@@ -258,7 +258,42 @@ Never overwrites; never moves a stub out of `stubs/` (placement into couple fold
 
 **Folder mode:** runs the triage scorer (§15b) over the folder, prints ranked candidates with signals, and processes only the ones the human selects.
 
-**Input** is a bare file, a **source-stub sidecar** (one asset + `*.notes.md`), a **source-stub bundle folder** (multiple files + a `notes.md` — e.g. recording + transcript; each file becomes a role-tagged version sharing the minted S-id, the folder dissolves, SPEC §12.1), or a folder to triage. **File mode**, transactional (any failure → roll back):
+**Input** is a bare file, a **source-stub sidecar** (one asset + `*.notes.md`), a **source-stub bundle folder** (multiple files + a `notes.md` — e.g. recording + transcript; each file becomes a role-tagged version sharing the minted S-id, the folder dissolves, SPEC §12.1), a **variation group** (see below), or a folder to triage. **File mode**, transactional (any failure → roll back):
+
+**Variation detection — implicit grouping from a mixed folder.** A real photo library has variation-siblings scattered among unrelated photos: three scans of the same portrait at different resolutions, a front-and-back pair, a color original and a restored version. They don't need a bundle folder — `fha process` (and `photoindex`) detects them automatically using two tiers:
+
+*Tier 1 — deterministic (free, always on):* files sharing the same basename root with only a suffix variation (`portrait_1880.jpg`, `portrait_1880_back.jpg`, `portrait_1880b.jpg`, `portrait_1880b_back.jpg`) are flagged as a candidate group. Known role suffixes: `-b` or `-c` etc (multiple scans of the same original photo, each may have separate context though), `b` or `c` etc (photo variation letters don't always start with a dash),  `-negative` (the film negative of the photo), `-front` (occasionally fronts are tagged with backs), `-page-N` (if a multi-page photo book it could have multiple pages), `-back` (reverse side), `-bw` (greyscale version), `-crop` (cropped). Any unrecognized suffix is kept as a freeform role. The primary is the file with the shortest/root name; others list as variants.
+
+*NOTE ON page-N variations.* This is usually because for photo books both the whole photo book page is scanned along with each individual photo on the page for archiving. So variations based on page-N share less context than other variations, but it still may be relevant for original source documentation.
+
+*Tier 2 — model-assisted (optional, gated behind `--with-vision`):* a vision pass over candidate pairs to confirm perceptual similarity — catches variations with unrelated names (e.g. `scan001.jpg` and `scan002.jpg` that are actually front/back of one photo). Expensive; used only on ambiguous cases Tier 1 can't resolve. Backlog until the core tools exist.
+
+**Processing a variation group:** when a group is detected, `fha process` surfaces it with a confirmation prompt:
+
+```
+Found 3 files that appear to be variations of the same photo:
+  portrait_1880.jpg        [primary]
+  portrait_1880_back.jpg   [role: back]
+  portrait_1880_bw.jpg     [role: bw]
+Process as ONE source (shared S-id) or separately?  [one / separate / skip]
+```
+
+On one: a single S-id is minted. The photos stay exactly where they are — names and locations unchanged. The root photo is flagged as is_primary=true. The source record updates to include an inventory lists each at its existing path with a role annotation:
+
+files:
+  - file: photos/1880/portrait_1880.jpg
+    role: primary
+    is_primary: true
+  - file: photos/1880/portrait_1880_back.jpg
+    role: back
+  - file: photos/1880/portrait_1880_bw.jpg
+    role: bw
+
+The SOURCE: S-xxxxxxxxxx keyword is written into each file's embedded metadata via exiftool so identity travels with the file if it moves. That is the only write to the files themselves — content and filename are untouched.
+
+On separate: each is processed as its own source. If one is clearly a derivative of another, a provenance note is suggested. On skip: deferred to the next session.
+
+The role annotations in files: are the only thing binding the variants — role lives in the record and the embedded SOURCE: keyword, not the filename. This is the opposite of documents-root files, which do carry the S-id in the filename precisely because they can be renamed; photos cannot be, so the record carries the meaning instead. The photo_groups index table caches the grouping for fast "show me all variants of this photo" queries.
 
 (1) mint S-id; (2) mark identity — **documents root:** rename to `{slug}_{S-id}.{ext}` in place (record `original_filename`); **photos root: NEVER rename** (Lightroom catalog integrity) — keyword only; (3) `exiftool -keywords+="SOURCE: {S-id}" -overwrite_original_in_place` where the format supports keywords; (4) scaffold `sources/{type}/{slug}_{S-id}.md` from the §14 template, inventory pre-filled, empty `## Claims`; (5) print the path. `--more FILE role[:copy]` attaches versions.
 Refuses files already carrying an S-id (filename or keyword).
@@ -309,9 +344,9 @@ DNA never included by default.
 
 ## 9. `fha photoindex` — photo metadata catalog
 
-**Purpose.** The photo library currently lives in Lightroom; finding anything must not require opening Lightroom.
+**Purpose.** The photo library currently lives in photo organizing software (Lightroom); finding anything must not require opening the other software.
 This tool scrapes embedded metadata for the entire `photos/` tree into `\.cache/photos.sqlite` — a disposable catalog making the library searchable in milliseconds.
-(It reads *files*, never the Lightroom catalog: embedded metadata is the durable layer.
+(It reads *files*, never the external catalog: embedded metadata is the durable layer.
 If a good open-source media browser is later adopted, it slots in at the interface layer; this catalog stays the scriptable surface.
 Candidates evaluated in the owner's private tool log.)
 
@@ -348,7 +383,7 @@ CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption, user_comment, ke
 ```
 
 **Variation grouping.** Versions of one physical photo must index as **one logical photo**.
-Group key, in priority order: (1) shared S-id (filename or `SOURCE:` keyword) — processed photos group by source; (2) same directory + same base stem after stripping the recognized suffix grammar `[-{copy}][-{role}]` (`-b`, `-c`, `-negative`, `-back`, `-front`, `-page-N`) — the pipeline's own naming convention; "text from alternate version" keywords corroborate a grouping but never create one (too fuzzy).
+Group key, in priority order: (1) shared S-id (filename or `SOURCE:` keyword) — processed photos group by source; (2) same directory + same base stem after stripping the recognized suffix grammar `[-{copy}][-{role}]` (`b`, `c`,`-b`, `-c`, `-negative`, `-back`, `-front`, `-page-N`) — the pipeline's own naming convention; "text from alternate version" keywords corroborate a grouping but never create one (too fuzzy). (NOTE letter varaitions are not always started with a dash, they always appear as the last thing before any additional tags however.)
 Grouping is conservative: never across directories, never on caption similarity.
 The **primary** variant is the front of copy a (fallback: lexicographically first); search results and the packet's photo gathering return *groups*, copying all variants but counting the photo once (`--files` exposes raw rows).
 
@@ -446,7 +481,7 @@ Most existing research lives behind logins (Ancestry especially), so capture is 
 Two delivery forms, one backend:
 
 **Delivery (interface layer, replaceable):**
-- *Browser companion* — a bookmarklet/extension or a Claude-in-Chrome action invoked on an open record page. The preferred form.
+- *Browser companion* — a extension/bookmarklet or a Claude-in-Chrome action invoked on an open record page. The preferred form.
 - *Paste fallback* — the human copies the page (or saves the HTML) into the workbench and says "capture this." Always available; needs no extension. This is the v1 path, since it requires nothing new to build.
 
 The companion's output is a **source stub** in the inbox (SPEC §12.1), never a finished record. **Backend (`fha capture`, deterministic + skill):**
