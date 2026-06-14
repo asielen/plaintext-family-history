@@ -1,0 +1,34 @@
+# Root-level local asset libraries for a user's working archive (anchored to root only)
+/photos/
+/documents/
+/inbox/
+/private/
+private/
+
+# Rebuildable cache — regenerated from the files, never committed
+.cache/
+*.sqlite
+*.sqlite-journal
+
+# But DO keep fixture assets if/when added
+!example-archive/documents/
+!example-archive/photos/
+!tests/fixtures/**
+
+# Python / tooling noise (for when the fha suite is built)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

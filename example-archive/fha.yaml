@@ -1,0 +1,5 @@
+# Example-archive config — fictional fixture. Asset roots are internal (and absent;
+# the example uses missing-fixture placeholders, see SPEC file-inventory status).
+roots:
+  photos: photos
+  documents: documents

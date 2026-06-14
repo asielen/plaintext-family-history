@@ -1,0 +1,6 @@
+# fha.yaml — archive configuration (plain, hand-editable). See SPEC.md §12.4.
+# Root aliases: record paths like "photos/1880/…" resolve their first segment here.
+# Use an absolute path to keep a library outside the archive (e.g. photos: D:/Photos).
+roots:
+  photos: photos
+  documents: documents
