@@ -110,8 +110,7 @@ from _lib import (
 #
 #  Tree view  (_cmd_tree and helpers)
 #    _fmt_id                      — uppercase type prefix for output IDs (p-xxx → P-xxx)
-#    _get_vitals                  — first accepted birth/death EDTF per person
-#    _build_node                  — assemble TOOLING §7 node dict for a person
+#    _build_nodes_bulk            — batch TOOLING §7 node dicts for all BFS pids (2 SQL queries)
 #    _collect_edges               — DISTINCT edges from relationships table for a pid
 #    _traverse_tree               — BFS with cycle detection; returns nodes + edges dicts
 #    _edge_to_json_dict           — edge dict → TOOLING §7 JSON edge schema
@@ -1348,49 +1347,48 @@ def _fmt_id(id_str: str) -> str:
     return id_str[0].upper() + id_str[1:]
 
 
-def _get_vitals(conn: sqlite3.Connection, pid: str) -> dict:
-    """Return {birth: edtf_or_null, death: edtf_or_null} for a person.
+def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, dict]:
+    """Build TOOLING §7 node dicts for all pids using two SQL queries instead of 2N.
 
-    Queries the first accepted claim of type 'birth' or 'death' for the
-    person and returns its date_edtf value.  Null when no accepted claim of
-    that type exists.
+    Returns an ordered dict keyed by lowercase pid, preserving the BFS encounter
+    order of the input list.  Falls back gracefully for pids absent from the index.
 
-    TOOLING §7 design decision D3: the vitals field carries the date_edtf
-    from the first accepted vital claim, not a computed bound.  'First' is
-    whatever SQLite returns — no ordering guarantee is needed because there
-    should be at most one accepted birth and one accepted death per person
-    (the review process prevents contradictory accepted vitals).
+    TOOLING §7 D3: vitals carry the date_edtf from the first accepted birth/death
+    claim.  At most one accepted claim of each vital type per person is expected,
+    so no ordering guarantee is needed.
     """
-    rows = conn.execute(
-        """
-        SELECT c.type, c.date_edtf
-        FROM claims c
-        JOIN claim_persons cp ON c.id = cp.claim_id
-        WHERE cp.person_id = ? AND c.type IN ('birth', 'death') AND c.status = 'accepted'
+    if not pids:
+        return {}
+    placeholders = ','.join('?' * len(pids))
+
+    person_map = {
+        row['id']: row
+        for row in conn.execute(
+            f'SELECT id, name, sex FROM persons WHERE id IN ({placeholders})',
+            pids,
+        ).fetchall()
+    }
+
+    vitals_map: dict[str, dict] = {p: {'birth': None, 'death': None} for p in pids}
+    for row in conn.execute(
+        f"""
+        SELECT cp.person_id, c.type, c.date_edtf
+        FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id
+        WHERE cp.person_id IN ({placeholders})
+          AND c.type IN ('birth', 'death') AND c.status = 'accepted'
         """,
-        (pid,),
-    ).fetchall()
-    vitals: dict = {'birth': None, 'death': None}
-    for row in rows:
-        vitals[row['type']] = row['date_edtf']
-    return vitals
+        pids,
+    ).fetchall():
+        vitals_map[row['person_id']][row['type']] = row['date_edtf']
 
-
-def _build_node(conn: sqlite3.Connection, pid: str) -> dict:
-    """Assemble the TOOLING §7 node dict for a person.
-
-    Schema: {p_id, name, sex, vitals: {birth, death}}.
-    Falls back gracefully when the person is not in the persons table so
-    that traversal over partially-indexed archives produces a coherent tree.
-    """
-    row = conn.execute(
-        'SELECT name, sex FROM persons WHERE id = ?', (pid,)
-    ).fetchone()
     return {
-        'p_id': _fmt_id(pid),
-        'name': row['name'] if row else pid,
-        'sex': row['sex'] if row else None,
-        'vitals': _get_vitals(conn, pid),
+        pid: {
+            'p_id': _fmt_id(pid),
+            'name': person_map[pid]['name'] if pid in person_map else pid,
+            'sex': person_map[pid]['sex'] if pid in person_map else None,
+            'vitals': vitals_map[pid],
+        }
+        for pid in pids
     }
 
 
@@ -1440,8 +1438,11 @@ def _traverse_tree(
 ) -> tuple[dict[str, dict], dict[tuple, dict]]:
     """BFS traversal of the relationships graph from seed_pid.
 
+    Collects P-ids and edges during BFS, then builds all node dicts in a
+    single batch (two SQL queries via _build_nodes_bulk) rather than 2N queries.
+
     Returns:
-        nodes — ordered dict p_id → node dict (BFS encounter order)
+        nodes — ordered dict pid → node dict (BFS encounter order)
         edges — ordered dict (from, to, type) → edge dict (deduplicated)
 
     Modes and traversal logic (TOOLING §7):
@@ -1457,21 +1458,15 @@ def _traverse_tree(
 
     Cycle detection: the visited set is seeded with seed_pid before the loop
     starts.  Any P-id already in visited is never re-enqueued, so even a
-    self-referential edge (person is their own parent) or a cousin-marriage
-    cycle terminates cleanly.  Spouse nodes added in descendants mode are
-    NOT added to visited, so they can still be reached via the BFS if they
-    happen to be descendants through a different path (cousin marriages).
+    self-referential edge or cousin-marriage cycle terminates cleanly.
     """
-    nodes: dict[str, dict] = {}
+    pids_in_order: list[str] = [seed_pid]
+    pids_seen: set[str] = {seed_pid}
     edges: dict[tuple, dict] = {}
     visited: set[str] = {seed_pid}
 
     queue: deque[tuple[str, int]] = deque([(seed_pid, 0)])
 
-    # Determine edge lists once — mode is constant across the traversal.
-    # traverse_rels: edges to follow (and enqueue neighbors).
-    # extra_rels: edges to collect as leaf nodes only, never enqueued
-    #             (spouse one-hop in descendants mode).
     if mode == 'ancestors':
         traverse_rels: list[str] = ['parent']
         extra_rels: list[str] = []
@@ -1485,9 +1480,6 @@ def _traverse_tree(
     while queue:
         pid, depth = queue.popleft()
 
-        if pid not in nodes:
-            nodes[pid] = _build_node(conn, pid)
-
         # Expand BFS edges (hop-limit check gates further enqueuing, not edge collection)
         if max_hops is None or depth < max_hops:
             for edge in _collect_edges(conn, pid, traverse_rels):
@@ -1498,6 +1490,9 @@ def _traverse_tree(
                 if other not in visited:
                     visited.add(other)
                     queue.append((other, depth + 1))
+                if other not in pids_seen:
+                    pids_in_order.append(other)
+                    pids_seen.add(other)
 
         # Collect extra_rels as leaf nodes — never enqueued (in-law lineages
         # appear in the tree but their own ancestry is not followed).
@@ -1505,9 +1500,12 @@ def _traverse_tree(
             ekey = (edge['from'], edge['to'], edge['type'])
             if ekey not in edges:
                 edges[ekey] = edge
-            if edge['to'] not in nodes:
-                nodes[edge['to']] = _build_node(conn, edge['to'])
+            other = edge['to']
+            if other not in pids_seen:
+                pids_in_order.append(other)
+                pids_seen.add(other)
 
+    nodes = _build_nodes_bulk(conn, pids_in_order)
     return nodes, edges
 
 
@@ -1794,6 +1792,10 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Generate view files from the index (timeline, sources-index, draft-queue, …).',
         description='Generate GENERATED-headed .md view files from the index.',
     )
+    views_p.add_argument('--root', dest='views_root', metavar='PATH',
+                         help='Archive root (auto-detected if omitted).')
+    views_p.add_argument('--spec-root', dest='views_spec_root', metavar='PATH',
+                         help='Spec docs root (accepted for CLI consistency).')
     views_p.set_defaults(func=_cmd_views_help)
 
     vsubs = views_p.add_subparsers(dest='views_command', metavar='SUBCOMMAND')
@@ -1812,6 +1814,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     tl.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
     tl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    tl.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     tl.set_defaults(func=_cmd_timeline)
 
     # ── sources-index ─────────────────────────────────────────────────────────
@@ -1831,6 +1834,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     si.add_argument('--couple-folders', action='store_true',
                     help='Generate sources-index.md in every curated couple folder.')
     si.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    si.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     si.set_defaults(func=_cmd_sources_index)
 
     # ── draft-queue ───────────────────────────────────────────────────────────
@@ -1847,6 +1851,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     dq.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
     dq.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    dq.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     dq.set_defaults(func=_cmd_draft_queue)
 
     # ── brackets ──────────────────────────────────────────────────────────────
@@ -1855,6 +1860,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Check and refresh couple-folder bracket lists (W103/W110).',
     )
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    br.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview changes without writing.')
@@ -1886,6 +1892,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     tr.add_argument('--out', metavar='FILE', help='Write output to FILE instead of stdout.')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    tr.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     tr.set_defaults(func=_cmd_tree)
 
     # Store a back-reference so _cmd_views_help can print the right help text
@@ -1902,12 +1909,18 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--root', metavar='PATH',
+    parser.add_argument('--root', dest='global_root', metavar='PATH',
                         help='Archive root (auto-detected if omitted).')
+    parser.add_argument('--spec-root', dest='global_spec_root', metavar='PATH',
+                        help='Spec docs root (accepted for CLI consistency).')
     subs = parser.add_subparsers(dest='views_command', metavar='SUBCOMMAND')
     register_standalone(subs)
 
     args = parser.parse_args(argv)
+    if getattr(args, 'root', None) is None:
+        args.root = getattr(args, 'global_root', None)
+    if getattr(args, 'spec_root', None) is None:
+        args.spec_root = getattr(args, 'global_spec_root', None)
     if not args.views_command:
         parser.print_help()
         return EXIT_CLEAN
@@ -1924,12 +1937,14 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     ]:
         p = subs.add_parser(name, help=help_text)
         p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+        p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
         if extra:
             extra(p)
         p.set_defaults(func=func)
 
     br = subs.add_parser('brackets', help='Check and refresh couple-folder bracket lists (W103/W110).')
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    br.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
@@ -1941,6 +1956,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     tr.add_argument('--format', choices=['json', 'dot', 'html'], default='json', dest='format')
     tr.add_argument('--out', metavar='FILE')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    tr.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     tr.set_defaults(func=_cmd_tree)
 
 

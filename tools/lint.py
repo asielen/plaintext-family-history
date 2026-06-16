@@ -1292,6 +1292,26 @@ def _fix_format(path: Path, dry_run: bool = False) -> None:
 
 # ── Main lint entry point ─────────────────────────────────────────────────────
 
+def _run_lint_core(
+    archive_root: Path,
+    fha_config: dict,
+    with_exif: bool = False,
+) -> tuple[list[Finding], 'Registry']:
+    """Run the three core lint passes and return (findings, registry).
+
+    Shared by run_lint (which then adds format/fix passes and prints output)
+    and run_lint_silent (which just counts findings for fha doctor).  Keeping
+    both entry points in sync automatically: any new core pass added here is
+    reflected in both.
+    """
+    findings: list[Finding] = []
+    registry = Registry(archive_root, fha_config)
+    _walk_archive(archive_root, registry, findings)
+    _cross_file_checks(registry, findings, with_exif=with_exif)
+    _check_agent_drift(archive_root, findings)
+    return findings, registry
+
+
 def run_lint(
     archive_root: Path,
     fha_config: dict,
@@ -1310,8 +1330,6 @@ def run_lint(
     Report-only by default; mutating fix modes require explicit flags and
     respect --dry-run. Never modifies original source files or photos.
     """
-    findings: list[Finding] = []
-
     # Check that archive root looks right
     if not (archive_root / 'fha.yaml').exists():
         msg = f'No fha.yaml found at {archive_root} — is this an archive root?'
@@ -1323,16 +1341,7 @@ def run_lint(
             print('Summary: 1 error(s)')
         return EXIT_ERRORS
 
-    registry = Registry(archive_root, fha_config)
-
-    # First pass: walk and collect
-    _walk_archive(archive_root, registry, findings)
-
-    # Second pass: cross-file checks
-    _cross_file_checks(registry, findings, with_exif=with_exif)
-
-    # E018: agent drift
-    _check_agent_drift(archive_root, findings)
+    findings, registry = _run_lint_core(archive_root, fha_config, with_exif=with_exif)
 
     # Format checks / fixes
     if format_check or format_write:
@@ -1451,6 +1460,24 @@ def _fix_spawn_questions(
 
 def _today() -> str:
     return datetime.date.today().isoformat()
+
+
+def run_lint_silent(
+    archive_root: Path,
+    fha_config: dict,
+) -> tuple[int, int, list[Finding]]:
+    """Run lint core passes without output. Returns (n_errors, n_warnings, e018_findings).
+
+    Used by fha doctor to embed a lint summary in the health report.
+    Delegates to _run_lint_core so any new core pass is automatically reflected here.
+    """
+    if not (archive_root / 'fha.yaml').exists():
+        return (1, 0, [])
+    findings, _ = _run_lint_core(archive_root, fha_config)
+    n_errors = sum(1 for f in findings if f.severity == 'E')
+    n_warnings = sum(1 for f in findings if f.severity == 'W')
+    e018 = [f for f in findings if f.code == 'E018']
+    return n_errors, n_warnings, e018
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

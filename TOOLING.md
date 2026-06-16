@@ -220,6 +220,8 @@ Exit codes as §1.
 Run it first after any migration or machine move. **Stated tradeoff:** this spec does not attempt to detect bit rot or silent file alteration; that preservation concern is deliberately deferred to the backup strategy, outside the archive format.
 A future `fha doctor --fixity` could add optional checksum verification without making checksums part of the research model.
 
+**Design decision D5 (implemented milestone 2):** Absent optional components (index, photoindex) report as "not yet built" and contribute exit code 1 (warning), not 2 (error).  Doctor is safe to run on a fresh archive with no caches built yet.  Rationale: a missing index or photoindex is a normal state during initial setup and after a clean wipe of `.cache/`; treating it as an error would make doctor hostile to the very situations where it is most useful.
+
 ## 4. `fha id` — minting
 
 `fha id mint P [-n 5]` → prints fresh IDs.
@@ -252,8 +254,14 @@ Returns hits with their record or asset and context.
 Cheap because the corpus is plain text plus the two SQLite FTS tables; one query spans prose and media metadata.
 
 Together these make `find` the **connection-discovery primitive**: any ID or date or phrase → its neighborhood, ranked, every edge carrying provenance — the raw material the report, the FAN view, and `cooccur` all build on.
-Uses the index when fresh; degrades to a tree scan with a warning when not.
+Uses the index when present. If the index is stale, `fha find` prints a warning but still returns the structured index-backed report; if the index is absent or unreadable, it degrades to a tree scan with the same warning.
 (`fha id check` is an alias for the bare locator.)
+
+**Design decision D4 (implemented milestone 2):** `--related` and `--related --date` are deferred to milestone 3.  They are most useful after `fha xref` and `fha cooccur` populate the corroborates/contradicts and social-edge data the neighborhood view depends on.  Passing `--related` in milestone 2 prints a clear deferral message and exits 0.
+
+**Design decision D7 (implemented milestone 2):** `fha find --text` scope in milestone 2 is record bodies + notes + transcripts (via FTS tables and a re.search pass).  Photo and document captions are automatically added to the search scope once `fha photoindex` is built — the tool degrades gracefully and notifies the user when the photoindex is absent.
+
+**Design decision D9 (implemented milestone 2 audit):** A stale index is still preferable to a bare tree scan for `fha find <ID>` because it preserves structured reports (person companions, claim summaries, source inventories, citation rows) after generated views change mtimes. Staleness is surfaced as a warning; only an absent or unreadable index falls back to grep-style scanning.
 
 ## 5. `fha stubs` — stub minter
 
@@ -690,7 +698,9 @@ Feeds report §15a.6. *(Flagged as a future-intelligence focus: a model-assisted
 
 ## 15. Build order & testing
 
-**Order:** `_lib` foundations → `install`/`update-tools` (scaffolding, §13c) → `id` → `index` → `lint` → `stubs` → `views` → `photoindex` (+triage, +reconcile) → `xref` → `cooccur` → `report` → `packet` → `process` → `convert-mining` → `site` → `wikitree` → `gedcom` → `capture` → `places geocode`.
+**Order:** `_lib` foundations → `install`/`update-tools` (scaffolding, §13c) → `id` → `index` → `lint` → `stubs` → `views` + `find` + `doctor` → `photoindex` (+triage, +reconcile) → `xref` → `cooccur` → `report` → `packet` → `process` → `convert-mining` → `site` → `wikitree` → `gedcom` → `capture` → `places geocode`.
+
+**Design decision D8 (implemented milestone 2):** `fha find` and `fha doctor` are milestone 2 deliverables alongside `fha views`.  They depend on the index (`fha index`) but not on the photoindex or any later tool.
 Rationale: lint validates everything later tools write; the photo index gates the packet; the converter needs stubs + lint to validate its output.
 
 **Testing:** the pilot tree is the **clean** golden fixture (`tests/fixtures/`) and must lint clean (exit 0; TODO-marked asset gaps are W-level, not E-level, in fixture mode); intentionally broken fixtures live separately under `tests/fixtures/broken-*/`, one per lint code. The `example-archive/` is a separate demonstration fixture — it is permitted to exit 1 with documented known warnings (e.g. W101 for historical figures whose death records have not been located); those warnings must not regress in count or code without a deliberate change.

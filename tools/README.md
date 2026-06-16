@@ -16,9 +16,43 @@ They are the "replaceable glue" of the philosophy — disposable, regenerable fr
 | `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
 | `fha views brackets` | `views.py` | ✓ W103 bracket refresh, W110 Ahnentafel placement; `--fix` applies, `--dry-run` previews |
 | `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; `--format html` deferred (D6) |
+| `fha doctor` | `doctor.py` | ✓ all 11 checks; D5 applied (absent index/photoindex = warning, not error) |
+| `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent |
+| `fha find --text "…"` | `find.py` | ✓ FTS (notes_fts + transcripts_fts) + re.search pass; photo-caption scope deferred (D7) |
+| `fha find --related <ID>` | `find.py` | ⚑ deferred to milestone 3 (D4); prints deferral message, exits 0 |
+| `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher |
 
-All views require a fresh `.cache/index.sqlite` (run `fha index` first).
+Views require a fresh `.cache/index.sqlite` (run `fha index` first). `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches.
 Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.
+
+## fha doctor — implementation status
+
+| Check | Status | Notes |
+|---|---|---|
+| Archive root + fha.yaml | ✓ | Fatal exit 2 if either absent/unparseable |
+| Mapped roots reachable | ✓ | ✓/✗ per root; unreachable → exit 2 |
+| exiftool on PATH | ✓ | ✗ → exit 1 (warning; not a hard dep for most commands) |
+| Python deps (PyYAML) | ✓ | ✗ → exit 2 |
+| Index freshness | ✓ | absent/stale → exit 1 (D5) |
+| Photoindex freshness | ✓ | absent/stale → exit 1 (D5) |
+| Lint summary | ✓ | import-and-call `run_lint_silent`; E-level findings → exit 2 |
+| Inbox aging (14 days) | ✓ | printed only when inbox/ dir exists |
+| Counts | ✓ | from index when fresh, else quick scan |
+| E018 findings detail | ✓ | lists findings when present |
+| Backup reminder | ✓ | always printed |
+
+## fha find — implementation status
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| `<P-id>` lookup | ✓ | file, couple folder, companions, claims, citations, photo note |
+| `<S-id>` lookup | ✓ | record, files (resolved + on-disk status), claims, citation sites |
+| `<C-id>` lookup | ✓ | source record + approx line, status, value, corroborates/contradicts |
+| `<L-id>` lookup | ✓ | place entry, claims referencing it, prose mentions |
+| `<H-id>` lookup | ✓ | hypothesis entry, section heading, status, prose mentions |
+| `--text "…"` | ✓ | FTS + re.search pass; photo captions ⚑ deferred (D7) |
+| `--related <ID>` | ⚑ deferred | prints deferral message, exits 0 (D4) |
+| Index fallback | ✓ | stale index warns but remains structured; absent/unreadable index tree-scans with "WARNING: index not fresh" header |
 
 ## Implemented tools (milestone 1)
 

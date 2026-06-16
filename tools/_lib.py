@@ -64,6 +64,10 @@ import yaml
 #    extract_token_ids         — all [ID] tokens from a text block
 #    extract_bare_ids          — all bare IDs from a text block
 #
+#  Archive freshness
+#    newest_record_mtime       — max mtime of sources/people/notes .md + places.yaml
+#    configure_utf8_stdout     — reconfigure stdout to UTF-8 (Windows cp1252 compat)
+#
 #  Output helpers
 #    EXIT_CLEAN / EXIT_WARNINGS / EXIT_ERRORS / EXIT_FAILURE  — shared exit codes
 #    Finding                   — one lint finding: severity + code + path + message
@@ -506,6 +510,46 @@ def extract_token_ids(text: str) -> list[str]:
 def extract_bare_ids(text: str) -> list[str]:
     """Return all bare ID values found in text (lowercased)."""
     return [m.group(0).lower() for m in ID_RE.finditer(text)]
+
+
+# ── Archive freshness ─────────────────────────────────────────────────────────
+
+def newest_record_mtime(archive_root: Path) -> float:
+    """Max mtime (epoch seconds) across sources/people/notes .md files and places/places.yaml.
+
+    Used as the freshness baseline for index.sqlite and photos.sqlite: if the
+    cache is older than this, it is stale.  Returns 0.0 on a brand-new archive
+    that has no record files yet (trivially up-to-date).
+    """
+    max_mtime = 0.0
+    for d_name in ('sources', 'people', 'notes'):
+        d = archive_root / d_name
+        if d.is_dir():
+            for p in d.rglob('*.md'):
+                try:
+                    mtime = p.stat().st_mtime
+                    if mtime > max_mtime:
+                        max_mtime = mtime
+                except OSError:
+                    pass
+    places_yaml = archive_root / 'places' / 'places.yaml'
+    if places_yaml.exists():
+        try:
+            mtime = places_yaml.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+        except OSError:
+            pass
+    return max_mtime
+
+
+def configure_utf8_stdout() -> None:
+    """Reconfigure stdout to UTF-8 so ✓/✗ render on Windows cp1252 terminals."""
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[union-attr]
+        except Exception:
+            pass
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────

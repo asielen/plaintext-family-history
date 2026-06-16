@@ -51,6 +51,7 @@ from _lib import (
     find_archive_root,
     load_fha_yaml,
     normalize_id,
+    parse_filename,
     read_record,
     resolve_path,
 )
@@ -330,6 +331,13 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     meta = rec['meta']
 
     pid = normalize_id(str(meta.get('id', '')))
+    if not pid:
+        # Generated companion files (timeline, sources-index, draft-queue) carry no
+        # frontmatter id — the P-id lives in the filename instead.  Extract it so
+        # these files appear in person_files and are discoverable via fha find.
+        parsed = parse_filename(path)
+        if parsed and parsed['id_type'] == 'P':
+            pid = parsed['id_str']
     if not pid or not pid.startswith('p-'):
         return
 
@@ -386,10 +394,12 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
                     (pid, system, str(ext_id)),
                 )
 
-    # Always record the file association
+    # Always record the file association.  Generated views have no frontmatter id
+    # (their id comes from the filename fallback above) so mark them generated=1.
+    is_generated = not meta.get('id')
     conn.execute(
         'INSERT OR REPLACE INTO person_files(person_id, kind, path, generated) VALUES (?,?,?,?)',
-        (pid, kind, str(path.relative_to(archive_root)), 0),
+        (pid, kind, str(path.relative_to(archive_root)), 1 if is_generated else 0),
     )
 
     # FTS index the body
