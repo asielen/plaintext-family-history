@@ -103,7 +103,7 @@ CREATE TABLE persons(
 CREATE TABLE person_variants(person_id TEXT, variant TEXT);
 CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
 CREATE TABLE person_files(person_id TEXT, kind TEXT, path TEXT, generated INTEGER DEFAULT 0,
-  PRIMARY KEY(person_id, kind));   -- profile | research | timeline | sources-index; profile populates persons.path
+  PRIMARY KEY(person_id, kind));   -- profile | research | timeline | sources-index | draft-queue; profile populates persons.path
 CREATE TABLE person_external(person_id TEXT, system TEXT, ext_id TEXT);
 
 CREATE TABLE sources(
@@ -174,7 +174,7 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 
 | Code | Check | Detection |
 |---|---|---|
-| E001 | Duplicate ID | A non-person record ID in two records' frontmatter is an error. For `P-id`s, one primary profile **plus** its companion files (`_research`, `_timeline`, `_sources-index`) may share the ID; two primary *profile* files with one `P-id` is the error. |
+| E001 | Duplicate ID | A non-person record ID in two records' frontmatter is an error. For `P-id`s, one primary profile **plus** its companion files (`_research`, `_timeline`, `_sources-index`, `_draft-queue`) may share the ID; two primary *profile* files with one `P-id` is the error. |
 | E002 | Malformed ID / filename | filename fails the §13 grammars; ID fails `ID_RE` |
 | E003 | Filename ID ≠ record ID | compare filename suffix to frontmatter `id` |
 | E004 | Orphan reference | any `[token]`, `persons:`, `place:`, `corroborates/contradicts` target not found |
@@ -337,12 +337,13 @@ Lint E012 for photos checks keyword↔inventory agreement (no filename carrier).
 All write GENERATED-headed `.md` into the tree; all derive purely from the index.
 
 - **`fha views timeline [P-id|--all-curated]`** → `…_timeline_{P-id}.md`: accepted + needs-review claims for the person, sorted by `date_min`, grouped by decade, each line `EDTF — type: value [S-id]`, suggested claims listed in a trailing "unreviewed" section.
+- **`fha views draft-queue [P-id|--all-curated]`** → `…_draft-queue_{P-id}.md`: accepted claims whose source is not cited in the profile body — the writing backlog. Consumed by the `write-biography` skill. See §14b for the full design.
 - **`fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|html|dot]`** → traverses the `relationships` edges from the person. `ancestors`: parent-edges recursively (pedigree). `descendants`: child-edges recursively (the v1 hero — "all descendants of T.E."). `fan`: the person plus kin plus social edges, one or two hops (2 = default; catches in-laws and shared-affiliation ties), the research-network graph — confirmed edges solid, `fha cooccur` candidates dashed, hypotheses ghosted, so the view doubles as a research surface. Bilinear: spouse edges pull in in-law branches. Every node carries its `[P-id]` (→ links to the person page) and every edge its source `claim_id`. Output is **the neutral tree JSON** — the stable data contract (nodes: `{p_id, name, vitals, sex}`; edges: `{type, from, to, claim_id, dates}`) — or dot for tooling. This JSON is what the spec pins down; the *rendering* of it (the site's vendored tree library, styling) is deliberately left to the build. A renderer adapter maps this neutral shape to whatever library is in use.
-- **`fha views sources-index`** → per curated person and per couple folder: every source with ≥1 claim naming the person(s), grouped by source_type, with paths.
+- **`fha views sources-index`** → per curated person and per couple folder: every source with ≥1 claim naming the person(s), grouped by source_type, with paths. The couple-folder version is written as `sources-index.md` at the folder root (no P-id — the folder is its context).
 - **`fha views brackets`** → folder maintenance for the `people/` tree, covering three concerns in one pass (all previewed as diffs; `--fix` applies them):
   1. **Bracket lists** — refresh stale `[child, …]` annotations in couple-folder names from accepted `relationship` claims. (W103)
   2. **Ahnentafel numbers** *(requires `root_person` in `fha.yaml`)* — derive each direct-line couple's correct number by walking accepted parent `relationship` claims outward from `root_person` (#1): the parent with `sex: M` takes position 2n, `sex: F` takes 2n+1; for same-sex or `sex: U` pairs the first-encountered parent (by P-id, deterministic) takes the lower slot. Report folders whose numeric prefix disagrees with the derived number; with `--fix`, rename. (W110)
-  3. **Person file placement** *(requires `root_person`)* — report direct-line person files (all companion kinds: profile, research, timeline, sources-index) living in the wrong couple folder; with `--fix`, move them to the correct folder, creating it when absent. Non-direct-line occupants (siblings, half-siblings, connections) are never moved. (W110)
+  3. **Person file placement** *(requires `root_person`)* — report direct-line person files (all companion kinds: profile, research, timeline, sources-index, draft-queue) living in the wrong couple folder; with `--fix`, move them to the correct folder, creating it when absent. Non-direct-line occupants (siblings, half-siblings, connections) are never moved. (W110)
   
   When `root_person` is absent from `fha.yaml`, checks 2 and 3 are skipped with an informational note. Renaming folders and moving person files are both safe: folder names and paths carry no machine meaning — the `P-id` in each filename is the identity.
 

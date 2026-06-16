@@ -61,16 +61,27 @@ README.md whenever a change affects how a human reads the archive (the README ru
 2. **Restate the contract** to the human before coding: inputs, outputs, flags, exit
 codes, what it must never do.
 Mismatch caught here is cheap.
-3. **Implement** within the guardrails: Python ≥3.10; dependencies ONLY PyYAML, Jinja2
+3. **Write the documentation shell first.** Before any implementation, write the module
+docstring and all function stubs with their full docstrings. Each docstring should cover:
+what the function does, why the approach was chosen, and any domain constraint a fresh
+reader needs (EDTF quirks, GENERATED header contracts, two-table UNION rationale — the
+things that vanish from memory six months later). If you cannot explain the why before
+implementing, the design is still unsettled; resolve it here rather than in a comment
+retrofitted after the fact. For files with ≥5 non-trivial functions, add a code-map
+comment block near the top listing sections and functions with one-line purposes so the
+file is skimmable without reading every docstring. Use this phase as a final contract
+check — if the stubs reveal spec gaps, surface them now (see Spec-discovery protocol below),
+then flesh out the implementations.
+4. **Implement** within the guardrails: Python ≥3.10; dependencies ONLY PyYAML, Jinja2
 (site), exiftool-as-binary — adding any other is a proposed decision, not a choice; one file per tool under `tools/`, shared code only in `_lib.py`, tools never import tools; no network access (geocoder's gazetteer download excepted).
-4. **Fixtures, not the archive.** Develop and test ONLY against `tests/fixtures/`
+5. **Fixtures, not the archive.** Develop and test ONLY against `tests/fixtures/`
 copies.
 The real archive is never a test bed; destructive paths are exercised on fixtures exclusively.
-5. **Definition of done:** `fha lint` runs clean on the clean pilot fixture; each of
+6. **Definition of done:** `fha lint` runs clean on the clean pilot fixture; each of
 the tool's error codes fires on its broken fixture; `--dry-run` previews every mutating operation; help text exists; TOOLING still describes the tool accurately.
 **Completion gate:** every flag the CLI accepts and every E/W code the tool advertises must appear in `tools/README.md` as either ✓ implemented or ⚑ deferred before the tool is declared milestone-complete. A flag that exists in the CLI but is absent from that table — or present but neither working nor marked deferred — is documentation debt that blocks handoff. Do not declare a tool done while any flag or code is in an undocumented partial state.
-6. **README review.** Before handoff, scan `README.md`, `docs/GETTING_STARTED.md`, and `tools/README.md` for any reference to the changed tool's behavior, flags, or build status and update anything now inaccurate. A working tool that a README still calls "not yet implemented," or whose flags the getting-started guide misdescribes, is a documentation bug. (The README rule from the decision log §21a binds tool-building as much as spec-refinement.)
-7. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
+7. **README review.** Before handoff, scan `README.md`, `docs/GETTING_STARTED.md`, and `tools/README.md` for any reference to the changed tool's behavior, flags, or build status and update anything now inaccurate. A working tool that a README still calls "not yet implemented," or whose flags the getting-started guide misdescribes, is a documentation bug. (The README rule from the decision log §21a binds tool-building as much as spec-refinement.)
+8. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
 
 **Spec-discovery protocol:** when implementation reveals that TOOLING/SPEC is ambiguous, contradictory, or wrong — STOP.
 Do not improvise past the spec (the docs must remain able to regenerate the tools).
@@ -84,9 +95,27 @@ Present the gap, propose the amendment as a decision-log entry, and proceed only
 
 **Correctness:** Think through failure modes before finalizing — empty inputs, malformed YAML, missing files, partial writes, interrupted runs, and `--dry-run` vs. live-execution divergence. Make cleanup paths explicit; never leave the archive in an inconsistent state after an error. Do not declare work complete while known medium or high correctness issues remain.
 
-**Documentation:** Add docstrings to all non-trivial functions explaining what the function does and, where non-obvious, why the approach was chosen. Add inline comments only where they clarify non-obvious decisions, tradeoffs, or failure-handling; do not add comments that restate obvious code.
+**Documentation:** The aesthetic target is Steinbeck or Hemingway, not Dickens or Kant.
+Complex things expressed plainly — not plain things dressed up to seem complex.
+A reader picking up the file cold should feel the code is on their side.
 
-**Self-review:** After implementing, review your own diff as a strict code reviewer before finalizing. Look specifically for correctness risks, duplicate side effects, contract mismatches, and missing cleanup. Classify each issue as high, medium, or low severity. Patch all high and medium issues before declaring done; do not leave them as follow-ups unless the human explicitly instructs otherwise.
+*Module docstrings:* every file gets an architecture overview: what this file is for,
+how it fits into the larger system, and the shape of data flowing through it.
+For files with ≥5 non-trivial functions, include a code-map comment block that lists
+sections and functions with one-line purposes so the reader can jump directly to what
+they need without reading the whole file.
+
+*Function docstrings:* explain what the function does AND why the approach was chosen.
+The what is often clear from the code; the why is what disappears without a docstring.
+Prioritise domain context over technical restatement — a reader who knows Python but
+not EDTF dates, Crockford IDs, or the GENERATED-header contract needs that context,
+not a paraphrase of the implementation.
+
+*Inline comments:* only for non-obvious decisions, tradeoffs, platform workarounds, or
+subtle invariants. Never restate the code. Never explain what — only explain why, and
+only when the why isn't already covered by the function's own docstring.
+
+**Self-review:** After implementing, review your own diff as a strict code reviewer before finalizing. Check correctness (failure modes, missing cleanup, contract mismatches, duplicate side effects) AND documentation (every non-trivial function has a docstring that explains the why; the module docstring reflects what was actually built; no inline comment merely restates the code; the code map is accurate). Classify each issue as high, medium, or low severity. Patch all high and medium issues before declaring done.
 
 **Completion:** Work to completion in one run — do not stop after partial implementation if more required work is known. Keep interim narration brief so context is reserved for actual work. If context limits prevent full completion, finish the highest-risk and most central work first, then clearly list what remains.
 

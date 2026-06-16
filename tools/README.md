@@ -7,6 +7,19 @@ These tools are **generic**: they operate on any spec-conforming archive and con
 They are the "replaceable glue" of the philosophy — disposable, regenerable from the spec, and safe to publish.
 `TOOLING.md` (repo root) is the design document for every tool; consult it before changing any behavior.
 
+## Implemented tools (milestone 2)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha views timeline` | `views.py` | ✓ per-person and --all-curated |
+| `fha views sources-index` | `views.py` | ✓ per-person, --all-curated, --couple-folders |
+| `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
+| `fha views brackets` | `views.py` | ⚑ stub — not yet implemented |
+| `fha views tree` | `views.py` | ⚑ stub — not yet implemented |
+
+All views require a fresh `.cache/index.sqlite` (run `fha index` first).
+Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.
+
 ## Implemented tools (milestone 1)
 
 | Tool | File | Status |

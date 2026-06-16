@@ -442,7 +442,7 @@ Every record file is **self-identifying** — its ID is in its filename, so file
 
 - **Source records:** `{slug}_{S-id}.md` — slug lowercase hyphenated, mutable; ID immutable.
 - **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` — the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) — but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`… Copies: `b`, `c`, `negative`… Derivative views: `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`) marking supplementary detail images, never independent sources. Note: `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` — it is the physical film or glass-plate source material for the root image. Suffix parsing priority order: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; remaining stem = base id (see `TOOLING.md` §6 for the full algorithm). Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions — "text from alternate version" tags — so any copy reveals the others.)
-- **Person files:** `{surname}__{given_names}[_{kind}]_{P-id}.md` — **double underscore** after the surname (families sort together), underscores within given names, **birth surname always** (keeps women findable under the name in their early records; matches WikiTree practice). `kind` ∈ `research` | `timeline` | `sources-index`.
+- **Person files:** `{surname}__{given_names}[_{kind}]_{P-id}.md` — **double underscore** after the surname (families sort together), underscores within given names, **birth surname always** (keeps women findable under the name in their early records; matches WikiTree practice). `kind` ∈ `research` | `timeline` | `sources-index` | `draft-queue`.
 
 The deliberate style difference — person files underscored, source files hyphenated — instantly distinguishes record kinds in search results.
 
@@ -563,6 +563,7 @@ Per the filename grammars of §13, a curated person has, in their couple folder:
 | `…_research_P-xxxx.md` | **Working file** — Research Notes, Open Questions, Hypotheses. |
 | `…_timeline_P-xxxx.md` | **Generated** from claims, EDTF-sorted. Never hand-edited. |
 | `…_sources-index_P-xxxx.md` | **Generated** list of sources mentioning this person. |
+| `…_draft-queue_P-xxxx.md` | **Generated** uncited-claim backlog; consumed by write-biography. Never hand-edited. |
 
 **Profile structure** — frontmatter (§9), then:
 

@@ -148,14 +148,16 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` — milestone 1 complete.**
+**Current: `spec v1.2` — milestone 2 complete.**
 
-The first implementation milestone is done: `fha lint` runs on the example archive with no errors.
+Milestone 2 delivers the view generators: `fha views timeline`, `fha views sources-index`, and
+`fha views draft-queue` all run cleanly on the example archive alongside the milestone-1 substrate.
 The intended build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
 - [x] `fha id`, `fha index`, `fha lint`, `fha stubs` — the substrate (milestone 1: lint clean on the example archive)
-- [ ] `fha process`, view generators, the photo index
+- [x] `fha views timeline`, `fha views sources-index`, `fha views draft-queue` — view generators (milestone 2)
+- [ ] `fha process`, photo index
 - [ ] The session report, cross-reference pass, person packets
 - [ ] The static-site generator and GEDCOM export
 - [ ] Web-capture companion for record intake

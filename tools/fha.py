@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     from index import register as index_register
     from lint import register as lint_register
     from stubs import register as stubs_register
+    from views import register as views_register
 
     parser = build_parser()
     subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -67,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     index_register(subs)
     lint_register(subs)
     stubs_register(subs)
+    views_register(subs)
 
     args = parser.parse_args(argv)
 

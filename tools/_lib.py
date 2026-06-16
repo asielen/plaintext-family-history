@@ -60,7 +60,7 @@ SOURCE_TYPES: frozenset[str] = frozenset({
 })
 
 # Companion file kinds (share a P-id with their profile)
-COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index'})
+COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index', 'draft-queue'})
 
 # ── fha.yaml loading ──────────────────────────────────────────────────────────
 

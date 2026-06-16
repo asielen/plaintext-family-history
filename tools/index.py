@@ -270,7 +270,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     # Determine kind from filename
     stem = path.stem
     kind = 'profile'
-    for k in ('research', 'timeline', 'sources-index'):
+    for k in ('research', 'timeline', 'sources-index', 'draft-queue'):
         if f'_{k}_' in stem or stem.endswith(f'_{k}'):
             kind = k
             break
