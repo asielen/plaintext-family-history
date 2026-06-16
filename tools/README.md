@@ -15,7 +15,7 @@ They are the "replaceable glue" of the philosophy — disposable, regenerable fr
 | `fha views sources-index` | `views.py` | ✓ per-person, --all-curated, --couple-folders |
 | `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
 | `fha views brackets` | `views.py` | ✓ W103 bracket refresh, W110 Ahnentafel placement; `--fix` applies, `--dry-run` previews |
-| `fha views tree` | `views.py` | ⚑ stub — not yet implemented |
+| `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; `--format html` deferred (D6) |
 
 All views require a fresh `.cache/index.sqlite` (run `fha index` first).
 Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.

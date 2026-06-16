@@ -6,7 +6,7 @@ views.py — fha views: generate view files from the index.
   fha views sources-index [P-id | --all-curated | --couple-folders]
   fha views draft-queue [P-id | --all-curated]
   fha views brackets [--fix] [--dry-run]
-  fha views tree          (not yet implemented)
+  fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
 
 ARCHITECTURE OVERVIEW
 ---------------------
@@ -44,11 +44,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import re
 import shutil
 import sqlite3
 import sys
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -106,10 +108,22 @@ from _lib import (
 #    _apply_bracket_fixes         — perform renames/moves after confirmation
 #    _cmd_brackets                — CLI handler: report, preview, fix
 #
+#  Tree view  (_cmd_tree and helpers)
+#    _fmt_id                      — uppercase type prefix for output IDs (p-xxx → P-xxx)
+#    _get_vitals                  — first accepted birth/death EDTF per person
+#    _build_node                  — assemble TOOLING §7 node dict for a person
+#    _collect_edges               — DISTINCT edges from relationships table for a pid
+#    _traverse_tree               — BFS with cycle detection; returns nodes + edges dicts
+#    _edge_to_json_dict           — edge dict → TOOLING §7 JSON edge schema
+#    _tree_to_json                — serialize traversal to neutral JSON (TOOLING §7 D3)
+#    _tree_to_dot                 — serialize traversal to GraphViz DOT
+#    _cmd_tree                    — CLI handler: traversal + output
+#
 #  CLI wiring
 #    _cmd_timeline, _cmd_sources_index, _cmd_draft_queue  — argparse handlers
 #    _cmd_brackets                — brackets handler (above)
-#    _cmd_not_implemented, _cmd_views_help                — stubs / help
+#    _cmd_tree                    — tree handler (above)
+#    _cmd_views_help              — prints views help when no subcommand given
 #    register           — called by fha.py to attach 'views' to the main parser
 #    register_standalone, main    — used when running `python tools/views.py` directly
 #
@@ -201,13 +215,12 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
     # Strip trailing _{P-id} suffix (Crockford Base32 alphabet, case-insensitive)
     base = re.sub(r'_[PSCLH]-[0-9a-hjkmnp-tv-z]{10}$', '', stem, flags=re.I)
     # Filename convention: P-id uses uppercase type prefix
-    pid_str = person_id[0].upper() + person_id[1:]   # p-xxx -> P-xxx
-    return profile_path.parent / f'{base}_{kind}_{pid_str}.md'
+    return profile_path.parent / f'{base}_{kind}_{_fmt_id(person_id)}.md'
 
 
 def _format_sid(source_id: str) -> str:
     """Format a source ID as a citation token: s-xxx ->[S-xxx]."""
-    return f'[{source_id[0].upper()}{source_id[1:]}]'
+    return f'[{_fmt_id(source_id)}]'
 
 
 def _place_label(place_text: str | None, place_id: str | None,
@@ -715,10 +728,10 @@ def _build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, 
     would produce the same positions but BFS is the natural traversal shape.
     """
     pid_to_pos: dict[str, int] = {root_pid: 1}
-    queue: list[tuple[str, int]] = [(root_pid, 1)]
+    queue: deque[tuple[str, int]] = deque([(root_pid, 1)])
 
     while queue:
-        pid, n = queue.pop(0)
+        pid, n = queue.popleft()
         parent_rows = conn.execute(
             """
             SELECT r.other_id AS pid, p.sex
@@ -1321,6 +1334,316 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
         conn.close()
 
 
+# ── Tree view ─────────────────────────────────────────────────────────────────
+
+def _fmt_id(id_str: str) -> str:
+    """Return an ID string with its type prefix uppercased (p-xxx → P-xxx).
+
+    The index stores all IDs in lowercase; the output schema in TOOLING §7
+    uses uppercase prefixes (P-, C-, S-, etc.).  Applied to both P-ids and
+    C-ids in tree output.
+    """
+    if not id_str:
+        return id_str
+    return id_str[0].upper() + id_str[1:]
+
+
+def _get_vitals(conn: sqlite3.Connection, pid: str) -> dict:
+    """Return {birth: edtf_or_null, death: edtf_or_null} for a person.
+
+    Queries the first accepted claim of type 'birth' or 'death' for the
+    person and returns its date_edtf value.  Null when no accepted claim of
+    that type exists.
+
+    TOOLING §7 design decision D3: the vitals field carries the date_edtf
+    from the first accepted vital claim, not a computed bound.  'First' is
+    whatever SQLite returns — no ordering guarantee is needed because there
+    should be at most one accepted birth and one accepted death per person
+    (the review process prevents contradictory accepted vitals).
+    """
+    rows = conn.execute(
+        """
+        SELECT c.type, c.date_edtf
+        FROM claims c
+        JOIN claim_persons cp ON c.id = cp.claim_id
+        WHERE cp.person_id = ? AND c.type IN ('birth', 'death') AND c.status = 'accepted'
+        """,
+        (pid,),
+    ).fetchall()
+    vitals: dict = {'birth': None, 'death': None}
+    for row in rows:
+        vitals[row['type']] = row['date_edtf']
+    return vitals
+
+
+def _build_node(conn: sqlite3.Connection, pid: str) -> dict:
+    """Assemble the TOOLING §7 node dict for a person.
+
+    Schema: {p_id, name, sex, vitals: {birth, death}}.
+    Falls back gracefully when the person is not in the persons table so
+    that traversal over partially-indexed archives produces a coherent tree.
+    """
+    row = conn.execute(
+        'SELECT name, sex FROM persons WHERE id = ?', (pid,)
+    ).fetchone()
+    return {
+        'p_id': _fmt_id(pid),
+        'name': row['name'] if row else pid,
+        'sex': row['sex'] if row else None,
+        'vitals': _get_vitals(conn, pid),
+    }
+
+
+def _collect_edges(
+    conn: sqlite3.Connection, pid: str, rels: list[str]
+) -> list[dict]:
+    """Fetch distinct outbound relationship edges from the relationships table.
+
+    The index builder may insert duplicate rows when a claim has multiple
+    claim_persons entries — DISTINCT prevents those duplicates from appearing
+    as repeated edges in the traversal.
+
+    Returns a list of internal edge dicts:
+        {type, from, to, claim_id, date_start, date_end}
+    IDs are lowercase as stored; callers apply _fmt_id at output time.
+    date_start / date_end are None when the table holds an empty string.
+    """
+    if not rels:
+        return []
+    placeholders = ','.join('?' * len(rels))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT rel, other_id, claim_id, date_start, date_end
+        FROM relationships
+        WHERE person_id = ? AND rel IN ({placeholders})
+        """,
+        [pid] + rels,
+    ).fetchall()
+    return [
+        {
+            'type': row['rel'],
+            'from': pid,
+            'to': row['other_id'],
+            'claim_id': row['claim_id'],
+            'date_start': row['date_start'],
+            'date_end': row['date_end'],
+        }
+        for row in rows
+    ]
+
+
+def _traverse_tree(
+    conn: sqlite3.Connection,
+    seed_pid: str,
+    mode: str,
+    max_hops: int | None,
+) -> tuple[dict[str, dict], dict[tuple, dict]]:
+    """BFS traversal of the relationships graph from seed_pid.
+
+    Returns:
+        nodes — ordered dict p_id → node dict (BFS encounter order)
+        edges — ordered dict (from, to, type) → edge dict (deduplicated)
+
+    Modes and traversal logic (TOOLING §7):
+        'ancestors'   — expand via 'parent' edges only (pedigree chart).
+        'descendants' — expand via 'child' edges.  At every visited node,
+                        spouse edges are also collected and the spouse added
+                        as a node, but spouses are NOT enqueued for further
+                        expansion (one-hop only — pulls in in-laws without
+                        recursing into their own ancestry).
+        'fan'         — expand via all edge types (parent, child, spouse,
+                        friend, associate, neighbor).  max_hops defaults to
+                        2 at the call site.
+
+    Cycle detection: the visited set is seeded with seed_pid before the loop
+    starts.  Any P-id already in visited is never re-enqueued, so even a
+    self-referential edge (person is their own parent) or a cousin-marriage
+    cycle terminates cleanly.  Spouse nodes added in descendants mode are
+    NOT added to visited, so they can still be reached via the BFS if they
+    happen to be descendants through a different path (cousin marriages).
+    """
+    nodes: dict[str, dict] = {}
+    edges: dict[tuple, dict] = {}
+    visited: set[str] = {seed_pid}
+
+    queue: deque[tuple[str, int]] = deque([(seed_pid, 0)])
+
+    # Determine edge lists once — mode is constant across the traversal.
+    # traverse_rels: edges to follow (and enqueue neighbors).
+    # extra_rels: edges to collect as leaf nodes only, never enqueued
+    #             (spouse one-hop in descendants mode).
+    if mode == 'ancestors':
+        traverse_rels: list[str] = ['parent']
+        extra_rels: list[str] = []
+    elif mode == 'descendants':
+        traverse_rels = ['child']
+        extra_rels = ['spouse']
+    else:  # fan — all relationship types
+        traverse_rels = ['parent', 'child', 'spouse', 'friend', 'associate', 'neighbor']
+        extra_rels = []
+
+    while queue:
+        pid, depth = queue.popleft()
+
+        if pid not in nodes:
+            nodes[pid] = _build_node(conn, pid)
+
+        # Expand BFS edges (hop-limit check gates further enqueuing, not edge collection)
+        if max_hops is None or depth < max_hops:
+            for edge in _collect_edges(conn, pid, traverse_rels):
+                ekey = (edge['from'], edge['to'], edge['type'])
+                if ekey not in edges:
+                    edges[ekey] = edge
+                other = edge['to']
+                if other not in visited:
+                    visited.add(other)
+                    queue.append((other, depth + 1))
+
+        # Collect extra_rels as leaf nodes — never enqueued (in-law lineages
+        # appear in the tree but their own ancestry is not followed).
+        for edge in _collect_edges(conn, pid, extra_rels):
+            ekey = (edge['from'], edge['to'], edge['type'])
+            if ekey not in edges:
+                edges[ekey] = edge
+            if edge['to'] not in nodes:
+                nodes[edge['to']] = _build_node(conn, edge['to'])
+
+    return nodes, edges
+
+
+def _edge_to_json_dict(edge: dict) -> dict:
+    """Convert an internal edge dict to the TOOLING §7 JSON edge schema.
+
+    dates.start / dates.end are populated only for spouse edges; all other
+    relationship types use null per TOOLING §7.  The claim_id and P-ids get
+    their type prefix uppercased for output consistency.
+    """
+    is_spouse = edge['type'] == 'spouse'
+    return {
+        'type': edge['type'],
+        'from': _fmt_id(edge['from']),
+        'to': _fmt_id(edge['to']),
+        'claim_id': _fmt_id(edge['claim_id']) if edge['claim_id'] else None,
+        'dates': {
+            'start': edge['date_start'] if is_spouse else None,
+            'end': edge['date_end'] if is_spouse else None,
+        },
+    }
+
+
+def _tree_to_json(
+    seed_pid: str, mode: str, nodes: dict, edges: dict
+) -> str:
+    """Serialize the traversal result to the TOOLING §7 neutral JSON format.
+
+    The JSON is the stable data contract between fha views tree and the site
+    generator (TOOLING §7 D3).  The renderer adapter in fha site maps this
+    shape to whatever tree library is vendored.
+    """
+    out = {
+        'seed': _fmt_id(seed_pid),
+        'mode': mode,
+        'nodes': list(nodes.values()),
+        'edges': [_edge_to_json_dict(e) for e in edges.values()],
+    }
+    return json.dumps(out, indent=2, ensure_ascii=False)
+
+
+def _tree_to_dot(nodes: dict, edges: dict) -> str:
+    """Serialize the traversal result to GraphViz DOT format.
+
+    Node label: "{name}\\n({birth}–{death})" where absent dates render as
+    empty string (not 'None').  Edge labels are the relationship type string.
+    The \\n in label strings is the DOT escape for a line break in the
+    rendered graph, not a Python newline — hence the double backslash.
+    """
+    lines = ['digraph {', '  rankdir=TB;']
+
+    for node in nodes.values():
+        pid = node['p_id']
+        name = (node['name'] or pid).replace('"', '\\"')
+        birth = node['vitals'].get('birth') or ''
+        death = node['vitals'].get('death') or ''
+        label = f'{name}\\n({birth}–{death})'
+        lines.append(f'  "{pid}" [label="{label}"];')
+
+    for edge in edges.values():
+        from_pid = nodes[edge['from']]['p_id']
+        to_pid = nodes[edge['to']]['p_id']
+        lines.append(f'  "{from_pid}" -> "{to_pid}" [label="{edge["type"]}"];')
+
+    lines.append('}')
+    return '\n'.join(lines) + '\n'
+
+
+def _cmd_tree(args: argparse.Namespace) -> int:
+    """Handle `fha views tree <P-id> --mode … [--generations N] [--format …] [--out FILE]`.
+
+    Traverses the relationships table from the seed person using BFS and
+    emits the result as neutral JSON (TOOLING §7 D3) or GraphViz DOT.
+    HTML output is deferred to the site generator (TOOLING §7 D6).
+
+    Exit codes follow the §1 convention: 0 clean, 1 warnings, 3 tool failure.
+    Missing index → exit 3 (tool cannot run without it).
+    """
+    archive_root = _resolve_root(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+
+    # HTML is deferred per TOOLING §7 D6
+    fmt = getattr(args, 'format', 'json') or 'json'
+    if fmt == 'html':
+        print(
+            'HTML tree output is not yet available. '
+            'Use fha site (coming in a later milestone) to render the tree as HTML.'
+        )
+        return EXIT_CLEAN
+
+    person_id = getattr(args, 'person_id', None)
+    if not person_id:
+        print('ERROR: a P-id argument is required.', file=sys.stderr)
+        return EXIT_FAILURE
+
+    mode = getattr(args, 'mode', None)
+    if not mode:
+        print('ERROR: --mode ancestors|descendants|fan is required.', file=sys.stderr)
+        return EXIT_FAILURE
+
+    seed_pid = normalize_id(person_id)
+    generations = getattr(args, 'generations', None)
+    out_file = getattr(args, 'out', None)
+
+    # Fan mode defaults to 2 hops; ancestors and descendants are unlimited
+    # unless the caller supplies --generations.
+    if generations is not None:
+        max_hops = generations
+    elif mode == 'fan':
+        max_hops = 2
+    else:
+        max_hops = None
+
+    conn = _open_db(archive_root)
+    if conn is None:
+        return EXIT_FAILURE
+    try:
+        nodes, edges = _traverse_tree(conn, seed_pid, mode, max_hops)
+    finally:
+        conn.close()
+
+    if fmt == 'dot':
+        output = _tree_to_dot(nodes, edges)
+    else:
+        output = _tree_to_json(seed_pid, mode, nodes, edges)
+
+    if out_file:
+        Path(out_file).write_text(output, encoding='utf-8')
+        print(out_file)
+    else:
+        print(output)
+
+    return EXIT_CLEAN
+
+
 # ── CLI command handlers ──────────────────────────────────────────────────────
 
 def _cmd_timeline(args: argparse.Namespace) -> int:
@@ -1451,12 +1774,6 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
         conn.close()
 
 
-def _cmd_not_implemented(args: argparse.Namespace) -> int:
-    subcmd = getattr(args, 'views_command', '?')
-    print(f'fha views {subcmd}: not yet implemented.')
-    return EXIT_CLEAN
-
-
 def _cmd_views_help(args: argparse.Namespace) -> int:
     # Retrieve the views sub-parser and print its help via the stored reference
     parser = getattr(args, '_views_parser', None)
@@ -1543,15 +1860,33 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                     help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
 
-    # ── tree (stub) ───────────────────────────────────────────────────────────
+    # ── tree ──────────────────────────────────────────────────────────────────
     tr = vsubs.add_parser(
         'tree',
-        help='Generate relationship tree view (not yet implemented).',
+        help='Traverse relationships and emit an ancestor/descendant/fan tree.',
+        description=(
+            'Traverse the relationships table from a seed person and emit the\n'
+            'result as neutral JSON (TOOLING §7) or GraphViz DOT.\n'
+            'Requires a fresh .cache/index.sqlite (run `fha index` first).'
+        ),
     )
-    tr.add_argument('person_id', nargs='?', metavar='P-id')
-    tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'])
+    tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')
+    tr.add_argument(
+        '--mode', choices=['ancestors', 'descendants', 'fan'], required=True,
+        help='ancestors: pedigree BFS; descendants: all descendants + in-law spouses; '
+             'fan: all edge types (default 2 hops).',
+    )
+    tr.add_argument(
+        '--generations', type=int, metavar='N',
+        help='Maximum generations / hops (default: unlimited; fan default: 2).',
+    )
+    tr.add_argument(
+        '--format', choices=['json', 'dot', 'html'], default='json', dest='format',
+        help='Output format (default: json; html is deferred to fha site).',
+    )
+    tr.add_argument('--out', metavar='FILE', help='Write output to FILE instead of stdout.')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    tr.set_defaults(func=_cmd_not_implemented)
+    tr.set_defaults(func=_cmd_tree)
 
     # Store a back-reference so _cmd_views_help can print the right help text
     views_p.set_defaults(_views_parser=views_p)
@@ -1583,10 +1918,9 @@ def main(argv: list[str] | None = None) -> int:
 def register_standalone(subs: argparse._SubParsersAction) -> None:
     """Register subcommands directly (for standalone python tools/views.py invocation)."""
     for name, help_text, func, extra in [
-        ('timeline',      'Generate per-person timeline view.',           _cmd_timeline,       _add_person_curated_args),
-        ('sources-index', 'Generate per-person sources-index view.',      _cmd_sources_index,  _add_si_args),
-        ('draft-queue',   'Generate per-person draft-queue view.',        _cmd_draft_queue,    _add_person_curated_args),
-        ('tree',          'Generate relationship tree view (stub).',      _cmd_not_implemented, None),
+        ('timeline',      'Generate per-person timeline view.',      _cmd_timeline,      _add_person_curated_args),
+        ('sources-index', 'Generate per-person sources-index view.', _cmd_sources_index, _add_si_args),
+        ('draft-queue',   'Generate per-person draft-queue view.',   _cmd_draft_queue,   _add_person_curated_args),
     ]:
         p = subs.add_parser(name, help=help_text)
         p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -1599,6 +1933,15 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
+
+    tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
+    tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')
+    tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
+    tr.add_argument('--generations', type=int, metavar='N')
+    tr.add_argument('--format', choices=['json', 'dot', 'html'], default='json', dest='format')
+    tr.add_argument('--out', metavar='FILE')
+    tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    tr.set_defaults(func=_cmd_tree)
 
 
 def _add_person_curated_args(p: argparse.ArgumentParser) -> None:
