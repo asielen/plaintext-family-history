@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import itertools
 import os
 import re
 import sys
@@ -522,20 +523,20 @@ def newest_record_mtime(archive_root: Path) -> float:
     that has no record files yet (trivially up-to-date).
     """
     max_mtime = 0.0
-    for d_name in ('sources', 'people', 'notes'):
-        d = archive_root / d_name
-        if d.is_dir():
-            for p in d.rglob('*.md'):
-                try:
-                    mtime = p.stat().st_mtime
-                    if mtime > max_mtime:
-                        max_mtime = mtime
-                except OSError:
-                    pass
-    places_yaml = archive_root / 'places' / 'places.yaml'
-    if places_yaml.exists():
+    dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
+    for p in itertools.chain.from_iterable(d.rglob('*.md') for d in dirs if d.is_dir()):
         try:
-            mtime = places_yaml.stat().st_mtime
+            mtime = p.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+        except OSError:
+            pass
+    for extra in (
+        archive_root / 'places' / 'places.yaml',
+        archive_root / 'fha.yaml',
+    ):
+        try:
+            mtime = extra.stat().st_mtime
             if mtime > max_mtime:
                 max_mtime = mtime
         except OSError:

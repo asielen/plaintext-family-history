@@ -36,7 +36,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import yaml
+try:
+    import yaml  # noqa: F401 — imported for side-effect check; _lib also uses it
+except ImportError:
+    print(
+        'ERROR: PyYAML is required but not installed. '
+        'Install it with: pip install pyyaml',
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 from _lib import (
     EXIT_CLEAN,
@@ -82,6 +90,14 @@ _WARN = '⚠'
 
 # ── Freshness helpers ─────────────────────────────────────────────────────────
 
+def _db_mtime(db_path: Path) -> float | None:
+    """Return mtime of db_path, or None if absent or unreadable."""
+    try:
+        return db_path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _fmt_delta(seconds: float) -> str:
     """Format a lag in seconds as 'Xh YmZs', 'YmZs', or 'Zs'."""
     total = int(seconds)
@@ -104,21 +120,26 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
       'absent' → detail = ''
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
-    if not db_path.exists():
-        return ('absent', '')
-    try:
-        db_mtime = db_path.stat().st_mtime
-    except OSError:
+    db_mtime = _db_mtime(db_path)
+    if db_mtime is None:
         return ('absent', '')
 
     record_mtime = newest_record_mtime(archive_root)
     if record_mtime == 0.0:
         return ('fresh', '')   # no records yet — trivially up-to-date
 
-    if db_mtime >= record_mtime:
-        return ('fresh', '')
+    if db_mtime < record_mtime:
+        return ('stale', _fmt_delta(record_mtime - db_mtime))
 
-    return ('stale', _fmt_delta(record_mtime - db_mtime))
+    # Mtime looks fresh — verify the schema is readable before declaring it so.
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('SELECT 1 FROM persons LIMIT 1')
+        conn.close()
+    except Exception:
+        return ('absent', '')   # treat corrupt/schema-less as absent
+
+    return ('fresh', '')
 
 
 def _photoindex_freshness(archive_root: Path, fha_config: dict) -> tuple[str, str]:
@@ -130,11 +151,8 @@ def _photoindex_freshness(archive_root: Path, fha_config: dict) -> tuple[str, st
     because the user should know to run fha photoindex when they add photos.
     """
     db_path = archive_root / '.cache' / 'photos.sqlite'
-    if not db_path.exists():
-        return ('absent', '')
-    try:
-        db_mtime = db_path.stat().st_mtime
-    except OSError:
+    db_mtime = _db_mtime(db_path)
+    if db_mtime is None:
         return ('absent', '')
 
     photos_root = resolve_path('photos', fha_config, archive_root)
@@ -175,14 +193,15 @@ def _counts_from_index(archive_root: Path) -> dict | None:
         restricted = conn.execute(
             "SELECT COUNT(*) FROM sources WHERE restricted = 1"
         ).fetchone()[0]
-        living_true = conn.execute(
-            "SELECT COUNT(*) FROM persons WHERE living = 'true'"
-        ).fetchone()[0]
-        living_unknown = conn.execute(
-            "SELECT COUNT(*) FROM persons WHERE living = 'unknown'"
-        ).fetchone()[0]
+        row = conn.execute(
+            "SELECT SUM(living='true'), SUM(living='unknown') FROM persons"
+        ).fetchone()
         conn.close()
-        return {'restricted': restricted, 'living': living_true, 'unknown': living_unknown}
+        return {
+            'restricted': restricted,
+            'living': row[0] or 0,
+            'unknown': row[1] or 0,
+        }
     except Exception:
         return None
 

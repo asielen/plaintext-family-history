@@ -2,7 +2,7 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
-![status](https://img.shields.io/badge/status-milestone_1_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestone_2_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
@@ -72,7 +72,7 @@ The spec is written so that all of that tooling can be *regenerated* from the do
 
 ## What this is not
 
-- **Not a finished app.** The core `fha` tools (lint, index, id, stubs) are now implemented; the full suite (process, site, packet, etc.) is still being built per the roadmap below.
+- **Not a finished app.** The milestone-1 substrate (`fha lint`, `fha index`, `fha id`, `fha stubs`) and milestone-2 tools (`fha views`, `fha find`, `fha doctor`) are now implemented; the full suite (`fha process`, `fha site`, `fha packet`, etc.) is still being built per the roadmap below.
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.

@@ -783,6 +783,7 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
         conn.execute('DELETE FROM claims WHERE source_id=?', (sid,))
         if source_path:
             conn.execute('DELETE FROM citations WHERE path=?', (source_path,))
+            conn.execute('DELETE FROM notes_fts WHERE path=?', (source_path,))
         conn.execute('DELETE FROM sources WHERE id=?', (sid,))
         conn.execute('DELETE FROM source_files WHERE source_id=?', (sid,))
         conn.execute('DELETE FROM source_people WHERE source_id=?', (sid,))

@@ -784,6 +784,12 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
         return
 
     root_pid = normalize_id(str(root_person_raw))
+    if not registry.has_person(root_pid):
+        findings.append(Finding('W', 'W110', registry.archive_root / 'fha.yaml',
+            f'root_person {root_pid!r} has no person record — '
+            'Ahnentafel placement checks (W110) skipped; '
+            'fix root_person in fha.yaml or run fha stubs'))
+        return
     children_of = _build_children_of(registry)
     pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry)
 

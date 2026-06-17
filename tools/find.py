@@ -605,10 +605,10 @@ def _find_text(
     # re.search pass over all record directories.
     # documents/ uses ('*.md', '*.txt') to catch transcript files (role: transcription).
     # Resolve the documents root via fha.yaml 'roots:' so external asset roots work.
-    _doc_root_val = (fha_config or {}).get('roots', {}).get('documents')
-    if _doc_root_val:
-        _doc_p = Path(str(_doc_root_val))
-        docs_root = _doc_p if _doc_p.is_absolute() else archive_root / _doc_p
+    doc_root_raw = (fha_config or {}).get('roots', {}).get('documents')
+    if doc_root_raw:
+        doc_root_p = Path(str(doc_root_raw))
+        docs_root = doc_root_p if doc_root_p.is_absolute() else archive_root / doc_root_p
     else:
         docs_root = archive_root / 'documents'
 

@@ -190,9 +190,18 @@ def _open_db(archive_root: Path) -> sqlite3.Connection | None:
     except OSError:
         pass
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute('SELECT 1 FROM persons LIMIT 1')
+        return conn
+    except Exception:
+        print(
+            'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
+            'Run `fha index` to rebuild.',
+            file=sys.stderr,
+        )
+        return None
 
 
 def _resolve_root(args: argparse.Namespace) -> Path | None:
@@ -826,6 +835,25 @@ def _check_w103_brackets(
         current_names = _parse_bracket_names(folder_name)
 
         person_ids = _persons_in_folder(conn, folder)
+        if not person_ids:
+            continue
+
+        # A stray direct-line child profile may also live in the folder (a W110
+        # misplacement that fha views brackets --fix will correct).  Exclude any
+        # occupant who is a child of another occupant so that grandchildren do not
+        # appear in the bracket list.
+        if len(person_ids) > 1:
+            pid_set = set(person_ids)
+            pl = ','.join('?' * len(person_ids))
+            stray_ids = {
+                r[0] for r in conn.execute(
+                    f'SELECT other_id FROM relationships '
+                    f'WHERE person_id IN ({pl}) AND rel = "child"',
+                    person_ids,
+                ).fetchall()
+            } & pid_set
+            if stray_ids:
+                person_ids = [p for p in person_ids if p not in stray_ids]
         if not person_ids:
             continue
 
