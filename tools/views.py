@@ -1540,6 +1540,14 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return EXIT_FAILURE
+
+        # Renames/moves change person_files.path without touching any file's
+        # mtime, so newest_record_mtime() can't detect the index is now stale.
+        # Remove the cache outright to force a rebuild before it's next read.
+        conn.close()
+        db_path = archive_root / '.cache' / 'index.sqlite'
+        db_path.unlink(missing_ok=True)
+
         if failures:
             print(
                 f'\nDone with {failures} item(s) not applied - see stderr.'
@@ -1645,8 +1653,8 @@ def _collect_edges(
             'from': pid,
             'to': row['other_id'],
             'claim_id': row['claim_id'],
-            'date_start': row['date_start'],
-            'date_end': row['date_end'],
+            'date_start': row['date_start'] or None,
+            'date_end': row['date_end'] or None,
         }
         for row in rows
     ]

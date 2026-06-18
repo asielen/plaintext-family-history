@@ -836,6 +836,11 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
                 continue
             m = re.match(r'^(\d+)', folder_name)
             if not m:
+                name = str(registry.person_meta.get(pid, {}).get('name', pid))
+                findings.append(Finding('W', 'W110', p,
+                    f'{name} (Ahnentafel {pos}) is in folder {folder_name!r} with no '
+                    f'numeric prefix, expected prefix {expected_prefix}; '
+                    f'run `fha views brackets --fix` to correct'))
                 continue
             actual_prefix = int(m.group(1))
             # Canonical placement: digit prefix followed by a space.

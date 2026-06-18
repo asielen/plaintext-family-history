@@ -635,7 +635,8 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
         '''SELECT c.id, c.type, c.subtype, c.date_edtf, c.date_min, c.date_max
            FROM claims c
            WHERE c.status = 'accepted'
-             AND c.type IN ('relationship', 'marriage', 'divorce', 'death')'''
+             AND c.type IN ('relationship', 'marriage', 'divorce', 'death')
+           ORDER BY CASE c.type WHEN 'divorce' THEN 1 WHEN 'death' THEN 1 ELSE 0 END'''
     ).fetchall()
 
     for (cid, ctype, subtype, date_edtf, dmin, dmax) in rows:
@@ -698,6 +699,14 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                              AND (date_end IS NULL OR date_end > ?)''',
                         (dmin, p2, p1, dmin),
                     )
+        elif ctype == 'death':
+            for deceased_id in pids:
+                conn.execute(
+                    '''UPDATE relationships SET date_end = ?
+                       WHERE rel = 'spouse' AND (person_id = ? OR other_id = ?)
+                         AND (date_end IS NULL OR date_end > ?)''',
+                    (dmin, deceased_id, deceased_id, dmin),
+                )
 
 
 # ── Full build ────────────────────────────────────────────────────────────────
