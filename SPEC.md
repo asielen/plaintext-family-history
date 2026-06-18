@@ -442,7 +442,7 @@ Every record file is **self-identifying** — its ID is in its filename, so file
 
 - **Source records:** `{slug}_{S-id}.md` — slug lowercase hyphenated, mutable; ID immutable.
 - **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` — the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) — but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`… Copies: `b`, `c`, `negative`… Derivative views: `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`) marking supplementary detail images, never independent sources. Note: `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` — it is the physical film or glass-plate source material for the root image. Suffix parsing priority order: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; remaining stem = base id (see `TOOLING.md` §6 for the full algorithm). Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions — "text from alternate version" tags — so any copy reveals the others.)
-- **Person files:** `{surname}__{given_names}[_{kind}]_{P-id}.md` — **double underscore** after the surname (families sort together), underscores within given names, **birth surname always** (keeps women findable under the name in their early records; matches WikiTree practice). `kind` ∈ `research` | `timeline` | `sources-index`.
+- **Person files:** `{surname}__{given_names}[_{kind}]_{P-id}.md` — **double underscore** after the surname (families sort together), underscores within given names, **birth surname always** (keeps women findable under the name in their early records; matches WikiTree practice). `kind` ∈ `research` | `timeline` | `sources-index` | `draft-queue`.
 
 The deliberate style difference — person files underscored, source files hyphenated — instantly distinguishes record kinds in search results.
 
@@ -563,6 +563,7 @@ Per the filename grammars of §13, a curated person has, in their couple folder:
 | `…_research_P-xxxx.md` | **Working file** — Research Notes, Open Questions, Hypotheses. |
 | `…_timeline_P-xxxx.md` | **Generated** from claims, EDTF-sorted. Never hand-edited. |
 | `…_sources-index_P-xxxx.md` | **Generated** list of sources mentioning this person. |
+| `…_draft-queue_P-xxxx.md` | **Generated** uncited-claim backlog; consumed by write-biography. Never hand-edited. |
 
 **Profile structure** — frontmatter (§9), then:
 
@@ -659,6 +660,35 @@ Integration rules:
 4. **People in photos: bare `P-xxxxxxxxxx` ID keywords + the `face_tags:` map.** Each person record's `face_tags:` (plus `name`/`name_variants`) maps the library's existing face/people-tag strings to the P-id — the resolution layer, one durable line per person, no *name* double-tagging. On top of that, tagging tooling writes a **bare `P-id` keyword** onto the photo for each identified person (e.g. keyword `P-de957bcda1`) — an in-file, unambiguous marker that survives any catalog and settles same-name collisions outright. Always previewed; `fha photoindex tag-person` applies them across a face-tag match or to specific photos.
 5. **AI output stays marked as AI** (analysis keywords, marker blocks); human captions are preserved.
 6. AI-derived assertions raised into claims enter at `status: suggested`.
+
+## 21. Publication and export `LOCKED`
+
+Generated output (the static site, person packets) that leaves the archive is subject to binding privacy rules. These rules apply identically to all export paths; they are not tool-specific.
+
+**Living-person redaction (mandatory for all external output):**
+- Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living [Surname]" or "Living Person", and all claims, photos, and source citations naming them are withheld.
+- `unknown` is treated as living. Stubs default to `unknown`.
+- Direct-line couple folders whose occupants are all redacted are collapsed to a stub entry; their folder number is retained so the pedigree chain remains intact.
+
+**Restricted sources (mandatory for all external output):**
+- Sources with `restricted: true` are never included in any external output. Their claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently.
+- DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in external output without an additional, independent non-DNA source establishing the same fact.
+
+**Scope (what "external output" covers):**
+- `fha site` — the static HTML snapshot.
+- `fha packet` — per-person zip exports.
+- Any future export path (GEDCOM, WikiTree, etc.) unless that path has an explicit `--include-living` / `--include-restricted` opt-in documented in its TOOLING entry.
+
+**Site generation freshness contract:**
+- `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` — it is as live as the last `fha index` run.
+- Biography prose and Stories sections are read from the curated person `.md` file directly.
+- The generated `.md` views (timeline, sources-index, draft-queue) are research artifacts for the agent; `fha site` does not read them.
+- The site snapshot is frozen at generation time. Regenerating is idempotent; an old snapshot remains a valid frozen view as the archive moves on.
+
+**View maintenance (`fha views clean` / `fha views refresh`):**
+- Generated `.md` views carry the `<!-- GENERATED … -->` header. This header is the sole signal for deletion by `fha views clean` — files without it are never touched, even if they match a view filename pattern.
+- `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step.
+- Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
 
 ---
 

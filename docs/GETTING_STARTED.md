@@ -23,17 +23,24 @@ State your **mode** at the start of a session — `research`, `tool-building`, `
 
 ## Step 3 — Use (or extend) the tools
 
-The first milestone is complete: `fha lint`, `fha index`, `fha id`, and `fha stubs` are implemented.
-Run them with Python 3.10+ from the `tools/` directory:
+Milestones 1 and 2 are complete: `fha lint`, `fha index`, `fha id`, `fha stubs`, and
+`fha views` (timeline, sources-index, draft-queue, brackets, tree) are all implemented.
+Run them with Python 3.10+ from the repo root:
 
 ```
-python tools/fha.py lint --root example-archive   # should exit 1 (one W101 warning, no errors)
-python tools/fha.py id mint P                      # mint a fresh person ID
-python tools/fha.py index --root example-archive   # build the SQLite index
+python tools/fha.py lint --root example-archive          # exits 1 (one W101 warning, no errors)
+python tools/fha.py id mint P                             # mint a fresh person ID
+python tools/fha.py index --root example-archive          # build the SQLite index
+python tools/fha.py views timeline --root example-archive --all-curated
+python tools/fha.py views sources-index --root example-archive --couple-folders
+python tools/fha.py views draft-queue --root example-archive --all-curated
+python tools/fha.py views brackets --root example-archive          # check W103/W110; add --fix to apply
+python tools/fha.py views tree P-de957bcda1 --mode descendants --root example-archive
+python tools/fha.py views tree P-de957bcda1 --mode ancestors --format dot --root example-archive
 ```
 
-To build further tools (process, views, photoindex, report, …), declare **tool-building mode** and
-follow the build order in `TOOLING.md` §15. The substrate (`_lib`, `id`, `index`, `lint`, `stubs`) is done.
+To build further tools (process, photoindex, report, …), declare **tool-building mode** and
+follow the build order in `TOOLING.md` §15.
 Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.
 
 ## Step 4 — Start your own archive

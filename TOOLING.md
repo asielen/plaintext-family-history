@@ -86,7 +86,7 @@ The query surface for every other tool and for ad-hoc research (`sqlite3` or any
 Never appended; never authoritative.
 
 **Incremental mode.** `fha index --source S-xxxx` upserts one source: delete its rows, re-parse the one file, re-insert — sub-second, run automatically at the end of review sessions.
-Deletion order matters: collect claim IDs first, then delete `claim_persons` and `claim_links` by those IDs, then delete `claims`, then `sources`/`source_files`/`source_people`. Reversing this order leaves orphan rows in the child tables because the parent subquery finds nothing.
+Deletion order matters (child tables before parent rows): collect claim IDs first, then delete `claim_persons` and `claim_links` by those IDs, then delete `claims`; capture `sources.path` before deletion, then delete `citations` by that path, then delete `notes_fts` rows by that path (the FTS virtual table is not covered by FK cascade and accumulates duplicate bodies on upsert), then delete `sources`/`source_files`/`source_people`. Reversing parent/child order leaves orphan rows because the parent subquery finds nothing.
 Full rebuild remains the periodic truth-check; any discrepancy between incremental and full states is a bug in incremental, by definition.
 
 **Build algorithm.** (1) glob `sources/**/*.md`, `people/**/*.md`, `places/places.yaml`, `notes/**/*.md`; (2) parse each with the parsing layer; (3) insert in one transaction; (4) scan all prose bodies for `TOKEN_RE` → citations table; (5) glob asset trees for filenames carrying S-ids → files table reconciliation; (6) build FTS tables.
@@ -103,7 +103,7 @@ CREATE TABLE persons(
 CREATE TABLE person_variants(person_id TEXT, variant TEXT);
 CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
 CREATE TABLE person_files(person_id TEXT, kind TEXT, path TEXT, generated INTEGER DEFAULT 0,
-  PRIMARY KEY(person_id, kind));   -- profile | research | timeline | sources-index; profile populates persons.path
+  PRIMARY KEY(person_id, kind));   -- profile | research | timeline | sources-index | draft-queue; profile populates persons.path
 CREATE TABLE person_external(person_id TEXT, system TEXT, ext_id TEXT);
 
 CREATE TABLE sources(
@@ -174,7 +174,7 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 
 | Code | Check | Detection |
 |---|---|---|
-| E001 | Duplicate ID | A non-person record ID in two records' frontmatter is an error. For `P-id`s, one primary profile **plus** its companion files (`_research`, `_timeline`, `_sources-index`) may share the ID; two primary *profile* files with one `P-id` is the error. |
+| E001 | Duplicate ID | A non-person record ID in two records' frontmatter is an error. For `P-id`s, one primary profile **plus** its companion files (`_research`, `_timeline`, `_sources-index`, `_draft-queue`) may share the ID; two primary *profile* files with one `P-id` is the error. |
 | E002 | Malformed ID / filename | filename fails the §13 grammars; ID fails `ID_RE` |
 | E003 | Filename ID ≠ record ID | compare filename suffix to frontmatter `id` |
 | E004 | Orphan reference | any `[token]`, `persons:`, `place:`, `corroborates/contradicts` target not found |
@@ -191,14 +191,14 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 | E015 | `type: relationship` claim missing `roles:` | field check |
 | E016 | New claim references a merged person directly | resolve via `merged_into`; flag for cleanup |
 | E017 | DNA source not `restricted: true`, or DNA file outside `documents/dna/` | field + path check |
-| E018 | Agent-instruction drift | AGENTS.md / skills reference deprecated commands (`fha promote`), stale skill names, or contradict locked rules (photo renames) |
+| E018 | Agent-instruction drift (partial) | AGENTS.md references deprecated commands (`fha promote`) or photo-rename instructions; skills scan and full drift detection are deferred |
 
-Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge); also used as the catch-all code for unrecognized `source_type` vocabulary and for file-format issues surfaced by `--format-check` (missing final newline, CRLF line endings) — a future cleanup may give these their own codes · **W110** Ahnentafel placement issue (requires `root_person` in `fha.yaml`): a direct-line couple folder's numeric prefix does not match the derived Ahnentafel number, or a direct-line person's files live in the wrong couple folder — `fha views brackets --fix` resolves both.
+Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header (deferred: detection requires mtime tracking; the check is a no-op in milestone 2) · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge); also used as the catch-all code for unrecognized `source_type` vocabulary and for file-format issues surfaced by `--format-check` (missing final newline, CRLF line endings) — a future cleanup may give these their own codes · **W110** Ahnentafel placement issue (requires `root_person` in `fha.yaml`): a direct-line couple folder's numeric prefix does not match the derived Ahnentafel number, or a direct-line person's files live in the wrong couple folder — `fha views brackets --fix` resolves both. If `root_person` is set but names a person with no existing record, W110 is emitted on `fha.yaml` itself explaining the skip (and placement checks are suppressed).
 
-**Formatter** (`fha lint --format-check` / `--format-write`): conservative normalization only — frontmatter and claim key order, lowercase IDs, blank-line and final-newline hygiene, YAML list indentation.
+**Formatter** (`fha lint --format-check` / `--format-write`): conservative normalization only — final-newline and CRLF line-ending hygiene (milestone 2 subset). Frontmatter key order, lowercase ID normalization, blank-line hygiene, and YAML list indentation are deferred.
 Never rewrites prose beyond trailing whitespace.
 
-**Fix modes** (each gated behind an explicit flag; use `--dry-run` to preview what would change before writing): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → regenerate `files:` from the ID-glob, preserving hand-written `role`/`original_filename` where the path matches).
+**Fix modes** (each gated behind an explicit flag; use `--dry-run` to preview what would change before writing): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → placeholder/deferred; prints a warning and suggests `fha process` instead).
 
 **Required claim fields enforced by E010:** `id`, `type`, `persons`, `value`, `status`. Note: `confidence` is required per SPEC §8.5 but is not in the E010 required-field set for milestone 1 — it is derived by tooling from `source_type` and the linter does not yet enforce its presence. Future work: add `confidence` to E010 enforcement, or emit a dedicated warning for accepted claims lacking it.
 
@@ -215,15 +215,17 @@ Comparison rule: each `[S-id]` in a segment must correspond to an `accepted` cla
 
 ## 3a. `fha doctor` — archive health
 
-One command answering "what is wrong with this archive?": archive root found; `fha.yaml` parses; every mapped root reachable; exiftool and Python deps present; index and photoindex freshness (age vs. newest record mtime); one-line lint summary (E/W counts); inbox items older than 14 days; counts of restricted sources, living and unknown-living persons; E018 agent-drift findings; reminder line that archive + mapped roots must both be in the backup policy (the spec takes no position on backup tooling).
+One command answering "what is wrong with this archive?": archive root found; `fha.yaml` parses; every mapped root reachable; exiftool and Python deps present; index and photoindex freshness (age vs. newest record mtime — a file current by mtime but with an unreadable or empty schema is reported as absent, not fresh); one-line lint summary (E/W counts); inbox items older than 14 days; counts of restricted sources, living and unknown-living persons; E018 agent-drift findings; reminder line that archive + mapped roots must both be in the backup policy (the spec takes no position on backup tooling).
 Exit codes as §1.
 Run it first after any migration or machine move. **Stated tradeoff:** this spec does not attempt to detect bit rot or silent file alteration; that preservation concern is deliberately deferred to the backup strategy, outside the archive format.
 A future `fha doctor --fixity` could add optional checksum verification without making checksums part of the research model.
 
+**Design decision D5 (implemented milestone 2):** Absent optional components (index, photoindex) report as "not yet built" and contribute exit code 1 (warning), not 2 (error).  Doctor is safe to run on a fresh archive with no caches built yet.  Rationale: a missing index or photoindex is a normal state during initial setup and after a clean wipe of `.cache/`; treating it as an error would make doctor hostile to the very situations where it is most useful.
+
 ## 4. `fha id` — minting
 
 `fha id mint P [-n 5]` → prints fresh IDs.
-Algorithm: draw 10 chars from the Crockford Base32 alphabet `0123456789abcdefghjkmnpqrstvwxyz` via `secrets.choice` (lowercase, omitting `i l o u`); check non-existence by (a) ripgrep-style scan of the tree for the candidate, or (b) the index if fresh (`--fast`); retry on the ~impossible collision. `fha id check <ID>` → where it appears.
+Algorithm: draw 10 chars from the Crockford Base32 alphabet `0123456789abcdefghjkmnpqrstvwxyz` via `secrets.choice` (lowercase, omitting `i l o u`); check non-existence by a ripgrep-style scan of the tree for the candidate; retry on the ~impossible collision. `fha id check <ID>` → where it appears.
 Dice-roll fallback documented in output of `fha id --help` (hand-minting: any 10 Base32 chars from the alphabet above + a search to confirm absence). On input, IDs are normalized to lowercase before matching, so a hand-typed uppercase ID still resolves.
 
 ---
@@ -231,7 +233,7 @@ Dice-roll fallback documented in output of `fha id --help` (hand-minting: any 10
 ## 4a. `fha find` — the universal locator
 
 `fha find <ID>` answers "where does this thing live?" for **any** ID — necessary because photos aren't renamed, so disk search alone can't locate a photo by S-id.
-Output by type: **S-id** → record path, every asset file (paths resolved through `fha.yaml`, located via filename for documents / inventory+keyword for photos), citation sites, claim count by status. **P-id** → person file, couple folder, claims naming them, photo count (via §9 resolution), citation sites. **C-id** → its source record + line, status, links in/out. **L-id/H-id** → record + every reference. `fha find <text>` falls through to FTS across notes, transcripts, captions, and comments.
+Output by type: **S-id** → record path, every asset file (paths resolved through `fha.yaml`, located via filename for documents / inventory+keyword for photos), citation sites, claim count by status. **P-id** → person file, couple folder, claims naming them, photo count (via §9 resolution), citation sites. **C-id** → its source record + line, status, links in/out. **L-id/H-id** → record + every reference. `fha find <text>` falls through to text search (records, notes, and configured documents root; photo captions when photoindex is fresh; transcripts deferred).
 (`fha id check` is an alias.)
 
 **`fha find --related <ID>`** — "show me everything adjacent to this," for **any** ID type, ranked, pure query over the index (no schema change).
@@ -247,13 +249,19 @@ What counts as *adjacent* depends on what you point at — each type has a natur
 "Who and what was active 1869–1874."
 Combinable: `--related <L-id> --date 187X` = the place, narrowed to a decade.
 
-**`fha find --text "…"`** — full-text search across everything textual: record bodies and notes, transcripts, and the **photo/document index** caption/comment/keyword fields (§9).
+**`fha find --text "…"`** — full-text search across record bodies and notes, plus the **photo/document index** caption/comment/keyword fields (§9) when the photoindex is fresh.  (The `transcripts_fts` table is provisioned but not yet populated — transcript search is deferred; see D7.)
 Returns hits with their record or asset and context.
 Cheap because the corpus is plain text plus the two SQLite FTS tables; one query spans prose and media metadata.
 
 Together these make `find` the **connection-discovery primitive**: any ID or date or phrase → its neighborhood, ranked, every edge carrying provenance — the raw material the report, the FAN view, and `cooccur` all build on.
-Uses the index when fresh; degrades to a tree scan with a warning when not.
+Uses the index when present. If the index is stale, `fha find` prints a warning but still returns the structured index-backed report; if the index is absent or unreadable, it degrades to a tree scan with the same warning. If the index is stale *and* has no row for the requested ID, it falls back to a tree scan rather than reporting "not found" — the record may simply have been added since the last `fha index` run.
 (`fha id check` is an alias for the bare locator.)
+
+**Design decision D4 (implemented milestone 2):** `--related` and `--related --date` are deferred to milestone 3.  They are most useful after `fha xref` and `fha cooccur` populate the corroborates/contradicts and social-edge data the neighborhood view depends on.  Passing `--related` in milestone 2 prints a clear deferral message and exits 0.
+
+**Design decision D7 (implemented milestone 2):** `fha find --text` searches record bodies and notes (via FTS tables plus a re.search pass) and **photo/document captions** when `.cache/photos.sqlite` is verifiably fresh (present, schema OK, newer than the photos root).  When the photoindex is absent, stale, or unreadable, captions are skipped and the tool prints an explicit note.  The `transcripts_fts` table is provisioned but transcript content is **not yet populated** — transcript search is deferred to a later milestone.
+
+**Design decision D9 (implemented milestone 2 audit):** A stale index is still preferable to a bare tree scan for `fha find <ID>` because it preserves structured reports (person companions, claim summaries, source inventories, citation rows) after generated views change mtimes. Staleness is surfaced as a warning; an absent or unreadable index falls back to grep-style scanning outright, and a stale index that has no row for the requested ID also falls back to a scan (the record may have been added after the last `fha index` run) rather than reporting a false "not found".
 
 ## 5. `fha stubs` — stub minter
 
@@ -337,14 +345,19 @@ Lint E012 for photos checks keyword↔inventory agreement (no filename carrier).
 All write GENERATED-headed `.md` into the tree; all derive purely from the index.
 
 - **`fha views timeline [P-id|--all-curated]`** → `…_timeline_{P-id}.md`: accepted + needs-review claims for the person, sorted by `date_min`, grouped by decade, each line `EDTF — type: value [S-id]`, suggested claims listed in a trailing "unreviewed" section.
-- **`fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|html|dot]`** → traverses the `relationships` edges from the person. `ancestors`: parent-edges recursively (pedigree). `descendants`: child-edges recursively (the v1 hero — "all descendants of T.E."). `fan`: the person plus kin plus social edges, one or two hops (2 = default; catches in-laws and shared-affiliation ties), the research-network graph — confirmed edges solid, `fha cooccur` candidates dashed, hypotheses ghosted, so the view doubles as a research surface. Bilinear: spouse edges pull in in-law branches. Every node carries its `[P-id]` (→ links to the person page) and every edge its source `claim_id`. Output is **the neutral tree JSON** — the stable data contract (nodes: `{p_id, name, vitals, sex}`; edges: `{type, from, to, claim_id, dates}`) — or dot for tooling. This JSON is what the spec pins down; the *rendering* of it (the site's vendored tree library, styling) is deliberately left to the build. A renderer adapter maps this neutral shape to whatever library is in use.
-- **`fha views sources-index`** → per curated person and per couple folder: every source with ≥1 claim naming the person(s), grouped by source_type, with paths.
+- **`fha views draft-queue [P-id|--all-curated]`** → `…_draft-queue_{P-id}.md`: accepted claims whose source is not cited in the profile body — the writing backlog. Consumed by the `write-biography` skill. See §14b for the full design.
+- **`fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]`** → traverses the `relationships` edges from the person. `ancestors`: parent-edges recursively (pedigree). `descendants`: child-edges recursively (the v1 hero — "all descendants of T.E."); spouse edges are added as one-hop leaf nodes per visited descendant (in-law branches appear as connected nodes without recursing into their own lineages). `fan`: the person plus kin plus social edges, two hops by default; `--generations N` overrides the hop depth. All modes use BFS with a visited-set cycle guard. Every node carries its `[P-id]` (→ links to the person page) and every edge its source `claim_id`. Output is **the neutral tree JSON** — the stable data contract (nodes: `{p_id, name, vitals, sex}`; edges: `{type, from, to, claim_id, dates}`) — or GraphViz DOT. Nodes and edges are deduplicated (by P-id for nodes, by `(from, to, type)` for edges). This JSON is what the spec pins down; the *rendering* of it (the site's vendored tree library, styling) is deliberately left to the build. A renderer adapter maps this neutral shape to whatever library is in use. **Node vitals field:** `{"birth": edtf_or_null, "death": edtf_or_null}` where each value is the `date_edtf` from the first accepted claim of the matching vital type for that person, or null if none. (D3) **Edge dates field:** `dates.start` / `dates.end` are populated only for spouse edges (marriage and divorce/death dates from the `relationships` table); all other edge types carry `null` for both. **`--format html` is deferred to the site generator (milestone N):** passing it emits an error directing the user to `fha site`. (D6)
+- **`fha views sources-index`** → per curated person and per couple folder: every source with ≥1 claim naming the person(s), grouped by source_type, with paths. The couple-folder version is written as `sources-index.md` at the folder root (no P-id — the folder is its context).
 - **`fha views brackets`** → folder maintenance for the `people/` tree, covering three concerns in one pass (all previewed as diffs; `--fix` applies them):
   1. **Bracket lists** — refresh stale `[child, …]` annotations in couple-folder names from accepted `relationship` claims. (W103)
   2. **Ahnentafel numbers** *(requires `root_person` in `fha.yaml`)* — derive each direct-line couple's correct number by walking accepted parent `relationship` claims outward from `root_person` (#1): the parent with `sex: M` takes position 2n, `sex: F` takes 2n+1; for same-sex or `sex: U` pairs the first-encountered parent (by P-id, deterministic) takes the lower slot. Report folders whose numeric prefix disagrees with the derived number; with `--fix`, rename. (W110)
-  3. **Person file placement** *(requires `root_person`)* — report direct-line person files (all companion kinds: profile, research, timeline, sources-index) living in the wrong couple folder; with `--fix`, move them to the correct folder, creating it when absent. Non-direct-line occupants (siblings, half-siblings, connections) are never moved. (W110)
+  3. **Person file placement** *(requires `root_person`)* — report direct-line person files (all companion kinds: profile, research, timeline, sources-index, draft-queue) living in the wrong couple folder; with `--fix`, move them to the correct folder, creating it when absent. Non-direct-line occupants (siblings, half-siblings, connections) are never moved. (W110)
   
   When `root_person` is absent from `fha.yaml`, checks 2 and 3 are skipped with an informational note. Renaming folders and moving person files are both safe: folder names and paths carry no machine meaning — the `P-id` in each filename is the identity.
+
+- **`fha views clean [--root PATH] [--dry-run]`** — delete all GENERATED-headed companion `.md` files from the `people/` tree (timeline, sources-index, draft-queue for every person and couple folder). Uses the `<!-- GENERATED … -->` header as the sole deletion signal; never touches profile, research, or manually authored files. `--dry-run` lists what would be removed without writing. Primary uses: compacting the archive for sharing (generated files are reproducible bulk) and resetting before a full `fha views refresh`.
+
+- **`fha views refresh [--root PATH]`** — regenerate all content views for every curated person and every couple folder in one shot: runs `timeline --all-curated`, `draft-queue --all-curated`, and `sources-index --all-curated --couple-folders`. Equivalent to running each view individually with `--all-curated`; useful as a post-`fha index` step to keep all views current. Requires a fresh `.cache/index.sqlite`.
 
 ---
 
@@ -478,7 +491,7 @@ Migrates a legacy transcript-mining pipeline output (`facts.txt` table rows, `st
 **Scope: the whole-family site** — the archive as a browsable website, not a single profile (the packet embeds a one-person slice of the same generator).
 
 **Pages:** **Home** — an **interactive descendant explorer** (v1 hero): expand/collapse nodes forward from a root ancestor, each node linking to its person page; plus an ancestor-pedigree view and the surname A–Z index and recent-discoveries teaser.
-All rendered from the `relationships` edges; no server, works from `file://`. **Person (curated)** — summary block; biography with `[S-]` rendered as numbered footnotes, `[P-]` as links; timeline; photo strip (via §9 person resolution, i.e. face_tags); Stories; Friends & Family; sources list. **Person (stub)** — one-line entries on their couple's section. **Source** — citation, metadata, claims table with status badges, thumbnails + file links. **Place** — name, coords (map *URLs*, no embedded map dependency), dated `history:`, claims naming it, contained micro-places (`within:` children). **Discoveries** — rendered from `notes/discoveries.md`.
+All rendered from the `relationships` edges; no server, works from `file://`. **Person (curated)** — summary block; biography with `[S-]` rendered as numbered footnotes, `[P-]` as links; **timeline** (HTML rendering of the same index query as `fha views timeline`: accepted + needs-review claims sorted by date, grouped by decade, each entry showing type, value, and source link — the HTML and `.md` views share the same query and format); photo strip (via §9 person resolution, i.e. face_tags); Stories; Friends & Family; **sources index** (HTML rendering of the same index query as `fha views sources-index`: every source with ≥1 claim naming the person, grouped by source_type, with citation and file links — the HTML and `.md` views share the same query). **Person (stub)** — one-line entries on their couple's section. **Source** — citation, metadata, claims table with status badges, thumbnails + file links. **Place** — name, coords (map *URLs*, no embedded map dependency), dated `history:`, claims naming it, contained micro-places (`within:` children). **Discoveries** — rendered from `notes/discoveries.md`.
 
 **Assets — self-contained snapshot by default.** The generated site is a **standalone snapshot**, not a live view of the archive: the generator produces its **own web-optimized image derivatives** (resized, EXIF stripped so living-person/location metadata never leaks) and copies them into the site folder, so the site depends on *nothing* outside itself — deploy it to a USB stick, a static host, or hand it to a relative, with the archive absent.
 Full-resolution originals never leave the archive; the site carries derivatives only.
@@ -487,7 +500,9 @@ The snapshot contains **only publication-eligible material** — `living`/`unkno
 **Modularity:** because the site is a snapshot, it is decoupled from the archive's churn — regenerating is idempotent, and an old site folder remains a valid frozen view even as the archive moves on.
 Thumbnails/derivatives via PIL.
 
-**Implementation:** Jinja2 templates in `tools/templates/`; markdown→HTML via a minimal stdlib converter (headings, bold, lists, links — the profile format is deliberately simple) to avoid a markdown dependency; image derivatives via `PIL`.
+**Data source — SQLite index, not .md views.** The site reads all structured data (claims, relationships, vitals, sources, citations, place references) directly from `.cache/index.sqlite`, making the output as fresh as the last `fha index` run. The generated companion `.md` views (timeline, sources-index, draft-queue) are *not* read — they are research aids for the agent, not the site's input. Biography prose and Stories sections are read directly from the curated person `.md` file (the only parts that live in prose, not structured claims). This means `fha site` is independent of `fha views` — a site can be generated without ever running `fha views`.
+
+**Implementation:** Jinja2 templates in `tools/templates/`; biography/stories prose rendered to HTML via a minimal stdlib converter (headings, bold, lists, links — the profile format is deliberately simple) to avoid a markdown dependency; structured fact sections (timeline, sources table, relationships) rendered from index queries; image derivatives via `PIL`.
 Token swap: `TOKEN_RE` → relative hrefs; unresolved tokens render highlighted (already lint errors).
 
 **Tree rendering — borrow the engine.** The interactive trees (descendant explorer, ancestor pedigree, FAN graph) are rendered by a **vendored client-side library**, not hand-rolled D3 — current best candidate **family-chart** (donatso, MIT, D3-based, framework-agnostic, has its own JSON input format).
@@ -586,7 +601,7 @@ This pair handles both, and both are **generic glue** (they move operating-layer
 This is the single source of truth for "what gets copied" — when the package grows (a second tools folder, a fifth doc), it's added to the manifest, and `update-tools` automatically knows to copy it.
 The list lives in versioned data, never hardcoded in prose or memory.
 
-The manifest covers the **operating layer** — `tools/` (and any future tool folders), `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md` — and the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
+The manifest covers the **operating layer** — `tools/` (and any future tool folders), `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md` — and the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
 It explicitly **excludes** spec-repo furniture (`example-archive/`, `archive-template/`, `tests/`, `.github/`, the public `README.md`, `PRIVACY.md`, `RELEASE_CHECKLIST.md`), which never enters an archive.
 
 **`fha install <archive-path>`** — the first-time bootstrap, **run from a clone of the public repo** (the only place the code exists before anything is copied).
@@ -683,11 +698,28 @@ Feeds report §15a.6. *(Flagged as a future-intelligence focus: a model-assisted
 
 ## 15. Build order & testing
 
-**Order:** `_lib` foundations → `install`/`update-tools` (scaffolding, §13c) → `id` → `index` → `lint` → `stubs` → `views` → `photoindex` (+triage, +reconcile) → `xref` → `cooccur` → `report` → `packet` → `process` → `convert-mining` → `site` → `wikitree` → `gedcom` → `capture` → `places geocode`.
-Rationale: lint validates everything later tools write; the photo index gates the packet; the converter needs stubs + lint to validate its output.
+See **`BUILD.md`** (repo root) for the full, annotated build sequence — which tools are built,
+which are pending, the dependency graph, PR-sized chunk descriptions with algorithm details, and
+definition-of-done test commands for every remaining tool.
 
-**Testing:** the pilot tree is the **clean** golden fixture (`tests/fixtures/`) and must lint clean (exit 0; TODO-marked asset gaps are W-level, not E-level, in fixture mode); intentionally broken fixtures live separately under `tests/fixtures/broken-*/`, one per lint code. The `example-archive/` is a separate demonstration fixture — it is permitted to exit 1 with documented known warnings (e.g. W101 for historical figures whose death records have not been located); those warnings must not regress in count or code without a deliberate change.
-Each tool ships `--dry-run`; tests are golden-file comparisons against a committed copy of the pilot (`tests/fixtures/`), plus deliberate-corruption fixtures for every lint code (a file per E/W code, asserting it fires). `fha lint` must run clean on the pilot before any release of any tool; a `make check` target runs the suite.
+**Dependency summary:**
+```
+_lib → index → lint, stubs, views, find, doctor → photoindex → xref, cooccur →
+find --related → report → packet, places, gedcom, wikitree → process → capture →
+convert-mining → site → install/update-tools
+```
+
+**Design decision D8 (implemented, layer 2):** `fha find` and `fha doctor` are layer-2
+deliverables alongside `fha views`. They depend on the index but not on the photoindex or any
+later tool. Rationale: lint validates everything later tools write; the photo index gates the
+packet; the converter needs stubs + lint to validate its output.
+
+**Testing invariants:** the clean golden fixture is `tests/fixtures/` (must lint exit 0);
+intentionally broken fixtures live under `tests/fixtures/broken-{CODE}/`, one per lint code.
+`example-archive/` is permitted to exit 1 with documented known warnings (currently W101 —
+Thomas Hartley death record absent); those must not regress in count or code without a
+deliberate change. Every tool ships `--dry-run`. `fha lint` must run clean on the pilot before
+any tool is declared done; `tools/README.md` is the authoritative build-status record.
 
 ---
 
@@ -747,7 +779,7 @@ Organized by how often *you* touch it — the skills are the real working surfac
 | `fha find <ID\|text>` (T C) | "Where does this live?" Records + assets + citations for any ID; FTS for text. |
 | `fha find --related <ID>` (T C) | "What's adjacent to this?" Neighborhood of any ID — person/place/source/claim/hypothesis — ranked, with provenance. The connection-discovery primitive. |
 | `fha find --related --date <EDTF>` (T C) | The time neighborhood: everyone/everything active in a date range. Combinable with an ID. |
-| `fha find --text "…"` (T C) | Full-text search across record bodies, notes, transcripts, and photo/document caption+keyword fields. |
+| `fha find --text "…"` (T C) | Full-text search across record bodies, notes, and documents root; photo captions when photoindex is fresh. (`transcripts_fts` provisioned but not yet populated.) |
 
 ### Occasional (setup, migration, publication moments)
 

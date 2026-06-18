@@ -27,7 +27,6 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     read_record,
-    scan_ids_in_tree,
 )
 
 import datetime
@@ -79,10 +78,17 @@ def _stub_content(pid: str, name: str | None) -> str:
 
 def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
     """
-    Scan claims for P-ids that have no person record.
-    Returns {pid: best_name_guess | None}
+    Scan source claims for P-ids that have no person record.
+    Returns {pid: name_guess | None}.
+
+    Name guessing is intentionally minimal here: claim values have varied
+    structure and reliable name extraction isn't worth the complexity.
+    The biographer gives the stub a real name when they promote it from stubs/.
+    # TODO: extract name from claim value when claim type is 'relationship'
+    #   and the value follows the "{name} is a child of …" pattern — that
+    #   would give us a name hint for most auto-generated relationship claims.
     """
-    # First collect all known P-ids (from person files)
+    # Collect all known P-ids from existing person files
     known_pids: set[str] = set()
     people_root = archive_root / 'people'
     if people_root.exists():
@@ -92,7 +98,7 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
             if pid and pid.startswith('p-'):
                 known_pids.add(pid)
 
-    # Scan source claims for P-ids
+    # Scan source claims for P-ids not in known_pids
     unresolved: dict[str, str | None] = {}
     sources_root = archive_root / 'sources'
     if sources_root.exists():
@@ -108,10 +114,7 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
                     ppid = normalize_id(str(p_raw))
                     if ppid and ppid.startswith('p-') and ppid not in known_pids:
                         if ppid not in unresolved:
-                            # Try to infer name from claim value
-                            name_guess = None
-                            val = str(claim.get('value', ''))
-                            unresolved[ppid] = name_guess
+                            unresolved[ppid] = None   # name extracted by TODO above
 
     return unresolved
 
@@ -153,17 +156,21 @@ def mint_named_stubs(
     """Mint new P-ids and create stubs for named people."""
     from id import mint_ids
 
-    existing = scan_ids_in_tree(archive_root)
+    clean_names = [n.strip() for n in names if n.strip()]
+    if not clean_names:
+        return
+
     stubs_dir = archive_root / 'people' / 'stubs'
     if not dry_run:
         stubs_dir.mkdir(parents=True, exist_ok=True)
 
-    for name in names:
-        name = name.strip()
-        if not name:
-            continue
-        new_ids = mint_ids('P', 1, archive_root)
-        pid = new_ids[0].lower()
+    # Mint all IDs in one call so previews are distinct even in --dry-run: no
+    # files are written then, so minting one-per-name would rescan the same tree
+    # and could repeat an ID. A single batch dedupes within itself.
+    ids = mint_ids('P', len(clean_names), archive_root)
+
+    for name, new_id in zip(clean_names, ids):
+        pid = new_id.lower()
         filename = _stub_filename(pid, name)
         stub_path = stubs_dir / filename
         content = _stub_content(pid, name)

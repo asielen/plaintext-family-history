@@ -47,48 +47,18 @@ One mode at a time; if a request crosses modes, say so and ask to switch — nev
 contract.
 Never edits SPEC.md, TOOLING.md, or `tools/`.
 - **tool-building** — edits `tools/` and `tests/` only. Follow the build order
-(TOOLING §15) and the implementation loop below.
+(TOOLING §15). Read **AGENTS_TOOLING.md** for the full implementation loop, coding
+standards, cross-cutting checks, and spec-discovery protocol.
 Spec changes only as *proposed* decision-log entries for the human to approve.
+- **code-review** — strict pre-push review of the current branch. **No file edits.**
+Read **AGENTS_TOOLING.md §Code-review mode** for the full 12-class checklist and
+output format. Use the full repo context (not just the diff); produce a structured
+report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
 - **migration** — bulk intake of existing material into the structure. The highest-risk
 mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → human approval → execute in bounded batches (≤200 files) → report.
 Never deletes anything; photos are never renamed even here; only staged files move.
 - **spec-refinement** — edits SPEC.md/TOOLING.md + the decision log, and MUST update
 README.md whenever a change affects how a human reads the archive (the README rule).
-
-### Tool-building: the implementation loop (per tool)
-
-1. **Read** the tool's TOOLING section and every SPEC section it cites.
-2. **Restate the contract** to the human before coding: inputs, outputs, flags, exit
-codes, what it must never do.
-Mismatch caught here is cheap.
-3. **Implement** within the guardrails: Python ≥3.10; dependencies ONLY PyYAML, Jinja2
-(site), exiftool-as-binary — adding any other is a proposed decision, not a choice; one file per tool under `tools/`, shared code only in `_lib.py`, tools never import tools; no network access (geocoder's gazetteer download excepted).
-4. **Fixtures, not the archive.** Develop and test ONLY against `tests/fixtures/`
-copies.
-The real archive is never a test bed; destructive paths are exercised on fixtures exclusively.
-5. **Definition of done:** `fha lint` runs clean on the clean pilot fixture; each of
-the tool's error codes fires on its broken fixture; `--dry-run` previews every mutating operation; help text exists; TOOLING still describes the tool accurately.
-**Completion gate:** every flag the CLI accepts and every E/W code the tool advertises must appear in `tools/README.md` as either ✓ implemented or ⚑ deferred before the tool is declared milestone-complete. A flag that exists in the CLI but is absent from that table — or present but neither working nor marked deferred — is documentation debt that blocks handoff. Do not declare a tool done while any flag or code is in an undocumented partial state.
-6. **README review.** Before handoff, scan `README.md`, `docs/GETTING_STARTED.md`, and `tools/README.md` for any reference to the changed tool's behavior, flags, or build status and update anything now inaccurate. A working tool that a README still calls "not yet implemented," or whose flags the getting-started guide misdescribes, is a documentation bug. (The README rule from the decision log §21a binds tool-building as much as spec-refinement.)
-7. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
-
-**Spec-discovery protocol:** when implementation reveals that TOOLING/SPEC is ambiguous, contradictory, or wrong — STOP.
-Do not improvise past the spec (the docs must remain able to regenerate the tools).
-Present the gap, propose the amendment as a decision-log entry, and proceed only after the human's call.
-
-### Coding standards (tool-building mode)
-
-**Before coding:** Map the control flow end-to-end for the area being changed — identify CLI entrypoints, flags, file I/O, exit-code paths, and side effects before writing a line. Identify ownership boundaries before touching shared code in `_lib.py`. There must be one clear owner for each archive mutation or side effect; avoid duplicate pathways for the same behavior. Preserve existing contracts (CLI flags, exit codes, SPEC-defined file formats) unless the task explicitly requires changing them; validate all call sites when a shared interface changes.
-
-**Style:** Write clear, simple, maintainable Python. Prefer simplicity over cleverness; optimize for readability by a single developer, not enterprise-scale abstraction. Use straightforward control flow, small focused functions, and descriptive names. Favor boring, predictable code over compact or clever code. Do not introduce new abstractions, helpers, or architectural layers unless they clearly reduce complexity. Dead code is acceptable as intentional scaffolding for a planned feature — tag it with a `# TODO:` comment explaining what it scaffolds and what must happen before it is activated; remove dead code that has no planned future use.
-
-**Correctness:** Think through failure modes before finalizing — empty inputs, malformed YAML, missing files, partial writes, interrupted runs, and `--dry-run` vs. live-execution divergence. Make cleanup paths explicit; never leave the archive in an inconsistent state after an error. Do not declare work complete while known medium or high correctness issues remain.
-
-**Documentation:** Add docstrings to all non-trivial functions explaining what the function does and, where non-obvious, why the approach was chosen. Add inline comments only where they clarify non-obvious decisions, tradeoffs, or failure-handling; do not add comments that restate obvious code.
-
-**Self-review:** After implementing, review your own diff as a strict code reviewer before finalizing. Look specifically for correctness risks, duplicate side effects, contract mismatches, and missing cleanup. Classify each issue as high, medium, or low severity. Patch all high and medium issues before declaring done; do not leave them as follow-ups unless the human explicitly instructs otherwise.
-
-**Completion:** Work to completion in one run — do not stop after partial implementation if more required work is known. Keep interim narration brief so context is reserved for actual work. If context limits prevent full completion, finish the highest-risk and most central work first, then clearly list what remains.
 
 ### Session end (all modes)
 

@@ -10,7 +10,8 @@ After copying:
 1. Edit `fha.yaml` to point at where your photos and documents live.
 2. Bring in the **operating layer** from the public repo. The easy way: run
    `fha install <this-archive>` once from your clone of the public repo — it copies the
-   `tools/` folder plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md` and nothing else.
+   `tools/` folder plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`
+   and nothing else.
    Later, `fha update-tools` (from here) pulls improvements, backing up any file you've
    customized and never touching your data. (See TOOLING.md §13c. Manual equivalent: copy
    those files by hand.)

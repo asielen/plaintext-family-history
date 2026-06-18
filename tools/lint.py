@@ -12,8 +12,31 @@ lint.py — fha lint: verify the archive against the spec.
   fha lint --fix-inventory           Planned inventory fixer (not yet implemented)
 
 Exit codes: 0 = clean, 1 = warnings only, 2 = errors, 3 = tool failure.
-Runs file-by-file plus cross-file passes on a fresh in-memory index.
-Does NOT require fha index to have run. TOOLING §3.
+SPEC §16, TOOLING §3.
+
+HOW IT WORKS — TWO PASSES, NO PRIOR INDEX
+------------------------------------------
+Lint is fully self-contained: it does NOT require `fha index` to have run.
+It builds its own in-memory Registry on the first pass, then runs cross-file
+checks on the second pass once the full picture is available.
+
+Pass 1 — walk and collect  (_walk_archive):
+  Read every person and source file; register IDs, claims, token references,
+  and metadata.  File-level checks fire here — the ones that don't need to see
+  the rest of the archive: bad IDs, missing required fields, malformed EDTF
+  dates, duplicate claim IDs within a source.
+
+Pass 2 — cross-file checks  (_cross_file_checks):
+  With the complete Registry in hand, check things that require the whole
+  picture: orphan token references, duplicate record IDs, summary-block drift
+  against accepted claims, vitals gaps for curated persons, merged-person
+  references, and reverse asset inventory.
+
+WHY IN-MEMORY, NOT THE SQLITE INDEX
+  The SQLite index may not exist, or may be stale.  Lint is the source of
+  truth — the index must match what lint accepts, never the other way around.
+  Building a fresh Registry per run ensures lint is always consistent with
+  what's actually on disk.
 """
 
 from __future__ import annotations
@@ -49,6 +72,7 @@ from _lib import (
     is_fixture_path,
     is_valid_edtf,
     is_valid_id,
+    FhaConfigError,
     load_fha_yaml,
     normalize_id,
     parse_filename,
@@ -58,10 +82,74 @@ from _lib import (
 
 import yaml
 
+# ── CODE MAP ──────────────────────────────────────────────────────────────────
+#
+#  Data model
+#    Registry                    — in-memory snapshot of one lint pass
+#
+#  Constants / small helpers
+#    _SOURCE_FILENAME_RE         — grammar check for source filenames (SPEC §13)
+#    _PERSON_FILENAME_RE         — grammar check for person filenames (SPEC §13)
+#    REQUIRED_*_FIELDS           — required frontmatter keys per record type
+#    _normalize_alias_path       — backslash→slash normalisation for path comparison
+#    _mapped_root, _path_to_alias — resolve fha.yaml alias roots to absolute paths
+#    _claim_person_ids           — extract normalised P-ids from a claim's persons: field
+#    _parse_summary_block        — parse **Born/Died/…:** lines from a profile body
+#    _collect_token_refs         — scan a text block for [ID] tokens → registry
+#    _question_blocks            — split a questions.md into per-heading blocks
+#    _metadata_values            — normalise scalar/list exiftool field values
+#
+#  Pass 1 — walk and collect
+#    _walk_archive               — top-level coordinator; calls the _process_* functions
+#    _process_person_file        — index one person file + file-level checks
+#    _process_source_file        — index one source file + file-level checks + claims
+#
+#  Bracket / Ahnentafel checks (W103, W110)
+#    _build_children_of          — accepted child-of claims → parent→children map
+#    _check_bracket_lists        — W103: stale couple-folder bracket lists
+#    _build_ahnentafel_lint      — BFS from root_person using in-memory registry
+#    _check_ahnentafel_placement — W110: person file in wrong Ahnentafel folder
+#
+#  Pass 2 — cross-file checks
+#    _cross_file_checks          — top-level coordinator for all cross-file rules
+#    _check_summary_line         — E013/W104: one **Label:** segment vs accepted claims
+#    _has_question_for           — E009: co-occurrence check across question blocks
+#    _get_person_accepted_claims — build accepted-claim list for one person
+#    _check_reverse_inventory    — E011: document files vs source inventory lists
+#    _check_embedded_source_keywords — E012: exiftool SOURCE: keyword vs inventory
+#    _read_source_keywords       — invoke exiftool; parse its JSON keyword output
+#    _check_generated_headers    — W105: hand-edits below a GENERATED header
+#    _check_readme_age           — W108: README.md older than SPEC.md
+#    _check_agent_drift          — E018: deprecated commands in AGENTS.md
+#
+#  Format checks / fix modes
+#    _check_format               — W109: final newline, CRLF line endings
+#    _fix_format                 — apply conservative format fixes
+#    _fix_mint_stubs             — create stubs for the E005 set (--mint-stubs)
+#    _fix_spawn_questions        — append question entries for E009 set (--spawn-questions)
+#
+#  Main entry / CLI
+#    run_lint                    — orchestrates both passes and emits findings
+#    register                    — attach 'lint' to the main fha parser
+#    _run_lint                   — argparse → run_lint bridge
+#    _standalone_main            — for `python tools/lint.py` direct invocation
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 # ── Registry built during a lint run ─────────────────────────────────────────
 
 class Registry:
-    """In-memory index of everything found in one lint pass."""
+    """
+    In-memory snapshot of everything found in one lint pass.
+
+    Populated entirely by Pass 1 (_walk_archive).  Read by Pass 2
+    (_cross_file_checks) once every file has been processed.
+
+    Lint builds its own Registry rather than reading the SQLite index so it
+    can run without `fha index` having been run, and so lint is always
+    consistent with what's on disk rather than with a potentially stale cache.
+    """
 
     def __init__(self, archive_root: Path, fha_config: dict):
         self.archive_root = archive_root
@@ -214,7 +302,16 @@ def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
 
 
 def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding]) -> None:
-    """First pass: collect all records and build the registry."""
+    """
+    Pass 1: walk the archive tree and populate the registry.
+
+    File-level checks fire here — the ones that don't need to see the whole
+    archive.  Anything that requires knowing whether another record exists
+    (orphan references, vitals gaps, summary-block drift) is deferred to Pass 2.
+
+    Walk order: places → people → sources → notes.  Places are indexed first
+    so their L-ids are available when Pass 2 checks place references in claims.
+    """
 
     # Places
     places_path = archive_root / 'places' / 'places.yaml'
@@ -316,7 +413,14 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
                 f'Filename ID {file_id!r} ≠ record id {pid!r}'))
 
     if not pid:
-        return   # can't do cross-reference checks without an id
+        # Generated companion files (timeline, sources-index, draft-queue) carry
+        # no frontmatter `id:`, but their filename still encodes the P-id; derive
+        # it from there so W110 placement checks (which scan person_companion_paths)
+        # still see these files instead of silently missing stray ones.
+        if is_companion and parsed:
+            pid = normalize_id(parsed['id_str'])
+            registry.person_companion_paths.setdefault(pid, []).append(path)
+        return   # can't do further cross-reference checks without record metadata
 
     # Register in registry
     if is_companion:
@@ -402,10 +506,20 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         findings.append(Finding('W', 'W109', path,
             f'Unknown source_type: {source_type!r} (not in controlled vocabulary)'))
 
-    # E017: DNA must be restricted
-    if source_type == 'dna' and meta.get('restricted') not in (True, 'true'):
-        findings.append(Finding('E', 'E017', path,
-            'DNA source must have restricted: true'))
+    # E017: DNA sources must be restricted AND keep their raw files under
+    # documents/dna/ (SPEC §8.5.5).
+    if source_type == 'dna':
+        if meta.get('restricted') not in (True, 'true'):
+            findings.append(Finding('E', 'E017', path,
+                'DNA source must have restricted: true'))
+        for f in (meta.get('files') or []):
+            if not isinstance(f, dict):
+                continue
+            fpath = str(f.get('file', '')).replace('\\', '/')
+            parts = [seg for seg in fpath.split('/') if seg]
+            if len(parts) < 2 or parts[0] != 'documents' or parts[1] != 'dna':
+                findings.append(Finding('E', 'E017', path,
+                    f'DNA source file must be under documents/dna/: {fpath!r}'))
 
     # E014: source_date EDTF check
     source_date = str(meta.get('source_date', ''))
@@ -525,10 +639,240 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     _collect_token_refs(rec['body'], path, registry)
 
 
+# ── Bracket and Ahnentafel checks (W103, W110) ───────────────────────────────
+
+def _build_children_of(registry: Registry) -> dict[str, set[str]]:
+    """Build parent_pid → {child_pids} from accepted child-of relationship claims.
+
+    Iterates all accepted claims of type 'relationship' with subtype 'child-of'
+    and extracts the roles.child / roles.parent values.  Both scalars and lists
+    are accepted in either field, matching the SPEC §8.4 schema.
+    """
+    children_of: dict[str, set[str]] = {}
+    for claims in registry.source_claims.values():
+        for claim in claims:
+            if (str(claim.get('status', '')) != 'accepted'
+                    or claim.get('type') != 'relationship'
+                    or claim.get('subtype') != 'child-of'):
+                continue
+            roles = claim.get('roles') or {}
+            child_val = roles.get('child')
+            parent_val = roles.get('parent')
+            if not child_val or not parent_val:
+                continue
+            child_ids = [child_val] if isinstance(child_val, str) else list(child_val)
+            parent_ids = [parent_val] if isinstance(parent_val, str) else list(parent_val)
+            for cpid in child_ids:
+                cpid = normalize_id(str(cpid))
+                for ppid in parent_ids:
+                    ppid = normalize_id(str(ppid))
+                    children_of.setdefault(ppid, set()).add(cpid)
+    return children_of
+
+
+def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
+    """W103: stale couple-folder bracket lists.
+
+    For each digit-prefixed directory under people/ (excluding stubs/connections),
+    derives the expected bracket list from accepted child-of relationship claims
+    whose parent field names a person residing in that folder.  ALL children
+    appear — direct-line children with their own folder included — mirroring the
+    bracket convention documented in TOOLING §7.
+
+    WHY ALL CHILDREN: see _check_w103_brackets in views.py.  Same invariant, same
+    source data, different backend (in-memory registry instead of SQLite).
+    """
+    children_of = _build_children_of(registry)
+
+    # Build pid → folder name for all persons with profile files in people/
+    pid_to_folder: dict[str, str] = {}
+    people_dir = registry.archive_root / 'people'
+    excluded = {'stubs', 'connections'}
+    for pid, paths in registry.person_profile_paths.items():
+        for p in paths:
+            if (p.parent.parent == people_dir
+                    and p.parent.name.lower() not in excluded
+                    and re.match(r'^\d', p.parent.name)):
+                pid_to_folder[pid] = p.parent.name
+                break
+
+    # Invert: folder name → {person_ids in that folder}
+    folder_to_pids: dict[str, set[str]] = {}
+    for pid, fname in pid_to_folder.items():
+        folder_to_pids.setdefault(fname, set()).add(pid)
+
+    # Check each couple folder
+    for folder_name, folder_pids in sorted(folder_to_pids.items()):
+        # Current bracket names from the folder name
+        m = re.search(r'\[([^\]]*)\]', folder_name)
+        current_names = (
+            [n.strip() for n in m.group(1).split('+') if n.strip()]
+            if m else []
+        )
+
+        # Derive expected children names.  Mirror views.py _check_w103_brackets
+        # exactly: drop stray occupants (a folder member who is a child of another
+        # member) from the PARENT set, then take all children of the remaining
+        # members.  Subtracting a stray's children instead would also drop a
+        # grandchild that ALSO has a direct child-of edge to a folder parent —
+        # views keeps that child, so lint must too.
+        member_children = {
+            cpid
+            for ppid in folder_pids
+            for cpid in children_of.get(ppid, set())
+        }
+        stray_pids = member_children & folder_pids
+        parents = folder_pids - stray_pids
+        child_pids: set[str] = set()
+        for ppid in parents:
+            child_pids.update(children_of.get(ppid, set()))
+
+        derived_names = sorted(
+            str(registry.person_meta.get(cp, {}).get('name', '')).split()[0]
+            for cp in child_pids
+            if registry.person_meta.get(cp, {}).get('name')
+        )
+
+        if sorted(current_names) != sorted(derived_names):
+            findings.append(Finding('W', 'W103',
+                people_dir / folder_name,
+                f'stale bracket list [{" + ".join(sorted(current_names))}] '
+                f'-> [{" + ".join(derived_names)}]; '
+                f'run `fha views brackets --fix` to update'))
+
+
+def _build_ahnentafel_lint(
+    root_pid: str, children_of: dict[str, set[str]], registry: Registry
+) -> dict[str, int]:
+    """BFS from root_pid → {person_id: Ahnentafel position} using in-memory data.
+
+    Same algorithm as _build_ahnentafel_map in views.py, but works from the
+    in-memory registry rather than the SQLite relationships table.  Parents are
+    determined by inverting children_of: a person P is a parent of Q if Q is
+    in children_of[P].
+
+    Determinism on same-sex / unknown pairs: lex-first P-id takes the even slot.
+    """
+    # Build child_pid → {parent_pids} from children_of for quick upward lookup
+    parents_of: dict[str, set[str]] = {}
+    for ppid, cset in children_of.items():
+        for cpid in cset:
+            parents_of.setdefault(cpid, set()).add(ppid)
+
+    pid_to_pos: dict[str, int] = {root_pid: 1}
+    queue: list[tuple[str, int]] = [(root_pid, 1)]
+
+    while queue:
+        pid, n = queue.pop(0)
+        parent_pids = sorted(parents_of.get(pid, set()))
+        if not parent_pids:
+            continue
+
+        if len(parent_pids) == 1:
+            pp = parent_pids[0]
+            sex = str(registry.person_meta.get(pp, {}).get('sex', 'U') or 'U')
+            pos = 2 * n if sex != 'F' else 2 * n + 1
+            if pp not in pid_to_pos:
+                pid_to_pos[pp] = pos
+                queue.append((pp, pos))
+        else:
+            # Take at most 2 parents; ignore additional (data quality issue)
+            p1, p2 = parent_pids[0], parent_pids[1]
+            s1 = str(registry.person_meta.get(p1, {}).get('sex', 'U') or 'U')
+            s2 = str(registry.person_meta.get(p2, {}).get('sex', 'U') or 'U')
+            if s1 == 'M' and s2 != 'M':
+                father, mother = p1, p2
+            elif s2 == 'M' and s1 != 'M':
+                father, mother = p2, p1
+            elif s1 == 'F' and s2 != 'F':
+                mother, father = p1, p2
+            elif s2 == 'F' and s1 != 'F':
+                mother, father = p2, p1
+            else:
+                sorted_pair = sorted([p1, p2])
+                father, mother = sorted_pair[0], sorted_pair[1]
+            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
+                if pp not in pid_to_pos:
+                    pid_to_pos[pp] = pos
+                    queue.append((pp, pos))
+
+    return pid_to_pos
+
+
+def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> None:
+    """W110: direct-line person files in the wrong couple folder.
+
+    Requires root_person in fha.yaml.  Builds the Ahnentafel map from the
+    in-memory registry, then verifies every direct-line person's profile files
+    live in the couple folder whose numeric prefix equals their expected position
+    (or position−1 if they hold the odd/mother slot).
+
+    Skips persons in people/connections/ or people/stubs/.
+    """
+    root_person_raw = registry.fha_config.get('root_person')
+    if not root_person_raw:
+        return
+
+    root_pid = normalize_id(str(root_person_raw))
+    if not registry.has_person(root_pid):
+        findings.append(Finding('W', 'W110', registry.archive_root / 'fha.yaml',
+            f'root_person {root_pid!r} has no person record — '
+            'Ahnentafel placement checks (W110) skipped; '
+            'fix root_person in fha.yaml or run fha stubs'))
+        return
+    children_of = _build_children_of(registry)
+    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry)
+
+    people_dir = registry.archive_root / 'people'
+    excluded = {'stubs', 'connections'}
+
+    for pid, pos in pid_to_pos.items():
+        if pos < 2:
+            continue
+        expected_prefix = pos if pos % 2 == 0 else pos - 1
+
+        all_paths = (
+            registry.person_profile_paths.get(pid, [])
+            + registry.person_companion_paths.get(pid, [])
+        )
+        for p in all_paths:
+            folder_name = p.parent.name
+            if folder_name.lower() in excluded:
+                continue
+            if p.parent.parent != people_dir:
+                continue
+            m = re.match(r'^(\d+)', folder_name)
+            if not m:
+                name = str(registry.person_meta.get(pid, {}).get('name', pid))
+                findings.append(Finding('W', 'W110', p,
+                    f'{name} (Ahnentafel {pos}) is in folder {folder_name!r} with no '
+                    f'numeric prefix, expected prefix {expected_prefix}; '
+                    f'run `fha views brackets --fix` to correct'))
+                continue
+            actual_prefix = int(m.group(1))
+            # Canonical placement: digit prefix followed by a space.
+            # Suffix folders like '040b …' share the numeric prefix but are never
+            # the correct location for a direct-line person file.
+            if re.match(r'^(\d+) ', folder_name) and actual_prefix == expected_prefix:
+                continue
+            name = str(registry.person_meta.get(pid, {}).get('name', pid))
+            findings.append(Finding('W', 'W110', p,
+                f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
+                f'expected prefix {expected_prefix}; '
+                f'run `fha views brackets --fix` to correct'))
+
+
 # ── Cross-file checks ─────────────────────────────────────────────────────────
 
 def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: bool = False) -> None:
-    """Second pass: checks that require the full registry."""
+    """
+    Pass 2: checks that require the full registry.
+
+    Called after _walk_archive has finished, so every ID, claim, and token
+    reference is already registered.  Rules that check existence of other
+    records (E004 orphan refs, E005 missing persons, E013 summary drift,
+    W101 vitals gaps) all live here.
+    """
 
     known_ids = registry.all_known_ids()
 
@@ -594,6 +938,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {cid} contradicts {tid} but no open question references both'))
 
     # E013: summary block drift for curated profiles
+    children_of = _build_children_of(registry)   # parent_pid → {child_pids}
     for pid, paths in registry.person_profile_paths.items():
         profile_path = paths[0]
         meta = registry.person_meta.get(pid, {})
@@ -610,7 +955,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
         for label, text, p_ids, s_ids in summary:
             _check_summary_line(label, text, p_ids, s_ids, person_claims,
-                                registry, profile_path, findings)
+                                registry, profile_path, findings,
+                                profile_pid=pid, children_of=children_of)
 
     # W101: vitals gaps for curated people
     for pid in registry.person_profile_paths:
@@ -680,7 +1026,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         f'[{display_pid}] at line {ref_line} references merged person '
                         f'(merged into {target}); update to the survivor P-id'))
 
-    # W103: stale folder bracket lists (not yet implemented — requires relationship traversal)
+    # W103: stale folder bracket lists
+    _check_bracket_lists(registry, findings)
+
+    # W110: direct-line person in wrong Ahnentafel couple folder
+    _check_ahnentafel_placement(registry, findings)
+
     # W104: summary line without supporting accepted claim (handled in E013 pass)
     # W105: hand-edits under GENERATED header
     _check_generated_headers(registry.archive_root, findings)
@@ -826,11 +1177,18 @@ def _has_question_for(cid1: str, cid2: str, registry: Registry) -> bool:
     for content in registry.research_content.values():
         all_blocks.extend(_question_blocks(content))
 
-    return any(cid1 in block and cid2 in block for block in all_blocks)
+    return any(cid1 in block.lower() and cid2 in block.lower() for block in all_blocks)
 
 
 def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:
-    """Return all accepted claims that name pid in their persons: list, with _source_id injected."""
+    """
+    Return all accepted claims that name pid in their persons: list.
+
+    Injects a synthetic '_source_id' key into each claim dict so that callers
+    (E013 summary checks, W101 vitals checks) can identify which source a claim
+    came from without a second lookup.  Claims don't carry source_id in their
+    own YAML dict — it lives on the source record that contains them.
+    """
     result = []
     for sid, claims in registry.source_claims.items():
         for claim in claims:
@@ -850,11 +1208,15 @@ def _check_summary_line(
     registry: Registry,
     profile_path: Path,
     findings: list[Finding],
+    profile_pid: str = '',
+    children_of: dict[str, set[str]] | None = None,
 ) -> None:
     """
     Verify one summary-block label segment against accepted claims (E013 / W104).
     Each [S-id] citation must have a matching accepted claim of the right type for
     this person; each [P-id] cross-link must resolve to a known person record.
+    For Parents/Children, each [P-id] must also be supported by an accepted
+    child-of relationship claim (E013), not merely exist as a record.
     """
     label_to_types = {
         'Born': ['birth', 'baptism'],
@@ -882,6 +1244,21 @@ def _check_summary_line(
         if not registry.has_person(ref_pid):
             findings.append(Finding('E', 'E004', profile_path,
                 f'Summary block {label} references unknown person {ref_pid}'))
+
+    # E013: Parents/Children cross-links must match an accepted child-of relationship
+    # claim (TOOLING §E013), not merely resolve to a person record.
+    if label in ('Parents', 'Children') and children_of is not None and profile_pid:
+        for ref_pid in p_ids:
+            if not registry.has_person(ref_pid):
+                continue   # already reported as E004 above
+            if label == 'Parents':
+                supported = profile_pid in children_of.get(ref_pid, set())
+            else:  # Children
+                supported = ref_pid in children_of.get(profile_pid, set())
+            if not supported:
+                findings.append(Finding('E', 'E013', profile_path,
+                    f'Summary **{label}:** lists {ref_pid} but no accepted child-of '
+                    f'relationship claim links them to {profile_pid}'))
 
 
 def _check_generated_headers(archive_root: Path, findings: list[Finding]) -> None:
@@ -985,6 +1362,26 @@ def _fix_format(path: Path, dry_run: bool = False) -> None:
 
 # ── Main lint entry point ─────────────────────────────────────────────────────
 
+def _run_lint_core(
+    archive_root: Path,
+    fha_config: dict,
+    with_exif: bool = False,
+) -> tuple[list[Finding], 'Registry']:
+    """Run the three core lint passes and return (findings, registry).
+
+    Shared by run_lint (which then adds format/fix passes and prints output)
+    and run_lint_silent (which just counts findings for fha doctor).  Keeping
+    both entry points in sync automatically: any new core pass added here is
+    reflected in both.
+    """
+    findings: list[Finding] = []
+    registry = Registry(archive_root, fha_config)
+    _walk_archive(archive_root, registry, findings)
+    _cross_file_checks(registry, findings, with_exif=with_exif)
+    _check_agent_drift(archive_root, findings)
+    return findings, registry
+
+
 def run_lint(
     archive_root: Path,
     fha_config: dict,
@@ -1003,8 +1400,6 @@ def run_lint(
     Report-only by default; mutating fix modes require explicit flags and
     respect --dry-run. Never modifies original source files or photos.
     """
-    findings: list[Finding] = []
-
     # Check that archive root looks right
     if not (archive_root / 'fha.yaml').exists():
         msg = f'No fha.yaml found at {archive_root} — is this an archive root?'
@@ -1016,16 +1411,7 @@ def run_lint(
             print('Summary: 1 error(s)')
         return EXIT_ERRORS
 
-    registry = Registry(archive_root, fha_config)
-
-    # First pass: walk and collect
-    _walk_archive(archive_root, registry, findings)
-
-    # Second pass: cross-file checks
-    _cross_file_checks(registry, findings, with_exif=with_exif)
-
-    # E018: agent drift
-    _check_agent_drift(archive_root, findings)
+    findings, registry = _run_lint_core(archive_root, fha_config, with_exif=with_exif)
 
     # Format checks / fixes
     if format_check or format_write:
@@ -1146,6 +1532,24 @@ def _today() -> str:
     return datetime.date.today().isoformat()
 
 
+def run_lint_silent(
+    archive_root: Path,
+    fha_config: dict,
+) -> tuple[int, int, list[Finding]]:
+    """Run lint core passes without output. Returns (n_errors, n_warnings, e018_findings).
+
+    Used by fha doctor to embed a lint summary in the health report.
+    Delegates to _run_lint_core so any new core pass is automatically reflected here.
+    """
+    if not (archive_root / 'fha.yaml').exists():
+        return (1, 0, [])
+    findings, _ = _run_lint_core(archive_root, fha_config)
+    n_errors = sum(1 for f in findings if f.severity == 'E')
+    n_warnings = sum(1 for f in findings if f.severity == 'W')
+    e018 = [f for f in findings if f.code == 'E018']
+    return n_errors, n_warnings, e018
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -1188,7 +1592,11 @@ def _run_lint(args: argparse.Namespace) -> int:
             print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
             return EXIT_FAILURE
 
-    fha_config = load_fha_yaml(archive_root)
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
     spec_root = getattr(args, 'spec_root', None)
 
     return run_lint(

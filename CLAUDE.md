@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 Read and follow **AGENTS.md** — it is the canonical operating instruction for any AI agent in this archive, and it applies to you in full.
+In **tool-building** or **code-review** mode, also read **AGENTS_TOOLING.md**.
 
 Claude-Code-specific notes:
 - Workflow skills live in `.claude/skills/` — process-source, review-claims,

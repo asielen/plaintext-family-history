@@ -4,7 +4,6 @@ id.py — fha id: mint and check archive IDs.
 
   fha id mint P|S|C|L|H [-n N]      Print fresh IDs (checked for non-existence)
   fha id check <ID>                  Show where an ID appears in the tree
-  fha id check <ID> --fast           Use the SQLite index if available (faster)
 
 Crockford Base32 alphabet: 0123456789abcdefghjkmnpqrstvwxyz (lowercase;
 i l o u omitted to avoid confusion with 1 0 and accidental words).
@@ -46,11 +45,10 @@ def mint_ids(
     prefix: str,
     count: int,
     archive_root: Path,
-    fast: bool = False,
 ) -> list[str]:
     """
     Mint `count` fresh IDs of the given prefix.
-    Checks existence against the archive tree (or index if --fast).
+    Checks existence against the archive tree.
     Retries on collision (vanishingly rare at family scale).
     """
     prefix = prefix.upper()
@@ -122,7 +120,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help='ID type: P (person) S (source) C (claim) L (place) H (hypothesis)',
     )
     mint_p.add_argument('-n', type=int, default=1, metavar='N', help='How many IDs to mint (default: 1)')
-    mint_p.add_argument('--fast', action='store_true', help='Use SQLite index for existence check (faster for large archives)')
+    # Accept --root after the nested subcommand too (TOOLING §1 dual-position root):
+    # fha id mint P --root PATH.  SUPPRESS so an absent flag here doesn't clobber a
+    # --root given at the `fha` or `id` level.
+    mint_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root')
 
     # check (alias: find)
     check_p = id_subs.add_parser(
@@ -131,6 +132,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         aliases=['find'],
     )
     check_p.add_argument('id_value', metavar='ID', help='ID to locate (e.g. P-de957bcda1)')
+    check_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root')
 
     id_parser.set_defaults(func=_run_id)
 
@@ -148,8 +150,11 @@ def _run_id(args: argparse.Namespace) -> int:
     sub = getattr(args, 'id_command', None)
 
     if sub == 'mint':
+        if args.n < 1:
+            print('ERROR: -n must be at least 1.', file=sys.stderr)
+            return EXIT_FAILURE
         try:
-            ids = mint_ids(args.prefix, args.n, archive_root, fast=args.fast)
+            ids = mint_ids(args.prefix, args.n, archive_root)
         except ValueError as e:
             print(f'ERROR: {e}', file=sys.stderr)
             return EXIT_FAILURE
@@ -192,10 +197,11 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     mint_p = subs.add_parser('mint', help='Mint fresh IDs')
     mint_p.add_argument('prefix', metavar='TYPE', choices=['P', 'S', 'C', 'L', 'H', 'p', 's', 'c', 'l', 'h'])
     mint_p.add_argument('-n', type=int, default=1, metavar='N')
-    mint_p.add_argument('--fast', action='store_true')
+    mint_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS)
 
     check_p = subs.add_parser('check', help='Find where an ID appears', aliases=['find'])
     check_p.add_argument('id_value', metavar='ID')
+    check_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS)
 
     args = parser.parse_args(argv)
     return _run_id(args)

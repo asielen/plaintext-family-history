@@ -11,3 +11,4 @@ Before tagging a spec release or pushing a significant change:
 - [ ] SPEC decision log includes the change.
 - [ ] Repo/tools/template/fixture distinction stays clear (no doc treats the repo root as a real archive).
 - [ ] Spec and Tooling files match implementation details if decisions were made differently than in the spec
+- [ ] `tools/README.md` updated: any newly completed tool or flag marked ✓; any newly deferred item marked ⚑ with a note pointing at its BUILD.md layer

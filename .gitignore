@@ -26,6 +26,10 @@ dist/
 build/
 *.egg-info/
 
+# Local Claude Code state — machine-specific permissions, never shared.
+# (Tracked .claude/ content such as .claude/skills/ stays committed.)
+.claude/settings.local.json
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

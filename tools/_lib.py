@@ -1,21 +1,82 @@
 """
 _lib.py — shared library for all fha tools.
 
-Parsing primitives, EDTF handling, path resolution, and shared constants.
-Every tool imports from here; tools never import each other.
+This is the foundation every other tool builds on.  Tools never import each
+other — _lib.py is the only shared dependency (TOOLING §15 build rule).
+
+What lives here:
+  - ID grammar and validation  (Crockford Base32, SPEC §10)
+  - EDTF date parsing and bounds computation  (TOOLING §1)
+  - Record file parsing  (frontmatter + fenced claims block + body)
+  - Path and alias resolution  (fha.yaml roots mapping)
+  - Filename grammar parsing  (person and source naming conventions, SPEC §13)
+  - Shared constants: claim types, source types, COMPANION_KINDS, significance
+  - The Finding class and exit-code constants shared by lint and other tools
 """
 
 from __future__ import annotations
 
 import calendar
 import datetime
+import itertools
 import os
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+# ── CODE MAP ──────────────────────────────────────────────────────────────────
+#
+#  Constants and patterns
+#    CROCKFORD_ALPHA           — the 32-char ID alphabet (i l o u omitted)
+#    ID_RE, TOKEN_RE           — bare ID and [ID] token patterns (SPEC §10)
+#    FRONT_RE, CLAIMS_RE       — frontmatter and fenced claims block patterns
+#    SIGNIFICANCE              — claim type → 'vital'/'substantive'/'incidental'
+#    CLAIM_TYPES, VITAL_TYPES  — frozensets derived from SIGNIFICANCE
+#    SOURCE_TYPES              — controlled vocabulary for source_type field
+#    COMPANION_KINDS           — generated file kinds that share a P-id with their profile
+#
+#  Archive configuration
+#    find_archive_root         — walk up from CWD to find fha.yaml
+#    load_fha_yaml             — parse fha.yaml into a dict
+#    get_roots                 — extract roots mapping from config
+#    resolve_path              — alias path ('photos/…') → absolute Path via fha.yaml
+#
+#  Record parsing
+#    _coerce_yaml              — normalise YAML scalar types for consistent comparisons
+#    read_record               — parse frontmatter + claims + body from a .md file
+#    parse_filename            — decompose filename into {id_str, kind, is_companion}
+#
+#  EDTF handling
+#    is_valid_edtf             — validate an EDTF string against this project's subset
+#    edtf_bounds               — compute (date_min, date_max) ISO strings
+#    _pad_date, _last_day      — internal date-padding helpers
+#
+#  ID utilities
+#    normalize_id              — lowercase for consistent set/dict keying
+#    is_valid_id               — syntactic validity check
+#    id_type_of                — extract P/S/C/L/H type prefix
+#    scan_ids_in_tree          — full-tree scan used by id mint for collision checking
+#
+#  Filename / path helpers
+#    is_fixture_path           — path under example-archive/ or tests/fixtures/?
+#    extract_token_ids         — all [ID] tokens from a text block
+#    extract_bare_ids          — all bare IDs from a text block
+#
+#  Archive freshness
+#    newest_record_mtime       — max mtime of sources/people/notes .md + places.yaml
+#    configure_utf8_stdout     — reconfigure stdout to UTF-8 (Windows cp1252 compat)
+#
+#  Output helpers
+#    EXIT_CLEAN / EXIT_WARNINGS / EXIT_ERRORS / EXIT_FAILURE  — shared exit codes
+#    Finding                   — one lint finding: severity + code + path + message
+#    emit_findings             — print findings list and return exit code
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # ── Regex patterns (TOOLING.md §1) ───────────────────────────────────────────
 
@@ -59,8 +120,11 @@ SOURCE_TYPES: frozenset[str] = frozenset({
     'website', 'artifact', 'proof-argument', 'other',
 })
 
-# Companion file kinds (share a P-id with their profile)
-COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index'})
+# Companion file kinds: generated view files that share a P-id with their profile
+# and live in the same folder.  Enumerated here so that parse_filename (kind
+# detection) and index.py (person_files.kind column) stay in sync when new view
+# types are added — add the kind here, and both consumers pick it up automatically.
+COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index', 'draft-queue'})
 
 # ── fha.yaml loading ──────────────────────────────────────────────────────────
 
@@ -76,16 +140,45 @@ def find_archive_root(start: str | Path | None = None) -> Path | None:
         p = parent
 
 
-def load_fha_yaml(archive_root: str | Path) -> dict:
-    """Load fha.yaml; return the parsed dict (empty dict on missing/error)."""
+class FhaConfigError(Exception):
+    """Raised by load_fha_yaml(strict=True) when fha.yaml is malformed.
+
+    A silent empty-dict fallback can make tools ignore external documents/photos
+    roots without telling the user, quietly changing which files are considered
+    truth — strict mode surfaces that instead.
+    """
+
+
+def load_fha_yaml(archive_root: str | Path, *, strict: bool = False) -> dict:
+    """Load fha.yaml and return the parsed dict.
+
+    A missing file returns {} (running without fha.yaml on default roots is
+    legitimate).  A *malformed* file is handled per `strict`:
+      - strict=False (default): return {} (permissive/legacy behavior).
+      - strict=True: raise FhaConfigError so the caller can fail loudly rather
+        than silently dropping configured roots.
+    """
     path = Path(archive_root) / 'fha.yaml'
     if not path.exists():
         return {}
     try:
         with open(path, encoding='utf-8') as f:
-            data = yaml.safe_load(f) or {}
+            data = yaml.safe_load(f)
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise FhaConfigError(
+                f'{path}: top-level YAML must be a mapping, '
+                f'got {type(data).__name__}.'
+            )
         return data
-    except Exception:
+    except FhaConfigError:
+        if strict:
+            raise
+        return {}
+    except Exception as e:
+        if strict:
+            raise FhaConfigError(f'{path}: invalid YAML — {e}') from e
         return {}
 
 
@@ -124,6 +217,83 @@ def resolve_path(
         base = archive_root / alias
 
     return (base / rest) if rest else base
+
+
+def db_mtime(db_path: Path) -> float | None:
+    """Return the mtime of db_path, or None if it is absent/unreadable."""
+    try:
+        return db_path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def probe_sqlite(db_path: str | Path, probe_sql: str) -> bool:
+    """Return True if db_path opens and probe_sql executes without error."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(probe_sql)
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
+    """Classify the photo index (.cache/photos.sqlite) for find/doctor.
+
+    Returns (status, lag_seconds):
+      'absent'     → no photos.sqlite               (lag 0.0)
+      'unreadable' → exists but fails a basic schema query — corrupt/incompatible (lag 0.0)
+      'stale'      → older than the newest file in the photos root (lag = seconds behind)
+      'fresh'      → schema OK and not older than the photos root (lag 0.0)
+
+    The schema is probed *before* the empty/missing-photo-root short-circuit, so a
+    corrupt database is never reported fresh just because there are no photos to
+    compare against.  Shared by `find --text` (caption search gating) and
+    `doctor` (freshness report) so both agree on whether photos.sqlite is usable.
+    """
+    archive_root = Path(archive_root)
+    db_path = archive_root / '.cache' / 'photos.sqlite'
+    mtime = db_mtime(db_path)
+    if mtime is None:
+        return ('absent', 0.0)
+
+    # Probe both required tables — photos (metadata) and photo_fts (caption search).
+    # A DB missing photo_fts would cause find --text to fail with a misleading error.
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photos LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_fts LIMIT 1'):
+        return ('unreadable', 0.0)
+
+    photos_root = resolve_path('photos', fha_config, archive_root)
+    if not photos_root.is_dir():
+        return ('fresh', 0.0)          # no photos root — nothing to compare against
+
+    # Directory mtimes are included (not just file mtimes) so that a deletion or
+    # rename — which bumps the parent directory's mtime but touches no remaining
+    # file — still makes the index look stale instead of silently staying 'fresh'
+    # with photo_fts rows pointing at files that no longer exist.
+    max_mtime = 0.0
+    for p in photos_root.rglob('*'):
+        if p.is_file() or p.is_dir():
+            try:
+                m = p.stat().st_mtime
+                if m > max_mtime:
+                    max_mtime = m
+            except OSError:
+                pass
+    try:
+        root_mtime = photos_root.stat().st_mtime
+        if root_mtime > max_mtime:
+            max_mtime = root_mtime
+    except OSError:
+        pass
+
+    if max_mtime == 0.0 or mtime >= max_mtime:
+        return ('fresh', 0.0)          # empty root, or db newer than newest photo
+    return ('stale', max_mtime - mtime)
 
 
 # ── Record parsing ────────────────────────────────────────────────────────────
@@ -292,8 +462,21 @@ def is_valid_edtf(s: str | None) -> bool:
 
 def edtf_bounds(s: str | None) -> tuple[str, str]:
     """
-    Return (min_iso, max_iso) for an EDTF string.
-    Implements the table from TOOLING.md §1.
+    Return (date_min, date_max) ISO strings for an EDTF date.
+
+    These bounds serve two purposes:
+      - Sorting: date_min is the ORDER BY column for chronological claim ordering
+      - Windowing: tools can filter claims to a date range with string comparison
+
+    Approximate dates are deliberately widened: '1840~' (about 1840) becomes
+    date_min='1839-01-01', date_max='1841-12-31'.  This reflects the uncertainty.
+
+    IMPORTANT: do not use date_min as the display year for an approximate date.
+    '1840~' has date_min=1839, but the correct decade is 1840s, not 1830s.
+    Always use the EDTF string directly for display and decade grouping, stripping
+    the qualifier yourself.  (See views.py _decade_from_edtf for exactly this.)
+
+    Implements the bounds table from TOOLING.md §1.
     """
     if not s or not isinstance(s, str):
         return ('0001-01-01', '9999-12-31')
@@ -420,10 +603,16 @@ def is_fixture_path(path: str | Path) -> bool:
     """
     Return True if the path is under example-archive/ or tests/fixtures/.
     Files there may use status: missing-fixture (W-level, not E-level).
+
+    Only an actual `tests/fixtures/` prefix qualifies — an arbitrary directory
+    named `tests` elsewhere in a real archive is NOT fixture space.
     """
     parts = Path(path).parts
+    if 'example-archive' in parts:
+        return True
     return any(
-        p in ('example-archive', 'tests') for p in parts
+        parts[i] == 'tests' and parts[i + 1] == 'fixtures'
+        for i in range(len(parts) - 1)
     )
 
 
@@ -435,6 +624,46 @@ def extract_token_ids(text: str) -> list[str]:
 def extract_bare_ids(text: str) -> list[str]:
     """Return all bare ID values found in text (lowercased)."""
     return [m.group(0).lower() for m in ID_RE.finditer(text)]
+
+
+# ── Archive freshness ─────────────────────────────────────────────────────────
+
+def newest_record_mtime(archive_root: Path) -> float:
+    """Max mtime (epoch seconds) across sources/people/notes .md files and places/places.yaml.
+
+    Used as the freshness baseline for index.sqlite and photos.sqlite: if the
+    cache is older than this, it is stale.  Returns 0.0 on a brand-new archive
+    that has no record files yet (trivially up-to-date).
+    """
+    max_mtime = 0.0
+    dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
+    for p in itertools.chain.from_iterable(d.rglob('*.md') for d in dirs if d.is_dir()):
+        try:
+            mtime = p.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+        except OSError:
+            pass
+    for extra in (
+        archive_root / 'places' / 'places.yaml',
+        archive_root / 'fha.yaml',
+    ):
+        try:
+            mtime = extra.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+        except OSError:
+            pass
+    return max_mtime
+
+
+def configure_utf8_stdout() -> None:
+    """Reconfigure stdout to UTF-8 so ✓/✗ render on Windows cp1252 terminals."""
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[union-attr]
+        except Exception:
+            pass
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -469,7 +698,13 @@ class Finding:
 
 
 def emit_findings(findings: list[Finding], use_json: bool = False) -> int:
-    """Print findings and return the appropriate exit code."""
+    """
+    Print findings to stdout and return the appropriate exit code.
+
+    A convenience wrapper so tool CLIs don't need to know the EXIT_* →
+    severity mapping.  Tools that want custom output formatting should
+    loop over findings themselves and call EXIT_* constants directly.
+    """
     import json
 
     if use_json:
