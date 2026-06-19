@@ -549,30 +549,76 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     Recompute group_id/is_primary/variant_copy/variant_role for every photo,
     and rebuild photo_groups, from the current `photos` rows.
 
-    Grouping key, in priority order (TOOLING §9): (1) a shared SOURCE: S-id —
-    files already processed into one source are one logical photo regardless
-    of name; (2) same directory + same filename base_id after stripping the
-    *recognized* suffix grammar (_lib.parse_media_filename, excluding
-    freeform roles — see _grouping_stem) — the pipeline's own variation
-    convention. Always run over every row (not just changed ones): grouping
-    is cheap pure-SQL/Python and a partial re-group after an incremental scan
-    would silently miss a newly-added sibling joining an existing group.
+    Two equivalences are unioned together (TOOLING §9): (1) a shared SOURCE:
+    S-id — files already processed into one source are one logical photo
+    regardless of name; (2) same directory + same filename base_id after
+    stripping the *recognized* suffix grammar (_lib.parse_media_filename,
+    excluding freeform roles — see _grouping_stem) — the pipeline's own
+    variation convention. Merging via union-find (rather than just keying on
+    source_id when present) keeps a source-tagged file and its untagged
+    same-stem sibling — e.g. a processed front with an untagged back/crop —
+    in one group instead of splitting them across a SOURCE: and a STEM: key.
+    Always run over every row (not just changed ones): grouping is cheap
+    pure-SQL/Python and a partial re-group after an incremental scan would
+    silently miss a newly-added sibling joining an existing group.
     """
     rows = conn.execute('SELECT path, source_id, edtf FROM photos').fetchall()
-    groups: dict[str, list[str]] = {}
     parsed_by_path: dict[str, ParsedName] = {}
     edtf_by_path: dict[str, str | None] = {}
+    source_by_path: dict[str, str | None] = {}
+    stem_key_by_path: dict[str, str] = {}
 
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    stem_clusters: dict[str, list[str]] = {}
+    source_clusters: dict[str, list[str]] = {}
     for path, source_id, edtf in rows:
         p = Path(path)
         parsed = parse_media_filename(p.stem)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
+        source_by_path[path] = source_id
+        stem_key = f'{p.parent.as_posix()}:{_grouping_stem(parsed)}'
+        stem_key_by_path[path] = stem_key
+        parent[path] = path
+        stem_clusters.setdefault(stem_key, []).append(path)
         if source_id:
-            key = f'SOURCE:{source_id}'
+            source_clusters.setdefault(source_id, []).append(path)
+
+    # Two independent equivalence passes (TOOLING §9), merged via union-find
+    # so a source-tagged file and its untagged same-stem sibling (e.g. a
+    # processed front with an untagged back/crop) end up in one group
+    # instead of being split across a SOURCE: and a STEM: key.
+    for cluster in stem_clusters.values():
+        for a, b in zip(cluster, cluster[1:]):
+            union(a, b)
+    for cluster in source_clusters.values():
+        for a, b in zip(cluster, cluster[1:]):
+            union(a, b)
+
+    members_by_root: dict[str, list[str]] = {}
+    for path in parent:
+        members_by_root.setdefault(find(path), []).append(path)
+
+    groups: dict[str, list[str]] = {}
+    for paths in members_by_root.values():
+        source_ids = {source_by_path[p] for p in paths if source_by_path[p]}
+        if source_ids:
+            group_id = f'SOURCE:{min(source_ids)}'
         else:
-            key = f'STEM:{p.parent.as_posix()}:{_grouping_stem(parsed)}'
-        groups.setdefault(key, []).append(path)
+            group_id = f'STEM:{stem_key_by_path[paths[0]]}'
+        groups[group_id] = paths
 
     conn.execute('DELETE FROM photo_groups')
 

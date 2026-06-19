@@ -142,6 +142,33 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_group_photos_merges_source_tagged_file_with_untagged_stem_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / '.cache'
+            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            try:
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,?,NULL,0,NULL,NULL)',
+                    ('wedding_1902.jpg', 'S-123456789a'),
+                )
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,NULL,NULL,0,NULL,NULL)',
+                    ('wedding_1902-back.jpg',),
+                )
+                photoindex._group_photos(conn)
+                group_ids = {
+                    path: group_id
+                    for path, group_id in conn.execute('SELECT path, group_id FROM photos')
+                }
+                self.assertEqual(group_ids['wedding_1902.jpg'], group_ids['wedding_1902-back.jpg'])
+                self.assertEqual(
+                    conn.execute('SELECT COUNT(*) FROM photo_groups').fetchone()[0], 1,
+                )
+            finally:
+                conn.close()
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
