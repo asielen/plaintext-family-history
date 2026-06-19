@@ -695,6 +695,85 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual(code, 1)
 
+    def test_face_tag_match_stops_name_fallback_for_same_region(self) -> None:
+        # 'Grandma' resolves uniquely via face_tags to p-aaaaaaaaaa (the
+        # higher-confidence tier); the weaker name/name_variant table must not
+        # also attach the same region to a different person, p-bbbbbbbbbb.
+        rows = photoindex._resolve_photo_people(
+            [],
+            [('Grandma', 'Face')],
+            {'Grandma': {'p-aaaaaaaaaa'}},
+            {'Grandma': {'p-bbbbbbbbbb'}},
+        )
+        self.assertEqual(rows, [('p-aaaaaaaaaa', 'face-tag')])
+
+    def test_unreadable_photo_file_raises_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            orig_stat = Path.stat
+
+            def flaky_stat(self, *args, **kwargs):
+                if self.name == 'family_reunion.jpg':
+                    raise OSError('permission denied')
+                return orig_stat(self, *args, **kwargs)
+
+            Path.stat = flaky_stat
+            try:
+                with self.assertRaisesRegex(RuntimeError, 'cannot stat'):
+                    photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            finally:
+                Path.stat = orig_stat
+
+    def test_sqlite_write_error_is_clean_tool_error(self) -> None:
+        # A write failure after _get_db() succeeds (e.g. a lock held by
+        # another process) must surface as a clean ERROR/exit-1, the same as
+        # the explicit RuntimeError cases, instead of a raw sqlite3 traceback.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+
+            class FlakyConnection(sqlite3.Connection):
+                def execute(self, sql, *args, **kwargs):
+                    if sql.startswith('INSERT OR REPLACE INTO photos'):
+                        raise sqlite3.OperationalError('database is locked')
+                    return super().execute(sql, *args, **kwargs)
+
+            orig_connect = sqlite3.connect
+            sqlite3.connect = lambda path, *a, **k: orig_connect(path, *a, factory=FlakyConnection, **k)
+            try:
+                args = type('Args', (), {'root': str(archive), 'full': True})()
+                code = photoindex._cmd_scan(args)
+                self.assertEqual(code, photoindex.EXIT_FAILURE)
+            finally:
+                sqlite3.connect = orig_connect
+
+    def test_source_tagged_stem_sibling_is_not_split_into_a_separate_group(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / '.cache'
+            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            try:
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,?,NULL,0,NULL,NULL)',
+                    ('portrait_1880.jpg', 'S-123456789a'),
+                )
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,NULL,NULL,0,NULL,NULL)',
+                    ('portrait_1880-back.jpg',),
+                )
+                photoindex._group_photos(conn)
+                group_ids = {
+                    path: group_id
+                    for path, group_id in conn.execute('SELECT path, group_id FROM photos')
+                }
+                self.assertEqual(group_ids['portrait_1880.jpg'], group_ids['portrait_1880-back.jpg'])
+                self.assertEqual(group_ids['portrait_1880.jpg'], 'SOURCE:S-123456789a')
+            finally:
+                conn.close()
+
 
 if __name__ == '__main__':
     unittest.main()
