@@ -273,8 +273,17 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     if not probe_sqlite(db_path, 'SELECT 1 FROM photo_fts LIMIT 1'):
         return ('unreadable', 0.0)
 
+    # photo_people is derived from .cache/index.sqlite (face_tags/name_variants),
+    # so a person record edit that's been folded into a rebuilt index.sqlite
+    # makes photos.sqlite's photo_people rows stale even though no photo file
+    # changed — without this, doctor/find would keep reporting the photoindex
+    # fresh while photo_people still reflects the old person records.
+    index_mtime = db_mtime(archive_root / '.cache' / 'index.sqlite')
+
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
+        if index_mtime is not None and index_mtime > mtime:
+            return ('stale', index_mtime - mtime)
         return ('fresh', 0.0)          # no photos root — nothing to compare against
 
     # Directory mtimes are included (not just file mtimes) so that a deletion or
@@ -297,8 +306,11 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     except OSError:
         pass
 
+    if index_mtime is not None and index_mtime > max_mtime:
+        max_mtime = index_mtime
+
     if max_mtime == 0.0 or mtime >= max_mtime:
-        return ('fresh', 0.0)          # empty root, or db newer than newest photo
+        return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
     return ('stale', max_mtime - mtime)
 
 

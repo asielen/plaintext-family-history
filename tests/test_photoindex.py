@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import photoindex
-from _lib import parse_media_filename
+from _lib import parse_media_filename, photoindex_status
 
 
 def _copy_fixture(tmp: Path) -> Path:
@@ -137,6 +137,31 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(dash_variant_crop.variant_id, 'b')
         self.assertTrue(dash_variant_crop.is_crop)
         self.assertIsNone(dash_variant_crop.freeform_role)
+
+    def test_photoindex_status_is_stale_after_person_index_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths
+            ]
+            photoindex.run_scan(archive, fha_config)
+
+            status, _lag = photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'fresh')
+
+            # Simulate a person-record edit that rebuilds index.sqlite after
+            # the photoindex scan: photo_people would now be derived from
+            # stale data until the next `fha photoindex` run.
+            cache = archive / '.cache'
+            index_db = cache / 'index.sqlite'
+            sqlite3.connect(index_db).close()
+            photos_mtime = (cache / 'photos.sqlite').stat().st_mtime
+            os.utime(index_db, (photos_mtime + 10, photos_mtime + 10))
+
+            status, lag = photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'stale')
+            self.assertGreater(lag, 0)
 
     def test_row_to_photo_falls_back_to_xmp_description_for_caption(self) -> None:
         with_caption = photoindex._row_to_photo(
