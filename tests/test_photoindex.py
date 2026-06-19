@@ -306,6 +306,15 @@ class PhotoindexTests(unittest.TestCase):
         )
         self.assertEqual(rows, [])
 
+    def test_face_tag_match_skips_conflicting_name_fallback(self) -> None:
+        rows = photoindex._resolve_photo_people(
+            [],
+            [('Jack', 'Face')],
+            {'Jack': {'p-aaaaaaaaaa'}},
+            {'Jack': {'p-bbbbbbbbbb'}},
+        )
+        self.assertEqual(rows, [('p-aaaaaaaaaa', 'face-tag')])
+
     def test_stale_index_is_not_used_for_weak_face_or_name_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
