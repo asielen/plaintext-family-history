@@ -138,6 +138,18 @@ class PhotoindexTests(unittest.TestCase):
         self.assertTrue(dash_variant_crop.is_crop)
         self.assertIsNone(dash_variant_crop.freeform_role)
 
+    def test_row_to_photo_falls_back_to_xmp_description_for_caption(self) -> None:
+        with_caption = photoindex._row_to_photo(
+            {'Caption-Abstract': 'IPTC caption', 'Description': 'XMP description'}, 0.0, 0,
+        )
+        self.assertEqual(with_caption['caption'], 'IPTC caption')
+
+        description_only = photoindex._row_to_photo({'Description': 'XMP description'}, 0.0, 0)
+        self.assertEqual(description_only['caption'], 'XMP description')
+
+        neither = photoindex._row_to_photo({}, 0.0, 0)
+        self.assertIsNone(neither['caption'])
+
     def test_grouping_stem_keeps_freeform_suffix_distinct(self) -> None:
         family = parse_media_filename('smith-family')
         house = parse_media_filename('smith-house')

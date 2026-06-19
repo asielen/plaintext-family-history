@@ -154,7 +154,7 @@ PHOTO_EXTENSIONS = frozenset({
 })
 
 _EXIFTOOL_FIELDS = [
-    '-Title', '-Caption-Abstract', '-UserComment', '-DateTimeOriginal',
+    '-Title', '-Caption-Abstract', '-XMP-dc:Description', '-UserComment', '-DateTimeOriginal',
     '-Location', '-City', '-State', '-Country', '-GPSLatitude', '-GPSLongitude',
     '-Keywords', '-Subject', '-XMP-mwg-rs:RegionInfo',
 ]
@@ -298,7 +298,7 @@ def _row_to_photo(row: dict, mtime: float, size: int) -> dict:
         'mtime': mtime,
         'size': size,
         'title': row.get('Title'),
-        'caption': row.get('Caption-Abstract'),
+        'caption': row.get('Caption-Abstract') or row.get('Description'),
         'user_comment': row.get('UserComment'),
         'exif_date': row.get('DateTimeOriginal'),
         'date_pattern': date_pattern,
