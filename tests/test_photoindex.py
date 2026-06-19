@@ -948,6 +948,65 @@ class PhotoindexTests(unittest.TestCase):
                 ['photos/portrait_1880-back.jpg', 'photos/portrait_1880.jpg'],
             )
 
+    def test_find_text_does_not_match_filename_path(self) -> None:
+        """--text searches metadata only; a term present only in the path must not match.
+
+        photo_fts also indexes `path`, so an unscoped MATCH on 'wedding' would hit
+        photos/wedding_1902.jpg via its filename even though its caption never says
+        'wedding'. The column-filtered query must return no rows here.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {'Title': 'Portrait front'},
+                    'portrait_1880-back.jpg': {'Caption-Abstract': 'back'},
+                    'wedding_1902.jpg': {'Caption-Abstract': 'Reception party'},
+                    'family_reunion.jpg': {'Caption-Abstract': 'gathering'},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, text='wedding',
+            )
+
+            self.assertEqual(result['rows'], [])
+
+    def test_cmd_find_cli_incompatible_schema_reported_even_on_no_match(self) -> None:
+        """An incompatible cache is reported even when the filter matches nothing."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cache = archive / '.cache'
+            cache.mkdir(exist_ok=True)
+            conn = sqlite3.connect(cache / 'photos.sqlite')
+            conn.executescript(
+                'CREATE TABLE photos(path TEXT);'
+                'CREATE TABLE photo_face_regions(path TEXT);'
+                'CREATE TABLE photo_fts(path TEXT, body TEXT);'
+                'CREATE TABLE photo_groups(group_id TEXT);'
+                'CREATE TABLE photo_keywords(path TEXT, keyword TEXT);'
+                'CREATE TABLE photo_people(path TEXT, person_ref TEXT);'
+            )
+            conn.commit()
+            conn.close()
+
+            args = type('Args', (), {
+                'root': str(archive),
+                'person': None,
+                'keyword': 'no-such-keyword',      # matches nothing
+                'edtf': None,
+                'text': None,
+                'files': False,
+            })()
+
+            code = photoindex._cmd_find(args)
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
     def test_find_rejects_invalid_edtf(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

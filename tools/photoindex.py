@@ -684,10 +684,20 @@ def _paths_by_edtf(conn: sqlite3.Connection, query: str) -> set[str]:
 
 
 def _paths_by_text(conn: sqlite3.Connection, query: str) -> set[str]:
+    """Full-text search over the metadata columns --text documents.
+
+    photo_fts also indexes `path` so the table can be rebuilt from one row per
+    file, but `--text` is documented as searching title/caption/comment/keywords
+    only; an unscoped MATCH would let a descriptive filename or folder produce a
+    hit whose metadata never mentions the term. Restrict the match to the four
+    metadata columns with an FTS5 column filter, parenthesizing the user's query
+    so the filter applies to the whole expression rather than just its first token.
+    """
+    scoped = f'{{title caption user_comment keywords}} : ({query})'
     try:
         return {
             row[0] for row in conn.execute(
-                'SELECT path FROM photo_fts WHERE photo_fts MATCH ?', (query,)
+                'SELECT path FROM photo_fts WHERE photo_fts MATCH ?', (scoped,)
             )
         }
     except sqlite3.OperationalError as e:
@@ -743,9 +753,11 @@ def run_find(
 
     photoindex_status only probes that the cache's tables exist, not that every
     selected column does; an older or partially written schema can therefore pass
-    the freshness gate yet raise inside a query. Those sqlite errors are mapped to
-    the same 'unreadable' status as a corrupt cache so the caller reports the
-    documented rebuild message instead of leaking a traceback.
+    the freshness gate. _schema_is_usable is checked up front so an incompatible
+    cache is reported as 'unreadable' even when the query would short-circuit to
+    an empty result before touching the missing columns; any residual sqlite error
+    inside the query is mapped to the same status as a final backstop, so the
+    caller reports the documented rebuild message instead of leaking a traceback.
     """
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
@@ -754,6 +766,8 @@ def run_find(
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
+        if not _schema_is_usable(conn):
+            return {'status': 'unreadable', 'rows': []}
         try:
             filters: list[set[str]] = []
             if person:
