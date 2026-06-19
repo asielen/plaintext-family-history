@@ -138,6 +138,15 @@ class PhotoindexTests(unittest.TestCase):
         self.assertTrue(dash_variant_crop.is_crop)
         self.assertIsNone(dash_variant_crop.freeform_role)
 
+    def test_grouping_stem_keeps_freeform_suffix_distinct(self) -> None:
+        family = parse_media_filename('smith-family')
+        house = parse_media_filename('smith-house')
+        self.assertEqual(family.base_id, house.base_id)
+        self.assertNotEqual(photoindex._grouping_stem(family), photoindex._grouping_stem(house))
+
+        back = parse_media_filename('portrait_1880_back')
+        self.assertEqual(photoindex._grouping_stem(back), 'portrait_1880')
+
     def test_person_resolution_dedupes_by_confidence_order(self) -> None:
         rows = photoindex._resolve_photo_people(
             ['P-AAAAAAAAAA'],

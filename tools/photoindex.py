@@ -502,6 +502,20 @@ def _variant_role(parsed: ParsedName) -> str | None:
     return base
 
 
+def _grouping_stem(parsed: ParsedName) -> str:
+    """
+    base_id for use as a grouping key (TOOLING §9): the recognized suffix
+    grammar (copy letter, negative/back/front/page-N/bw, crop) is stripped,
+    but an unrecognized freeform suffix is kept folded back in. Freeform
+    roles are not part of the documented grouping grammar — two unrelated
+    files like 'smith-family.jpg' and 'smith-house.jpg' must not collapse
+    into one group just because both have a trailing '-word'.
+    """
+    if parsed.part_kind == 'freeform':
+        return f'{parsed.base_id}-{parsed.freeform_role}'
+    return parsed.base_id
+
+
 def _group_photos(conn: sqlite3.Connection) -> None:
     """
     Recompute group_id/is_primary/variant_copy/variant_role for every photo,
@@ -510,7 +524,8 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     Grouping key, in priority order (TOOLING §9): (1) a shared SOURCE: S-id —
     files already processed into one source are one logical photo regardless
     of name; (2) same directory + same filename base_id after stripping the
-    suffix grammar (_lib.parse_media_filename) — the pipeline's own variation
+    *recognized* suffix grammar (_lib.parse_media_filename, excluding
+    freeform roles — see _grouping_stem) — the pipeline's own variation
     convention. Always run over every row (not just changed ones): grouping
     is cheap pure-SQL/Python and a partial re-group after an incremental scan
     would silently miss a newly-added sibling joining an existing group.
@@ -528,7 +543,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
         if source_id:
             key = f'SOURCE:{source_id}'
         else:
-            key = f'STEM:{p.parent.as_posix()}:{parsed.base_id}'
+            key = f'STEM:{p.parent.as_posix()}:{_grouping_stem(parsed)}'
         groups.setdefault(key, []).append(path)
 
     conn.execute('DELETE FROM photo_groups')
