@@ -651,7 +651,10 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool]:
     The boolean return value tells the scan whether this database existed
     before cached face regions, so unchanged files need one backfill scrape.
     """
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(f'cannot create .cache directory: {e}') from e
     db_path = cache_dir / 'photos.sqlite'
 
     try:

@@ -429,6 +429,17 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_cache_directory_creation_failure_raises_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            # A plain file named '.cache' blocks mkdir() with a clean failure
+            # (e.g. NotADirectoryError/FileExistsError) instead of a raw
+            # traceback escaping run_scan.
+            (archive / '.cache').write_text('not a directory', encoding='utf-8')
+
+            with self.assertRaises(RuntimeError):
+                photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
     def test_missing_exiftool_row_fails_without_refreshing_stale_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
