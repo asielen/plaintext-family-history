@@ -522,7 +522,7 @@ def parse_media_filename(stem: str) -> ParsedName:
         remaining = _BW_SUFFIX_RE.sub('', remaining)
     else:
         freeform_m = _FREEFORM_ROLE_RE.search(remaining)
-        if freeform_m:
+        if freeform_m and not _VARIANT_DASH_RE.search(remaining) and not _VARIANT_BARE_RE.search(remaining):
             part_kind = 'freeform'
             freeform_role = freeform_m.group(1).lower()
             remaining = _FREEFORM_ROLE_RE.sub('', remaining)

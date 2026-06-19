@@ -127,6 +127,17 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(freeform.part_kind, 'freeform')
         self.assertEqual(freeform.freeform_role, 'restored')
 
+        dash_variant = parse_media_filename('portrait_1880-b')
+        self.assertEqual(dash_variant.base_id, 'portrait_1880')
+        self.assertEqual(dash_variant.variant_id, 'b')
+        self.assertIsNone(dash_variant.freeform_role)
+
+        dash_variant_crop = parse_media_filename('portrait_1880-b-crop')
+        self.assertEqual(dash_variant_crop.base_id, 'portrait_1880')
+        self.assertEqual(dash_variant_crop.variant_id, 'b')
+        self.assertTrue(dash_variant_crop.is_crop)
+        self.assertIsNone(dash_variant_crop.freeform_role)
+
     def test_person_resolution_dedupes_by_confidence_order(self) -> None:
         rows = photoindex._resolve_photo_people(
             ['P-AAAAAAAAAA'],
