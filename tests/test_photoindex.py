@@ -118,6 +118,30 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_negative_with_copy_letter_is_stored_at_stem_level(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / '.cache'
+            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            try:
+                for path in ('portrait_1880b-negative.jpg', 'portrait_1880-back.jpg'):
+                    conn.execute(
+                        'INSERT INTO photos(path, mtime, size, group_id, is_primary, '
+                        'variant_copy, variant_role) VALUES (?,0,0,NULL,0,NULL,NULL)',
+                        (path,),
+                    )
+                photoindex._group_photos(conn)
+                rows = {
+                    path: (variant_copy, variant_role)
+                    for path, variant_copy, variant_role in conn.execute(
+                        'SELECT path, variant_copy, variant_role FROM photos'
+                    )
+                }
+                negative_copy, negative_role = rows['portrait_1880b-negative.jpg']
+                self.assertIsNone(negative_copy)
+                self.assertEqual(negative_role, 'negative')
+            finally:
+                conn.close()
+
     def test_media_filename_parser_covers_documented_suffixes(self) -> None:
         back = parse_media_filename('portrait_1880_back')
         self.assertEqual(back.base_id, 'portrait_1880')
@@ -317,6 +341,68 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_unrelated_record_edit_does_not_drop_weak_person_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            person_file = people_dir / 'grandma__example_P-aaaaaaaaaa.md'
+            person_file.write_text('---\nid: P-aaaaaaaaaa\nname: Grandma\n---\n', encoding='utf-8')
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {
+                        'SourceFile': str(p),
+                        'RegionInfo': {
+                            'RegionList': [{'Name': 'Grandma', 'Type': 'Face'}],
+                        } if p.name == 'family_reunion.jpg' else {},
+                    }
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            cache = archive / '.cache'
+            index_db = cache / 'index.sqlite'
+            conn = sqlite3.connect(index_db)
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE persons(id TEXT, name TEXT);
+                    CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
+                    CREATE TABLE person_variants(person_id TEXT, variant TEXT);
+                    INSERT INTO persons(id, name) VALUES ('p-aaaaaaaaaa', 'Grandma');
+                    INSERT INTO person_face_tags(person_id, tag) VALUES ('p-aaaaaaaaaa', 'Grandma');
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            os.utime(index_db, None)
+
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            # Editing an unrelated record (not a person record) must not make
+            # index.sqlite look stale and wipe the weak face-tag match.
+            sources_dir = archive / 'sources'
+            sources_dir.mkdir(exist_ok=True)
+            source_file = sources_dir / 'unrelated__example_S-bbbbbbbbbb.md'
+            source_file.write_text('---\nid: S-bbbbbbbbbb\n---\n', encoding='utf-8')
+            index_mtime = index_db.stat().st_mtime
+            os.utime(source_file, (index_mtime + 10, index_mtime + 10))
+
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                people = conn.execute(
+                    'SELECT person_ref, via FROM photo_people ORDER BY person_ref'
+                ).fetchall()
+                self.assertEqual(people, [('p-aaaaaaaaaa', 'face-tag')])
+            finally:
+                conn.close()
+
     def test_old_schema_photos_sqlite_is_recreated(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -407,6 +493,20 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_run_exiftool_fails_on_documented_error_exit_status(self) -> None:
+        class FakeProc:
+            returncode = 1
+            stdout = '[]'
+            stderr = 'Error: File not found - missing.jpg'
+
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **k: FakeProc()
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'exiftool failed'):
+                photoindex._run_exiftool([Path('missing.jpg')])
+        finally:
+            subprocess.run = orig_run
+
     def test_corrupt_photos_sqlite_is_recreated(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -481,6 +581,7 @@ class PhotoindexTests(unittest.TestCase):
         commands = [
             ['find', '--person', 'P-de957bcda1', '--root', 'tests/fixtures/photo-fixture'],
             ['find', '--text', 'cemetery', '--root', 'tests/fixtures/photo-fixture'],
+            ['find', '--files', '--root', 'tests/fixtures/photo-fixture'],
             ['triage', '--top', '10', '--root', 'tests/fixtures/photo-fixture'],
             ['tag-person', 'P-de957bcda1', '--root', 'tests/fixtures/photo-fixture'],
             [

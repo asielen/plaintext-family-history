@@ -72,6 +72,7 @@ import yaml
 #
 #  Archive freshness
 #    newest_record_mtime       — max mtime of sources/people/notes .md + places.yaml
+#    newest_person_record_mtime — max mtime of people/*.md only
 #    configure_utf8_stdout     — reconfigure stdout to UTF-8 (Windows cp1252 compat)
 #
 #  Output helpers
@@ -789,6 +790,28 @@ def newest_record_mtime(archive_root: Path) -> float:
     ):
         try:
             mtime = extra.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+        except OSError:
+            pass
+    return max_mtime
+
+
+def newest_person_record_mtime(archive_root: Path) -> float:
+    """Max mtime (epoch seconds) across people/*.md files only.
+
+    Narrower than `newest_record_mtime`: face-tag/name matching only needs to
+    know whether person records changed, so an edit to an unrelated source,
+    note, or place file must not be treated as busting that freshness check.
+    Returns 0.0 on a brand-new archive that has no person records yet.
+    """
+    max_mtime = 0.0
+    people_dir = archive_root / 'people'
+    if not people_dir.is_dir():
+        return max_mtime
+    for p in people_dir.rglob('*.md'):
+        try:
+            mtime = p.stat().st_mtime
             if mtime > max_mtime:
                 max_mtime = mtime
         except OSError:

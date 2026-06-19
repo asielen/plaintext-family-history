@@ -98,7 +98,7 @@ from _lib import (
     find_archive_root,
     is_valid_edtf,
     load_fha_yaml,
-    newest_record_mtime,
+    newest_person_record_mtime,
     normalize_id,
     parse_media_filename,
     path_to_alias,
@@ -185,7 +185,7 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
         raise RuntimeError('fha photoindex requires exiftool on PATH') from e
-    if proc.returncode not in (0, 1):
+    if proc.returncode != 0:
         raise RuntimeError(f'exiftool failed while scanning photos: {proc.stderr.strip()}')
     try:
         return json.loads(proc.stdout or '[]')
@@ -340,7 +340,7 @@ def _index_is_fresh(archive_root: Path) -> bool:
     ):
         if not probe_sqlite(db_path, probe):
             return False
-    record_mtime = newest_record_mtime(archive_root)
+    record_mtime = newest_person_record_mtime(archive_root)
     return record_mtime == 0.0 or mtime >= record_mtime
 
 
@@ -595,10 +595,14 @@ def _group_photos(conn: sqlite3.Connection) -> None:
 
         for path in paths:
             parsed = parsed_by_path[path]
+            # Negatives are stored at the stem level regardless of any variant
+            # letter in their filename (TOOLING §9) — a negative is source
+            # material for the root image, not an A/B variant of the print.
+            variant_copy = None if parsed.part_kind == 'negative' else parsed.variant_id
             conn.execute(
                 'UPDATE photos SET group_id=?, is_primary=?, variant_copy=?, variant_role=? '
                 'WHERE path=?',
-                (group_id, 1 if path == primary else 0, parsed.variant_id,
+                (group_id, 1 if path == primary else 0, variant_copy,
                  _variant_role(parsed), path),
             )
 
@@ -833,6 +837,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
             child.add_argument('--keyword', metavar='TEXT', help=argparse.SUPPRESS)
             child.add_argument('--edtf', metavar='EDTF', help=argparse.SUPPRESS)
             child.add_argument('--text', metavar='TEXT', help=argparse.SUPPRESS)
+            child.add_argument('--files', action='store_true', help=argparse.SUPPRESS)
         elif name == 'triage':
             child.add_argument('--top', metavar='N', help=argparse.SUPPRESS)
         elif name == 'tag-person':
