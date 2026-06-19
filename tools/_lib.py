@@ -17,6 +17,7 @@ What lives here:
 from __future__ import annotations
 
 import calendar
+import dataclasses
 import datetime
 import itertools
 import os
@@ -44,11 +45,14 @@ import yaml
 #    load_fha_yaml             — parse fha.yaml into a dict
 #    get_roots                 — extract roots mapping from config
 #    resolve_path              — alias path ('photos/…') → absolute Path via fha.yaml
+#    path_to_alias             — absolute Path → alias path ('photos/…'), the inverse
 #
 #  Record parsing
 #    _coerce_yaml              — normalise YAML scalar types for consistent comparisons
 #    read_record               — parse frontmatter + claims + body from a .md file
 #    parse_filename            — decompose filename into {id_str, kind, is_companion}
+#    ParsedName, parse_media_filename — decompose an unprocessed photo/scan filename
+#                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
 #
 #  EDTF handling
 #    is_valid_edtf             — validate an EDTF string against this project's subset
@@ -68,6 +72,7 @@ import yaml
 #
 #  Archive freshness
 #    newest_record_mtime       — max mtime of sources/people/notes .md + places.yaml
+#    newest_person_record_mtime — max mtime of people/*.md only
 #    configure_utf8_stdout     — reconfigure stdout to UTF-8 (Windows cp1252 compat)
 #
 #  Output helpers
@@ -219,6 +224,24 @@ def resolve_path(
     return (base / rest) if rest else base
 
 
+def path_to_alias(path: str | Path, alias: str, fha_config: dict, archive_root: str | Path) -> str:
+    """
+    Inverse of resolve_path: turn an absolute Path under `alias`'s root back into
+    the stored alias-form path ('photos/1880/foo.jpg', forward slashes — TOOLING
+    "All stored paths are alias-form with forward slashes").
+
+    Falls back to the absolute path's forward-slash form if `path` isn't under the
+    alias's resolved root (e.g. an absolute root configured outside archive_root).
+    """
+    root = resolve_path(alias, fha_config, archive_root)
+    path = Path(path)
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return path.as_posix()
+    return f'{alias}/{rel.as_posix()}' if str(rel) != '.' else alias
+
+
 def db_mtime(db_path: Path) -> float | None:
     """Return the mtime of db_path, or None if it is absent/unreadable."""
     try:
@@ -260,39 +283,53 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     if mtime is None:
         return ('absent', 0.0)
 
-    # Probe both required tables — photos (metadata) and photo_fts (caption search).
-    # A DB missing photo_fts would cause find --text to fail with a misleading error.
+    # Probe required tables.  `photo_face_regions` is part of the scrape cache,
+    # not just a derived query table; an older cache missing it needs a refresh
+    # before doctor/find should call the photoindex fresh.
     if not probe_sqlite(db_path, 'SELECT 1 FROM photos LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_face_regions LIMIT 1'):
         return ('unreadable', 0.0)
     if not probe_sqlite(db_path, 'SELECT 1 FROM photo_fts LIMIT 1'):
         return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_groups LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_keywords LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_people LIMIT 1'):
+        return ('unreadable', 0.0)
+
+    # photo_people is derived from .cache/index.sqlite (face_tags/name_variants),
+    # so a person record edit that's been folded into a rebuilt index.sqlite
+    # makes photos.sqlite's photo_people rows stale even though no photo file
+    # changed — without this, doctor/find would keep reporting the photoindex
+    # fresh while photo_people still reflects the old person records.
+    index_mtime = db_mtime(archive_root / '.cache' / 'index.sqlite')
+    max_mtime = index_mtime if index_mtime is not None else 0.0
 
     photos_root = resolve_path('photos', fha_config, archive_root)
-    if not photos_root.is_dir():
-        return ('fresh', 0.0)          # no photos root — nothing to compare against
-
-    # Directory mtimes are included (not just file mtimes) so that a deletion or
-    # rename — which bumps the parent directory's mtime but touches no remaining
-    # file — still makes the index look stale instead of silently staying 'fresh'
-    # with photo_fts rows pointing at files that no longer exist.
-    max_mtime = 0.0
-    for p in photos_root.rglob('*'):
-        if p.is_file() or p.is_dir():
-            try:
-                m = p.stat().st_mtime
-                if m > max_mtime:
-                    max_mtime = m
-            except OSError:
-                pass
-    try:
-        root_mtime = photos_root.stat().st_mtime
-        if root_mtime > max_mtime:
-            max_mtime = root_mtime
-    except OSError:
-        pass
+    if photos_root.is_dir():
+        # Directory mtimes are included (not just file mtimes) so that a deletion
+        # or rename — which bumps the parent directory's mtime but touches no
+        # remaining file — still makes the index look stale instead of silently
+        # staying 'fresh' with photo_fts rows pointing at files that no longer exist.
+        for p in photos_root.rglob('*'):
+            if p.is_file() or p.is_dir():
+                try:
+                    m = p.stat().st_mtime
+                    if m > max_mtime:
+                        max_mtime = m
+                except OSError:
+                    pass
+        try:
+            root_mtime = photos_root.stat().st_mtime
+            if root_mtime > max_mtime:
+                max_mtime = root_mtime
+        except OSError:
+            pass
 
     if max_mtime == 0.0 or mtime >= max_mtime:
-        return ('fresh', 0.0)          # empty root, or db newer than newest photo
+        return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
     return ('stale', max_mtime - mtime)
 
 
@@ -427,6 +464,120 @@ def parse_filename(path: str | Path) -> dict | None:
             pass
 
     return result
+
+
+# ── Media filename grammar (TOOLING.md §6, §9) ───────────────────────────────
+#
+# Unprocessed photos/scans in a mixed folder carry no S-id yet, but variation
+# siblings (different scans of one physical photo, front/back pairs, pages of
+# a booklet) share a filename "base_id" with only a suffix distinguishing
+# them.  This parser recovers that structure so `fha photoindex` (grouping)
+# and `fha process` (variation-detection prompt) can both recognise siblings
+# without either tool importing the other (shared code lives only in _lib).
+
+@dataclasses.dataclass(frozen=True)
+class ParsedName:
+    """One filename stem decomposed per the TOOLING §6 suffix grammar.
+
+    base_id    — the stem with all recognised suffixes stripped; the grouping key.
+    variant_id — trailing copy letter ('a', 'b', 'c', …) if present, else None.
+    part_kind  — 'front' | 'back' | 'page' | 'negative' | 'bw' | 'freeform' | 'none'.
+    page_num   — integer page number when part_kind == 'page', else None.
+    freeform_role — unrecognised suffix kept as a role, per TOOLING §6.
+    is_crop    — True if a '-crop' derivative-detail suffix was stripped.
+    """
+    base_id: str
+    variant_id: str | None
+    part_kind: str
+    page_num: int | None
+    freeform_role: str | None
+    is_crop: bool
+
+
+_CROP_SUFFIX_RE = re.compile(r'[-_]crop$', re.I)
+_NEGATIVE_SUFFIX_RE = re.compile(r'[-_]negative$', re.I)
+_BACK_SUFFIX_RE = re.compile(r'[-_]back$', re.I)
+_FRONT_SUFFIX_RE = re.compile(r'[-_]front$', re.I)
+_BW_SUFFIX_RE = re.compile(r'[-_]bw$', re.I)
+_PAGE_SUFFIX_RE = re.compile(r'[-_]page[-_]?(\d+)$', re.I)
+_VARIANT_DASH_RE = re.compile(r'-([a-z])$', re.I)
+_VARIANT_BARE_RE = re.compile(r'(?<=[0-9])([a-z])$', re.I)
+_FREEFORM_ROLE_RE = re.compile(r'[-_]([a-z][a-z0-9-]*)$', re.I)
+
+
+def parse_media_filename(stem: str) -> ParsedName:
+    """
+    Decompose a photo/scan filename stem into base_id + variation metadata.
+
+    Suffixes are stripped in a fixed priority order (TOOLING §6) because the
+    grammar is ambiguous if read in any other sequence — e.g. 'portrait_1880b'
+    must lose the bare trailing letter only after confirming no dash-suffix
+    role applies first:
+      1. '-crop'                         (stacks on any other suffix)
+      2. part-kind: '-negative' before '-back'/'-front'/'-page[-]N'/'-bw'
+      3. trailing variant letter: '-b' (dash) or bare 'b' right after a digit
+      4. whatever remains is base_id.
+
+    A '-negative' filename may still carry a variant letter (e.g.
+    'portrait_1880b-negative') — the parser records it in variant_id, but
+    TOOLING §9 directs the *grouper* to file negatives at the stem level
+    regardless of that letter, since a negative is source material for the
+    root image, not an A/B print variant. That grouping decision lives in
+    photoindex.py, not here — this function only reports what the filename
+    literally encodes.
+    """
+    remaining = stem
+    is_crop = bool(_CROP_SUFFIX_RE.search(remaining))
+    if is_crop:
+        remaining = _CROP_SUFFIX_RE.sub('', remaining)
+
+    part_kind = 'none'
+    page_num: int | None = None
+    freeform_role: str | None = None
+    page_m = _PAGE_SUFFIX_RE.search(remaining)
+    if page_m:
+        part_kind = 'page'
+        page_num = int(page_m.group(1))
+        remaining = _PAGE_SUFFIX_RE.sub('', remaining)
+    elif _NEGATIVE_SUFFIX_RE.search(remaining):
+        part_kind = 'negative'
+        remaining = _NEGATIVE_SUFFIX_RE.sub('', remaining)
+    elif _BACK_SUFFIX_RE.search(remaining):
+        part_kind = 'back'
+        remaining = _BACK_SUFFIX_RE.sub('', remaining)
+    elif _FRONT_SUFFIX_RE.search(remaining):
+        part_kind = 'front'
+        remaining = _FRONT_SUFFIX_RE.sub('', remaining)
+    elif _BW_SUFFIX_RE.search(remaining):
+        part_kind = 'bw'
+        remaining = _BW_SUFFIX_RE.sub('', remaining)
+    else:
+        freeform_m = _FREEFORM_ROLE_RE.search(remaining)
+        # A single trailing letter is never a freeform role — it's either a
+        # documented copy variant ('-b', '034b') or, for an undocumented form
+        # like '_a', not a suffix at all (TOOLING §6: only dash or
+        # bare-after-digit is copy-variant grammar; underscore-letter must
+        # stay part of base_id rather than being swallowed as a "role").
+        if freeform_m and len(freeform_m.group(1)) > 1:
+            part_kind = 'freeform'
+            freeform_role = freeform_m.group(1).lower()
+            remaining = _FREEFORM_ROLE_RE.sub('', remaining)
+
+    variant_id: str | None = None
+    dash_m = _VARIANT_DASH_RE.search(remaining)
+    if dash_m:
+        variant_id = dash_m.group(1).lower()
+        remaining = _VARIANT_DASH_RE.sub('', remaining)
+    else:
+        bare_m = _VARIANT_BARE_RE.search(remaining)
+        if bare_m:
+            variant_id = bare_m.group(1).lower()
+            remaining = remaining[:-1]
+
+    return ParsedName(
+        base_id=remaining, variant_id=variant_id, part_kind=part_kind,
+        page_num=page_num, freeform_role=freeform_role, is_crop=is_crop,
+    )
 
 
 # ── EDTF handling (TOOLING.md §1) ────────────────────────────────────────────
@@ -650,6 +801,33 @@ def newest_record_mtime(archive_root: Path) -> float:
     ):
         try:
             mtime = extra.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+        except OSError:
+            pass
+    return max_mtime
+
+
+def newest_person_record_mtime(archive_root: Path) -> float:
+    """Max mtime (epoch seconds) across person *profile* records only.
+
+    Narrower than `newest_record_mtime`: face-tag/name matching only reads
+    `face_tags`/`name_variants` from profile records, so generated companion
+    files (research/timeline/sources-index/draft-queue) and folder-level
+    `sources-index.md` files under people/ must not bust this freshness
+    check just because `fha views refresh` touched them.
+    Returns 0.0 on a brand-new archive that has no person records yet.
+    """
+    max_mtime = 0.0
+    people_dir = archive_root / 'people'
+    if not people_dir.is_dir():
+        return max_mtime
+    for p in people_dir.rglob('*.md'):
+        parsed = parse_filename(p)
+        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
+            continue
+        try:
+            mtime = p.stat().st_mtime
             if mtime > max_mtime:
                 max_mtime = mtime
         except OSError:

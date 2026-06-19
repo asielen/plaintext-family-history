@@ -1,0 +1,8 @@
+# Fixture for fha photoindex (BUILD.md layer 3, scan/schema/grouping PR).
+# Four placeholder JPEGs with real embedded metadata (written via exiftool,
+# not a code-level stub) under photos/: a front/back variation pair with
+# disagreeing DATE: keywords (exercises date_conflict), a single photo
+# carrying a SOURCE: keyword (exercises source-id grouping), and one
+# unrelated ungrouped photo.
+roots:
+  photos: photos
