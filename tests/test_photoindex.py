@@ -307,6 +307,19 @@ class PhotoindexTests(unittest.TestCase):
         )
         self.assertEqual(rows, [])
 
+    def test_unique_face_tag_does_not_also_fall_back_to_name_match(self) -> None:
+        # 'Jack' resolves uniquely via person_face_tags to P-a. Face-tag
+        # resolution is the higher-confidence tier, so name/name_variant
+        # matching must not also run for the same region name and attach an
+        # unrelated person (P-b) to the same face.
+        rows = photoindex._resolve_photo_people(
+            [],
+            [('Jack', 'Face')],
+            {'Jack': {'p-aaaaaaaaaa'}},
+            {'Jack': {'p-bbbbbbbbbb'}},
+        )
+        self.assertEqual(rows, [('p-aaaaaaaaaa', 'face-tag')])
+
     def test_stale_index_is_not_used_for_weak_face_or_name_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

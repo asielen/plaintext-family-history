@@ -423,16 +423,15 @@ def _resolve_photo_people(
             add(normalize_id(kw), 'pid-keyword')
 
     matched_names = {n for n, _ in face_regions}
-    ambiguous_tags: set[str] = set()
+    resolved_via_face_tags: set[str] = set()
     for region_name, _region_type in face_regions:
         pids = face_tags.get(region_name)
         if pids:
+            resolved_via_face_tags.add(region_name)
             if len(pids) == 1:
                 add(next(iter(pids)), 'face-tag')
-            else:
-                ambiguous_tags.add(region_name)
 
-    for region_name in matched_names - ambiguous_tags:
+    for region_name in matched_names - resolved_via_face_tags:
         pids = names.get(region_name)
         if pids and len(pids) == 1:
             add(next(iter(pids)), 'name-match')
