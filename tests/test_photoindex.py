@@ -77,6 +77,13 @@ class PhotoindexTests(unittest.TestCase):
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
             try:
+                all_paths = [row[0] for row in conn.execute('SELECT path FROM photos')]
+                self.assertTrue(all_paths)
+                for stored_path in all_paths:
+                    self.assertTrue(stored_path.startswith('photos/'), stored_path)
+                    self.assertNotIn('\\', stored_path)
+                    self.assertFalse(Path(stored_path).is_absolute(), stored_path)
+
                 portrait_rows = conn.execute(
                     "SELECT path, is_primary, variant_role FROM photos "
                     "WHERE path LIKE '%portrait_1880%' ORDER BY path"

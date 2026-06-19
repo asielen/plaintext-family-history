@@ -45,6 +45,7 @@ import yaml
 #    load_fha_yaml             — parse fha.yaml into a dict
 #    get_roots                 — extract roots mapping from config
 #    resolve_path              — alias path ('photos/…') → absolute Path via fha.yaml
+#    path_to_alias             — absolute Path → alias path ('photos/…'), the inverse
 #
 #  Record parsing
 #    _coerce_yaml              — normalise YAML scalar types for consistent comparisons
@@ -220,6 +221,24 @@ def resolve_path(
         base = archive_root / alias
 
     return (base / rest) if rest else base
+
+
+def path_to_alias(path: str | Path, alias: str, fha_config: dict, archive_root: str | Path) -> str:
+    """
+    Inverse of resolve_path: turn an absolute Path under `alias`'s root back into
+    the stored alias-form path ('photos/1880/foo.jpg', forward slashes — TOOLING
+    "All stored paths are alias-form with forward slashes").
+
+    Falls back to the absolute path's forward-slash form if `path` isn't under the
+    alias's resolved root (e.g. an absolute root configured outside archive_root).
+    """
+    root = resolve_path(alias, fha_config, archive_root)
+    path = Path(path)
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return path.as_posix()
+    return f'{alias}/{rel.as_posix()}' if str(rel) != '.' else alias
 
 
 def db_mtime(db_path: Path) -> float | None:

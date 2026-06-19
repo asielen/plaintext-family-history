@@ -101,6 +101,7 @@ from _lib import (
     newest_record_mtime,
     normalize_id,
     parse_media_filename,
+    path_to_alias,
     probe_sqlite,
     resolve_path,
 )
@@ -698,11 +699,13 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
         }
 
     on_disk: dict[Path, tuple[float, int]] = {}
+    alias_by_path: dict[Path, str] = {}
     for p in photos_root.rglob('*'):
         if p.is_file() and p.suffix.lower() in PHOTO_EXTENSIONS:
             try:
                 st = p.stat()
                 on_disk[p] = (st.st_mtime, st.st_size)
+                alias_by_path[p] = path_to_alias(p, 'photos', fha_config, archive_root)
             except OSError:
                 pass
 
@@ -715,8 +718,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
 
         to_scrape: list[Path] = []
         for p, (mtime, size) in on_disk.items():
-            key = str(p)
-            prior = existing.get(key)
+            prior = existing.get(alias_by_path[p])
             if full or needs_face_backfill or prior is None or prior[0] != mtime or prior[1] != size:
                 to_scrape.append(p)
 
@@ -741,7 +743,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
                 row = rows_by_file[resolved[p]]
                 mtime, size = on_disk[p]
                 photo = _row_to_photo(row, mtime, size)
-                path_key = str(p)
+                path_key = alias_by_path[p]
 
                 conn.execute(
                     'INSERT OR REPLACE INTO photos(path, mtime, size, title, caption, '
@@ -767,8 +769,9 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
                 scraped += 1
 
         removed = 0
+        alias_on_disk = set(alias_by_path.values())
         for path_key in list(existing):
-            if Path(path_key) not in on_disk:
+            if path_key not in alias_on_disk:
                 conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key)
                 removed += 1
