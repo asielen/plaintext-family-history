@@ -147,6 +147,15 @@ class PhotoindexTests(unittest.TestCase):
         )
         self.assertEqual(rows, [('p-aaaaaaaaaa', 'pid-keyword')])
 
+    def test_ambiguous_face_tag_does_not_fall_back_to_name_match(self) -> None:
+        rows = photoindex._resolve_photo_people(
+            [],
+            [('Grandma', 'Face')],
+            {'Grandma': {'p-aaaaaaaaaa', 'p-bbbbbbbbbb'}},
+            {'Grandma': {'p-aaaaaaaaaa'}},
+        )
+        self.assertEqual(rows, [])
+
     def test_stale_index_is_not_used_for_weak_face_or_name_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
