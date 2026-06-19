@@ -33,7 +33,7 @@ the insertion point in the same edit.
 |---|---|---|---|
 | 1 | Layer 1 — Foundation | M1.1 – M1.8 | ✓ shipped |
 | 2 | Layer 2 — Archive views & discovery | M2.1 – M2.5 | ✓ shipped |
-| 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ◐ in progress — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`) shipped; M3.3–M3.4 remain |
+| 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ✓ shipped — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
 | 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | future |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | future |
 | 6 | Layer 6 — Data output | M6.1 – M6.5 | future |
@@ -640,7 +640,7 @@ Incremental by `(path, mtime, size)`; `--full` bypasses. For each file:
 - Pass 2: same directory + same `base_id` after stripping suffix grammar in fixed order:
   `-crop` first; then `-negative`/`-back`/`-front`/`-pageN`; then trailing variant letter
   (`-b` or bare digit-letter `034b`) → group `STEM:{dir}:{base_id}`.
-- `is_primary`: shortest-path file with no variant suffix (lexicographic tie-break).
+- `is_primary`: file with no variant suffix, front of copy a if more than one (lexicographic tie-break — matches TOOLING §9, not file-path length).
 - `photo_groups.edtf_resolved`: best-confidence EDTF across variants (more `!` components
   = higher confidence; prefer `~` over `?`). Any two variants whose bounds don't overlap
   → `date_conflict = 1`.
@@ -674,7 +674,7 @@ fha photoindex find --edtf 192X --root ...             # bounds-overlap filter
 
 ---
 
-### M3.3 — `fha photoindex triage` + `report`; unlock D7
+### M3.3 — `fha photoindex triage` + `report`; unlock D7 (✓ shipped)
 
 **One PR.** Extend `tools/photoindex.py` with the two read-only/reporting sub-commands.
 Also update `tools/find.py` to include `photo_fts` in `--text` searches (D7 unlock)
@@ -691,6 +691,8 @@ and `caption` — a date disagreement between front and back is a research findi
 
 **D7 unlock in `find.py`.** In `_text_search()`: if `photos.sqlite` fresh, query `photo_fts`
 and merge hits as `[photo]` entries. If absent → append note. Update TOOLING §4a D7 entry.
+(Already implemented as of milestone 2's `find.py` build — TOOLING §4a's D7 entry is marked
+"implemented milestone 2." No further `find.py` change was needed for this phase.)
 
 **Done when:**
 ```sh
@@ -702,7 +704,7 @@ fha find --text "word" --root example-archive                # prints "not searc
 
 ---
 
-### M3.4 — `fha photoindex reconcile` + `tag-person`
+### M3.4 — `fha photoindex reconcile` + `tag-person` (✓ shipped)
 
 **One PR.** Extend `tools/photoindex.py` with the two sub-commands that touch on-disk
 state or embedded metadata — grouped together and kept separate from `triage`/`report`

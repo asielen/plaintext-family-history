@@ -7,7 +7,19 @@
       "Bash(python tools/fha.py index --root example-archive -v)",
       "Bash(python tools/fha.py index --root example-archive --source S-4f5f215e60)",
       "Bash(python tools/fha.py lint --root example-archive --spec-root . --json)",
-      "PowerShell(cd \"d:\\\\Andrew\\\\Documents\\\\Programming\\\\PycharmProjects\\\\plainfile-family-history\"; python tools/fha.py lint --root example-archive --spec-root . 2>&1; Write-Host \"Exit: $LASTEXITCODE\")"
+      "PowerShell(cd \"d:\\\\Andrew\\\\Documents\\\\Programming\\\\PycharmProjects\\\\plainfile-family-history\"; python tools/fha.py lint --root example-archive --spec-root . 2>&1; Write-Host \"Exit: $LASTEXITCODE\")",
+      "Bash(gh auth *)",
+      "Bash(gh api *)",
+      "PowerShell(gh auth status 2>&1)",
+      "Bash(gh --version)",
+      "PowerShell(gh --version)",
+      "PowerShell($paths = @\\(\"$env:ProgramFiles\\\\GitHub CLI\", \"$env:LOCALAPPDATA\\\\Programs\\\\GitHub CLI\", \"$env:ProgramFiles\\(x86\\)\\\\GitHub CLI\"\\); foreach \\($p in $paths\\) { if \\(Test-Path $p\\) { Write-Output \"FOUND: $p\"; Get-ChildItem $p -Filter gh.exe -Recurse -ErrorAction SilentlyContinue } })",
+      "PowerShell([Environment]::GetEnvironmentVariable\\('Path','Machine'\\) -split ';' | Select-String 'GitHub CLI'; [Environment]::GetEnvironmentVariable\\('Path','User'\\) -split ';' | Select-String 'GitHub CLI')",
+      "Bash(gh secret *)",
+      "Bash(gh extension *)",
+      "PowerShell(gh auth status)",
+      "PowerShell(Test-Path \"$env:ProgramFiles\\\\GitHub CLI\\\\gh.exe\"; Test-Path \"$env:LOCALAPPDATA\\\\GitHub CLI\\\\gh.exe\"; where.exe gh 2>&1; winget list --id GitHub.cli 2>&1)",
+      "PowerShell(& \"$env:ProgramFiles\\\\GitHub CLI\\\\gh.exe\" auth status)"
     ]
   }
 }
