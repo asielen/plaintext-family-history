@@ -142,6 +142,40 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_source_tagged_stem_sibling_groups_with_untagged_variant(self) -> None:
+        # Only the front carries a SOURCE: S-id; the same-directory/same-stem
+        # back has not itself been processed. They are one logical photo
+        # (TOOLING §9) and must land in a single group, not split into a
+        # SOURCE:-keyed group and a separate STEM:-keyed group.
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / '.cache'
+            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            try:
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,?,NULL,0,NULL,NULL)',
+                    ('photos/portrait_1880.jpg', 'S-123456789a'),
+                )
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,NULL,NULL,0,NULL,NULL)',
+                    ('photos/portrait_1880-back.jpg',),
+                )
+                photoindex._group_photos(conn)
+                group_ids = {
+                    path: group_id
+                    for path, group_id in conn.execute('SELECT path, group_id FROM photos')
+                }
+                self.assertEqual(
+                    group_ids['photos/portrait_1880.jpg'],
+                    group_ids['photos/portrait_1880-back.jpg'],
+                )
+                self.assertEqual(
+                    conn.execute('SELECT COUNT(*) FROM photo_groups').fetchone()[0], 1,
+                )
+            finally:
+                conn.close()
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -305,6 +339,19 @@ class PhotoindexTests(unittest.TestCase):
             {'Grandma': {'p-aaaaaaaaaa'}},
         )
         self.assertEqual(rows, [])
+
+    def test_resolved_face_tag_does_not_also_fall_back_to_name_match(self) -> None:
+        # 'Grandma' resolves uniquely via face_tags to p-aaaaaaaaaa; the same
+        # string also uniquely matches a different person's name. Face-tag
+        # is the higher-confidence tier, so the name-match fallback must not
+        # also attach p-bbbbbbbbbb for the same region name.
+        rows = photoindex._resolve_photo_people(
+            [],
+            [('Grandma', 'Face')],
+            {'Grandma': {'p-aaaaaaaaaa'}},
+            {'Grandma': {'p-bbbbbbbbbb'}},
+        )
+        self.assertEqual(rows, [('p-aaaaaaaaaa', 'face-tag')])
 
     def test_stale_index_is_not_used_for_weak_face_or_name_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -612,6 +659,43 @@ class PhotoindexTests(unittest.TestCase):
 
             with self.assertRaises(RuntimeError):
                 photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+    def test_stat_failure_raises_runtime_error_instead_of_dropping_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            real_stat = Path.stat
+            # is_file() also calls stat() internally, so only fail the
+            # *second* stat() on the target file (the explicit `p.stat()`
+            # inside run_scan's try/except), not the rglob filter's own check.
+            seen = set()
+
+            def flaky_stat(self, *a, **k):
+                if self.name == 'family_reunion.jpg':
+                    if self in seen:
+                        raise OSError('permission denied')
+                    seen.add(self)
+                return real_stat(self, *a, **k)
+
+            Path.stat = flaky_stat
+            try:
+                with self.assertRaisesRegex(RuntimeError, 'could not stat'):
+                    photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            finally:
+                Path.stat = real_stat
+
+    def test_sqlite_write_error_in_scan_returns_clean_failure(self) -> None:
+        import argparse
+
+        orig_run_scan = photoindex.run_scan
+        photoindex.run_scan = lambda *a, **k: (_ for _ in ()).throw(
+            sqlite3.OperationalError('database is locked')
+        )
+        try:
+            args = argparse.Namespace(root='tests/fixtures/photo-fixture', full=False)
+            exit_code = photoindex._cmd_scan(args)
+            self.assertEqual(exit_code, photoindex.EXIT_FAILURE)
+        finally:
+            photoindex.run_scan = orig_run_scan
 
     def test_missing_exiftool_row_fails_without_refreshing_stale_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as d:
