@@ -771,19 +771,23 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
         return {
             'photos_root': str(photos_root), 'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
-            'groups': 0, 'conflicts': 0,
+            'groups': 0, 'conflicts': 0, 'stat_errors': [],
         }
 
     on_disk: dict[Path, tuple[float, int]] = {}
     alias_by_path: dict[Path, str] = {}
+    stat_errors: list[Path] = []
     for p in photos_root.rglob('*'):
-        if p.is_file() and p.suffix.lower() in PHOTO_EXTENSIONS:
-            try:
-                st = p.stat()
-                on_disk[p] = (st.st_mtime, st.st_size)
-                alias_by_path[p] = path_to_alias(p, 'photos', fha_config, archive_root)
-            except OSError:
-                pass
+        if p.suffix.lower() not in PHOTO_EXTENSIONS:
+            continue
+        try:
+            if not p.is_file():
+                continue
+            st = p.stat()
+            on_disk[p] = (st.st_mtime, st.st_size)
+            alias_by_path[p] = path_to_alias(p, 'photos', fha_config, archive_root)
+        except OSError:
+            stat_errors.append(p)
 
     conn, needs_face_backfill = _get_db(archive_root / '.cache')
     try:
@@ -880,6 +884,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
         'total': len(on_disk), 'scraped': scraped,
         'unchanged': len(on_disk) - scraped, 'removed': removed,
         'groups': groups, 'conflicts': conflicts,
+        'stat_errors': [str(p) for p in stat_errors],
     }
 
 
@@ -968,6 +973,10 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         f"{summary['removed']} removed from cache).\n"
         f"Groups: {summary['groups']} ({summary['conflicts']} with date conflicts)."
     )
+    if summary['stat_errors']:
+        for path in summary['stat_errors']:
+            print(f'WARNING: could not stat {path} — skipped.', file=sys.stderr)
+        return EXIT_WARNINGS
     return EXIT_CLEAN
 
 

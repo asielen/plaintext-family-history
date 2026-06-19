@@ -649,6 +649,31 @@ class PhotoindexTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
+    def test_unstatable_photo_is_reported_not_silently_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            orig_stat = Path.stat
+
+            def fake_stat(self, *a, **k):
+                if self.name == 'wedding_1902.jpg':
+                    raise OSError('permission denied')
+                return orig_stat(self, *a, **k)
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [{'SourceFile': str(p)} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            Path.stat = fake_stat
+            try:
+                summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            finally:
+                Path.stat = orig_stat
+
+            self.assertEqual(summary['total'], 3)
+            self.assertEqual(len(summary['stat_errors']), 1)
+            self.assertIn('wedding_1902.jpg', summary['stat_errors'][0])
+
     def test_missing_exiftool_row_fails_without_refreshing_stale_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
