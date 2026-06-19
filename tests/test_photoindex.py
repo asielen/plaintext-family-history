@@ -743,6 +743,25 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn('deferred to a follow-up photoindex PR', proc.stdout)
 
+    def test_sqlite_write_failure_cli_returns_clean_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            args = type('Args', (), {
+                'root': str(archive),
+                'full': False,
+            })()
+
+            orig_run_scan = photoindex.run_scan
+            photoindex.run_scan = lambda *a, **k: (_ for _ in ()).throw(
+                sqlite3.OperationalError('database is locked')
+            )
+            try:
+                code = photoindex._cmd_scan(args)
+            finally:
+                photoindex.run_scan = orig_run_scan
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
     def test_missing_photos_root_cli_returns_warning(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

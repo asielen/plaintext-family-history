@@ -959,7 +959,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
     try:
         summary = run_scan(archive_root, fha_config, full=getattr(args, 'full', False))
-    except RuntimeError as e:
+    except (RuntimeError, sqlite3.Error) as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
