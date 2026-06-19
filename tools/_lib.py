@@ -17,6 +17,7 @@ What lives here:
 from __future__ import annotations
 
 import calendar
+import dataclasses
 import datetime
 import itertools
 import os
@@ -49,6 +50,8 @@ import yaml
 #    _coerce_yaml              — normalise YAML scalar types for consistent comparisons
 #    read_record               — parse frontmatter + claims + body from a .md file
 #    parse_filename            — decompose filename into {id_str, kind, is_companion}
+#    ParsedName, parse_media_filename — decompose an unprocessed photo/scan filename
+#                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
 #
 #  EDTF handling
 #    is_valid_edtf             — validate an EDTF string against this project's subset
@@ -260,9 +263,12 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     if mtime is None:
         return ('absent', 0.0)
 
-    # Probe both required tables — photos (metadata) and photo_fts (caption search).
-    # A DB missing photo_fts would cause find --text to fail with a misleading error.
+    # Probe required tables.  `photo_face_regions` is part of the scrape cache,
+    # not just a derived query table; an older cache missing it needs a refresh
+    # before doctor/find should call the photoindex fresh.
     if not probe_sqlite(db_path, 'SELECT 1 FROM photos LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_face_regions LIMIT 1'):
         return ('unreadable', 0.0)
     if not probe_sqlite(db_path, 'SELECT 1 FROM photo_fts LIMIT 1'):
         return ('unreadable', 0.0)
@@ -427,6 +433,115 @@ def parse_filename(path: str | Path) -> dict | None:
             pass
 
     return result
+
+
+# ── Media filename grammar (TOOLING.md §6, §9) ───────────────────────────────
+#
+# Unprocessed photos/scans in a mixed folder carry no S-id yet, but variation
+# siblings (different scans of one physical photo, front/back pairs, pages of
+# a booklet) share a filename "base_id" with only a suffix distinguishing
+# them.  This parser recovers that structure so `fha photoindex` (grouping)
+# and `fha process` (variation-detection prompt) can both recognise siblings
+# without either tool importing the other (shared code lives only in _lib).
+
+@dataclasses.dataclass(frozen=True)
+class ParsedName:
+    """One filename stem decomposed per the TOOLING §6 suffix grammar.
+
+    base_id    — the stem with all recognised suffixes stripped; the grouping key.
+    variant_id — trailing copy letter ('a', 'b', 'c', …) if present, else None.
+    part_kind  — 'front' | 'back' | 'page' | 'negative' | 'bw' | 'freeform' | 'none'.
+    page_num   — integer page number when part_kind == 'page', else None.
+    freeform_role — unrecognised suffix kept as a role, per TOOLING §6.
+    is_crop    — True if a '-crop' derivative-detail suffix was stripped.
+    """
+    base_id: str
+    variant_id: str | None
+    part_kind: str
+    page_num: int | None
+    freeform_role: str | None
+    is_crop: bool
+
+
+_CROP_SUFFIX_RE = re.compile(r'[-_]crop$', re.I)
+_NEGATIVE_SUFFIX_RE = re.compile(r'[-_]negative$', re.I)
+_BACK_SUFFIX_RE = re.compile(r'[-_]back$', re.I)
+_FRONT_SUFFIX_RE = re.compile(r'[-_]front$', re.I)
+_BW_SUFFIX_RE = re.compile(r'[-_]bw$', re.I)
+_PAGE_SUFFIX_RE = re.compile(r'[-_]page[-_]?(\d+)$', re.I)
+_VARIANT_DASH_RE = re.compile(r'[-_]([a-z])$', re.I)
+_VARIANT_BARE_RE = re.compile(r'(?<=[0-9])([a-z])$', re.I)
+_FREEFORM_ROLE_RE = re.compile(r'[-_]([a-z][a-z0-9-]*)$', re.I)
+
+
+def parse_media_filename(stem: str) -> ParsedName:
+    """
+    Decompose a photo/scan filename stem into base_id + variation metadata.
+
+    Suffixes are stripped in a fixed priority order (TOOLING §6) because the
+    grammar is ambiguous if read in any other sequence — e.g. 'portrait_1880b'
+    must lose the bare trailing letter only after confirming no dash-suffix
+    role applies first:
+      1. '-crop'                         (stacks on any other suffix)
+      2. part-kind: '-negative' before '-back'/'-front'/'-page[-]N'/'-bw'
+      3. trailing variant letter: '-b' (dash) or bare 'b' right after a digit
+      4. whatever remains is base_id.
+
+    A '-negative' filename may still carry a variant letter (e.g.
+    'portrait_1880b-negative') — the parser records it in variant_id, but
+    TOOLING §9 directs the *grouper* to file negatives at the stem level
+    regardless of that letter, since a negative is source material for the
+    root image, not an A/B print variant. That grouping decision lives in
+    photoindex.py, not here — this function only reports what the filename
+    literally encodes.
+    """
+    remaining = stem
+    is_crop = bool(_CROP_SUFFIX_RE.search(remaining))
+    if is_crop:
+        remaining = _CROP_SUFFIX_RE.sub('', remaining)
+
+    part_kind = 'none'
+    page_num: int | None = None
+    freeform_role: str | None = None
+    page_m = _PAGE_SUFFIX_RE.search(remaining)
+    if page_m:
+        part_kind = 'page'
+        page_num = int(page_m.group(1))
+        remaining = _PAGE_SUFFIX_RE.sub('', remaining)
+    elif _NEGATIVE_SUFFIX_RE.search(remaining):
+        part_kind = 'negative'
+        remaining = _NEGATIVE_SUFFIX_RE.sub('', remaining)
+    elif _BACK_SUFFIX_RE.search(remaining):
+        part_kind = 'back'
+        remaining = _BACK_SUFFIX_RE.sub('', remaining)
+    elif _FRONT_SUFFIX_RE.search(remaining):
+        part_kind = 'front'
+        remaining = _FRONT_SUFFIX_RE.sub('', remaining)
+    elif _BW_SUFFIX_RE.search(remaining):
+        part_kind = 'bw'
+        remaining = _BW_SUFFIX_RE.sub('', remaining)
+    else:
+        freeform_m = _FREEFORM_ROLE_RE.search(remaining)
+        if freeform_m:
+            part_kind = 'freeform'
+            freeform_role = freeform_m.group(1).lower()
+            remaining = _FREEFORM_ROLE_RE.sub('', remaining)
+
+    variant_id: str | None = None
+    dash_m = _VARIANT_DASH_RE.search(remaining)
+    if dash_m:
+        variant_id = dash_m.group(1).lower()
+        remaining = _VARIANT_DASH_RE.sub('', remaining)
+    else:
+        bare_m = _VARIANT_BARE_RE.search(remaining)
+        if bare_m:
+            variant_id = bare_m.group(1).lower()
+            remaining = remaining[:-1]
+
+    return ParsedName(
+        base_id=remaining, variant_id=variant_id, part_kind=part_kind,
+        page_num=page_num, freeform_role=freeform_role, is_crop=is_crop,
+    )
 
 
 # ── EDTF handling (TOOLING.md §1) ────────────────────────────────────────────

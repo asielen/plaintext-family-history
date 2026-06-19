@@ -19,11 +19,35 @@ They are the "replaceable glue" of the philosophy — disposable, regenerable fr
 | `fha doctor` | `doctor.py` | ✓ all 11 checks; D5 applied (absent index/photoindex = warning, not error) |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated — transcript search deferred (D7) |
-| `fha find --related <ID>` | `find.py` | ⚑ deferred to milestone 3 (D4); prints deferral message, exits 0 |
+| `fha find --related <ID>` | `find.py` | ⚑ deferred to BUILD.md M4.3 (D4); prints deferral message, exits 0 |
 | `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher |
 
 Views require a fresh `.cache/index.sqlite` (run `fha index` first). `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches.
 Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.
+
+## Implemented tools (milestone 3, in progress)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha photoindex [--full]` | `photoindex.py` | ✓ M3.1 — schema, exiftool scan (incremental by mtime/size; `--full` rescans all), variation grouping, person resolution. `fha photoindex find` (M3.2) and the triage/reconcile/tag-person/report sub-commands (M3.3–M3.4) are ⚑ deferred to follow-up PRs |
+
+## fha photoindex — implementation status
+
+| Feature | Status | Notes |
+|---|---|---|
+| Schema (`.cache/photos.sqlite`) | ✓ | `photos`, `photo_groups`, `photo_keywords`, `photo_face_regions`, `photo_people`, `photo_fts`; face regions cache XMP names/types/area JSON so weak person resolution can be rebuilt without re-scraping unchanged images |
+| Scan — incremental | ✓ | Skips re-scraping a file via exiftool when `(path, mtime, size)` is unchanged; removes cache rows for files no longer on disk. Existing compatible caches without `photo_face_regions` get one backfill scrape; incompatible/corrupt disposable caches are recreated |
+| Scan — `--full` | ✓ | Bypasses the incremental check, rescans every file |
+| Variation grouping | ✓ | Pass 1: shared `SOURCE:` keyword. Pass 2: same directory + same filename `base_id` (`_lib.parse_media_filename`). `is_primary`, `variant_copy`, `variant_role` populated; grouping is recomputed in full on every scan |
+| Date resolution (`edtf_resolved`, `date_conflict`) | ✓ | Best-confidence variant wins ties broken by the group's primary file, then by path; non-overlapping bounds across variants set `date_conflict=1` |
+| Person resolution | ✓ | Rebuilt every scan from cached `photo_keywords` + `photo_face_regions`: `pid-keyword` (regex-only, no index needed) → `face-tag` (exact match against `person_face_tags`, skipped if ambiguous) → `name-match`. The latter two require a fresh `.cache/index.sqlite`; absent/stale/unreadable index degrades to pid-keyword only |
+| `fha photoindex find` | ⚑ deferred (BUILD.md M3.2) | CLI stub registered (prints "deferred to a follow-up photoindex PR", exits 0) so the command tree is coherent; query logic lands in M3.2 |
+| `fha photoindex triage` + `report` | ⚑ deferred (BUILD.md M3.3) | Same CLI-stub treatment |
+| `fha photoindex reconcile` + `tag-person` | ⚑ deferred (BUILD.md M3.4) | Same CLI-stub treatment |
+
+Test fixture: `tests/fixtures/photo-fixture/` — 4 placeholder JPEGs with real embedded metadata (written via exiftool, not a code-level stub): a front/back variation pair with disagreeing `DATE:` keywords (exercises `date_conflict`), a photo carrying a `SOURCE:` keyword (exercises source-id grouping), and one ungrouped photo.
+
+Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependency) monkeypatches `photoindex._run_exiftool` to inject canned JSON rows over a copy of the fixture, covering grouping/date-conflict/pid-keyword resolution, face-region caching, stale-index-disables-weak-resolution behavior, and fresh-index weak-resolution refresh from cached regions. Run with `python -m unittest tests.test_photoindex -v` from the repo root. This is the first `.py` test file in the repo; no test runner is wired into CI yet.
 
 ## fha doctor — implementation status
 

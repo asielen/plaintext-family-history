@@ -425,6 +425,7 @@ CREATE TABLE photos(path TEXT PRIMARY KEY, mtime REAL, size INTEGER,
 CREATE TABLE photo_groups(group_id TEXT PRIMARY KEY, primary_path TEXT,
   edtf_resolved TEXT, date_conflict INTEGER DEFAULT 0, file_count INTEGER);
 CREATE TABLE photo_keywords(path TEXT, keyword TEXT);
+CREATE TABLE photo_face_regions(path TEXT, name TEXT, region_type TEXT, area_json TEXT);
 CREATE TABLE photo_people(path TEXT, person_ref TEXT, via TEXT); -- via: pid-keyword | face-tag | name-match
 CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption, user_comment, keywords);
 ```
@@ -448,7 +449,9 @@ The group's `edtf_resolved` is the **best-confidence variant's** EDTF: score by 
 If any two variants' EDTF bounds (per §1 `edtf_bounds`) fail to overlap, set `date_conflict = 1` — and `fha photoindex report` lists all conflicted groups, because a date disagreement between the front and the back of the same photo is a research finding worth a question, not a value to silently average.
 Person/keyword attributes aggregate as the union across variants.
 
-`photo_people` resolution, in confidence order: (1) bare `P-…` ID keywords (regex `^P-[0-9a-hjkmnp-tv-z]{10}$`, case-insensitive) → `via=pid-keyword`, authoritative; (2) face-region/people-tag strings matched **exactly** against person records' `face_tags:` → `via=face-tag`; (3) `name`/`name_variants` matches → `via=name-match`; (4) caption/comment hits → weakest, flagged.
+`photo_face_regions` caches XMP region names, region types, and the provider-specific area object as compact JSON. This table is scraped metadata, not a derived query table: it lets `photo_people` be rebuilt when the person index changes without re-reading unchanged image files through exiftool. Existing otherwise-compatible caches that predate this table are not considered fresh; the next `fha photoindex` run backfills face regions. Older incompatible or corrupt `photos.sqlite` files are disposable and may be recreated from the photo files.
+
+`photo_people` resolution is rebuilt from cached `photo_keywords` + `photo_face_regions` on every scan. Confidence order: (1) bare `P-…` ID keywords (regex `^P-[0-9a-hjkmnp-tv-z]{10}$`, case-insensitive) → `via=pid-keyword`, authoritative; (2) cached face-region/people-tag strings matched **exactly** against person records' `face_tags:` → `via=face-tag`; (3) `name`/`name_variants` matches → `via=name-match`. Caption/comment-only person hints are deliberately not inserted into `photo_people` in the scan phase; they remain triage/query signals for later photoindex commands.
 A tag string matching multiple persons is **ambiguous**, never guessed — surfaced for tag-person resolution. **`fha photoindex tag-person <P-id> [--from-face-tag "X" | paths…]`** writes the bare `P-id` keyword (via exiftool, previewed list first) across a face-tag match or onto specific photos — making identifications in-file durable and settling same-name collisions.
 
 **Reconciliation — `fha photoindex reconcile` (and the general `fha reconcile`).** Because assets are organized by moving files (and other systems rename them), the on-disk reality drifts from the index's stored paths.
@@ -457,7 +460,9 @@ Anything unmatchable is reported for human attention.
 This is why folder location is never truth: identity rides in the file (keyword/ID), and paths are a refreshable cache.
 Runs incrementally; folded into `fha doctor` and the report's freshness step. **`fha reconcile`** applies the same disk↔index path-healing to every file type, not just photos.
 
-**Query.** `fha photoindex find --person P-… | --keyword … | --edtf 192X | --text "…"` → paths.
+**Query.** `fha photoindex find --person P-… | --keyword … | --edtf 192X | --text "…"` → paths. Deferred in the scan/schema/grouping PR: the command is registered as a stub that prints a clear deferral message and exits 0; query logic lands with the triage/reconcile/tag-person/report follow-up.
+
+**Design decision D10 (implemented milestone 3, phase 1):** `fha photoindex` ships first as scan/schema/grouping/person-resolution cache infrastructure. `photoindex find`, triage, reconcile, tag-person, and report are deferred to follow-up photoindex phases, but their subcommands are registered where useful so command discovery is coherent. Face regions are cached in `photo_face_regions` because they are scraped metadata needed to rebuild weak person matches after `index.sqlite` changes; forcing an exiftool re-scrape merely to refresh name/tag resolution would make incremental scans slower and less equivalent to full rebuilds.
 
 ---
 
@@ -794,7 +799,7 @@ Organized by how often *you* touch it — the skills are the real working surfac
 | `fha views timeline\|sources-index\|draft-queue\|brackets` (T C) | Manual view refresh (review sessions auto-trigger); `brackets --fix` after family-structure changes — also verifies and corrects Ahnentafel folder numbers and person file placement (requires `root_person` in `fha.yaml`). |
 | `fha places geocode` / `places lint` (T C) | Coordinate backfill (human-confirmed); registry hygiene. |
 | `fha convert-mining [--apply]` (T C) | One-time: legacy ChatGPT mining migration. |
-| `fha photoindex find / report` (T C) | Ad-hoc photo search; cross-variant date-conflict review. |
+| `fha photoindex find / report` (T C, deferred after scan/schema phase) | Ad-hoc photo search; cross-variant date-conflict review. |
 | `fha reconcile` / `photoindex reconcile` (T C) | Heal index paths after moving/renaming files; run after a photo-organizing session. |
 | `fha photoindex tag-person` (T C) | Writing bare `P-id` keywords across a face-tag match or onto specific photos (previewed). |
 
