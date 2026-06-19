@@ -307,6 +307,16 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     index_mtime = db_mtime(archive_root / '.cache' / 'index.sqlite')
     max_mtime = index_mtime if index_mtime is not None else 0.0
 
+    # The index.sqlite mtime only catches a person edit that has already been
+    # folded into a rebuilt index. If a profile's face_tags/name_variants changed
+    # but `fha index` has NOT been rerun, index.sqlite (and the photo_people rows
+    # derived from it) is stale even though its mtime looks current. Fold the
+    # person-record watermark in directly — mirroring photoindex._index_is_fresh —
+    # so find/doctor flag the cache stale instead of serving outdated weak matches.
+    record_mtime = newest_person_record_mtime(archive_root)
+    if record_mtime > max_mtime:
+        max_mtime = record_mtime
+
     photos_root = resolve_path('photos', fha_config, archive_root)
     if photos_root.is_dir():
         # Directory mtimes are included (not just file mtimes) so that a deletion

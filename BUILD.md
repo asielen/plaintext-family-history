@@ -33,7 +33,7 @@ the insertion point in the same edit.
 |---|---|---|---|
 | 1 | Layer 1 — Foundation | M1.1 – M1.8 | ✓ shipped |
 | 2 | Layer 2 — Archive views & discovery | M2.1 – M2.5 | ✓ shipped |
-| 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ◐ in progress — M3.1 (`photoindex` scan/schema/grouping) shipped; M3.2–M3.4 remain |
+| 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ◐ in progress — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`) shipped; M3.3–M3.4 remain |
 | 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | future |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | future |
 | 6 | Layer 6 — Data output | M6.1 – M6.5 | future |
@@ -652,13 +652,12 @@ variation pair and one image with a `SOURCE:` keyword.
 **Done when:**
 ```sh
 fha photoindex --root tests/fixtures/photo-fixture    # exits 0; photos.sqlite created
-fha photoindex find --root tests/fixtures/photo-fixture  # deferral message, exits 0
 fha doctor --root example-archive                     # no regression
 ```
 
 ---
 
-### M3.2 — `fha photoindex find`
+### M3.2 — `fha photoindex find` (✓ shipped)
 
 **One PR.** Replace the deferral stub in `tools/photoindex.py` with real output (TOOLING §9).
 
