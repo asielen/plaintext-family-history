@@ -451,6 +451,186 @@ class RunFindDispatchTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertIn("p-aaaaaaaaaa's world", out)
 
+    def test_date_with_text_is_rejected_not_silently_dropped(self) -> None:
+        # `fha find --text "X" --date 1900` has no defined meaning — --date
+        # is only documented for --related. Used to silently route through
+        # the --text branch and discard the date; should now error out.
+        args = self._parse(['--text', 'lived', '--date', '1900'])
+        rc, out = _run(find._run_find, args)
+        self.assertEqual(rc, EXIT_FAILURE)
+
+    def test_related_with_date_then_id_treats_positional_as_related_id(self) -> None:
+        # `fha find --related --date 1900 P-…` parses as --related-no-value
+        # + --date 1900 + positional 'P-…'. Used to silently drop the P-id
+        # and run the standalone date slice; should now route the P-id to
+        # the related-person neighborhood.
+        args = self._parse(['--related', '--date', '1900', 'p-aaaaaaaaaa'])
+        rc, out = _run(find._run_find, args)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn("p-aaaaaaaaaa's world", out)
+        self.assertNotIn('Active in', out)
+
+
+class PersonPlacesStatusTests(unittest.TestCase):
+    """Covers the _person_places status-filter fix: `suggested`/`rejected`
+    placed claims must not be silently promoted into a person's place
+    ranking, matching the gating on co-occurrence and shared affiliations."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        _add_source(self.conn, 's-1111111111', 'Census')
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_suggested_and_rejected_places_excluded_from_ranking(self) -> None:
+        _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence',
+                    'lived in Topeka', ['p-aaaaaaaaaa'],
+                    place_text='Topeka, Kansas')  # accepted
+        _add_claim(self.conn, 'c-2222222222', 's-2222222222', 'residence',
+                    'maybe Wichita', ['p-aaaaaaaaaa'],
+                    place_text='Wichita, Kansas', status='suggested')
+        _add_claim(self.conn, 'c-3333333333', 's-1111111111', 'residence',
+                    'not Lawrence', ['p-aaaaaaaaaa'],
+                    place_text='Lawrence, Kansas', status='rejected')
+        self.conn.commit()
+
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None, self.archive_root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Topeka, Kansas — 1 claim(s)', out)
+        self.assertNotIn('Wichita', out)
+        self.assertNotIn('Lawrence', out)
+
+
+class SharedAffiliationDateTests(unittest.TestCase):
+    """Covers the _person_org_hubs `--date` fix: hubs from a 1950 membership
+    must not appear when slicing the 1880 neighborhood."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        _add_person(self.conn, 'p-bbbbbbbbbb', 'Bob')
+        _add_source(self.conn, 's-1111111111', 'Census')
+        _add_source(self.conn, 's-2222222222', 'Obituary')
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_date_filter_excludes_out_of_range_hubs(self) -> None:
+        _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'occupation',
+                    'bookkeeper, Plains Junction Railroad', ['p-aaaaaaaaaa'],
+                    date_edtf='1880', date_min='1880-01-01', date_max='1880-12-31')
+        _add_claim(self.conn, 'c-2222222222', 's-2222222222', 'occupation',
+                    'conductor, Plains Junction Railroad', ['p-bbbbbbbbbb'],
+                    date_edtf='1880', date_min='1880-01-01', date_max='1880-12-31')
+        _add_claim(self.conn, 'c-3333333333', 's-1111111111', 'event',
+                    'Elks Lodge', ['p-aaaaaaaaaa'], subtype='membership',
+                    date_edtf='1950', date_min='1950-01-01', date_max='1950-12-31')
+        _add_claim(self.conn, 'c-4444444444', 's-2222222222', 'event',
+                    'Elks Lodge', ['p-bbbbbbbbbb'], subtype='membership',
+                    date_edtf='1950', date_min='1950-01-01', date_max='1950-12-31')
+        self.conn.commit()
+
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', '1880', self.archive_root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Plains Junction Railroad', out)
+        self.assertNotIn('Elks Lodge', out)
+
+
+class PhotoIndexFreshnessInRelatedTests(unittest.TestCase):
+    """Covers the photoindex_status gating in _print_person_photos and
+    _print_place_photos: a stale photos.sqlite must be reported as stale
+    rather than queried as if its rows were current."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        _add_source(self.conn, 's-1111111111', 'Census')
+        self.conn.execute(
+            "INSERT INTO places(id, name, lat, lon) VALUES ('l-1111111111', 'Fairview', 39.0, -95.0)"
+        )
+        _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence',
+                    'lived there', ['p-aaaaaaaaaa'], place_id='l-1111111111')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _make_stale_photo_db(self) -> None:
+        photos_root = self.archive_root / 'photos'
+        photos_root.mkdir()
+        cache = self.archive_root / '.cache'
+        cache.mkdir(exist_ok=True)
+        # Build the minimal schema the queries touch so we'd surface rows
+        # if the freshness gate were absent — the test then asserts we do not.
+        pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
+        pconn.executescript(
+            '''
+            CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
+                                gps_lat REAL, gps_lon REAL);
+            CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY, primary_path TEXT);
+            CREATE TABLE photo_people(path TEXT, person_ref TEXT);
+            CREATE TABLE photo_face_regions(path TEXT);
+            CREATE TABLE photo_keywords(path TEXT);
+            CREATE VIRTUAL TABLE photo_fts USING fts5(path, name, caption);
+            INSERT INTO photo_groups VALUES (1, 'photos/old.jpg');
+            INSERT INTO photos VALUES ('photos/old.jpg', 1, 39.0, -95.0);
+            INSERT INTO photo_people VALUES ('photos/old.jpg', 'p-aaaaaaaaaa');
+            '''
+        )
+        pconn.commit()
+        pconn.close()
+        # A photo file newer than the index → photoindex_status reports 'stale'.
+        new_photo = photos_root / 'new.jpg'
+        new_photo.write_bytes(b'x')
+        import os, time
+        future = time.time() + 60
+        os.utime(new_photo, (future, future))
+
+    def test_person_photos_reports_stale_instead_of_old_rows(self) -> None:
+        self._make_stale_photo_db()
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('photos: photo index is stale', out)
+        self.assertNotIn('photos/old.jpg', out)
+
+    def test_place_photos_reports_stale_instead_of_old_rows(self) -> None:
+        self._make_stale_photo_db()
+        rc, out = _run(find.run_related, 'l-1111111111', None,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('photos: photo index is stale', out)
+        self.assertNotIn('photos/old.jpg', out)
+
+
+class OpenIndexDbFailureTests(unittest.TestCase):
+    """Covers the _lib.open_index_db connect-failure fix: a non-file at
+    `.cache/index.sqlite` (e.g. a directory) used to crash before reaching
+    the try block; should now return None with the documented message."""
+
+    def test_directory_at_index_path_returns_none(self) -> None:
+        from _lib import open_index_db
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.cache' / 'index.sqlite').mkdir(parents=True)
+            buf = io.StringIO()
+            from contextlib import redirect_stderr
+            with redirect_stderr(buf):
+                conn = open_index_db(root, ('persons',))
+            self.assertIsNone(conn)
+            self.assertIn('unreadable', buf.getvalue())
+
 
 if __name__ == '__main__':
     unittest.main()

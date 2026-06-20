@@ -868,10 +868,14 @@ def _person_places(
     shared-place detector uses, so the two tools agree on what counts as
     "the same place."
     """
+    # Same accepted/needs-review gate as _person_cooccur_neighbors and
+    # _person_org_hubs use — without it, `suggested`/`rejected` draft
+    # placed claims silently get promoted into the person's place ranking.
     sql = '''
         SELECT c.place_id, c.place_text
         FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
         WHERE cp.person_id = ?
+          AND c.status IN ('accepted', 'needs-review')
           AND ((c.place_id IS NOT NULL AND c.place_id != '')
                OR (c.place_text IS NOT NULL AND c.place_text != ''))
     '''
@@ -893,7 +897,9 @@ def _person_places(
     return out
 
 
-def _person_org_hubs(conn: sqlite3.Connection, pid: str) -> list[dict]:
+def _person_org_hubs(
+    conn: sqlite3.Connection, pid: str, date_bounds: tuple[str, str] | None
+) -> list[dict]:
     """
     Recurring occupation/military/membership affiliations this person shares
     with at least one other person — TOOLING §4a's "shared entities ...
@@ -903,17 +909,25 @@ def _person_org_hubs(conn: sqlite3.Connection, pid: str) -> list[dict]:
     entity recurrence (occupation and military are direct categories;
     membership rides the subtype of event/note claims), filtered to hubs
     that include pid.
+
+    With a date window, the same overlap predicate the rest of the
+    neighborhood uses (`_overlap_clause` on `date_min/date_max`) narrows
+    affiliations — otherwise a person's 1880 job would still parade their
+    1950 club membership in `fha find --related P-… --date 1880`.
     """
-    rows = conn.execute(
-        '''
+    sql = '''
         SELECT c.type, c.subtype, c.value, cp.person_id
         FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
         WHERE c.status IN ('accepted', 'needs-review')
           AND (c.negated IS NULL OR c.negated = 0)
           AND (c.type IN ('occupation', 'military')
                OR (c.type IN ('event', 'note') AND LOWER(COALESCE(c.subtype, '')) = 'membership'))
-        '''
-    ).fetchall()
+    '''
+    params: list = []
+    if date_bounds:
+        sql += ' AND ' + _overlap_clause('c.date_min', 'c.date_max')
+        params += [date_bounds[1], date_bounds[0]]
+    rows = conn.execute(sql, params).fetchall()
 
     groups: dict[tuple[str, str], dict] = {}
     for row in rows:
@@ -955,17 +969,29 @@ def _person_source_count(conn: sqlite3.Connection, pid: str) -> int:
     return len(rows)
 
 
-def _print_person_photos(pid: str, archive_root: Path) -> None:
+def _print_person_photos(pid: str, archive_root: Path, fha_config: dict) -> None:
     """
     Photos tagged to this person via any resolution confidence
     (pid-keyword/face-tag/name-match — photo_people already records the
     winning method per photo). Mirrors _find_person's photo-count lookup but
     lists the group's primary_path so the photos are actually locatable.
+
+    Gated on `photoindex_status()` so a stale photos.sqlite — e.g. after a
+    name-variant change or photo rename/delete — is reported as stale rather
+    than silently surfacing old `photo_people`/`photo_groups` rows that may
+    point to renamed people or missing files.
     """
-    photos_db = archive_root / '.cache' / 'photos.sqlite'
-    if not photos_db.exists():
+    status, _ = photoindex_status(archive_root, fha_config)
+    if status == 'absent':
         print('  photos: not indexed (run fha photoindex)')
         return
+    if status == 'stale':
+        print('  photos: photo index is stale — run fha photoindex')
+        return
+    if status == 'unreadable':
+        print('  photos: photo index is unreadable; rebuild with fha photoindex')
+        return
+    photos_db = archive_root / '.cache' / 'photos.sqlite'
     try:
         pconn = sqlite3.connect(str(photos_db))
         try:
@@ -997,6 +1023,7 @@ def _related_person(
     pid: str,
     conn: sqlite3.Connection,
     archive_root: Path,
+    fha_config: dict,
     date_bounds: tuple[str, str] | None,
 ) -> int:
     """Print a P-id's neighborhood: relationship edges, co-occurrence, places, shared affiliations, sources, photos."""
@@ -1069,7 +1096,7 @@ def _related_person(
     else:
         print('  places: none')
 
-    hub_rows = _person_org_hubs(conn, pid)
+    hub_rows = _person_org_hubs(conn, pid, date_bounds)
     if hub_rows:
         print('  shared affiliations:')
         for h in hub_rows:
@@ -1079,25 +1106,35 @@ def _related_person(
         print('  shared affiliations: none')
 
     print(f'  sources: {_person_source_count(conn, pid)}')
-    _print_person_photos(pid, archive_root)
+    _print_person_photos(pid, archive_root, fha_config)
 
     return EXIT_CLEAN
 
 
-def _print_place_photos(place: sqlite3.Row, archive_root: Path) -> None:
+def _print_place_photos(place: sqlite3.Row, archive_root: Path, fha_config: dict) -> None:
     """
     Photos geotagged within ~0.002 degrees of the place's coords
     (roughly 200m at mid-latitudes — TOOLING §4a "photos geotagged within
     it"). Coordinate-only proximity; a place with no within: children and no
     coords simply has no photo neighborhood to report.
+
+    Same `photoindex_status()` gating as `_print_person_photos` so stale GPS
+    rows (after photos move or get re-geotagged) aren't surfaced silently.
     """
     if place['lat'] is None or place['lon'] is None:
         print('  photos: place has no coordinates')
         return
-    photos_db = archive_root / '.cache' / 'photos.sqlite'
-    if not photos_db.exists():
+    status, _ = photoindex_status(archive_root, fha_config)
+    if status == 'absent':
         print('  photos: not indexed (run fha photoindex)')
         return
+    if status == 'stale':
+        print('  photos: photo index is stale — run fha photoindex')
+        return
+    if status == 'unreadable':
+        print('  photos: photo index is unreadable; rebuild with fha photoindex')
+        return
+    photos_db = archive_root / '.cache' / 'photos.sqlite'
     try:
         pconn = sqlite3.connect(str(photos_db))
         try:
@@ -1128,6 +1165,7 @@ def _related_place(
     lid: str,
     conn: sqlite3.Connection,
     archive_root: Path,
+    fha_config: dict,
     date_bounds: tuple[str, str] | None,
 ) -> int:
     """Print an L-id's neighborhood: claims naming it, people ranked by frequency, sources, micro-places, photos."""
@@ -1188,7 +1226,7 @@ def _related_place(
     else:
         print('  micro-places: none')
 
-    _print_place_photos(place, archive_root)
+    _print_place_photos(place, archive_root, fha_config)
 
     return EXIT_CLEAN
 
@@ -1550,9 +1588,9 @@ def run_related(
 
         id_type = id_type_of(id_norm)
         if id_type == 'P':
-            return _related_person(id_norm, conn, archive_root, date_bounds)
+            return _related_person(id_norm, conn, archive_root, fha_config, date_bounds)
         elif id_type == 'L':
-            return _related_place(id_norm, conn, archive_root, date_bounds)
+            return _related_place(id_norm, conn, archive_root, fha_config, date_bounds)
         elif id_type == 'S':
             return _related_source(id_norm, conn, date_bounds)
         elif id_type == 'C':
@@ -1759,19 +1797,28 @@ def _run_find(args: argparse.Namespace) -> int:
     related_requested = related is not _NO_RELATED
     related_id = related if (related_requested and related) else None
 
+    # --date only has defined behavior alongside --related (TOOLING §4a D4).
+    # Catch it before the --text branch — otherwise `fha find --text "X" --date Y`
+    # silently runs an unfiltered text search and drops the date.
+    if date is not None and not related_requested:
+        print('ERROR: --date requires --related.', file=sys.stderr)
+        return EXIT_FAILURE
+
     if text_query is not None:
         return run_find(text_query, archive_root, fha_config, text_mode=True)
     elif related_requested:
+        # `fha find --related --date 1900 P-…` parses as --related-with-no-value
+        # + --date 1900 + positional query 'P-…'. Without this rescue the
+        # positional silently routes to the standalone date-slice branch and
+        # the user's P-id is dropped on the floor. Treat the leftover positional
+        # as the related ID — that's almost certainly what they meant.
+        if related_id is None and query:
+            related_id = query
+            query = None
         return run_find(
             None, archive_root, fha_config,
             related_id=related_id, related_requested=True, date_filter=date,
         )
-    elif date is not None:
-        # --date only has defined behavior alongside --related (TOOLING §4a
-        # D4); silently discarding a bare ID/text query to run the standalone
-        # date slice instead would drop the user's actual request.
-        print('ERROR: --date requires --related.', file=sys.stderr)
-        return EXIT_FAILURE
     elif query:
         return run_find(query, archive_root, fha_config)
     else:

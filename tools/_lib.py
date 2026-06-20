@@ -354,14 +354,19 @@ def open_index_db(
             file=sys.stderr,
         )
 
-    conn = sqlite3.connect(str(db_path))
+    conn: sqlite3.Connection | None = None
     try:
+        # sqlite3.connect() itself can raise (path is a directory, permission
+        # denied, locked, etc.) — keep it inside the guard so callers see the
+        # documented unreadable-index error and exit 3 instead of a traceback.
+        conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         for table in required_tables:
             conn.execute(f'SELECT 1 FROM {table} LIMIT 1')
         return conn
     except Exception:
-        conn.close()
+        if conn is not None:
+            conn.close()
         print(
             'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
             'Run `fha index` to rebuild.',
