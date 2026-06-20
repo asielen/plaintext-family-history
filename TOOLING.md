@@ -658,11 +658,13 @@ Output: candidate pairs with the shared sources and T.E.'s-side context.
 Confirmation mints a `relationship` claim (`subtype: friend|associate|neighbor`, the confirming source cited); dismissal records a tombstone so the pair isn't re-proposed.
 Noise control is the threshold + the human gate: every witness co-occurs with everyone on a document, so low-variety pairs rank low and most are dismissed — threshold tuning is pilot-data work.
 
+**Shared-place co-occurrence → candidate social edges.** Accepted/needs-review claims of different, unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`) with overlapping EDTF date bounds — e.g. two people each placed in the same town the same year by different sources — with no existing `relationship` edge between them. Same exclusion rules as person co-occurrence (existing edge, dismissed tombstone).
+
 **Organization/entity recurrence → connection hubs.** Named entities living as claim *values* (employers in `occupation`, units in `military`, clubs in membership `event`/`note` claims) that recur across **≥N people or sources** are surfaced as candidate hubs: "Plains Junction Railroad — 4 people, 6 sources."
 Per SPEC §22 these stay claim values (no `O-` object); the detector simply makes the shared affiliation visible and queryable, and flags it should the recurrence ever justify promoting to a real record later.
 No schema change.
 
-Both feed the report; both render in the FAN view as provisional (dashed) edges distinct from confirmed claims.
+All three feed the report; all three render in the FAN view as provisional (dashed) edges distinct from confirmed claims.
 
 ## 14b. `fha views draft-queue` — material awaiting narrative
 

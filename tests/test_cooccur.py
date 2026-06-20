@@ -155,6 +155,117 @@ class CooccurPersonTests(unittest.TestCase):
         self.assertEqual(result['org_groups'], [])
 
 
+class CooccurPlaceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        _add_person(self.conn, 'p-bbbbbbbbbb', 'Bob')
+        _add_source(self.conn, 's-1111111111', 'Census', 'census')
+        _add_source(self.conn, 's-2222222222', 'Newspaper', 'newspaper')
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _insert_claim(self, cid, sid, persons, *, place_text=None, place_id=None, date_edtf=None):
+        self.conn.execute(
+            "INSERT INTO claims(id, source_id, type, value, status, place_text, place_id, date_edtf) "
+            "VALUES (?,?,'residence','lived there','accepted',?,?,?)",
+            (cid, sid, place_text, place_id, date_edtf),
+        )
+        for pos, pid in enumerate(persons):
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
+                (cid, pid, pos, None),
+            )
+
+    def test_shared_place_overlapping_dates_is_a_candidate(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(len(result['place_pairs']), 1)
+        pair = result['place_pairs'][0]
+        self.assertEqual({pair['person_a'], pair['person_b']}, {'p-aaaaaaaaaa', 'p-bbbbbbbbbb'})
+        self.assertEqual(pair['place_label'], 'Topeka, Kansas')
+        self.assertEqual(pair['source_count'], 2)
+
+    def test_shared_place_non_overlapping_dates_not_a_candidate(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1840')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1900')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
+    def test_different_places_not_a_candidate(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Fairview, Ohio', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
+    def test_existing_relationship_excludes_place_pair(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.execute(
+            "INSERT INTO relationships(person_id, rel, other_id) VALUES ('p-aaaaaaaaaa','spouse','p-bbbbbbbbbb')"
+        )
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
+    def test_dismissed_tombstone_excludes_place_pair(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.commit()
+
+        dismissed_path = self.archive_root / '.cache' / 'cooccur_dismissed.json'
+        dismissed_path.write_text(json.dumps({
+            'pairs': [['p-aaaaaaaaaa', 'p-bbbbbbbbbb']],
+            'generated': '2026-06-19',
+        }), encoding='utf-8')
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
+    def test_place_id_match_overrides_differing_place_text(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka', place_id='l-1111111111', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka Township', place_id='l-1111111111', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(len(result['place_pairs']), 1)
+
+    def test_same_person_not_paired_with_self(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
+
 class CooccurOrgTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

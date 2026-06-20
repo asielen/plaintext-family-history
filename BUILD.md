@@ -758,12 +758,18 @@ fha lint --root example-archive      # no regression
 **One PR.** New file `tools/cooccur.py`. Wire into `fha.py`. Does not write to the
 archive — output candidates only. Requires fresh index; exit 3 if absent (TOOLING §14a2).
 
-**`fha cooccur [--threshold N]`** (default 2). Two outputs:
+**`fha cooccur [--threshold N]`** (default 2). Three outputs:
 
-*Person co-occurrence:* join `source_people` on shared `source_id`; group by person-pair;
-count distinct sources; exclude pairs with existing `relationships` row; load and exclude
-`.cache/cooccur_dismissed.json` (`{"pairs": [["P-id1","P-id2"]], "generated":"…"}`); rank by
-count then source-type variety (different `source_type`s weigh more).
+*Person co-occurrence:* join `source_people` (∪ `claim_persons` participants) on shared
+`source_id`; group by person-pair; count distinct sources; exclude pairs with existing
+`relationships` row; load and exclude `.cache/cooccur_dismissed.json`
+(`{"pairs": [["P-id1","P-id2"]], "generated":"…"}`); rank by count then source-type variety
+(different `source_type`s weigh more).
+
+*Shared-place co-occurrence (TOOLING §690b):* accepted/needs-review claims of different,
+unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`)
+with overlapping EDTF date bounds; exclude pairs with an existing `relationships` row or a
+dismissed tombstone, same as person co-occurrence.
 
 *Org/entity recurrence:* group `claims.value` by `(value, type)` for `occupation`/`military`/
 `membership`; emit groups with ≥2 people or ≥2 sources as shared affiliation hubs.

@@ -11,13 +11,19 @@ person-pair mints a `relationship` claim and dismissing one records a
 tombstone, but both of those writes belong to a future skill layer, not this
 tool. This tool only reads `.cache/cooccur_dismissed.json`; it never writes it.
 
-TWO OUTPUTS
------------
+THREE OUTPUTS (TOOLING §690)
+----------------------------
 1. Person co-occurrence: person-pairs named together in >= `--threshold`
    (default 2) distinct sources, with no existing `relationships` edge
    between them, ranked by source count then source-type variety.
 
-2. Org/entity recurrence: repeated claim values for `occupation`,
+2. Shared-place co-occurrence: accepted/needs-review claims of different,
+   unlinked people that share a place (`place_id` if both have one, else
+   normalized `place_text`) with overlapping EDTF date bounds — e.g. two
+   people each placed in the same town the same year by different sources,
+   with no existing `relationships` edge between them.
+
+3. Org/entity recurrence: repeated claim values for `occupation`,
    `military`, and membership-style `event`/`note` claims. The grouping key is
    `(category, normalized value)` so employers, military units, and clubs with
    similar wording do not collapse into one hub. Per SPEC §22 these stay claim
@@ -30,6 +36,9 @@ CODE MAP
 
   Person co-occurrence
     _person_cooccurrence       — pair candidates ranked by source count + variety
+
+  Shared-place co-occurrence
+    _normalize_place, _place_cooccurrence — same-place, overlapping-dates pairs
 
   Org / entity recurrence
     _org_category, _normalize_entity_value — claim -> hub grouping key
@@ -53,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
+    edtf_bounds,
     find_archive_root,
     newest_record_mtime,
 )
@@ -203,6 +213,97 @@ def _person_cooccurrence(conn: sqlite3.Connection, threshold: int, dismissed: se
     return candidates
 
 
+# ── Shared-place co-occurrence ───────────────────────────────────────────────
+
+def _normalize_place(text: str | None) -> str:
+    return ' '.join((text or '').strip().lower().split())
+
+
+def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]) -> list[dict]:
+    """
+    Accepted/needs-review claims of different, unlinked people that share a
+    place (structured `place_id` preferred, else normalized `place_text`)
+    with overlapping EDTF bounds — e.g. two people each placed in the same
+    town the same year by different sources (TOOLING §690b).
+    """
+    claims = {
+        row['id']: dict(row)
+        for row in conn.execute(
+            '''
+            SELECT id, source_id, place_id, place_text, date_edtf
+            FROM claims
+            WHERE status IN ('accepted', 'needs-review')
+              AND (
+                (place_id IS NOT NULL AND place_id != '')
+                OR (place_text IS NOT NULL AND place_text != '')
+              )
+            '''
+        )
+    }
+    persons_by_claim: dict[str, set[str]] = {}
+    for row in conn.execute('SELECT claim_id, person_id FROM claim_persons'):
+        if row['claim_id'] in claims:
+            persons_by_claim.setdefault(row['claim_id'], set()).add(row['person_id'])
+
+    by_place: dict[str, list[str]] = {}
+    place_labels: dict[str, str] = {}
+    for cid, claim in claims.items():
+        place_id = (claim['place_id'] or '').strip().lower()
+        key = place_id or _normalize_place(claim['place_text'])
+        if not key:
+            continue
+        by_place.setdefault(key, []).append(cid)
+        place_labels.setdefault(key, claim['place_text'] or claim['place_id'])
+
+    existing_edges: set[frozenset[str]] = set()
+    for row in conn.execute('SELECT person_id, other_id FROM relationships'):
+        existing_edges.add(frozenset((row['person_id'], row['other_id'])))
+
+    names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
+
+    pair_data: dict[frozenset[str], dict] = {}
+    for place_key, cids in by_place.items():
+        for i in range(len(cids)):
+            for j in range(i + 1, len(cids)):
+                cid_a, cid_b = cids[i], cids[j]
+                claim_a, claim_b = claims[cid_a], claims[cid_b]
+                a_min, a_max = edtf_bounds(claim_a['date_edtf'])
+                b_min, b_max = edtf_bounds(claim_b['date_edtf'])
+                if not (a_min <= b_max and b_min <= a_max):
+                    continue
+                for pa in persons_by_claim.get(cid_a, ()):
+                    for pb in persons_by_claim.get(cid_b, ()):
+                        if pa == pb:
+                            continue
+                        pair = frozenset((pa, pb))
+                        if pair in existing_edges or pair in dismissed:
+                            continue
+                        entry = pair_data.setdefault(pair, {
+                            'place_label': place_labels.get(place_key, place_key),
+                            'claim_ids': set(),
+                            'source_ids': set(),
+                        })
+                        entry['claim_ids'].update((cid_a, cid_b))
+                        entry['source_ids'].update((claim_a['source_id'], claim_b['source_id']))
+
+    candidates = []
+    for pair, data in pair_data.items():
+        a, b = sorted(pair)
+        candidates.append({
+            'person_a': a,
+            'person_b': b,
+            'name_a': names.get(a, a),
+            'name_b': names.get(b, b),
+            'place_label': data['place_label'],
+            'claim_ids': sorted(data['claim_ids']),
+            'source_ids': sorted(data['source_ids']),
+            'source_count': len(data['source_ids']),
+        })
+
+    candidates.sort(key=lambda c: (-c['source_count'], c['person_a'], c['person_b']))
+    return candidates
+
+
 # ── Org / entity recurrence ──────────────────────────────────────────────────
 
 def _org_category(claim: dict) -> str | None:
@@ -283,15 +384,17 @@ def _org_recurrence(conn: sqlite3.Connection) -> list[dict]:
 
 def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
     """
-    Returns {'status': 'ok'|'failed', 'person_pairs': [...], 'org_groups': [...]}.
+    Returns {'status': 'ok'|'failed', 'person_pairs': [...],
+    'place_pairs': [...], 'org_groups': [...]}.
     """
     conn = _open_db(archive_root)
     if conn is None:
-        return {'status': 'failed', 'person_pairs': [], 'org_groups': []}
+        return {'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': []}
 
     try:
         dismissed = _load_dismissed(archive_root)
         person_pairs = _person_cooccurrence(conn, threshold, dismissed)
+        place_pairs = _place_cooccurrence(conn, dismissed)
         org_groups = _org_recurrence(conn)
     except sqlite3.OperationalError:
         print(
@@ -299,11 +402,16 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
             'Run `fha index` to rebuild.',
             file=sys.stderr,
         )
-        return {'status': 'failed', 'person_pairs': [], 'org_groups': []}
+        return {'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': []}
     finally:
         conn.close()
 
-    return {'status': 'ok', 'person_pairs': person_pairs, 'org_groups': org_groups}
+    return {
+        'status': 'ok',
+        'person_pairs': person_pairs,
+        'place_pairs': place_pairs,
+        'org_groups': org_groups,
+    }
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -337,6 +445,20 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
                 print(f"    {_fmt_id(sid)}")
     else:
         print('No candidate person co-occurrence pairs found.')
+
+    place_pairs = result['place_pairs']
+    if place_pairs:
+        print(f'\nFound {len(place_pairs)} candidate shared-place co-occurrence pair(s):')
+        for c in place_pairs:
+            print(
+                f"  {c['name_a']} [{_fmt_id(c['person_a'])}]  <->  "
+                f"{c['name_b']} [{_fmt_id(c['person_b'])}]  "
+                f"@ {c['place_label']}  — {c['source_count']} source(s)"
+            )
+            for cid in c['claim_ids']:
+                print(f"    {_fmt_id(cid)}")
+    else:
+        print('\nNo candidate shared-place co-occurrence pairs found.')
 
     groups = result['org_groups']
     if groups:

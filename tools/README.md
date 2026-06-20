@@ -41,7 +41,7 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 | Tool | File | Status |
 |---|---|---|
 | `fha xref` | `xref.py` | ✓ M4.1 — corroboration/contradiction candidate pairs: same person + same claim `type` + different source + not already linked (`claim_links`); classified by `edtf_bounds` overlap, plus a vital-type (`birth`/`death`/`marriage`) place mismatch check when bounds overlap (`place_text`, falling back to conservative place phrases in `value`). Read-only; never writes `claim_links`. Absent/unreadable index → exit 3; stale → warns, still queries. |
-| `fha cooccur [--threshold N]` | `cooccur.py` | ✓ M4.2 — two candidate detectors: (1) person co-occurrence — person-pairs sharing ≥`--threshold` (default 2) sources via `source_people`, excluding pairs with an existing `relationships` edge or a dismissed-tombstone entry (`.cache/cooccur_dismissed.json`, read-only), ranked by source count then source-type variety; (2) org/entity recurrence — `occupation`, `military`, and membership-style `event`/`note` claims grouped by `(category, normalized value)`, emitted when ≥2 people or ≥2 sources share the same category/value hub. Read-only; never mints claims or writes the tombstone. Same absent/unreadable/stale handling as `xref`. |
+| `fha cooccur [--threshold N]` | `cooccur.py` | ✓ M4.2 — three candidate detectors: (1) person co-occurrence — person-pairs sharing ≥`--threshold` (default 2) sources via `source_people` ∪ `claim_persons` participants, excluding pairs with an existing `relationships` edge or a dismissed-tombstone entry (`.cache/cooccur_dismissed.json`, read-only), ranked by source count then source-type variety; (2) shared-place co-occurrence — accepted/needs-review claims of different, unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`) with overlapping EDTF bounds, same exclusion rules as person co-occurrence; (3) org/entity recurrence — `occupation`, `military`, and membership-style `event`/`note` claims grouped by `(category, normalized value)`, emitted when ≥2 people or ≥2 sources share the same category/value hub. Read-only; never mints claims or writes the tombstone. Same absent/unreadable/stale handling as `xref`. |
 
 Both tools follow the TOOLING §14a/§14a2 "deterministic candidates, human-confirm gate"
 discipline: they only print suggestions. Confirming a pair (writing `corroborates:`/
@@ -57,6 +57,7 @@ future skill layer — out of scope for M4.1/M4.2.
 | Person co-occurrence ranking | ✓ | `(source_count desc, source_type variety desc)` |
 | Existing-relationship exclusion | ✓ | Any `relationships` row between the pair (either direction) suppresses the candidate |
 | Dismissed-pairs tombstone | ✓ (read-only) | `.cache/cooccur_dismissed.json`; missing file = empty set, not an error; this tool never writes it |
+| Shared-place co-occurrence | ✓ | Different, unlinked people's claims sharing a place (`place_id` else normalized `place_text`) with overlapping EDTF bounds; same exclusion rules as person co-occurrence |
 | Org/entity recurrence | ✓ | Groups `occupation`, `military`, and membership-style `event`/`note` claims by `(category, normalized value)` |
 | `--threshold N` | ✓ | Minimum distinct shared sources for a person co-occurrence candidate (default 2); rejects `< 1` |
 
