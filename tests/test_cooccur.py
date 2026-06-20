@@ -104,6 +104,56 @@ class CooccurPersonTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(len(result['person_pairs']), 1)
 
+    def test_claim_participants_without_source_people_still_pair(self) -> None:
+        # Two people named only via claim_persons (no source_people frontmatter
+        # list) on two different sources should still be detected as a
+        # co-occurring pair — source_people and claim_persons are unioned.
+        for cid, sid in (('c-aaaaaaaaaa', 's-1111111111'), ('c-bbbbbbbbbb', 's-2222222222')):
+            self.conn.execute(
+                "INSERT INTO claims(id, source_id, type, value, status) VALUES (?,?,?,?,?)",
+                (cid, sid, 'residence', 'lived together', 'accepted'),
+            )
+            for pos, pid in enumerate(('p-aaaaaaaaaa', 'p-bbbbbbbbbb')):
+                self.conn.execute(
+                    'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
+                    (cid, pid, pos, None),
+                )
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(len(result['person_pairs']), 1)
+        pair = result['person_pairs'][0]
+        self.assertEqual(pair['source_count'], 2)
+
+    def test_missing_required_table_returns_failed_status(self) -> None:
+        self.conn.execute('DROP TABLE relationships')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['person_pairs'], [])
+        self.assertEqual(result['org_groups'], [])
+
+    def test_missing_required_column_returns_failed_status(self) -> None:
+        # All required tables exist (table probe passes) but claims is missing
+        # a column _org_recurrence's query selects — must surface the
+        # documented incompatible-schema message rather than an uncaught
+        # OperationalError.
+        self.conn.execute('ALTER TABLE claims RENAME TO claims_old')
+        self.conn.execute(
+            '''CREATE TABLE claims(
+                 id TEXT PRIMARY KEY, source_id TEXT NOT NULL, type TEXT NOT NULL,
+                 value TEXT NOT NULL, status TEXT NOT NULL
+               )'''
+        )
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['person_pairs'], [])
+        self.assertEqual(result['org_groups'], [])
+
 
 class CooccurOrgTests(unittest.TestCase):
     def setUp(self) -> None:

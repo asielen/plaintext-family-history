@@ -163,8 +163,8 @@ def _place_from_vital_value(text: str | None) -> str:
     if not text:
         return ''
     patterns = (
-        r'\b(?:born|died|married)\s+(?:in|at)\s+([^.;\n]+)',
-        r'\b(?:birthplace|deathplace|marriage place|place)\s*:\s*([^.;\n]+)',
+        r'\b(?:born|died|married|buried|baptized|baptised)\s+(?:in|at)\s+([^.;\n]+)',
+        r'\b(?:birthplace|deathplace|marriage place|burial place|baptism place|place)\s*:\s*([^.;\n]+)',
     )
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
@@ -178,11 +178,6 @@ def _classify_pair(a: dict, b: dict) -> str | None:
     Return 'corroborates', 'contradicts', or None (not a comparable pair) for a
     same-person, same-type pair.
     """
-    if bool(a['negated']) != bool(b['negated']):
-        # One claim asserts the fact happened, the other confirms it never did —
-        # that's a conflict regardless of dates or type recurrence.
-        return 'contradicts'
-
     a_min, a_max = edtf_bounds(a['date_edtf'])
     b_min, b_max = edtf_bounds(b['date_edtf'])
     bounds_overlap = a_min <= b_max and b_min <= a_max
@@ -193,6 +188,13 @@ def _classify_pair(a: dict, b: dict) -> str | None:
         # Substantive types (residence, occupation, ...) are recurring by
         # design (§8.2) — non-overlapping dates are expected, not a conflict.
         return None
+
+    if bool(a['negated']) != bool(b['negated']):
+        # One claim asserts the fact happened, the other confirms it never
+        # did, for the same place in time — that's a genuine conflict. (Vital
+        # types always reach here: an undated negated claim gets unbounded
+        # bounds, so it overlaps any dated positive claim of the same type.)
+        return 'contradicts'
 
     if a['type'] in _VITAL_TYPES:
         if a['place_id'] and b['place_id']:

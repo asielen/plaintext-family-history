@@ -146,8 +146,20 @@ def _load_dismissed(archive_root: Path) -> set[frozenset[str]]:
 # ── Person co-occurrence ─────────────────────────────────────────────────────
 
 def _person_cooccurrence(conn: sqlite3.Connection, threshold: int, dismissed: set[frozenset[str]]) -> list[dict]:
+    # `source_people` is populated from a source's optional frontmatter
+    # `people:` list; a source's claims (`claim_persons`) carry participants
+    # too and may name people that list omits, so union both.
     sources_by_person: dict[str, set[str]] = {}
     for row in conn.execute('SELECT source_id, person_id FROM source_people'):
+        sources_by_person.setdefault(row['person_id'], set()).add(row['source_id'])
+    for row in conn.execute(
+        '''
+        SELECT DISTINCT c.source_id AS source_id, cp.person_id AS person_id
+        FROM claim_persons cp
+        JOIN claims c ON c.id = cp.claim_id
+        WHERE c.status IN ('accepted', 'needs-review')
+        '''
+    ):
         sources_by_person.setdefault(row['person_id'], set()).add(row['source_id'])
 
     persons_by_source: dict[str, set[str]] = {}
@@ -281,6 +293,13 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
         dismissed = _load_dismissed(archive_root)
         person_pairs = _person_cooccurrence(conn, threshold, dismissed)
         org_groups = _org_recurrence(conn)
+    except sqlite3.OperationalError:
+        print(
+            'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
+            'Run `fha index` to rebuild.',
+            file=sys.stderr,
+        )
+        return {'status': 'failed', 'person_pairs': [], 'org_groups': []}
     finally:
         conn.close()
 

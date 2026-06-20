@@ -251,6 +251,47 @@ class XrefTests(unittest.TestCase):
         pairs = result['groups'][0]['pairs']
         self.assertEqual(pairs[0]['kind'], 'contradicts')
 
+    def test_overlapping_burial_value_places_contradict_without_place_text(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'burial',
+                       'buried in Springfield', date_edtf='1840~', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'burial',
+                       'buried in Fairview', date_edtf='1840~', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
+    def test_negated_substantive_claim_not_overlapping_positive_not_paired(self) -> None:
+        # A negated 1880 residence and a positive 1900 residence for the same
+        # person are not in tension — they describe different periods, so
+        # the non-overlap exclusion for recurring types should still apply
+        # even when polarity differs.
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence',
+                       'did not reside in Topeka', date_edtf='1880', negated=1,
+                       persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'residence',
+                       'resided in Topeka', date_edtf='1900', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
+    def test_negated_substantive_claim_overlapping_positive_contradicts(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence',
+                       'did not reside in Topeka', date_edtf='1880', negated=1,
+                       persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'residence',
+                       'resided in Topeka', date_edtf='1880', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
     def test_missing_required_column_returns_failed_status(self) -> None:
         # A cache built against an older claims schema has all the required
         # tables (so the table probe passes) but is missing a column xref's
