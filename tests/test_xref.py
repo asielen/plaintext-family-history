@@ -239,6 +239,37 @@ class XrefTests(unittest.TestCase):
             import shutil
             shutil.rmtree(empty_root, ignore_errors=True)
 
+    def test_non_overlapping_burial_dates_contradict(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'burial',
+                       'buried 1840', date_edtf='1840', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'burial',
+                       'buried 1900', date_edtf='1900', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
+    def test_missing_required_column_returns_failed_status(self) -> None:
+        # A cache built against an older claims schema has all the required
+        # tables (so the table probe passes) but is missing a column xref's
+        # query selects — this must surface the documented incompatible-
+        # schema message rather than an uncaught OperationalError.
+        self.conn.execute('ALTER TABLE claims RENAME TO claims_old')
+        self.conn.execute(
+            '''CREATE TABLE claims(
+                 id TEXT PRIMARY KEY, source_id TEXT NOT NULL, type TEXT NOT NULL,
+                 subtype TEXT, date_edtf TEXT, place_text TEXT, value TEXT NOT NULL,
+                 status TEXT NOT NULL, negated INTEGER DEFAULT 0
+               )'''
+        )
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['groups'], [])
+
 
 if __name__ == '__main__':
     unittest.main()

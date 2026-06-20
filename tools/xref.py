@@ -70,7 +70,7 @@ from _lib import (
     newest_record_mtime,
 )
 
-_VITAL_TYPES = {'birth', 'death', 'marriage'}
+_VITAL_TYPES = {'birth', 'death', 'marriage', 'baptism', 'burial'}
 
 
 def _fmt_id(id_str: str) -> str:
@@ -222,40 +222,51 @@ def run_xref(archive_root: Path) -> dict:
         return {'status': 'failed', 'groups': []}
 
     try:
-        claims_by_id = {
-            row['id']: dict(row)
-            for row in conn.execute(
-                '''
-                SELECT id, source_id, type, subtype, date_edtf, place_id, place_text,
-                       value, negated
-                FROM claims
-                WHERE status IN ('accepted', 'needs-review')
-                '''
-            )
-        }
-        source_titles = {
-            row['id']: row['title'] for row in conn.execute('SELECT id, title FROM sources')
-        }
-        for claim in claims_by_id.values():
-            claim['source_title'] = source_titles.get(claim['source_id'], claim['source_id'])
-
-        claims_by_person: dict[str, list[str]] = {}
-        claim_persons: dict[str, list[str]] = {}
-        claim_role: dict[tuple[str, str], str] = {}
-        for row in conn.execute('SELECT claim_id, person_id, role FROM claim_persons'):
-            if row['claim_id'] not in claims_by_id:
-                continue
-            claims_by_person.setdefault(row['person_id'], []).append(row['claim_id'])
-            claim_persons.setdefault(row['claim_id'], []).append(row['person_id'])
-            claim_role[(row['claim_id'], row['person_id'])] = row['role']
-
-        linked_pairs: set[frozenset[str]] = set()
-        for row in conn.execute('SELECT claim_id, target_id FROM claim_links'):
-            linked_pairs.add(frozenset((row['claim_id'], row['target_id'])))
-
-        person_names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
+        return _run_xref_queries(conn)
+    except sqlite3.OperationalError:
+        print(
+            'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
+            'Run `fha index` to rebuild.',
+            file=sys.stderr,
+        )
+        return {'status': 'failed', 'groups': []}
     finally:
         conn.close()
+
+
+def _run_xref_queries(conn: sqlite3.Connection) -> dict:
+    claims_by_id = {
+        row['id']: dict(row)
+        for row in conn.execute(
+            '''
+            SELECT id, source_id, type, subtype, date_edtf, place_id, place_text,
+                   value, negated
+            FROM claims
+            WHERE status IN ('accepted', 'needs-review')
+            '''
+        )
+    }
+    source_titles = {
+        row['id']: row['title'] for row in conn.execute('SELECT id, title FROM sources')
+    }
+    for claim in claims_by_id.values():
+        claim['source_title'] = source_titles.get(claim['source_id'], claim['source_id'])
+
+    claims_by_person: dict[str, list[str]] = {}
+    claim_persons: dict[str, list[str]] = {}
+    claim_role: dict[tuple[str, str], str] = {}
+    for row in conn.execute('SELECT claim_id, person_id, role FROM claim_persons'):
+        if row['claim_id'] not in claims_by_id:
+            continue
+        claims_by_person.setdefault(row['person_id'], []).append(row['claim_id'])
+        claim_persons.setdefault(row['claim_id'], []).append(row['person_id'])
+        claim_role[(row['claim_id'], row['person_id'])] = row['role']
+
+    linked_pairs: set[frozenset[str]] = set()
+    for row in conn.execute('SELECT claim_id, target_id FROM claim_links'):
+        linked_pairs.add(frozenset((row['claim_id'], row['target_id'])))
+
+    person_names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
 
     groups = []
     for person_id, claim_ids in sorted(claims_by_person.items()):
