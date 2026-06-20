@@ -267,37 +267,65 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
 
     names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
 
+    # Bucket claims by place first so the pairwise comparison below only ever
+    # runs within a shared-place bucket, not across every placed claim in the
+    # archive — `_same_place` can only be true for claims that land in the
+    # same place_id bucket or the same normalized place_text bucket.
+    by_place_id: dict[str, list[str]] = {}
+    by_place_text: dict[str, list[str]] = {}
+    for cid, claim in claims.items():
+        if claim['place_id']:
+            by_place_id.setdefault(claim['place_id'].strip().lower(), []).append(cid)
+        text_norm = _normalize_place(claim['place_text'])
+        if text_norm:
+            by_place_text.setdefault(text_norm, []).append(cid)
+
     # Cache keyed by (person pair, normalized place) — not person pair alone —
     # so two people sharing more than one place get a separate candidate per
     # place instead of one candidate whose claim_ids/source_ids blend places.
     pair_data: dict[tuple[frozenset[str], str], dict] = {}
-    cids = list(claims)
-    for i in range(len(cids)):
-        for j in range(i + 1, len(cids)):
-            cid_a, cid_b = cids[i], cids[j]
-            claim_a, claim_b = claims[cid_a], claims[cid_b]
-            if not _same_place(claim_a, claim_b):
-                continue
-            a_min, a_max = edtf_bounds(claim_a['date_edtf'])
-            b_min, b_max = edtf_bounds(claim_b['date_edtf'])
-            if not (a_min <= b_max and b_min <= a_max):
-                continue
-            place_label = claim_a['place_text'] or claim_b['place_text'] or claim_a['place_id'] or claim_b['place_id']
+    compared: set[frozenset[str]] = set()
+
+    def _consider(cid_a: str, cid_b: str) -> None:
+        claim_pair = frozenset((cid_a, cid_b))
+        if claim_pair in compared:
+            return
+        compared.add(claim_pair)
+        claim_a, claim_b = claims[cid_a], claims[cid_b]
+        if not _same_place(claim_a, claim_b):
+            return
+        a_min, a_max = edtf_bounds(claim_a['date_edtf'])
+        b_min, b_max = edtf_bounds(claim_b['date_edtf'])
+        if not (a_min <= b_max and b_min <= a_max):
+            return
+        place_label = claim_a['place_text'] or claim_b['place_text'] or claim_a['place_id'] or claim_b['place_id']
+        # When both claims share a place_id, canonicalize the bucket key on
+        # that id rather than on whichever place_text happens to be
+        # encountered first — otherwise the same person-pair/place_id can
+        # fragment into multiple candidates keyed by different aliases.
+        if claim_a['place_id'] and claim_b['place_id']:
+            place_norm = claim_a['place_id'].strip().lower()
+        else:
             place_norm = _normalize_place(place_label) or (place_label or '').strip().lower()
-            for pa in persons_by_claim.get(cid_a, ()):
-                for pb in persons_by_claim.get(cid_b, ()):
-                    if pa == pb:
-                        continue
-                    pair = frozenset((pa, pb))
-                    if pair in existing_edges or pair in dismissed:
-                        continue
-                    entry = pair_data.setdefault((pair, place_norm), {
-                        'place_label': place_label,
-                        'claim_ids': set(),
-                        'source_ids': set(),
-                    })
-                    entry['claim_ids'].update((cid_a, cid_b))
-                    entry['source_ids'].update((claim_a['source_id'], claim_b['source_id']))
+        for pa in persons_by_claim.get(cid_a, ()):
+            for pb in persons_by_claim.get(cid_b, ()):
+                if pa == pb:
+                    continue
+                pair = frozenset((pa, pb))
+                if pair in existing_edges or pair in dismissed:
+                    continue
+                entry = pair_data.setdefault((pair, place_norm), {
+                    'place_label': place_label,
+                    'claim_ids': set(),
+                    'source_ids': set(),
+                })
+                entry['claim_ids'].update((cid_a, cid_b))
+                entry['source_ids'].update((claim_a['source_id'], claim_b['source_id']))
+
+    for bucket in (*by_place_id.values(), *by_place_text.values()):
+        for i in range(len(bucket)):
+            for j in range(i + 1, len(bucket)):
+                _consider(bucket[i], bucket[j])
 
     candidates = []
     for (pair, _place_norm), data in pair_data.items():
@@ -341,7 +369,26 @@ def _normalize_entity_value(value: str) -> str:
     return ' '.join((value or '').strip().lower().split())
 
 
-def _org_recurrence(conn: sqlite3.Connection) -> list[dict]:
+def _entity_label(category: str, value: str) -> str:
+    """
+    Extract the entity/organization portion of a claim value for grouping.
+
+    `occupation` and `military` values follow the documented "role, entity"
+    convention (SPEC §8.4, e.g. "bookkeeper, Plains Junction Railroad") — the
+    role varies between claims about the same employer, so grouping on the
+    whole value would split one recurring employer into separate hubs. The
+    entity is the text after the LAST comma, since entity names can
+    themselves contain commas (e.g. "Plains Junction Railroad, Topeka Div.").
+    Membership values have no documented role/entity split, so they're used
+    as-is.
+    """
+    label = (value or '').strip()
+    if category in _DIRECT_ORG_TYPES and ',' in label:
+        label = label.rsplit(',', 1)[1].strip()
+    return label
+
+
+def _org_recurrence(conn: sqlite3.Connection, threshold: int = 2) -> list[dict]:
     claims = {
         row['id']: dict(row)
         for row in conn.execute(
@@ -362,9 +409,11 @@ def _org_recurrence(conn: sqlite3.Connection) -> list[dict]:
     groups: dict[tuple[str, str], dict] = {}
     for cid, claim in claims.items():
         category = _org_category(claim)
-        label = (claim.get('value') or '').strip()
+        if category is None:
+            continue
+        label = _entity_label(category, claim.get('value') or '')
         normalized = _normalize_entity_value(label)
-        if category is None or not normalized:
+        if not normalized:
             continue
         key = (category, normalized)
         group = groups.setdefault(key, {
@@ -380,7 +429,7 @@ def _org_recurrence(conn: sqlite3.Connection) -> list[dict]:
 
     out = []
     for group in groups.values():
-        if len(group['person_ids']) >= 2 or len(group['source_ids']) >= 2:
+        if len(group['person_ids']) >= threshold or len(group['source_ids']) >= threshold:
             out.append({
                 'label': group['label'],
                 'category': group['category'],
@@ -408,7 +457,7 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
         dismissed = _load_dismissed(archive_root)
         person_pairs = _person_cooccurrence(conn, threshold, dismissed)
         place_pairs = _place_cooccurrence(conn, dismissed)
-        org_groups = _org_recurrence(conn)
+        org_groups = _org_recurrence(conn, threshold)
     except sqlite3.OperationalError:
         print(
             'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '

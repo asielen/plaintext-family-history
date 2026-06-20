@@ -322,6 +322,74 @@ class XrefTests(unittest.TestCase):
         pairs = result['groups'][0]['pairs']
         self.assertEqual(pairs[0]['kind'], 'contradicts')
 
+    def test_marriage_to_different_spouse_not_paired(self) -> None:
+        # Marriage claims always share the literal role "spouse" for both
+        # parties, so role can't distinguish one marriage from another for
+        # the same person — the counterpart must. A first-marriage claim and
+        # a second-marriage claim (different spouse) shouldn't be compared.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Spouse One','false','curated','y.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-cccccccccc','Spouse Two','false','curated','z.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'marriage',
+                       'married Spouse One', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'marriage',
+                       'married Spouse Two', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-cccccccccc'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-cccccccccc': 'spouse'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
+    def test_marriage_to_same_spouse_corroborates(self) -> None:
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Spouse','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'marriage',
+                       'married Spouse', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'marriage',
+                       'married Spouse', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'corroborates')
+
+    def test_relationship_claim_bundling_extra_counterpart_still_pairs(self) -> None:
+        # One source bundles two children under one parent claim
+        # (roles: parent: [P2, P3]); another source only names one of them.
+        # The bundled claim should still be compared against the claim that
+        # names just the shared counterpart, since both assert the same
+        # parent-of-P2 edge.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Child Two','false','curated','y.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-cccccccccc','Child Three','false','curated','z.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'relationship',
+                       'parent of two children', subtype='child-of',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc'],
+                       roles={'p-aaaaaaaaaa': 'parent', 'p-bbbbbbbbbb': 'child',
+                              'p-cccccccccc': 'child'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'relationship',
+                       'parent of one child', subtype='child-of',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'parent', 'p-bbbbbbbbbb': 'child'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]['kind'], 'corroborates')
+
     def test_missing_required_column_returns_failed_status(self) -> None:
         # A cache built against an older claims schema has all the required
         # tables (so the table probe passes) but is missing a column xref's

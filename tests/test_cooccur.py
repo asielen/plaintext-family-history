@@ -381,6 +381,37 @@ class CooccurOrgTests(unittest.TestCase):
         result = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(result['org_groups'], [])
 
+    def test_occupation_groups_by_entity_not_role(self) -> None:
+        # SPEC §8.4's documented occupation value convention is
+        # "role, entity" (e.g. "bookkeeper, Plains Junction Railroad") — the
+        # role varies between people at the same employer, so grouping
+        # should key off the entity (text after the last comma), not the
+        # whole value.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', 'occupation',
+                            'bookkeeper, Plains Junction Railroad', ['p-aaaaaaaaaa'])
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', 'occupation',
+                            'conductor, Plains Junction Railroad', ['p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(len(result['org_groups']), 1)
+        group = result['org_groups'][0]
+        self.assertEqual(group['label'], 'Plains Junction Railroad')
+        self.assertEqual(group['person_count'], 2)
+
+    def test_org_recurrence_respects_threshold(self) -> None:
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', 'occupation',
+                            'bookkeeper, Plains Junction Railroad', ['p-aaaaaaaaaa'])
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', 'occupation',
+                            'conductor, Plains Junction Railroad', ['p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        below = cooccur.run_cooccur(self.archive_root, threshold=3)
+        self.assertEqual(below['org_groups'], [])
+
+        at_threshold = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(len(at_threshold['org_groups']), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

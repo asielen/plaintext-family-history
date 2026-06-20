@@ -290,25 +290,46 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
             claim = claims_by_id[cid]
             if claim['type'] == 'relationship':
                 # A person can be e.g. a child in one child-of claim and a
-                # parent in another — only pair claims with the same subtype,
-                # this person's role, and the same counterpart person(s).
+                # parent in another — only pair claims with the same subtype
+                # and this person's role. A claim can bundle several
+                # counterparts at once (e.g. roles: parent: [P2, P3]), so it's
+                # bucketed once per individual counterpart rather than once
+                # per whole counterpart set — otherwise a claim naming {P2, P3}
+                # would never compare against one naming only {P2}.
                 role = claim_role.get((cid, person_id))
+                others = [p for p in claim_persons.get(cid, []) if p != person_id]
+                for other in others:
+                    key = (claim['type'], claim['subtype'], role, other)
+                    by_group.setdefault(key, []).append(cid)
+            elif claim['type'] == 'marriage':
+                # Marriage claims share the literal role "spouse" for both
+                # parties, so the counterpart set (not role) is what
+                # distinguishes one marriage from another for this person.
                 others = frozenset(p for p in claim_persons.get(cid, []) if p != person_id)
-                key = (claim['type'], claim['subtype'], role, others)
+                key = (claim['type'], others)
+                by_group.setdefault(key, []).append(cid)
             else:
                 key = (claim['type'],)
-            by_group.setdefault(key, []).append(cid)
+                by_group.setdefault(key, []).append(cid)
 
         pairs = []
+        seen_pairs: set[frozenset[str]] = set()
         for ids in by_group.values():
             ids = sorted(set(ids))
             for i in range(len(ids)):
                 for j in range(i + 1, len(ids)):
                     cid_a, cid_b = ids[i], ids[j]
+                    # A relationship claim can land in more than one
+                    # per-counterpart bucket; skip a pair already classified
+                    # via another shared counterpart.
+                    pair_key = frozenset((cid_a, cid_b))
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
                     claim_a, claim_b = claims_by_id[cid_a], claims_by_id[cid_b]
                     if claim_a['source_id'] == claim_b['source_id']:
                         continue
-                    if frozenset((cid_a, cid_b)) in linked_pairs:
+                    if pair_key in linked_pairs:
                         continue
                     kind = _classify_pair(claim_a, claim_b)
                     if kind is None:
