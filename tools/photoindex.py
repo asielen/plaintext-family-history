@@ -521,10 +521,32 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     P-id keyword on the back of a print) is recorded for every variant in
     the group, not just the path that carries it. When variants disagree on
     `via` for the same person, the most confident one wins.
+
+    Bulk pid-keyword tagging is incremental work (TOOLING §9): most of the
+    archive starts out resolved only via the weaker `face-tag`/`name-match`
+    tiers, and stays that way until someone works through it by hand. A
+    stale `.cache/index.sqlite` already means new weak matches can't be
+    trusted (`_load_face_tag_index` returns nothing for that case), but the
+    weak matches an earlier, fresher rebuild already recorded are not
+    re-derived here at all — wiping them out on every rebuild until the
+    index catches up would erase real, already-screened identifications
+    just because some *other* photo's tagging triggered this rebuild. So a
+    stale index keeps every existing non-`pid-keyword` row as-is and only
+    refreshes the `pid-keyword` tier, which reads straight from
+    `photo_keywords` and never depends on the index.
     """
+    index_fresh = _index_is_fresh(archive_root)
     face_tags, names = _load_face_tag_index(archive_root)
     keywords_by_path = _load_keywords_by_path(conn)
     face_regions_by_path = _load_face_regions_by_path(conn)
+
+    preserved_by_path: dict[str, list[tuple[str, str]]] = {}
+    if not index_fresh:
+        for path, pid, via in conn.execute(
+            "SELECT path, person_ref, via FROM photo_people WHERE via != 'pid-keyword'"
+        ):
+            preserved_by_path.setdefault(path, []).append((pid, via))
+
     conn.execute('DELETE FROM photo_people')
 
     matches_by_path: dict[str, list[tuple[str, str]]] = {}
@@ -532,7 +554,13 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     for path, group_id in conn.execute('SELECT path, group_id FROM photos ORDER BY path'):
         keywords = keywords_by_path.get(path, [])
         face_regions = face_regions_by_path.get(path, [])
-        matches_by_path[path] = _resolve_photo_people(keywords, face_regions, face_tags, names)
+        resolved = _resolve_photo_people(keywords, face_regions, face_tags, names)
+        if not index_fresh and path in preserved_by_path:
+            resolved_pids = {pid for pid, _via in resolved}
+            resolved = resolved + [
+                (pid, via) for pid, via in preserved_by_path[path] if pid not in resolved_pids
+            ]
+        matches_by_path[path] = resolved
         key = group_id if group_id is not None else path
         paths_by_group.setdefault(key, []).append(path)
 

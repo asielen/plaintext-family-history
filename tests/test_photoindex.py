@@ -510,6 +510,100 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_tag_person_rebuild_preserves_other_photos_weak_matches_when_index_goes_stale(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            (people_dir / 'grandma__example_P-aaaaaaaaaa.md').write_text(
+                '---\nid: P-aaaaaaaaaa\nname: Grandma\n---\n', encoding='utf-8',
+            )
+            (people_dir / 'other__example_P-bbbbbbbbbb.md').write_text(
+                '---\nid: P-bbbbbbbbbb\n---\n', encoding='utf-8',
+            )
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {
+                        'SourceFile': str(p),
+                        'RegionInfo': {
+                            'RegionList': [{'Name': 'Grandma', 'Type': 'Face'}],
+                        } if p.name == 'family_reunion.jpg' else {},
+                    }
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            cache = archive / '.cache'
+            index_db = cache / 'index.sqlite'
+            conn = sqlite3.connect(index_db)
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE persons(id TEXT, name TEXT);
+                    CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
+                    CREATE TABLE person_variants(person_id TEXT, variant TEXT);
+                    INSERT INTO persons(id, name) VALUES ('p-aaaaaaaaaa', 'Grandma');
+                    INSERT INTO person_face_tags(person_id, tag) VALUES ('p-aaaaaaaaaa', 'Grandma');
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            os.utime(index_db, None)
+
+            # Fresh index -> family_reunion.jpg picks up the weak face-tag match.
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                people = conn.execute(
+                    'SELECT person_ref, via FROM photo_people ORDER BY person_ref'
+                ).fetchall()
+                self.assertEqual(people, [('p-aaaaaaaaaa', 'face-tag')])
+            finally:
+                conn.close()
+
+            # A newer person record makes index.sqlite stale again.
+            (people_dir / 'third__example_P-cccccccccc.md').write_text(
+                '---\nid: P-cccccccccc\n---\n', encoding='utf-8',
+            )
+            index_mtime = index_db.stat().st_mtime
+            os.utime(
+                people_dir / 'third__example_P-cccccccccc.md',
+                (index_mtime + 10, index_mtime + 10),
+            )
+
+            # Tagging an unrelated photo (portrait_1880.jpg) with a different
+            # P-id triggers apply_tag_person's _rebuild_photo_people while the
+            # index is stale. That must not wipe out family_reunion.jpg's
+            # already-screened weak match for Grandma — tag-person bulk work
+            # is incremental, and most of the archive starts out resolved only
+            # via these weaker tiers.
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            result = photoindex.apply_tag_person(
+                archive, {'roots': {'photos': 'photos'}}, 'p-bbbbbbbbbb',
+                ['photos/portrait_1880.jpg'],
+            )
+            self.assertEqual(result['tagged'], ['photos/portrait_1880.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                people = conn.execute(
+                    "SELECT path, person_ref, via FROM photo_people WHERE person_ref='p-aaaaaaaaaa'"
+                ).fetchall()
+                self.assertEqual(people, [('photos/family_reunion.jpg', 'p-aaaaaaaaaa', 'face-tag')])
+                tagged = conn.execute(
+                    "SELECT path, via FROM photo_people WHERE person_ref='p-bbbbbbbbbb' "
+                    "AND path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertEqual(tagged, ('photos/portrait_1880.jpg', 'pid-keyword'))
+            finally:
+                conn.close()
+
     def test_unrelated_record_edit_does_not_drop_weak_person_matches(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
