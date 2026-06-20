@@ -169,11 +169,12 @@ class CooccurPlaceTests(unittest.TestCase):
         self.conn.close()
         self._tmp.cleanup()
 
-    def _insert_claim(self, cid, sid, persons, *, place_text=None, place_id=None, date_edtf=None):
+    def _insert_claim(self, cid, sid, persons, *, place_text=None, place_id=None,
+                       date_edtf=None, negated=0):
         self.conn.execute(
-            "INSERT INTO claims(id, source_id, type, value, status, place_text, place_id, date_edtf) "
-            "VALUES (?,?,'residence','lived there','accepted',?,?,?)",
-            (cid, sid, place_text, place_id, date_edtf),
+            "INSERT INTO claims(id, source_id, type, value, status, place_text, place_id, "
+            "date_edtf, negated) VALUES (?,?,'residence','lived there','accepted',?,?,?,?)",
+            (cid, sid, place_text, place_id, date_edtf, negated),
         )
         for pos, pid in enumerate(persons):
             self.conn.execute(
@@ -302,6 +303,46 @@ class CooccurPlaceTests(unittest.TestCase):
             else:
                 self.assertEqual(set(pair['claim_ids']), {'c-cccccccccc', 'c-dddddddddd'})
 
+    def test_undated_claim_not_a_candidate(self) -> None:
+        # An undated claim gets unbounded EDTF bounds, so without this guard
+        # it would appear to overlap a dated claim from any era — undated
+        # placed claims should be excluded outright rather than matching
+        # everything.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
+    def test_negated_placed_claim_not_a_candidate(self) -> None:
+        # A negated residence claim means the person was NOT there — it
+        # shouldn't generate a shared-place lead with someone who was.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880', negated=1)
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
+    def test_same_source_claims_not_a_candidate(self) -> None:
+        # Two residence claims from the same household source (e.g. a single
+        # census record) naming different people at the same address aren't
+        # independent corroboration — they're one document's own household
+        # listing, not a cross-source lead.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-1111111111', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['place_pairs'], [])
+
 
 class CooccurOrgTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -411,6 +452,39 @@ class CooccurOrgTests(unittest.TestCase):
 
         at_threshold = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(len(at_threshold['org_groups']), 1)
+
+    def test_entity_with_internal_comma_keeps_full_text(self) -> None:
+        # The entity itself can contain a comma (e.g. a railroad division),
+        # so the role/entity split has to happen on the FIRST comma, not the
+        # last — splitting on the last comma would silently drop everything
+        # before the entity's own internal comma.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', 'occupation',
+                            'bookkeeper, Plains Junction Railroad, Topeka Div.', ['p-aaaaaaaaaa'])
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', 'occupation',
+                            'conductor, Plains Junction Railroad, Topeka Div.', ['p-bbbbbbbbbb'])
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(len(result['org_groups']), 1)
+        self.assertEqual(result['org_groups'][0]['label'], 'Plains Junction Railroad, Topeka Div.')
+
+    def test_negated_occupation_excluded_from_org_hub(self) -> None:
+        # "not employed by Plains Junction Railroad" is a confirmed absence,
+        # not an affiliation — it shouldn't count toward the recurrence hub.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', 'occupation',
+                            'bookkeeper, Plains Junction Railroad', ['p-aaaaaaaaaa'])
+        self.conn.execute(
+            "INSERT INTO claims(id, source_id, type, value, status, negated) VALUES "
+            "('c-cccccccccc','s-2222222222','occupation','conductor, Plains Junction Railroad','accepted',1)"
+        )
+        self.conn.execute(
+            "INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES "
+            "('c-cccccccccc','p-bbbbbbbbbb',0,NULL)"
+        )
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['org_groups'], [])
 
 
 if __name__ == '__main__':

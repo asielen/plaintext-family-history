@@ -363,6 +363,60 @@ class XrefTests(unittest.TestCase):
         pairs = result['groups'][0]['pairs']
         self.assertEqual(pairs[0]['kind'], 'corroborates')
 
+    def test_negated_marriage_with_no_spouse_named_contradicts_positive_marriage(self) -> None:
+        # "Never married" proof claims name no spouse, so they can't be
+        # bucketed by counterpart the way a normal marriage claim is — they
+        # have to be compared against every marriage claim for this person.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Spouse','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'marriage',
+                       'never married', date_edtf='1870', negated=1,
+                       persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'marriage',
+                       'married Spouse', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
+    def test_divorce_from_different_spouse_not_paired(self) -> None:
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Spouse One','false','curated','y.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-cccccccccc','Spouse Two','false','curated','z.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'divorce',
+                       'divorced Spouse One', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-bbbbbbbbbb': 'spouse'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'divorce',
+                       'divorced Spouse Two', date_edtf='1870',
+                       persons=['p-aaaaaaaaaa', 'p-cccccccccc'],
+                       roles={'p-aaaaaaaaaa': 'spouse', 'p-cccccccccc': 'spouse'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
+    def test_vital_place_phrase_excludes_trailing_date_clause(self) -> None:
+        # "born in Springfield in 1840" should compare as place "Springfield",
+        # not "Springfield in 1840" — the date belongs to date_edtf, not the
+        # place phrase, so this isn't a place mismatch with bare "Springfield".
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
+                       'born in Springfield in 1840', date_edtf='1840', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'birth',
+                       'born in Springfield', date_edtf='1840', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'corroborates')
+
     def test_relationship_claim_bundling_extra_counterpart_still_pairs(self) -> None:
         # One source bundles two children under one parent claim
         # (roles: parent: [P2, P3]); another source only names one of them.

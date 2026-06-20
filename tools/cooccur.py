@@ -249,6 +249,8 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
             SELECT id, source_id, place_id, place_text, date_edtf
             FROM claims
             WHERE status IN ('accepted', 'needs-review')
+              AND (negated IS NULL OR negated = 0)
+              AND date_edtf IS NOT NULL AND date_edtf != ''
               AND (
                 (place_id IS NOT NULL AND place_id != '')
                 OR (place_text IS NOT NULL AND place_text != '')
@@ -292,6 +294,8 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
             return
         compared.add(claim_pair)
         claim_a, claim_b = claims[cid_a], claims[cid_b]
+        if claim_a['source_id'] == claim_b['source_id']:
+            return
         if not _same_place(claim_a, claim_b):
             return
         a_min, a_max = edtf_bounds(claim_a['date_edtf'])
@@ -377,14 +381,15 @@ def _entity_label(category: str, value: str) -> str:
     convention (SPEC §8.4, e.g. "bookkeeper, Plains Junction Railroad") — the
     role varies between claims about the same employer, so grouping on the
     whole value would split one recurring employer into separate hubs. The
-    entity is the text after the LAST comma, since entity names can
-    themselves contain commas (e.g. "Plains Junction Railroad, Topeka Div.").
-    Membership values have no documented role/entity split, so they're used
-    as-is.
+    entity is the text after the FIRST comma, since entity names can
+    themselves contain commas (e.g. "Plains Junction Railroad, Topeka Div.") —
+    splitting on the last comma would drop everything before the entity's own
+    internal comma. Membership values have no documented role/entity split,
+    so they're used as-is.
     """
     label = (value or '').strip()
     if category in _DIRECT_ORG_TYPES and ',' in label:
-        label = label.rsplit(',', 1)[1].strip()
+        label = label.split(',', 1)[1].strip()
     return label
 
 
@@ -396,6 +401,7 @@ def _org_recurrence(conn: sqlite3.Connection, threshold: int = 2) -> list[dict]:
             SELECT id, source_id, type, subtype, value
             FROM claims
             WHERE status IN ('accepted', 'needs-review')
+              AND (negated IS NULL OR negated = 0)
               AND type IN ({})
             '''.format(','.join('?' * len(_ORG_CLAIM_TYPES))),
             tuple(_ORG_CLAIM_TYPES),

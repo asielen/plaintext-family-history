@@ -162,9 +162,15 @@ def _place_from_vital_value(text: str | None) -> str:
     """
     if not text:
         return ''
+    # The place capture stops before a trailing date/preposition clause
+    # ("born in Springfield in 1840" -> "Springfield", not "Springfield in
+    # 1840") as well as at sentence punctuation, since the date belongs to
+    # the structured `date_edtf` field, not the place comparison.
     patterns = (
-        r'\b(?:born|died|married|buried|baptized|baptised)\s+(?:in|at)\s+([^.;\n]+)',
-        r'\b(?:birthplace|deathplace|marriage place|burial place|baptism place|place)\s*:\s*([^.;\n]+)',
+        r'\b(?:born|died|married|buried|baptized|baptised)\s+(?:in|at)\s+'
+        r'([^.;\n]+?)(?:\s+(?:in|on|circa|c\.)\s+\d|[.;\n]|$)',
+        r'\b(?:birthplace|deathplace|marriage place|burial place|baptism place|place)\s*:\s*'
+        r'([^.;\n]+?)(?:\s+(?:in|on|circa|c\.)\s+\d|[.;\n]|$)',
     )
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
@@ -283,9 +289,17 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
 
     person_names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
 
+    _COUNTERPART_VITAL_TYPES = {'marriage', 'divorce'}
+
     groups = []
     for person_id, claim_ids in sorted(claims_by_person.items()):
         by_group: dict[tuple, list[str]] = {}
+        # A negated marriage/divorce claim ("never married", "no divorce on
+        # record") names no spouse, so it can't be bucketed by counterpart —
+        # it has to be compared against every claim of that type for this
+        # person instead of just one counterpart's bucket.
+        no_counterpart: dict[str, list[str]] = {}
+        all_of_type: dict[str, list[str]] = {}
         for cid in claim_ids:
             claim = claims_by_id[cid]
             if claim['type'] == 'relationship':
@@ -301,44 +315,58 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                 for other in others:
                     key = (claim['type'], claim['subtype'], role, other)
                     by_group.setdefault(key, []).append(cid)
-            elif claim['type'] == 'marriage':
-                # Marriage claims share the literal role "spouse" for both
-                # parties, so the counterpart set (not role) is what
-                # distinguishes one marriage from another for this person.
+            elif claim['type'] in _COUNTERPART_VITAL_TYPES:
+                # Marriage/divorce claims share one literal role ("spouse")
+                # for both parties, so the counterpart set (not role) is what
+                # distinguishes one marriage/divorce from another for this
+                # person.
                 others = frozenset(p for p in claim_persons.get(cid, []) if p != person_id)
-                key = (claim['type'], others)
-                by_group.setdefault(key, []).append(cid)
+                all_of_type.setdefault(claim['type'], []).append(cid)
+                if others:
+                    key = (claim['type'], others)
+                    by_group.setdefault(key, []).append(cid)
+                else:
+                    no_counterpart.setdefault(claim['type'], []).append(cid)
             else:
                 key = (claim['type'],)
                 by_group.setdefault(key, []).append(cid)
 
         pairs = []
         seen_pairs: set[frozenset[str]] = set()
+
+        def _try_pair(cid_a: str, cid_b: str) -> None:
+            pair_key = frozenset((cid_a, cid_b))
+            if pair_key in seen_pairs:
+                return
+            seen_pairs.add(pair_key)
+            claim_a, claim_b = claims_by_id[cid_a], claims_by_id[cid_b]
+            if claim_a['source_id'] == claim_b['source_id']:
+                return
+            if pair_key in linked_pairs:
+                return
+            kind = _classify_pair(claim_a, claim_b)
+            if kind is None:
+                return
+            pairs.append({
+                'kind': kind,
+                'claim_a': claim_a,
+                'claim_b': claim_b,
+            })
+
         for ids in by_group.values():
             ids = sorted(set(ids))
             for i in range(len(ids)):
                 for j in range(i + 1, len(ids)):
-                    cid_a, cid_b = ids[i], ids[j]
                     # A relationship claim can land in more than one
-                    # per-counterpart bucket; skip a pair already classified
-                    # via another shared counterpart.
-                    pair_key = frozenset((cid_a, cid_b))
-                    if pair_key in seen_pairs:
+                    # per-counterpart bucket; _try_pair dedupes via seen_pairs.
+                    _try_pair(ids[i], ids[j])
+
+        for ctype, no_ids in no_counterpart.items():
+            for cid_a in no_ids:
+                for cid_b in all_of_type.get(ctype, []):
+                    if cid_a == cid_b:
                         continue
-                    seen_pairs.add(pair_key)
-                    claim_a, claim_b = claims_by_id[cid_a], claims_by_id[cid_b]
-                    if claim_a['source_id'] == claim_b['source_id']:
-                        continue
-                    if pair_key in linked_pairs:
-                        continue
-                    kind = _classify_pair(claim_a, claim_b)
-                    if kind is None:
-                        continue
-                    pairs.append({
-                        'kind': kind,
-                        'claim_a': claim_a,
-                        'claim_b': claim_b,
-                    })
+                    _try_pair(cid_a, cid_b)
 
         if pairs:
             pairs.sort(key=lambda p: (p['claim_a']['type'], p['claim_a']['id'], p['claim_b']['id']))
