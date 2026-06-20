@@ -34,7 +34,7 @@ the insertion point in the same edit.
 | 1 | Layer 1 — Foundation | M1.1 – M1.8 | ✓ shipped |
 | 2 | Layer 2 — Archive views & discovery | M2.1 – M2.5 | ✓ shipped |
 | 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ✓ shipped — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
-| 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | future |
+| 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ◐ in progress — M4.1 (`fha xref`), M4.2 (`fha cooccur`) shipped; M4.3 (`fha find --related`) future |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | future |
 | 6 | Layer 6 — Data output | M6.1 – M6.5 | future |
 | 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | future |
@@ -726,14 +726,14 @@ fha photoindex tag-person <P-id> --paths <file> --root ...   # previews; writes 
 
 ---
 
-## Layer 4 — Cross-reference & connection (Milestone 4)
+## Layer 4 — Cross-reference & connection (Milestone 4 — ◐ in progress)
 
 Depends on: index (claim_links, relationships).
 Unlocks: `fha find --related` (D4), `fha report` section 8.
 
 ---
 
-### M4.1 — `fha xref`
+### M4.1 — `fha xref` (✓ shipped)
 
 **One PR.** New file `tools/xref.py`. Wire into `fha.py`. Does not write to the archive —
 output candidates only. Requires fresh index; exit 3 if absent (TOOLING §14a).
@@ -753,17 +753,23 @@ fha lint --root example-archive      # no regression
 
 ---
 
-### M4.2 — `fha cooccur`
+### M4.2 — `fha cooccur` (✓ shipped)
 
 **One PR.** New file `tools/cooccur.py`. Wire into `fha.py`. Does not write to the
 archive — output candidates only. Requires fresh index; exit 3 if absent (TOOLING §14a2).
 
-**`fha cooccur [--threshold N]`** (default 2). Two outputs:
+**`fha cooccur [--threshold N]`** (default 2). Three outputs:
 
-*Person co-occurrence:* join `source_people` on shared `source_id`; group by person-pair;
-count distinct sources; exclude pairs with existing `relationships` row; load and exclude
-`.cache/cooccur_dismissed.json` (`{"pairs": [["P-id1","P-id2"]], "generated":"…"}`); rank by
-count then source-type variety (different `source_type`s weigh more).
+*Person co-occurrence:* join `source_people` (∪ `claim_persons` participants) on shared
+`source_id`; group by person-pair; count distinct sources; exclude pairs with existing
+`relationships` row; load and exclude `.cache/cooccur_dismissed.json`
+(`{"pairs": [["P-id1","P-id2"]], "generated":"…"}`); rank by count then source-type variety
+(different `source_type`s weigh more).
+
+*Shared-place co-occurrence (TOOLING §690b):* accepted/needs-review claims of different,
+unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`)
+with overlapping EDTF date bounds; exclude pairs with an existing `relationships` row or a
+dismissed tombstone, same as person co-occurrence.
 
 *Org/entity recurrence:* group `claims.value` by `(value, type)` for `occupation`/`military`/
 `membership`; emit groups with ≥2 people or ≥2 sources as shared affiliation hubs.

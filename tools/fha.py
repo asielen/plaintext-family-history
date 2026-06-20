@@ -202,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
     from doctor import register as doctor_register
     from find import register as find_register
     from photoindex import register as photoindex_register
+    from xref import register as xref_register
+    from cooccur import register as cooccur_register
 
     parser = build_parser()
     subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -214,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
     doctor_register(subs)
     find_register(subs)
     photoindex_register(subs)
+    xref_register(subs)
+    cooccur_register(subs)
 
     args = parser.parse_args(argv_list)
 
