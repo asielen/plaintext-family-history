@@ -73,10 +73,18 @@ import yaml
 #  Indexers (one per record type)
 #    _index_places           — places.yaml → places, place_names, place_history
 #    _index_person           — one person .md → persons + person_files
+#                              + hypotheses + search_log (research files)
 #    _index_source           — one source .md → sources + claims + claim_persons
 #                              + claim_links + source_files + source_people
 #    _index_notes            — notes/*.md → notes_fts
+#                              + search_log (notes/research-log.md)
 #    _index_citations        — all .md → citations (token → file + line)
+#
+#  Markdown block parsing
+#    _parse_md_list_blocks   — generic "- field: value" block parser, shared by
+#                              the Hypotheses and Research Log section parsers
+#    _index_hypotheses_block — ## Hypotheses entries → hypotheses rows
+#    _index_research_log_block — ## Research Log entries → search_log rows
 #
 #  Derived tables
 #    _derive_relationships   — accepted claims → relationships adjacency list
@@ -317,6 +325,161 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
                 )
 
 
+_MD_HEADING_RE = re.compile(r'^##\s')
+_MD_LIST_ITEM_RE = re.compile(r'^-\s+(\w+):\s*(.*)$')
+_MD_CONTINUATION_RE = re.compile(r'^\s{2,}(\w+):\s*(.*)$')
+
+
+def _parse_md_list_blocks(section_body: str) -> list[dict[str, str]]:
+    """
+    Parse a markdown section body into a list of `- field: value` entries.
+
+    Each entry starts with a line matching `- field: value` and continues
+    with indented `  field: value` continuation lines until the next `- `
+    entry, a blank line, or the next `##` heading (the caller is expected to
+    have already sliced the body down to one section, but this also bails out
+    defensively on a heading so a malformed slice can't bleed into the next
+    section's entries).
+
+    Tolerant of the well-formed two-space-indent style (the canonical example,
+    SPEC §16) and is otherwise strict about line shape — a continuation line
+    that lacks the leading indent is just not picked up, rather than guessed
+    at, since the field-name-as-disambiguator trick is fragile prose to rely on.
+    Values are returned exactly as written, quotes and all; callers that care
+    about quoting strip it themselves.
+    """
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+
+    for line in section_body.splitlines():
+        if _MD_HEADING_RE.match(line):
+            break
+        if not line.strip():
+            current = None
+            continue
+
+        m = _MD_LIST_ITEM_RE.match(line)
+        if m:
+            current = {m.group(1): m.group(2).strip()}
+            entries.append(current)
+            continue
+
+        if current is not None:
+            cm = _MD_CONTINUATION_RE.match(line)
+            if cm:
+                current[cm.group(1)] = cm.group(2).strip()
+            else:
+                # Unindented or unrecognized line inside an entry — the entry
+                # is over (matches the "blank line or next `- `" termination
+                # rule in spirit: anything that isn't a recognized field line
+                # ends the current entry rather than corrupting it).
+                current = None
+
+    return entries
+
+
+def _strip_quotes(value: str) -> str:
+    """Strip a single layer of matching quotes a YAML-ish hand-written value may carry."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
+def _extract_section_body(body: str, heading: str) -> str:
+    """Return the text between `## {heading}` and the next `##` heading (or EOF)."""
+    pattern = re.compile(
+        rf'^##\s*{re.escape(heading)}\s*$(.*?)(?=^##\s|\Z)', re.M | re.S,
+    )
+    m = pattern.search(body)
+    return m.group(1) if m else ''
+
+
+def _index_hypotheses_block(
+    conn: sqlite3.Connection, body: str, pid: str | None, rel_path: str,
+) -> None:
+    """Parse `## Hypotheses` entries from a research file body and insert rows."""
+    section = _extract_section_body(body, 'Hypotheses')
+    if not section.strip():
+        return
+    for entry in _parse_md_list_blocks(section):
+        hid = normalize_id(_strip_quotes(entry.get('id', '')))
+        if not hid or not hid.startswith('h-'):
+            continue
+        status = _strip_quotes(entry.get('status', ''))
+        verified_claim = None
+        cm = ID_RE.search(status)
+        if cm and cm.group(1).upper() == 'C':
+            verified_claim = normalize_id(f"{cm.group(1)}-{cm.group(2)}")
+        conn.execute(
+            '''INSERT OR REPLACE INTO hypotheses
+               (id, person_id, hypothesis, basis, verify, origin, status, verified_claim, path)
+               VALUES (?,?,?,?,?,?,?,?,?)''',
+            (
+                hid, pid,
+                _strip_quotes(entry.get('hypothesis', '')),
+                _strip_quotes(entry.get('basis', '')),
+                _strip_quotes(entry.get('verify', '')),
+                _strip_quotes(entry.get('origin', '')),
+                status,
+                verified_claim,
+                rel_path,
+            ),
+        )
+
+
+def _index_research_log_block(
+    conn: sqlite3.Connection, body: str, pid: str | None, rel_path: str,
+) -> None:
+    """Parse `## Research Log` entries from a research file (or notes/research-log.md)
+    body and insert rows into search_log.
+
+    notes/research-log.md (SPEC §16) isn't specified to require the
+    `## Research Log` heading the way a person research file does — it may
+    just be a bare list of entries.  Fall back to treating the whole body as
+    the section when no heading is present, so either shape works.
+    """
+    section = _extract_section_body(body, 'Research Log')
+    if not section.strip():
+        section = body
+    if not section.strip():
+        return
+    for entry in _parse_md_list_blocks(section):
+        date = _strip_quotes(entry.get('date', ''))
+        if not date:
+            continue
+        result = _strip_quotes(entry.get('result', ''))
+        source_id = None
+        sm = ID_RE.search(result)
+        if sm and sm.group(1).upper() == 'S':
+            source_id = normalize_id(f"{sm.group(1)}-{sm.group(2)}")
+        entry_pid = pid
+        if not entry_pid:
+            # Multi-person/locality entries (notes/research-log.md) carry no
+            # implicit person — only pick one up if the entry explicitly names
+            # a person_id or P-id (SPEC §16: "no person_id field there since
+            # it's not person-scoped the same way").
+            explicit = entry.get('person_id') or ''
+            qm = ID_RE.search(explicit) or ID_RE.search(entry.get('question', ''))
+            if qm and qm.group(1).upper() == 'P':
+                entry_pid = normalize_id(f"{qm.group(1)}-{qm.group(2)}")
+        conn.execute(
+            '''INSERT INTO search_log
+               (date, person_id, question, repository, collection, terms, result, source_id, path)
+               VALUES (?,?,?,?,?,?,?,?,?)''',
+            (
+                date, entry_pid,
+                _strip_quotes(entry.get('question', '')),
+                _strip_quotes(entry.get('repository', '')),
+                _strip_quotes(entry.get('collection', '')),
+                _strip_quotes(entry.get('terms', '')),
+                result,
+                source_id,
+                rel_path,
+            ),
+        )
+
+
 def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> None:
     """
     Index one person .md file into persons and person_files.
@@ -413,6 +576,16 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
             (str(path.relative_to(archive_root)), body),
         )
+
+    # Research files (SPEC §16) carry ## Hypotheses and ## Research Log
+    # sections — the only place those durable records live.  Without this,
+    # the report's hypotheses/search-log sections always read empty even when
+    # the archive has real entries (the report rebuilds the index right
+    # before querying these tables).
+    if kind == 'research' and body.strip():
+        rel_path = str(path.relative_to(archive_root))
+        _index_hypotheses_block(conn, body, pid, rel_path)
+        _index_research_log_block(conn, body, pid, rel_path)
 
 
 def _index_source(
@@ -595,6 +768,20 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path) -> None:
             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
             (str(path.relative_to(archive_root)), content),
         )
+
+    # notes/research-log.md (SPEC §16): multi-person/locality searches log
+    # here with the same field shape as a research file's ## Research Log,
+    # but no implicit person_id (it isn't person-scoped) — picked up only
+    # when an entry explicitly names one.
+    research_log_path = notes_dir / 'research-log.md'
+    if research_log_path.exists():
+        try:
+            content = research_log_path.read_text(encoding='utf-8')
+        except OSError:
+            content = ''
+        if content.strip():
+            rel_path = str(research_log_path.relative_to(archive_root))
+            _index_research_log_block(conn, content, None, rel_path)
 
 
 def _index_citations(conn: sqlite3.Connection, archive_root: Path) -> None:
