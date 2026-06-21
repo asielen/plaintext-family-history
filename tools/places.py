@@ -61,6 +61,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Finding,
+    FhaConfigError,
     edtf_bounds,
     fmt_id_display,
     load_fha_yaml,
@@ -72,7 +73,7 @@ from _lib import (
 )
 
 _LINT_REQUIRED_TABLES = ('places', 'place_names', 'place_history', 'claims')
-_CANDIDATES_REQUIRED_TABLES = ('claims',)
+_CANDIDATES_REQUIRED_TABLES = ('claims', 'places')
 
 _GPS_CLUSTER_RADIUS_M = 150.0
 _EARTH_RADIUS_M = 6371000.0
@@ -300,18 +301,29 @@ def _gps_clusters(
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
         return []
+    if status == 'stale':
+        print(
+            'WARNING: photo index may be stale — skipping GPS cluster detection. '
+            'Run `fha photoindex` to refresh.',
+            file=sys.stderr,
+        )
+        return []
 
     db_path = archive_root / '.cache' / 'photos.sqlite'
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        points = [
-            (row['path'], row['gps_lat'], row['gps_lon'])
-            for row in conn.execute(
-                'SELECT path, gps_lat, gps_lon FROM photos '
-                'WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL'
-            )
-        ]
+        # One row per group_id (preferring the primary variant) so front/
+        # back/crop/copy variants of the same logical photo count once
+        # toward the cluster threshold, matching the photoindex contract.
+        by_group: dict[str, tuple[str, float, float]] = {}
+        for row in conn.execute(
+            'SELECT path, group_id, gps_lat, gps_lon FROM photos '
+            'WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL '
+            'ORDER BY group_id, is_primary DESC'
+        ):
+            by_group.setdefault(row['group_id'], (row['path'], row['gps_lat'], row['gps_lon']))
+        points = list(by_group.values())
     except sqlite3.OperationalError:
         return []
     finally:
@@ -374,13 +386,11 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
     try:
         place_text_groups = _place_text_candidates(conn, threshold)
         known_coords = []
-        try:
-            known_coords = [
-                (row['lat'], row['lon'])
-                for row in conn.execute('SELECT lat, lon FROM places WHERE lat IS NOT NULL AND lon IS NOT NULL')
-            ]
-        except sqlite3.OperationalError:
-            known_coords = []
+        for row in conn.execute('SELECT lat, lon FROM places WHERE lat IS NOT NULL AND lon IS NOT NULL'):
+            try:
+                known_coords.append((float(row['lat']), float(row['lon'])))
+            except (TypeError, ValueError):
+                continue
     except sqlite3.OperationalError:
         print(
             'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
@@ -412,19 +422,10 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def _resolve_root_and_config(args: argparse.Namespace) -> tuple[Path, dict] | int:
+def _cmd_places_lint(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
-    fha_config = load_fha_yaml(archive_root)
-    return archive_root, fha_config
-
-
-def _cmd_places_lint(args: argparse.Namespace) -> int:
-    resolved = _resolve_root_and_config(args)
-    if isinstance(resolved, int):
-        return resolved
-    archive_root, _fha_config = resolved
 
     result = run_lint(archive_root)
     if result['status'] == 'failed':
@@ -444,10 +445,14 @@ def _cmd_places_lint(args: argparse.Namespace) -> int:
 
 
 def _cmd_places_candidates(args: argparse.Namespace) -> int:
-    resolved = _resolve_root_and_config(args)
-    if isinstance(resolved, int):
-        return resolved
-    archive_root, fha_config = resolved
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
+        return EXIT_FAILURE
 
     threshold = getattr(args, 'threshold', None)
     if threshold is None:
