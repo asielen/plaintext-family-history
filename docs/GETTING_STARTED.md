@@ -23,11 +23,12 @@ State your **mode** at the start of a session — `research`, `tool-building`, `
 
 ## Step 3 — Use (or extend) the tools
 
-Milestones 1–5 are complete, plus `fha packet` (milestone 6.1): `fha lint`, `fha index`,
+Milestones 1–5 are complete, plus `fha packet` (milestone 6.1) and `fha places`
+(milestone 6.2): `fha lint`, `fha index`,
 `fha id`, `fha stubs`, `fha views` (timeline, sources-index, draft-queue, brackets, tree),
 `fha doctor`, `fha find` (including `--related` and `--text`), `fha photoindex`
 (scan/find/triage/report/reconcile/tag-person), `fha xref`, `fha cooccur`, `fha report`,
-and `fha packet` are all implemented — see `tools/README.md` for the authoritative
+`fha packet`, and `fha places` are all implemented — see `tools/README.md` for the authoritative
 per-tool status table. Run them with Python 3.10+ from the repo root:
 
 ```
@@ -45,9 +46,11 @@ python tools/fha.py find P-de957bcda1 --root example-archive
 python tools/fha.py find --related P-de957bcda1 --root example-archive
 python tools/fha.py report --root example-archive
 python tools/fha.py packet P-de957bcda1 --root example-archive --no-photos
+python tools/fha.py places lint --root example-archive
+python tools/fha.py places candidates --root example-archive
 ```
 
-To build further tools (process, places, gedcom, wikitree, site, …), declare
+To build further tools (process, gedcom, wikitree, site, …), declare
 **tool-building mode** and follow the build order in `BUILD.md` (which itself implements
 the design in `TOOLING.md` §15).
 Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.

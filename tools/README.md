@@ -77,7 +77,7 @@ start importing siblings.
 | §5 Search-log awareness | ✓ | Annotates leads (W101/suggested-claim/E009 persons) from `search_log`; nil searches older than 18 months flagged "worth re-running (stale nil search)". `search_log` is provisioned but not yet populated by any tool — this section reports "no matching entries" until something writes to it |
 | §5b Answerable questions | ✓ | Open `notes/questions.md` questions whose referenced `[C-id]` is now `accepted`, or whose referenced `[P-id]` now has all its required-vitals accepted claims; proposals only — printed, never executed |
 | §6 Photo triage | ✓ | Embeds `photoindex.run_triage(top=10)`; absent/unreadable photo index reported, not treated as an error |
-| §6b Place candidates | ⚑ deferred | `fha places` (BUILD.md M6.2) does not exist yet; this section always prints a deferral note. The code path imports `places` and calls `run_candidates()` so it activates automatically once that tool ships |
+| §6b Place candidates | ✓ | `fha places` (BUILD.md M6.2) is built; this section calls `places.run_candidates()` directly — unlinked place-text clusters and GPS clusters, or a "none found" note |
 | §7 Hypotheses & draft queues | ✓ | `hypotheses` table is provisioned but not yet populated by any tool — reports "no open hypotheses" until something writes to it; draft-queue backlog reads `person_files` companion files for non-placeholder content |
 | §8 Possible connections | ✓ | Embeds `cooccur.run_cooccur(threshold=2)` — person pairs, shared-place pairs, and org/entity recurrence hubs, top 10 each, with `[confirm] [dismiss]` labels (confirming/dismissing is still a future skill-layer action, same as `fha cooccur` itself) |
 | `--full` | ✓ | Treats the snapshot baseline as empty for diffing; still writes a fresh snapshot afterward |
@@ -138,6 +138,7 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | Tool | File | Status |
 |---|---|---|
 | `fha packet <P-id> [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]` | `packet.py` | ✓ M6.1 — see "fha packet — implementation status" below |
+| `fha places lint` / `fha places candidates [--threshold N]` | `places.py` | ✓ M6.2 — see "fha places — implementation status" below |
 
 ## fha packet — implementation status
 
@@ -156,6 +157,17 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | Filesystem-error handling | ✓ | A single file's copy failing (locked file, permission error) is caught, reported in messages/exit code, and skipped — it never aborts the build. A structural failure (can't create the packet dir, zip write fails, disk full) is caught at the top level, the half-built directory is removed on a best-effort basis, and the command returns `write-failed` (exit 3) instead of an unhandled traceback |
 
 Automated tests: `tests/test_packet.py` builds a synthetic `.cache/index.sqlite` (and, where needed, a synthetic `.cache/photos.sqlite`) directly from `index.py`'s/`photoindex.py`'s DDL, covering the curated/living gates, strict stale-index refusal, restricted/DNA source filtering (both directions), the other-living-person caution (`living: true` and `living: unknown`), timeline source filtering, missing asset/photo reporting, `--include-research` with no research file, output conflict/overwrite/dry-run (including `--dry-run --overwrite` together) behavior, external `--out` display, the missing/absent/stale photoindex paths, photo-group expansion (a person tagged on one variant pulls in its siblings), a per-file copy failure (mocked `shutil.copy2`), and a structural build failure (mocked `_zip_directory`).
+
+## fha places — implementation status
+
+| Feature | Status | Notes |
+|---|---|---|
+| `fha places lint` | ✓ | Orphan `claims.place_id` references (`PL001`); duplicate place names case-folded across `name` + `alt_names` (`PL002`); dangling `within:` links (`PL003`); cyclic `within:` chains, including a self-loop, reported once per cycle (`PL004`); a place that is itself a `within:` target (a settlement) also carrying its own outward `within:` link — settlement-to-jurisdiction containment belongs in `history:`, never `within:` (`PL005`, SPEC §15); a non-string `within:` value, e.g. an unquoted YAML scalar (`PL006`) |
+| `fha places candidates` | ✓ | Distinct *unlinked* (`place_id` empty) claim `place_text` values normalized (case-fold, punctuation, whitespace, St→Street/Co→County expansion) and clustered by a sorted token-set key, so word-order, punctuation, and abbreviation variants land in one group; groups with ≥ `--threshold` (default 3) claims are surfaced with claim count and EDTF date spread |
+| GPS clusters | ✓ | Geotagged photos (`.cache/photos.sqlite`) clustered by ≤150m haversine distance, excluding photos within 150m of a known place's `coords`; absent/unreadable photo index is skipped, not an error (mirrors `fha packet --no-photos` treatment) |
+| `fha report` §6b integration | ✓ | `report.py`'s `_section_place_candidates` imports `places` and calls `run_candidates()` — now live instead of the BUILD.md M6.2 deferral stub |
+
+Automated tests: `tests/test_places.py` builds a synthetic `.cache/index.sqlite` directly from `index.py`'s DDL (same pattern as `tests/test_cooccur.py`), covering each lint code individually, word-order/punctuation/abbreviation clustering, the unlinked-only filter, date-spread computation, the missing-index failure path, and haversine distance sanity checks.
 
 ## fha doctor — implementation status
 

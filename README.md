@@ -72,7 +72,7 @@ The spec is written so that all of that tooling can be *regenerated* from the do
 
 ## What this is not
 
-- **Not a finished app.** Milestones 1–5 (linting, IDs, views/discovery, the photo catalog, cross-reference/connection detection, and the research report — see `BUILD.md` for the full roadmap) are implemented, plus `fha packet` (milestone 6.1); the full suite (`fha process`, `fha site`, GEDCOM/WikiTree export, etc.) is still being built.
+- **Not a finished app.** Milestones 1–5 (linting, IDs, views/discovery, the photo catalog, cross-reference/connection detection, and the research report — see `BUILD.md` for the full roadmap) are implemented, plus `fha packet` (milestone 6.1) and `fha places` (milestone 6.2); the full suite (`fha process`, `fha site`, GEDCOM/WikiTree export, etc.) is still being built.
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.
@@ -148,14 +148,15 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` — milestones 1–5 complete, plus `fha packet` (milestone 6.1).**
+**Current: `spec v1.2` — milestones 1–5 complete, plus `fha packet` (milestone 6.1) and `fha places` (milestone 6.2).**
 
-Everything through the research report, plus the person export packet, is
+Everything through the research report, plus the person export packet and place
+registry hygiene/candidate detection, is
 implemented and runs cleanly on the example archive: the linting/indexing
 substrate, the view generators and universal locator, the photo catalog, the
 candidate-finding tools (contradiction/corroboration detection, person and
 place co-occurrence, and `fha find --related`'s neighborhood queries), the
-`fha report` session feed, and `fha packet`. See `BUILD.md` for the detailed
+`fha report` session feed, `fha packet`, and `fha places`. See `BUILD.md` for the detailed
 milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
@@ -171,7 +172,8 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha find --related` — the neighborhood query: people, places, sources, and time slices (milestone 4)
 - [x] `fha report` — the session research feed: discoveries, review queue, vitals gaps, contradictions, search-log awareness, answerable questions, photo triage, hypotheses, possible connections (milestone 5)
 - [x] `fha packet` — person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)
-- [ ] `fha places`, `fha gedcom`, `fha wikitree` (milestone 6.2+)
+- [x] `fha places` — place registry lint and recurring unlinked place/GPS candidate detection (milestone 6.2)
+- [ ] `fha gedcom`, `fha wikitree` (milestone 6.4+)
 - [ ] `fha process`, web-capture intake (milestone 7)
 - [ ] The static-site generator
 

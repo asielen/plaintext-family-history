@@ -36,7 +36,7 @@ the insertion point in the same edit.
 | 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ✓ shipped — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
 | 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ✓ shipped — M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | ✓ shipped — M5.1 (`fha report` §0–4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6–8 photo triage/place candidates/hypotheses/cooccur) |
-| 6 | Layer 6 — Data output | M6.1 – M6.5 | ◐ in progress — M6.1 (`fha packet`) |
+| 6 | Layer 6 — Data output | M6.1 – M6.5 | ◐ in progress — M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`) |
 | 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | future |
 | 8 | Layer 8 — Publication | M8.1 – M8.5 | future |
 | 9 | Layer 9 — Scaffolding | M9.1 – M9.2 | future |
@@ -956,7 +956,7 @@ fha packet P-de957bcda1 --root example-archive --include-research  # adds resear
 
 ---
 
-### M6.2 — `fha places lint` + `fha places candidates`
+### M6.2 — `fha places lint` + `fha places candidates` (✓ shipped)
 
 **One PR.** New file `tools/places.py`. Wire both into `fha.py` (TOOLING §10).
 
@@ -970,8 +970,10 @@ count and EDTF spread. GPS clusters: ≥3 photos within ~150m with no known L-id
 
 **Done when:**
 ```sh
+fha index --root example-archive                     # build the index first
 fha places lint --root example-archive               # exits 0 (clean fixture)
 fha places candidates --root example-archive         # exits 0
+fha index --root tests/fixtures/broken-places
 fha places lint --root tests/fixtures/broken-places  # fires on orphan L-id + dangling within:
 ```
 

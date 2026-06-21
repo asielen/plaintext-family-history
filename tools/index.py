@@ -295,11 +295,26 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
         return
     try:
         with open(places_path, encoding='utf-8') as f:
-            places = yaml.safe_load(f) or []
-    except Exception:
+            places = yaml.safe_load(f)
+    except Exception as exc:
+        print(
+            f'WARNING: places/places.yaml could not be parsed ({exc}); '
+            'place registry will be empty until this is fixed.',
+            file=sys.stderr,
+        )
         return
 
-    for place in (places if isinstance(places, list) else []):
+    if places is None:
+        return
+    if not isinstance(places, list):
+        print(
+            'WARNING: places/places.yaml is not a YAML list; '
+            'place registry will be empty until this is fixed.',
+            file=sys.stderr,
+        )
+        return
+
+    for place in places:
         if not isinstance(place, dict):
             continue
         pid = normalize_id(str(place.get('id', '')))

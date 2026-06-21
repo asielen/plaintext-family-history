@@ -9,7 +9,6 @@
       "Bash(git diff*)",
       "Bash(git log*)",
       "Bash(git show*)",
-      "PowerShell(cd \"d:\\\\Andrew\\\\Documents\\\\Programming\\\\PycharmProjects\\\\plainfile-family-history\"; python tools/fha.py lint --root example-archive --spec-root . 2>&1; Write-Host \"Exit: $LASTEXITCODE\")",
       "PowerShell(gh auth status 2>&1)",
       "Bash(gh --version)",
       "PowerShell(gh --version)",
@@ -18,7 +17,17 @@
       "PowerShell(gh auth status)",
       "PowerShell(Test-Path \"$env:ProgramFiles\\\\GitHub CLI\\\\gh.exe\"; Test-Path \"$env:LOCALAPPDATA\\\\GitHub CLI\\\\gh.exe\"; where.exe gh 2>&1; winget list --id GitHub.cli 2>&1)",
       "PowerShell(& \"$env:ProgramFiles\\\\GitHub CLI\\\\gh.exe\" auth status)",
-      "Bash(curl -s \"https://api.github.com/repos/asielen/plainfile-family-history/*)"
+      "Bash(curl -s \"https://api.github.com/repos/asielen/plainfile-family-history/*)",
+      "Bash(python tools/fha.py index --root example-archive)",
+      "Bash(echo \"LINT_EXIT=$?\")",
+      "Bash(echo \"CAND_EXIT=$?\")",
+      "Bash(python -m pytest tests/test_places.py -q)",
+      "Bash(git log --oneline -20)",
+      "Bash(git diff --stat)",
+      "Bash(python -m pytest tests/test_places.py tests/test_report.py -q)",
+      "Bash(echo \"candidates exit=$?\")",
+      "Bash(python tools/fha.py places --root example-archive)",
+      "Bash(echo \"noargs exit=$?\")"
     ]
   }
 }

@@ -71,7 +71,7 @@ CODE MAP
     _section_search_log          — §5: search_log lookups for current leads
     _section_answerable_questions — §5b: open questions with a closeable gap
     _section_photo_triage        — §6: photoindex.run_triage embed
-    _section_place_candidates    — §6b: places.candidates() if built, else a deferral note
+    _section_place_candidates    — §6b: places.run_candidates() embed
     _section_hypotheses          — §7: open hypotheses + draft-queue backlog
     _section_possible_connections — §8: cooccur.run_cooccur top candidates
 
@@ -721,12 +721,13 @@ def _section_photo_triage(
 
 def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]:
     """
-    Calls `places.candidates(root)` if the `fha places` tool has been built
-    (BUILD.md M6.2); that module does not exist yet in this milestone, so the
-    import always fails and this section is a documented stub note instead.
+    Calls `places.run_candidates()` (BUILD.md M6.2). The import/attribute
+    guards stay in place as a defensive fallback rather than a hard
+    dependency — every other optional embed in this file (photoindex,
+    cooccur) degrades the same way instead of raising.
     """
     try:
-        import places as _places_tool   # noqa: PLC0415 — optional, may not exist yet
+        import places as _places_tool   # noqa: PLC0415 — optional embed, see docstring
     except ImportError:
         return ['`fha places candidates` is not yet built (BUILD.md M6.2) — section deferred.']
 

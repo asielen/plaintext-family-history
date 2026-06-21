@@ -472,7 +472,7 @@ Runs incrementally; folded into `fha doctor` and the report's freshness step. **
 
 ## 10. `fha places` — registry + geocoder
 
-`fha places lint` (orphan L-ids, duplicates by normalized name, dangling/cyclic `within:` links, `within:` pointing at a non-settlement) · **`fha places candidates`** — the recurrence detector: normalize unlinked claim `place_text` (case, punctuation, abbreviation expansion: St/Street, Co/County), cluster near-variants (token-set match), emit groups ≥3 occurrences with their claims and date spread; plus photo-GPS clusters (≥3 photos within ~150m) near no known place's coords.
+`fha places lint` (orphan L-ids, duplicates by normalized name, dangling/cyclic `within:` links, a place that is itself a `within:` target also carrying its own outward `within:` link) · **`fha places candidates`** — the recurrence detector: normalize unlinked claim `place_text` (case, punctuation, abbreviation expansion: St/Street, Co/County), cluster near-variants (token-set match), emit groups ≥3 occurrences with their claims and date spread; plus photo-GPS clusters (≥3 photos within ~150m) near no known place's coords.
 Elevation is a guided flow: human confirms → mint L-id (+`within:`) → per-claim `place:` backfill, each shown (same text across decades may be different buildings); `place_text` never altered.
 This deterministic-cluster → human-confirmed-elevation pattern is the template for future recurring-people (FAN) detection. · `fha places geocode` — backfill `coords`/`alt_names`.
 Gazetteer: **GeoNames** offline dump (`cities15000` + `allCountries` as needed), downloaded once into `\.cache/geonames/`; no live API dependency.

@@ -257,9 +257,13 @@ class ReportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             report.run_report(self.archive_root, {}, section='not-a-real-section')
 
-    def test_place_candidates_section_is_a_deferral_stub(self) -> None:
+    def test_place_candidates_section_uses_live_places_tool(self) -> None:
+        # places.py now exists (BUILD.md M6.2), so the section calls
+        # places.run_candidates() instead of printing the deferral stub.
         result = report.run_report(self.archive_root, {}, full=True)
-        self.assertIn('BUILD.md M6.2', result['markdown'])
+        md = result['markdown']
+        self.assertNotIn('BUILD.md M6.2', md)
+        self.assertIn('No recurring unlinked place-text or GPS clusters found.', md)
 
     def test_photo_triage_section_reports_absent_index(self) -> None:
         result = report.run_report(self.archive_root, {}, full=True)
