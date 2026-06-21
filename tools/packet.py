@@ -135,8 +135,42 @@ def _today() -> str:
 def _curated_person(conn: sqlite3.Connection, pid: str) -> sqlite3.Row | None:
     """Return the persons row for pid, or None if absent. Caller checks tier."""
     return conn.execute(
-        'SELECT id, name, surname, living, tier, path FROM persons WHERE id = ?', (pid,)
+        'SELECT id, name, surname, living, tier, status, merged_into, path FROM persons WHERE id = ?',
+        (pid,),
     ).fetchone()
+
+
+def _resolve_merged_person(
+    conn: sqlite3.Connection, person: sqlite3.Row
+) -> tuple[sqlite3.Row, list[str]]:
+    """
+    Follow `merged_into` to the survivor (SPEC §8.8: "tools resolve
+    references through merged_into"). A merged tombstone's own `tier`/
+    `living` are irrelevant once redirected — the survivor's gate checks
+    apply instead. Guards against a corrupt merge cycle by capping the
+    chain length rather than looping forever.
+    """
+    notes: list[str] = []
+    seen = {person['id']}
+    while person['status'] == 'merged' and person['merged_into']:
+        target_id = person['merged_into']
+        if target_id in seen:
+            notes.append(f'{fmt_id_display(target_id)}: merge chain cycle detected; stopping redirect.')
+            return person, notes
+        target = _curated_person(conn, target_id)
+        if target is None:
+            notes.append(
+                f'{fmt_id_display(person["id"])} is merged into {fmt_id_display(target_id)}, '
+                'which is not in the index.'
+            )
+            return person, notes
+        notes.append(
+            f'{fmt_id_display(person["id"])} is merged into {fmt_id_display(target_id)}; '
+            'building the packet for the survivor.'
+        )
+        seen.add(target_id)
+        person = target
+    return person, notes
 
 
 def _source_ids_for_person(conn: sqlite3.Connection, pid: str) -> list[str]:
@@ -608,6 +642,10 @@ def run_packet(
         person = _curated_person(conn, pid)
         if person is None:
             return {'status': 'not-found', 'packet_dir': None, 'zip_path': None, 'messages': messages}
+        person, merge_notes = _resolve_merged_person(conn, person)
+        if merge_notes:
+            messages.extend(merge_notes)
+        pid = person['id']
         if person['tier'] != 'curated':
             return {'status': 'not-curated', 'packet_dir': None, 'zip_path': None, 'messages': messages}
         if person['living'] in ('true', 'unknown'):

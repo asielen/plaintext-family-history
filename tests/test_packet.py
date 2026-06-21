@@ -68,14 +68,15 @@ class PacketTests(unittest.TestCase):
         os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
 
     def _seed_person(self, pid='p-aaaaaaaaaa', name='Test Person', living='false',
-                     tier='curated', surname='Person'):
+                     tier='curated', surname='Person', status='active', merged_into=None):
         profile_path = self.archive_root / 'people' / f'{surname.lower()}__test_{pid}.md'
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         profile_path.write_text(f'---\nid: {pid}\nname: {name}\n---\n# {name}\n', encoding='utf-8')
         rel = profile_path.relative_to(self.archive_root).as_posix()
         self.conn.execute(
-            'INSERT INTO persons(id, name, surname, living, tier, path) VALUES (?,?,?,?,?,?)',
-            (pid, name, surname, living, tier, rel),
+            'INSERT INTO persons(id, name, surname, living, tier, status, merged_into, path) '
+            'VALUES (?,?,?,?,?,?,?,?)',
+            (pid, name, surname, living, tier, status, merged_into, rel),
         )
         return profile_path
 
@@ -120,6 +121,48 @@ class PacketTests(unittest.TestCase):
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
         self.assertEqual(result['status'], 'living-subject')
         self.assertFalse(self.out_dir.exists())
+
+    def test_merged_tombstone_redirects_to_survivor(self):
+        self._seed_person(pid='p-bbbbbbbbbb', name='Survivor Person', surname='Survivor')
+        self._seed_person(
+            pid='p-aaaaaaaaaa', name='Old Record', surname='Old',
+            status='merged', merged_into='p-bbbbbbbbbb',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        self.assertTrue(any('merged into' in m for m in result['messages']))
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Survivor Person', readme)
+
+    def test_merge_redirect_to_living_survivor_refuses(self):
+        self._seed_person(pid='p-bbbbbbbbbb', name='Survivor Person', surname='Survivor', living='true')
+        self._seed_person(
+            pid='p-aaaaaaaaaa', name='Old Record', surname='Old',
+            status='merged', merged_into='p-bbbbbbbbbb',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'living-subject')
+
+    def test_merge_chain_cycle_does_not_hang(self):
+        self._seed_person(
+            pid='p-aaaaaaaaaa', name='A', surname='A',
+            status='merged', merged_into='p-bbbbbbbbbb',
+        )
+        self._seed_person(
+            pid='p-bbbbbbbbbb', name='B', surname='B',
+            status='merged', merged_into='p-aaaaaaaaaa',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertTrue(any('cycle detected' in m for m in result['messages']))
 
     def test_stale_index_refuses_before_export(self):
         profile = self._seed_person()
