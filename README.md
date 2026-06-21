@@ -148,15 +148,15 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` — milestones 1–4 complete.**
+**Current: `spec v1.2` — milestones 1–5 complete.**
 
-Everything through cross-reference and connection detection is implemented and
-runs cleanly on the example archive: the linting/indexing substrate, the view
-generators and universal locator, the photo catalog, and the candidate-finding
-tools (contradiction/corroboration detection, person and place co-occurrence,
-and `fha find --related`'s neighborhood queries). See `BUILD.md` for the
-detailed milestone breakdown. The intended build sequence (detailed in
-`TOOLING.md` §15):
+Everything through the research report is implemented and runs cleanly on
+the example archive: the linting/indexing substrate, the view generators and
+universal locator, the photo catalog, the candidate-finding tools
+(contradiction/corroboration detection, person and place co-occurrence, and
+`fha find --related`'s neighborhood queries), and the `fha report` session
+feed. See `BUILD.md` for the detailed milestone breakdown. The intended
+build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
 - [x] `fha id`, `fha index`, `fha lint`, `fha stubs` — the substrate (milestone 1: lint clean on the example archive)
@@ -169,8 +169,9 @@ detailed milestone breakdown. The intended build sequence (detailed in
 - [x] `fha photoindex` — photo catalog: scan/grouping, find, triage/report, reconcile/tag-person (milestone 3)
 - [x] `fha xref`, `fha cooccur` — corroboration/contradiction and co-occurrence candidate detection (milestone 4)
 - [x] `fha find --related` — the neighborhood query: people, places, sources, and time slices (milestone 4)
-- [ ] `fha process`, the session report, person packets (milestone 5+)
-- [ ] The static-site generator and GEDCOM export
+- [x] `fha report` — the session research feed: discoveries, review queue, vitals gaps, contradictions, search-log awareness, answerable questions, photo triage, hypotheses, possible connections (milestone 5)
+- [ ] `fha process`, person packets, GEDCOM/WikiTree export (milestone 6+)
+- [ ] The static-site generator
 - [ ] Web-capture companion for record intake
 
 ## A complementary project

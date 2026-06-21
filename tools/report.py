@@ -93,7 +93,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
+    EXIT_WARNINGS,
     FhaConfigError,
     fmt_id_display,
     load_fha_yaml,
@@ -208,6 +210,17 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
     source_ids = sorted(r[0] for r in conn.execute('SELECT id FROM sources'))
     person_ids = sorted(r[0] for r in conn.execute('SELECT id FROM persons'))
     claim_status_by_id = {r[0]: r[1] for r in conn.execute('SELECT id, status FROM claims')}
+    # claim_persons participants (person + role) are part of a claim's identity
+    # too -- reattaching a claim to a different person/role is a real change
+    # even though every scalar claim field stays the same, so it must flow
+    # into the fingerprint or section 2 ("changed since last session") misses it.
+    claim_persons_by_claim: dict[str, list[str]] = {}
+    for r in conn.execute(
+        'SELECT claim_id, person_id, position, role FROM claim_persons ORDER BY claim_id, position'
+    ):
+        claim_persons_by_claim.setdefault(r['claim_id'], []).append(
+            f"{r['person_id']}:{r['position']}:{r['role'] or ''}"
+        )
     claim_fingerprints = {
         r['id']: '|'.join(
             str(r[k] or '')
@@ -216,7 +229,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
                 'value', 'status', 'reviewed', 'confidence', 'information', 'evidence',
                 'asset', 'anchor', 'hypothesis', 'negated', 'notes',
             )
-        )
+        ) + '|persons=' + ','.join(claim_persons_by_claim.get(r['id'], []))
         for r in conn.execute(
             '''
             SELECT id, source_id, type, subtype, date_edtf, place_id, place_text,
@@ -237,6 +250,11 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
         {tuple(r) for r in conn.execute('SELECT person_id, rel, other_id FROM relationships')}
     )
     questions = _parse_questions(archive_root)
+    # E009 contradiction messages, so a resolution that adds an open question
+    # (refs both claim-ids, no claim_links change) without changing claim
+    # status still shows up as "resolved" in section 0 -- a pure claim_links
+    # diff alone never catches that case, since claim_links never changed.
+    e009_messages = sorted(f.message for f in findings if f.code == 'E009')
 
     return {
         'generated': datetime.date.today().isoformat(),
@@ -250,6 +268,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
         'relationships': [list(t) for t in relationships],
         'vitals_gap_person_ids': _vitals_gap_pids(findings, registry),
         'question_status_by_heading': {h: info['status'] for h, info in questions.items()},
+        'e009_messages': e009_messages,
     }
 
 
@@ -324,6 +343,17 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
         lines.append('**Confirmed connections:**')
         for a, rel, b in confirmed:
             lines.append(f'- {_person_label(conn, a)} — {rel} — {_person_label(conn, b)}')
+
+    # Contradictions (E009) that no longer fire this session.  A resolution
+    # logged as a new open question referencing both claim-ids (rather than a
+    # claim_links/status change) wouldn't otherwise surface anywhere above.
+    prev_e009 = set(prev.get('e009_messages', []))
+    cur_e009 = set(current.get('e009_messages', []))
+    resolved_e009 = sorted(prev_e009 - cur_e009)
+    if resolved_e009:
+        lines.append('**Contradictions resolved (no longer flagged):**')
+        for msg in resolved_e009:
+            lines.append(f'- {msg}')
 
     return lines or ['No discoveries since last session.']
 
@@ -482,6 +512,36 @@ def _section_search_log(conn, current: dict) -> list[str]:
 
 # ── Section 5b: Answerable questions ──────────────────────────────────────────
 
+# Vitals-gap closure (the P-id branch below) only makes sense for a question
+# that is actually *about* birth/marriage/death — a question referencing the
+# same person but asking about something else entirely (immigration date,
+# residence, parentage, an alias) must not be proposed-closed just because
+# that person's vitals later filled in.  Keyed on the same vocabulary as the
+# `needed` vitals set so a match always lines up with what was just verified.
+_VITALS_QUESTION_KEYWORDS = {
+    'birth': ('born', 'birth', 'baptism', 'baptized', 'christened'),
+    'marriage': ('marry', 'marri', 'wed', 'spouse', 'husband', 'wife'),
+    'death': ('died', 'death', 'buried', 'burial', 'death certificate'),
+}
+# Generic vitals-completeness phrasing ("fully documented", "vitals gap")
+# doesn't name a specific vital but is still clearly about the same closure
+# this section proposes, unlike a question about immigration, residence, or
+# parentage that merely happens to reference the person.
+_VITALS_GENERIC_KEYWORDS = ('fully documented', 'vitals', 'vital record', 'documented?')
+
+
+def _question_mentions_vitals(heading: str, block: str, needed: set[str]) -> bool:
+    """True if the question text plausibly concerns one of the `needed` vitals types."""
+    text = f'{heading}\n{block}'.lower()
+    if any(kw in text for kw in _VITALS_GENERIC_KEYWORDS):
+        return True
+    return any(
+        kw in text
+        for vital in needed
+        for kw in _VITALS_QUESTION_KEYWORDS.get(vital, ())
+    )
+
+
 def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
     """
     Open questions whose referenced gap now has an accepted claim, or whose
@@ -531,7 +591,9 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
                 living = str(person_row['living']) if person_row else 'unknown'
                 if living not in ('true', 'unknown'):
                     needed.add('death')
-                if needed.issubset(claim_types):
+                if needed.issubset(claim_types) and _question_mentions_vitals(
+                    heading, info['block'], needed
+                ):
                     proposal = (
                         f'propose: review — {_person_label(conn, pid)} now has accepted '
                         f'{", ".join(sorted(needed))} claim(s)'
@@ -615,7 +677,11 @@ def _section_hypotheses(conn, archive_root: Path) -> list[str]:
         except OSError:
             continue
         body = text.split('-->', 1)[-1].strip()
-        if body and body != _DRAFT_QUEUE_EMPTY:
+        # body still carries the generated "# Draft Queue: {name}" heading
+        # line above the empty-queue sentence (views.py's _generate_draft_queue
+        # always emits the heading), so an exact-equality check against
+        # _DRAFT_QUEUE_EMPTY never matches — test containment instead.
+        if body and _DRAFT_QUEUE_EMPTY not in body:
             backlog_pids.add(row['person_id'])
 
     if backlog_pids:
@@ -750,7 +816,18 @@ def run_report(
     finally:
         conn.close()
 
-    return {'status': 'ok', 'markdown': printed_md, 'exit_code': EXIT_CLEAN}
+    # Map the refresh's lint pass onto the tool suite's shared 0/1/2 exit-code
+    # contract (TOOLING §1) instead of always reporting clean — an E-level
+    # finding (duplicate IDs, malformed records, etc.) must surface as exit 2,
+    # a W-level-only run as exit 1, same as `fha lint` itself would report.
+    if any(f.severity == 'E' for f in findings):
+        exit_code = EXIT_ERRORS
+    elif any(f.severity == 'W' for f in findings):
+        exit_code = EXIT_WARNINGS
+    else:
+        exit_code = EXIT_CLEAN
+
+    return {'status': 'ok', 'markdown': printed_md, 'exit_code': exit_code}
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
