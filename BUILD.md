@@ -970,8 +970,10 @@ count and EDTF spread. GPS clusters: ≥3 photos within ~150m with no known L-id
 
 **Done when:**
 ```sh
+fha index --root example-archive                     # build the index first
 fha places lint --root example-archive               # exits 0 (clean fixture)
 fha places candidates --root example-archive         # exits 0
+fha index --root tests/fixtures/broken-places
 fha places lint --root tests/fixtures/broken-places  # fires on orphan L-id + dangling within:
 ```
 

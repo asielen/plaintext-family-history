@@ -34,11 +34,11 @@ def _add_alt_name(conn, pid, alt_name):
     conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (pid, alt_name))
 
 
-def _add_claim(conn, cid, place_id=None, place_text=None, date_edtf=None):
+def _add_claim(conn, cid, place_id=None, place_text=None, date_edtf=None, status='accepted'):
     conn.execute(
         'INSERT INTO claims(id, source_id, type, value, status, place_id, place_text, date_edtf) '
         'VALUES (?,?,?,?,?,?,?,?)',
-        (cid, 's-0000000001', 'residence', 'lived there', 'accepted', place_id, place_text, date_edtf),
+        (cid, 's-0000000001', 'residence', 'lived there', status, place_id, place_text, date_edtf),
     )
 
 
@@ -214,6 +214,13 @@ class PlacesCandidatesTests(unittest.TestCase):
     def test_claims_with_place_id_excluded(self) -> None:
         for i in range(3):
             _add_claim(self.conn, f'c-{i}111111111', place_id='l-aaaaaaaaaa', place_text='Topeka, Kansas')
+        self.conn.commit()
+        result = places.run_candidates(self.archive_root, {}, threshold=3)
+        self.assertEqual(result['place_text_groups'], [])
+
+    def test_rejected_and_superseded_claims_excluded(self) -> None:
+        for i, status in enumerate(['rejected', 'superseded', 'disputed']):
+            _add_claim(self.conn, f'c-{i}111111111', place_text='Topeka, Kansas', status=status)
         self.conn.commit()
         result = places.run_candidates(self.archive_root, {}, threshold=3)
         self.assertEqual(result['place_text_groups'], [])

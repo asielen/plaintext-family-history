@@ -19,8 +19,8 @@ hygiene:
     links live only in dated `history:` strings, never in `within:`)
 
 `fha places candidates` is the recurrence detector (TOOLING §10), sibling to
-`fha cooccur`: distinct *unlinked* claim `place_text` values (no `place_id`)
-are normalized (case-fold, punctuation, whitespace, St/Street and Co/County
+`fha cooccur`: distinct *unlinked*, active (`accepted`/`needs-review`) claim
+`place_text` values (no `place_id`) are normalized (case-fold, punctuation, whitespace, St/Street and Co/County
 expansion) and clustered by a sorted token-set key so word-order variants and
 abbreviation variants land in the same group; groups with >= `--threshold`
 (default 3) occurrences are surfaced with their claim count and EDTF date
@@ -244,6 +244,7 @@ def _place_text_candidates(conn: sqlite3.Connection, threshold: int) -> list[dic
         SELECT id, place_text, date_edtf FROM claims
         WHERE (place_id IS NULL OR place_id = '')
           AND place_text IS NOT NULL AND place_text != ''
+          AND status IN ('accepted', 'needs-review')
         """
     ).fetchall()
 
