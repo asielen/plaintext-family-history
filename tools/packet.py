@@ -111,6 +111,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    path_to_alias,
     photoindex_status,
     resolve_path,
     resolve_root_arg,
@@ -120,7 +121,7 @@ configure_utf8_stdout()
 
 _REQUIRED_TABLES = (
     'persons', 'claims', 'sources', 'claim_persons', 'source_files',
-    'source_people', 'person_files',
+    'source_people', 'person_files', 'citations',
 )
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.gif'}
@@ -173,25 +174,51 @@ def _resolve_merged_person(
     return person, notes
 
 
-def _source_ids_for_person(conn: sqlite3.Connection, pid: str) -> list[str]:
+def _merged_alias_ids(conn: sqlite3.Connection, survivor_id: str) -> list[str]:
     """
-    Distinct source IDs citing pid — the same two-table UNION views.py uses
-    for sources-index (claim_persons→claims, plus the direct source_people
-    table for sources that name someone without yet having extracted claims).
-    Duplicated here rather than imported: tools never import tools (TOOLING §15).
+    Every person id whose merged_into chain resolves to survivor_id (SPEC
+    §8.8), found by walking merged_into outward from the survivor rather
+    than assuming a single hop. Once `_resolve_merged_person` redirects pid
+    to the survivor, sources/claims still citing one of these old ids must
+    still be gathered, not dropped.
     """
+    aliases: set[str] = set()
+    frontier = {survivor_id}
+    while frontier:
+        placeholders = ','.join('?' * len(frontier))
+        rows = conn.execute(
+            f"SELECT id FROM persons WHERE status = 'merged' AND merged_into IN ({placeholders})",
+            list(frontier),
+        ).fetchall()
+        frontier = {r['id'] for r in rows if r['id'] not in aliases and r['id'] != survivor_id}
+        aliases |= frontier
+    return sorted(aliases)
+
+
+def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[str]:
+    """
+    Distinct source IDs citing any of pids — the same two-table UNION
+    views.py uses for sources-index (claim_persons→claims, plus the direct
+    source_people table for sources that name someone without yet having
+    extracted claims). Duplicated here rather than imported: tools never
+    import tools (TOOLING §15).
+
+    pids carries the survivor plus any merged-away aliases (SPEC §8.8) so a
+    source that still cites an old id isn't dropped from the packet.
+    """
+    placeholders = ','.join('?' * len(pids))
     rows = conn.execute(
-        """
+        f"""
         SELECT DISTINCT c.source_id
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
-        WHERE cp.person_id = ?
+        WHERE cp.person_id IN ({placeholders})
         UNION
         SELECT DISTINCT source_id
         FROM source_people
-        WHERE person_id = ?
+        WHERE person_id IN ({placeholders})
         """,
-        (pid, pid),
+        list(pids) + list(pids),
     ).fetchall()
     return [r[0] for r in rows]
 
@@ -392,7 +419,7 @@ def _source_image_paths(
 # ── Timeline ──────────────────────────────────────────────────────────────────
 
 def _build_timeline_text(
-    conn: sqlite3.Connection, pid: str, person_name: str, included_source_ids: set[str]
+    conn: sqlite3.Connection, pids: list[str], person_name: str, included_source_ids: set[str]
 ) -> str:
     """
     Build a fresh timeline.md body for the packet.
@@ -402,24 +429,28 @@ def _build_timeline_text(
     timeline anyway. Intentionally simpler than `fha views timeline`'s decade
     grouping (no GENERATED header, no decade headers) — this is a one-shot
     export artifact, not a tracked, regenerable archive view.
+
+    pids carries the survivor plus any merged-away aliases (SPEC §8.8) so
+    claims still attached to an old id still surface here.
     """
     if not included_source_ids:
         rows = []
     else:
-        placeholders = ','.join('?' * len(included_source_ids))
+        pid_placeholders = ','.join('?' * len(pids))
+        src_placeholders = ','.join('?' * len(included_source_ids))
         rows = conn.execute(
             f"""
             SELECT DISTINCT c.date_edtf, c.date_min, c.type, c.value,
                    c.place_text, c.source_id
             FROM claim_persons cp
             JOIN claims c ON cp.claim_id = c.id
-            WHERE cp.person_id = ? AND c.status IN ('accepted', 'needs-review')
-              AND c.source_id IN ({placeholders})
+            WHERE cp.person_id IN ({pid_placeholders}) AND c.status IN ('accepted', 'needs-review')
+              AND c.source_id IN ({src_placeholders})
             ORDER BY
                 CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
                 c.date_min ASC
             """,
-            [pid] + list(included_source_ids),
+            list(pids) + list(included_source_ids),
         ).fetchall()
 
     lines = [f'# Timeline: {person_name}\n']
@@ -603,11 +634,13 @@ def run_packet(
     directories under the archive root and copy from (or report missing) the
     wrong files.
 
-    out_dir is refused if it falls inside a record tree (sources/, people/,
-    notes/): a packet's copied .md records there would be picked up by a
-    later `fha index` as if they were archive truth (TOOLING §15 "tools
-    never import tools" applies just as much to one tool's output becoming
-    another's input by accident).
+    out_dir is refused if it falls inside the archive root anywhere other
+    than the top-level `out/` directory: a packet's copied .md records
+    there would be picked up by a later `fha index` as if they were
+    archive truth (TOOLING §15 "tools never import tools" applies just as
+    much to one tool's output becoming another's input by accident).
+    `out/` itself is exempt because `_index_citations` already skips it by
+    the same rule — the two must agree on what's safe.
     """
     messages: list[str] = []
     try:
@@ -615,9 +648,7 @@ def run_packet(
         out_relative = resolved_out.relative_to(archive_root.resolve())
     except ValueError:
         out_relative = None
-    if out_relative is not None and out_relative.parts and out_relative.parts[0] in (
-        'sources', 'people', 'notes',
-    ):
+    if out_relative is not None and out_relative.parts and out_relative.parts[0] != 'out':
         return {
             'status': 'bad-output-path', 'packet_dir': None, 'zip_path': None,
             'messages': [
@@ -672,7 +703,8 @@ def run_packet(
                     ],
                 }
 
-        source_ids = _source_ids_for_person(conn, pid)
+        alias_pids = [pid] + _merged_alias_ids(conn, pid)
+        source_ids = _source_ids_for_person(conn, alias_pids)
         included_rows, excluded_rows = _classify_sources(
             conn, source_ids, include_restricted=include_restricted, include_dna=include_dna,
         )
@@ -685,18 +717,16 @@ def run_packet(
                 (pid,),
             ).fetchone()
 
-        # Caution list combines two sources: people named via claim_persons/
-        # source_people (structured data), and people named only by a bare
-        # [P-id] citation token in the copied prose itself (profile, research
-        # note, included source records) — a living person mentioned in a
-        # paragraph with no claim row would otherwise go unflagged.
+        # Caution list combines structured-data matches now, and gets
+        # extended with prose-citation and photo-only matches further below
+        # — the dict stays open until just before the README is written so
+        # every source can contribute without re-sorting repeatedly.
         copied_md_paths = {person['path']} | {r['path'] for r in included_rows}
         if research_row is not None:
             copied_md_paths.add(research_row['path'])
         other_named_by_id = {r['id']: r for r in _other_named_persons(conn, list(included_ids), pid)}
         for r in _citation_named_persons(conn, copied_md_paths, pid):
             other_named_by_id.setdefault(r['id'], r)
-        other_named = sorted(other_named_by_id.values(), key=lambda r: r['name'])
 
         files_by_source, missing_assets = _resolve_source_files(
             conn, archive_root, fha_config, list(included_ids)
@@ -765,7 +795,7 @@ def run_packet(
 
             # timeline.md
             (packet_dir / 'timeline.md').write_text(
-                _build_timeline_text(conn, pid, person_name, included_ids), encoding='utf-8',
+                _build_timeline_text(conn, alias_pids, person_name, included_ids), encoding='utf-8',
             )
 
             # sources/ + files/
@@ -798,23 +828,65 @@ def run_packet(
                         ).fetchall()
                     })
 
-                    # photo_people/photos store alias-form paths ('photos/…') that need
-                    # resolve_path; source-file paths from _resolve_source_files are
-                    # already absolute. Resolve each group separately rather than mixing
-                    # the two forms in one set, so a malformed alias path can't be
-                    # mistaken for (or silently fixed up into) an absolute one.
-                    # Keep the alias form alongside the resolved path so a "missing on
-                    # disk" note can report it instead of a machine-specific absolute
-                    # path when the photos root is mapped outside the archive.
-                    photo_targets: dict[Path, str | None] = {}
-                    for alias_path in _expand_photo_groups(pconn, people_paths):
-                        try:
-                            resolved = resolve_path(alias_path, fha_config, archive_root)
-                        except Exception:
-                            continue
-                        photo_targets[resolved] = alias_path
+                    # Source-linked images aren't under photos/ control by tag, but a
+                    # scan/copy of one may still share a photo_groups entry with a
+                    # tagged photo (front/back/crop of the same physical item) — convert
+                    # each to alias form and union with the tagged paths *before*
+                    # expanding through photo_groups, so those siblings are captured too
+                    # (TOOLING §9: a logical photo is the whole group, not one file).
+                    # path_to_alias falls back to the absolute path's forward-slash form
+                    # when the file isn't under the photos root at all; track those
+                    # originals so they can still be copied directly.
+                    source_alias_map: dict[str, Path] = {}
                     for src_image_path in _source_image_paths(files_by_source):
-                        photo_targets.setdefault(src_image_path, None)
+                        alias = path_to_alias(src_image_path, 'photos', fha_config, archive_root)
+                        source_alias_map[alias] = src_image_path
+
+                    combined_paths = set(people_paths) | set(source_alias_map)
+                    expanded_aliases = _expand_photo_groups(pconn, combined_paths)
+
+                    def _is_photo_alias(a: str) -> bool:
+                        return a == 'photos' or a.startswith('photos/')
+
+                    # photo_people/photos store alias-form paths ('photos/…') that need
+                    # resolve_path; a source image outside the photos root falls back to
+                    # its own absolute path above and is used as-is. Keep the alias form
+                    # alongside the resolved path so a "missing on disk" note can report
+                    # it instead of a machine-specific absolute path when the photos
+                    # root is mapped outside the archive.
+                    photo_targets: dict[Path, str | None] = {}
+                    for alias_path in expanded_aliases:
+                        if _is_photo_alias(alias_path):
+                            try:
+                                resolved = resolve_path(alias_path, fha_config, archive_root)
+                            except Exception:
+                                continue
+                            photo_targets[resolved] = alias_path
+                        else:
+                            photo_targets[source_alias_map.get(alias_path, Path(alias_path))] = None
+
+                    # A photo-group sibling may be tagged with a different,
+                    # still-living/unknown person who never appears in any claim or
+                    # source — catch that here so the caution list covers photo-only
+                    # matches too.
+                    tagged_aliases = {a for a in expanded_aliases if _is_photo_alias(a)}
+                    if tagged_aliases:
+                        placeholders = ','.join('?' * len(tagged_aliases))
+                        photo_person_ids = {
+                            row['person_ref'] for row in pconn.execute(
+                                f"SELECT DISTINCT person_ref FROM photo_people "
+                                f"WHERE path IN ({placeholders}) AND person_ref != ?",
+                                list(tagged_aliases) + [pid],
+                            ).fetchall()
+                        }
+                        if photo_person_ids:
+                            pplaceholders = ','.join('?' * len(photo_person_ids))
+                            for row in conn.execute(
+                                f"SELECT id, name FROM persons WHERE id IN ({pplaceholders}) "
+                                f"AND living IN ('true', 'unknown')",
+                                list(photo_person_ids),
+                            ).fetchall():
+                                other_named_by_id.setdefault(row['id'], row)
 
                     if photo_targets:
                         photos_dir = packet_dir / 'photos'
@@ -833,6 +905,7 @@ def run_packet(
                     pconn.close()
 
             # README.txt
+            other_named = sorted(other_named_by_id.values(), key=lambda r: r['name'])
             _write_readme(
                 packet_dir / 'README.txt',
                 person_name=person_name, pid=pid,

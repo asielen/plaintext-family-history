@@ -523,6 +523,101 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(second['status'], 'dry-run')
         self.assertTrue(sentinel.exists())
 
+    def test_out_dir_inside_arbitrary_record_subdir_refused(self):
+        # Broadened rule: anything inside the archive whose top-level
+        # component isn't literally 'out' is refused, not just the three
+        # named record trees — e.g. a custom internal scratch dir.
+        self._seed_person()
+        self._commit_fresh()
+
+        result = packet.run_packet(
+            self.archive_root, 'p-aaaaaaaaaa', self.archive_root / 'scratch' / 'packets',
+            no_photos=True,
+        )
+        self.assertEqual(result['status'], 'bad-output-path')
+
+    def test_out_dir_nested_under_out_is_allowed(self):
+        self._seed_person()
+        self._commit_fresh()
+
+        result = packet.run_packet(
+            self.archive_root, 'p-aaaaaaaaaa', self.archive_root / 'out' / 'nested',
+            no_photos=True,
+        )
+        self.assertEqual(result['status'], 'ok')
+
+    def test_source_image_expands_to_photo_group_siblings(self):
+        self._seed_person()
+        self._seed_source(
+            's-1111111111', 'Source One', asset_rel='photos/scan-front.jpg',
+        )
+        self._commit_fresh()
+
+        back = self.archive_root / 'photos' / 'scan-back.jpg'
+        back.write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/scan-front.jpg', 'g1')")
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/scan-back.jpg', 'g1')")
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        photos_out = result['packet_dir'] / 'photos'
+        self.assertTrue((photos_out / 'scan-front.jpg').exists())
+        self.assertTrue((photos_out / 'scan-back.jpg').exists())
+
+    def test_photo_only_living_person_gets_caution(self):
+        self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Photo Only Living', living='true', surname='Other')
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        photo = photos_dir / 'group.jpg'
+        photo.write_bytes(b'group')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/group.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('photos/group.jpg', 'p-aaaaaaaaaa', 'pid-keyword')"
+        )
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('photos/group.jpg', 'p-bbbbbbbbbb', 'face-tag')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('CAUTION', readme)
+        self.assertIn('Photo Only Living', readme)
+
+    def test_merged_alias_sources_still_gathered(self):
+        # p-aaaaaaaaaa is merged into the survivor p-bbbbbbbbbb; a source
+        # citing the old, merged-away id must still appear in the
+        # survivor's packet (SPEC §8.8).
+        self._seed_person(pid='p-bbbbbbbbbb', name='Survivor Person', surname='Survivor')
+        self._seed_person(
+            pid='p-aaaaaaaaaa', name='Old Identity', surname='Old',
+            status='merged', merged_into='p-bbbbbbbbbb',
+        )
+        self._seed_source('s-1111111111', 'Old Alias Source', persons=('p-aaaaaaaaaa',))
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-bbbbbbbbbb', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        sources_out = result['packet_dir'] / 'sources'
+        self.assertTrue((sources_out / 's-1111111111.md').exists())
+
     def test_stale_photoindex_refuses_unless_no_photos(self):
         self._seed_person()
         self._commit_fresh()

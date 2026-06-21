@@ -10,9 +10,10 @@ private/
 *.sqlite
 *.sqlite-journal
 
-# fha packet output — disposable export copies, never the archive's truth
+# fha packet output — disposable export copies, never the archive's truth.
+# Anchored to root only — a record tree's own 'out' subdirectory (sources/out/,
+# …) is real archive content and must stay trackable.
 /out/
-out/
 
 # But DO keep fixture assets if/when added
 !example-archive/documents/
