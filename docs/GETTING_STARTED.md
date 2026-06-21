@@ -23,9 +23,12 @@ State your **mode** at the start of a session — `research`, `tool-building`, `
 
 ## Step 3 — Use (or extend) the tools
 
-Milestones 1 and 2 are complete: `fha lint`, `fha index`, `fha id`, `fha stubs`, and
-`fha views` (timeline, sources-index, draft-queue, brackets, tree) are all implemented.
-Run them with Python 3.10+ from the repo root:
+Milestones 1–5 are complete, plus `fha packet` (milestone 6.1): `fha lint`, `fha index`,
+`fha id`, `fha stubs`, `fha views` (timeline, sources-index, draft-queue, brackets, tree),
+`fha doctor`, `fha find` (including `--related` and `--text`), `fha photoindex`
+(scan/find/triage/report/reconcile/tag-person), `fha xref`, `fha cooccur`, `fha report`,
+and `fha packet` are all implemented — see `tools/README.md` for the authoritative
+per-tool status table. Run them with Python 3.10+ from the repo root:
 
 ```
 python tools/fha.py lint --root example-archive          # exits 1 (one W101 warning, no errors)
@@ -37,10 +40,16 @@ python tools/fha.py views draft-queue --root example-archive --all-curated
 python tools/fha.py views brackets --root example-archive          # check W103/W110; add --fix to apply
 python tools/fha.py views tree P-de957bcda1 --mode descendants --root example-archive
 python tools/fha.py views tree P-de957bcda1 --mode ancestors --format dot --root example-archive
+python tools/fha.py doctor --root example-archive
+python tools/fha.py find P-de957bcda1 --root example-archive
+python tools/fha.py find --related P-de957bcda1 --root example-archive
+python tools/fha.py report --root example-archive
+python tools/fha.py packet P-de957bcda1 --root example-archive --no-photos
 ```
 
-To build further tools (process, photoindex, report, …), declare **tool-building mode** and
-follow the build order in `TOOLING.md` §15.
+To build further tools (process, places, gedcom, wikitree, site, …), declare
+**tool-building mode** and follow the build order in `BUILD.md` (which itself implements
+the design in `TOOLING.md` §15).
 Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.
 
 ## Step 4 — Start your own archive
@@ -55,17 +64,14 @@ Each new tool follows the same implementation loop: read TOOLING, state contract
 1. **This public repo** already exists once you've pushed it (spec + tools).
 2. **Your private archive:** on GitHub, create a new **private** repo (e.g. `my-family-archive`).
 Copy the contents of `archive-template/` into it as the starting skeleton.
-3. **Get the tools into your archive**, by whichever method you prefer:
-   - *Vendor (recommended):* run `fha install ~/my-family-archive` once from your clone of
-     this repo — it creates the archive with the operating layer (tools + the four docs).
-     Later, `fha update-tools` (run from the archive) pulls improvements, backing up anything
-     you've customized and never touching your data (TOOLING.md §13c). The archive stays
-     self-contained even if the public repo vanishes, and you never memorize a file list.
-     *(Until the tools are built, the manual equivalent is copying `tools/` plus `SPEC.md`,
-     `TOOLING.md`, `AGENTS.md`, `CLAUDE.md` onto the skeleton — which is what install automates.)*
-   - *Install (once packaging exists):* not available yet as a package.
-When the `fha` suite is packaged, you'll install it from this repo and call `fha` from anywhere.
-Until then, vendor the tools (above).
+3. **Get the tools into your archive.** `fha install`/`fha update-tools` (TOOLING.md §13c) are
+   the planned vendoring path — copy the operating layer into a fresh archive once, then pull
+   improvements later, backing up anything you've customized and never touching your data — but
+   they are not built yet (milestone 9, `BUILD.md` M9.1–M9.2). Until then, vendor by hand:
+   copy `tools/` plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md` onto the skeleton from
+   `archive-template/`. There is no packaged `fha` install yet either; call it as
+   `python tools/fha.py <command>` from your clone of this repo (or add it to your `PATH`
+   yourself).
 
 **Then, the actual research:**
 
@@ -76,7 +82,11 @@ Until then, vendor the tools (above).
 
 ## Step 5 — The daily loop
 
-Once tools exist, a session looks like: run the report (`today`), see your review queue and research leads, process new inbox items, review drafted claims, and let the index regenerate.
+A session looks like: run the report (`fha report`, narrated by the future `today` skill —
+TOOLING.md §16), see your review queue and research leads, process new inbox items, review
+drafted claims, and let the index regenerate. `fha process` (intake) and the workflow skills
+themselves are still milestone 7 work; until they ship, intake is manual (`fha id mint` +
+hand-editing the source record) and review/report are run directly from the CLI.
 Capture → file → process → review → report.
 
 ## A note on the example archive

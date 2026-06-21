@@ -133,6 +133,30 @@ Test fixture: `tests/fixtures/photo-fixture/` — 4 placeholder JPEGs with real 
 
 Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependency) monkeypatches `photoindex._run_exiftool` (and, for tag-person, `_run_exiftool_write`/`builtins.input`) to inject canned JSON rows or simulated confirm answers over a copy of the fixture, covering grouping/date-conflict/pid-keyword resolution, face-region caching, stale-index-disables-weak-resolution behavior, fresh-index weak-resolution refresh from cached regions, `--full` vs. incremental scan equivalence, reconcile's rematch/missing/untracked outcomes (including `photo_fts` re-keying), and tag-person's plan/confirm/dry-run/write paths (including `photo_fts` refresh and per-candidate partial-failure handling). Run with `python -m unittest tests.test_photoindex -v` from the repo root. This is the first `.py` test file in the repo; no test runner is wired into CI yet.
 
+## Implemented tools (milestone 6, in progress)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha packet <P-id> [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]` | `packet.py` | ✓ M6.1 — see "fha packet — implementation status" below |
+
+## fha packet — implementation status
+
+| Feature | Status | Notes |
+|---|---|---|
+| Curated/living gate | ✓ | Non-curated/stub persons and unknown P-ids refuse with exit 1 (`not-curated`/`not-found`), distinct from a missing index (exit 3). Packet subjects with `living: true` or `living: unknown` refuse before output is created, matching SPEC's external-output rule until a future explicit packet opt-in exists |
+| Source gathering | ✓ | `claim_persons ∪ source_people` union (same two-table pattern as `views.py`'s sources-index, duplicated per-tool per TOOLING §15 — tools never import tools) |
+| Privacy filtering | ✓ | `restricted: true` sources excluded by default (`--include-restricted` overrides); `source_type: dna` sources excluded even with `--include-restricted` (only `--include-dna` includes them); excluded sources are listed by ID + reason in the README, never silently dropped |
+| Other-living-person caution | ✓ | Any other person named by an included source's claims or `source_people`, with `living` in `('true', 'unknown')`, is listed in a README caution |
+| `profile/` | ✓ | Profile `.md` always; `+research.md` with `--include-research` — if no research file exists for the person, a warning is reported (in messages and exit code) instead of silently omitting it |
+| `timeline.md` | ✓ | Freshly generated for the export, filtered to the packet's *included* sources only (an excluded restricted/DNA source's claims never leak into the timeline) — intentionally simpler than `fha views timeline` (no decade headers, no GENERATED header; this is a one-shot export artifact, not a tracked view file) |
+| `sources/` + `files/` | ✓ | One copy of each included source record; `source_files` assets resolved via `resolve_path` and copied with their on-disk filenames. Missing/unresolvable assets are listed in stderr and README.txt, and the CLI exits with warnings |
+| `photos/` | ✓ | Union of `photo_people` (`pid-keyword`/`face-tag`/`name-match`, already computed by `fha photoindex`) expanded to each match's full `photo_groups` variation group, plus image-suffixed asset files from included sources. Missing/unreadable/stale photo index refuses (exit 3) unless `--no-photos`; an individual photo file missing on disk (stale cache entry) is listed in stderr and README.txt, same as a missing source asset, never silently dropped |
+| `--no-photos` | ✓ | Skips photo gathering entirely; no photoindex required |
+| Output | ✓ | `packet_{surname}_{P-id}_{date}/` under `-o`/`--out` (default `out/` under the archive root), then zipped alongside it; directory and zip are both left on disk. Existing same-name output refuses unless `--overwrite`; `--dry-run` previews without writing |
+| Filesystem-error handling | ✓ | A single file's copy failing (locked file, permission error) is caught, reported in messages/exit code, and skipped — it never aborts the build. A structural failure (can't create the packet dir, zip write fails, disk full) is caught at the top level, the half-built directory is removed on a best-effort basis, and the command returns `write-failed` (exit 3) instead of an unhandled traceback |
+
+Automated tests: `tests/test_packet.py` builds a synthetic `.cache/index.sqlite` (and, where needed, a synthetic `.cache/photos.sqlite`) directly from `index.py`'s/`photoindex.py`'s DDL, covering the curated/living gates, strict stale-index refusal, restricted/DNA source filtering (both directions), the other-living-person caution (`living: true` and `living: unknown`), timeline source filtering, missing asset/photo reporting, `--include-research` with no research file, output conflict/overwrite/dry-run (including `--dry-run --overwrite` together) behavior, external `--out` display, the missing/absent/stale photoindex paths, photo-group expansion (a person tagged on one variant pulls in its siblings), a per-file copy failure (mocked `shutil.copy2`), and a structural build failure (mocked `_zip_directory`).
+
 ## fha doctor — implementation status
 
 | Check | Status | Notes |

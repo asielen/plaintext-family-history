@@ -192,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     from xref import register as xref_register
     from cooccur import register as cooccur_register
     from report import register as report_register
+    from packet import register as packet_register
 
     parser = build_parser()
     subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -207,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     xref_register(subs)
     cooccur_register(subs)
     report_register(subs)
+    packet_register(subs)
 
     args = parser.parse_args(argv_list)
 

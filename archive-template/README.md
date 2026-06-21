@@ -8,11 +8,10 @@ See the repo root `README.md` ("Repo, tools, and your archive") for how the publ
 
 After copying:
 1. Edit `fha.yaml` to point at where your photos and documents live.
-2. Bring in the **operating layer** from the public repo. The easy way: run
-   `fha install <this-archive>` once from your clone of the public repo — it copies the
+2. Bring in the **operating layer** from the public repo. The planned easy way —
+   `fha install <this-archive>` once from your clone of the public repo, copying the
    `tools/` folder plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`
-   and nothing else.
-   Later, `fha update-tools` (from here) pulls improvements, backing up any file you've
-   customized and never touching your data. (See TOOLING.md §13c. Manual equivalent: copy
-   those files by hand.)
+   and nothing else, with `fha update-tools` later pulling improvements and backing up
+   anything you've customized — is not built yet (`BUILD.md` M9.1–M9.2, TOOLING.md §13c).
+   Until then, copy those files by hand.
 3. Open in your AI agent and start processing `inbox/` items.

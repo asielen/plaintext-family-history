@@ -10,6 +10,10 @@ private/
 *.sqlite
 *.sqlite-journal
 
+# fha packet output — disposable export copies, never the archive's truth
+/out/
+out/
+
 # But DO keep fixture assets if/when added
 !example-archive/documents/
 !example-archive/photos/

@@ -364,7 +364,7 @@ All write GENERATED-headed `.md` into the tree; all derive purely from the index
 
 ## 8. `fha packet` — person data dump
 
-`fha packet P-de957bcda1 [-o out/] [--include-research] [--include-restricted]`
+`fha packet P-de957bcda1 [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]`
 
 Gathers, as **copies**, into `packet_{surname}_{P-id}_{date}/` then zips:
 
@@ -378,15 +378,18 @@ photos/           ← ALL photos of the person (see below)
 ```
 
 **Photo gathering** (the "all photos of grandma" requirement): union of (a) photos carrying the bare `{P-id}` keyword; (b) photos whose face-region/people tags match the person's `face_tags:` exactly; (c) `name`/`name_variants` matches — listed in the README as *name-matched, unverified*; (d) files of sources citing the person.
-Requires the photo index (§9); refuses with a clear message if it is missing/stale unless `--no-photos`.
+Requires a fresh main index because privacy/source filters come from SQLite. Requires the photo index (§9); refuses with a clear message if it is missing/stale unless `--no-photos`.
 
 **Audience: `fha packet` is a family/private research export, not a public publication format** — included materials may mention other living people.
 Public sharing goes through `fha site --standalone` (or another exporter), which redacts living and unknown-living persons by default.
 The packet README cautions name both `living: true` and `living: unknown` persons.
 
 **Privacy enforcement:** `living: unknown` is treated as living.
+Packet subjects with `living: true` or `living: unknown` are refused before any output is written; packets have no `--include-living` override.
 Sources with `restricted: true` are excluded (listed by ID only in README) unless `--include-restricted`; DNA sources are excluded even then — only `--include-dna` includes them; any *other* person in the packet's materials with `living: true` is named in a README caution.
 DNA never included by default.
+Missing source asset files are listed in stderr and README.txt rather than silently dropped.
+Existing same-name packet output refuses unless `--overwrite`; `--dry-run` previews checks and paths without writing.
 
 ---
 
@@ -782,7 +785,7 @@ Organized by how often *you* touch it — the skills are the real working surfac
 | `fha lint` — `/lint` (T C) | After any batch of edits; the done-gate. Flags: `--with-exif`, fix modes (diff-previewed). |
 | `fha doctor` — `/doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |
 | `fha process <file\|folder>` (T C) | Direct intake without the skill conversation; folder mode triages first. |
-| `fha packet <P-id>` (T C) | "Make grandma's packet." `--include-research/--include-restricted/--include-dna/--no-photos`. |
+| `fha packet <P-id>` (T C) | "Make grandma's packet." `--include-research/--include-restricted/--include-dna/--no-photos/--dry-run/--overwrite`. |
 | `fha report` (T C) | The raw report, un-narrated. `--full`, `--section`. |
 | `fha find <ID\|text>` (T C) | "Where does this live?" Records + assets + citations for any ID; FTS for text. |
 | `fha find --related <ID>` (T C) | "What's adjacent to this?" Neighborhood of any ID — person/place/source/claim/hypothesis — ranked, with provenance. The connection-discovery primitive. |
