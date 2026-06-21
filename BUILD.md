@@ -35,7 +35,7 @@ the insertion point in the same edit.
 | 2 | Layer 2 — Archive views & discovery | M2.1 – M2.5 | ✓ shipped |
 | 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ✓ shipped — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
 | 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ✓ shipped — M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
-| 5 | Layer 5 — Research report | M5.1 – M5.3 | future |
+| 5 | Layer 5 — Research report | M5.1 – M5.3 | ✓ shipped — M5.1 (`fha report` §0–4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6–8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 — Data output | M6.1 – M6.5 | future |
 | 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | future |
 | 8 | Layer 8 — Publication | M8.1 – M8.5 | future |
@@ -825,13 +825,13 @@ fha find --related P-de957bcda1 --date 1880 --root example-archive  # combined
 
 ---
 
-## Layer 5 — Research report (Milestone 5)
+## Layer 5 — Research report (Milestone 5 — ✓ shipped)
 
 Depends on: photoindex (triage section), xref (corroboration events), cooccur (section 8).
 
 ---
 
-### M5.1 — `fha report` — sections 0–4 + snapshot
+### M5.1 — `fha report` — sections 0–4 + snapshot (✓ shipped)
 
 **One PR.** New file `tools/report.py`. Wire `fha report [--full] [--section NAME]`
 (TOOLING §15a).
@@ -872,7 +872,7 @@ fha report --full --root ...                 # ignores snapshot
 
 ---
 
-### M5.2 — `fha report` — sections 5 + 5b (research-loop closure)
+### M5.2 — `fha report` — sections 5 + 5b (research-loop closure) (✓ shipped)
 
 **One PR.** Extend `tools/report.py` (TOOLING §15a). Both sections close research loops
 already in flight — cross-referencing past searches and proposing question closures —
@@ -892,7 +892,7 @@ fha report --root example-archive   # sections 0-5b printed without error
 
 ---
 
-### M5.3 — `fha report` — sections 6–8 (calls into other tools)
+### M5.3 — `fha report` — sections 6–8 (calls into other tools) (✓ shipped)
 
 **One PR.** Extend `tools/report.py` (TOOLING §15a). All four sections are thin
 formatting wrappers around tools built in earlier layers (photoindex, places, cooccur) or

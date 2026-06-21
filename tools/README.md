@@ -51,6 +51,45 @@ dismissal) is left to a future skill layer — out of scope for M4.1/M4.2. `fha 
 --related` (M4.3) is purely a read query over the data those two tools (plus `relationships`
 and `claim_links`) already populate — it writes nothing.
 
+## Implemented tools (milestone 5)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha report [--full] [--section NAME]` | `report.py` | ✓ M5.1–M5.3 — see "fha report — implementation status" below |
+
+`fha report` is the one tool that calls other tools' logic directly in-process
+(`index.build_index`, `lint._run_lint_core`, `photoindex.run_scan`/`run_triage`,
+`cooccur.run_cooccur` — BUILD.md M5.1: "call tool logic directly, not subprocess").
+Every other tool in the suite follows "tools never import other tools"; `report.py`
+is the documented orchestrator exception, not a precedent for any other tool to
+start importing siblings.
+
+## fha report — implementation status
+
+| Section | Status | Notes |
+|---|---|---|
+| Refresh sequence | ✓ | `photoindex.run_scan(full=False)` → `index.build_index` → `lint._run_lint_core`, every run regardless of `--full`/`--section` |
+| §0 Discoveries | ✓ | Claims flipping `needs-review`→`accepted`; new `claim_links` `corroborates` rows; questions newly `status: answered`; profiles newly vital-complete (left the W101 set); newly confirmed `relationships` edges. Diffed against `.cache/last_report.json`, which stores per-claim status, `claim_links`, `relationships`, the W101 person-id set, and per-question status (a superset of the minimal example in BUILD.md/TOOLING §15a — the extra fields are what a real transition diff needs) |
+| §1 Review queue (W102) | ✓ | Suggested claims grouped by source, sources ordered by oldest claim `date_min` |
+| §2 New since last session | ✓ | Source-id / claim-id + changed-claim / person-id diff vs. snapshot |
+| §3 Vitals gaps (W101) | ✓ | Reuses lint's findings from the same refresh pass |
+| §4 Contradictions (E009) | ✓ | Reuses lint's findings from the same refresh pass |
+| §5 Search-log awareness | ✓ | Annotates leads (W101/suggested-claim/E009 persons) from `search_log`; nil searches older than 18 months flagged "worth re-running (stale nil search)". `search_log` is provisioned but not yet populated by any tool — this section reports "no matching entries" until something writes to it |
+| §5b Answerable questions | ✓ | Open `notes/questions.md` questions whose referenced `[C-id]` is now `accepted`, or whose referenced `[P-id]` now has all its required-vitals accepted claims; proposals only — printed, never executed |
+| §6 Photo triage | ✓ | Embeds `photoindex.run_triage(top=10)`; absent/unreadable photo index reported, not treated as an error |
+| §6b Place candidates | ⚑ deferred | `fha places` (BUILD.md M6.2) does not exist yet; this section always prints a deferral note. The code path imports `places` and calls `run_candidates()` so it activates automatically once that tool ships |
+| §7 Hypotheses & draft queues | ✓ | `hypotheses` table is provisioned but not yet populated by any tool — reports "no open hypotheses" until something writes to it; draft-queue backlog reads `person_files` companion files for non-placeholder content |
+| §8 Possible connections | ✓ | Embeds `cooccur.run_cooccur(threshold=2)` — person pairs, shared-place pairs, and org/entity recurrence hubs, top 10 each, with `[confirm] [dismiss]` labels (confirming/dismissing is still a future skill-layer action, same as `fha cooccur` itself) |
+| `--full` | ✓ | Treats the snapshot baseline as empty for diffing; still writes a fresh snapshot afterward |
+| `--section NAME` | ✓ | Narrows stdout to one section; the persisted snapshot and `.cache/report_{date}.md` always hold the complete report |
+| `notes/discoveries.md` append | ⚑ deferred | TOOLING §15a describes appending confirmed discoveries there with human confirmation — a future skill-layer action, mirroring `fha cooccur`'s read-only tombstone discipline. `fha report` only ever prints |
+
+Automated tests: `tests/test_report.py` builds a tiny on-disk archive fixture (not a
+synthetic index — `fha report` rebuilds from files) and exercises the vitals-gap →
+accepted-claim discovery transition, the new-source diff, an unchanged second run's
+empty discoveries section, `--section` filtering, the unknown-section error path, and
+the place-candidates/photo-triage deferral/absent-cache messages.
+
 ## fha xref / fha cooccur — implementation status
 
 | Feature | Status | Notes |

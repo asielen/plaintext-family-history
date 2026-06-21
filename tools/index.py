@@ -721,42 +721,54 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
     # Drop and recreate
     conn = _get_db(cache_dir)
     _drop_tables(conn)
+    conn.close()   # release the OS file handle before reopening (Windows: a
+                    # leaked handle here blocks anyone trying to delete/replace
+                    # the .sqlite file, e.g. a tempdir-based test's cleanup)
     conn = _get_db(cache_dir)   # recreate tables after drop
 
-    with conn:
-        # Places
-        _index_places(conn, archive_root)
-        if verbose:
-            print('  indexed places')
+    try:
+        with conn:
+            # Places
+            _index_places(conn, archive_root)
+            if verbose:
+                print('  indexed places')
 
-        # People
-        people_root = archive_root / 'people'
-        person_count = 0
-        if people_root.exists():
-            for path in people_root.rglob('*.md'):
-                _index_person(conn, path, archive_root)
-                person_count += 1
-        if verbose:
-            print(f'  indexed {person_count} person files')
+            # People
+            people_root = archive_root / 'people'
+            person_count = 0
+            if people_root.exists():
+                for path in people_root.rglob('*.md'):
+                    _index_person(conn, path, archive_root)
+                    person_count += 1
+            if verbose:
+                print(f'  indexed {person_count} person files')
 
-        # Sources
-        sources_root = archive_root / 'sources'
-        source_count = 0
-        if sources_root.exists():
-            for path in sources_root.rglob('*.md'):
-                _index_source(conn, path, archive_root, fha_config)
-                source_count += 1
-        if verbose:
-            print(f'  indexed {source_count} source files')
+            # Sources
+            sources_root = archive_root / 'sources'
+            source_count = 0
+            if sources_root.exists():
+                for path in sources_root.rglob('*.md'):
+                    _index_source(conn, path, archive_root, fha_config)
+                    source_count += 1
+            if verbose:
+                print(f'  indexed {source_count} source files')
 
-        # Notes FTS
-        _index_notes(conn, archive_root)
+            # Notes FTS
+            _index_notes(conn, archive_root)
 
-        # Citation scan
-        _index_citations(conn, archive_root)
+            # Citation scan
+            _index_citations(conn, archive_root)
 
-        # Relationship derivation
-        _derive_relationships(conn)
+            # Relationship derivation
+            _derive_relationships(conn)
+    finally:
+        # Without this, every build_index call leaks one open sqlite3.Connection
+        # (the `with conn:` context manager only commits/rolls back — it never
+        # closes). On Windows that held-open file handle blocks anything trying
+        # to delete or replace the .sqlite file afterward, e.g. a tempdir-based
+        # test's cleanup, or `fha photoindex tag-person` writing right after a
+        # `fha report` refresh in the same process.
+        conn.close()
 
     if verbose:
         db_path = cache_dir / 'index.sqlite'
@@ -847,45 +859,51 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
         return 'index_absent'
 
     conn = _get_db(cache_dir)
-    with conn:
-        source_row = conn.execute('SELECT path FROM sources WHERE id=?', (sid,)).fetchone()
-        source_path = source_row[0] if source_row else None
+    try:
+        with conn:
+            source_row = conn.execute('SELECT path FROM sources WHERE id=?', (sid,)).fetchone()
+            source_path = source_row[0] if source_row else None
 
-        existing_claim_ids = [
-            row[0] for row in
-            conn.execute('SELECT id FROM claims WHERE source_id=?', (sid,)).fetchall()
-        ]
-        if existing_claim_ids:
-            placeholders = ','.join('?' * len(existing_claim_ids))
-            conn.execute(f'DELETE FROM claim_persons WHERE claim_id IN ({placeholders})', existing_claim_ids)
-            conn.execute(f'DELETE FROM claim_links WHERE claim_id IN ({placeholders})', existing_claim_ids)
-        conn.execute('DELETE FROM claims WHERE source_id=?', (sid,))
-        if source_path:
-            conn.execute('DELETE FROM citations WHERE path=?', (source_path,))
-            conn.execute('DELETE FROM notes_fts WHERE path=?', (source_path,))
-        conn.execute('DELETE FROM sources WHERE id=?', (sid,))
-        conn.execute('DELETE FROM source_files WHERE source_id=?', (sid,))
-        conn.execute('DELETE FROM source_people WHERE source_id=?', (sid,))
-        # Forward-safety: drop any transcript rows for this source so a future
-        # transcript-indexing pass cannot leave stale FTS content behind.
-        conn.execute('DELETE FROM transcripts_fts WHERE source_id=?', (sid,))
+            existing_claim_ids = [
+                row[0] for row in
+                conn.execute('SELECT id FROM claims WHERE source_id=?', (sid,)).fetchall()
+            ]
+            if existing_claim_ids:
+                placeholders = ','.join('?' * len(existing_claim_ids))
+                conn.execute(f'DELETE FROM claim_persons WHERE claim_id IN ({placeholders})', existing_claim_ids)
+                conn.execute(f'DELETE FROM claim_links WHERE claim_id IN ({placeholders})', existing_claim_ids)
+            conn.execute('DELETE FROM claims WHERE source_id=?', (sid,))
+            if source_path:
+                conn.execute('DELETE FROM citations WHERE path=?', (source_path,))
+                conn.execute('DELETE FROM notes_fts WHERE path=?', (source_path,))
+            conn.execute('DELETE FROM sources WHERE id=?', (sid,))
+            conn.execute('DELETE FROM source_files WHERE source_id=?', (sid,))
+            conn.execute('DELETE FROM source_people WHERE source_id=?', (sid,))
+            # Forward-safety: drop any transcript rows for this source so a future
+            # transcript-indexing pass cannot leave stale FTS content behind.
+            conn.execute('DELETE FROM transcripts_fts WHERE source_id=?', (sid,))
 
-        _index_source(conn, found, archive_root, fha_config)
-        # Re-add citation tokens for the re-indexed source file.
-        try:
-            lines = found.read_text(encoding='utf-8', errors='ignore').splitlines()
-        except OSError:
-            lines = []
-        rel = str(found.relative_to(archive_root))
-        for lineno, line in enumerate(lines, start=1):
-            for m in TOKEN_RE.finditer(line):
-                token = m.group(1).lower()
-                conn.execute(
-                    'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
-                    (token, token[0].upper(), rel, lineno),
-                )
+            _index_source(conn, found, archive_root, fha_config)
+            # Re-add citation tokens for the re-indexed source file.
+            try:
+                lines = found.read_text(encoding='utf-8', errors='ignore').splitlines()
+            except OSError:
+                lines = []
+            rel = str(found.relative_to(archive_root))
+            for lineno, line in enumerate(lines, start=1):
+                for m in TOKEN_RE.finditer(line):
+                    token = m.group(1).lower()
+                    conn.execute(
+                        'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
+                        (token, token[0].upper(), rel, lineno),
+                    )
 
-        _derive_relationships(conn)
+            _derive_relationships(conn)
+    finally:
+        # See build_index's matching comment: `with conn:` never closes the
+        # connection, and a leaked handle blocks later deletion/replacement
+        # of the .sqlite file (most visibly on Windows).
+        conn.close()
     return 'indexed'
 
 
