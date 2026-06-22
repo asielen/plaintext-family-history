@@ -7,6 +7,7 @@ refusal / rollback / --more logic runs without the binary.
 Run: python -m unittest tests.test_process -v   (from the repo root)
 """
 
+import os
 import shutil
 import sys
 import tempfile
@@ -366,6 +367,61 @@ class ProcessTestCase(unittest.TestCase):
         odd = self.archive / 'photos' / '1880' / 'scan.xyz'
         odd.write_bytes(b'0')
         self.assertEqual(process.classify_asset(odd, cfg, self.archive), 'photo')
+
+    def test_classify_asset_documents_root_wins_over_photo_extension(self) -> None:
+        # A scanned record filed under documents/ but saved as .jpg is still a
+        # document: the documents-root identity rule takes precedence over the
+        # extension-based photo rule.
+        cfg = {'roots': {'photos': 'photos', 'documents': 'documents'}}
+        scan = self.archive / 'documents' / 'census' / 'scan.jpg'
+        scan.write_bytes(b'0')
+        self.assertEqual(process.classify_asset(scan, cfg, self.archive), 'document')
+
+    def test_document_refuses_file_outside_documents_root(self) -> None:
+        outside = self.archive / 'inbox.txt'
+        outside.write_text('x', encoding='utf-8')
+        rc = self._run([str(outside)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(outside.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_document_relative_path_resolves_alias_under_cwd(self) -> None:
+        original = self.archive / 'documents' / 'census' / 'deed.txt'
+        original.write_text('x', encoding='utf-8')
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(original.parent)
+            rc = process._standalone_main(['deed.txt', '--root', str(self.archive)])
+        finally:
+            os.chdir(old_cwd)
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertTrue(rec['meta']['files'][0]['file'].startswith('documents/census/'))
+
+    def test_photo_dry_run_survives_exiftool_read_failure(self) -> None:
+        photo = self.archive / 'photos' / '1880' / 'broken.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+
+        def _boom(_path: Path) -> list[str]:
+            raise RuntimeError('exiftool not on PATH')
+
+        process._run_exiftool_read_keywords = _boom
+        rc = self._run([str(photo), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_malformed_frontmatter_refused(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'broken.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'broken.notes.md'
+        sidecar.write_text('---\ntitle: [unterminated\n---\nnotes\n', encoding='utf-8')
+
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())  # not consumed on failure
+        self.assertTrue(asset.exists())  # not renamed
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
     def test_slugify(self) -> None:
         self.assertEqual(process._slugify('Fairview, Kansas! 1880'), 'fairview-kansas-1880')

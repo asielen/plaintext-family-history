@@ -171,14 +171,17 @@ def _is_under(path: Path, root: Path) -> bool:
 def classify_asset(file_path: Path, fha_config: dict, archive_root: Path) -> str:
     """Return 'photo' or 'document' for an asset file (TOOLING §6).
 
-    A file is a photo if it has a known photo extension OR lives under the
-    resolved photos root — the latter catches odd-extension scans filed in the
-    photo library. Everything else is a document, including a photo-extension
-    file the user deliberately filed under the documents root? No: extension
-    wins there, because an embedded-keyword photo must never be renamed even if
-    mis-filed. The two rules only ever *add* photos, never reclassify one as a
-    document.
+    The documents root takes precedence: a file filed there is a document even
+    if it has a photo extension (a scanned record saved as `.jpg`) — the
+    documents-root identity rule (rename + provenance) applies to whatever was
+    deliberately filed there. Otherwise a file is a photo if it has a known
+    photo extension OR lives under the resolved photos root — the latter
+    catches odd-extension scans filed in the photo library. Everything else is
+    a document.
     """
+    documents_root = resolve_path('documents', fha_config, archive_root)
+    if _is_under(file_path, documents_root):
+        return 'document'
     if file_path.suffix.lower() in PHOTO_EXTENSIONS:
         return 'photo'
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
@@ -468,8 +471,16 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     The stub's optional frontmatter seeds record fields (title/source_type/
     repository hints); its prose body flows into the record's `## Notes`, since
     those notes are the starting point a reviewer reads (never accepted facts).
+
+    Raises ProcessError on malformed frontmatter rather than silently dropping
+    it: the sidecar is consumed (deleted) on a successful run, so any citation/
+    title/source-type hints in unparseable frontmatter would otherwise be lost
+    instead of surfaced for the user to fix.
     """
     rec = read_record(sidecar)
+    if rec.get('parse_errors'):
+        errors = '; '.join(msg for _, msg in rec['parse_errors'])
+        raise ProcessError(f'{sidecar.name} has malformed frontmatter: {errors}')
     meta = rec.get('meta') or {}
     # Strip the frontmatter off the body; keep the prose the human wrote.
     body = (rec.get('body') or '').strip()
@@ -502,6 +513,14 @@ def process_document(
         raise ProcessError(
             f'{file_path.name} already carries an S-id ({existing.upper()}); '
             'it looks already processed. Refusing to mint a second ID.'
+        )
+
+    documents_root = resolve_path('documents', fha_config, archive_root)
+    if not _is_under(file_path, documents_root):
+        raise ProcessError(
+            f'{file_path.name} is not under the configured documents root '
+            f'({_rel(documents_root, archive_root)}); file it there before processing — '
+            'a record outside the asset roots cannot be expressed as a portable alias path.'
         )
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
@@ -590,7 +609,20 @@ def process_photo(
     failure, do not scaffold"). If the scaffold then fails, the just-written
     keyword is removed so the photo is not left half-processed.
     """
-    existing = _read_source_keyword(file_path)
+    # The documented dry-run contract is "preview without any exiftool call or
+    # writes" — a machine without exiftool on PATH (or a photo whose metadata
+    # can't be read) must still get a preview, not a tool failure. The live
+    # path still needs this read to refuse re-processing, so only dry-run
+    # degrades a read failure to a warning and treats it as "unknown".
+    if dry_run:
+        try:
+            existing = _read_source_keyword(file_path)
+        except RuntimeError as e:
+            print(f'WARNING: could not read existing keywords from {file_path.name}: {e}',
+                  file=sys.stderr)
+            existing = None
+    else:
+        existing = _read_source_keyword(file_path)
     if existing:
         raise ProcessError(
             f'{file_path.name} already carries SOURCE: {existing.upper()}; '
@@ -712,12 +744,15 @@ def attach_more(
             print(f'[dry-run] Would add files: entry (role: {role}) to '
                   f'{_rel(record_path, archive_root)}')
             return EXIT_CLEAN
+        # Read the record before writing the keyword: if the read fails
+        # (permission issue, transient I/O error, non-UTF-8 record), nothing
+        # has been written to the photo yet, so there's nothing to roll back.
+        old_text = record_path.read_text(encoding='utf-8')
         err = _run_exiftool_embed_source(more_file, sid)
         if err is not None:
             print(f'ERROR: exiftool could not embed SOURCE keyword in {more_file.name}: {err}',
                   file=sys.stderr)
             return EXIT_FAILURE
-        old_text = record_path.read_text(encoding='utf-8')
         try:
             new_text = _append_file_entry(old_text, entry)
             record_path.write_text(new_text, encoding='utf-8')
@@ -856,7 +891,12 @@ def _run_process(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    file_path = Path(args.file)
+    # Resolve to an absolute path before any alias derivation: a relative path
+    # run from inside an asset subdirectory (`cd documents/census && fha
+    # process deed.pdf`) can't otherwise be related back to the resolved
+    # documents/photos roots, and path_to_alias() would fall back to storing
+    # the bare relative name instead of the real alias-form path.
+    file_path = Path(args.file).resolve()
     if not file_path.exists():
         print(f'ERROR: file not found: {args.file}', file=sys.stderr)
         return EXIT_ERRORS
@@ -879,7 +919,7 @@ def _run_process(args: argparse.Namespace) -> int:
 
     try:
         if args.more:
-            more_file = Path(args.more[0])
+            more_file = Path(args.more[0]).resolve()
             role_spec = args.more[1]
             if not more_file.is_file():
                 print(f'ERROR: --more file not found: {args.more[0]}', file=sys.stderr)
