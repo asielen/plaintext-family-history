@@ -133,12 +133,14 @@ Test fixture: `tests/fixtures/photo-fixture/` — 4 placeholder JPEGs with real 
 
 Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependency) monkeypatches `photoindex._run_exiftool` (and, for tag-person, `_run_exiftool_write`/`builtins.input`) to inject canned JSON rows or simulated confirm answers over a copy of the fixture, covering grouping/date-conflict/pid-keyword resolution, face-region caching, stale-index-disables-weak-resolution behavior, fresh-index weak-resolution refresh from cached regions, `--full` vs. incremental scan equivalence, reconcile's rematch/missing/untracked outcomes (including `photo_fts` re-keying), and tag-person's plan/confirm/dry-run/write paths (including `photo_fts` refresh and per-candidate partial-failure handling). Run with `python -m unittest tests.test_photoindex -v` from the repo root. This is the first `.py` test file in the repo; no test runner is wired into CI yet.
 
-## Implemented tools (milestone 6, in progress)
+## Implemented tools (milestone 6)
 
 | Tool | File | Status |
 |---|---|---|
 | `fha packet <P-id> [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]` | `packet.py` | ✓ M6.1 — see "fha packet — implementation status" below |
-| `fha places lint` / `fha places candidates [--threshold N]` | `places.py` | ✓ M6.2 — see "fha places — implementation status" below |
+| `fha places lint` / `fha places candidates [--threshold N]` / `fha places geocode [--place L-id] [--all] [--offline]` | `places.py` | ✓ M6.2–M6.3 — see "fha places — implementation status" below |
+| `fha gedcom [<P-id>] [--mode descendants\|ancestors\|connected] [--generations N] [--all] [--include-living] [--out FILE]` | `gedcom.py` | ✓ M6.4 — see "fha gedcom — implementation status" below |
+| `fha wikitree <P-id> [--out FILE]` | `wikitree.py` | ✓ M6.5 — see "fha wikitree — implementation status" below |
 
 ## fha packet — implementation status
 
@@ -166,8 +168,39 @@ Automated tests: `tests/test_packet.py` builds a synthetic `.cache/index.sqlite`
 | `fha places candidates` | ✓ | Distinct *unlinked* (`place_id` empty) claim `place_text` values normalized (case-fold, punctuation, whitespace, St→Street/Co→County expansion) and clustered by a sorted token-set key, so word-order, punctuation, and abbreviation variants land in one group; groups with ≥ `--threshold` (default 3) claims are surfaced with claim count and EDTF date spread |
 | GPS clusters | ✓ | Geotagged photos (`.cache/photos.sqlite`) clustered by ≤150m haversine distance, excluding photos within 150m of a known place's `coords`; absent/unreadable photo index is skipped, not an error (mirrors `fha packet --no-photos` treatment) |
 | `fha report` §6b integration | ✓ | `report.py`'s `_section_place_candidates` imports `places` and calls `run_candidates()` — now live instead of the BUILD.md M6.2 deferral stub |
+| `fha places geocode` | ✓ (M6.3) | Backfills `coords` (and proposes `alt_names`) for registry places missing coordinates (`--all`) or one place (`--place L-id`). Gazetteer is the offline **GeoNames** `cities15000` dump downloaded once into `.cache/geonames/` (`--offline` never fetches: a cached dump is required, else `no-gazetteer`/exit 1). A place's `name` + `hierarchy` tokens match against the dump; country names and US state names narrow candidates (admin1/country codes), and **only a single high-confidence hit is proposed** — `ambiguous` (multi-candidate) and no-match places are skipped, never guessed. **Every write is gated by an interactive `[y/N]`** (`confirm` callable is injectable for tests). Writes are surgical text edits to the matched `places.yaml` block (coords inserted/replaced; `alt_names` added only when absent, never clobbering a human list), preserving comments without needing `ruamel.yaml` |
 
-Automated tests: `tests/test_places.py` builds a synthetic `.cache/index.sqlite` directly from `index.py`'s DDL (same pattern as `tests/test_cooccur.py`), covering each lint code individually, word-order/punctuation/abbreviation clustering, the unlinked-only filter, date-spread computation, the missing-index failure path, and haversine distance sanity checks.
+Automated tests: `tests/test_places.py` builds a synthetic `.cache/index.sqlite` directly from `index.py`'s DDL (same pattern as `tests/test_cooccur.py`), covering each lint code individually, word-order/punctuation/abbreviation clustering, the unlinked-only filter, date-spread computation, the missing-index failure path, haversine distance sanity checks, and (geocode) unique/ambiguous/none matching with country+state narrowing, the surgical YAML edit (insert/replace coords, preserve comments and an existing `alt_names`, touch only the target block), and the offline-no-gazetteer / decline-writes-nothing / accept-writes-coords run paths via an injected `confirm`.
+
+## fha gedcom — implementation status
+
+| Feature | Status | Notes |
+|---|---|---|
+| Scope selection | ✓ | `<P-id> --mode descendants\|ancestors\|connected` traverses the `relationships` edges (descendants follow `child` + one spouse hop to complete couples; ancestors follow `parent` + spouse hop; connected = the whole component over parent/child/spouse). `--generations N` caps descendants/ancestors depth (ignored by connected/`--all`). `--all` exports every non-merged person |
+| INDI records | ✓ | NAME `Given /Surname/` (surname from the index slug, else last token), SEX, BIRT/DEAT from the first accepted dated birth/death claim (DATE/PLAC/SOUR), FAMS/FAMC links, `REFN` carrying the P-id |
+| FAM records | ✓ | Couples keyed by parent-set (from `child`-of edges) merged with spouse pairs; HUSB/WIFE by sex (deterministic fallback for unknown/same-sex), CHIL links, MARR from the accepted public-safe marriage claim keyed by the spouse pair (role=`spouse` when present, first two persons as the legacy fallback so witnesses do not break the couple match) |
+| Dates | ✓ | EDTF → GEDCOM 5.5.1 (`1850`, `ABT 1850`, `MAY 1850`, `20 MAY 1850`, `BET … AND …` for intervals, `ABT` for decades, `BEF` for open `[..Y]` bounds) |
+| Sources | ✓ | Each emitted vital/marriage fact's `source_id` → `2 SOUR @Sn@`; top-level `SOUR` records carry `TITL` + `REFN` (the S-id), emitted only for sources actually cited by a non-redacted fact |
+| Privacy (living redaction) | ✓ | `living: true`/`unknown` → `NAME /Living/`, birth/death and their SOUR withheld, marriage details of any family they belong to withheld, REFN omitted; structural FAMS/FAMC/HUSB/WIFE/CHIL links kept so the tree shape survives. `--include-living` lifts it. A redaction count is reported on stderr |
+| Privacy (restricted/DNA) | ✓ | Restricted and DNA sources are not eligible fact sources for public GEDCOM export; their vital/marriage event details and `SOUR` records are withheld while already-derived relationship edges may still preserve tree shape |
+| Output | ✓ | GEDCOM 5.5.1 with a "do not re-import as truth" HEAD note; CRLF line endings; stdout or `--out FILE`. Never re-imported (SPEC §22). Stable xrefs: persons `I{n}` by id, families `F{n}`, sources `S{n}` |
+
+Automated tests: `tests/test_gedcom.py` (synthetic `.cache/index.sqlite`, relationships inserted directly) covers descendant/ancestor traversal and the generations cap, living-redaction default vs. `--include-living`, restricted/DNA fact exclusion, marriage role handling with witnesses, vitals/marriage/source emission, `--all`, the EDTF→GEDCOM and name-formatting helpers, and the not-found/bad-id/no-index paths.
+
+## fha wikitree — implementation status
+
+| Feature | Status | Notes |
+|---|---|---|
+| Subject gating | ✓ | Curated profiles only; `living: true`/`unknown` subjects refused (external-facing output, AGENTS.md privacy rule); invalid/non-P id and missing person handled distinctly from a missing index |
+| Privacy (restricted/DNA) | ✓ | Profile prose that cites restricted or DNA sources is refused before output is written; the exporter fails closed with the blocking S-ids rather than dropping refs and leaving unsupported public facts behind |
+| Named-ref reuse | ✓ | Each `[S-id]` in the body → self-closing `<ref name="S-id"/>` at the use site; full `<ref name="S-id">{citation}</ref>` definitions (citation read from the source record's frontmatter, else its title) gathered once, deduplicated, in first-use order, into the hidden `<div name="references" style="display: none">` block; `== Sources ==` ends with `<references/>` |
+| Person links + name folding | ✓ | `[P-id]` → `[[wikitree_id\|name]]` when `external_ids.wikitree` is recorded (`person_external`), else the plain name. A preceding "Name " in the prose (full name, first given word, or a `name_variant`) is folded into the link so "Margaret A. Cole [P-id]" renders the name once, not twice — and the same detection means an in-dialect "married [P-id]" still emits the name |
+| Spacetime spans | ✓ | A sentence carrying exactly one `[S-id]` whose (subject, source) pair resolves to a single dated+placed claim **and** whose claim year appears in the sentence text is wrapped in `<span class="spacetime" data-loc=… data-date=ISO>`. The single-claim + year-in-sentence guards keep a source cited across several sentences from stamping the wrong (e.g. marriage) date onto an unrelated (e.g. birth) sentence. Sentence splitting skips initials ("Margaret A. Cole") and common abbreviations |
+| Ancestry images | ✓ | A source's `external_links` Ancestry image URLs (`dbid=…&h=…` or `/view/{id}:{db}`) → `{{Ancestry Image\|db\|id}}`, appended to that source's reference definition |
+| Template hooks | ✓ | Optional `tools/wikitree_templates.yaml` maps a claim `type` → a WikiTree infobox template (+ field map over `date`/`place`/`value`); each matching accepted claim renders the template near the top. Ships empty (no templates) so the default export emits none; a missing/malformed file disables the feature without breaking the export |
+| Output | ✓ | Heading conversion (`##`→`==`, `###`→`===`, H1 dropped), `*(none yet)*` placeholders removed; stdout or `--out FILE`; never uploads |
+
+Automated tests: `tests/test_wikitree.py` builds a small on-disk archive (profile + source records) with a synthetic index, covering ref dedup/placement and the `<references/>` anchor, `[P-id]` link folding (no doubled name), the spacetime span landing only on the year-matching sentence, the Ancestry-image template, placeholder removal, the living/not-curated/not-found/bad-id gates, restricted/DNA citation refusal, and the URL/heading/sentence-split unit helpers.
 
 ## fha doctor — implementation status
 

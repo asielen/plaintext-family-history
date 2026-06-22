@@ -1,0 +1,25 @@
+# wikitree_templates.yaml — optional claim-type → WikiTree infobox hooks for
+# `fha wikitree` (TOOLING §13). This file is *data*: it ships empty so the
+# default export emits no templates. Uncomment / add mappings to have certain
+# claim types render a WikiTree template near the top of the exported profile.
+#
+# Schema — one entry per claim `type` (SPEC §8.2 vocabulary):
+#
+#   <claim_type>:
+#     template: <WikiTree template name>      # e.g. "US Civil War"
+#     fields:                                 # optional WikiTree field <- claim attribute
+#       <wikitree_field>: <claim_attr>        # claim_attr ∈ {date, place, value}
+#
+# For every ACCEPTED claim of the subject person whose `type` matches a key, the
+# named template is emitted once with the mapped fields filled from the claim.
+# A field whose claim attribute is empty is omitted; an empty/missing file, or a
+# malformed one, simply disables the feature (the rest of the export is unaffected).
+#
+# Example (commented out — enable by removing the leading '#'):
+#
+# military:
+#   template: "US Civil War"
+#   fields:
+#     enlisted: date
+#     unit: value
+#     location: place

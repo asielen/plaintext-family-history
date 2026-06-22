@@ -194,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     from report import register as report_register
     from packet import register as packet_register
     from places import register as places_register
+    from gedcom import register as gedcom_register
+    from wikitree import register as wikitree_register
 
     parser = build_parser()
     subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -211,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     report_register(subs)
     packet_register(subs)
     places_register(subs)
+    gedcom_register(subs)
+    wikitree_register(subs)
 
     args = parser.parse_args(argv_list)
 

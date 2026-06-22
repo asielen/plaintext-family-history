@@ -36,7 +36,7 @@ the insertion point in the same edit.
 | 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ✓ shipped — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
 | 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ✓ shipped — M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | ✓ shipped — M5.1 (`fha report` §0–4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6–8 photo triage/place candidates/hypotheses/cooccur) |
-| 6 | Layer 6 — Data output | M6.1 – M6.5 | ◐ in progress — M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`) |
+| 6 | Layer 6 — Data output | M6.1 – M6.5 | ✓ shipped — M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
 | 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | future |
 | 8 | Layer 8 — Publication | M8.1 – M8.5 | future |
 | 9 | Layer 9 — Scaffolding | M9.1 – M9.2 | future |
@@ -916,7 +916,7 @@ fha report --root example-archive   # all 8 sections printed without error
 
 ---
 
-## Layer 6 — Data output (Milestone 6 — ◐ in progress)
+## Layer 6 — Data output (Milestone 6 — ✓ shipped)
 
 Depends on: index (+ photoindex for packet). Tools in this layer are independent of each
 other and of layers 4–5; build in any order once layer 3 is done.
@@ -979,7 +979,7 @@ fha places lint --root tests/fixtures/broken-places  # fires on orphan L-id + da
 
 ---
 
-### M6.3 — `fha places geocode`
+### M6.3 — `fha places geocode` (✓ shipped)
 
 **One PR.** Extend `tools/places.py`. Wire `fha places geocode [--place L-id] [--all]
 [--offline]` (TOOLING §10).
@@ -999,7 +999,7 @@ fha places geocode --all --root example-archive --offline  # exits 0 without net
 
 ---
 
-### M6.4 — `fha gedcom`
+### M6.4 — `fha gedcom` (✓ shipped)
 
 **One PR.** New file `tools/gedcom.py`. Wire `fha gedcom [<P-id>] [--mode descendants|
 ancestors|connected] [--generations N] [--all] [--include-living] [--out FILE]`
@@ -1018,7 +1018,7 @@ fha gedcom P-de957bcda1 --mode descendants --root example-archive  # valid .ged 
 
 ---
 
-### M6.5 — `fha wikitree`
+### M6.5 — `fha wikitree` (✓ shipped)
 
 **One PR.** New file `tools/wikitree.py`. Wire `fha wikitree <P-id> [--out FILE]`
 (TOOLING §13).

@@ -172,8 +172,8 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha find --related` — the neighborhood query: people, places, sources, and time slices (milestone 4)
 - [x] `fha report` — the session research feed: discoveries, review queue, vitals gaps, contradictions, search-log awareness, answerable questions, photo triage, hypotheses, possible connections (milestone 5)
 - [x] `fha packet` — person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)
-- [x] `fha places` — place registry lint and recurring unlinked place/GPS candidate detection (milestone 6.2)
-- [ ] `fha gedcom`, `fha wikitree` (milestone 6.4+)
+- [x] `fha places` — place registry lint, recurring unlinked place/GPS candidate detection, and offline GeoNames coordinate backfill (milestone 6.2–6.3)
+- [x] `fha gedcom` — GEDCOM 5.5.1 relationship export (living-redacted by default); `fha wikitree` — curated-profile export in the WikiTree dialect (milestone 6.4–6.5)
 - [ ] `fha process`, web-capture intake (milestone 7)
 - [ ] The static-site generator
 

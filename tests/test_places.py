@@ -308,6 +308,202 @@ class PlacesCandidatesTests(unittest.TestCase):
         self.assertEqual(places._cmd_places_candidates(args), places.EXIT_FAILURE)
 
 
+def _geo(name, lat, lon, country='US', admin1='', pop=1000, ascii_=None, alts=()):
+    return places.GeoRow(
+        name=name, asciiname=ascii_ or name, altnames=frozenset(a.lower() for a in alts),
+        lat=lat, lon=lon, country=country, admin1=admin1, population=pop,
+    )
+
+
+class GeocodeMatchTests(unittest.TestCase):
+    def test_unique_hit(self):
+        gz = [_geo('Topeka', 39.05, -95.68, admin1='KS')]
+        hit = places._match_place('Topeka', 'Topeka, Kansas, USA', gz)
+        self.assertIsInstance(hit, places.GeoRow)
+        self.assertEqual(hit.admin1, 'KS')
+
+    def test_no_match(self):
+        gz = [_geo('Topeka', 39.05, -95.68, admin1='KS')]
+        self.assertIsNone(places._match_place('Nowhere', 'Nowhere, USA', gz))
+
+    def test_ambiguous_same_name_two_states(self):
+        gz = [_geo('Fairview', 39.8, -95.6, admin1='KS'),
+              _geo('Fairview', 40.0, -74.0, admin1='NJ')]
+        self.assertEqual(places._match_place('Fairview', 'Fairview, USA', gz), 'ambiguous')
+
+    def test_state_narrows_ambiguity(self):
+        gz = [_geo('Fairview', 39.8, -95.6, admin1='KS'),
+              _geo('Fairview', 40.0, -74.0, admin1='NJ')]
+        hit = places._match_place('Fairview', 'Fairview, Breton County, Kansas, USA', gz)
+        self.assertIsInstance(hit, places.GeoRow)
+        self.assertEqual(hit.admin1, 'KS')
+
+    def test_country_filter(self):
+        gz = [_geo('London', 51.5, -0.12, country='GB', admin1='ENG'),
+              _geo('London', 42.98, -81.24, country='CA', admin1='08')]
+        hit = places._match_place('London', 'London, England, United Kingdom', gz)
+        self.assertEqual(hit.country, 'GB')
+
+    def test_alt_name_match(self):
+        gz = [_geo('Bombay', 19.07, 72.87, country='IN', admin1='16', alts=('Mumbai',))]
+        hit = places._match_place('Mumbai', 'Mumbai, India', gz)
+        self.assertIsInstance(hit, places.GeoRow)
+
+
+class GeocodeYamlEditTests(unittest.TestCase):
+    def test_insert_coords_and_alt_names(self):
+        text = (
+            '- id: L-7c1a9f4e22\n'
+            '  name: Fairview\n'
+            '  hierarchy: Fairview, Kansas, USA\n'
+        )
+        new, changed = places._apply_geocode_to_yaml(text, 'L-7c1a9f4e22', 39.8, -95.6, ['Fairview City'])
+        self.assertTrue(changed)
+        self.assertIn('coords: [39.8, -95.6]', new)
+        self.assertIn('alt_names: [Fairview City]', new)
+        # the id line and name line survive
+        self.assertIn('- id: L-7c1a9f4e22', new)
+        self.assertIn('name: Fairview', new)
+
+    def test_replace_existing_coords(self):
+        text = (
+            '- id: L-7c1a9f4e22\n'
+            '  name: Fairview\n'
+            '  coords: [0.0, 0.0]\n'
+        )
+        new, changed = places._apply_geocode_to_yaml(text, 'L-7c1a9f4e22', 39.8, -95.6, [])
+        self.assertTrue(changed)
+        self.assertIn('coords: [39.8, -95.6]', new)
+        self.assertNotIn('[0.0, 0.0]', new)
+
+    def test_existing_alt_names_not_clobbered(self):
+        text = (
+            '- id: L-7c1a9f4e22\n'
+            '  name: Fairview\n'
+            '  alt_names: [Old Name]\n'
+        )
+        new, changed = places._apply_geocode_to_yaml(text, 'L-7c1a9f4e22', 39.8, -95.6, ['New Name'])
+        self.assertIn('alt_names: [Old Name]', new)
+        self.assertNotIn('New Name', new)
+
+    def test_only_target_block_touched(self):
+        text = (
+            '- id: L-aaaaaaaaaa\n'
+            '  name: Other\n'
+            '- id: L-7c1a9f4e22\n'
+            '  name: Fairview\n'
+        )
+        new, changed = places._apply_geocode_to_yaml(text, 'L-7c1a9f4e22', 39.8, -95.6, [])
+        # coords land in the Fairview block, after its id line, not the Other block
+        lines = new.splitlines()
+        fv = lines.index('- id: L-7c1a9f4e22')
+        self.assertTrue(lines[fv + 1].strip().startswith('coords:'))
+        self.assertNotIn('coords:', '\n'.join(lines[:fv]))
+
+    def test_comments_preserved(self):
+        text = (
+            '# registry header comment\n'
+            '- id: L-7c1a9f4e22\n'
+            '  name: Fairview  # inline comment\n'
+        )
+        new, _ = places._apply_geocode_to_yaml(text, 'L-7c1a9f4e22', 39.8, -95.6, [])
+        self.assertIn('# registry header comment', new)
+        self.assertIn('# inline comment', new)
+
+    def test_unknown_id_no_change(self):
+        text = '- id: L-7c1a9f4e22\n  name: Fairview\n'
+        new, changed = places._apply_geocode_to_yaml(text, 'L-9999999999', 1.0, 2.0, [])
+        self.assertFalse(changed)
+        self.assertEqual(new, text)
+
+
+class GeocodeRunTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'places').mkdir()
+        self.conn = _make_index(self.root)
+
+    def tearDown(self):
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _fresh_index(self):
+        import os
+        os.utime(self.root / '.cache' / 'index.sqlite')
+
+    def _write_gazetteer(self, rows):
+        gdir = self.root / '.cache' / 'geonames'
+        gdir.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for r in rows:
+            cols = [''] * 19
+            cols[1] = r['name']
+            cols[2] = r.get('ascii', r['name'])
+            cols[3] = r.get('alt', '')
+            cols[4] = str(r['lat'])
+            cols[5] = str(r['lon'])
+            cols[8] = r.get('country', 'US')
+            cols[10] = r.get('admin1', '')
+            cols[14] = str(r.get('pop', 1000))
+            lines.append('\t'.join(cols))
+        (gdir / places._GEONAMES_MEMBER).write_text('\n'.join(lines), encoding='utf-8')
+
+    def test_offline_no_gazetteer_when_places_need_coords(self):
+        _add_place(self.conn, 'l-7c1a9f4e22', 'Fairview')  # no coords
+        self.conn.commit()
+        (self.root / 'places' / 'places.yaml').write_text(
+            '- id: L-7c1a9f4e22\n  name: Fairview\n', encoding='utf-8')
+        self._fresh_index()
+        result = places.run_geocode(self.root, {}, all_places=True, offline=True)
+        self.assertEqual(result['status'], 'no-gazetteer')
+        self.assertEqual(result['written'], 0)
+
+    def test_all_have_coords_is_clean(self):
+        _add_place(self.conn, 'l-7c1a9f4e22', 'Fairview', lat=39.8, lon=-95.6)
+        self.conn.commit()
+        result = places.run_geocode(self.root, {}, all_places=True, offline=True)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['written'], 0)
+
+    def test_decline_writes_nothing(self):
+        _add_place(self.conn, 'l-7c1a9f4e22', 'Fairview',
+                   within=None)  # no coords
+        self.conn.execute("UPDATE places SET hierarchy=? WHERE id=?",
+                          ('Fairview, Kansas, USA', 'l-7c1a9f4e22'))
+        self.conn.commit()
+        yaml_path = self.root / 'places' / 'places.yaml'
+        original = '- id: L-7c1a9f4e22\n  name: Fairview\n  hierarchy: Fairview, Kansas, USA\n'
+        yaml_path.write_text(original, encoding='utf-8')
+        self._write_gazetteer([{'name': 'Fairview', 'lat': 39.8, 'lon': -95.6, 'admin1': 'KS'}])
+        self._fresh_index()
+        result = places.run_geocode(self.root, {}, all_places=True, offline=True,
+                                    confirm=lambda prompt: False)
+        self.assertEqual(result['written'], 0)
+        self.assertEqual(yaml_path.read_text(encoding='utf-8'), original)
+
+    def test_accept_writes_coords(self):
+        _add_place(self.conn, 'l-7c1a9f4e22', 'Fairview')
+        self.conn.execute("UPDATE places SET hierarchy=? WHERE id=?",
+                          ('Fairview, Kansas, USA', 'l-7c1a9f4e22'))
+        self.conn.commit()
+        yaml_path = self.root / 'places' / 'places.yaml'
+        yaml_path.write_text(
+            '- id: L-7c1a9f4e22\n  name: Fairview\n  hierarchy: Fairview, Kansas, USA\n',
+            encoding='utf-8')
+        self._write_gazetteer([{'name': 'Fairview', 'lat': 39.8, 'lon': -95.6, 'admin1': 'KS'}])
+        self._fresh_index()
+        result = places.run_geocode(self.root, {}, all_places=True, offline=True,
+                                    confirm=lambda prompt: True)
+        self.assertEqual(result['written'], 1)
+        self.assertIn('coords: [39.8, -95.6]', yaml_path.read_text(encoding='utf-8'))
+
+    def test_not_found_place(self):
+        self.conn.commit()
+        result = places.run_geocode(self.root, {}, place_id='l-9999999999', offline=True)
+        self.assertEqual(result['status'], 'not-found')
+
+
 class HaversineTests(unittest.TestCase):
     def test_zero_distance(self) -> None:
         self.assertAlmostEqual(places._haversine_meters(39.5631, -95.1216, 39.5631, -95.1216), 0.0, places=3)

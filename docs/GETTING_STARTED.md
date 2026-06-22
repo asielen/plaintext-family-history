@@ -48,9 +48,11 @@ python tools/fha.py report --root example-archive
 python tools/fha.py packet P-de957bcda1 --root example-archive --no-photos
 python tools/fha.py places lint --root example-archive
 python tools/fha.py places candidates --root example-archive
+python tools/fha.py gedcom P-de957bcda1 --root example-archive
+python tools/fha.py wikitree P-de957bcda1 --root example-archive
 ```
 
-To build further tools (process, gedcom, wikitree, site, …), declare
+To build further tools (process, web-capture intake, site, …), declare
 **tool-building mode** and follow the build order in `BUILD.md` (which itself implements
 the design in `TOOLING.md` §15).
 Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.
