@@ -22,6 +22,7 @@ import datetime
 import itertools
 import os
 import re
+import secrets
 import sqlite3
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ import yaml
 #    SIGNIFICANCE              — claim type → 'vital'/'substantive'/'incidental'
 #    CLAIM_TYPES, VITAL_TYPES  — frozensets derived from SIGNIFICANCE
 #    SOURCE_TYPES              — controlled vocabulary for source_type field
+#    PHOTO_EXTENSIONS          — recognised photo/scan file extensions (photoindex + process)
 #    COMPANION_KINDS           — generated file kinds that share a P-id with their profile
 #
 #  Archive configuration
@@ -69,6 +71,7 @@ import yaml
 #    _pad_date, _last_day      — internal date-padding helpers
 #
 #  ID utilities
+#    mint_ids                  — mint collision-checked Crockford IDs
 #    normalize_id              — lowercase for consistent set/dict keying
 #    is_valid_id               — syntactic validity check
 #    id_type_of                — extract P/S/C/L/H type prefix
@@ -135,6 +138,15 @@ SOURCE_TYPES: frozenset[str] = frozenset({
     'census', 'vital-record', 'newspaper', 'photo', 'interview', 'letter',
     'military-record', 'land-record', 'probate', 'directory', 'dna', 'book',
     'website', 'artifact', 'proof-argument', 'other',
+})
+
+# Common raster and camera-raw extensions a personal photo library mixes in.
+# Canonical home for the set so that `photoindex` (cataloguing) and `process`
+# (document-vs-photo intake detection) agree on what counts as a photo without
+# either tool importing the other (tools never import tools — TOOLING §15).
+PHOTO_EXTENSIONS: frozenset[str] = frozenset({
+    '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.gif', '.heic', '.heif',
+    '.cr2', '.nef', '.dng', '.arw', '.orf', '.rw2',
 })
 
 # Companion file kinds: generated view files that share a P-id with their profile
@@ -832,6 +844,39 @@ def _last_day(year: int, month: int) -> str:
 
 
 # ── ID utilities ──────────────────────────────────────────────────────────────
+
+ID_TYPES: frozenset[str] = frozenset('PSCLH')
+
+
+def _mint_candidate(prefix: str) -> str:
+    """Draw one Crockford ID candidate with the canonical uppercase type prefix."""
+    body = ''.join(secrets.choice(CROCKFORD_ALPHA) for _ in range(10))
+    return f'{prefix.upper()}-{body}'
+
+
+def mint_ids(prefix: str, count: int, archive_root: str | Path) -> list[str]:
+    """Mint fresh IDs of one type, collision-checked against the archive tree.
+
+    ID minting is shared archive infrastructure, so it lives in `_lib.py`
+    rather than in the `id` CLI module. That keeps later tools such as
+    `fha process` inside the project rule that tools do not import other tools
+    while still using the same Crockford alphabet and collision scan everywhere.
+    """
+    prefix = prefix.upper()
+    if prefix not in ID_TYPES:
+        raise ValueError(f'Unknown ID type: {prefix!r}. Must be one of P S C L H.')
+    if count < 1:
+        raise ValueError('count must be at least 1')
+
+    existing = scan_ids_in_tree(archive_root)
+    result: list[str] = []
+    while len(result) < count:
+        candidate = _mint_candidate(prefix)
+        if candidate.lower() not in existing:
+            result.append(candidate)
+            existing.add(candidate.lower())
+    return result
+
 
 def normalize_id(id_str: str) -> str:
     """Normalize an ID to lowercase."""

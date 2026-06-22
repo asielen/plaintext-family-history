@@ -25,6 +25,7 @@ from _lib import (
     EXIT_FAILURE,
     find_archive_root,
     load_fha_yaml,
+    mint_ids,
     normalize_id,
     read_record,
 )
@@ -154,8 +155,6 @@ def mint_named_stubs(
     dry_run: bool = False,
 ) -> None:
     """Mint new P-ids and create stubs for named people."""
-    from id import mint_ids
-
     clean_names = [n.strip() for n in names if n.strip()]
     if not clean_names:
         return

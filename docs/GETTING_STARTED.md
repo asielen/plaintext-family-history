@@ -23,8 +23,8 @@ State your **mode** at the start of a session — `research`, `tool-building`, `
 
 ## Step 3 — Use (or extend) the tools
 
-Milestones 1–5 are complete, plus `fha packet` (milestone 6.1) and `fha places`
-(milestone 6.2): `fha lint`, `fha index`,
+Milestones 1–6 are complete, plus `fha process` single-file intake
+(milestone 7.1–7.2): `fha lint`, `fha index`,
 `fha id`, `fha stubs`, `fha views` (timeline, sources-index, draft-queue, brackets, tree),
 `fha doctor`, `fha find` (including `--related` and `--text`), `fha photoindex`
 (scan/find/triage/report/reconcile/tag-person), `fha xref`, `fha cooccur`, `fha report`,
@@ -52,7 +52,7 @@ python tools/fha.py gedcom P-de957bcda1 --root example-archive
 python tools/fha.py wikitree P-de957bcda1 --root example-archive
 ```
 
-To build further tools (process, web-capture intake, site, …), declare
+To build further tools (folder intake, web-capture intake, site, …), declare
 **tool-building mode** and follow the build order in `BUILD.md` (which itself implements
 the design in `TOOLING.md` §15).
 Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.
@@ -89,9 +89,10 @@ Copy the contents of `archive-template/` into it as the starting skeleton.
 
 A session looks like: run the report (`fha report`, narrated by the future `today` skill —
 TOOLING.md §16), see your review queue and research leads, process new inbox items, review
-drafted claims, and let the index regenerate. `fha process` (intake) and the workflow skills
-themselves are still milestone 7 work; until they ship, intake is manual (`fha id mint` +
-hand-editing the source record) and review/report are run directly from the CLI.
+drafted claims, and let the index regenerate. `fha process` handles single-file
+documents/photos and `--more`; folder triage, bundle dissolution, capture, and the
+workflow skills themselves are still milestone 7 work. Until those later phases ship,
+multi-file intake and review/report are run directly from the CLI.
 Capture → file → process → review → report.
 
 ## A note on the example archive

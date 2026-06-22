@@ -48,7 +48,7 @@ CODE MAP
     _DDL                      — CREATE TABLE statements for photos.sqlite
 
   exiftool integration
-    PHOTO_EXTENSIONS          — recognised photo/scan file extensions
+    PHOTO_EXTENSIONS          — recognised photo/scan file extensions (imported from _lib)
     _run_exiftool             — batched `exiftool -j -struct` invocation (test seam)
     _SOURCE_KEYWORD_RE, _PID_KEYWORD_RE, _DATE_KEYWORD_RE — keyword patterns
     _extract_keywords         — flatten Keywords+Subject into one string list
@@ -143,6 +143,7 @@ from _lib import (
     normalize_id,
     parse_media_filename,
     path_to_alias,
+    PHOTO_EXTENSIONS,
     photoindex_status,
     probe_sqlite,
     resolve_path,
@@ -195,11 +196,7 @@ _REQUIRED_SCHEMA = {
 
 # ── exiftool integration ──────────────────────────────────────────────────
 
-# Common raster and camera-raw extensions a personal photo library mixes in.
-PHOTO_EXTENSIONS = frozenset({
-    '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.gif', '.heic', '.heif',
-    '.cr2', '.nef', '.dng', '.arw', '.orf', '.rw2',
-})
+# PHOTO_EXTENSIONS now lives in _lib (shared with `fha process`); imported above.
 
 _EXIFTOOL_FIELDS = [
     '-Title', '-Caption-Abstract', '-XMP-dc:Description', '-UserComment', '-DateTimeOriginal',

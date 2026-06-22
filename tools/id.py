@@ -13,59 +13,31 @@ IDs are immutable, never reused. SPEC §10, TOOLING §4.
 from __future__ import annotations
 
 import argparse
-import re
-import secrets
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    CROCKFORD_ALPHA,
     ID_RE,
     EXIT_CLEAN,
     EXIT_FAILURE,
+    mint_ids as _shared_mint_ids,
     resolve_root_arg,
-    scan_ids_in_tree,
     normalize_id,
 )
 
-ID_TYPES = frozenset('PSCLH')
 
 
 # ── Minting ───────────────────────────────────────────────────────────────────
-
-def _mint_candidate(prefix: str) -> str:
-    """Draw 10 random Crockford Base32 chars and return the full ID string."""
-    body = ''.join(secrets.choice(CROCKFORD_ALPHA) for _ in range(10))
-    return f'{prefix.upper()}-{body}'
-
 
 def mint_ids(
     prefix: str,
     count: int,
     archive_root: Path,
 ) -> list[str]:
-    """
-    Mint `count` fresh IDs of the given prefix.
-    Checks existence against the archive tree.
-    Retries on collision (vanishingly rare at family scale).
-    """
-    prefix = prefix.upper()
-    if prefix not in ID_TYPES:
-        raise ValueError(f'Unknown ID type: {prefix!r}. Must be one of P S C L H.')
-
-    # Load the existing ID set for collision checking
-    existing = scan_ids_in_tree(archive_root)
-
-    result: list[str] = []
-    while len(result) < count:
-        candidate = _mint_candidate(prefix)
-        if candidate.lower() not in existing:
-            result.append(candidate)
-            existing.add(candidate.lower())   # prevent duplicates within this batch
-
-    return result
+    """Compatibility wrapper around the shared `_lib.mint_ids` implementation."""
+    return _shared_mint_ids(prefix, count, archive_root)
 
 
 # ── Check / locate ────────────────────────────────────────────────────────────

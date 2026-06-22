@@ -142,6 +142,43 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `fha gedcom [<P-id>] [--mode descendants\|ancestors\|connected] [--generations N] [--all] [--include-living] [--out FILE]` | `gedcom.py` | ✓ M6.4 — see "fha gedcom — implementation status" below |
 | `fha wikitree <P-id> [--out FILE]` | `wikitree.py` | ✓ M6.5 — see "fha wikitree — implementation status" below |
 
+## Implemented tools (milestone 7, in progress)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha process FILE [--type TYPE] [--title …] [--slug SLUG] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1–M7.2 — single-file documents and photos + `--more`; see "fha process — implementation status" below |
+
+## fha process — implementation status
+
+This is Stage A (the deterministic mint + mark + scaffold) of the intake
+pipeline; the AI draft pass and review pass are the `process-source` /
+`review-claims` skills, not this tool (TOOLING §6).
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Document intake (M7.1) | ✓ | Detect a non-photo file (extension + not under the resolved photos root); refuse a filename already carrying `_{S-id}`; mint an S-id via `_lib.mint_ids`; **rename in place** to `{slug}_{S-id}.{ext}` recording `original_filename`; scaffold `sources/{type}/{slug}_{S-id}.md` from the §14 template with an empty `## Claims` block. Transactional — the rename and record-write each register an undo and any failure rolls back; destination conflicts and unknown `--type` values refuse before writing |
+| Photo intake (M7.2) | ✓ | Detect a photo (extension or under the photos root); refuse a file already carrying a `SOURCE:` keyword; mint an S-id; **never rename** — embed `SOURCE: {S-id}` via `exiftool -keywords+= -overwrite_original_in_place` (abort, scaffold nothing, on failure); scaffold `sources/photos/{slug}_{S-id}.md` with `role: primary`, `is_primary: true`. `source_type` is always `photo` |
+| Source-stub sidecar (`*.notes.md`) | ✓ | A lone `{stem}.notes.md` beside a single asset (SPEC §12.1) is read as the starting point whether the user passes the asset or the sidecar itself: its optional `title`/`source_type` frontmatter hints refine the record (photos remain `source_type: photo`), its prose body becomes the record's `## Notes`, and the stub is deleted after the record is safely written. Bundle folders (multiple files + one `notes.md`) are M7.4, not handled here |
+| `--more FILE ROLE[:copy]` | ✓ | Attach an additional file to the existing source named by the positional asset's S-id (its embedded `SOURCE:` keyword for a photo, its `_{S-id}` filename for a document). A photo `--more` file is keyword-marked and left in place; a document `--more` file is renamed `{slug}-[{copy}-]{role}_{S-id}.{ext}` with `original_filename` recorded. The new file's inventory entry is appended to the record via surgical text edit (frontmatter comments/order preserved, mirroring `fha places geocode`) |
+| `--type TYPE` | ✓ | Source type + subdirectory for a document (default `other`); ignored for photos (always `photo`). A `*.notes.md` `source_type` hint overrides the default when it is in the controlled vocabulary |
+| `--title` / `--slug` | ✓ | `--slug` wins; else `--title`; else the filename stem — slugified to lowercase-hyphenated. `--title` also seeds the record `title`/`citation` |
+| `--dry-run` | ✓ | Previews mint/rename/keyword/scaffold/stub-delete and performs no filesystem effect (no exiftool call) |
+| Folder mode / variation grouping (M7.3) | ⚑ deferred | Passing a directory is refused with a pointer to M7.3/M7.4. Triage scorer over a folder, tier-1 variation detection, and the `one / separate / skip` prompt are M7.3 |
+| Bundle folder dissolution (M7.4) | ⚑ deferred | `notes.md`-bearing inbox bundle folders (SPEC §12.1) are M7.4 |
+| `--with-vision` tier-2 grouping | ⚑ deferred | Backlog (TOOLING §6) |
+| Exit codes | ✓ | 0 success; 2 for a refusal / missing file / folder mode / `_{S-id}` already present; 3 for a tool failure (exiftool missing or write error, rolled-back record write) |
+
+Automated tests: `tests/test_process.py` (stdlib `unittest`) builds a throwaway
+archive and monkeypatches the exiftool seams
+(`_run_exiftool_read_keywords` / `_run_exiftool_embed_source` /
+`_run_exiftool_remove_source`) with an in-memory
+`FakePhotoStore`, covering document mint/rename/scaffold, the empty-`## Claims`
+parse, `--dry-run` no-op, already-processed refusal, sidecar-into-`## Notes`
+(with `source_type` hint routing), rollback on a record-write failure, photo
+keyword-embed-no-rename, the already-keyworded refusal, the embed-failure abort,
+`--more` for both a photo back and a document page, asset classification, and the
+slug helpers. Run with `python -m unittest tests.test_process -v` from the repo root.
+
 ## fha packet — implementation status
 
 | Feature | Status | Notes |

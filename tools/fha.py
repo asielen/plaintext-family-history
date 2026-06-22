@@ -196,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     from places import register as places_register
     from gedcom import register as gedcom_register
     from wikitree import register as wikitree_register
+    from process import register as process_register
 
     parser = build_parser()
     subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -215,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     places_register(subs)
     gedcom_register(subs)
     wikitree_register(subs)
+    process_register(subs)
 
     args = parser.parse_args(argv_list)
 
