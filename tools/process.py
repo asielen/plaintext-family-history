@@ -314,6 +314,11 @@ def _scaffold_text(
     is_photo: bool,
     original_filename: str | None,
     notes_body: str | None,
+    restricted: bool = False,
+    citation: str | None = None,
+    repository: str | None = None,
+    source_date: str | None = None,
+    provenance: str | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -323,17 +328,30 @@ def _scaffold_text(
     heading, and an empty body parses to an empty claims list. The inventory
     records the one file we just processed: `is_primary`/`role: primary` for a
     photo, `original_filename` provenance for a renamed document.
+
+    `restricted`/`citation`/`repository`/`source_date`/`provenance` are §14
+    fields a source-stub sidecar may hint (or, for `restricted`, that a `dna`
+    source_type always forces) — without passing them through, capture-written
+    metadata in the stub would be silently dropped when the stub is consumed.
     """
     lines = [
         '---',
         f'id: {s_id}',
         f'title: {_yaml_inline(title)}',
         f'source_type: {source_type}',
-        'source_class: original',
-        'repository: unknown',
-        'citation: >',
-        f'  {title}',
-        'people: []',
+    ]
+    if source_date:
+        lines.append(f'source_date: {_yaml_inline(source_date)}')
+    lines.append('source_class: original')
+    lines.append(f'repository: {_yaml_inline(repository) if repository else "unknown"}')
+    lines.append('citation: >')
+    lines.append(f'  {citation if citation else title}')
+    lines.append('people: []')
+    if restricted:
+        lines.append('restricted: true')
+    if provenance:
+        lines.append(f'provenance: {_yaml_inline(provenance)}')
+    lines += [
         'files:',
         f'  - file: {_yaml_inline(file_alias)}',
         '    role: primary',
@@ -412,6 +430,13 @@ def _append_file_entry(record_text: str, entry_lines: list[str]) -> str:
         block = ['files:'] + entry_lines
         return '\n'.join(lines[:insert_at] + block + lines[insert_at:])
 
+    if lines[files_idx].rstrip() != 'files:':
+        # An inline value ('files: []', 'files: ~', …) is valid YAML but has no
+        # block underneath it to append to; normalize it to a bare key first so
+        # the new entries land as a proper block list instead of dangling,
+        # unparseable lines after a scalar.
+        lines[files_idx] = 'files:'
+
     # Find the end of the files: block: the first line at/after files_idx+1 that
     # is not indented (a new top-level key) or the closing ---.
     block_end = end
@@ -487,6 +512,17 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     return meta, body
 
 
+def _sidecar_str(sidecar_meta: dict, key: str) -> str | None:
+    """A sidecar hint field as a string, or None — feeds an optional §14 field."""
+    val = sidecar_meta.get(key)
+    return str(val) if val not in (None, '') else None
+
+
+def _sidecar_flag(sidecar_meta: dict, key: str) -> bool:
+    """A sidecar hint field as a bool — feeds an optional §14 flag field."""
+    return sidecar_meta.get(key) in (True, 'true')
+
+
 # ── Top-level operations ──────────────────────────────────────────────────────
 
 class ProcessError(Exception):
@@ -537,6 +573,17 @@ def process_document(
             if hinted in SOURCE_TYPES:
                 source_type = hinted
 
+    # DNA sources always carry restricted: true and must live under
+    # documents/dna/ (SPEC §8.5.5, lint E017) — refuse before scaffolding a
+    # source the linter would immediately flag.
+    if source_type == 'dna':
+        dna_root = documents_root / 'dna'
+        if not _is_under(file_path, dna_root):
+            raise ProcessError(
+                f'{file_path.name} is source_type dna but is not under '
+                f'{_rel(dna_root, archive_root)}; file DNA originals there before processing.'
+            )
+
     sid = _mint_one_source_id(archive_root)
     final_slug = _derive_slug(slug, final_title if title is None else title, file_path)
     ext = file_path.suffix
@@ -555,6 +602,11 @@ def process_document(
     text = _scaffold_text(
         sid, final_title, source_type, file_alias,
         is_photo=False, original_filename=file_path.name, notes_body=notes_body,
+        restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
+        citation=_sidecar_str(sidecar_meta, 'citation'),
+        repository=_sidecar_str(sidecar_meta, 'repository'),
+        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
     if dry_run:
@@ -609,6 +661,14 @@ def process_photo(
     failure, do not scaffold"). If the scaffold then fails, the just-written
     keyword is removed so the photo is not left half-processed.
     """
+    photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
+    if not _is_under(file_path, photos_root):
+        raise ProcessError(
+            f'{file_path.name} is not under the configured photos root '
+            f'({_rel(photos_root, archive_root)}); file it there before processing — '
+            'a record outside the asset roots cannot be expressed as a portable alias path.'
+        )
+
     # The documented dry-run contract is "preview without any exiftool call or
     # writes" — a machine without exiftool on PATH (or a photo whose metadata
     # can't be read) must still get a preview, not a tool failure. The live
@@ -632,6 +692,7 @@ def process_photo(
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(file_path)
     notes_body = None
+    sidecar_meta: dict = {}
     if sidecar is not None:
         sidecar_meta, notes_body = _read_sidecar(sidecar)
         if title is None and sidecar_meta.get('title'):
@@ -649,6 +710,11 @@ def process_photo(
     text = _scaffold_text(
         sid, final_title, _PHOTO_SOURCE_TYPE, file_alias,
         is_photo=True, original_filename=None, notes_body=notes_body,
+        restricted=_sidecar_flag(sidecar_meta, 'restricted'),
+        citation=_sidecar_str(sidecar_meta, 'citation'),
+        repository=_sidecar_str(sidecar_meta, 'repository'),
+        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
     if dry_run:
@@ -733,6 +799,12 @@ def attach_more(
     more_kind = classify_asset(more_file, fha_config, archive_root)
 
     if more_kind == 'photo':
+        photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
+        if not _is_under(more_file, photos_root):
+            raise ProcessError(
+                f'{more_file.name} is not under the configured photos root '
+                f'({_rel(photos_root, archive_root)}); file it there before attaching it.'
+            )
         if _read_source_keyword(more_file):
             raise ProcessError(f'{more_file.name} already carries a SOURCE keyword.')
         new_alias = path_to_alias(more_file, _PHOTO_DIR, fha_config, archive_root)
@@ -779,6 +851,12 @@ def attach_more(
     # Document: rename to share the record's S-id with a -role suffix.
     if _filename_has_source_id(more_file):
         raise ProcessError(f'{more_file.name} already carries an S-id.')
+    documents_root = resolve_path('documents', fha_config, archive_root)
+    if not _is_under(more_file, documents_root):
+        raise ProcessError(
+            f'{more_file.name} is not under the configured documents root '
+            f'({_rel(documents_root, archive_root)}); file it there before attaching it.'
+        )
     base = _slugify(more_file.stem)
     suffix = f'-{_slugify(role)}'
     if copy:

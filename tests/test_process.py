@@ -89,6 +89,11 @@ class ProcessTestCase(unittest.TestCase):
     def _run(self, argv: list[str]) -> int:
         return process._standalone_main(argv + ['--root', str(self.archive)])
 
+    def _write_temp_record(self, text: str) -> Path:
+        path = self.tmp / 'scratch_record.md'
+        path.write_text(text, encoding='utf-8')
+        return path
+
     # ── M7.1 documents ────────────────────────────────────────────────────────
 
     def test_document_mints_renames_scaffolds(self) -> None:
@@ -338,6 +343,88 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(store.read(back), [])
         self.assertEqual(record.read_text(encoding='utf-8'), 'no frontmatter here\n')
         record.write_text(original_record_text, encoding='utf-8')
+
+    def test_photo_refuses_file_outside_photos_root(self) -> None:
+        store = self._install_photo_store()
+        outside = self.archive / 'stray.jpg'
+        outside.write_bytes(b'\xff\xd8\xff')
+        rc = self._run([str(outside)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertEqual(store.read(outside), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_more_refuses_photo_attachment_outside_photos_root(self) -> None:
+        store = self._install_photo_store()
+        front = self.archive / 'photos' / '1880' / 'cardx.jpg'
+        front.write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
+
+        outside = self.archive / 'stray-back.jpg'
+        outside.write_bytes(b'\xff\xd8\xff')
+        rc = self._run([str(front), '--more', str(outside), 'back'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertEqual(store.read(outside), [])
+
+    def test_more_refuses_document_attachment_outside_documents_root(self) -> None:
+        page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1)]), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        outside = self.archive / 'stray-page2.txt'
+        outside.write_text('p2', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(outside), 'page-2'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(outside.exists())  # not renamed
+
+    def test_dna_source_marked_restricted_and_requires_dna_root(self) -> None:
+        outside = self.archive / 'documents' / 'census' / 'kit.txt'
+        outside.write_text('x', encoding='utf-8')
+        rc = self._run([str(outside), '--type', 'dna'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(outside.exists())
+
+        (self.archive / 'documents' / 'dna').mkdir(parents=True)
+        kit = self.archive / 'documents' / 'dna' / 'kit.txt'
+        kit.write_text('x', encoding='utf-8')
+        rc = self._run([str(kit), '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'dna').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['restricted'], 'true')
+
+    def test_sidecar_hint_fields_preserved_into_scaffold(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'hinted.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'hinted.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'title: Hinted Source\n'
+            'citation: A custom citation string.\n'
+            'repository: county archive\n'
+            'source_date: 1900-01\n'
+            'provenance: found in a shoebox\n'
+            '---\n'
+            'body notes\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['repository'], 'county archive')
+        self.assertEqual(rec['meta']['source_date'], '1900-01')
+        self.assertEqual(rec['meta']['provenance'], 'found in a shoebox')
+        self.assertIn('A custom citation string.', record.read_text(encoding='utf-8'))
+
+    def test_append_file_entry_handles_inline_files_value(self) -> None:
+        record_text = '---\nid: S-aaaaaaaaaa\nfiles: []\ncreated: 2026-01-01\n---\n\nbody\n'
+        entry = ['  - file: documents/census/page2.txt', '    role: page-2']
+        new_text = process._append_file_entry(record_text, entry)
+        parsed = read_record(self._write_temp_record(new_text))
+        self.assertEqual(parsed['parse_errors'], [])
+        self.assertEqual(len(parsed['meta']['files']), 1)
+        self.assertEqual(parsed['meta']['files'][0]['role'], 'page-2')
 
     def test_more_document_renames_with_shared_sid(self) -> None:
         # Process a document, then attach a second document page to it.
