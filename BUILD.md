@@ -48,7 +48,7 @@ the insertion point in the same edit.
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
 | 7 | Layer 7 - Intake pipeline | M7.1-M7.8 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
-| 8 | Layer 8 - Publication | M8.1-M8.5 | future |
+| 8 | Layer 8 - Publication | M8.1-M8.5 | ✓ shipped - M8.1 (`fha site` foundations: query layer, Jinja2, source page), M8.2 (person page), M8.3 (place + discoveries pages), M8.4 (home page + standalone redaction audit), M8.5 (interactive trees via a vendored, dependency-free renderer + adapter seam) |
 | 9 | Layer 9 - Scaffolding | M9.1-M9.2 | future |
 
 ---
@@ -1352,8 +1352,18 @@ Vendor a client-side tree library (`family-chart`, MIT, D3-based - or comparable
 (from `fha views tree --format json`) to the library's input format. The adapter is the only
 place that knows about the library; swapping renderers later touches only the adapter.
 
-At build time: generate `site/data/tree_{P-id}.json` for the root person (descendants mode)
-and ancestor pedigrees per curated person (ancestors mode, 3 generations default).
+At build time: generate `site/data/tree_{P-id}_{mode}.json` (the `_{mode}` suffix
+keeps the descendant and ancestor artifacts distinct when the same person seeds
+both) for the root person's descendant tree and ancestor pedigrees per curated
+person (ancestors mode, 3 generations default). The home descendant tree seeds
+from the **apex of `root_person`'s line** (its most distant recorded ancestor),
+not `root_person` literally: the Ahnentafel `root_person` is the proband and has
+no descendants, so seeding there would yield a single node - seeding from the apex
+makes the explorer fan forward across the whole family (TOOLING §12's "descendant
+explorer from a root ancestor"). The tree JSON is written to `site/data/` as the
+reusable artifact *and* embedded inline in each page (read from the DOM, not
+fetched, so it renders from `file://`); redaction is applied server-side in the
+JSON so a published tree never names a living person.
 
 **Done when:**
 ```sh

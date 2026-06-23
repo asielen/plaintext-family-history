@@ -24,7 +24,9 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    check - if the stubs reveal spec gaps, surface them now (see Spec-discovery protocol below),
    then flesh out the implementations.
 4. **Implement** within the guardrails: Python ≥3.10; dependencies ONLY PyYAML, Jinja2
-   (site), exiftool-as-binary - adding any other is a proposed decision, not a choice; one
+   (site), Pillow (optional - `fha site` standalone image derivatives; the site degrades
+   gracefully without it, omitting images rather than copying originals), exiftool-as-binary
+   - adding any other is a proposed decision, not a choice; one
    file per tool under `tools/`, shared code only in `_lib.py`, tools never import tools;
    no network access (geocoder's gazetteer download excepted).
 5. **Fixtures, not the archive.** Develop and test ONLY against `tests/fixtures/` copies.

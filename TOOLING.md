@@ -217,7 +217,7 @@ Comparison rule: each `[S-id]` in a segment must correspond to an `accepted` cla
 
 ## 3a. `fha doctor` - archive health
 
-One command answering "what is wrong with this archive?": archive root found; `fha.yaml` parses; every mapped root reachable; exiftool and Python deps present; index and photoindex freshness (age vs. newest record mtime - a file current by mtime but with an unreadable or empty schema is reported as absent, not fresh); one-line lint summary (E/W counts); inbox items older than 14 days; counts of restricted sources, living and unknown-living persons; E018 agent-drift findings; reminder line that archive + mapped roots must both be in the backup policy (the spec takes no position on backup tooling).
+One command answering "what is wrong with this archive?": archive root found; `fha.yaml` parses; every mapped root reachable; exiftool and Python deps present (PyYAML; plus Jinja2 - required for `fha site` - and Pillow - optional, for standalone-site images - each reported with its install command, a missing Jinja2/Pillow being a warning, not a hard error, since the rest of the suite runs without them); index and photoindex freshness (age vs. newest record mtime - a file current by mtime but with an unreadable or empty schema is reported as absent, not fresh); one-line lint summary (E/W counts); inbox items older than 14 days; counts of restricted sources, living and unknown-living persons; E018 agent-drift findings; reminder line that archive + mapped roots must both be in the backup policy (the spec takes no position on backup tooling).
 Exit codes as §1.
 Run it first after any migration or machine move. **Stated tradeoff:** this spec does not attempt to detect bit rot or silent file alteration; that preservation concern is deliberately deferred to the backup strategy, outside the archive format.
 A future `fha doctor --fixity` could add optional checksum verification without making checksums part of the research model.
@@ -520,6 +520,7 @@ Token swap: `TOKEN_RE` → relative hrefs; unresolved tokens render highlighted 
 It is a *replaceable rendering adapter* in the borrow-the-engines spirit: `fha views tree` emits the neutral tree JSON (§14b), the site bundles the library and feeds it that JSON (mapped to the library's format), and swapping renderers later touches only the adapter.
 The library is vendored into the site bundle so the snapshot stays self-contained and offline.
 Verdict + alternatives (Yakubovich/descendant_tree, others) evaluated in the owner's private tool log.
+**Implementation status (M8.5):** the vendored engine that shipped is a small, dependency-free SVG collapsible-tree renderer authored in-repo (`tools/templates/vendor/fha-tree.js`), *not* family-chart - it was chosen so the milestone needs no network fetch and the bundle carries no large third-party blob. The borrow-the-engine *contract* is fully honored: `tools/templates/vendor/tree-adapter.js` is the single seam that maps the neutral tree JSON to the renderer, so dropping in family-chart (or any D3-based engine) later replaces only those two files. The site embeds each page's tree JSON inline (read from the DOM, not `fetch`ed - `file://` has no network) and also writes it to `site/data/tree_{P-id}_{mode}.json` as the reusable artifact; redaction is applied server-side in that JSON (living/unknown → "Living Person", no vitals, no link). The home tree seeds from the **apex of `fha.yaml`'s `root_person`** (its most distant recorded ancestor) so the descendant explorer fans forward across the whole line; per-person pages carry a 3-generation ancestor pedigree.
 
 ---
 
@@ -798,7 +799,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 
 | Command | When |
 |---|---|
-| `fha site [--standalone]` (T C) | Regenerating the family site; before any share or USB hand-off. |
+| `fha site [--standalone\|--linked] [--out PATH] [--dry-run]` (T C) | Regenerating the family site; before any share or USB hand-off. `--standalone` (default) is the redacted, self-contained snapshot; `--linked` is an unredacted local developer preview. Reads the index + record prose; writes only to the output dir (default `.cache/site/`). |
 | `fha wikitree <P-id>` (T C) | Publishing a curated profile in the WikiTree dialect. Never uploads. |
 | `fha install <path>` (clone) / `fha update-tools` (T C) | Bootstrap a private archive with the operating layer, or refresh it later - backs up your edits, never deletes, never touches data. |
 | `fha capture` (T C, + browser companion) | Capturing a record from an open web page (Ancestry etc.): citation + asset/HTML-snapshot + research-log entry → `fha process`. The main intake on-ramp. |

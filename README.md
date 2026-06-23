@@ -84,7 +84,7 @@ The spec is written so that all of that tooling can be *regenerated* from the do
 
 ## What this is not
 
-- **Not a finished app.** Milestones 1-7 are implemented, including the intake pipeline (`fha process`, `fha capture`, and `fha convert-mining`); site generation and installer/update tooling are still being built.
+- **Not a finished app.** Milestones 1-8 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`) and the static-site generator (`fha site`); only the installer/update tooling (Milestone 9) is still being built.
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.
@@ -190,7 +190,8 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha process` - asset intake: single-file documents/photos, `--more`, folder triage, variation grouping, and bundle dissolution (milestone 7.1-7.4)
 - [x] `fha capture` - paste-fallback web capture, generic recipe, and Ancestry/FamilySearch/Newspapers.com/FindAGrave recipes (milestone 7.5-7.7)
 - [x] `fha convert-mining` - one-time legacy transcript-mining migration (milestone 7.8)
-- [ ] The static-site generator
+- [x] `fha site` - static-site generator: source/person/place/discoveries/home pages, standalone (redacted, self-contained) vs linked preview, and vendored interactive descendant/ancestor trees (milestone 8.1-8.5)
+- [ ] `fha install` / `fha update-tools` - archive scaffolding and updating (milestone 9)
 
 ## A complementary project
 
