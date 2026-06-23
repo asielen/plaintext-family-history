@@ -605,6 +605,58 @@ def _companion_for_sidecar(sidecar: Path) -> Path | None:
     return candidates[0]
 
 
+def _relocate_from_inbox(
+    archive_root: Path,
+    fha_config: dict,
+    file_path: Path,
+    sidecar: Path | None,
+    *,
+    dry_run: bool,
+) -> tuple[Path, Path | None]:
+    """Move an inbox-staged asset (+ sidecar) into its documents/photos root.
+
+    `fha capture --asset` (and a hand-dropped file) stage in `inbox/`, but
+    `process_document`/`process_photo` require the asset already under the
+    configured root — that's the whole point of an inbox: every fha process
+    entrypoint should know how to file something out of it rather than making
+    the user move it by hand first. A no-op (returns the inputs unchanged) when
+    `file_path` isn't under the resolved inbox root.
+
+    The move is flat (same filename, no rename) into documents/ or photos/ —
+    `process_document` mints its own `{slug}_{S-id}` rename afterward; photos
+    are never renamed at all. Real moves happen with `Path.rename`, which is
+    atomic on the same filesystem; on `dry_run` nothing is touched and a
+    not-yet-existing destination path is returned so the caller's own preview
+    can still report the post-move root.
+    """
+    inbox_root = resolve_path('inbox', fha_config, archive_root)
+    if not _is_under(file_path, inbox_root):
+        return file_path, sidecar
+    kind = classify_asset(file_path, fha_config, archive_root)
+    dest_root = (
+        resolve_path(_PHOTO_DIR, fha_config, archive_root) if kind == 'photo'
+        else resolve_path('documents', fha_config, archive_root)
+    )
+    new_path = dest_root / file_path.name
+    new_sidecar = dest_root / sidecar.name if sidecar is not None else None
+    if new_path.exists():
+        raise ProcessError(f'destination already exists: {_rel(new_path, archive_root)}')
+    if new_sidecar is not None and new_sidecar.exists():
+        raise ProcessError(f'destination already exists: {_rel(new_sidecar, archive_root)}')
+
+    if dry_run:
+        print(f'[dry-run] Would move {file_path.name} out of inbox/ into '
+              f'{_rel(dest_root, archive_root)}/')
+        return new_path, new_sidecar
+
+    dest_root.mkdir(parents=True, exist_ok=True)
+    file_path.rename(new_path)
+    if sidecar is not None:
+        sidecar.rename(new_sidecar)
+    print(f'Moved {file_path.name} out of inbox/ into {_rel(dest_root, archive_root)}/')
+    return new_path, new_sidecar
+
+
 def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     """Parse a stub sidecar into (hint frontmatter, prose body).
 
@@ -2027,6 +2079,7 @@ def _run_process(args: argparse.Namespace) -> int:
         print(f'ERROR: not a regular file: {args.file}', file=sys.stderr)
         return EXIT_ERRORS
 
+    sidecar_path: Path | None = None
     try:
         if _is_sidecar_path(file_path):
             companion = _companion_for_sidecar(file_path)
@@ -2040,7 +2093,13 @@ def _run_process(args: argparse.Namespace) -> int:
                     source_type=args.source_type, slug=args.slug, title=args.title,
                     dry_run=dry_run,
                 )
+            sidecar_path = file_path
             file_path = companion
+        else:
+            sidecar_path = _find_sidecar(file_path)
+        file_path, sidecar_path = _relocate_from_inbox(
+            archive_root, fha_config, file_path, sidecar_path, dry_run=dry_run,
+        )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_ERRORS

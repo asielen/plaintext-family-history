@@ -201,6 +201,71 @@ class ProcessTestCase(unittest.TestCase):
         renamed = list((self.archive / 'documents' / 'census').glob('diary-page_S-*.txt'))
         self.assertEqual(len(renamed), 1)
 
+    def test_document_asset_relocated_out_of_inbox(self) -> None:
+        # A bare file dropped straight in inbox/ (no sidecar) — process should
+        # file it into documents/ before scaffolding, not refuse it.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        renamed = list((self.archive / 'documents').glob('note_S-*.txt'))
+        self.assertEqual(len(renamed), 1)
+
+    def test_sidecar_and_companion_relocated_out_of_inbox(self) -> None:
+        # The `fha capture --asset` case: a stub + its companion both staged in
+        # inbox/. Processing the sidecar should move both into documents/ then
+        # scaffold normally, same as if they'd been hand-filed there.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'clipping.txt'
+        asset.write_text('clipping body', encoding='utf-8')
+        sidecar = self.archive / 'inbox' / 'clipping.notes.md'
+        sidecar.write_text('---\ntitle: Newspaper Clipping\n---\nFound online.\n', encoding='utf-8')
+
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        renamed = list((self.archive / 'documents').glob('newspaper-clipping_S-*.txt'))
+        self.assertEqual(len(renamed), 1)
+        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+
+    def test_photo_relocated_out_of_inbox(self) -> None:
+        store = self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        photo = self.archive / 'inbox' / 'scan.jpg'
+        photo.write_text('photo bytes', encoding='utf-8')
+
+        rc = self._run([str(photo)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(photo.exists())
+        moved = self.archive / 'photos' / 'scan.jpg'
+        self.assertTrue(moved.exists())
+        self.assertIn(str(moved), store.keywords)
+
+    def test_inbox_relocation_dry_run_writes_nothing(self) -> None:
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+
+        rc = self._run([str(asset), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(asset.exists())
+        self.assertEqual(list((self.archive / 'documents').glob('*.txt')), [])
+
+    def test_inbox_relocation_refuses_destination_conflict(self) -> None:
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+        (self.archive / 'documents' / 'note.txt').write_text('already here', encoding='utf-8')
+
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(asset.exists())
+
     def test_document_rollback_on_record_write_failure(self) -> None:
         original = self.archive / 'documents' / 'census' / 'will.txt'
         original.write_text('will body', encoding='utf-8')
