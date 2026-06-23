@@ -1,7 +1,9 @@
-# BUILD.md — fha tool suite: build sequence
+# BUILD.md - fha tool suite: build sequence
+
+**Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
 This file is the complete build guide for the `fha` CLI, written as if nothing exists yet.
-Every tool appears in dependency order with the same level of detail — algorithm, constraints,
+Every tool appears in dependency order with the same level of detail - algorithm, constraints,
 and done criteria. Implementation status is tracked separately in `tools/README.md`.
 Design rationale lives in `TOOLING.md`; this file tells you the sequence and how to verify it.
 
@@ -13,33 +15,41 @@ Design rationale lives in `TOOLING.md`; this file tells you the sequence and how
 - Every mutating operation ships `--dry-run`.
 - `tools/README.md` is the authoritative implementation-status record. Update it on every PR.
 
+**UX bar (all PRs) - every PR that adds user-visible output must satisfy all four:**
+- **No traceback reaches the user.** Catch exceptions at the CLI boundary; translate to a plain cause + exact next command. A Python stack trace on the human's screen is always a defect. (Keep full detail behind `--debug` if useful for developers.)
+- **Every user-facing error names cause + exact fix.** "No record found for S-7q2… - run `fha find S-7q2x9c4m1` to check the ID" beats "lookup failed." A message that reports a failure but gives no next step is a dead end, and a dead end is a bug.
+- **Jargon ships an example or a valid-list.** Any term from the format reference (EDTF, `source_type`, anchor, claim status, Crockford ID) gets a plain gloss and a concrete example or the set of allowed values, inline in the message - never a bare "invalid X."
+- **Messy-but-recoverable input is inferred or asked, never hard-failed.** Loose natural-language dates, slightly malformed hand-edits, or non-canonical spellings that the tool can resolve should produce a single plain question or a proposed normalisation - not a refusal. History is messy; treat imperfect input as normal.
+
+**`fha doctor` and `docs/TROUBLESHOOTING.md` (all PRs):** Any new user-visible failure condition introduced by a PR must be (a) detectable by `fha doctor` with a plain-language next step, and (b) listed in `docs/TROUBLESHOOTING.md` with cause and remedy. A failure mode the human can hit but `fha doctor` cannot surface is a support burden waiting to happen.
+
 ---
 
 ## Milestones
 
-Each Layer below maps 1:1 to a milestone — a shipped batch of capability. Layers are split
+Each Layer below maps 1:1 to a milestone - a shipped batch of capability. Layers are split
 into more PR-sized phases than earlier drafts of this doc so that no single phase is
 dramatically larger than its neighbors; splitting a layer into more phases never changes
 its milestone number.
 
-**Every phase is numbered `M{milestone}.{phase}`** in its `###` heading (e.g. `M3.2`) —
+**Every phase is numbered `M{milestone}.{phase}`** in its `###` heading (e.g. `M3.2`) -
 that number is the stable handle for asking for a review of that specific PR ("review
 M3.2", or "review M3" for the whole milestone). The number is positional within its
 milestone, not tied to a tool name, so renaming a phase's heading later doesn't change its
-number; only inserting/removing a phase does — if that happens, renumber everything after
+number; only inserting/removing a phase does - if that happens, renumber everything after
 the insertion point in the same edit.
 
 | Milestone | Layer | Phases | Status |
 |---|---|---|---|
-| 1 | Layer 1 — Foundation | M1.1 – M1.8 | ✓ shipped |
-| 2 | Layer 2 — Archive views & discovery | M2.1 – M2.5 | ✓ shipped |
-| 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ✓ shipped — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
-| 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ✓ shipped — M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
-| 5 | Layer 5 — Research report | M5.1 – M5.3 | ✓ shipped — M5.1 (`fha report` §0–4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6–8 photo triage/place candidates/hypotheses/cooccur) |
-| 6 | Layer 6 — Data output | M6.1 – M6.5 | ✓ shipped — M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
-| 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | ✓ shipped — M7.1–M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6–M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
-| 8 | Layer 8 — Publication | M8.1 – M8.5 | future |
-| 9 | Layer 9 — Scaffolding | M9.1 – M9.2 | future |
+| 1 | Layer 1 - Foundation | M1.1-M1.8 | ✓ shipped |
+| 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | ✓ shipped |
+| 3 | Layer 3 - Photo catalog | M3.1-M3.4 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
+| 4 | Layer 4 - Cross-reference & connection | M4.1-M4.3 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
+| 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
+| 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
+| 7 | Layer 7 - Intake pipeline | M7.1-M7.8 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
+| 8 | Layer 8 - Publication | M8.1-M8.5 | future |
+| 9 | Layer 9 - Scaffolding | M9.1-M9.2 | future |
 
 ---
 
@@ -62,23 +72,23 @@ views tree (JSON) ────────── site (tree rendering adapter)
 install/update-tools ─────── (needs complete tool manifest)
 ```
 
-Tools with no inbound lines — places, gedcom, wikitree, packet, convert-mining — depend only
+Tools with no inbound lines - places, gedcom, wikitree, packet, convert-mining - depend only
 on the index and can be built in any order once the index is stable.
 
 ---
 
-## Layer 1 — Foundation (Milestone 1 — ✓ shipped)
+## Layer 1 - Foundation (Milestone 1 - ✓ shipped)
 
 Everything else depends on these. Build in the order listed.
 
 ---
 
-### M1.1 — `_lib.py` + `fha id`
+### M1.1 - `_lib.py` + `fha id`
 
-**One PR.** Create `tools/_lib.py` (shared library — no CLI) and `tools/id.py`
+**One PR.** Create `tools/_lib.py` (shared library - no CLI) and `tools/id.py`
 (minting tool). Wire `fha id mint` and `fha id check` into `fha.py`.
 
-**`_lib.py` — the four parsing primitives** (TOOLING §1):
+**`_lib.py` - the four parsing primitives** (TOOLING §1):
 
 ```python
 ID_RE     = re.compile(r'\b([PSCLH])-([0-9a-hjkmnp-tv-z]{10})\b', re.I)
@@ -92,15 +102,15 @@ YAML scalar normalization: booleans and date objects coerce to strings (`'true'`
 Claims blocks: `yaml.safe_load`; parse failure is collected as a lint error, never a crash.
 All file IO is UTF-8.
 
-`edtf_bounds(s) -> (min_iso, max_iso)` — the EDTF subset the tools need (TOOLING §1 table):
+`edtf_bounds(s) -> (min_iso, max_iso)` - the EDTF subset the tools need (TOOLING §1 table):
 year `1850` → `(1850-01-01, 1850-12-31)`; tilde/question `1850~`/`1850?` → widen ±1y;
 decade `185X` → full decade; month `1850-05` → month bounds; interval `A/B` → (min(A), max(B));
 open `[..1920]` → `(0001-01-01, 1920-12-31)`. Validate with the same regex used for E014.
 
-`resolve_path(p, fha_yaml) -> str` — maps the first segment of a record path through
+`resolve_path(p, fha_yaml) -> str` - maps the first segment of a record path through
 `fha.yaml`'s `roots:` map; missing alias defaults to `{archive_root}/{alias}`.
 
-**`fha id mint [TYPE] [-n N]`** — draw N (default 1) IDs of type `P|S|C|L|H`.
+**`fha id mint [TYPE] [-n N]`** - draw N (default 1) IDs of type `P|S|C|L|H`.
 Algorithm: `secrets.choice` over Crockford Base32 alphabet `0-9a-hjkmnpqrstvwxyz` (omit
 `i l o u`), 10 chars. Verify absence by scanning the tree with `ID_RE`; retry on collision.
 `fha id check <ID>` is an alias for `fha find <ID>` (wire through `fha.py` dispatcher;
@@ -116,7 +126,7 @@ python -c "from _lib import edtf_bounds; print(edtf_bounds('185X'))"
 
 ---
 
-### M1.2 — `fha index` — schema + full rebuild
+### M1.2 - `fha index` - schema + full rebuild
 
 **One PR.** New file `tools/index.py`. Wire `fha index [--root PATH]` into `fha.py`
 (TOOLING §2). This phase ships the schema and the from-scratch path only; incremental
@@ -129,7 +139,7 @@ python -c "from _lib import edtf_bounds; print(edtf_bounds('185X'))"
 4. Glob asset trees for filenames carrying S-ids → `source_files` reconciliation.
 5. Build FTS tables.
 
-**Schema** (TOOLING §2 DDL — create verbatim):
+**Schema** (TOOLING §2 DDL - create verbatim):
 
 ```sql
 CREATE TABLE persons(id TEXT PRIMARY KEY, name TEXT NOT NULL, surname TEXT, sex TEXT,
@@ -186,25 +196,25 @@ CREATE VIRTUAL TABLE transcripts_fts USING fts5(source_id, path, content);
 ```sh
 fha index --root example-archive         # exits 0; .cache/index.sqlite created
 sqlite3 .cache/index.sqlite "SELECT count(*) FROM claims"  # non-zero
-sqlite3 .cache/index.sqlite "SELECT count(*) FROM relationships"  # zero — M1.3 populates this
+sqlite3 .cache/index.sqlite "SELECT count(*) FROM relationships"  # zero - M1.3 populates this
 ```
 
 ---
 
-### M1.3 — `fha index` — incremental upsert + relationship derivation
+### M1.3 - `fha index` - incremental upsert + relationship derivation
 
 **One PR.** Extend `tools/index.py`. Wire `fha index --source S-id [--root PATH]`
 (TOOLING §2).
 
 **Incremental mode** (`--source S-id`): delete then re-insert one source's rows. Deletion
-order matters — delete `claim_persons` and `claim_links` before `claims`; delete `citations`
+order matters - delete `claim_persons` and `claim_links` before `claims`; delete `citations`
 and `notes_fts` rows for the source path before `sources`. Reversing order leaves orphans.
 
 **Relationship derivation** (after claims load, in both full-rebuild and incremental mode):
-for each `accepted` claim — `relationship subtype: child-of` → `(child, 'parent', father)` +
+for each `accepted` claim - `relationship subtype: child-of` → `(child, 'parent', father)` +
 reciprocal; `marriage` or `relationship subtype: spouse-of` → reciprocal `spouse` edges with
 `date_start`/`date_end`; social subtypes → `friend`/`associate`/`neighbor` edges. Edges are
-pure cache, re-derived from claims on every build — never hand-edited.
+pure cache, re-derived from claims on every build - never hand-edited.
 
 **Done when:**
 ```sh
@@ -215,11 +225,11 @@ fha index --source S-4f5f215e60 --root example-archive  # incremental upsert; ex
 
 ---
 
-### M1.4 — `fha lint` — engine + structural/reference errors (E001–E010)
+### M1.4 - `fha lint` - engine + structural/reference errors (E001-E010)
 
 **One PR.** New file `tools/lint.py`. Wire `fha lint [--root PATH] [--json]` into `fha.py`
 (TOOLING §3). This phase ships the lint engine and the first ten error codes only;
-inventory/keyword/agent-drift errors (E011–E018), all warning codes (W101–W110), and the
+inventory/keyword/agent-drift errors (E011-E018), all warning codes (W101-W110), and the
 fix/formatter flags are later phases in this same layer.
 
 Lint builds its own in-memory index (does not require `fha index` to have run first).
@@ -242,19 +252,19 @@ one bad file.
 | E010 | Missing required frontmatter fields: `id`, `type`, `title` (sources); `id`, `name`, `tier`, `living` (persons) |
 
 **E013 note (forward reference):** the summary-block cross-check is E013, built in the next
-phase alongside the other inventory-facing codes — it needs the same record-parsing
+phase alongside the other inventory-facing codes - it needs the same record-parsing
 machinery this phase establishes, but the codes are numbered out of build order.
 
 **Done when:**
 ```sh
-fha lint --root example-archive              # exits 0 — no codes built yet fire on this fixture
+fha lint --root example-archive              # exits 0 - no codes built yet fire on this fixture
 fha lint --root tests/fixtures/broken-E001  # fires E001
-# repeat for each of E002–E010 against its broken fixture
+# repeat for each of E002-E010 against its broken fixture
 ```
 
 ---
 
-### M1.5 — `fha lint` — inventory, keyword, and agent-drift errors (E011–E018)
+### M1.5 - `fha lint` - inventory, keyword, and agent-drift errors (E011-E018)
 
 **One PR.** Extend `tools/lint.py`. Wire `[--with-exif]` into the existing `fha lint`
 command (TOOLING §3).
@@ -273,27 +283,27 @@ command (TOOLING §3).
 | E018 | `AGENTS.md` or skills reference deprecated commands or contradict locked rules |
 
 **E013 parsing detail.** Scan the summary text (H1 to first `## Section`) with `finditer` on
-`**Label:**` pattern — do NOT split by line (inline multi-label form exists). Extract
+`**Label:**` pattern - do NOT split by line (inline multi-label form exists). Extract
 `[S-id]` and `[P-id]` tokens per segment; compare to accepted claims of the matching type.
 
 **E011 `missing-fixture` suppression.** Suppress entirely when the archive path is under
-`example-archive/` or `tests/fixtures/` — stub asset references are intentional in those
+`example-archive/` or `tests/fixtures/` - stub asset references are intentional in those
 fixtures. (An arbitrary directory merely *named* `tests` in a real archive is not fixture
 space; see `is_fixture_path`.)
 
 **Done when:**
 ```sh
-fha lint --root example-archive              # exits 0 — W101 isn't built until M1.6
+fha lint --root example-archive              # exits 0 - W101 isn't built until M1.6
 fha lint --root tests/fixtures/broken-E011  # fires E011
-# repeat for each of E012–E018 against its broken fixture
+# repeat for each of E012-E018 against its broken fixture
 fha lint --root example-archive --with-exif  # exits without crash (E012 path)
 ```
 
 ---
 
-### M1.6 — `fha lint` — warning codes (W101–W110)
+### M1.6 - `fha lint` - warning codes (W101-W110)
 
-**One PR.** Extend `tools/lint.py`. No new flags — warnings ride the existing `fha lint`
+**One PR.** Extend `tools/lint.py`. No new flags - warnings ride the existing `fha lint`
 invocation (TOOLING §3).
 
 **Warning codes:**
@@ -304,7 +314,7 @@ invocation (TOOLING §3).
 | W102 | `suggested` claim backlog per source |
 | W103 | Couple-folder bracket list `[child, …]` doesn't match accepted relationship claims |
 | W104 | Summary block line with no supporting accepted claim |
-| W105 | Hand-edits under a GENERATED header (deferred — detection requires mtime tracking; check is a no-op) |
+| W105 | Hand-edits under a GENERATED header (deferred - detection requires mtime tracking; check is a no-op) |
 | W106 | Accepted claim missing Mills analysis fields |
 | W107 | Direct reference to a merged person |
 | W108 | `README.md` older than last `SPEC.md` change |
@@ -320,7 +330,7 @@ fha lint --root tests/fixtures/broken-W103  # fires W103
 
 ---
 
-### M1.7 — `fha lint` — fix modes + formatter
+### M1.7 - `fha lint` - fix modes + formatter
 
 **One PR.** Extend `tools/lint.py`. Wire `[--dry-run] [--mint-stubs] [--spawn-questions]
 [--fix-inventory] [--format-check] [--format-write]` into `fha.py` (TOOLING §3).
@@ -328,7 +338,7 @@ fha lint --root tests/fixtures/broken-W103  # fires W103
 **Fix modes** (gated behind explicit flags; always diff-previewed with `--dry-run`):
 - `--mint-stubs` (E005): create stubs in `people/stubs/`
 - `--spawn-questions` (E009): append templated question to `notes/questions.md`
-- `--fix-inventory` (E011): placeholder/deferred — prints a warning and suggests `fha process`; full ID-glob rebuild is not yet implemented
+- `--fix-inventory` (E011): placeholder/deferred - prints a warning and suggests `fha process`; full ID-glob rebuild is not yet implemented
 
 **Formatter** (`--format-check` / `--format-write`): final-newline and CRLF line-ending hygiene (initial subset). Frontmatter key order, lowercase ID normalization, blank-line hygiene, and YAML list indentation are deferred.
 `--format-write` applies what `--format-check` reports. Never rewrites prose.
@@ -342,7 +352,7 @@ fha lint --root example-archive --spawn-questions --dry-run
 
 ---
 
-### M1.8 — `fha stubs`
+### M1.8 - `fha stubs`
 
 **One PR.** New file `tools/stubs.py`. Wire `fha stubs [--root PATH] [--from-names "…"]`
 into `fha.py` (TOOLING §5).
@@ -353,7 +363,7 @@ record. For each: create `people/stubs/{surname}__{given}_{P-id}.md` with minima
 text where parseable; else `unknown__unknown_{P-id}.md` (flagged for hand-rename). Never
 overwrites; never moves a stub out of `stubs/`.
 
-**`--from-names "Ethel Hartley; Frances Hartley"`** — mint new IDs and create stubs
+**`--from-names "Ethel Hartley; Frances Hartley"`** - mint new IDs and create stubs
 interactively. One stub per semicolon-delimited name.
 
 **Done when:**
@@ -365,29 +375,29 @@ fha stubs --from-names "Test Person" --root example-archive  # creates one stub
 
 ---
 
-## Layer 2 — Archive views & discovery (Milestone 2 — ✓ shipped)
+## Layer 2 - Archive views & discovery (Milestone 2 - ✓ shipped)
 
 Depends on: index.
 
 ---
 
-### M2.1 — `fha views` — timeline, sources-index, draft-queue
+### M2.1 - `fha views` - timeline, sources-index, draft-queue
 
 **One PR.** New file `tools/views.py`. Wire `fha views timeline`, `fha views sources-index`,
 and `fha views draft-queue` into `fha.py`. Stub `brackets`, `tree`, `clean`, `refresh` as
-"not yet implemented" so the CLI is coherent (TOOLING §7) — M2.2 builds `brackets`, M2.3
+"not yet implemented" so the CLI is coherent (TOOLING §7) - M2.2 builds `brackets`, M2.3
 builds `tree`/`clean`/`refresh`.
 
 All three sub-commands require a fresh index (exit 3 if absent). All write GENERATED-headed
 `.md` files into the tree:
 ```
-<!-- GENERATED by fha views <sub-command> on <ISO-date> — do not edit; regenerate instead -->
+<!-- GENERATED by fha views <sub-command> on <ISO-date> - do not edit; regenerate instead -->
 ```
 
 **`fha views timeline [P-id | --all-curated]`** → `…_timeline_{P-id}.md`.
 Query: `claims JOIN claim_persons WHERE person_id = ? AND status IN ('accepted','needs-review')
 ORDER BY date_min ASC NULLS LAST`. Group by decade (floor `date_min` year to decade). Line
-format: `{date_edtf} — {type}: {value} [@ {place_text_or_name}] [{source_id}]`. After main
+format: `{date_edtf} - {type}: {value} [@ {place_text_or_name}] [{source_id}]`. After main
 chronology, emit `## Unreviewed` section listing `suggested` claims in the same format.
 `--all-curated`: iterate every person in `persons WHERE tier = 'curated'`.
 
@@ -396,14 +406,14 @@ Per-person: union of source_ids from (a) `claim_persons → claims.source_id` an
 `source_people`. Group by `source_type`; each line: `{title} [{S-id}]` then indented record
 path. Write `…_sources-index_{P-id}.md`.
 Couple-folder variant: for each couple folder in `people/`, enumerate all profile P-ids in
-that folder; union their source_ids; write `sources-index.md` at the folder root (no P-id —
+that folder; union their source_ids; write `sources-index.md` at the folder root (no P-id -
 the folder is its context).
 
 **`fha views draft-queue [P-id | --all-curated]`** → `…_draft-queue_{P-id}.md`.
 Load the person's profile body. Extract all `[S-id]` tokens via `TOKEN_RE`. Query all accepted
 claims for the person → collect distinct `source_id`s. Set-diff: sources with accepted claims
 NOT represented by any `[S-id]` token = the uncited backlog. Per uncited source: show title +
-`[S-id]`, then indent each uncited claim as `{type}: {value} — {date_edtf}`. If diff is empty,
+`[S-id]`, then indent each uncited claim as `{type}: {value} - {date_edtf}`. If diff is empty,
 write: `All accepted claims are cited in the profile.`
 
 **Done when:**
@@ -416,12 +426,12 @@ fha lint --root example-archive   # still exits 1 W101; W105 does not fire on GE
 
 ---
 
-### M2.2 — `fha views` — brackets (folder maintenance)
+### M2.2 - `fha views` - brackets (folder maintenance)
 
 **One PR.** Extend `tools/views.py` with `brackets`; stub `tree`, `clean`, `refresh` as
 "not yet implemented" so the CLI is coherent (TOOLING §7).
 
-**`fha views brackets [--fix] [--dry-run]`** — folder maintenance, three concerns in one pass:
+**`fha views brackets [--fix] [--dry-run]`** - folder maintenance, three concerns in one pass:
 
 1. *Bracket list refresh (W103)*: walk `people/` for couple folders (dirs starting with digits
    directly under `people/` or `people/connections/`). Parse current `[child, …]` suffix.
@@ -451,12 +461,12 @@ Create `tests/fixtures/broken-W103/` and `tests/fixtures/broken-W110/` as part o
 
 ---
 
-### M2.3 — `fha views` — tree, clean, refresh
+### M2.3 - `fha views` - tree, clean, refresh
 
 **One PR.** Extend `tools/views.py` with the remaining sub-commands (TOOLING §7).
 
 **`fha views tree <P-id> --mode ancestors|descendants|fan [--generations N]
-[--format json|dot] [--out FILE]`** — traverses `relationships` edges (TOOLING §7):
+[--format json|dot] [--out FILE]`** - traverses `relationships` edges (TOOLING §7):
 
 - `ancestors`: BFS following `rel='parent'` edges recursively.
 - `descendants`: BFS following `rel='child'` edges; for each visited descendant, add one-hop
@@ -464,7 +474,7 @@ Create `tests/fixtures/broken-W103/` and `tests/fixtures/broken-W110/` as part o
 - `fan`: BFS all edge types, 2-hop default; `--generations N` overrides depth.
 - Cycle guard: visited-set on P-ids.
 
-Output — **neutral tree JSON** (spec-pinned data contract):
+Output - **neutral tree JSON** (spec-pinned data contract):
 ```json
 {
   "seed": "P-…", "mode": "descendants",
@@ -478,7 +488,7 @@ Node `vitals`: first accepted `birth`/`death` claim's `date_edtf` or null.
 Edge `dates`: populated only for `spouse` edges (marriage date / divorce or death date from
 `relationships.date_start`/`date_end`); null for all other types.
 Deduplicate: nodes by P-id; edges by `(from, to, type)`.
-`--format dot`: GraphViz DOT with `{name}\n({birth}–{death})` labels.
+`--format dot`: GraphViz DOT with `{name}\n({birth} - {death})` labels.
 `--format html`: print deferral message directing to `fha site`; do not implement here.
 
 **`fha views clean [--dry-run]`**: walk `people/` for `.md` files whose first non-blank line
@@ -498,7 +508,7 @@ fha views refresh --root example-archive            # regenerates all; lint stil
 
 ---
 
-### M2.4 — `fha doctor`
+### M2.4 - `fha doctor`
 
 **One PR.** New file `tools/doctor.py`. Wire `fha doctor [--root PATH]` into `fha.py`
 (TOOLING §3a).
@@ -533,7 +543,7 @@ fha doctor --root example-archive   # exits 1 (index may be stale; that's a warn
 
 ---
 
-### M2.5 — `fha find` — ID types, `--text`, `--related` stub
+### M2.5 - `fha find` - ID types, `--text`, `--related` stub
 
 **One PR.** New file `tools/find.py`. Wire `fha find [ID | --text "…" | --related ID]
 [--date EDTF] [--root PATH]` into `fha.py`. Also wire `fha id check <ID>` as an alias through
@@ -564,7 +574,7 @@ file path; every record body mentioning `[H-id]` token.
 
 **`--text "…"`**: query `notes_fts` FTS table (if index present) then do a `re.search` pass
 over sources, people, notes, and configured documents root. For each hit: path + context
-snippet. `transcripts_fts` is provisioned but not yet populated — transcript search is
+snippet. `transcripts_fts` is provisioned but not yet populated - transcript search is
 deferred. Photo captions are searched only when `.cache/photos.sqlite` is verifiably fresh
 (present, schema includes `photo_fts`, newer than the photos root); absent/stale/unreadable
 photoindex prints an explicit status-specific skip note.
@@ -591,7 +601,7 @@ fha id check P-de957bcda1 --root example-archive    # same output as fha find P-
 
 ---
 
-## Layer 3 — Photo catalog (Milestone 3 — ◐ in progress)
+## Layer 3 - Photo catalog (Milestone 3 - ◐ in progress)
 
 Depends on: index.
 Unlocks: `fha find --text` photo captions (D7), photo gathering in `fha packet`, triage
@@ -599,11 +609,11 @@ section of `fha report`, photo count in `fha find <P-id>`.
 
 ---
 
-### M3.1 — `fha photoindex` — scan, schema, variation grouping (✓ shipped)
+### M3.1 - `fha photoindex` - scan, schema, variation grouping (✓ shipped)
 
 **One PR.** New file `tools/photoindex.py`. Wire `fha photoindex [--full]` into `fha.py`
 (TOOLING §9). Stub `find`, `triage`, `reconcile`, `tag-person`, `report` as "deferred to a
-follow-up photoindex PR" so the CLI is coherent (views.py precedent) — M3.2–M3.4 build them.
+follow-up photoindex PR" so the CLI is coherent (views.py precedent) - M3.2-M3.4 build them.
 
 **Schema** (create `.cache/photos.sqlite`):
 
@@ -624,7 +634,7 @@ CREATE TABLE photo_people(path TEXT, person_ref TEXT, via TEXT);
 CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption, user_comment, keywords);
 ```
 
-**Scan.** Run `exiftool -j -r <fields> <photos-root>` — one process, JSON, batch 500 files.
+**Scan.** Run `exiftool -j -r <fields> <photos-root>` - one process, JSON, batch 500 files.
 Incremental by `(path, mtime, size)`; `--full` bypasses. For each file:
 - `source_id`: keyword matching `SOURCE:\s*([Ss]-[0-9a-hjkmnp-tv-z]{10})`.
 - `edtf` + `date_pattern`: keywords matching `DATE:EDTF` (strip prefix); confidence per SPEC §20.
@@ -640,12 +650,12 @@ Incremental by `(path, mtime, size)`; `--full` bypasses. For each file:
 - Pass 2: same directory + same `base_id` after stripping suffix grammar in fixed order:
   `-crop` first; then `-negative`/`-back`/`-front`/`-pageN`; then trailing variant letter
   (`-b` or bare digit-letter `034b`) → group `STEM:{dir}:{base_id}`.
-- `is_primary`: file with no variant suffix, front of copy a if more than one (lexicographic tie-break — matches TOOLING §9, not file-path length).
+- `is_primary`: file with no variant suffix, front of copy a if more than one (lexicographic tie-break - matches TOOLING §9, not file-path length).
 - `photo_groups.edtf_resolved`: best-confidence EDTF across variants (more `!` components
   = higher confidence; prefer `~` over `?`). Any two variants whose bounds don't overlap
   → `date_conflict = 1`.
 
-**Test fixture.** Create `tests/fixtures/photo-fixture/` with 3–4 placeholder images. Stub
+**Test fixture.** Create `tests/fixtures/photo-fixture/` with 3-4 placeholder images. Stub
 `_run_exiftool()` so a test harness can inject pre-cooked JSON. Include at least one
 variation pair and one image with a `SOURCE:` keyword.
 
@@ -657,7 +667,7 @@ fha doctor --root example-archive                     # no regression
 
 ---
 
-### M3.2 — `fha photoindex find` (✓ shipped)
+### M3.2 - `fha photoindex find` (✓ shipped)
 
 **One PR.** Replace the deferral stub in `tools/photoindex.py` with real output (TOOLING §9).
 
@@ -674,12 +684,12 @@ fha photoindex find --edtf 192X --root ...             # bounds-overlap filter
 
 ---
 
-### M3.3 — `fha photoindex triage` + `report`; unlock D7 (✓ shipped)
+### M3.3 - `fha photoindex triage` + `report`; unlock D7 (✓ shipped)
 
 **One PR.** Extend `tools/photoindex.py` with the two read-only/reporting sub-commands.
 Also update `tools/find.py` to include `photo_fts` in `--text` searches (D7 unlock)
 (TOOLING §9, §15b). Grouped together because neither writes to the archive or the photos
-themselves — both are "look at what's already indexed" features.
+themselves - both are "look at what's already indexed" features.
 
 **`fha photoindex triage [--top N]`** (TOOLING §15b). Groups with `source_id IS NULL`. Score:
 +3 non-null caption (human transcription heuristic), +2 pid-keyword hit, +1 date at Y!
@@ -687,11 +697,11 @@ confidence, +1 group has a `back` variant, -2 AI-only user_comment ("AI:" or "Mo
 Emit top N (default 10) with signals and suggested `fha process <path>`.
 
 **`fha photoindex report`.** Print groups where `date_conflict = 1` with each photo's `edtf`
-and `caption` — a date disagreement between front and back is a research finding.
+and `caption` - a date disagreement between front and back is a research finding.
 
 **D7 unlock in `find.py`.** In `_text_search()`: if `photos.sqlite` fresh, query `photo_fts`
 and merge hits as `[photo]` entries. If absent → append note. Update TOOLING §4a D7 entry.
-(Already implemented as of milestone 2's `find.py` build — TOOLING §4a's D7 entry is marked
+(Already implemented as of milestone 2's `find.py` build - TOOLING §4a's D7 entry is marked
 "implemented milestone 2." No further `find.py` change was needed for this phase.)
 
 **Done when:**
@@ -704,10 +714,10 @@ fha find --text "word" --root example-archive                # prints "not searc
 
 ---
 
-### M3.4 — `fha photoindex reconcile` + `tag-person` (✓ shipped)
+### M3.4 - `fha photoindex reconcile` + `tag-person` (✓ shipped)
 
 **One PR.** Extend `tools/photoindex.py` with the two sub-commands that touch on-disk
-state or embedded metadata — grouped together and kept separate from `triage`/`report`
+state or embedded metadata - grouped together and kept separate from `triage`/`report`
 because both are mutating (or path-healing) operations that deserve focused review.
 
 **`fha photoindex reconcile`.** Missing stored paths: try re-match by `source_id` glob (needs
@@ -726,16 +736,16 @@ fha photoindex tag-person <P-id> --paths <file> --root ...   # previews; writes 
 
 ---
 
-## Layer 4 — Cross-reference & connection (Milestone 4 — ✓ shipped)
+## Layer 4 - Cross-reference & connection (Milestone 4 - ✓ shipped)
 
 Depends on: index (claim_links, relationships).
 Unlocks: `fha find --related` (D4), `fha report` section 8.
 
 ---
 
-### M4.1 — `fha xref` (✓ shipped)
+### M4.1 - `fha xref` (✓ shipped)
 
-**One PR.** New file `tools/xref.py`. Wire into `fha.py`. Does not write to the archive —
+**One PR.** New file `tools/xref.py`. Wire into `fha.py`. Does not write to the archive -
 output candidates only. Requires fresh index; exit 3 if absent (TOOLING §14a).
 
 **`fha xref`**. Query pairs of accepted/needs-review claims: same person, same type, different
@@ -753,10 +763,10 @@ fha lint --root example-archive      # no regression
 
 ---
 
-### M4.2 — `fha cooccur` (✓ shipped)
+### M4.2 - `fha cooccur` (✓ shipped)
 
 **One PR.** New file `tools/cooccur.py`. Wire into `fha.py`. Does not write to the
-archive — output candidates only. Requires fresh index; exit 3 if absent (TOOLING §14a2).
+archive - output candidates only. Requires fresh index; exit 3 if absent (TOOLING §14a2).
 
 **`fha cooccur [--threshold N]`** (default 2). Three outputs:
 
@@ -785,28 +795,28 @@ fha lint --root example-archive      # no regression
 
 ---
 
-### M4.3 — `fha find --related` — complete implementation (✓ shipped)
+### M4.3 - `fha find --related` - complete implementation (✓ shipped)
 
 **One PR.** Replace the deferral stub in `tools/find.py` with real output. Update TOOLING §4a
 D4 note: "implemented" (TOOLING §4a).
 
 **By ID type:**
 
-`--related <P-id>` — person's world: relationship edges (rel type + source count); top
+`--related <P-id>` - person's world: relationship edges (rel type + source count); top
 co-occurring persons with no existing edge; places ranked by claim frequency; shared claim
 values (occupation/military/membership) recurring with others; distinct sources; photos from
 `photo_people` (note if photoindex absent).
 
-`--related <L-id>` — place's world: claims naming the place; people ranked by frequency;
+`--related <L-id>` - place's world: claims naming the place; people ranked by frequency;
 sources; photos within ~0.002° of coords; micro-places (`within: L-id` children).
 
-`--related <S-id>` — source's world: its claims by status; persons; places; corroborating/
+`--related <S-id>` - source's world: its claims by status; persons; places; corroborating/
 contradicting sources via `claim_links`; sibling sources sharing a person or repository.
 
-`--related <C-id>` — claim's neighborhood: its source, persons, place; linked claims;
+`--related <C-id>` - claim's neighborhood: its source, persons, place; linked claims;
 sibling claims (same person + same type).
 
-`--related <H-id>` — hypothesis's neighborhood: person it concerns; claims referencing its
+`--related <H-id>` - hypothesis's neighborhood: person it concerns; claims referencing its
 H-id; verifying claim if `verified_claim` is set.
 
 `--related --date <EDTF>` (standalone): all claims whose bounds overlap the EDTF → persons,
@@ -825,13 +835,13 @@ fha find --related P-de957bcda1 --date 1880 --root example-archive  # combined
 
 ---
 
-## Layer 5 — Research report (Milestone 5 — ✓ shipped)
+## Layer 5 - Research report (Milestone 5 - ✓ shipped)
 
 Depends on: photoindex (triage section), xref (corroboration events), cooccur (section 8).
 
 ---
 
-### M5.1 — `fha report` — sections 0–4 + snapshot (✓ shipped)
+### M5.1 - `fha report` - sections 0-4 + snapshot (✓ shipped)
 
 **One PR.** New file `tools/report.py`. Wire `fha report [--full] [--section NAME]`
 (TOOLING §15a).
@@ -848,23 +858,23 @@ Depends on: photoindex (triage section), xref (corroboration events), cooccur (s
 ```
 `--full` ignores snapshot. After building, write new snapshot.
 
-**Section 0 — Discoveries:** claims moving `needs-review → accepted` since snapshot; questions
+**Section 0 - Discoveries:** claims moving `needs-review → accepted` since snapshot; questions
 newly `status: answered`; `claim_links` corroboration rows added since snapshot.
 
-**Section 1 — Review queue** (W102): sources with `suggested` claims, grouped, oldest first.
+**Section 1 - Review queue** (W102): sources with `suggested` claims, grouped, oldest first.
 
-**Section 2 — New since last session:** source_ids and person_ids in index not in snapshot.
+**Section 2 - New since last session:** source_ids and person_ids in index not in snapshot.
 
-**Section 3 — Vitals gaps** (W101): reuse lint W101 logic; curated persons first.
+**Section 3 - Vitals gaps** (W101): reuse lint W101 logic; curated persons first.
 
-**Section 4 — Contradictions** (E009): `claim_links WHERE rel='contradicts'` with no open
+**Section 4 - Contradictions** (E009): `claim_links WHERE rel='contradicts'` with no open
 question referencing both C-ids.
 
 Output: markdown to stdout + `.cache/report_{date}.md`.
 
 **Done when:**
 ```sh
-fha report --root example-archive            # exits 0; sections 0–4 printed
+fha report --root example-archive            # exits 0; sections 0-4 printed
 fha report --root example-archive            # second run: section 0 empty
 fha report --section review-queue --root ... # only section 1
 fha report --full --root ...                 # ignores snapshot
@@ -872,17 +882,17 @@ fha report --full --root ...                 # ignores snapshot
 
 ---
 
-### M5.2 — `fha report` — sections 5 + 5b (research-loop closure) (✓ shipped)
+### M5.2 - `fha report` - sections 5 + 5b (research-loop closure) (✓ shipped)
 
 **One PR.** Extend `tools/report.py` (TOOLING §15a). Both sections close research loops
-already in flight — cross-referencing past searches and proposing question closures —
+already in flight - cross-referencing past searches and proposing question closures -
 so they share the most original logic of the remaining sections and are paired together.
 
-**Section 5 — Search-log awareness.** For leads in sections 1–4: query `search_log` for
+**Section 5 - Search-log awareness.** For leads in sections 1-4: query `search_log` for
 matching `(person_id, collection)`. Annotate with "already searched {date}." Entries older
 than 18 months → "worth re-running."
 
-**Section 5b — Answerable questions.** Open questions in `notes/questions.md` where the
+**Section 5b - Answerable questions.** Open questions in `notes/questions.md` where the
 referenced gap now has an accepted claim → propose closure. Print proposals; do not execute.
 
 **Done when:**
@@ -892,21 +902,21 @@ fha report --root example-archive   # sections 0-5b printed without error
 
 ---
 
-### M5.3 — `fha report` — sections 6–8 (calls into other tools) (✓ shipped)
+### M5.3 - `fha report` - sections 6-8 (calls into other tools) (✓ shipped)
 
 **One PR.** Extend `tools/report.py` (TOOLING §15a). All four sections are thin
 formatting wrappers around tools built in earlier layers (photoindex, places, cooccur) or
-simple counts — the lightest remaining report work, bundled together for that reason.
+simple counts - the lightest remaining report work, bundled together for that reason.
 
-**Section 6 — Photo triage.** Call `photoindex.triage(root, top=10)` and embed ranked list.
+**Section 6 - Photo triage.** Call `photoindex.triage(root, top=10)` and embed ranked list.
 
-**Section 6b — Place candidates.** Call `places.candidates(root)` if places tool is built;
+**Section 6b - Place candidates.** Call `places.candidates(root)` if places tool is built;
 else stub with a note.
 
-**Section 7 — Hypotheses & draft queues.** From `hypotheses WHERE status='open'`: count per
+**Section 7 - Hypotheses & draft queues.** From `hypotheses WHERE status='open'`: count per
 person. From `person_files` kind='draft-queue': persons whose file is non-trivially non-empty.
 
-**Section 8 — Possible connections.** Call cooccur logic; format top-10 person-pair candidates
+**Section 8 - Possible connections.** Call cooccur logic; format top-10 person-pair candidates
 with "[confirm] [dismiss]" labels.
 
 **Done when:**
@@ -916,14 +926,14 @@ fha report --root example-archive   # all 8 sections printed without error
 
 ---
 
-## Layer 6 — Data output (Milestone 6 — ✓ shipped)
+## Layer 6 - Data output (Milestone 6 - ✓ shipped)
 
 Depends on: index (+ photoindex for packet). Tools in this layer are independent of each
-other and of layers 4–5; build in any order once layer 3 is done.
+other and of layers 4-5; build in any order once layer 3 is done.
 
 ---
 
-### M6.1 — `fha packet` (✓ shipped)
+### M6.1 - `fha packet` (✓ shipped)
 
 **One PR.** New file `tools/packet.py`. Wire `fha packet <P-id> [-o out/]
 [--include-research] [--include-restricted] [--include-dna] [--no-photos]
@@ -956,7 +966,7 @@ fha packet P-de957bcda1 --root example-archive --include-research  # adds resear
 
 ---
 
-### M6.2 — `fha places lint` + `fha places candidates` (✓ shipped)
+### M6.2 - `fha places lint` + `fha places candidates` (✓ shipped)
 
 **One PR.** New file `tools/places.py`. Wire both into `fha.py` (TOOLING §10).
 
@@ -979,7 +989,7 @@ fha places lint --root tests/fixtures/broken-places  # fires on orphan L-id + da
 
 ---
 
-### M6.3 — `fha places geocode` (✓ shipped)
+### M6.3 - `fha places geocode` (✓ shipped)
 
 **One PR.** Extend `tools/places.py`. Wire `fha places geocode [--place L-id] [--all]
 [--offline]` (TOOLING §10).
@@ -999,7 +1009,7 @@ fha places geocode --all --root example-archive --offline  # exits 0 without net
 
 ---
 
-### M6.4 — `fha gedcom` (✓ shipped)
+### M6.4 - `fha gedcom` (✓ shipped)
 
 **One PR.** New file `tools/gedcom.py`. Wire `fha gedcom [<P-id>] [--mode descendants|
 ancestors|connected] [--generations N] [--all] [--include-living] [--out FILE]`
@@ -1008,7 +1018,7 @@ ancestors|connected] [--generations N] [--all] [--include-living] [--out FILE]`
 From `relationships` edges and accepted vital claims: INDI records (name, sex, birth, death);
 FAM records (spouse pairs + children). `living`/`unknown` → `/Living/` by default;
 `--include-living` overrides. Each vital claim's `source_id` → SOUR note. Emit header comment:
-"generated by fha gedcom — do not re-import as truth."
+"generated by fha gedcom - do not re-import as truth."
 
 **Done when:**
 ```sh
@@ -1018,7 +1028,7 @@ fha gedcom P-de957bcda1 --mode descendants --root example-archive  # valid .ged 
 
 ---
 
-### M6.5 — `fha wikitree` (✓ shipped)
+### M6.5 - `fha wikitree` (✓ shipped)
 
 **One PR.** New file `tools/wikitree.py`. Wire `fha wikitree <P-id> [--out FILE]`
 (TOOLING §13).
@@ -1038,16 +1048,16 @@ fha wikitree P-de957bcda1 --root example-archive   # valid WikiTree markup to st
 
 ---
 
-## Layer 7 — Intake pipeline (Milestone 7)
+## Layer 7 - Intake pipeline (Milestone 7)
 
 `fha process` depends on: index, lint. `fha capture` hands off to process.
 `fha convert-mining` depends on: index, lint, stubs. `fha process` is split into four PRs
-and `fha capture`'s site recipes into two — variation detection, bundle dissolution, and
+and `fha capture`'s site recipes into two - variation detection, bundle dissolution, and
 the four site recipes are each significant scope on their own.
 
 ---
 
-### M7.1 — `fha process` — document files (Stage A, single-file mode) (✓ shipped)
+### M7.1 - `fha process` - document files (Stage A, single-file mode) (✓ shipped)
 
 **One PR.** New file `tools/process.py`. Wire `fha process <file> [--type TYPE]
 [--title "…"] [--slug SLUG]` (TOOLING §6, document root only).
@@ -1069,13 +1079,13 @@ fha process tests/fixtures/sample.notes.md --root ...         # pre-fills; delet
 
 ---
 
-### M7.2 — `fha process` — photo files (✓ shipped)
+### M7.2 - `fha process` - photo files (✓ shipped)
 
 **One PR.** Extend `tools/process.py` with photo-root support (TOOLING §6).
 
 **Photos are never renamed.** Detect as photo. Refuse if `SOURCE: S-id` keyword already
 embedded. Mint S-id. Run `exiftool -keywords+="SOURCE: {S-id}" -overwrite_original_in_place`
-— abort on failure, do not scaffold. Scaffold `sources/photos/{slug}_{S-id}.md`; existing
+ - abort on failure, do not scaffold. Scaffold `sources/photos/{slug}_{S-id}.md`; existing
 photo path in `files:`, `role: primary`, `is_primary: true`.
 
 `--more FILE role[:copy]` attaches additional files to an existing record.
@@ -1089,7 +1099,7 @@ fha process photo.jpg --more photo_back.jpg role:back ... # adds files: entry
 
 ---
 
-### M7.3 — `fha process` — folder mode + variation detection (✓ shipped)
+### M7.3 - `fha process` - folder mode + variation detection (✓ shipped)
 
 **One PR.** Extend `tools/process.py` (TOOLING §6).
 
@@ -1106,7 +1116,7 @@ Process as ONE source (shared S-id) or separately?  [one / separate / skip]
 ```
 On `one`: one S-id; SOURCE: keyword on all; one record with all files in `files:` with role
 annotations. On `separate`: process each independently. On `skip`: defer.
-Display batch type label A–D (TOOLING §6 table) — informational only.
+Display batch type label A-D (TOOLING §6 table) - informational only.
 
 **Done when:**
 ```sh
@@ -1116,7 +1126,7 @@ fha process tests/fixtures/photo-fixture/ --root ...
 
 ---
 
-### M7.4 — `fha process` — bundle folder dissolution (✓ shipped)
+### M7.4 - `fha process` - bundle folder dissolution (✓ shipped)
 
 **One PR.** Extend `tools/process.py` (SPEC §12.1, TOOLING §6).
 
@@ -1133,7 +1143,7 @@ fha process tests/fixtures/bundle-folder/ --root ...
 
 ---
 
-### M7.5 — `fha capture` — paste fallback + generic recipe (✓ shipped)
+### M7.5 - `fha capture` - paste fallback + generic recipe (✓ shipped)
 
 **One PR.** New file `tools/capture.py`. Wire `fha capture [--url URL] [--title "…"]
 [--type TYPE] [--date DATE] [--asset FILE]` (TOOLING §13b).
@@ -1162,7 +1172,7 @@ fha capture --url "…" --title "Override" --type newspaper
 
 ---
 
-### M7.6 — `fha capture` — site recipes: Ancestry + FamilySearch (✓ shipped)
+### M7.6 - `fha capture` - site recipes: Ancestry + FamilySearch (✓ shipped)
 
 **One PR.** Create `tools/capture_recipes/` directory with the two genealogy-database
 recipes. Each recipe exposes `detect(html, url) -> bool` and `extract(html, url) -> dict`.
@@ -1185,7 +1195,7 @@ fha capture < tests/fixtures/capture-samples/familysearch.html --url "https://fa
 
 ---
 
-### M7.7 — `fha capture` — site recipes: Newspapers.com + FindAGrave (✓ shipped)
+### M7.7 - `fha capture` - site recipes: Newspapers.com + FindAGrave (✓ shipped)
 
 **One PR.** Extend `tools/capture_recipes/` with the two remaining recipes, inserted into
 the priority order ahead of the generic fallback: Ancestry → FamilySearch → Newspapers.com
@@ -1206,7 +1216,7 @@ fha capture < tests/fixtures/capture-samples/findagrave.html --url "https://find
 
 ---
 
-### M7.8 — `fha convert-mining` (✓ shipped)
+### M7.8 - `fha convert-mining` (✓ shipped)
 
 **One PR.** New file `tools/convert_mining.py`. Wire `fha convert-mining [--apply]`
 (TOOLING §11). Default: dry-run. `--apply` required to write.
@@ -1225,27 +1235,27 @@ fha convert-mining --root tests/fixtures/legacy-export --apply # writes; lint ex
 
 ---
 
-## Layer 8 — Publication (Milestone 8)
+## Layer 8 - Publication (Milestone 8)
 
 Depends on: index, photoindex (photo strips), `fha views tree --format json` (tree data
-contract). Jinja2 is the one new permitted dependency; add to requirements. Five PRs —
+contract). Jinja2 is the one new permitted dependency; add to requirements. Five PRs -
 each is independently shippable.
 
 ---
 
-### M8.1 — `fha site` — foundations: query layer, Jinja2, source page
+### M8.1 - `fha site` - foundations: query layer, Jinja2, source page
 
 **One PR.** New file `tools/site.py`. Wire `fha site [--out PATH] [--linked]`
 (TOOLING §12). This phase ships the infrastructure every later page depends on, proved out
 against the simpler of the two page types; the person page (more sections, plus the
 person-specific half of redaction) is M8.2.
 
-The site reads all structured data from `.cache/index.sqlite` directly — not from generated
+The site reads all structured data from `.cache/index.sqlite` directly - not from generated
 `.md` view files.
 
 `tools/templates/` directory with `base.html` layout. Token swap: `TOKEN_RE` → relative hrefs;
 unresolved tokens → `<mark>[X-xxxx]</mark>`. Minimal stdlib HTML converter for prose
-(headings, bold, lists, links) — no markdown library.
+(headings, bold, lists, links) - no markdown library.
 
 `--standalone` (default): web-optimized derivatives (max 1200px, EXIF stripped) into
 `site/media/`; redaction baked in (restricted / DNA / `publication_ok: false` sources
@@ -1253,15 +1263,24 @@ excluded). `--linked`: fast local preview; real archive paths; no copies; no red
 
 **Source page:** citation block; claims table with status badges; thumbnails; file links.
 
+**M8 UX bar (applies to all M8 phases):** error messaging and redaction copy must be
+human-readable throughout. Specifically: (a) a malformed archive (corrupt YAML, missing
+required fields, bad EDTF) must produce a plain error message with the problem file and a
+suggested fix - never a Python traceback; (b) redacted content displays as "Living Person"
+or "Restricted - not included in this publication," not as an empty slot or a broken link;
+(c) `--standalone` build failures (missing asset, bad template) name the file and a
+corrective step, then continue rather than aborting the entire build.
+
 **Done when:**
 ```sh
 fha site --root example-archive --linked
 # 1880 census source page: citation, claims table
+# malformed source YAML → plain message naming the file; remaining pages still build
 ```
 
 ---
 
-### M8.2 — `fha site` — person page
+### M8.2 - `fha site` - person page
 
 **One PR.** Extend `tools/site.py` (TOOLING §12).
 
@@ -1284,11 +1303,11 @@ fha site --root example-archive
 
 ---
 
-### M8.3 — `fha site` — place + discoveries pages
+### M8.3 - `fha site` - place + discoveries pages
 
 **One PR.** Extend `tools/site.py` (TOOLING §12).
 
-**Place page:** name, coords (map URL — no embedded map), dated `history:`, claims naming it,
+**Place page:** name, coords (map URL - no embedded map), dated `history:`, claims naming it,
 micro-places, people ranked by association frequency.
 
 **Discoveries page:** render `notes/discoveries.md` as HTML; link P-id and S-id mentions.
@@ -1301,15 +1320,15 @@ fha site --root example-archive             # discoveries page redacts living-pe
 
 ---
 
-### M8.4 — `fha site` — home page + standalone redaction audit
+### M8.4 - `fha site` - home page + standalone redaction audit
 
 **One PR.** Extend `tools/site.py` (TOOLING §12).
 
-**Home page:** surname A–Z index; recent-discoveries teaser (last 5 entries).
+**Home page:** surname A-Z index; recent-discoveries teaser (last 5 entries).
 
 **Standalone redaction audit.** Verify `--standalone` redaction is applied consistently
-across every page type built in M8.1–M8.4 (source, person, place, discoveries,
-home) — place pages must not link to redacted persons; the home page's surname index must
+across every page type built in M8.1-M8.4 (source, person, place, discoveries,
+home) - place pages must not link to redacted persons; the home page's surname index must
 omit redacted persons; no page links to a person page that doesn't exist under
 `--standalone`. This phase exists specifically to catch a redaction rule applied to one
 page type and missed on another (AGENTS_TOOLING symmetry audit, applied across pages
@@ -1324,11 +1343,11 @@ fha site --root example-archive             # living persons redacted across all
 
 ---
 
-### M8.5 — `fha site` — interactive tree rendering
+### M8.5 - `fha site` - interactive tree rendering
 
 **One PR.** Extend `tools/site.py` (TOOLING §12).
 
-Vendor a client-side tree library (`family-chart`, MIT, D3-based — or comparable) into
+Vendor a client-side tree library (`family-chart`, MIT, D3-based - or comparable) into
 `tools/templates/vendor/`. Write an adapter mapping the neutral tree JSON contract
 (from `fha views tree --format json`) to the library's input format. The adapter is the only
 place that knows about the library; swapping renderers later touches only the adapter.
@@ -1346,52 +1365,77 @@ fha site --root example-archive
 
 ---
 
-## Layer 9 — Scaffolding (Milestone 9)
+## Layer 9 - Scaffolding (Milestone 9)
 
-Build last — the manifest must list every operating-layer file, so this is only stable once
+Build last - the manifest must list every operating-layer file, so this is only stable once
 the tool suite is substantially complete.
 
 ---
 
-### M9.1 — `fha install` + `manifest.json`
+### M9.1 - `fha install` + `manifest.json`
 
 **One PR.** New file `tools/scaffold.py`. Wire `fha install <archive-path>`. Create
 `manifest.json` at repo root (TOOLING §13c). This phase ships the manifest and the
-write-once skeleton installer; `fha update-tools` (the diff/backup logic — a meaningfully
+write-once skeleton installer; `fha update-tools` (the diff/backup logic - a meaningfully
 different risk profile, since it touches an existing populated archive rather than an
 empty one) is M9.2.
 
 **`manifest.json`:** one JSON object listing every operating-layer file with `path`, `sha256`,
 `spec_version`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`,
 `CLAUDE.md`, `BUILD.md`, and the skeleton (`fha.yaml` template, the empty record dirs, seeded
-`places.yaml`). Excludes spec-repo furniture: `example-archive/`, `archive-template/` (its
-*contents* seed the skeleton, but the folder itself is never copied into an archive — matching
+`places.yaml`). Also covers the human-facing docs that must ship into every archive:
+`docs/GETTING_STARTED.md`, `docs/SETUP_FROM_ZIP.md`, `docs/CHEATSHEET.md`,
+`docs/TROUBLESHOOTING.md`, `docs/FILING_CABINET.md` (create any that don't exist yet as
+stubs - the manifest entry is the commitment that they will be present in every installed
+archive; `GETTING_STARTED.md` and `SETUP_FROM_ZIP.md` already exist from PR 09).
+Excludes spec-repo furniture: `example-archive/`, `archive-template/` (its
+*contents* seed the skeleton, but the folder itself is never copied into an archive - matching
 TOOLING §13c), `tests/`, `.github/`, public `README.md`, `PRIVACY.md`, `RELEASE_CHECKLIST.md`.
 
 **`fha install <archive-path>`** (run from repo clone): create skeleton; copy all manifest
 files; write `.plainfile-version` with manifest version + per-file SHA256 checksums.
 
+**Preflight checks (first-day UX bar):** before writing anything, `fha install` checks
+Python ≥ 3.10 and `exiftool` on PATH. Failures produce plain, friendly guidance - not a
+Python traceback or bare "not found":
+- Python too old → "Python 3.10 or later is required. You have X.Y. Download the latest at python.org."
+- `exiftool` missing → "exiftool is not installed. Photo features won't work until it is. Install it from exiftool.org (Mac: `brew install exiftool`; Windows: see exiftool.org/install.html)."
+
+**Zip-based, git-free install path (first-class):** `fha install` must work when the
+repo is provided as an extracted zip rather than a git clone. The `--repo PATH` flag
+accepts any directory containing `manifest.json`; it must not assume `.git/` exists.
+This is the primary install path for non-technical users (see PR 09 / `docs/SETUP_FROM_ZIP.md`).
+
 **Done when:**
 ```sh
-python tools/fha.py install ./test-archive --repo .  # skeleton; .plainfile-version written
+python tools/fha.py install ./test-archive --repo .   # skeleton; .plainfile-version written
+# Python < 3.10 → friendly message, no traceback
+# exiftool absent → friendly guidance message, install proceeds (not a hard stop)
+# --repo pointing to an unzipped download (no .git/) → same result as a git clone
+# docs/GETTING_STARTED.md, docs/SETUP_FROM_ZIP.md etc. present in installed archive
 ```
 
 ---
 
-### M9.2 — `fha update-tools`
+### M9.2 - `fha update-tools`
 
 **One PR.** Extend `tools/scaffold.py`. Wire `fha update-tools [--dry-run]` (TOOLING §13c).
 
 **`fha update-tools [--dry-run]`** (run from within an archive; `--repo PATH` required):
-compare manifest against `.plainfile-version`. For each file — new → copy in; unchanged
+compare manifest against `.plainfile-version`. For each file - new → copy in; unchanged
 (checksum matches) → overwrite silently; customized (checksum differs) → move to
 `.plainfile-backup/{date}/` and report; retired from manifest → move to backup and report.
-Never deletes. Never silently overwrites customized files.
+Never deletes. Never silently overwrites customized files. All output is plain English -
+"Updating tools/index.py (unchanged)" or "Your edited tools/fha.py has been backed up to
+.plainfile-backup/2026-06-22/fha.py - the new version is now in tools/fha.py." No technical
+diffs or checksums shown by default; `--verbose` may add them.
 
 **Done when:**
 ```sh
-fha update-tools --dry-run --repo .                  # reports plan; no writes
-# edit tools/fha.py; fha update-tools → edited version moved to .plainfile-backup/
+fha update-tools --dry-run --repo .                  # reports plan in plain English; no writes
+# edit tools/fha.py; fha update-tools → plain "backed up + updated" message
+# no traceback on any error; missing --repo → "Run this command from inside your archive,
+#   with --repo pointing to your copy of the plainfile tools."
 ```
 
 ---
@@ -1399,10 +1443,24 @@ fha update-tools --dry-run --repo .                  # reports plan; no writes
 ## Testing invariants (all PRs)
 
 Every PR must leave `fha lint --root example-archive` exiting 1 with exactly the documented
-W101 (Thomas Hartley death record absent — intentional). No new errors or warnings may appear.
+W101 (Thomas Hartley death record absent - intentional). No new errors or warnings may appear.
 Broken fixtures in `tests/fixtures/broken-{CODE}/` must continue to fire their targeted code.
 Any new lint code being implemented in that PR requires a new broken fixture for it.
 
 `tools/README.md` is the authoritative implementation-status record. Before closing any PR:
 update the relevant rows there. A flag or code that exists in the CLI but is absent from that
-table — in any state — is documentation debt that blocks handoff.
+table - in any state - is documentation debt that blocks handoff.
+
+**UX bar check (all PRs - required before closing):** For every new user-visible message or
+error path introduced by the PR, confirm:
+1. No Python traceback can reach the user under any input - including absent files, malformed
+   YAML, bad IDs, and interrupted runs.
+2. Every failure names a cause and a next command or corrective step.
+3. Any jargon term (EDTF, `source_type`, anchor, Crockford ID, claim status) is glossed with
+   an example or a valid-list in the message itself.
+4. Messy-but-recoverable input (loose dates, near-miss IDs, slightly malformed hand-edits) is
+   inferred or met with one plain question, never a hard refusal.
+5. New failure conditions are covered by `fha doctor` and have an entry in
+   `docs/TROUBLESHOOTING.md`.
+
+A PR that passes lint and tests but fails the UX bar is not done.

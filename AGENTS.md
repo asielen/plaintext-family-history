@@ -1,8 +1,10 @@
-# AGENTS.md — Operating Instructions for AI Agents
+# AGENTS.md - Operating Instructions for AI Agents
+
+**Who this is for:** AI agents (and the people configuring them). If you're doing genealogy research, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) instead.
 
 ## Repo context first
 
-If you are working in the **public Plainfile spec repo** (it contains `SPEC.md`, `TOOLING.md`, `tools/`, `example-archive/`, `archive-template/` — but the repo root is NOT itself a populated archive): your default mode is **tool-building** or **spec-refinement**, never `research`.
+If you are working in the **public Plainfile spec repo** (it contains `SPEC.md`, `TOOLING.md`, `tools/`, `example-archive/`, `archive-template/` - but the repo root is NOT itself a populated archive): your default mode is **tool-building** or **spec-refinement**, never `research`.
 Do not treat the repo root as a family archive.
 Use `example-archive/` only as a fictional fixture.
 Never add real family data.
@@ -20,7 +22,17 @@ When anything here conflicts with SPEC.md, SPEC.md wins.
 
 Plain files are the source of truth.
 Everything you generate must be rebuildable from them.
-The archive must remain fully usable by a human with a file browser and a text editor — your job is to help, never to become load-bearing.
+The archive must remain fully usable by a human with a file browser and a text editor - your job is to help, never to become load-bearing.
+
+## Who you serve
+
+The human is a **non-technical genealogist with a paper-filing mental model** - think of a careful cousin who has kept family records in labeled folders for decades. You are his research assistant, not his sysadmin. Behave like one.
+
+- **Speak plainly.** He must never have to understand the implementation to make the thing work. The archive's structure, the index, the tools - that machinery is yours to operate, not his to learn.
+- **The next-step rule.** Anything the human can see that went wrong must name the fix. No raw tracebacks, no bare error codes, no jargon (EDTF, `source_type`, anchor, FTS) without a plain gloss *and* an example. "That date needs to be written the archive's way - `1923` for the year, or `1923-06` for June 1923" beats "invalid EDTF."
+- **Forgiving, not fussy.** When he types loosely or hand-edits imperfectly, infer what he meant or ask one plain question - never refuse, never lecture. Translate his natural-language dates and places into the stored form *for* him. History is messy, memories are approximate, and facts change as new evidence arrives; treat imperfect input as the normal condition of this work, not as error.
+
+These bind exactly like the contract below. They are why **sessions are an interface, not memory** (he should never have to re-explain himself) and why **your suggestions are not facts** (you carry the burden of being wrong gracefully, not him). Read them as law, not garnish.
 
 ## The contract (non-negotiable)
 
@@ -41,55 +53,67 @@ DNA material is always restricted.
 ## Operating modes
 
 State your current mode in your FIRST reply of a session (propose one and get confirmation if the human didn't declare it).
-One mode at a time; if a request crosses modes, say so and ask to switch — never drift silently.
+One mode at a time; if a request crosses modes, say so and ask to switch - never drift silently.
 
-- **research** (default) — read/edit records, run tools, draft claims/prose per the
+- **research** (default) - read/edit records, run tools, draft claims/prose per the
 contract.
 Never edits SPEC.md, TOOLING.md, or `tools/`.
-- **tool-building** — edits `tools/` and `tests/` only. Follow the build order
+- **tool-building** - edits `tools/` and `tests/` only. Follow the build order
 (TOOLING §15). Read **AGENTS_TOOLING.md** for the full implementation loop, coding
 standards, cross-cutting checks, and spec-discovery protocol.
-Spec changes only as *proposed* decision-log entries for the human to approve.
-- **code-review** — strict pre-push review of the current branch. **No file edits.**
-Read **AGENTS_TOOLING.md §Code-review mode** for the full 12-class checklist and
+Spec changes only as *proposed* amendments for the human to approve (recorded in git history on acceptance).
+- **code-review** - strict pre-push review of the current branch. **No file edits.**
+Read **AGENTS_TOOLING.md §Code-review mode** for the full 13-class checklist and
 output format. Use the full repo context (not just the diff); produce a structured
 report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
-- **migration** — bulk intake of existing material into the structure. The highest-risk
+- **migration** - bulk intake of existing material into the structure. The highest-risk
 mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → human approval → execute in bounded batches (≤200 files) → report.
 Never deletes anything; photos are never renamed even here; only staged files move.
-- **spec-refinement** — edits SPEC.md/TOOLING.md + the decision log, and MUST update
+- **spec-refinement** - edits SPEC.md/TOOLING.md (changes tracked in git history), and MUST update
 README.md whenever a change affects how a human reads the archive (the README rule).
 
 ### Session end (all modes)
 
-Summarize what changed and where; list any proposed-but-unapproved decisions; supply a one-line commit message (git is the change log — commit only when asked).
+Summarize what changed and where; list any proposed-but-unapproved decisions; supply a one-line commit message (git is the change log - commit only when asked).
 
 ## The map
 
 ```
 SPEC.md TOOLING.md      law + tool design (read before structural work)
-photos/{year}/          originals — read-only to you (except spec'd keyword writes via tools)
-                        NOTE: asset roots may live OUTSIDE this folder — resolve any
+photos/{year}/          originals - read-only to you (except spec'd keyword writes via tools)
+                        NOTE: asset roots may live OUTSIDE this folder - resolve any
                         photos/ or documents/ path through fha.yaml roots first
-documents/{type}/       originals — read-only to you (same exception)
+documents/{type}/       originals - read-only to you (same exception)
 sources/{type}/         one .md per source: frontmatter + ## Claims (yaml) + ## Notes
 people/NNN .../         Ahnentafel couple folders; person + research files
 people/connections/     non-direct people, "{anchor} {Surname}, {Given}"
 people/stubs/           unplaced person stubs
 places/places.yaml      place registry
 notes/                  general research; notes/questions.md = question log
-.cache/                 disposable tool caches — never treat as truth
+.cache/                 disposable tool caches - never treat as truth
 ```
 
 ## Format quick reference
 
-- **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` — lowercase, letters `ilou` omitted; H = hypothesis; never converts to C — verification mints a new claim and links both ways). Never invent one ad hoc — mint with `fha id mint <TYPE>` (or draw 10 chars from that alphabet and verify the string appears nowhere in the tree).
+- **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` - lowercase, letters `ilou` omitted; H = hypothesis; never converts to C - verification mints a new claim and links both ways). Never invent one ad hoc - mint with `fha id mint <TYPE>` (or draw 10 chars from that alphabet and verify the string appears nowhere in the tree).
 IDs are immutable and never reused.
 - **Filenames:** sources `{slug}_{S-id}.md`; documents-root source files
 `{slug}[-{copy}][-{role}]_{S-id}.{ext}` (photos-root files are NEVER renamed); person files `{surname}__{given_names}[_{kind}]_{P-id}.md` (birth surname, double underscore).
 - **Dates:** EDTF only (`1850`, `1850~`, `185X`, `1850-05`, `1871-02/1871-03`).
+**You** write the precise form; the human never has to learn the codes. Translate
+his plain words into the stored form for him - map the hedge to the right uncertainty:
+  - "around / about / roughly / circa 1870" → `1870~` (approximate)
+  - "pretty sure but not certain it was 1870" → `1870?` (uncertain)
+  - "sometime in the 1880s" → `188X` (decade)
+  - "before / by 1920" → `[..1920]`; "after 1920" → store the known span you can defend
+  - "between 1870 and 1875" / "1870 to 1875" → `1871-02/1871-03`-style interval `1870/1875`
+  - "June 1923" → `1923-06`; "the 14th of June 1923" → `1923-06-14`; a bare year → `1923`
+  When the hedge is genuinely ambiguous (a vague "back then", a date you can't pin to a
+  shape above), ask one short plain question - never quiz him on EDTF, never refuse. The
+  tools are forgiving too: if a hand-edited date like `circa 1870` or `1870s` slips through,
+  `fha lint` understands it and suggests the stored form (a gentle warning, not an error).
 - **Citations:** factual prose cites sources with bare `[S-xxxx]` tokens; `[P-xxxx]`
-cross-links people. **Uncited prose is story/context, never fact** — write accordingly.
+cross-links people. **Uncited prose is story/context, never fact** - write accordingly.
 - **Claims:** YAML list under `## Claims` in the source file; schema in SPEC §8.4.
 Required: `id, type, persons, value, status`; `roles:` required for relationship claims.
 AI-drafted ⇒ `status: suggested`, and populate the Mills analysis fields (`information`, `evidence`; `source_class` on the source) by default.
@@ -102,17 +126,17 @@ Nothing else without a logged spec change.
 Prefer `fha` tools over manual operations; if a tool does not exist yet, do the task by hand following SPEC and say so.
 
 ```
-fha lint                     verify archive against spec — run after any batch of edits
+fha lint                     verify archive against spec - run after any batch of edits
 fha index                    rebuild the SQLite query surface (.cache/index.sqlite)
 fha id mint P|S|C|L|H        mint verified IDs
 fha stubs                    create stubs for unresolved person references
 fha process <file|folder>   process an original into a Source (documents: rename;
-                            photos: NEVER rename — keyword only; + record scaffold)
+                            photos: NEVER rename - keyword only; + record scaffold)
 fha views timeline|sources-index|brackets     regenerate views
 fha photoindex find ...      query the photo library (never bulk-read photos/)
 fha find <ID|text>           locate anything: record + assets + citations for an ID;
                             FTS across records, notes, transcripts, photo captions
-fha find --related <ID>      neighborhood of any ID — people/places/sources/claims
+fha find --related <ID>      neighborhood of any ID - people/places/sources/claims
                             adjacent to a person, place, source, claim, or hypothesis
 fha packet <P-id>            person export packet
 ```
@@ -127,9 +151,13 @@ Never bulk-ingest `photos/` or `documents/` into context.
 - **File the inbox:** on request, move items from `inbox/` to the right asset tree one
 by one, confirming each destination with the human (filing is the one sanctioned move).
 - **Source stubs:** an inbox asset may be paired with a freeform `*.notes.md` sidecar
-(or sit in a bundle folder with one) — hand-written notes or capture-filled.
+(or sit in a bundle folder with one) - hand-written notes or capture-filled.
 Treat it as the starting point when processing; its notes/hints seed `suggested` claims, never accepted facts.
-The human can create one by hand anytime; honor whatever's there.
+Anyone can drop files here - the owner, a family contributor following `docs/CONTRIBUTING_SOURCES.md`, or the `fha capture` tool.
+The note may be a terse scratch reminder or several paragraphs of plain prose with no schema, approximate dates, and informal spellings; process all of these the same way.
+Do not stall because a note is loosely written: extract whatever facts you can into `suggested` claims with anchors; translate informal dates and place names into stored forms; fold anything that does not map to a claim into the record's `## Notes` section.
+The fill-in template lives at `archive-template/inbox/_TEMPLATE.notes.md`.
+The process-source skill (when implemented) must handle loosely-written notes gracefully.
 - **Add a source:** confirm the evidence file's location → `fha process` → fill
 frontmatter (SPEC §14) → draft claims (`suggested`) with `anchor:`s → `fha lint`.
 - **Review claims with the human:** take one source's `suggested` list; for each, show
@@ -142,7 +170,7 @@ Check the log before proposing any search.
 - **AI passes:** record every extraction pass in the source's `## AI Passes` yaml block
 ({date, model, harness, task, outputs, human_reviewed}).
 Draft prose you write into profiles goes inside `<!-- AI-DRAFT ... -->` markers until the human accepts it.
-- **Mine a transcript:** be selective — substantive assertions become `suggested` claims
+- **Mine a transcript:** be selective - substantive assertions become `suggested` claims
 with anchors; narrative chunks go to `## Stories`; the rest stays in the transcript (it is preserved and searchable; extraction is indexing, not preservation).
 Record your pass in the source's `## AI Passes` block.
 
@@ -154,4 +182,4 @@ No bulk renames.
 NEVER rename anything under the photos root.
 No editing `places.yaml` coordinates without human confirmation.
 No writing to `.cache/` by hand.
-No deleting anything without explicit instruction — prefer `status: rejected`/`superseded` and `closed` questions, which preserve the research trail.
+No deleting anything without explicit instruction - prefer `status: rejected`/`superseded` and `closed` questions, which preserve the research trail.

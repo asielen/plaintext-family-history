@@ -59,8 +59,9 @@ CODE MAP
   Person resolution
     _index_is_fresh           — schema-valid + not-older-than-newest-record check on index.sqlite
     _load_face_tag_index      — person_face_tags + persons name/variants from index.sqlite
+    _load_source_people       — source_id -> [P-id] from source record people: lists (source-people tier)
     _resolve_photo_people     — pid-keyword / face-tag / name-match, in confidence order
-    _rebuild_photo_people     — recompute photo_people from cached keywords + face regions
+    _rebuild_photo_people     — recompute photo_people from keywords + face regions + source-people
 
   Variation grouping
     _edtf_confidence          — sortable confidence score for an EDTF string (SPEC §20)
@@ -127,38 +128,57 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    CACHE_SCHEMA_KEY,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
     configure_utf8_stdout,
     db_mtime,
+    find_source_record,
     ParsedName,
     edtf_bounds,
+    format_edtf_error,
+    format_exiftool_error,
     grouping_stem as _grouping_stem,
     id_type_of,
+    INDEX_SCHEMA_VERSION,
     is_valid_edtf,
     is_valid_id,
     load_fha_yaml,
     newest_person_record_mtime,
+    normalize_date,
     normalize_id,
     parse_media_filename,
     select_variation_primary,
     variant_role as _variant_role,
     path_to_alias,
     PHOTO_EXTENSIONS,
+    PHOTOINDEX_SCHEMA_VERSION,
     photoindex_status,
     probe_sqlite,
     resolve_path,
     resolve_root_arg,
     scan_person_record_ids,
+    sqlite_cache_schema_status,
 )
 
 configure_utf8_stdout()
 
 # ── Schema (TOOLING §9 plus cached face regions) ─────────────────────────────
 
-_DDL = """
+_DDL = f"""
+PRAGMA user_version={PHOTOINDEX_SCHEMA_VERSION};
+
+-- meta: cache identity and schema version; disposable, rebuilt by `fha photoindex`.
+CREATE TABLE IF NOT EXISTS meta(
+  key TEXT PRIMARY KEY,       -- setting name, currently schema_version
+  value TEXT NOT NULL         -- setting value, stored as text for readability
+);
+INSERT OR REPLACE INTO meta(key, value)
+  VALUES ('{CACHE_SCHEMA_KEY}', '{PHOTOINDEX_SCHEMA_VERSION}');
+
+-- photos: one cached metadata row per photo file alias.
 CREATE TABLE IF NOT EXISTS photos(
   path TEXT PRIMARY KEY, mtime REAL, size INTEGER,
   title TEXT, caption TEXT, user_comment TEXT,
@@ -169,15 +189,20 @@ CREATE TABLE IF NOT EXISTS photos(
   group_id TEXT, is_primary INTEGER DEFAULT 0,
   variant_copy TEXT, variant_role TEXT
 );
+-- photo_groups: variation groups and the selected primary photo.
 CREATE TABLE IF NOT EXISTS photo_groups(
   group_id TEXT PRIMARY KEY, primary_path TEXT,
   edtf_resolved TEXT, date_conflict INTEGER DEFAULT 0, file_count INTEGER
 );
+-- photo_keywords: flattened Keywords/Subject values for filtering.
 CREATE TABLE IF NOT EXISTS photo_keywords(path TEXT, keyword TEXT);
+-- photo_face_regions: cached face-region labels and geometry.
 CREATE TABLE IF NOT EXISTS photo_face_regions(
   path TEXT, name TEXT, region_type TEXT, area_json TEXT
 );
+-- photo_people: resolved person references for photo search.
 CREATE TABLE IF NOT EXISTS photo_people(path TEXT, person_ref TEXT, via TEXT);
+-- photo_fts: full-text search over captions, comments, and keywords.
 CREATE VIRTUAL TABLE IF NOT EXISTS photo_fts USING fts5(
   path, title, caption, user_comment, keywords
 );
@@ -244,7 +269,7 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
-        raise RuntimeError('fha photoindex requires exiftool on PATH') from e
+        raise RuntimeError(format_exiftool_error('fha photoindex')) from e
     if proc.returncode != 0:
         raise RuntimeError(f'exiftool failed while scanning photos: {proc.stderr.strip()}')
     try:
@@ -393,6 +418,13 @@ def _index_is_fresh(archive_root: Path) -> bool:
     mtime = db_mtime(db_path)
     if mtime is None:
         return False
+    status, _detail = sqlite_cache_schema_status(
+        db_path,
+        INDEX_SCHEMA_VERSION,
+        ('persons', 'person_face_tags', 'person_variants'),
+    )
+    if status != 'fresh':
+        return False
     for probe in (
         'SELECT 1 FROM persons LIMIT 1',
         'SELECT 1 FROM person_face_tags LIMIT 1',
@@ -503,7 +535,47 @@ def _load_face_regions_by_path(conn: sqlite3.Connection) -> dict[str, list[tuple
     return by_path
 
 
-_VIA_PRIORITY = {'pid-keyword': 0, 'face-tag': 1, 'name-match': 2}
+# Priority 0 = authoritative (pid-keyword embeds the P-id directly in the file;
+# source-people means the source record's `people:` field names the person).
+# Higher numbers are weaker inferences; face-tag and name-match both require
+# face regions (XMP-mwg-rs) and a fresh .cache/index.sqlite.
+_VIA_PRIORITY = {'pid-keyword': 0, 'source-people': 0, 'face-tag': 1, 'name-match': 2}
+
+
+def _load_source_people(
+    conn: sqlite3.Connection, archive_root: Path,
+) -> dict[str, list[str]]:
+    """
+    Return a {source_id -> [person_id, ...]} map loaded from source record files.
+
+    Reads the `people:` list from every source record whose S-id appears in the
+    catalog's `photos.source_id` column. This is the `source-people` resolution
+    tier: a person named in the source record's `people:` field is authoritative
+    evidence that the person appears in the source, equivalent in confidence to a
+    bare `pid-keyword` written to the image file. It works even when exiftool was
+    never run after `fha process --people`, or when the user manually edited the
+    source record after initial processing.
+
+    Returns an empty dict when no photos carry source_ids, or when source records
+    are absent or unparseable — callers fall back gracefully to keyword-only resolution.
+    """
+    source_ids = {
+        row[0]
+        for row in conn.execute('SELECT DISTINCT source_id FROM photos WHERE source_id IS NOT NULL')
+    }
+    result: dict[str, list[str]] = {}
+    for sid in source_ids:
+        rec = find_source_record(archive_root, sid)
+        if rec is None:
+            continue
+        pids = [
+            normalize_id(str(p))
+            for p in (rec.get('meta') or {}).get('people') or []
+            if p and id_type_of(str(p)) == 'P'
+        ]
+        if pids:
+            result[normalize_id(sid)] = pids
+    return result
 
 
 def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
@@ -522,6 +594,14 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     the group, not just the path that carries it. When variants disagree on
     `via` for the same person, the most confident one wins.
 
+    Resolution tiers in confidence order (all authoritative — priority 0):
+      pid-keyword   — bare P-id keyword embedded directly in the image file
+      source-people — person listed in the source record's `people:` field
+
+    Weaker inferred tiers (require face regions + a fresh index.sqlite):
+      face-tag    — face region name matched against person_face_tags
+      name-match  — face region name matched against person name/variants
+
     Bulk pid-keyword tagging is incremental work (TOOLING §9): most of the
     archive starts out resolved only via the weaker `face-tag`/`name-match`
     tiers, and stays that way until someone works through it by hand. A
@@ -531,19 +611,26 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     re-derived here at all — wiping them out on every rebuild until the
     index catches up would erase real, already-screened identifications
     just because some *other* photo's tagging triggered this rebuild. So a
-    stale index keeps every existing non-`pid-keyword` row as-is and only
-    refreshes the `pid-keyword` tier, which reads straight from
-    `photo_keywords` and never depends on the index.
+    stale index keeps every existing non-`pid-keyword`/`source-people` row
+    as-is and only refreshes the authoritative tiers.
     """
     index_fresh = _index_is_fresh(archive_root)
     face_tags, names = _load_face_tag_index(archive_root)
     keywords_by_path = _load_keywords_by_path(conn)
     face_regions_by_path = _load_face_regions_by_path(conn)
+    source_people = _load_source_people(conn, archive_root)
+
+    # source_id stored in the photos table uses normalize_id (lowercase).
+    source_id_by_path: dict[str, str | None] = {
+        row[0]: row[1]
+        for row in conn.execute('SELECT path, source_id FROM photos')
+    }
 
     preserved_by_path: dict[str, list[tuple[str, str]]] = {}
     if not index_fresh:
         for path, pid, via in conn.execute(
-            "SELECT path, person_ref, via FROM photo_people WHERE via != 'pid-keyword'"
+            "SELECT path, person_ref, via FROM photo_people "
+            "WHERE via != 'pid-keyword' AND via != 'source-people'"
         ):
             preserved_by_path.setdefault(path, []).append((pid, via))
 
@@ -555,6 +642,16 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
         keywords = keywords_by_path.get(path, [])
         face_regions = face_regions_by_path.get(path, [])
         resolved = _resolve_photo_people(keywords, face_regions, face_tags, names)
+        # source-people tier: people listed in the source record are authoritative
+        # even when no P-id keyword has been embedded in the file yet — the source
+        # record is the human's canonical "who is in this photo" statement.
+        source_id = source_id_by_path.get(path)
+        if source_id and source_id in source_people:
+            resolved_pids = {pid for pid, _via in resolved}
+            for pid in source_people[source_id]:
+                if pid not in resolved_pids:
+                    resolved.append((pid, 'source-people'))
+                    resolved_pids.add(pid)
         if not index_fresh and path in preserved_by_path:
             resolved_pids = {pid for pid, _via in resolved}
             resolved = resolved + [
@@ -719,8 +816,9 @@ def _paths_by_edtf(conn: sqlite3.Connection, query: str) -> set[str]:
     unparseable string to the open range 0001..9999, which would turn a typo like
     --edtf banana into a match-every-dated-photo query; reject it up front instead.
     """
+    query = normalize_date(query) or query
     if not is_valid_edtf(query):
-        raise ValueError(f'--edtf value is not a valid EDTF date: {query!r}')
+        raise ValueError(format_edtf_error(query, field='--edtf'))
     q_min, q_max = edtf_bounds(query)
     out: set[str] = set()
     for path, edtf in conn.execute('SELECT path, edtf FROM photos WHERE edtf IS NOT NULL'):
@@ -1461,7 +1559,7 @@ def _run_exiftool_write(paths: list[Path], keyword: str) -> dict[Path, str | Non
         try:
             proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
         except FileNotFoundError as e:
-            raise RuntimeError('fha photoindex tag-person requires exiftool on PATH') from e
+            raise RuntimeError(format_exiftool_error('fha photoindex tag-person')) from e
         results[p] = None if proc.returncode == 0 else proc.stderr.strip()
     return results
 
@@ -1584,7 +1682,7 @@ def _schema_is_usable(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool]:
+def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
     """
     Open (or create) .cache/photos.sqlite and apply the schema.
 
@@ -1595,17 +1693,26 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool]:
     inventory: a corrupt cache must degrade with a message, never crash).
     The boolean return value tells the scan whether this database existed
     before cached face regions, so unchanged files need one backfill scrape.
+    The optional string tells the caller why a cache had to be recreated.
     """
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         raise RuntimeError(f'cannot create .cache directory: {e}') from e
     db_path = cache_dir / 'photos.sqlite'
+    schema_status, schema_detail = sqlite_cache_schema_status(
+        db_path,
+        PHOTOINDEX_SCHEMA_VERSION,
+        (
+            'photos', 'photo_face_regions', 'photo_fts', 'photo_groups',
+            'photo_keywords', 'photo_people',
+        ),
+    )
 
     try:
         conn, needs_face_backfill = _open_and_apply_schema(db_path)
-        if _schema_is_usable(conn):
-            return conn, needs_face_backfill
+        if schema_status in {'absent', 'fresh'} and _schema_is_usable(conn):
+            return conn, needs_face_backfill, None
         conn.close()
     except sqlite3.DatabaseError:
         pass
@@ -1616,7 +1723,8 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool]:
         if db_path.exists():
             db_path.unlink()
         conn, _needs_face_backfill = _open_and_apply_schema(db_path)
-        return conn, False
+        reason = schema_detail or schema_status or 'schema could not be used'
+        return conn, False, reason
     except OSError as e:
         raise RuntimeError(f'cannot replace incompatible photos.sqlite: {e}') from e
     except sqlite3.DatabaseError as e:
@@ -1640,7 +1748,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
         return {
             'photos_root': str(photos_root), 'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
-            'groups': 0, 'conflicts': 0,
+            'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         }
 
     on_disk: dict[Path, tuple[float, int]] = {}
@@ -1661,7 +1769,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
             f'could not stat {len(stat_failures)} photo file(s): {sample}{more}'
         )
 
-    conn, needs_face_backfill = _get_db(archive_root / '.cache')
+    conn, needs_face_backfill, rebuilt_reason = _get_db(archive_root / '.cache')
     try:
         existing = {
             path: (mtime, size)
@@ -1774,6 +1882,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
         'total': len(on_disk), 'scraped': scraped,
         'unchanged': len(on_disk) - scraped, 'removed': removed,
         'groups': groups, 'conflicts': conflicts,
+        'rebuilt_reason': rebuilt_reason,
     }
 
 
@@ -1895,7 +2004,16 @@ def _print_photoindex_status(status: str, *, require_fresh: bool = False) -> int
         print('ERROR: no photo index found. Run fha photoindex first.', file=sys.stderr)
         return EXIT_FAILURE
     if status == 'unreadable':
-        print('ERROR: .cache/photos.sqlite is unreadable. Rebuild with fha photoindex.', file=sys.stderr)
+        print(
+            'ERROR: your photo index is unreadable. Run `fha photoindex` to rebuild it.',
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+    if status == 'old-schema':
+        print(
+            'ERROR: your photo index is out of date. Run `fha photoindex` to rebuild it.',
+            file=sys.stderr,
+        )
         return EXIT_FAILURE
     if status == 'stale':
         if require_fresh:
@@ -1923,6 +2041,12 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     if not summary['root_found']:
         print(f"Photos root not found: {summary['photos_root']} — nothing scanned.")
         return EXIT_WARNINGS
+
+    if summary.get('rebuilt_reason'):
+        print(
+            'Photo index cache was out of date or unreadable '
+            f"({summary['rebuilt_reason']}); rebuilt from photo files."
+        )
 
     print(
         f"Scanned {summary['total']} files under {summary['photos_root']} "

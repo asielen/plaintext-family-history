@@ -1,14 +1,39 @@
-# fha.yaml — archive configuration (plain, hand-editable). See SPEC.md §12.4.
+# fha.yaml - archive configuration (plain, hand-editable). See SPEC.md §12.4.
+#
+# This one file tells the tools where your photos and documents live. Edit it with
+# any plain text editor (Notepad, TextEdit - not Word). Copy-paste examples for the
+# common setups are in README.md ("Where your photos and documents live").
 #
 # root_person: P-xxxxxxxxxx
 #   Set to the P-id of your direct-line descendant at Ahnentafel position #1
 #   (typically the researcher or the focal youngest generation).
-#   Any full sibling works — siblings share one ancestor tree.
+#   Any full sibling works - siblings share one ancestor tree.
 #   Enables Ahnentafel folder-number verification and person placement via
 #   `fha views brackets`. Omit to disable those checks.
 #
 # Root aliases: record paths like "photos/1880/…" resolve their first segment here.
-# Use an absolute path to keep a library outside the archive (e.g. photos: D:/Photos).
+# Use an absolute path to keep a library outside the archive.
+#
+# ── Examples (uncomment and edit ONE photos: line; defaults below work as-is) ──
+#
+#   Plain folders inside this archive (the default - keep everything together):
+# roots:
+#   photos: photos
+#   documents: documents
+#
+#   An external drive (Windows uses a drive letter; Mac uses /Volumes):
+# roots:
+#   photos: D:/FamilyPhotos              # Windows
+#   photos: /Volumes/Archive/Photos      # Mac
+#   documents: documents
+#
+#   An existing photo library (e.g. a Lightroom folder) left where it is:
+# roots:
+#   photos: C:/Users/you/Pictures/Lightroom   # Windows
+#   photos: /Users/you/Pictures/Lightroom     # Mac
+#   documents: documents
+#
+# ── Active configuration (the defaults; edit these to match your setup) ──
 roots:
   photos: photos
   documents: documents

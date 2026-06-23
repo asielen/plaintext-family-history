@@ -8,8 +8,8 @@ gedcom.py — fha gedcom: derive a GEDCOM 5.5.1 exchange file (TOOLING §13a).
 
 GEDCOM is a one-way bridge to other genealogy applications. It is *derived* at
 export time from the index's `relationships` edges and accepted vital claims —
-never stored in the archive, never re-imported as truth (SPEC §22: the archive
-is never GEDCOM's corpus). The header carries an explicit
+never stored in the archive, never re-imported as truth (the archive is never
+GEDCOM's corpus — GEDCOM is a one-way bridge to other apps). The header carries an explicit
 "do not re-import as truth" note to make that contract travel with the file.
 
 SCOPE SELECTION

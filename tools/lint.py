@@ -68,11 +68,17 @@ from _lib import (
     Finding,
     edtf_bounds,
     extract_token_ids,
+    fmt_id_display,
+    format_edtf_error,
+    format_exiftool_error,
+    format_source_type_error,
+    id_type_of,
     is_fixture_path,
     is_valid_edtf,
     is_valid_id,
     FhaConfigError,
     load_fha_yaml,
+    normalize_date,
     normalize_id,
     parse_filename,
     read_record,
@@ -95,6 +101,8 @@ import yaml
 #    _mapped_root, _path_to_alias — resolve fha.yaml alias roots to absolute paths
 #    _claim_person_ids           — extract normalised P-ids from a claim's persons: field
 #    _parse_summary_block        — parse **Born/Died/…:** lines from a profile body
+#    _edtf_gloss                 — plain-language gloss for a canonical EDTF value
+#    _check_date_value           — forgiving date check: valid/loose-W109/broken-E014
 #    _collect_token_refs         — scan a text block for [ID] tokens → registry
 #    _question_blocks            — split a questions.md into per-heading blocks
 #    _metadata_values            — normalise scalar/list exiftool field values
@@ -289,6 +297,66 @@ def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]
         results.append((label, segment, p_ids, s_ids))
 
     return results
+
+
+# ── Forgiving date handling (PR 05) ──────────────────────────────────────────
+
+def _edtf_gloss(edtf: str) -> str:
+    """Plain-language gloss for a canonical EDTF value.
+
+    Used when lint suggests a normalized date so the human sees the meaning, not
+    just the code: '1870~' is shown as 'about 1870', '187X' as 'the 1870s'.
+    """
+    if '/' in edtf:
+        a, b = edtf.split('/', 1)
+        return f'between {a} and {b}'
+    before_m = re.match(r'^\[\.{2}(.+)\]$', edtf)
+    if before_m:
+        return f'on or before {before_m.group(1)}'
+    decade_m = re.match(r'^(\d{3})X$', edtf)
+    if decade_m:
+        return f'the {decade_m.group(1)}0s'
+    if edtf.endswith('~'):
+        return f'about {edtf[:-1]}'
+    if edtf.endswith('?'):
+        return f'{edtf[:-1]}, uncertain'
+    return edtf
+
+
+def _check_date_value(
+    value: object,
+    field: str,
+    prefix: str,
+    path: Path,
+    findings: list[Finding],
+) -> None:
+    """Check one date field the forgiving way (PR 05 — "forgiving, not fussy").
+
+    Three outcomes, in line with AGENTS.md → "Who you serve":
+      - Already valid EDTF → nothing.
+      - Loose but clear ("circa 1870", "1870s", "before 1920") → a gentle W109
+        suggestion naming the canonical form and its meaning.  The human's intent
+        is plain; only the spelling differs, so this is never a hard error.  The
+        archive still reads the loose value correctly (edtf_bounds normalizes it),
+        so nothing downstream breaks while the human gets a nudge toward the
+        stored form.
+      - Genuinely unreadable → E014 with copyable examples (format_edtf_error),
+        one plain message rather than a wall of codes.
+
+    `prefix` is an optional lead-in such as 'Claim C-… : ' so claim-level and
+    source-level dates read naturally with the same helper.
+    """
+    val = str(value).strip()
+    if not val or is_valid_edtf(val):
+        return
+    suggestion = normalize_date(val)
+    if suggestion:
+        findings.append(Finding('W', 'W109', path,
+            f'{prefix}{field} {val!r} understood as {suggestion!r} '
+            f'({_edtf_gloss(suggestion)}); store it that way to match the archive date form'))
+    else:
+        findings.append(Finding('E', 'E014', path,
+            f'{prefix}{format_edtf_error(val, field=field)}'))
 
 
 # ── Walk and collect ─────────────────────────────────────────────────────────
@@ -504,7 +572,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     source_type = str(meta.get('source_type', ''))
     if source_type and source_type not in SOURCE_TYPES:
         findings.append(Finding('W', 'W109', path,
-            f'Unknown source_type: {source_type!r} (not in controlled vocabulary)'))
+            format_source_type_error(source_type)))
 
     # E017: DNA sources must be restricted AND keep their raw files under
     # documents/dna/ (SPEC §8.5.5).
@@ -521,11 +589,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 findings.append(Finding('E', 'E017', path,
                     f'DNA source file must be under documents/dna/: {fpath!r}'))
 
-    # E014: source_date EDTF check
-    source_date = str(meta.get('source_date', ''))
-    if source_date and not is_valid_edtf(source_date):
-        findings.append(Finding('E', 'E014', path,
-            f'Non-EDTF source_date: {source_date!r}'))
+    # E014: source_date EDTF check (forgiving: loose-but-clear → W109 suggestion)
+    _check_date_value(meta.get('source_date', ''), 'source_date', '', path, findings)
 
     # Claims
     claims = rec['claims']
@@ -575,11 +640,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             findings.append(Finding('E', 'E006', path,
                 f'Accepted claim {cid} missing reviewed date'))
 
-        # E014: Claim date EDTF check
-        date_val = str(claim.get('date', ''))
-        if date_val and not is_valid_edtf(date_val):
-            findings.append(Finding('E', 'E014', path,
-                f'Claim {cid} non-EDTF date: {date_val!r}'))
+        # E014: Claim date EDTF check (forgiving: loose-but-clear → W109 suggestion)
+        _check_date_value(claim.get('date', ''), 'date', f'Claim {cid}: ', path, findings)
 
         # E008: Significance override without reason
         if claim.get('significance') and not claim.get('significance_reason'):
@@ -907,11 +969,24 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     findings.append(Finding('E', 'E005', src_path,
                         f'Claim {claim.get("id","?")} references person {ppid} but no person record exists'))
 
-            # E004: place reference
-            place_ref = normalize_id(str(claim.get('place', '')))
-            if place_ref and place_ref not in registry.place_ids:
-                findings.append(Finding('E', 'E004', src_path,
-                    f'Claim {claim.get("id","?")} references unknown place {place_ref}'))
+            # place reference — forgiving (PR 05): never reject a place the human
+            # typed.  A well-formed L-id that doesn't resolve is a broken link
+            # (E004, an integrity problem).  Free text in place: is just the place
+            # as-written in the wrong field — point to place_text:, don't error.
+            place_raw = str(claim.get('place', '')).strip()
+            if place_raw:
+                if id_type_of(place_raw) == 'L':
+                    place_ref = normalize_id(place_raw)
+                    if place_ref not in registry.place_ids:
+                        findings.append(Finding('E', 'E004', src_path,
+                            f'Claim {claim.get("id","?")} place {fmt_id_display(place_ref)} '
+                            f'is not a registered place — register it with `fha places` '
+                            f'or fix the L-id'))
+                else:
+                    findings.append(Finding('W', 'W109', src_path,
+                        f'Claim {claim.get("id","?")} place: {place_raw!r} is not a place '
+                        f'L-id — put the place as written in place_text: instead, or run '
+                        f'`fha places` to register it and get an L-id'))
 
             # E004: corroborates/contradicts targets
             for link_type in ('corroborates', 'contradicts'):
@@ -1130,7 +1205,7 @@ def _read_source_keywords(paths: list[Path]) -> dict[Path, set[str]]:
                 encoding='utf-8',
             )
         except FileNotFoundError as e:
-            raise RuntimeError('--with-exif requires exiftool on PATH') from e
+            raise RuntimeError(format_exiftool_error('fha lint --with-exif')) from e
         if proc.returncode not in (0, 1):
             raise RuntimeError(f'exiftool failed while reading embedded metadata: {proc.stderr.strip()}')
         try:

@@ -91,8 +91,11 @@ from _lib import (
     SOURCE_TYPES,
     FhaConfigError,
     configure_utf8_stdout,
+    format_edtf_error,
+    format_source_type_error,
     is_valid_edtf,
     load_fha_yaml,
+    normalize_date,
     resolve_path,
     resolve_root_arg,
 )
@@ -690,23 +693,26 @@ def run_capture(
     if source_type:
         st = source_type.strip().lower()
         if st not in SOURCE_TYPES:
-            raise CaptureError(
-                f'unknown source type {source_type!r}; valid types: '
-                f'{", ".join(sorted(SOURCE_TYPES))}.'
-            )
+            raise CaptureError(format_source_type_error(source_type, where='--type'))
         result.source_type = st
     elif result.source_type not in SOURCE_TYPES:
         # A recipe must still stay within vocabulary; guard the generic default
         # already does, but a misbehaving recipe shouldn't write a bad stub.
         result.source_type = _GENERIC_SOURCE_TYPE
     if source_date:
-        if not is_valid_edtf(source_date):
-            raise CaptureError(f'--date must be EDTF (got {source_date!r}).')
-        result.source_date = source_date
+        normalized = normalize_date(source_date)
+        if normalized is None:
+            raise CaptureError(format_edtf_error(source_date, field='--date'))
+        result.source_date = normalized
     elif result.source_date and not is_valid_edtf(str(result.source_date)):
-        print(f'WARNING: recipe produced non-EDTF source_date {result.source_date!r}; '
-              'dropping it from the stub.', file=sys.stderr)
-        result.source_date = None
+        normalized = normalize_date(str(result.source_date))
+        if normalized is None:
+            print(f'WARNING: recipe produced a source_date {result.source_date!r} '
+                  'that the archive could not read; dropping it from the stub.',
+                  file=sys.stderr)
+            result.source_date = None
+        else:
+            result.source_date = normalized
 
     # An explicit --url that no recipe surfaced still belongs in external_links.
     if url and not any((isinstance(l, dict) and l.get('url') == url) for l in result.external_links):
@@ -810,7 +816,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--type', metavar='TYPE', dest='source_type',
                    help='Override the inferred source_type (controlled vocabulary)')
     p.add_argument('--date', metavar='DATE', dest='source_date',
-                   help="Override the source's own date (EDTF), e.g. 1880")
+                   help="Override the source's own date, e.g. 1880 or 'about 1880'")
     p.add_argument('--asset', metavar='FILE',
                    help='Asset to stage alongside the stub (an image, or the saved page HTML)')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')

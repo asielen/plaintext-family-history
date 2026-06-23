@@ -1,0 +1,133 @@
+# Something Went Wrong - Get Unstuck
+
+Nothing here is a disaster. Your archive is plain files, you have backups, and most fixes are one
+command or one sentence to the assistant. Find your symptom, read the plain cause, do the fix.
+
+> **First move, almost always:** ask the assistant to **run `fha doctor`** (or run
+> `python tools/fha.py doctor --root my-family-archive` yourself). It's the archive's health
+> check - it inspects the things below and tells you which one is wrong, so you rarely have to
+> guess. Start there whenever something feels off.
+
+---
+
+## Search or the timeline looks wrong, stale, or missing things
+
+**What happened.** Search, trees, and reports are powered by a *cache* - a throwaway copy the
+tools build from your files. If you edited records by hand or added a lot at once, the cache can
+fall behind what's actually on disk.
+
+**Fix.** Ask: *"Rebuild the index."* (Or run `python tools/fha.py index --root my-family-archive`.)
+The cache is regenerated from your files; nothing real is ever lost by doing this - you can
+rebuild it as often as you like. `fha doctor` will tell you when the cache is stale.
+
+---
+
+## I renamed or moved a photo and now it seems disconnected
+
+**What happened.** A photo's identity lives in *hidden metadata inside the file* (a keyword), not
+in its filename or folder - exactly so you can reorganize your library safely. After a big move,
+the cache just needs to find the files in their new spots.
+
+**Fix.** Ask: *"Reconcile the photo index."* (Or run
+`python tools/fha.py photoindex reconcile --root my-family-archive`.) It re-matches moved files by
+their embedded ID. Any file it genuinely can't find is flagged so you can point it out. If a photo
+won't reconnect, it may have been re-saved by an editor that stripped the metadata - tell the
+assistant and it'll re-tag it. (`fha doctor` checks whether the photo index has fallen behind the
+photos folder, so it'll often catch this for you first.)
+
+---
+
+## I edited a record and now something's broken (bad YAML)
+
+**What happened.** The top of each record is structured text (called YAML). A stray quote, a tab,
+or a missing colon can make a record unreadable. Easy to do, easy to undo.
+
+**Fix.** Ask: *"Lint my archive and help me fix the errors."* (Or run
+`python tools/fha.py lint --root my-family-archive`.) The linter points at the exact file and line.
+Open that file in a plain text editor, fix the spot it names, save. (`fha doctor` includes a lint
+summary, so it flags this too.) If you can't see what's wrong, paste the error to the assistant - it reads YAML for a living. Still stuck? **Undo your edit** (see
+the git / no-git entries at the bottom) to get back to the last good version.
+
+---
+
+## A date won't take / it gets rejected
+
+**What happened.** Dates are stored in a format that can hold *uncertainty* (so "about 1880" is a
+real, valid date). A typo - like `18800` or `March 1871` written longhand - falls outside that
+format.
+
+**Fix.** Just say the date in plain words to the assistant - *"about 1880," "the 1880s," "February
+or March 1871"* - and let it write the formal version. The translation table is on the
+[cheat sheet](CHEATSHEET.md#how-to-write-an-uncertain-date). You never have to learn the codes.
+
+---
+
+## The AI misread a document
+
+**What happened.** The assistant *drafts* facts; sometimes it misreads faded handwriting or a bad
+scan. This is expected, and it's exactly why nothing it produces is a fact until you approve it.
+
+**Fix.** Just tell it: *"That birth year is wrong - it's 1898, not 1893,"* or *"reject that place,
+the document doesn't say that."* Corrected facts stay properly sourced; rejected ones are marked
+rejected, not deleted, so there's a record of the call. Nothing it got wrong ever silently became
+truth.
+
+---
+
+## I accepted a claim by mistake - undo it
+
+**What happened.** You marked a suggested fact as **accepted**, but it shouldn't be.
+
+**Fix.** Tell the assistant: *"Undo that claim - set it back to needs-review,"* or *"reject the
+death-date claim on that source."* A claim has a review status that can move backward; it doesn't
+have to be erased. If you'd rather wipe the edit entirely and start over, **undo the change** using
+git or the no-git method below.
+
+---
+
+## Two records turned out to be the same person - merge them
+
+**What happened.** You researched "John Hartley" twice before realizing they're one man, and now he
+has two `P-…` records.
+
+**Fix.** Tell the assistant: *"These two people are the same - merge them,"* and name the two
+records. It walks the **merge** workflow: one record is kept, the other's claims, sources, and
+relationships are moved onto it, and the old ID is left as a redirect so nothing that pointed at it
+breaks. Review the result before you accept it. (This is deliberate and careful work - let the
+assistant drive it rather than hand-editing two files.)
+
+---
+
+## My photos/documents drive is offline
+
+**What happened.** Your `fha.yaml` points the archive at an external drive (or a network folder)
+that isn't plugged in or mounted right now. The text records are fine; the tools just can't reach
+the *files* they describe.
+
+**Fix.** Plug the drive back in (on a Mac, make sure it shows under `/Volumes`; on Windows, that it
+has its usual drive letter). Run `fha doctor` - it checks that every mapped root is reachable and
+tells you which one isn't. If the drive's letter or path changed, update the path in `fha.yaml` to
+match (always forward slashes, even on Windows). Your records never lived on that drive, so nothing
+was lost - only temporarily out of reach.
+
+---
+
+## "I don't have git - how do I undo?"
+
+**What happened.** You don't use GitHub, so there's no commit history to roll back to - but you can
+still undo, because your archive is plain files and you keep backups.
+
+**Fix.** Restore the affected file (or the whole folder) from your most recent backup zip - the one
+[SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-still-no-git) recommends you keep on a
+separate drive or cloud folder. Copy the good version back over the broken one. *This is the whole
+reason for the backup habit:* a plain copy of plain files is a complete undo. Going forward, zip
+your archive folder before any big editing session and you'll always have a point to fall back to.
+
+> **If you *do* use git:** ask the assistant to "show me what changed and undo my last edit," or
+> run `git restore <file>` to drop uncommitted changes (or `git revert` a bad commit). Git keeps a
+> full history, so any past state is recoverable.
+
+---
+
+*Still stuck after `fha doctor`? Paste its full output to the assistant - it's written to be read
+and acted on. Nothing in a plain-file archive is ever truly lost; it's just waiting to be found.*

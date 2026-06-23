@@ -12,13 +12,21 @@ with a register(subs) function, then add one import + one register() call here.
 
 from __future__ import annotations
 
+import difflib
 import sys
+import traceback
 from pathlib import Path
 
 # Make sure sibling tool modules are importable when this file is run directly
 sys.path.insert(0, str(Path(__file__).parent))
 
 import argparse
+
+COMMANDS = (
+    'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'photoindex',
+    'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
+    'process', 'capture', 'convert-mining',
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,7 +50,54 @@ def build_parser() -> argparse.ArgumentParser:
         help='Spec docs root when SPEC.md/TOOLING.md are not in the archive '
              '(e.g. running from the public spec repo)',
     )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Show Python tracebacks for tool-building diagnostics',
+    )
     return parser
+
+
+def _first_command_token(argv: list[str]) -> str | None:
+    """Return the first positional token that should be the subcommand.
+
+    The top-level parser has a few global flags that may appear before the
+    command. Looking for the command ourselves lets us replace argparse's terse
+    "invalid choice" with a "did you mean" hint before argparse exits.
+    """
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ('--root', '--spec-root'):
+            i += 2
+            continue
+        if tok in ('--debug', '-h', '--help'):
+            i += 1
+            continue
+        if tok.startswith('--root=') or tok.startswith('--spec-root='):
+            i += 1
+            continue
+        if tok.startswith('-'):
+            return None
+        return tok
+    return None
+
+
+def _unknown_command_exit(command: str) -> int:
+    """Print a friendly unknown-command message with a close-match suggestion."""
+    match = difflib.get_close_matches(command, COMMANDS, n=1)
+    if match:
+        print(
+            f"ERROR: unknown fha command {command!r}. Did you mean `{match[0]}`?\n"
+            f"Run `fha {match[0]} --help` to see that command.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"ERROR: unknown fha command {command!r}. Run `fha --help` to see the command list.",
+            file=sys.stderr,
+        )
+    return 2
 
 
 def _intercept_id_check(argv: list[str]) -> int | None:
@@ -65,7 +120,10 @@ def _intercept_id_check(argv: list[str]) -> int | None:
     #   fha id check P-x --root A
     global_root: str | None = None
     pos = 0
-    while pos < len(argv) and argv[pos] in ('--root', '--spec-root'):
+    while pos < len(argv) and argv[pos] in ('--root', '--spec-root', '--debug'):
+        if argv[pos] == '--debug':
+            pos += 1
+            continue
         if pos + 1 >= len(argv):
             return None
         if argv[pos] == '--root':
@@ -75,7 +133,14 @@ def _intercept_id_check(argv: list[str]) -> int | None:
     if pos >= len(argv) or argv[pos] != 'id':
         return None
 
-    from _lib import FhaConfigError, find_archive_root, load_fha_yaml, normalize_id
+    from _lib import (
+        EXIT_FAILURE,
+        FhaConfigError,
+        archive_root_missing_message,
+        find_archive_root,
+        load_fha_yaml,
+        normalize_id,
+    )
     from find import find_by_id as _find_by_id
 
     rest = argv[pos + 1:]
@@ -103,7 +168,7 @@ def _intercept_id_check(argv: list[str]) -> int | None:
     else:
         archive_root = find_archive_root()
         if archive_root is None:
-            print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
+            print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
             return EXIT_FAILURE
 
     try:
@@ -136,6 +201,9 @@ def _intercept_doctor(argv: list[str]) -> int | None:
     i = 0
     while i < len(argv):
         tok = argv[i]
+        if tok == '--debug':
+            i += 1
+            continue
         if tok in ('--root', '--spec-root'):
             i += 2  # flag + its value
             continue
@@ -149,7 +217,10 @@ def _intercept_doctor(argv: list[str]) -> int | None:
         return None
 
     from doctor import _standalone_main as doctor_main
-    rest = argv[:command_idx] + argv[command_idx + 1:]
+    rest = [
+        tok for tok in (argv[:command_idx] + argv[command_idx + 1:])
+        if tok != '--debug'
+    ]
     return doctor_main(rest)
 
 
@@ -167,79 +238,117 @@ def main(argv: list[str] | None = None) -> int:
     re-routing is purely in this dispatcher (TOOLING §4a).
     """
     argv_list = list(argv) if argv is not None else sys.argv[1:]
+    debug = '--debug' in argv_list
 
-    # Alias interception must happen before argparse because the id check
-    # sub-subparser doesn't define --root (id.py is intentionally unchanged).
-    result = _intercept_id_check(argv_list)
-    if result is not None:
-        return result
+    try:
+        command = _first_command_token(argv_list)
+        if command is not None and command not in COMMANDS:
+            return _unknown_command_exit(command)
 
-    # Likewise, intercept 'doctor' before the bulk tool imports below so its
-    # guarded yaml check (see _intercept_doctor docstring) gets first crack.
-    result = _intercept_doctor(argv_list)
-    if result is not None:
-        return result
+        # Alias interception must happen before argparse because the id check
+        # sub-subparser doesn't define --root (id.py is intentionally unchanged).
+        result = _intercept_id_check(argv_list)
+        if result is not None:
+            return result
 
-    # Lazy imports: keep them inside main() for the reason above.
-    from id import register as id_register
-    from index import register as index_register
-    from lint import register as lint_register
-    from stubs import register as stubs_register
-    from views import register as views_register
-    from doctor import register as doctor_register
-    from find import register as find_register
-    from photoindex import register as photoindex_register
-    from xref import register as xref_register
-    from cooccur import register as cooccur_register
-    from report import register as report_register
-    from packet import register as packet_register
-    from places import register as places_register
-    from gedcom import register as gedcom_register
-    from wikitree import register as wikitree_register
-    from process import register as process_register
-    from capture import register as capture_register
-    from convert_mining import register as convert_mining_register
+        # Likewise, intercept 'doctor' before the bulk tool imports below so its
+        # guarded yaml check (see _intercept_doctor docstring) gets first crack.
+        result = _intercept_doctor(argv_list)
+        if result is not None:
+            return result
 
-    parser = build_parser()
-    subs = parser.add_subparsers(dest='command', metavar='COMMAND')
+        # Lazy imports: keep them inside main() for the reason above.
+        from id import register as id_register
+        from index import register as index_register
+        from lint import register as lint_register
+        from stubs import register as stubs_register
+        from views import register as views_register
+        from doctor import register as doctor_register
+        from find import register as find_register
+        from photoindex import register as photoindex_register
+        from xref import register as xref_register
+        from cooccur import register as cooccur_register
+        from report import register as report_register
+        from packet import register as packet_register
+        from places import register as places_register
+        from gedcom import register as gedcom_register
+        from wikitree import register as wikitree_register
+        from process import register as process_register
+        from capture import register as capture_register
+        from convert_mining import register as convert_mining_register
 
-    id_register(subs)
-    index_register(subs)
-    lint_register(subs)
-    stubs_register(subs)
-    views_register(subs)
-    doctor_register(subs)
-    find_register(subs)
-    photoindex_register(subs)
-    xref_register(subs)
-    cooccur_register(subs)
-    report_register(subs)
-    packet_register(subs)
-    places_register(subs)
-    gedcom_register(subs)
-    wikitree_register(subs)
-    process_register(subs)
-    capture_register(subs)
-    convert_mining_register(subs)
+        parser = build_parser()
+        subs = parser.add_subparsers(dest='command', metavar='COMMAND')
 
-    args = parser.parse_args(argv_list)
+        id_register(subs)
+        index_register(subs)
+        lint_register(subs)
+        stubs_register(subs)
+        views_register(subs)
+        doctor_register(subs)
+        find_register(subs)
+        photoindex_register(subs)
+        xref_register(subs)
+        cooccur_register(subs)
+        report_register(subs)
+        packet_register(subs)
+        places_register(subs)
+        gedcom_register(subs)
+        wikitree_register(subs)
+        process_register(subs)
+        capture_register(subs)
+        convert_mining_register(subs)
 
-    if getattr(args, 'root', None) is None:
-        args.root = (
-            getattr(args, 'views_root', None)
-            or getattr(args, 'global_root', None)
-        )
-    if getattr(args, 'spec_root', None) is None:
-        args.spec_root = (
-            getattr(args, 'views_spec_root', None)
-            or getattr(args, 'global_spec_root', None)
-        )
+        args = parser.parse_args(argv_list)
+        debug = bool(getattr(args, 'debug', False))
 
-    if not args.command:
-        parser.print_help()
-        return 0
+        if getattr(args, 'root', None) is None:
+            args.root = (
+                getattr(args, 'views_root', None)
+                or getattr(args, 'global_root', None)
+            )
+        if getattr(args, 'spec_root', None) is None:
+            args.spec_root = (
+                getattr(args, 'views_spec_root', None)
+                or getattr(args, 'global_spec_root', None)
+            )
 
-    return args.func(args) or 0
+        if not args.command:
+            parser.print_help()
+            return 0
+
+        return args.func(args) or 0
+    except SystemExit:
+        raise
+    except ModuleNotFoundError as e:
+        if e.name == 'yaml':
+            print(
+                'ERROR: This tool needs PyYAML to read archive YAML files. '
+                'Install it with `python -m pip install pyyaml`, then run `fha doctor`.',
+                file=sys.stderr,
+            )
+            return 3
+        if debug:
+            traceback.print_exc()
+        else:
+            print(
+                f'ERROR: a required Python module is missing: {e.name}. '
+                'Run `fha doctor` to check your archive. Re-run with `--debug` '
+                'to show the Python traceback.',
+                file=sys.stderr,
+            )
+        return 3
+    except Exception as e:  # noqa: BLE001 - top-level guard for CLI users
+        if debug:
+            traceback.print_exc()
+        else:
+            print(
+                f'ERROR: something went wrong: {e}\n'
+                'Run `fha doctor` to check your archive. Re-run with `--debug` '
+                'to show the Python traceback.',
+                file=sys.stderr,
+            )
+        return 3
 
 
 if __name__ == '__main__':

@@ -43,12 +43,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     SIGNIFICANCE,
     CLAIM_TYPES,
+    CACHE_SCHEMA_KEY,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     ID_RE,
+    INDEX_SCHEMA_VERSION,
     TOKEN_RE,
     FhaConfigError,
+    archive_root_missing_message,
     edtf_bounds,
     find_archive_root,
     id_type_of,
@@ -58,6 +61,7 @@ from _lib import (
     parse_filename,
     read_record,
     resolve_path,
+    sqlite_cache_schema_status,
 )
 
 import yaml
@@ -108,10 +112,20 @@ import yaml
 # WAL journal mode: a crash during indexing leaves the prior index readable.
 # kind column in person_files: profile | research | timeline | sources-index | draft-queue
 
-_DDL = """
+_DDL = f"""
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=OFF;
+PRAGMA user_version={INDEX_SCHEMA_VERSION};
 
+-- meta: cache identity and schema version; disposable, rebuilt by `fha index`.
+CREATE TABLE IF NOT EXISTS meta(
+  key TEXT PRIMARY KEY,       -- setting name, currently schema_version
+  value TEXT NOT NULL         -- setting value, stored as text for readability
+);
+INSERT OR REPLACE INTO meta(key, value)
+  VALUES ('{CACHE_SCHEMA_KEY}', '{INDEX_SCHEMA_VERSION}');
+
+-- persons: one row per person profile used by find/views/exports.
 CREATE TABLE IF NOT EXISTS persons(
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -125,8 +139,11 @@ CREATE TABLE IF NOT EXISTS persons(
   no_known_children INTEGER DEFAULT 0,
   path TEXT NOT NULL
 );
+-- person_variants: alternate searchable names from person records.
 CREATE TABLE IF NOT EXISTS person_variants(person_id TEXT, variant TEXT);
+-- person_face_tags: face-region labels that resolve photos to people.
 CREATE TABLE IF NOT EXISTS person_face_tags(person_id TEXT, tag TEXT);
+-- person_files: profile and generated companion files for each person.
 CREATE TABLE IF NOT EXISTS person_files(
   person_id TEXT,
   kind TEXT,
@@ -134,8 +151,10 @@ CREATE TABLE IF NOT EXISTS person_files(
   generated INTEGER DEFAULT 0,
   PRIMARY KEY(person_id, kind)
 );
+-- person_external: outside-system identifiers attached to people.
 CREATE TABLE IF NOT EXISTS person_external(person_id TEXT, system TEXT, ext_id TEXT);
 
+-- sources: one row per source record and its searchable metadata.
 CREATE TABLE IF NOT EXISTS sources(
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -151,6 +170,7 @@ CREATE TABLE IF NOT EXISTS sources(
   superseded_by TEXT,
   path TEXT NOT NULL
 );
+-- source_files: original/derived evidence files attached to each source.
 CREATE TABLE IF NOT EXISTS source_files(
   source_id TEXT,
   path TEXT,
@@ -162,6 +182,7 @@ CREATE TABLE IF NOT EXISTS source_files(
   in_inventory INTEGER
 );
 
+-- claims: extracted assertions from sources, with date/place/search fields.
 CREATE TABLE IF NOT EXISTS claims(
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL,
@@ -186,19 +207,23 @@ CREATE TABLE IF NOT EXISTS claims(
   negated INTEGER DEFAULT 0,
   notes TEXT
 );
+-- claim_persons: ordered people and roles named by each claim.
 CREATE TABLE IF NOT EXISTS claim_persons(
   claim_id TEXT,
   person_id TEXT,
   position INTEGER,
   role TEXT
 );
+-- claim_links: links from claims to other claims, sources, or hypotheses.
 CREATE TABLE IF NOT EXISTS claim_links(
   claim_id TEXT,
   rel TEXT,
   target_id TEXT
 );
+-- source_people: denormalized source-to-person lookup for fast browsing.
 CREATE TABLE IF NOT EXISTS source_people(source_id TEXT, person_id TEXT);
 
+-- relationships: accepted relationship edges derived from accepted claims.
 CREATE TABLE IF NOT EXISTS relationships(
   person_id TEXT,
   rel TEXT,
@@ -209,6 +234,7 @@ CREATE TABLE IF NOT EXISTS relationships(
   UNIQUE(person_id, rel, other_id, claim_id)
 );
 
+-- places: registry places from places/places.yaml.
 CREATE TABLE IF NOT EXISTS places(
   id TEXT PRIMARY KEY,
   name TEXT,
@@ -217,7 +243,9 @@ CREATE TABLE IF NOT EXISTS places(
   lat REAL,
   lon REAL
 );
+-- place_names: alternate names for each registered place.
 CREATE TABLE IF NOT EXISTS place_names(place_id TEXT, alt_name TEXT);
+-- place_history: dated hierarchy names for places over time.
 CREATE TABLE IF NOT EXISTS place_history(
   place_id TEXT,
   period_edtf TEXT,
@@ -226,6 +254,7 @@ CREATE TABLE IF NOT EXISTS place_history(
   hierarchy TEXT
 );
 
+-- search_log: prior searches and nil results from research logs/capture.
 CREATE TABLE IF NOT EXISTS search_log(
   date TEXT,
   person_id TEXT,
@@ -238,6 +267,7 @@ CREATE TABLE IF NOT EXISTS search_log(
   path TEXT
 );
 
+-- hypotheses: open research hypotheses attached to people.
 CREATE TABLE IF NOT EXISTS hypotheses(
   id TEXT PRIMARY KEY,
   person_id TEXT,
@@ -250,6 +280,7 @@ CREATE TABLE IF NOT EXISTS hypotheses(
   path TEXT
 );
 
+-- citations: [ID] token locations by file and line number.
 CREATE TABLE IF NOT EXISTS citations(
   token TEXT,
   kind TEXT,
@@ -257,8 +288,10 @@ CREATE TABLE IF NOT EXISTS citations(
   line INTEGER
 );
 
+-- notes_fts: full-text search over notes and record prose.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
   USING fts5(path, content);
+-- transcripts_fts: full-text search over source transcripts.
 CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
   USING fts5(source_id, path, content);
 """
@@ -279,6 +312,7 @@ def _get_db(cache_dir: Path) -> sqlite3.Connection:
 def _drop_tables(conn: sqlite3.Connection) -> None:
     """Drop all data tables for a full rebuild."""
     tables = [
+        'meta',
         'persons', 'person_variants', 'person_face_tags', 'person_files',
         'person_external', 'sources', 'source_files', 'claims', 'claim_persons',
         'claim_links', 'source_people', 'relationships', 'places', 'place_names',
@@ -962,6 +996,16 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
 def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> None:
     """Rebuild the index from scratch."""
     cache_dir = archive_root / '.cache'
+    db_path = cache_dir / 'index.sqlite'
+
+    status, _detail = sqlite_cache_schema_status(
+        db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'),
+    )
+    if status == 'unreadable':
+        try:
+            db_path.unlink()
+        except FileNotFoundError:
+            pass
 
     if verbose:
         print('Building index...')
@@ -1022,7 +1066,6 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         conn.close()
 
     if verbose:
-        db_path = cache_dir / 'index.sqlite'
         size_kb = db_path.stat().st_size // 1024
         print(f'Done. Index at {db_path} ({size_kb} KB)')
 
@@ -1063,7 +1106,12 @@ def _require_existing_index(cache_dir: Path) -> bool:
     only one source's rows, missing persons/places/notes_fts).
     """
     db_path = cache_dir / 'index.sqlite'
-    if not db_path.exists():
+    status, _detail = sqlite_cache_schema_status(
+        db_path,
+        INDEX_SCHEMA_VERSION,
+        ('persons', 'sources', 'claims'),
+    )
+    if status != 'fresh':
         return False
     try:
         conn = sqlite3.connect(str(db_path))
@@ -1183,7 +1231,7 @@ def _run_index(args: argparse.Namespace) -> int:
     else:
         archive_root = find_archive_root()
         if archive_root is None:
-            print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
+            print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
             return EXIT_FAILURE
 
     try:
@@ -1214,6 +1262,15 @@ def _run_index(args: argparse.Namespace) -> int:
             return EXIT_FAILURE
         print(f'Upserted source {args.source}')
     else:
+        db_path = archive_root / '.cache' / 'index.sqlite'
+        status, detail = sqlite_cache_schema_status(
+            db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'),
+        )
+        if status in {'old-schema', 'unreadable'}:
+            suffix = f' ({detail})' if detail else ''
+            print(
+                f'Index cache is out of date or unreadable{suffix}; rebuilding from archive files.'
+            )
         build_index(archive_root, fha_config, verbose=getattr(args, 'verbose', False))
         if not getattr(args, 'verbose', False):
             print(f'Index rebuilt: {archive_root / ".cache" / "index.sqlite"}')

@@ -694,7 +694,7 @@ def run_packet(
         photo_status = 'absent'
         if not no_photos:
             photo_status, _lag = photoindex_status(archive_root, fha_config)
-            if photo_status in ('absent', 'unreadable', 'stale'):
+            if photo_status in ('absent', 'unreadable', 'old-schema', 'stale'):
                 return {
                     'status': 'no-photoindex', 'packet_dir': None, 'zip_path': None,
                     'messages': [

@@ -52,6 +52,8 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    INDEX_SCHEMA_VERSION,
+    PHOTOINDEX_SCHEMA_VERSION,
     configure_utf8_stdout,
     db_mtime,
     get_roots,
@@ -64,6 +66,7 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    sqlite_cache_schema_status,
 )
 
 configure_utf8_stdout()
@@ -120,15 +123,20 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
     if mtime is None:
         return ('absent', '')
 
+    schema_status, schema_detail = sqlite_cache_schema_status(
+        db_path,
+        INDEX_SCHEMA_VERSION,
+        ('persons', 'sources', 'claims'),
+    )
+    if schema_status in {'unreadable', 'old-schema'}:
+        return (schema_status, schema_detail)
+
     record_mtime = newest_record_mtime(archive_root)
     if record_mtime == 0.0:
         return ('fresh', '')   # no records yet — trivially up-to-date
 
     if mtime < record_mtime:
         return ('stale', _fmt_delta(record_mtime - mtime))
-
-    if not probe_sqlite(db_path, 'SELECT 1 FROM persons LIMIT 1'):
-        return ('absent', '')   # treat corrupt/schema-less as absent
 
     return ('fresh', '')
 
@@ -157,7 +165,12 @@ def _counts_from_index(archive_root: Path) -> dict | None:
     Returns None if the index can't be opened (fall back to scan).
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
-    if not db_path.exists():
+    status, _detail = sqlite_cache_schema_status(
+        db_path,
+        INDEX_SCHEMA_VERSION,
+        ('persons', 'sources'),
+    )
+    if status != 'fresh':
         return None
     try:
         conn = sqlite3.connect(str(db_path))
@@ -210,7 +223,7 @@ def _counts_from_scan(archive_root: Path) -> dict:
 
 # ── Main report ───────────────────────────────────────────────────────────────
 
-def run_doctor(archive_root: Path, fha_config: dict) -> int:
+def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config: dict) -> int:
     """
     Run all health checks and print a structured report.
 
@@ -360,6 +373,175 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
+
+def run_doctor(archive_root: Path, fha_config: dict) -> int:
+    """Run all health checks and print one concrete next step per line."""
+    worst = EXIT_CLEAN
+    root_arg = str(archive_root)
+    roots = get_roots(fha_config)
+    is_fixture = is_fixture_path(archive_root)
+    index_cmd = f'fha index --root "{root_arg}"'
+    photoindex_cmd = f'fha photoindex --root "{root_arg}"'
+    lint_cmd = f'fha lint --root "{root_arg}"'
+    doctor_cmd = f'fha doctor --root "{root_arg}"'
+    troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
+
+    print(f'archive root: {_OK} {archive_root}  next: no action needed')
+    print(f'fha.yaml:     {_OK} {archive_root / "fha.yaml"} loaded  next: no action needed')
+    print()
+
+    if roots:
+        print('mapped roots:')
+        for alias in roots:
+            resolved = resolve_path(alias, fha_config, archive_root)
+            if os.path.isdir(resolved):
+                print(f'  {alias} -> {resolved}  {_OK}  next: no action needed')
+            elif is_fixture:
+                print(
+                    f'  {alias} -> {resolved}  {_WARN} fixture path is missing  '
+                    f'next: add fixture files or rerun `{doctor_cmd}` on a real archive'
+                )
+                worst = max(worst, EXIT_WARNINGS)
+            else:
+                print(
+                    f'  {alias} -> {resolved}  {_BAD} not reachable  '
+                    f'next: fix roots in {archive_root / "fha.yaml"} or create that folder, '
+                    f'then run `{doctor_cmd}`'
+                )
+                worst = max(worst, EXIT_ERRORS)
+        print()
+
+    exiftool_path = shutil.which('exiftool')
+    if exiftool_path:
+        print(f'exiftool:  {_OK} {exiftool_path}  next: no action needed')
+    else:
+        print(
+            f'exiftool:  {_WARN} not found on PATH  next: install exiftool, '
+            f'then run `{doctor_cmd}`'
+        )
+        worst = max(worst, EXIT_WARNINGS)
+    print(f'python deps (PyYAML): {_OK}  next: no action needed')
+    print()
+
+    idx_status, idx_delta = _index_freshness(archive_root)
+    idx_path = archive_root / '.cache' / 'index.sqlite'
+    if idx_status == 'fresh':
+        print(f'index: {_OK} fresh at {idx_path}  next: no action needed')
+    elif idx_status == 'stale':
+        print(f'index: {_WARN} stale by {idx_delta} at {idx_path}  next: run `{index_cmd}`')
+        worst = max(worst, EXIT_WARNINGS)
+    elif idx_status in {'unreadable', 'old-schema'}:
+        detail = f' ({idx_delta})' if idx_delta else ''
+        print(
+            f'index: {_WARN} search index is out of date or unreadable{detail}: '
+            f'{idx_path}  next: run `{index_cmd}`'
+        )
+        worst = max(worst, EXIT_WARNINGS)
+    else:
+        print(f'index: {_WARN} not yet built at {idx_path}  next: run `{index_cmd}`')
+        worst = max(worst, EXIT_WARNINGS)
+
+    photo_status, photo_delta = _photoindex_freshness(archive_root, fha_config)
+    photo_path = archive_root / '.cache' / 'photos.sqlite'
+    if photo_status == 'fresh':
+        print(f'photoindex: {_OK} fresh at {photo_path}  next: no action needed')
+    elif photo_status == 'stale':
+        print(f'photoindex: {_WARN} stale by {photo_delta} at {photo_path}  next: run `{photoindex_cmd}`')
+        worst = max(worst, EXIT_WARNINGS)
+    elif photo_status in {'unreadable', 'old-schema'}:
+        label = 'out of date' if photo_status == 'old-schema' else 'unreadable'
+        print(f'photoindex: {_WARN} {label}: {photo_path}  next: run `{photoindex_cmd}`')
+        worst = max(worst, EXIT_WARNINGS)
+    else:
+        print(f'photoindex: {_WARN} not yet built at {photo_path}  next: run `{photoindex_cmd}`')
+        worst = max(worst, EXIT_WARNINGS)
+    print()
+
+    e018_findings: list = []
+    try:
+        from lint import run_lint_silent
+        n_errors, n_warnings, e018_findings = run_lint_silent(archive_root, fha_config)
+        symbol = _OK if n_errors == 0 else _BAD
+        action = 'no action needed' if n_errors == 0 and n_warnings == 0 else f'run `{lint_cmd}` for details'
+        print(f'lint: E:{n_errors} W:{n_warnings}  {symbol}  next: {action}')
+        if n_errors > 0:
+            worst = max(worst, EXIT_ERRORS)
+        elif n_warnings > 0:
+            worst = max(worst, EXIT_WARNINGS)
+    except Exception as exc:
+        print(
+            f'lint: {_BAD} lint machinery failed: {exc}  '
+            f'next: run `{lint_cmd}`; if it still fails see {troubleshooting}'
+        )
+        worst = max(worst, EXIT_WARNINGS)
+    print()
+
+    inbox_dir = archive_root / 'inbox'
+    if inbox_dir.is_dir():
+        now = datetime.datetime.now().timestamp()
+        cutoff = now - 14 * 86400
+        aged: list[tuple[int, Path]] = []
+        for item in inbox_dir.iterdir():
+            try:
+                mtime = item.stat().st_mtime
+                if mtime < cutoff:
+                    age_days = int((now - mtime) / 86400)
+                    aged.append((age_days, item))
+            except OSError:
+                pass
+        if aged:
+            aged.sort(reverse=True)
+            oldest_days, oldest_path = aged[0]
+            print(
+                f'inbox: {len(aged)} item(s) older than 14 days '
+                f'(oldest: {oldest_path}, {oldest_days} days)  '
+                f'next: preview filing with `fha process "{oldest_path}" --root "{root_arg}" --dry-run`'
+            )
+            worst = max(worst, EXIT_WARNINGS)
+        else:
+            print(f'inbox: {_OK} no items older than 14 days  next: no action needed')
+        print()
+
+    if idx_status == 'fresh':
+        counts = _counts_from_index(archive_root)
+        if counts is None:
+            counts = _counts_from_scan(archive_root)
+            label = 'counts (scanned - index unreadable):'
+        else:
+            label = 'counts (from index):'
+    else:
+        counts = _counts_from_scan(archive_root)
+        label = 'counts (scanned - index not fresh):'
+
+    print(label)
+    print(f'  sources restricted:  {counts["restricted"]}')
+    print(f'  persons living:      {counts["living"]}')
+    print(f'  persons unknown:     {counts["unknown"]}')
+    print(f'  next: run `{index_cmd}` if these counts look wrong')
+    print()
+
+    if e018_findings:
+        print(f'E018 agent-instruction drift ({len(e018_findings)} finding(s)):')
+        for f in e018_findings:
+            try:
+                rel = Path(f.path).relative_to(archive_root)
+            except (ValueError, AttributeError):
+                rel = f.path
+            print(f'  {rel}: {f.message}')
+        print(f'  next: run `{lint_cmd}` and repair the listed instruction files')
+    else:
+        print('E018 findings: none  next: no action needed')
+    print()
+
+    print('-' * 60)
+    print('Backup policy must cover both the archive root and all mapped asset roots.')
+    print(f'Archive root: {archive_root}')
+    for alias in roots:
+        print(f'Asset root {alias}: {resolve_path(alias, fha_config, archive_root)}')
+    print(f'Next: make sure those paths are included in your backup. More help: {troubleshooting}')
+
+    return worst
+
 
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'doctor' onto the main fha parser."""

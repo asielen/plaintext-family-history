@@ -26,8 +26,8 @@ THREE OUTPUTS (TOOLING §690)
 3. Org/entity recurrence: repeated claim values for `occupation`,
    `military`, and membership-style `event`/`note` claims. The grouping key is
    `(category, normalized value)` so employers, military units, and clubs with
-   similar wording do not collapse into one hub. Per SPEC §22 these stay claim
-   values — no schema change, no new `O-` object type.
+   similar wording do not collapse into one hub. These stay claim values — no
+   schema change, no new `O-` object type (organizations are out of scope for now).
 
 CODE MAP
 --------

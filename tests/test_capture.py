@@ -9,6 +9,7 @@ Run: python -m unittest tests.test_capture -v   (from the repo root)
 """
 
 import io
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -111,10 +112,26 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(meta['source_type'], 'newspaper')
         self.assertEqual(meta['source_date'], '1880')
 
-        with self.assertRaises(capture.CaptureError):
+        shutil.rmtree(self.archive / 'inbox')
+        rc = self._capture(html, source_date='about 1880')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(read_record(self._only_stub())['meta']['source_date'], '1880~')
+
+        shutil.rmtree(self.archive / 'inbox')
+        rc = self._capture(html, source_date='June 1880')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(read_record(self._only_stub())['meta']['source_date'], '1880-06')
+
+        with self.assertRaises(capture.CaptureError) as type_ctx:
             self._capture(html, source_type='not-a-type')
-        with self.assertRaises(capture.CaptureError):
-            self._capture(html, source_date='June 1880')
+        self.assertIn('source category', str(type_ctx.exception))
+        self.assertIn('census', str(type_ctx.exception))
+        self.assertIn('photo', str(type_ctx.exception))
+
+        with self.assertRaises(capture.CaptureError) as date_ctx:
+            self._capture(html, source_date='last summer')
+        self.assertIn('date the archive can read', str(date_ctx.exception))
+        self.assertIn('1880-06-15', str(date_ctx.exception))
 
     def test_dry_run_writes_nothing(self) -> None:
         asset = self.tmp / 'scan.jpg'

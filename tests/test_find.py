@@ -576,6 +576,9 @@ class PhotoIndexFreshnessInRelatedTests(unittest.TestCase):
         pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
         pconn.executescript(
             '''
+            PRAGMA user_version=1;
+            CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta(key, value) VALUES ('schema_version', '1');
             CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
                                 gps_lat REAL, gps_lon REAL);
             CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY, primary_path TEXT);
@@ -732,6 +735,9 @@ class RelatedPhotoDateTests(unittest.TestCase):
         pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
         pconn.executescript(
             '''
+            PRAGMA user_version=1;
+            CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta(key, value) VALUES ('schema_version', '1');
             CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
                                 gps_lat REAL, gps_lon REAL, edtf TEXT);
             CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY,

@@ -8,7 +8,7 @@ Before tagging a spec release or pushing a significant change:
 - [ ] No real personal data in examples, docs, issues, or fixtures (see PRIVACY.md).
 - [ ] `example-archive/` is lint-clean under the current rules.
 - [ ] AGENTS.md / CLAUDE.md reference current command and skill names (no stale `promote`, `PERSON:`, `add-source`).
-- [ ] SPEC decision log includes the change.
+- [ ] Significant design decisions are noted in the PR description or commit message.
 - [ ] Repo/tools/template/fixture distinction stays clear (no doc treats the repo root as a real archive).
 - [ ] Spec and Tooling files match implementation details if decisions were made differently than in the spec
 - [ ] `tools/README.md` updated: any newly completed tool or flag marked ✓; any newly deferred item marked ⚑ with a note pointing at its BUILD.md layer

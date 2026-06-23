@@ -2,7 +2,8 @@
 """
 process.py — fha process: Stage A of the intake pipeline.
 
-  fha process <file> [--type TYPE] [--title "…"] [--slug SLUG]   Process one asset
+  fha process <file> [--type TYPE] [--title "…"] [--date DATE] [--slug SLUG]
+                                                                 Process one asset
   fha process <photo> --more <file> ROLE[:copy]                  Attach a file to its source
   fha process <file> --dry-run                                   Preview, write nothing
 
@@ -123,17 +124,24 @@ from _lib import (
     FhaConfigError,
     ParsedName,
     configure_utf8_stdout,
+    format_edtf_error,
+    format_exiftool_error,
+    format_source_type_error,
     fmt_id_display,
     grouping_stem,
     id_type_of,
     is_valid_edtf,
+    is_valid_id,
     load_fha_yaml,
     mint_ids,
+    normalize_date,
+    normalize_id,
     parse_media_filename,
     path_to_alias,
     read_record,
     resolve_path,
     resolve_root_arg,
+    scan_person_record_ids,
     select_variation_primary,
     variant_role,
 )
@@ -266,7 +274,7 @@ def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
-        raise RuntimeError('fha process requires exiftool on PATH for photo files') from e
+        raise RuntimeError(format_exiftool_error('fha process')) from e
     if proc.returncode != 0:
         raise RuntimeError(f'exiftool failed reading {file_path.name}: {proc.stderr.strip()}')
     try:
@@ -288,38 +296,49 @@ def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
     return out
 
 
-def _run_exiftool_embed_source(file_path: Path, s_id: str) -> str | None:
-    """Append `SOURCE: {s_id}` to a photo's Keywords, overwriting in place.
+def _run_exiftool_embed_source(
+    file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+) -> str | None:
+    """Append `SOURCE: {s_id}` (and any extra keywords) to a photo's Keywords.
 
     Uses exiftool's `+=` list-append so existing keywords (DATE:, P-ids) are
     preserved — the only sanctioned write to a photo original (AGENTS.md: photos
     are never renamed, but spec'd keyword writes through fha tools are allowed).
+    `extra_keywords` carries bare P-id strings (e.g. `['P-de957bcda1']`) added
+    in the same call so SOURCE: and people are atomic: one exiftool invocation
+    per file, one rollback path if the record scaffold fails.
     Returns None on success, the stderr text on a per-file failure; raises
     RuntimeError only when exiftool itself is absent.
     """
-    keyword = f'SOURCE: {s_id}'
-    cmd = ['exiftool', f'-keywords+={keyword}', '-overwrite_original_in_place', str(file_path)]
+    keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
+    kw_args = [f'-keywords+={kw}' for kw in keywords]
+    cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
-        raise RuntimeError('fha process requires exiftool on PATH for photo files') from e
+        raise RuntimeError(format_exiftool_error('fha process')) from e
     return None if proc.returncode == 0 else proc.stderr.strip()
 
 
-def _run_exiftool_remove_source(file_path: Path, s_id: str) -> str | None:
-    """Remove a just-added `SOURCE: {s_id}` keyword during rollback.
+def _run_exiftool_remove_source(
+    file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+) -> str | None:
+    """Remove a just-added SOURCE keyword (and any extra keywords) during rollback.
 
     The normal photo path writes the keyword before the record, because a
     failed exiftool write must abort without a dangling source record. If the
     later record write fails, this inverse operation restores the photo to its
-    pre-run identity state so the command remains transactional.
+    pre-run identity state so the command remains transactional. `extra_keywords`
+    must match what was passed to `_run_exiftool_embed_source` so the rollback
+    removes exactly what was added.
     """
-    keyword = f'SOURCE: {s_id}'
-    cmd = ['exiftool', f'-keywords-={keyword}', '-overwrite_original_in_place', str(file_path)]
+    keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
+    kw_args = [f'-keywords-={kw}' for kw in keywords]
+    cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
-        raise RuntimeError('fha process requires exiftool on PATH for photo files') from e
+        raise RuntimeError(format_exiftool_error('fha process')) from e
     return None if proc.returncode == 0 else proc.stderr.strip()
 
 
@@ -390,6 +409,7 @@ def _scaffold_text(
     source_date: str | None = None,
     provenance: str | None = None,
     external_links: list[dict] | None = None,
+    people: list[str] | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -409,6 +429,11 @@ def _scaffold_text(
     `restricted`, that a `dna` source_type always forces) — without passing
     them through, capture-written metadata in the stub would be silently
     dropped when the stub is consumed.
+
+    `people` is a validated list of P-ids from `--people`; they land in the
+    record's `people:` field so `fha index` indexes the photo-to-person link
+    and `fha find --related P-xxx` surfaces the photo source without requiring
+    any face-region placement (the "photos, no photo manager" path, TOOLING §FAQ).
     """
     lines = [
         '---',
@@ -425,7 +450,12 @@ def _scaffold_text(
     lines.append('citation: >')
     citation_text = citation if citation else title
     lines += [f'  {line}' for line in (citation_text.splitlines() or [''])]
-    lines.append('people: []')
+    if people:
+        lines.append('people:')
+        for pid in people:
+            lines.append(f'  - {_yaml_inline(pid)}')
+    else:
+        lines.append('people: []')
     if restricted:
         lines.append('restricted: true')
     if provenance:
@@ -723,20 +753,22 @@ def _sidecar_str(sidecar_meta: dict, key: str) -> str | None:
 
 
 def _sidecar_source_date(sidecar_meta: dict, sidecar_name: str) -> str | None:
-    """A sidecar's `source_date:` hint, validated as EDTF (or None).
+    """Return a sidecar `source_date:` hint normalized to EDTF, or None.
 
-    Mirrors `fha capture`'s `--date`/recipe `source_date` validation — an
-    unvalidated hint copied straight into the scaffold would write a §14
-    record that immediately fails lint E014, with the stub already consumed
-    by the time the human sees the lint error.
+    Mirrors `fha capture`'s `--date` handling: loose but clear human dates
+    ("about 1880", "1870s") are translated before writing the §14 record, while
+    genuinely unclear dates still stop before the stub is consumed.
     """
     source_date = _sidecar_str(sidecar_meta, 'source_date')
-    if source_date is not None and not is_valid_edtf(source_date):
+    if source_date is None:
+        return None
+    normalized = normalize_date(source_date)
+    if normalized is None:
         raise ProcessError(
-            f'{sidecar_name} hints source_date {source_date!r}, which is not valid EDTF; '
-            'fix the sidecar before processing.'
+            f'{sidecar_name} hints {format_edtf_error(source_date, field="source_date")} '
+            'Fix the sidecar before processing.'
         )
-    return source_date
+    return normalized
 
 
 def _sidecar_flag(sidecar_meta: dict, key: str) -> bool:
@@ -933,7 +965,7 @@ def _run_exiftool_read_meta(file_path: Path) -> dict:
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
-        raise RuntimeError('fha process folder triage requires exiftool on PATH') from e
+        raise RuntimeError(format_exiftool_error('fha process folder triage')) from e
     if proc.returncode != 0:
         raise RuntimeError(f'exiftool failed reading {file_path.name}: {proc.stderr.strip()}')
     try:
@@ -1019,6 +1051,41 @@ class ProcessError(Exception):
     """A user-facing processing failure (refusal or bad input)."""
 
 
+def _parse_people_ids(raw: str | None, archive_root: Path) -> list[str]:
+    """Parse `--people` into known person IDs before any photo write.
+
+    `--people` accepts a comma/space/semicolon-separated list of bare P-ids
+    (e.g. 'P-de957bcda1, P-ab3c8f0e12'). Each token is checked against the
+    Crockford ID format and the archive's person records. A typo that still
+    looks like a P-id must fail before exiftool writes to original photo
+    metadata; `fha photoindex tag-person` follows the same known-person rule.
+    """
+    if not raw:
+        return []
+    known_people = scan_person_record_ids(archive_root)
+    tokens = re.split(r'[,;\s]+', raw.strip())
+    ids: list[str] = []
+    for tok in tokens:
+        if not tok:
+            continue
+        if not is_valid_id(tok) or id_type_of(tok) != 'P':
+            raise ProcessError(
+                f'{tok!r} is not a valid P-id. P-ids look like P-de957bcda1 — '
+                'a P followed by a dash and 10 characters from the archive alphabet '
+                '(0-9 and lowercase a-z, except i, l, o, u). '
+                'Run `fha find <name>` to look up the right P-id.'
+            )
+        normalized = normalize_id(tok)
+        if normalized not in known_people:
+            raise ProcessError(
+                f'{fmt_id_display(normalized)} is not a known person in this archive. '
+                'Run `fha find <name>` to look up the right P-id, or create the person '
+                'record before tagging the photo.'
+            )
+        ids.append(fmt_id_display(normalized))
+    return ids
+
+
 def process_document(
     archive_root: Path,
     fha_config: dict,
@@ -1027,6 +1094,7 @@ def process_document(
     source_type: str,
     slug: str | None,
     title: str | None,
+    source_date: str | None,
     dry_run: bool,
 ) -> int:
     """M7.1: rename a documents-root original and scaffold its source record.
@@ -1062,8 +1130,8 @@ def process_document(
             hinted = str(sidecar_meta['source_type'])
             if hinted not in SOURCE_TYPES:
                 raise ProcessError(
-                    f'{sidecar.name} hints unknown source_type {hinted!r}; fix the '
-                    'sidecar (or pass --type explicitly) before processing.'
+                    f'{sidecar.name} hints {format_source_type_error(hinted)} '
+                    'Fix the sidecar, or pass --type with one of those values.'
                 )
             source_type = hinted
 
@@ -1102,7 +1170,7 @@ def process_document(
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
+        source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -1150,6 +1218,7 @@ def process_pointer_only(
     source_type: str | None = None,
     slug: str | None = None,
     title: str | None = None,
+    source_date: str | None = None,
     dry_run: bool,
 ) -> int:
     """TOOLING §13b case (c): mint a source record with no asset.
@@ -1165,8 +1234,8 @@ def process_pointer_only(
         resolved_type = str(sidecar_meta['source_type'])
     if resolved_type not in SOURCE_TYPES:
         raise ProcessError(
-            f'unknown source_type {resolved_type!r} ({"--type" if source_type else sidecar.name}); '
-            'fix the sidecar (or pass --type explicitly) before processing.'
+            f'{format_source_type_error(resolved_type, where="--type" if source_type else "source_type")} '
+            'Fix the sidecar, or pass --type with one of those values.'
         )
     source_type = resolved_type
 
@@ -1198,7 +1267,7 @@ def process_pointer_only(
         restricted=restricted,
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_source_date(sidecar_meta, sidecar.name),
+        source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
         external_links=external_links,
     )
@@ -1231,7 +1300,9 @@ def process_photo(
     *,
     slug: str | None,
     title: str | None,
+    source_date: str | None,
     dry_run: bool,
+    people: list[str] | None = None,
 ) -> int:
     """M7.2: embed a SOURCE keyword in a photo and scaffold its source record.
 
@@ -1239,6 +1310,12 @@ def process_photo(
     first: if exiftool fails, nothing is scaffolded (TOOLING §6 "abort on
     failure, do not scaffold"). If the scaffold then fails, the just-written
     keyword is removed so the photo is not left half-processed.
+
+    `people` is a validated list of P-ids from `--people`; each is written as
+    a bare keyword in the same exiftool call as SOURCE: (one atomic write, one
+    rollback path), and also lands in the source record's `people:` field so
+    `fha index` + `fha find --related P-xxx` work without any face-region
+    placement (the no-photo-manager path, TOOLING §FAQ).
     """
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     if not _is_under(file_path, photos_root):
@@ -1248,25 +1325,31 @@ def process_photo(
             'a record outside the asset roots cannot be expressed as a portable alias path.'
         )
 
-    # The documented dry-run contract is "preview without any exiftool call or
-    # writes" — a machine without exiftool on PATH (or a photo whose metadata
-    # can't be read) must still get a preview, not a tool failure. The live
-    # path still needs this read to refuse re-processing, so only dry-run
-    # degrades a read failure to a warning and treats it as "unknown".
+    # Read all keywords at once: one exiftool call detects a pre-existing SOURCE:
+    # keyword (refuses re-processing) and identifies which P-ids from --people are
+    # already present. Only the absent ones are embedded and rolled back; ExifTool's
+    # -= operator removes every occurrence of a value, so rolling back a P-id that
+    # predated this run would delete it permanently.
     if dry_run:
         try:
-            existing = _read_source_keyword(file_path)
+            raw_kws = _run_exiftool_read_keywords(file_path)
         except RuntimeError as e:
             print(f'WARNING: could not read existing keywords from {file_path.name}: {e}',
                   file=sys.stderr)
-            existing = None
+            raw_kws = []
     else:
-        existing = _read_source_keyword(file_path)
+        raw_kws = _run_exiftool_read_keywords(file_path)
+    existing = next(
+        (mo.group(1).lower() for kw in raw_kws if (mo := _SOURCE_KEYWORD_RE.match(kw.strip()))),
+        None,
+    )
     if existing:
         raise ProcessError(
             f'{file_path.name} already carries SOURCE: {existing.upper()}; '
             'it looks already processed. Refusing to mint a second ID.'
         )
+    existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+    new_people = [p for p in (people or []) if p not in existing_pids]
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(file_path)
@@ -1293,19 +1376,23 @@ def process_photo(
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
+        source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        people=people or None,
     )
 
     if dry_run:
         print(f'[dry-run] Would mint {sid}')
-        print(f'[dry-run] Would embed SOURCE: {sid} in {file_path.name} (no rename)')
+        kw_desc = f'SOURCE: {sid}' + (f' + {len(new_people)} P-id keyword(s)' if new_people else '')
+        print(f'[dry-run] Would embed {kw_desc} in {file_path.name} (no rename)')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
+        if new_people:
+            print(f'[dry-run] people: {", ".join(new_people)}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
 
-    err = _run_exiftool_embed_source(file_path, sid)
+    err = _run_exiftool_embed_source(file_path, sid, extra_keywords=new_people or None)
     if err is not None:
         print(f'ERROR: exiftool could not embed SOURCE keyword in {file_path.name}: {err}',
               file=sys.stderr)
@@ -1323,7 +1410,7 @@ def process_photo(
         except Exception:
             pass
         try:
-            rollback_err = _run_exiftool_remove_source(file_path, sid)
+            rollback_err = _run_exiftool_remove_source(file_path, sid, extra_keywords=new_people or None)
         except RuntimeError as rollback_exc:
             rollback_err = str(rollback_exc)
         print(f'ERROR: SOURCE keyword was embedded in {file_path.name} but the record '
@@ -1337,6 +1424,8 @@ def process_photo(
 
     print(f'Minted {sid}')
     print(f'Embedded SOURCE: {sid} in {file_path.name} (not renamed)')
+    if new_people:
+        print(f'Tagged people: {", ".join(new_people)}')
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
@@ -1368,7 +1457,9 @@ def process_photo_group(
     *,
     slug: str | None,
     title: str | None,
+    source_date: str | None,
     dry_run: bool,
+    people: list[str] | None = None,
 ) -> int:
     """M7.3: process a variation set as ONE source sharing a single S-id.
 
@@ -1379,7 +1470,9 @@ def process_photo_group(
     discipline) and the whole set is transactional: if any embed fails, the
     keywords already written are removed; if the record write fails, both the
     keywords and the record are rolled back, so an interrupted run never leaves
-    a half-tagged set.
+    a half-tagged set. `people` (P-ids from `--people`) are written as bare
+    keywords on every member of the group and land in the source record's
+    `people:` list — same atomic-write discipline as for a single photo.
     """
     members = sorted(members)
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
@@ -1390,15 +1483,32 @@ def process_photo_group(
                 f'({_rel(photos_root, archive_root)}); file the whole set there before processing.'
             )
 
-    # Refuse the set if any member is already processed — the user should attach
-    # with --more rather than mint a second ID over an existing source.
+    # Refuse the set if any member is already processed, and collect per-member
+    # existing P-id keywords so rollback only removes the ones this run added.
+    # ExifTool's -= operator removes every occurrence of a value, so rolling back
+    # a P-id keyword that predated this run would delete it permanently.
+    per_member_new_people: dict[Path, list[str]] = {}
     for m in members:
-        existing, _ = _read_existing_source_keyword(m, dry_run)
-        if existing:
+        if dry_run:
+            try:
+                raw_kws = _run_exiftool_read_keywords(m)
+            except RuntimeError as e:
+                print(f'WARNING: could not read existing keywords from {m.name}: {e}',
+                      file=sys.stderr)
+                raw_kws = []
+        else:
+            raw_kws = _run_exiftool_read_keywords(m)
+        existing_source = next(
+            (mo.group(1).lower() for kw in raw_kws if (mo := _SOURCE_KEYWORD_RE.match(kw.strip()))),
+            None,
+        )
+        if existing_source:
             raise ProcessError(
-                f'{m.name} already carries SOURCE: {existing.upper()}; the set looks '
+                f'{m.name} already carries SOURCE: {existing_source.upper()}; the set looks '
                 'partly processed. Attach the rest with --more instead.'
             )
+        existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+        per_member_new_people[m] = [p for p in (people or []) if p not in existing_pids]
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     ordered = [primary] + [m for m in members if m != primary]
@@ -1438,8 +1548,9 @@ def process_photo_group(
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else primary.name),
+        source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name if sidecar else primary.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        people=people or None,
     )
 
     if dry_run:
@@ -1447,6 +1558,8 @@ def process_photo_group(
         for m in ordered:
             tag = 'primary' if m == primary else _variation_role_copy(m, False)[0]
             print(f'[dry-run] Would embed SOURCE: {sid} in {m.name} ({tag}, no rename)')
+        if people:
+            print(f'[dry-run] people: {", ".join(people)} (keyword on every member)')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
@@ -1455,7 +1568,7 @@ def process_photo_group(
     embedded: list[Path] = []
     try:
         for m in ordered:
-            err = _run_exiftool_embed_source(m, sid)
+            err = _run_exiftool_embed_source(m, sid, extra_keywords=per_member_new_people[m] or None)
             if err is not None:
                 raise RuntimeError(f'exiftool could not embed SOURCE keyword in {m.name}: {err}')
             embedded.append(m)
@@ -1470,7 +1583,7 @@ def process_photo_group(
             pass
         for m in reversed(embedded):
             try:
-                _run_exiftool_remove_source(m, sid)
+                _run_exiftool_remove_source(m, sid, extra_keywords=per_member_new_people[m] or None)
             except RuntimeError:
                 pass
         print(f'ERROR: processing the variation set failed, rolled back: {e}', file=sys.stderr)
@@ -1480,6 +1593,8 @@ def process_photo_group(
     for m in ordered:
         tag = 'primary' if m == primary else _variation_role_copy(m, False)[0]
         print(f'Embedded SOURCE: {sid} in {m.name} ({tag}, not renamed)')
+    if people:
+        print(f'Tagged people: {", ".join(people)} (on all {len(members)} files)')
     print(f'Scaffolded {_rel(record_path, archive_root)} with {len(members)} files')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
@@ -1493,7 +1608,9 @@ def _process_variation_set(
     *,
     slug: str | None,
     title: str | None,
+    source_date: str | None,
     dry_run: bool,
+    people: list[str] | None = None,
 ) -> int:
     """Surface a variation set and process it per the human's one/separate/skip choice.
 
@@ -1506,7 +1623,8 @@ def _process_variation_set(
     members = sorted(members)
     if len(members) == 1:
         return process_photo(archive_root, fha_config, members[0],
-                             slug=slug, title=title, dry_run=dry_run)
+                             slug=slug, title=title, source_date=source_date,
+                             dry_run=dry_run, people=people)
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     letter, desc = _batch_type(members)
@@ -1524,12 +1642,14 @@ def _process_variation_set(
                      '[one / separate / skip]: ').strip().lower()
     if answer.startswith('one') or answer == 'o':
         return process_photo_group(archive_root, fha_config, members,
-                                   slug=slug, title=title, dry_run=dry_run)
+                                   slug=slug, title=title, source_date=source_date,
+                                   dry_run=dry_run, people=people)
     if answer.startswith('sep'):
         rc = EXIT_CLEAN
         for m in members:
             rc = max(rc, process_photo(archive_root, fha_config, m,
-                                       slug=None, title=None, dry_run=dry_run))
+                                       slug=None, title=None, source_date=source_date,
+                                       dry_run=dry_run, people=people))
         return rc
     print('Skipped — deferred to a later session.')
     return EXIT_CLEAN
@@ -1568,7 +1688,9 @@ def process_folder(
     fha_config: dict,
     folder: Path,
     *,
+    source_date: str | None,
     dry_run: bool,
+    people: list[str] | None = None,
 ) -> int:
     """M7.3: triage a folder's unprocessed photos, then process selected groups.
 
@@ -1617,7 +1739,8 @@ def process_folder(
     for idx in chosen:
         members = scored[idx]['members']
         rc = max(rc, _process_variation_set(
-            archive_root, fha_config, members, slug=None, title=None, dry_run=dry_run))
+            archive_root, fha_config, members, slug=None, title=None,
+            source_date=source_date, dry_run=dry_run, people=people))
     return rc
 
 
@@ -1626,6 +1749,7 @@ def process_bundle(
     fha_config: dict,
     folder: Path,
     *,
+    source_date: str | None,
     dry_run: bool,
 ) -> int:
     """M7.4: dissolve a `notes.md` bundle folder into one source (SPEC §12.1).
@@ -1679,23 +1803,26 @@ def process_bundle(
         names = ', '.join(missing_hints)
         raise ProcessError(f'bundle notes contain file hints for missing assets: {names}.')
 
-    source_type = _DEFAULT_DOCUMENT_TYPE
-    hinted_type = sidecar_meta.get('source_type')
-    if hinted_type:
-        hinted_type = str(hinted_type)
-        if hinted_type not in SOURCE_TYPES:
-            raise ProcessError(
-                f"{notes_path.name} hints unknown source_type {hinted_type!r}; "
-                'fix the notes before dissolving the bundle.'
-            )
-        source_type = hinted_type
-
     final_title = str(sidecar_meta['title']) if sidecar_meta.get('title') \
         else _slugify(folder.name).replace('-', ' ')
     final_slug = _derive_slug(None, final_title, folder)
 
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     documents_root = resolve_path('documents', fha_config, archive_root)
+    asset_kinds = {a: classify_asset(a, fha_config, archive_root) for a in assets}
+
+    source_type = _DEFAULT_DOCUMENT_TYPE
+    hinted_type = sidecar_meta.get('source_type')
+    if hinted_type:
+        hinted_type = str(hinted_type)
+        if hinted_type not in SOURCE_TYPES:
+            raise ProcessError(
+                f"{notes_path.name} hints {format_source_type_error(hinted_type)} "
+                'Fix the notes before dissolving the bundle.'
+            )
+        source_type = hinted_type
+    elif asset_kinds and all(kind == 'photo' for kind in asset_kinds.values()):
+        source_type = _PHOTO_SOURCE_TYPE
 
     hinted_primary = [
         a for a in assets
@@ -1708,7 +1835,7 @@ def process_bundle(
 
     # Primary: honor an explicit stub hint, else prefer the plain photo scan,
     # otherwise the first asset (sorted).
-    photo_assets = [a for a in assets if classify_asset(a, fha_config, archive_root) == 'photo']
+    photo_assets = [a for a in assets if asset_kinds[a] == 'photo']
     if hinted_primary:
         primary = hinted_primary[0]
     elif photo_assets:
@@ -1722,7 +1849,7 @@ def process_bundle(
     # collision is caught (and previewed) before any move happens.
     plan = []  # each: {src, kind, dest, embed(bool), entry}
     for asset in assets:
-        kind = classify_asset(asset, fha_config, archive_root)
+        kind = asset_kinds[asset]
         is_primary = asset == primary
         hint = file_hints.get(asset.name, {})
         if kind == 'photo':
@@ -1778,7 +1905,7 @@ def process_bundle(
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_source_date(sidecar_meta, notes_path.name),
+        source_date=source_date or _sidecar_source_date(sidecar_meta, notes_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -2076,8 +2203,16 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'photos are always source_type photo')
     p.add_argument('--title', metavar='TITLE', help='Source title (also seeds the slug)')
     p.add_argument('--slug', metavar='SLUG', help='Explicit filename slug')
+    p.add_argument('--date', metavar='DATE', dest='source_date',
+                   help="Source date, e.g. 1880, 1880-06-15, or 'about 1880'")
     p.add_argument('--more', nargs=2, metavar=('FILE', 'ROLE'),
                    help='Attach FILE to the existing source as ROLE[:copy]')
+    p.add_argument('--people', metavar='P-IDS',
+                   help='Comma-separated P-ids of people in this photo — e.g. '
+                        '"P-de957bcda1,P-ab3c8f0e12". Writes each as a bare keyword '
+                        'in the photo file and populates the source record\'s people: '
+                        'list. Photos only; use `fha photoindex tag-person` to tag '
+                        'photos already processed.')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -2102,6 +2237,33 @@ def _run_process(args: argparse.Namespace) -> int:
         return EXIT_ERRORS
 
     dry_run = bool(getattr(args, 'dry_run', False))
+    source_date = getattr(args, 'source_date', None)
+    normalized_source_date = normalize_date(source_date) if source_date else None
+    if source_date and normalized_source_date is None:
+        print(f'ERROR: {format_edtf_error(source_date, field="--date")}', file=sys.stderr)
+        return EXIT_ERRORS
+    source_date = normalized_source_date
+    if source_date and args.more:
+        print(
+            'ERROR: --date sets the source date while processing a new source. '
+            'With --more, edit the existing source record instead.',
+            file=sys.stderr,
+        )
+        return EXIT_ERRORS
+
+    # Parse --people early so a bad P-id fails fast (before any file I/O).
+    try:
+        people = _parse_people_ids(getattr(args, 'people', None), archive_root)
+    except ProcessError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_ERRORS
+    if people and args.more:
+        print(
+            'ERROR: --people is for new sources. With --more, use '
+            '`fha photoindex tag-person` to add people to already-processed photos.',
+            file=sys.stderr,
+        )
+        return EXIT_ERRORS
 
     # Folder modes (BUILD.md M7.3/M7.4): a folder holding a bare notes.md is a
     # source-stub bundle that dissolves into one source; any other folder is a
@@ -2111,10 +2273,21 @@ def _run_process(args: argparse.Namespace) -> int:
         if args.more:
             print('ERROR: --more attaches a single file, not a folder.', file=sys.stderr)
             return EXIT_ERRORS
+        if people:
+            print('ERROR: --people targets a specific photo. For a folder, process each '
+                  'photo individually with --people, or tag after processing with '
+                  '`fha photoindex tag-person`.', file=sys.stderr)
+            return EXIT_ERRORS
         try:
             if (file_path / 'notes.md').is_file():
-                return process_bundle(archive_root, fha_config, file_path, dry_run=dry_run)
-            return process_folder(archive_root, fha_config, file_path, dry_run=dry_run)
+                return process_bundle(
+                    archive_root, fha_config, file_path,
+                    source_date=source_date, dry_run=dry_run,
+                )
+            return process_folder(
+                archive_root, fha_config, file_path,
+                source_date=source_date, dry_run=dry_run,
+            )
         except ProcessError as e:
             print(f'ERROR: {e}', file=sys.stderr)
             return EXIT_ERRORS
@@ -2138,7 +2311,7 @@ def _run_process(args: argparse.Namespace) -> int:
                 return process_pointer_only(
                     archive_root, fha_config, file_path,
                     source_type=args.source_type, slug=args.slug, title=args.title,
-                    dry_run=dry_run,
+                    source_date=source_date, dry_run=dry_run,
                 )
             sidecar_path = file_path
             file_path = companion
@@ -2180,19 +2353,27 @@ def _run_process(args: argparse.Namespace) -> int:
                 siblings = _photo_variation_siblings(file_path)
                 rc = _process_variation_set(
                     archive_root, fha_config, siblings,
-                    slug=args.slug, title=args.title, dry_run=dry_run,
+                    slug=args.slug, title=args.title, source_date=source_date,
+                    dry_run=dry_run, people=people or None,
                 )
             else:
-                source_type = (args.source_type or _DEFAULT_DOCUMENT_TYPE).strip().lower()
-                if source_type not in SOURCE_TYPES:
-                    print(f'ERROR: unknown source type {source_type!r}.', file=sys.stderr)
+                if people:
+                    print('ERROR: --people is for photo sources only. '
+                          'To record people in a document source, edit its `people:` '
+                          'field directly after processing.',
+                          file=sys.stderr)
                     rc = EXIT_ERRORS
                 else:
-                    rc = process_document(
-                        archive_root, fha_config, file_path,
-                        source_type=source_type, slug=args.slug, title=args.title,
-                        dry_run=dry_run,
-                    )
+                    source_type = (args.source_type or _DEFAULT_DOCUMENT_TYPE).strip().lower()
+                    if source_type not in SOURCE_TYPES:
+                        print(f'ERROR: {format_source_type_error(source_type, where="--type")}', file=sys.stderr)
+                        rc = EXIT_ERRORS
+                    else:
+                        rc = process_document(
+                            archive_root, fha_config, file_path,
+                            source_type=source_type, slug=args.slug, title=args.title,
+                            source_date=source_date, dry_run=dry_run,
+                        )
         if rc != EXIT_CLEAN and relocate_undo is not None:
             relocate_undo()
         return rc

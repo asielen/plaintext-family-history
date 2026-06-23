@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
+    archive_root_missing_message,
     find_archive_root,
     load_fha_yaml,
     mint_ids,
@@ -206,7 +207,7 @@ def _run_stubs(args: argparse.Namespace) -> int:
     else:
         archive_root = find_archive_root()
         if archive_root is None:
-            print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
+            print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
             return EXIT_FAILURE
 
     dry_run = getattr(args, 'dry_run', False)

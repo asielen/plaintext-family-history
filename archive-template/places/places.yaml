@@ -1,4 +1,4 @@
-# Place registry — one record per physical location (SPEC §15). Empty to start.
+# Place registry - one record per physical location (SPEC §15). Empty to start.
 # Example shape:
 # - id: L-xxxxxxxxxx
 #   name: Springfield

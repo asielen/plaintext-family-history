@@ -8,6 +8,8 @@ Run: python -m unittest tests.test_process -v   (from the repo root)
 """
 
 import os
+import contextlib
+import io
 import shutil
 import sys
 import tempfile
@@ -18,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import process
-from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, read_record
+from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, load_fha_yaml, read_record
 
 
 def _make_archive(tmp: Path) -> Path:
@@ -52,17 +54,24 @@ class FakePhotoStore:
             raise RuntimeError('simulated exiftool read failure')
         return list(self.keywords.get(str(file_path), []))
 
-    def embed(self, file_path: Path, s_id: str) -> str | None:
+    def embed(
+        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+    ) -> str | None:
         key = str(file_path)
         if key in self.fail_paths:
             return 'simulated exiftool failure'
-        self.keywords.setdefault(key, []).append(f'SOURCE: {s_id}')
+        kws = self.keywords.setdefault(key, [])
+        kws.append(f'SOURCE: {s_id}')
+        for kw in extra_keywords or []:
+            kws.append(kw)
         return None
 
-    def remove(self, file_path: Path, s_id: str) -> str | None:
+    def remove(
+        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+    ) -> str | None:
         key = str(file_path)
-        keyword = f'SOURCE: {s_id}'
-        self.keywords[key] = [kw for kw in self.keywords.get(key, []) if kw != keyword]
+        to_remove = {f'SOURCE: {s_id}'} | set(extra_keywords or [])
+        self.keywords[key] = [kw for kw in self.keywords.get(key, []) if kw not in to_remove]
         return None
 
 
@@ -91,6 +100,81 @@ class ProcessTestCase(unittest.TestCase):
         process._prompt = self._orig_prompt
         self._tmp.cleanup()
 
+    def test_cli_unknown_source_type_teaches_valid_vocabulary(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'loose.pdf'
+        asset.write_bytes(b'%PDF-1.4')
+        args = type('Args', (), {
+            'root': str(self.archive),
+            'file': str(asset),
+            'source_type': 'bogus',
+            'title': None,
+            'slug': None,
+            'more': None,
+            'dry_run': True,
+        })()
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = process._run_process(args)
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('source category', text)
+        self.assertIn('census', text)
+        self.assertIn('photo', text)
+        self.assertNotIn('Traceback', text)
+
+    def test_sidecar_source_date_error_shows_archive_date_examples(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'loose.pdf'
+        asset.write_bytes(b'%PDF-1.4')
+        sidecar = asset.with_name('loose.notes.md')
+        sidecar.write_text('---\nsource_date: last summer\n---\n', encoding='utf-8')
+
+        with self.assertRaises(process.ProcessError) as ctx:
+            process.process_document(
+                self.archive, load_fha_yaml(self.archive, strict=True), asset,
+                source_type='census', slug=None, title=None, source_date=None,
+                dry_run=True,
+            )
+
+        text = str(ctx.exception)
+        self.assertIn('date the archive can read', text)
+        self.assertIn('1880-06-15', text)
+
+    def test_cli_invalid_date_teaches_archive_date_examples(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'loose.pdf'
+        asset.write_bytes(b'%PDF-1.4')
+        args = type('Args', (), {
+            'root': str(self.archive),
+            'file': str(asset),
+            'source_type': 'census',
+            'source_date': 'last summer',
+            'title': None,
+            'slug': None,
+            'more': None,
+            'dry_run': True,
+        })()
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = process._run_process(args)
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('date the archive can read', text)
+        self.assertIn('1880-06-15', text)
+        self.assertNotIn('Traceback', text)
+
+    def test_cli_loose_date_is_normalized_into_scaffold(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'loose-date.txt'
+        asset.write_text('x', encoding='utf-8')
+
+        rc = self._run([str(asset), '--date', 'about 1880'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['source_date'], '1880~')
+
     def _install_photo_store(self) -> FakePhotoStore:
         store = FakePhotoStore()
         process._run_exiftool_read_keywords = store.read
@@ -109,6 +193,14 @@ class ProcessTestCase(unittest.TestCase):
     def _write_temp_record(self, text: str) -> Path:
         path = self.tmp / 'scratch_record.md'
         path.write_text(text, encoding='utf-8')
+        return path
+
+    def _write_person(self, pid: str, stem: str = 'hartley__person') -> Path:
+        path = self.archive / 'people' / f'{stem}_{pid}.md'
+        path.write_text(
+            f'---\nid: {pid}\nname: Test Person\nliving: unknown\n---\n',
+            encoding='utf-8',
+        )
         return path
 
     # ── M7.1 documents ────────────────────────────────────────────────────────
@@ -533,7 +625,7 @@ class ProcessTestCase(unittest.TestCase):
             'title: Hinted Source\n'
             'citation: A custom citation string.\n'
             'repository: county archive\n'
-            'source_date: 1900-01\n'
+            'source_date: around 1900\n'
             'provenance: found in a shoebox\n'
             '---\n'
             'body notes\n',
@@ -544,7 +636,7 @@ class ProcessTestCase(unittest.TestCase):
         record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
         rec = read_record(record)
         self.assertEqual(rec['meta']['repository'], 'county archive')
-        self.assertEqual(rec['meta']['source_date'], '1900-01')
+        self.assertEqual(rec['meta']['source_date'], '1900~')
         self.assertEqual(rec['meta']['provenance'], 'found in a shoebox')
         self.assertIn('A custom citation string.', record.read_text(encoding='utf-8'))
 
@@ -840,8 +932,8 @@ class ProcessTestCase(unittest.TestCase):
         rec = read_record(record)
         self.assertTrue(rec['meta']['restricted'])
 
-    def test_sidecar_pointer_only_rejects_invalid_source_date(self) -> None:
-        sidecar = self.archive / 'documents' / 'census' / 'bad-date.notes.md'
+    def test_sidecar_pointer_only_normalizes_month_name_source_date(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'month-date.notes.md'
         sidecar.write_text(
             '---\nasset_elsewhere: true\nsource_date: June 1880\n'
             'external_links:\n  - url: https://x.test/y\n'
@@ -849,21 +941,20 @@ class ProcessTestCase(unittest.TestCase):
             encoding='utf-8',
         )
         rc = self._run([str(sidecar)])
-        self.assertEqual(rc, EXIT_ERRORS)
-        self.assertTrue(sidecar.exists())
-        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['source_date'], '1880-06')
 
-    def test_document_rejects_invalid_sidecar_source_date(self) -> None:
-        asset = self.archive / 'documents' / 'census' / 'with-bad-date.txt'
+    def test_document_normalizes_month_name_sidecar_source_date(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'with-month-date.txt'
         asset.write_text('x', encoding='utf-8')
-        sidecar = self.archive / 'documents' / 'census' / 'with-bad-date.notes.md'
+        sidecar = self.archive / 'documents' / 'census' / 'with-month-date.notes.md'
         sidecar.write_text('---\nsource_date: June 1880\n---\nbody\n', encoding='utf-8')
 
         rc = self._run([str(asset)])
-        self.assertEqual(rc, EXIT_ERRORS)
-        self.assertTrue(asset.exists())
-        self.assertTrue(sidecar.exists())
-        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['source_date'], '1880-06')
 
     def test_sidecar_people_hint_surfaces_in_notes(self) -> None:
         asset = self.archive / 'documents' / 'census' / 'people-hint.txt'
@@ -893,6 +984,108 @@ class ProcessTestCase(unittest.TestCase):
     def test_missing_file(self) -> None:
         rc = self._run([str(self.archive / 'documents' / 'nope.txt')])
         self.assertEqual(rc, EXIT_ERRORS)
+
+    # ── M7.2b --people flag ────────────────────────────────────────────────────
+
+    def test_photo_people_embeds_pid_keywords_and_populates_record(self) -> None:
+        store = self._install_photo_store()
+        self._write_person('P-de957bcda1')
+        self._write_person('P-ab3c8f0e12', 'hartley__second')
+        photo = self.archive / 'photos' / '1880' / 'family.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+
+        rc = self._run([str(photo), '--people', 'P-de957bcda1,P-ab3c8f0e12'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        kws = store.read(photo)
+        self.assertIn('P-de957bcda1', kws)
+        self.assertIn('P-ab3c8f0e12', kws)
+        self.assertTrue(any(kw.startswith('SOURCE: S-') for kw in kws))
+
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        rec = read_record(record)
+        people = rec['meta'].get('people', [])
+        self.assertIn('P-de957bcda1', people)
+        self.assertIn('P-ab3c8f0e12', people)
+
+    def test_photo_people_dry_run_shows_people_without_writing(self) -> None:
+        store = self._install_photo_store()
+        self._write_person('P-de957bcda1')
+        photo = self.archive / 'photos' / '1880' / 'preview-people.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(photo), '--people', 'P-de957bcda1', '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('P-de957bcda1', out.getvalue())
+        self.assertEqual(store.read(photo), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_photo_people_rollback_removes_pid_keywords_on_scaffold_failure(self) -> None:
+        """If record write fails after embedding, both SOURCE and P-id keywords roll back."""
+        store = self._install_photo_store()
+        self._write_person('P-de957bcda1')
+        photo = self.archive / 'photos' / '1880' / 'rollback.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+
+        # Block the record dir by placing a file at sources/photos so mkdir fails.
+        (self.archive / 'sources' / 'photos').write_text('blocker', encoding='utf-8')
+
+        rc = self._run([str(photo), '--people', 'P-de957bcda1'])
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertEqual(store.read(photo), [])  # SOURCE and P-id keywords rolled back
+
+    def test_photo_people_invalid_pid_rejected_before_writes(self) -> None:
+        store = self._install_photo_store()
+        photo = self.archive / 'photos' / '1880' / 'bad-pid.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(photo), '--people', 'NotAnId'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('NotAnId', err.getvalue())
+        self.assertIn('P-id', err.getvalue())
+        self.assertEqual(store.read(photo), [])  # no writes attempted
+
+    def test_photo_people_unknown_valid_pid_rejected_before_writes(self) -> None:
+        store = self._install_photo_store()
+        photo = self.archive / 'photos' / '1880' / 'unknown-person.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(photo), '--people', 'P-de957bcda1'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('not a known person', err.getvalue())
+        self.assertEqual(store.read(photo), [])
+
+    def test_photo_people_rejected_with_more(self) -> None:
+        store = self._install_photo_store()
+        self._write_person('P-de957bcda1')
+        photo = self.archive / 'photos' / '1880' / 'existing.jpg'
+        extra = self.archive / 'photos' / '1880' / 'existing-back.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+        extra.write_bytes(b'\xff\xd8\xff')
+        store.keywords[str(photo)] = ['SOURCE: S-aaaaaaaaaa']
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(photo), '--people', 'P-de957bcda1', '--more', str(extra), 'back'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--more', err.getvalue())
+
+    def test_photo_people_rejected_for_document(self) -> None:
+        self._write_person('P-de957bcda1')
+        doc = self.archive / 'documents' / 'census' / 'letter.txt'
+        doc.write_text('x', encoding='utf-8')
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run([str(doc), '--people', 'P-de957bcda1'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('photo', err.getvalue().lower())
 
     # ── M7.3 variation detection (single photo) ────────────────────────────────
 
@@ -1160,6 +1353,24 @@ class ProcessTestCase(unittest.TestCase):
         sid = record.stem.split('_')[-1]
         self.assertEqual(files[0]['copy'], 'b')
         self.assertTrue(files[0]['file'].endswith(f'-b-translation_{sid}.txt'))
+
+    def test_plain_photo_only_bundle_infers_photo_source_type(self) -> None:
+        store = self._install_photo_store()
+        bundle = self.archive / 'inbox' / 'grandma-rose-portrait'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text('Grandma Rose portrait, front and back.\n', encoding='utf-8')
+        (bundle / 'front.jpg').write_bytes(b'\xff\xd8\xff')
+        (bundle / 'back.jpg').write_bytes(b'\xff\xd8\xff')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['source_type'], 'photo')
+        self.assertTrue((self.archive / 'photos' / 'front.jpg').exists())
+        self.assertTrue((self.archive / 'photos' / 'back.jpg').exists())
+        self.assertEqual(len(store.read(self.archive / 'photos' / 'front.jpg')), 1)
 
     def test_bundle_refuses_role_hint_for_missing_file(self) -> None:
         bundle = self.archive / 'inbox' / 'missing-hint-bundle'

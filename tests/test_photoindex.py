@@ -124,7 +124,7 @@ class PhotoindexTests(unittest.TestCase):
     def test_negative_with_copy_letter_is_stored_at_stem_level(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             cache_dir = Path(d) / '.cache'
-            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(cache_dir)
             try:
                 for path in ('portrait_1880b-negative.jpg', 'portrait_1880-back.jpg'):
                     conn.execute(
@@ -151,7 +151,7 @@ class PhotoindexTests(unittest.TestCase):
         # split into a SOURCE: group and a separate STEM: group.
         with tempfile.TemporaryDirectory() as d:
             cache_dir = Path(d) / '.cache'
-            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            conn, _needs_face_backfill, _rebuilt_reason = photoindex._get_db(cache_dir)
             try:
                 conn.execute(
                     'INSERT INTO photos(path, mtime, size, source_id, group_id, '
@@ -300,6 +300,32 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(status, 'stale')
             self.assertGreater(lag, 0)
 
+    def test_photoindex_status_is_stale_after_source_people_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths
+            ]
+            photoindex.run_scan(archive, fha_config)
+
+            status, _lag = photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'fresh')
+
+            sources_dir = archive / 'sources' / 'photos'
+            sources_dir.mkdir(parents=True, exist_ok=True)
+            source_record = sources_dir / 'wedding_1902_S-123456789a.md'
+            source_record.write_text(
+                '---\ntitle: Wedding 1902\npeople:\n  - P-de957bcda1\n---\n',
+                encoding='utf-8',
+            )
+            photos_mtime = (archive / '.cache' / 'photos.sqlite').stat().st_mtime
+            os.utime(source_record, (photos_mtime + 10, photos_mtime + 10))
+
+            status, lag = photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'stale')
+            self.assertGreater(lag, 0)
+
     def test_row_to_photo_falls_back_to_xmp_description_for_caption(self) -> None:
         with_caption = photoindex._row_to_photo(
             {'Caption-Abstract': 'IPTC caption', 'Description': 'XMP description'}, 0.0, 0,
@@ -412,6 +438,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
+                    PRAGMA user_version=1;
+                    CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '1');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -484,6 +513,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
+                    PRAGMA user_version=1;
+                    CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '1');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -544,6 +576,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
+                    PRAGMA user_version=1;
+                    CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '1');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -632,6 +667,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
+                    PRAGMA user_version=1;
+                    CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '1');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -2606,6 +2644,144 @@ class PhotoindexTests(unittest.TestCase):
                     "AND person_ref='p-de957bcda1'"
                 ).fetchone()
                 self.assertEqual(row[0], 'pid-keyword')
+            finally:
+                conn.close()
+
+
+    # ── source-people resolution ───────────────────────────────────────────────
+
+    def test_source_people_resolution_from_source_record(self) -> None:
+        """A photo with source_id pointing to a record with people: list gets
+        a source-people entry in photo_people even with no P-id keyword."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {},
+                    'portrait_1880-back.jpg': {},
+                    # wedding carries SOURCE keyword so source_id gets populated
+                    'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']},
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, fha_config)
+
+            # Create source record with people: list
+            sources_dir = archive / 'sources'
+            sources_dir.mkdir(exist_ok=True)
+            source_record = sources_dir / 'wedding_1902_S-123456789a.md'
+            source_record.write_text(
+                '---\ntitle: Wedding 1902\npeople:\n  - P-de957bcda1\n---\n',
+                encoding='utf-8',
+            )
+
+            # Re-run scan — photos unchanged (mtime), but _rebuild_photo_people re-reads source files.
+            photoindex.run_scan(archive, fha_config, full=True)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT person_ref, via FROM photo_people "
+                    "WHERE path LIKE '%wedding_1902.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row, 'Expected a photo_people entry for wedding_1902.jpg')
+                self.assertEqual(row[0], 'p-de957bcda1')
+                self.assertEqual(row[1], 'source-people')
+            finally:
+                conn.close()
+
+    def test_source_people_authoritative_without_face_regions(self) -> None:
+        """source-people resolves even when photo_face_regions is empty (no XMP regions)."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                # wedding has no RegionInfo — no face regions at all
+                rows = {
+                    'portrait_1880.jpg': {},
+                    'portrait_1880-back.jpg': {},
+                    'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']},
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, fha_config)
+
+            sources_dir = archive / 'sources'
+            sources_dir.mkdir(exist_ok=True)
+            (sources_dir / 'wedding_1902_S-123456789a.md').write_text(
+                '---\ntitle: Wedding 1902\npeople:\n  - P-de957bcda1\n---\n',
+                encoding='utf-8',
+            )
+
+            photoindex.run_scan(archive, fha_config, full=True)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                # Verify no face regions for this photo
+                regions = conn.execute(
+                    "SELECT COUNT(*) FROM photo_face_regions WHERE path LIKE '%wedding_1902.jpg'"
+                ).fetchone()[0]
+                self.assertEqual(regions, 0)
+
+                # And source-people still resolves
+                row = conn.execute(
+                    "SELECT person_ref, via FROM photo_people "
+                    "WHERE path LIKE '%wedding_1902.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(row[0], 'p-de957bcda1')
+                self.assertEqual(row[1], 'source-people')
+            finally:
+                conn.close()
+
+    def test_source_people_not_duplicated_when_also_pid_keyword(self) -> None:
+        """If a P-id is already embedded as a keyword, source-people doesn't add a duplicate."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {},
+                    'portrait_1880-back.jpg': {},
+                    # Both SOURCE keyword AND the P-id keyword already embedded
+                    'wedding_1902.jpg': {
+                        'Keywords': ['SOURCE: S-123456789a', 'P-de957bcda1'],
+                    },
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, fha_config)
+
+            sources_dir = archive / 'sources'
+            sources_dir.mkdir(exist_ok=True)
+            (sources_dir / 'wedding_1902_S-123456789a.md').write_text(
+                '---\ntitle: Wedding 1902\npeople:\n  - P-de957bcda1\n---\n',
+                encoding='utf-8',
+            )
+
+            photoindex.run_scan(archive, fha_config, full=True)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                rows = conn.execute(
+                    "SELECT person_ref, via FROM photo_people "
+                    "WHERE path LIKE '%wedding_1902.jpg'"
+                ).fetchall()
+                # Only one row — pid-keyword wins (same priority, deduped by _resolve)
+                person_refs = [row[0] for row in rows]
+                self.assertEqual(person_refs.count('p-de957bcda1'), 1)
+                # The pid-keyword tier wins (not source-people) since pid-keyword is resolved first
+                self.assertEqual(rows[0][1], 'pid-keyword')
             finally:
                 conn.close()
 

@@ -1,105 +1,210 @@
-# Getting Started
+# Getting Started - Your First Day
 
-Plainfile is operated with an AI coding agent.
-This walks you from a fresh clone to your first processed record.
+**Who this is for:** a genealogist setting up their own Plainfile archive and filing a first
+document. No programming required - you'll work with an AI assistant that runs the commands for you.
 
-## Prerequisites
+- **Were you sent here to hand over photos or documents?** You don't need any of this - see
+  [`CONTRIBUTING_SOURCES.md`](CONTRIBUTING_SOURCES.md) instead.
+- **Do you want to build or extend the `fha` tools?** That's a different door - start at
+  [`../BUILD.md`](../BUILD.md), then [`../TOOLING.md`](../TOOLING.md).
+- **Did someone send you a zip of this project?** You can skip the download below and follow
+  [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md), then come back here for the walkthrough.
 
-- An AI coding agent that reads project instructions and runs shell commands. [Claude Code](https://www.anthropic.com/claude-code) is the reference; the spec is harness-agnostic (anything reading `AGENTS.md` works).
-- Python 3.10+ (the `fha` tools are Python; minimal dependencies).
-- `exiftool` for embedded photo/document metadata.
-- Optional: a photo library (Lightroom or similar) — it can live anywhere; `fha.yaml` maps to it.
+This page takes you from a blank machine to your first filed record. Two parts: a one-time
+**setup** (install three things), then a **five-minute walkthrough** (drop a scan in, get a
+suggested fact back, accept it). Take the setup slowly; do the walkthrough once and the daily
+rhythm is yours.
 
-## Step 1 — Read the spec
+---
 
-`SPEC.md` is the contract.
-Read it fully before building anything.
-The five record types, the claim lifecycle, and the four-layer model are the concepts everything else rests on. `TOOLING.md` is the implementation design; `AGENTS.md` is what the agent is allowed to do.
+## Part 1 - Set up your machine (one time)
 
-## Step 2 — Open the repo in your agent
+You install three things. After each one there's a "did it work?" check - a single command to
+run so you're never guessing. You run these checks in a **terminal**: the Command Prompt on
+Windows, or the Terminal app on Mac. Type the command, press Enter, and compare what you see to
+what's described.
 
-The agent reads `CLAUDE.md`, which defers to `AGENTS.md`, and now knows the rules: files are truth, AI suggestions enter a review queue, photos are never renamed, every fact cites a source.
-State your **mode** at the start of a session — `research`, `tool-building`, `migration`, or `spec-refinement`.
+### 1. Python (required)
 
-## Step 3 — Use (or extend) the tools
+Python is the engine the `fha` tools run on. It's free.
 
-Milestones 1–7 are complete: `fha lint`, `fha index`,
-`fha id`, `fha stubs`, `fha views` (timeline, sources-index, draft-queue, brackets, tree),
-`fha doctor`, `fha find` (including `--related` and `--text`), `fha photoindex`
-(scan/find/triage/report/reconcile/tag-person), `fha xref`, `fha cooccur`, `fha report`,
-`fha packet`, `fha places`, `fha gedcom`, `fha wikitree`, `fha process`,
-`fha capture`, and `fha convert-mining` are all implemented — see `tools/README.md` for the authoritative
-per-tool status table. Run them with Python 3.10+ from the repo root:
+1. Go to **<https://www.python.org/downloads/>** and click the big "Download Python" button.
+2. Run the installer. **On Windows, tick the box that says "Add Python to PATH"** before you
+   click Install - this one checkbox saves a lot of grief.
+
+**Did it work?** In a terminal, run:
 
 ```
-python tools/fha.py lint --root example-archive          # exits 1 (one W101 warning, no errors)
-python tools/fha.py id mint P                             # mint a fresh person ID
-python tools/fha.py index --root example-archive          # build the SQLite index
-python tools/fha.py views timeline --root example-archive --all-curated
-python tools/fha.py views sources-index --root example-archive --couple-folders
-python tools/fha.py views draft-queue --root example-archive --all-curated
-python tools/fha.py views brackets --root example-archive          # check W103/W110; add --fix to apply
-python tools/fha.py views tree P-de957bcda1 --mode descendants --root example-archive
-python tools/fha.py views tree P-de957bcda1 --mode ancestors --format dot --root example-archive
-python tools/fha.py doctor --root example-archive
-python tools/fha.py find P-de957bcda1 --root example-archive
-python tools/fha.py find --related P-de957bcda1 --root example-archive
-python tools/fha.py report --root example-archive
-python tools/fha.py packet P-de957bcda1 --root example-archive --no-photos
-python tools/fha.py places lint --root example-archive
-python tools/fha.py places candidates --root example-archive
-python tools/fha.py gedcom P-de957bcda1 --root example-archive
-python tools/fha.py wikitree P-de957bcda1 --root example-archive
-python tools/fha.py process inbox/example.pdf --root my-family-archive --dry-run
-echo "<html><title>Record</title></html>" | python tools/fha.py capture --root my-family-archive --url "https://example.com/record" --dry-run
+python --version
 ```
 
-To build further tools (site generation, installer/update tooling, …), declare
-**tool-building mode** and follow the build order in `BUILD.md` (which itself implements
-the design in `TOOLING.md` §15).
-Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.
+You should see something like `Python 3.12.1` (any 3.10 or newer is fine). If you see
+`command not found` or `not recognized`, Python isn't on your PATH - on Windows, re-run the
+installer and tick that box; on Mac, try `python3 --version` instead (Macs often use `python3`).
 
-## Step 4 — Start your own archive
+> Throughout this guide, where you see `python`, use `python3` if that's the one your Mac
+> answers to. Everything else is identical.
 
-> **Your archive is a separate, private repository from this public one.** This public
-> repo holds the spec and the generic tools; your real family records live in their own
-> private repo and never enter the public one. The only link between them is that your
-> archive *uses* the tools published here.
+### 2. exiftool (optional - only for photo features)
 
-**Setting up the two repos (one time):**
+`exiftool` lets the archive read and write the hidden metadata inside photos (so a scan can
+carry its own ID and keywords). **If you're starting with documents and notes, skip this for
+now** and add it later when you bring in a photo library. Nothing in the walkthrough below needs it.
 
-1. **This public repo** already exists once you've pushed it (spec + tools).
-2. **Your private archive:** on GitHub, create a new **private** repo (e.g. `my-family-archive`).
-Copy the contents of `archive-template/` into it as the starting skeleton.
-3. **Get the tools into your archive.** `fha install`/`fha update-tools` (TOOLING.md §13c) are
-   the planned vendoring path — copy the operating layer into a fresh archive once, then pull
-   improvements later, backing up anything you've customized and never touching your data — but
-   they are not built yet (milestone 9, `BUILD.md` M9.1–M9.2). Until then, vendor by hand:
-   copy `tools/` plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md` onto the skeleton from
-   `archive-template/`. There is no packaged `fha` install yet either; call it as
-   `python tools/fha.py <command>` from your clone of this repo (or add it to your `PATH`
-   yourself).
+When you're ready: download it from **<https://exiftool.org/>** (Windows users grab the
+"Windows Executable"; Mac users can use the installer there or `brew install exiftool`).
 
-**Then, the actual research:**
+**Did it work?** In a terminal:
 
-1. Copy the structure (`sources/`, `people/`, `places/`, `notes/`, and an `inbox/`).
-2. Point `fha.yaml` at where your photos and documents live.
-3. Drop a scan, a downloaded record, or a quick note into `inbox/` — optionally with a freeform `*.notes.md` beside it (a "source stub").
-4. Ask the agent to process it. It mints IDs, drafts sourced claims as `suggested`, and hands them to you for review. Nothing becomes a fact until you accept it.
+```
+exiftool -ver
+```
 
-## Step 5 — The daily loop
+A version number like `12.76` means you're set. An error just means it isn't installed yet -
+no harm, the rest still works.
 
-A session looks like: run the report (`fha report`, narrated by the future `today` skill —
-TOOLING.md §16), see your review queue and research leads, capture web records into the
-inbox when needed, process new inbox items, review drafted claims, and let the index
-regenerate. `fha process` handles single-file documents/photos, `--more`, folder triage,
-variation groups, and bundle dissolution; `fha capture` stages web source stubs. The
-workflow skills themselves still sit above the CLI, so review/report work is run directly
-or guided by the agent until those skills are implemented.
-Capture → file → process → review → report.
+### 3. Your AI assistant (required)
+
+Plainfile is *operated* through an AI coding assistant - it reads the project's rules, runs the
+`fha` commands, and drafts sourced facts for you to approve. You never have to memorize a
+command; you ask in plain English. The reference assistant is
+**[Claude Code](https://www.anthropic.com/claude-code)** - follow the install instructions on
+that page. (Any assistant that can read `AGENTS.md` and run shell commands works; Claude Code is
+the one this guide assumes.)
+
+**Did it work?** Open the project folder in your assistant and ask it something simple, like:
+
+> "What is this project, and what mode should we work in?"
+
+If it answers by describing a family-history archive and proposes **research mode**, the rules
+loaded correctly and you're ready. (It reads them from `CLAUDE.md` → `AGENTS.md` automatically -
+you don't have to point it at anything.)
+
+---
+
+## Part 2 - Make your archive
+
+Your family records live in **their own folder**, separate from the tools. The starting skeleton
+is already in this project at [`../archive-template/`](../archive-template/).
+
+1. **Copy the `archive-template` folder** and rename the copy to something like
+   `my-family-archive`. Keep it next to the `tools` folder so the tools can reach it. (If you
+   got here from a zip, [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md) shows the exact layout.)
+2. **Point it at your photos and documents.** Open `fha.yaml` inside your new folder in a plain
+   text editor and tell it where your files live. Copy-paste examples - a plain local folder, an
+   external drive, an existing photo library - are in
+   [`../archive-template/README.md`](../archive-template/README.md). If you're starting fresh
+   with nothing yet, the defaults are fine; leave it as-is.
+
+**Did it work?** From the project folder, run the linter against your archive (it checks that
+everything is shaped the way the spec expects):
+
+```
+python tools/fha.py lint --root my-family-archive
+```
+
+A fresh archive prints **`✓ No issues found.`** - that's a green light. (`--root` just tells the
+tools which archive folder to look at.)
+
+---
+
+## Part 3 - File your first document (five minutes)
+
+This is the whole loop in miniature: a scan goes in, a *suggested* fact comes back, you accept
+it. Nothing becomes a real fact until you say so.
+
+### Step 1 - Drop a scan in the inbox
+
+Find any scan, photo, or downloaded record - a birth certificate, an old photo, a screenshot
+from a genealogy site. Copy the file into the `inbox/` folder inside your archive. That's it;
+don't rename it.
+
+Optionally, drop a short note beside it describing what it is - copy
+`inbox/_TEMPLATE.notes.md`, rename the copy `notes.md`, and answer the questions in plain words
+("a photo of Grandma Rose's wedding, around 1955, found in a shoebox"). The assistant uses your
+note as hints. Skipping it is fine too.
+
+### Step 2 - Ask the assistant to process it
+
+In your assistant, say:
+
+> "Process the new item in my inbox."
+
+Behind the scenes it runs `fha process`, which mints a permanent ID for the source, files it
+into the right place, and creates a record for it. Then it reads the document, works out the
+names, dates, and places, and **drafts each one as a suggested fact** - never as a settled fact.
+It'll show you what it found.
+
+### Step 3 - Review and accept
+
+The assistant shows you each suggested fact next to the words in the document it came from.
+You're the judge. Reply in plain English:
+
+> "The birth date and the name are right. I'm not sure about the place - leave that one as a
+> suggestion for now."
+
+The ones you approve get marked **accepted** and stamped with today's date. The rest stay as
+suggestions until evidence or your memory settles them. **You are the only thing that turns a
+suggestion into a fact** - the assistant can never do it on its own.
+
+That's a filed record. You just did the core loop of the whole system.
+
+---
+
+## The daily rhythm
+
+Every working session is the same five beats:
+
+**Capture → file → process → review → report.**
+
+- **Capture** - pull a record off a genealogy site into the inbox (the assistant can do this
+  with `fha capture`), or just drop in a scan.
+- **File & process** - "process my inbox," as above.
+- **Review** - accept or set aside the suggested facts.
+- **Report** - ask "what should I look at today?" The assistant runs `fha report` and reads you
+  the review queue, gaps to fill, and research leads.
+
+You'll learn the handful of phrases you actually use within a week. You never need the command
+names - the assistant translates.
+
+---
+
+## Where things live (so nothing feels like a black box)
+
+| Folder | What's in it |
+|---|---|
+| `inbox/` | New material waiting to be processed - your "to-file" pile. |
+| `sources/` | One record per piece of evidence (a document, a photo, an interview). |
+| `people/` | The people in your tree, in numbered family-couple folders. |
+| `places/` | The list of places, with their locations. |
+| `notes/` | Research in progress and your running list of questions. |
+| `fha.yaml` | The one settings file - where your photos and documents live. |
+
+Everything is plain text or standard image files. You can open any of it with Notepad, TextEdit,
+or a photo viewer - no tool required, now or in fifty years. The tools only ever help; they're
+never the thing holding your archive together.
+
+---
 
 ## A note on the example archive
 
-`example-archive/` is a small, **entirely fictional** family (the Hartleys).
-It exists to give the linter and tools something spec-conformant to run against, and to show what processed records look like.
-None of it is real genealogy.
+The project ships with [`../example-archive/`](../example-archive/) - a small, **entirely
+fictional** family (the Hartleys). It's there so the tools have something real-shaped to run
+against, and so you can see what finished, processed records look like before you have many of
+your own. Poke around in it freely; none of it is real genealogy, so you can't break anything.
+
+---
+
+## What's next
+
+- A one-page **cheat sheet** of the commands and phrases you'll actually use:
+  [`CHEATSHEET.md`](CHEATSHEET.md) - print it and keep it by the keyboard.
+- Hit a snag? [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) maps each common "something went wrong"
+  to its exact fix.
+- New to filing research at all? [`FILING_CABINET.md`](FILING_CABINET.md) explains the whole
+  archive as the paper filing cabinet you already know.
+- Want the deeper "why" behind files-not-a-database and human-approved facts?
+  See [`FAQ.md`](FAQ.md).
+- Every term and ID type, defined: [`GLOSSARY.md`](GLOSSARY.md).
+- The full rulebook, if you ever want it: [`../SPEC.md`](../SPEC.md). You never *have* to read
+  it to use the archive - the assistant already follows it for you.
