@@ -1,0 +1,7 @@
+## Q: Where exactly was Mary Hartley born?
+person: Mary Hartley
+source: S001
+
+## Q: In which regiment did Thomas Hartley serve?
+person: Thomas Hartley
+source: S002

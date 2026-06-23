@@ -389,6 +389,7 @@ def _scaffold_text(
     repository: str | None = None,
     source_date: str | None = None,
     provenance: str | None = None,
+    external_links: list[dict] | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -399,12 +400,15 @@ def _scaffold_text(
     lists every file the source covers: a single document or photo is one
     entry; a variation group or dissolved bundle is many, with the primary
     carrying `is_primary: true` (photos) and each renamed document carrying its
-    `original_filename` provenance.
+    `original_filename` provenance. `file_entries` is empty for a TOOLING §13b
+    "pointer-only" source (no asset, `external_links` only), in which case the
+    `files:` block is omitted rather than written empty.
 
-    `restricted`/`citation`/`repository`/`source_date`/`provenance` are §14
-    fields a source-stub sidecar may hint (or, for `restricted`, that a `dna`
-    source_type always forces) — without passing them through, capture-written
-    metadata in the stub would be silently dropped when the stub is consumed.
+    `restricted`/`citation`/`repository`/`source_date`/`provenance`/
+    `external_links` are §14 fields a source-stub sidecar may hint (or, for
+    `restricted`, that a `dna` source_type always forces) — without passing
+    them through, capture-written metadata in the stub would be silently
+    dropped when the stub is consumed.
     """
     lines = [
         '---',
@@ -426,9 +430,20 @@ def _scaffold_text(
         lines.append('restricted: true')
     if provenance:
         lines.append(f'provenance: {_yaml_inline(provenance)}')
-    lines.append('files:')
-    for entry in file_entries:
-        lines += _render_scaffold_file_entry(entry)
+    if external_links:
+        lines.append('external_links:')
+        for link in external_links:
+            url = link.get('url') if isinstance(link, dict) else str(link)
+            if not url:
+                continue
+            lines.append(f'  - url: {_yaml_inline(str(url))}')
+            accessed = link.get('accessed') if isinstance(link, dict) else None
+            if accessed:
+                lines.append(f'    accessed: {_yaml_inline(str(accessed))}')
+    if file_entries:
+        lines.append('files:')
+        for entry in file_entries:
+            lines += _render_scaffold_file_entry(entry)
     lines += [
         f'created: {_today()}',
         '---',
@@ -557,13 +572,19 @@ def _is_sidecar_path(file_path: Path) -> bool:
     return file_path.name.lower().endswith('.notes.md')
 
 
-def _companion_for_sidecar(sidecar: Path) -> Path:
+def _companion_for_sidecar(sidecar: Path) -> Path | None:
     """Return the single same-stem asset paired with a source-stub sidecar.
 
     M7.1 documents the convenient entrypoint `fha process sample.notes.md`.
     The sidecar is not the original; it is the notes wrapper around exactly one
     companion asset named `sample.*`. Refusing none-or-many matches prevents the
     tool from minting a source for the wrong file.
+
+    Returns None, rather than raising, when the stub explicitly flags
+    `asset_elsewhere: true` — TOOLING §13b case (c), the "pointer-only" source
+    (no asset, citation + `external_links` only, flagged for later retrieval).
+    Any other no-companion case still refuses: an unflagged missing asset is
+    far more likely a mistake than a deliberate pointer-only capture.
     """
     stem = sidecar.name[:-len('.notes.md')]
     candidates = [
@@ -571,6 +592,9 @@ def _companion_for_sidecar(sidecar: Path) -> Path:
         if p.is_file() and p.name != sidecar.name and p.stem == stem
     ]
     if not candidates:
+        meta, _ = _read_sidecar(sidecar)
+        if _sidecar_flag(meta, 'asset_elsewhere'):
+            return None
         raise ProcessError(f'no companion asset found for source stub {sidecar.name}')
     if len(candidates) > 1:
         names = ', '.join(sorted(p.name for p in candidates))
@@ -581,12 +605,97 @@ def _companion_for_sidecar(sidecar: Path) -> Path:
     return candidates[0]
 
 
+def _relocate_from_inbox(
+    archive_root: Path,
+    fha_config: dict,
+    file_path: Path,
+    sidecar: Path | None,
+    *,
+    dry_run: bool,
+) -> tuple[Path, Path | None, object]:
+    """Move an inbox-staged asset (+ sidecar) into its documents/photos root.
+
+    `fha capture --asset` (and a hand-dropped file) stage in `inbox/`, but
+    `process_document`/`process_photo` require the asset already under the
+    configured root — that's the whole point of an inbox: every fha process
+    entrypoint should know how to file something out of it rather than making
+    the user move it by hand first. A no-op (returns the inputs unchanged, undo
+    `None`) when `file_path` isn't under the resolved inbox root.
+
+    The move is flat (same filename, no rename) into documents/ or photos/ —
+    `process_document` mints its own `{slug}_{S-id}` rename afterward; photos
+    are never renamed at all. Real moves happen with `Path.rename`, which is
+    atomic on the same filesystem; on `dry_run` nothing is touched and a
+    not-yet-existing destination path is returned so the caller's own preview
+    can still report the post-move root.
+
+    Returns `(file_path, sidecar, undo)`. This relocation runs *before*
+    `process_document`/`process_photo`'s own validation (e.g. the `dna`
+    source_type's documents/dna/ requirement) and their own transactions, so a
+    refusal downstream would otherwise leave the asset filed out of the inbox
+    even though the command failed overall. The caller must call `undo()` (a
+    no-arg callable, or `None` for the no-op case) whenever it reports the
+    relocated file's command as anything other than success.
+    """
+    inbox_root = resolve_path('inbox', fha_config, archive_root)
+    if not _is_under(file_path, inbox_root):
+        return file_path, sidecar, None
+
+    # A sidecar's `source_type` hint (e.g. `census`, `vital-record`) overrides
+    # the extension heuristic: a record image like `census.jpg` is a photo
+    # *extension* but the recipe/stub already knows it's a document-typed
+    # source, and filing it under photos/ would scaffold the wrong record type.
+    hinted_type = None
+    if sidecar is not None:
+        try:
+            sidecar_meta, _ = _read_sidecar(sidecar)
+            hinted_type = sidecar_meta.get('source_type')
+        except ProcessError:
+            pass  # downstream re-parse will raise the real error
+    if hinted_type:
+        kind = _PHOTO_SOURCE_TYPE if str(hinted_type) == _PHOTO_SOURCE_TYPE else 'document'
+    else:
+        kind = classify_asset(file_path, fha_config, archive_root)
+    dest_root = (
+        resolve_path(_PHOTO_DIR, fha_config, archive_root) if kind == 'photo'
+        else resolve_path('documents', fha_config, archive_root)
+    )
+    new_path = dest_root / file_path.name
+    new_sidecar = dest_root / sidecar.name if sidecar is not None else None
+    if new_path.exists():
+        raise ProcessError(f'destination already exists: {_rel(new_path, archive_root)}')
+    if new_sidecar is not None and new_sidecar.exists():
+        raise ProcessError(f'destination already exists: {_rel(new_sidecar, archive_root)}')
+
+    if dry_run:
+        print(f'[dry-run] Would move {file_path.name} out of inbox/ into '
+              f'{_rel(dest_root, archive_root)}/')
+        return new_path, new_sidecar, None
+
+    dest_root.mkdir(parents=True, exist_ok=True)
+    file_path.rename(new_path)
+    if sidecar is not None:
+        sidecar.rename(new_sidecar)
+    print(f'Moved {file_path.name} out of inbox/ into {_rel(dest_root, archive_root)}/')
+
+    def undo() -> None:
+        if new_path.exists():
+            new_path.rename(file_path)
+        if sidecar is not None and new_sidecar is not None and new_sidecar.exists():
+            new_sidecar.rename(sidecar)
+
+    return new_path, new_sidecar, undo
+
+
 def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     """Parse a stub sidecar into (hint frontmatter, prose body).
 
     The stub's optional frontmatter seeds record fields (title/source_type/
     repository hints); its prose body flows into the record's `## Notes`, since
     those notes are the starting point a reviewer reads (never accepted facts).
+    A `people:` hint (names the captured page showed, not yet resolved to
+    P-ids) has nowhere else to land in a §14 record, so it is folded into that
+    same prose rather than silently dropped when the sidecar is consumed.
 
     Raises ProcessError on malformed frontmatter rather than silently dropping
     it: the sidecar is consumed (deleted) on a successful run, so any citation/
@@ -600,6 +709,10 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     meta = rec.get('meta') or {}
     # Strip the frontmatter off the body; keep the prose the human wrote.
     body = (rec.get('body') or '').strip()
+    names = [str(n) for n in (meta.get('people') or []) if str(n).strip()]
+    if names:
+        hint = 'Captured people mentioned on source page (unreconciled): ' + ', '.join(names)
+        body = f'{body}\n\n{hint}' if body else hint
     return meta, body
 
 
@@ -609,9 +722,44 @@ def _sidecar_str(sidecar_meta: dict, key: str) -> str | None:
     return str(val) if val not in (None, '') else None
 
 
+def _sidecar_source_date(sidecar_meta: dict, sidecar_name: str) -> str | None:
+    """A sidecar's `source_date:` hint, validated as EDTF (or None).
+
+    Mirrors `fha capture`'s `--date`/recipe `source_date` validation — an
+    unvalidated hint copied straight into the scaffold would write a §14
+    record that immediately fails lint E014, with the stub already consumed
+    by the time the human sees the lint error.
+    """
+    source_date = _sidecar_str(sidecar_meta, 'source_date')
+    if source_date is not None and not is_valid_edtf(source_date):
+        raise ProcessError(
+            f'{sidecar_name} hints source_date {source_date!r}, which is not valid EDTF; '
+            'fix the sidecar before processing.'
+        )
+    return source_date
+
+
 def _sidecar_flag(sidecar_meta: dict, key: str) -> bool:
     """A sidecar hint field as a bool — feeds an optional §14 flag field."""
     return sidecar_meta.get(key) in (True, 'true')
+
+
+def _sidecar_external_links(sidecar_meta: dict) -> list[dict]:
+    """A sidecar's `external_links:` hint as a list of `{url, accessed}` dicts.
+
+    Mirrors `capture.py`'s `RecipeResult.external_links` shape so a captured
+    stub's links survive unchanged into the §14 record.
+    """
+    raw = sidecar_meta.get('external_links')
+    if not isinstance(raw, list):
+        return []
+    links = []
+    for item in raw:
+        if isinstance(item, dict) and item.get('url'):
+            links.append({'url': str(item['url']), 'accessed': item.get('accessed')})
+        elif isinstance(item, str) and item:
+            links.append({'url': item})
+    return links
 
 
 def _bundle_file_hints(sidecar_meta: dict) -> dict[str, dict]:
@@ -954,7 +1102,7 @@ def process_document(
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -991,6 +1139,88 @@ def process_document(
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
+    return EXIT_CLEAN
+
+
+def process_pointer_only(
+    archive_root: Path,
+    fha_config: dict,
+    sidecar: Path,
+    *,
+    source_type: str | None = None,
+    slug: str | None = None,
+    title: str | None = None,
+    dry_run: bool,
+) -> int:
+    """TOOLING §13b case (c): mint a source record with no asset.
+
+    Only reached when `_companion_for_sidecar` found no same-stem file *and*
+    the stub explicitly flags `asset_elsewhere: true` — citation +
+    `external_links` only, flagged for a later retrieval pass. Every other
+    no-companion case still refuses in `_companion_for_sidecar`.
+    """
+    sidecar_meta, notes_body = _read_sidecar(sidecar)
+    resolved_type = source_type or _DEFAULT_DOCUMENT_TYPE
+    if source_type is None and sidecar_meta.get('source_type'):
+        resolved_type = str(sidecar_meta['source_type'])
+    if resolved_type not in SOURCE_TYPES:
+        raise ProcessError(
+            f'unknown source_type {resolved_type!r} ({"--type" if source_type else sidecar.name}); '
+            'fix the sidecar (or pass --type explicitly) before processing.'
+        )
+    source_type = resolved_type
+
+    final_title = title or (
+        str(sidecar_meta['title']) if sidecar_meta.get('title')
+        else _slugify(sidecar.stem).replace('-', ' ')
+    )
+    external_links = _sidecar_external_links(sidecar_meta)
+    if not external_links:
+        raise ProcessError(
+            f'{sidecar.name} flags asset_elsewhere but has no external_links; '
+            'add at least one before processing.'
+        )
+
+    # DNA sources always carry restricted: true (SPEC §8.5.5, lint E017),
+    # same as process_document — a missing asset doesn't relax that rule.
+    restricted = source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted')
+
+    sid = _mint_one_source_id(archive_root)
+    final_slug = _derive_slug(slug, final_title, sidecar)
+    record_dir = archive_root / 'sources' / _record_subdir(source_type)
+    record_path = record_dir / f'{final_slug}_{sid}.md'
+    if record_path.exists():
+        raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
+
+    text = _scaffold_text(
+        sid, final_title, source_type, [],
+        notes_body=notes_body,
+        restricted=restricted,
+        citation=_sidecar_str(sidecar_meta, 'citation'),
+        repository=_sidecar_str(sidecar_meta, 'repository'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name),
+        provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        external_links=external_links,
+    )
+
+    if dry_run:
+        print(f'[dry-run] Would mint {sid}')
+        print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)} (no asset — asset-elsewhere)')
+        print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
+        return EXIT_CLEAN
+
+    try:
+        record_dir.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(text, encoding='utf-8')
+        sidecar.unlink()
+    except Exception as e:
+        record_path.unlink(missing_ok=True)
+        print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f'Minted {sid}')
+    print(f'Scaffolded {_rel(record_path, archive_root)} (asset-elsewhere; no companion file)')
+    print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
     return EXIT_CLEAN
 
 
@@ -1063,7 +1293,7 @@ def process_photo(
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -1208,7 +1438,7 @@ def process_photo_group(
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else primary.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -1548,7 +1778,7 @@ def process_bundle(
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, notes_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -1896,50 +2126,85 @@ def _run_process(args: argparse.Namespace) -> int:
         print(f'ERROR: not a regular file: {args.file}', file=sys.stderr)
         return EXIT_ERRORS
 
+    sidecar_path: Path | None = None
     try:
         if _is_sidecar_path(file_path):
-            file_path = _companion_for_sidecar(file_path)
+            companion = _companion_for_sidecar(file_path)
+            if companion is None:
+                if args.more:
+                    print('ERROR: --more attaches a file to a record with an asset; '
+                          'a pointer-only source has none.', file=sys.stderr)
+                    return EXIT_ERRORS
+                return process_pointer_only(
+                    archive_root, fha_config, file_path,
+                    source_type=args.source_type, slug=args.slug, title=args.title,
+                    dry_run=dry_run,
+                )
+            sidecar_path = file_path
+            file_path = companion
+        else:
+            sidecar_path = _find_sidecar(file_path)
+        file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
+            archive_root, fha_config, file_path, sidecar_path, dry_run=dry_run,
+        )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_ERRORS
 
+    # The relocation above runs before process_document/process_photo's own
+    # validation (e.g. dna's documents/dna/ requirement) and transactions, so
+    # any non-clean outcome below — refusal or rollback alike — must undo the
+    # move too, or a failed command would still leave the asset filed out of
+    # the inbox.
     try:
         if args.more:
             more_file = Path(args.more[0]).resolve()
             role_spec = args.more[1]
             if not more_file.is_file():
                 print(f'ERROR: --more file not found: {args.more[0]}', file=sys.stderr)
-                return EXIT_ERRORS
-            role, _, copy = role_spec.partition(':')
-            role = role.strip() or 'attachment'
-            copy = copy.strip() or None
-            return attach_more(archive_root, fha_config, file_path, more_file,
-                               role, copy, dry_run=dry_run)
-
-        kind = classify_asset(file_path, fha_config, archive_root)
-        if kind == 'photo':
-            # Tier-1 variation detection (M7.3): a single photo may have
-            # front/back/crop/copy siblings sitting beside it. _process_variation_set
-            # processes a lone photo straight through and only prompts when the
-            # directory actually holds a sibling set.
-            siblings = _photo_variation_siblings(file_path)
-            return _process_variation_set(
-                archive_root, fha_config, siblings,
-                slug=args.slug, title=args.title, dry_run=dry_run,
-            )
-        source_type = (args.source_type or _DEFAULT_DOCUMENT_TYPE).strip().lower()
-        if source_type not in SOURCE_TYPES:
-            print(f'ERROR: unknown source type {source_type!r}.', file=sys.stderr)
-            return EXIT_ERRORS
-        return process_document(
-            archive_root, fha_config, file_path,
-            source_type=source_type, slug=args.slug, title=args.title, dry_run=dry_run,
-        )
+                rc = EXIT_ERRORS
+            else:
+                role, _, copy = role_spec.partition(':')
+                role = role.strip() or 'attachment'
+                copy = copy.strip() or None
+                rc = attach_more(archive_root, fha_config, file_path, more_file,
+                                  role, copy, dry_run=dry_run)
+        else:
+            kind = classify_asset(file_path, fha_config, archive_root)
+            if kind == 'photo':
+                # Tier-1 variation detection (M7.3): a single photo may have
+                # front/back/crop/copy siblings sitting beside it.
+                # _process_variation_set processes a lone photo straight
+                # through and only prompts when the directory actually holds
+                # a sibling set.
+                siblings = _photo_variation_siblings(file_path)
+                rc = _process_variation_set(
+                    archive_root, fha_config, siblings,
+                    slug=args.slug, title=args.title, dry_run=dry_run,
+                )
+            else:
+                source_type = (args.source_type or _DEFAULT_DOCUMENT_TYPE).strip().lower()
+                if source_type not in SOURCE_TYPES:
+                    print(f'ERROR: unknown source type {source_type!r}.', file=sys.stderr)
+                    rc = EXIT_ERRORS
+                else:
+                    rc = process_document(
+                        archive_root, fha_config, file_path,
+                        source_type=source_type, slug=args.slug, title=args.title,
+                        dry_run=dry_run,
+                    )
+        if rc != EXIT_CLEAN and relocate_undo is not None:
+            relocate_undo()
+        return rc
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
+        if relocate_undo is not None:
+            relocate_undo()
         return EXIT_ERRORS
     except RuntimeError as e:
         print(f'ERROR: {e}', file=sys.stderr)
+        if relocate_undo is not None:
+            relocate_undo()
         return EXIT_FAILURE
 
 

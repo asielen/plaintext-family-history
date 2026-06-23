@@ -31,6 +31,7 @@ clean index readable rather than corrupting it.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sqlite3
@@ -799,6 +800,43 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path) -> None:
             _index_research_log_block(conn, content, None, rel_path)
 
 
+def _index_capture_log(conn: sqlite3.Connection, archive_root: Path) -> None:
+    """Re-ingest `.cache/capture_log.jsonl` rows into search_log.
+
+    `fha capture` writes a search_log row directly into index.sqlite for
+    immediate freshness, but a full rebuild drops and recreates search_log
+    from scratch (`_drop_tables`) — without this, that row would vanish on the
+    next `fha index` run. capture.py also always appends the same row to this
+    jsonl file, so re-ingesting it here makes every capture survive a reindex
+    regardless of whether the index existed at capture time.
+    """
+    capture_log_path = archive_root / '.cache' / 'capture_log.jsonl'
+    if capture_log_path.exists():
+        try:
+            lines = capture_log_path.read_text(encoding='utf-8').splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            conn.execute(
+                '''INSERT INTO search_log
+                   (date, person_id, question, repository, collection, terms, result, source_id, path)
+                   VALUES (?,?,?,?,?,?,?,?,?)''',
+                (
+                    entry.get('date', ''), None, entry.get('question', ''),
+                    entry.get('repository', ''), entry.get('collection', ''),
+                    entry.get('terms', ''), entry.get('result', ''), None,
+                    entry.get('path', ''),
+                ),
+            )
+
+
 def _index_citations(conn: sqlite3.Connection, archive_root: Path) -> None:
     """Scan all .md files for [ID] citation tokens."""
     from _lib import TOKEN_RE
@@ -965,6 +1003,9 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
 
             # Notes FTS
             _index_notes(conn, archive_root)
+
+            # Capture log (durability: survives a search_log drop/rebuild)
+            _index_capture_log(conn, archive_root)
 
             # Citation scan
             _index_citations(conn, archive_root)

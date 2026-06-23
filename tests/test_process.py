@@ -201,6 +201,103 @@ class ProcessTestCase(unittest.TestCase):
         renamed = list((self.archive / 'documents' / 'census').glob('diary-page_S-*.txt'))
         self.assertEqual(len(renamed), 1)
 
+    def test_document_asset_relocated_out_of_inbox(self) -> None:
+        # A bare file dropped straight in inbox/ (no sidecar) — process should
+        # file it into documents/ before scaffolding, not refuse it.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        renamed = list((self.archive / 'documents').glob('note_S-*.txt'))
+        self.assertEqual(len(renamed), 1)
+
+    def test_sidecar_and_companion_relocated_out_of_inbox(self) -> None:
+        # The `fha capture --asset` case: a stub + its companion both staged in
+        # inbox/. Processing the sidecar should move both into documents/ then
+        # scaffold normally, same as if they'd been hand-filed there.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'clipping.txt'
+        asset.write_text('clipping body', encoding='utf-8')
+        sidecar = self.archive / 'inbox' / 'clipping.notes.md'
+        sidecar.write_text('---\ntitle: Newspaper Clipping\n---\nFound online.\n', encoding='utf-8')
+
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        renamed = list((self.archive / 'documents').glob('newspaper-clipping_S-*.txt'))
+        self.assertEqual(len(renamed), 1)
+        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+
+    def test_inbox_relocation_honors_sidecar_source_type_hint(self) -> None:
+        # A record image (.jpg) with a sidecar hinting source_type: census must
+        # be filed as a document, not misclassified as a photo by extension.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'census.jpg'
+        asset.write_text('record image bytes', encoding='utf-8')
+        sidecar = self.archive / 'inbox' / 'census.notes.md'
+        sidecar.write_text('---\nsource_type: census\n---\nFound online.\n', encoding='utf-8')
+
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
+        self.assertEqual(list((self.archive / 'photos').glob('census*')), [])
+        renamed = list((self.archive / 'documents').glob('census_S-*.jpg'))
+        self.assertEqual(len(renamed), 1)
+        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+
+    def test_inbox_relocation_rolled_back_on_downstream_refusal(self) -> None:
+        # A dna-typed asset relocated out of inbox/ into documents/ (flat) still
+        # fails process_document's documents/dna/ requirement; the move itself
+        # must be undone, not leave the asset filed outside the inbox.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'kit.txt'
+        asset.write_text('kit body', encoding='utf-8')
+
+        rc = self._run([str(asset), '--type', 'dna'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(asset.exists())
+        self.assertEqual(list((self.archive / 'documents').glob('kit*')), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_photo_relocated_out_of_inbox(self) -> None:
+        store = self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        photo = self.archive / 'inbox' / 'scan.jpg'
+        photo.write_text('photo bytes', encoding='utf-8')
+
+        rc = self._run([str(photo)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(photo.exists())
+        moved = self.archive / 'photos' / 'scan.jpg'
+        self.assertTrue(moved.exists())
+        self.assertIn(str(moved), store.keywords)
+
+    def test_inbox_relocation_dry_run_writes_nothing(self) -> None:
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+
+        rc = self._run([str(asset), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(asset.exists())
+        self.assertEqual(list((self.archive / 'documents').glob('*.txt')), [])
+
+    def test_inbox_relocation_refuses_destination_conflict(self) -> None:
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+        (self.archive / 'documents' / 'note.txt').write_text('already here', encoding='utf-8')
+
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(asset.exists())
+
     def test_document_rollback_on_record_write_failure(self) -> None:
         original = self.archive / 'documents' / 'census' / 'will.txt'
         original.write_text('will body', encoding='utf-8')
@@ -631,6 +728,159 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(sidecar.exists())  # not consumed on failure
         self.assertTrue(asset.exists())  # not renamed
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    # ── Pointer-only sources (TOOLING §13b case (c), explicit stub flag) ──────
+
+    def test_sidecar_no_companion_refused_without_flag(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'ghost.notes.md'
+        sidecar.write_text(
+            '---\ntitle: Ghost Record\nexternal_links:\n  - url: https://county.test/courthouse\n'
+            '---\nHeld at the county courthouse.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())  # not consumed on refusal
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_pointer_only_mints_source_with_no_files_block(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'courthouse.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'title: Deed Held at County Courthouse\n'
+            'asset_elsewhere: true\n'
+            'citation: >\n'
+            '  Deed book 12, page 4, Cass County courthouse.\n'
+            'external_links:\n'
+            '  - url: https://county.test/courthouse\n'
+            '    accessed: "2024-01-01"\n'
+            '---\n'
+            'Recorded but not retrieved yet.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(sidecar.exists())  # stub consumed
+
+        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        rec = read_record(records[0])
+        self.assertEqual(rec['meta']['title'], 'Deed Held at County Courthouse')
+        self.assertNotIn('files', rec['meta'])  # no asset -> no files: block
+        links = rec['meta']['external_links']
+        self.assertEqual(links[0]['url'], 'https://county.test/courthouse')
+        self.assertIn('Recorded but not retrieved yet', records[0].read_text(encoding='utf-8'))
+
+    def test_sidecar_pointer_only_dry_run_writes_nothing(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'preview.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\nexternal_links:\n  - url: https://x.test/y\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(sidecar.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_pointer_only_refused_without_external_links(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'empty.notes.md'
+        sidecar.write_text('---\nasset_elsewhere: true\n---\nbody\n', encoding='utf-8')
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_pointer_only_honors_cli_overrides(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'override.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'title: Sidecar Title\n'
+            'asset_elsewhere: true\n'
+            'external_links:\n'
+            '  - url: https://county.test/courthouse\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar), '--type', 'newspaper', '--title', 'CLI Title',
+                         '--slug', 'cli-slug'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'newspaper').glob('cli-slug_S-*.md'))
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['title'], 'CLI Title')
+
+    def test_sidecar_pointer_only_rejects_more(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'no-more.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\nexternal_links:\n  - url: https://x.test/y\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        extra = self.tmp / 'extra.txt'
+        extra.write_text('x', encoding='utf-8')
+
+        rc = self._run([str(sidecar), '--more', str(extra), 'attachment'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())  # not consumed on refusal
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_pointer_only_dna_always_restricted(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'dna-pointer.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\n'
+            'external_links:\n  - url: https://dna.test/kit\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar), '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'dna').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertTrue(rec['meta']['restricted'])
+
+    def test_sidecar_pointer_only_rejects_invalid_source_date(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'bad-date.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\nsource_date: June 1880\n'
+            'external_links:\n  - url: https://x.test/y\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_document_rejects_invalid_sidecar_source_date(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'with-bad-date.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'with-bad-date.notes.md'
+        sidecar.write_text('---\nsource_date: June 1880\n---\nbody\n', encoding='utf-8')
+
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(asset.exists())
+        self.assertTrue(sidecar.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_people_hint_surfaces_in_notes(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'people-hint.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'people-hint.notes.md'
+        sidecar.write_text(
+            '---\ntitle: Hint Test\npeople:\n  - Calvin Hartley\n  - Edith Hartley\n'
+            '---\nPage text.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        text = record.read_text(encoding='utf-8')
+        self.assertIn('Calvin Hartley', text)
+        self.assertIn('Edith Hartley', text)
+        self.assertIn('unreconciled', text)
 
     def test_slugify(self) -> None:
         self.assertEqual(process._slugify('Fairview, Kansas! 1880'), 'fairview-kansas-1880')

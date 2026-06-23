@@ -1,0 +1,3 @@
+# name = P-id  (legacy alias map; names without an entry get a fresh P-id)
+Mary Hartley = P-a1a1a1a1a1
+Thomas Hartley = P-b2b2b2b2b2

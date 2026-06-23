@@ -23,12 +23,12 @@ State your **mode** at the start of a session — `research`, `tool-building`, `
 
 ## Step 3 — Use (or extend) the tools
 
-Milestones 1–6 are complete, plus `fha process` single-file intake
-(milestone 7.1–7.2): `fha lint`, `fha index`,
+Milestones 1–7 are complete: `fha lint`, `fha index`,
 `fha id`, `fha stubs`, `fha views` (timeline, sources-index, draft-queue, brackets, tree),
 `fha doctor`, `fha find` (including `--related` and `--text`), `fha photoindex`
 (scan/find/triage/report/reconcile/tag-person), `fha xref`, `fha cooccur`, `fha report`,
-`fha packet`, and `fha places` are all implemented — see `tools/README.md` for the authoritative
+`fha packet`, `fha places`, `fha gedcom`, `fha wikitree`, `fha process`,
+`fha capture`, and `fha convert-mining` are all implemented — see `tools/README.md` for the authoritative
 per-tool status table. Run them with Python 3.10+ from the repo root:
 
 ```
@@ -50,9 +50,11 @@ python tools/fha.py places lint --root example-archive
 python tools/fha.py places candidates --root example-archive
 python tools/fha.py gedcom P-de957bcda1 --root example-archive
 python tools/fha.py wikitree P-de957bcda1 --root example-archive
+python tools/fha.py process inbox/example.pdf --root my-family-archive --dry-run
+echo "<html><title>Record</title></html>" | python tools/fha.py capture --root my-family-archive --url "https://example.com/record" --dry-run
 ```
 
-To build further tools (folder intake, web-capture intake, site, …), declare
+To build further tools (site generation, installer/update tooling, …), declare
 **tool-building mode** and follow the build order in `BUILD.md` (which itself implements
 the design in `TOOLING.md` §15).
 Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.
@@ -88,11 +90,12 @@ Copy the contents of `archive-template/` into it as the starting skeleton.
 ## Step 5 — The daily loop
 
 A session looks like: run the report (`fha report`, narrated by the future `today` skill —
-TOOLING.md §16), see your review queue and research leads, process new inbox items, review
-drafted claims, and let the index regenerate. `fha process` handles single-file
-documents/photos and `--more`; folder triage, bundle dissolution, capture, and the
-workflow skills themselves are still milestone 7 work. Until those later phases ship,
-multi-file intake and review/report are run directly from the CLI.
+TOOLING.md §16), see your review queue and research leads, capture web records into the
+inbox when needed, process new inbox items, review drafted claims, and let the index
+regenerate. `fha process` handles single-file documents/photos, `--more`, folder triage,
+variation groups, and bundle dissolution; `fha capture` stages web source stubs. The
+workflow skills themselves still sit above the CLI, so review/report work is run directly
+or guided by the agent until those skills are implemented.
 Capture → file → process → review → report.
 
 ## A note on the example archive

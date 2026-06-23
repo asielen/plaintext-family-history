@@ -2,7 +2,7 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
-![status](https://img.shields.io/badge/status-milestones_1--5_%2B_6.1_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestones_1%E2%80%937_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
@@ -17,7 +17,7 @@ It is the blueprint for a simple future proof system for family research. The go
 
 Three things live at arm's length from each other, by design:
 
-1. **This repo** (public): the spec (`SPEC.md`, `TOOLING.md`, `AGENTS.md`), the docs, the generic `fha` tools (once built), an empty `archive-template/`, and a fictional `example-archive/` fixture.
+1. **This repo** (public): the spec (`SPEC.md`, `TOOLING.md`, `AGENTS.md`), the docs, the generic `fha` tools, an empty `archive-template/`, and a fictional `example-archive/` fixture.
 2. **The tools** (public, in `tools/`): generic — they operate on *any* conforming archive and hold no family data. Publishing them is the manifestation of the spec. Tools are replaceable glue, regenerable from the spec.
 3. **Your archive** (private, separate repo): your real family's records, created from `archive-template/`, depending on this repo's spec and tools but never living inside it. Public examples stay fictional; your groceries don't go in the cookbook.
 
@@ -34,10 +34,10 @@ my-family-archive/          ← PRIVATE: your real family's records
 
 They are not technically linked.
 The only relationship is that your private archive *uses the tools* that live in this public repo.
-There are two ways to get those tools to your archive (decide once the tools are built — you don't need to now):
+There are two ways to get those tools to your archive:
 
 - **Vendor (copy them in).** Copy this repo's `tools/` folder into your private archive so the tools live *beside* your data. The archive becomes fully self-contained — it works on any machine, offline, forever, even if this repo disappears. Updating means re-copying `tools/` when they improve. *Recommended for a personal archive — it matches the "survives tool churn, usable from a USB stick" goal.*
-- **Install (once packaging exists).** *Not available yet — the tools are specified, not built.* Once the `fha` suite is implemented and packaged, you'll be able to install it from this repo (`pip install git+https://github.com/YOURNAME/plainfile-family-history.git`) and call `fha` from anywhere. Cleaner day-to-day (tools live in one place), but your archive then depends on the tools being installed separately. Until then, use the vendored-copy model above.
+- **Install (once packaging exists).** *Not available yet.* Once the `fha` suite is packaged, you'll be able to install it from this repo (`pip install git+https://github.com/YOURNAME/plainfile-family-history.git`) and call `fha` from anywhere. Cleaner day-to-day (tools live in one place), but your archive then depends on the tools being installed separately. Until then, use the vendored-copy model above.
 
 Either way, **your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.
 
@@ -72,7 +72,7 @@ The spec is written so that all of that tooling can be *regenerated* from the do
 
 ## What this is not
 
-- **Not a finished app.** Milestones 1–6 are implemented, and `fha process` has shipped single-file document/photo intake plus `--more` (milestone 7.1–7.2); folder intake, web capture, site generation, and installer/update tooling are still being built.
+- **Not a finished app.** Milestones 1–7 are implemented, including the intake pipeline (`fha process`, `fha capture`, and `fha convert-mining`); site generation and installer/update tooling are still being built.
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.
@@ -108,8 +108,8 @@ plainfile-family-history/
 │   └── FAQ.md
 ├── archive-template/    ← empty skeleton (+ fha.yaml) to copy when starting your own (private) archive
 ├── example-archive/     ← a small, fully fictional worked example (+ its own fha.yaml)
-├── tools/               ← the generic fha command suite (skeletal in v1; see TOOLING.md)
-├── tests/               ← fixtures for the linter (skeletal in v1)
+├── tools/               ← the generic fha command suite (see tools/README.md)
+├── tests/               ← automated tests and fixtures for the tools
 ├── PRIVACY.md           ← example-data policy
 └── .github/             ← issue templates, contributing guide
 ```
@@ -120,7 +120,7 @@ plainfile-family-history/
 
 1. **Clone this repo** and read `SPEC.md` end to end. It is the contract; everything else serves it.
 2. **Open the folder in your agent.** It will read `CLAUDE.md` → `AGENTS.md` and know the rules before you say anything.
-3. **Build the tools.** Declare *tool-building mode* and point the agent at the build order in `TOOLING.md` §15. The first milestone is the linter running clean on `example-archive/`.
+3. **Use or extend the tools.** Milestones 1–7 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
 4. **Start your own archive.** Copy the structure, drop your first scan or note into `inbox/`, and ask the agent to process it.
 
 See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthrough.
@@ -148,16 +148,16 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` — milestones 1–6 complete, plus `fha process` single-file intake (milestone 7.1–7.2).**
+**Current: `spec v1.2` — milestones 1–7 complete.**
 
-Everything through the research report, plus the person export packet and place
+Everything through the intake pipeline, plus the person export packet and place
 registry hygiene/candidate detection, is
 implemented and runs cleanly on the example archive: the linting/indexing
 substrate, the view generators and universal locator, the photo catalog, the
 candidate-finding tools (contradiction/corroboration detection, person and
 place co-occurrence, and `fha find --related`'s neighborhood queries), the
 `fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export, and
-the first `fha process` intake phases. See `BUILD.md` for the detailed
+the milestone 7 intake tools. See `BUILD.md` for the detailed
 milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
@@ -175,7 +175,9 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha packet` — person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)
 - [x] `fha places` — place registry lint, recurring unlinked place/GPS candidate detection, and offline GeoNames coordinate backfill (milestone 6.2–6.3)
 - [x] `fha gedcom` — GEDCOM 5.5.1 relationship export (living-redacted by default); `fha wikitree` — curated-profile export in the WikiTree dialect (milestone 6.4–6.5)
-- [~] `fha process` — asset intake: single-file documents (rename + scaffold) and photos (SOURCE-keyword + scaffold), plus `--more` (milestone 7.1–7.2); folder triage, variation grouping, and bundle dissolution still to come (milestone 7.3–7.8); web-capture intake later in milestone 7
+- [x] `fha process` — asset intake: single-file documents/photos, `--more`, folder triage, variation grouping, and bundle dissolution (milestone 7.1–7.4)
+- [x] `fha capture` — paste-fallback web capture, generic recipe, and Ancestry/FamilySearch/Newspapers.com/FindAGrave recipes (milestone 7.5–7.7)
+- [x] `fha convert-mining` — one-time legacy transcript-mining migration (milestone 7.8)
 - [ ] The static-site generator
 
 ## A complementary project

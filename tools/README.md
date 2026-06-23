@@ -74,7 +74,7 @@ start importing siblings.
 | §2 New since last session | ✓ | Source-id / claim-id + changed-claim / person-id diff vs. snapshot |
 | §3 Vitals gaps (W101) | ✓ | Reuses lint's findings from the same refresh pass |
 | §4 Contradictions (E009) | ✓ | Reuses lint's findings from the same refresh pass |
-| §5 Search-log awareness | ✓ | Annotates leads (W101/suggested-claim/E009 persons) from `search_log`; nil searches older than 18 months flagged "worth re-running (stale nil search)". `search_log` is provisioned but not yet populated by any tool — this section reports "no matching entries" until something writes to it |
+| §5 Search-log awareness | ✓ | Annotates leads (W101/suggested-claim/E009 persons) from `search_log`; nil searches older than 18 months flagged "worth re-running (stale nil search)". Populated by `## Research Log` entries (person research files, `notes/research-log.md`) and by `fha capture`. Capture rows always carry `person_id IS NULL` (a stub isn't reconciled to a person yet) so they can never match a lead above; a separate "Recently captured (not yet linked to a person)" call-out lists the last 30 days' worth so they stay visible until `fha process` resolves the stub, rather than only existing silently in the table |
 | §5b Answerable questions | ✓ | Open `notes/questions.md` questions whose referenced `[C-id]` is now `accepted`, or whose referenced `[P-id]` now has all its required-vitals accepted claims; proposals only — printed, never executed |
 | §6 Photo triage | ✓ | Embeds `photoindex.run_triage(top=10)`; absent/unreadable photo index reported, not treated as an error |
 | §6b Place candidates | ✓ | `fha places` (BUILD.md M6.2) is built; this section calls `places.run_candidates()` directly — unlinked place-text clusters and GPS clusters, or a "none found" note |
@@ -142,11 +142,13 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `fha gedcom [<P-id>] [--mode descendants\|ancestors\|connected] [--generations N] [--all] [--include-living] [--out FILE]` | `gedcom.py` | ✓ M6.4 — see "fha gedcom — implementation status" below |
 | `fha wikitree <P-id> [--out FILE]` | `wikitree.py` | ✓ M6.5 — see "fha wikitree — implementation status" below |
 
-## Implemented tools (milestone 7, in progress)
+## Implemented tools (milestone 7)
 
 | Tool | File | Status |
 |---|---|---|
 | `fha process FILE|FOLDER [--type TYPE] [--title …] [--slug SLUG] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1–M7.4 — single-file documents and photos + `--more`; folder triage + tier-1 variation detection (M7.3); `notes.md` bundle dissolution (M7.4); see "fha process — implementation status" below |
+| `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ M7.5–M7.7 — paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; see "fha capture — implementation status" below |
+| `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.8 — one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; see "fha convert-mining — implementation status" below |
 
 ## fha process — implementation status
 
@@ -158,7 +160,8 @@ pipeline; the AI draft pass and review pass are the `process-source` /
 |---|---|---|
 | Document intake (M7.1) | ✓ | Detect a non-photo file (extension + not under the resolved photos root); refuse a filename already carrying `_{S-id}`; mint an S-id via `_lib.mint_ids`; **rename in place** to `{slug}_{S-id}.{ext}` recording `original_filename`; scaffold `sources/{type}/{slug}_{S-id}.md` from the §14 template with an empty `## Claims` block. Transactional — the rename and record-write each register an undo and any failure rolls back; destination conflicts and unknown `--type` values refuse before writing |
 | Photo intake (M7.2) | ✓ | Detect a photo (extension or under the photos root); refuse a file already carrying a `SOURCE:` keyword; mint an S-id; **never rename** — embed `SOURCE: {S-id}` via `exiftool -keywords+= -overwrite_original_in_place` (abort, scaffold nothing, on failure); scaffold `sources/photos/{slug}_{S-id}.md` with `role: primary`, `is_primary: true`. `source_type` is always `photo` |
-| Source-stub sidecar (`*.notes.md`) | ✓ | A lone `{stem}.notes.md` beside a single asset (SPEC §12.1) is read as the starting point whether the user passes the asset or the sidecar itself: its optional `title`/`source_type` frontmatter hints refine the record (photos remain `source_type: photo`), its prose body becomes the record's `## Notes`, and the stub is deleted after the record is safely written. Bundle folders (multiple files + one bare `notes.md`) are handled by M7.4 below |
+| Inbox relocation | ✓ | An asset (and its sidecar, if any) staged under the resolved `inbox/` root — e.g. `fha capture --asset` — is moved flat (no rename) into `documents/` or `photos/` (by extension/photo-root heuristic, same as `classify_asset`) *before* document/photo intake runs, rather than refusing it as "not under the configured root." That's the point of an inbox: every `fha process` entrypoint files out of it instead of making the user move things by hand first. `--dry-run` previews the move without touching the filesystem; a destination-name collision refuses before anything moves |
+| Source-stub sidecar (`*.notes.md`) | ✓ | A lone `{stem}.notes.md` beside a single asset (SPEC §12.1) is read as the starting point whether the user passes the asset or the sidecar itself: its optional `title`/`source_type` frontmatter hints refine the record (photos remain `source_type: photo`), its prose body becomes the record's `## Notes`, and the stub is deleted after the record is safely written. A `people:` hint (names the captured page showed, no P-ids yet) is folded into that same `## Notes` text rather than dropped, since a §14 record has no other slot for an unreconciled name. A sidecar with no same-stem asset is refused *unless* it explicitly flags `asset_elsewhere: true` (TOOLING §13b case (c), "pointer-only") — then it mints a no-asset record from `citation`/`external_links` hints instead (`files:` omitted, `--type`/`--title`/`--slug` overrides honored same as the asset path, `restricted: true` forced for `source_type: dna`), refusing if no `external_links` are present, and refusing `--more` outright (there's no asset for a second file to attach to). Bundle folders (multiple files + one bare `notes.md`) are handled by M7.4 below |
 | `--more FILE ROLE[:copy]` | ✓ | Attach an additional file to the existing source named by the positional asset's S-id (its embedded `SOURCE:` keyword for a photo, its `_{S-id}` filename for a document). A photo `--more` file is keyword-marked and left in place; a document `--more` file is renamed `{slug}-[{copy}-]{role}_{S-id}.{ext}` with `original_filename` recorded. The new file's inventory entry is appended to the record via surgical text edit (frontmatter comments/order preserved, mirroring `fha places geocode`) |
 | `--type TYPE` | ✓ | Source type + subdirectory for a document (default `other`); ignored for photos (always `photo`). A `*.notes.md` `source_type` hint overrides the default when it is in the controlled vocabulary |
 | `--title` / `--slug` | ✓ | `--slug` wins; else `--title`; else the filename stem — slugified to lowercase-hyphenated. `--title` also seeds the record `title`/`citation` |
@@ -193,6 +196,63 @@ role hints, already-processed-photo refusal, sidecar-named asset inclusion,
 late-failure rollback, no-asset refusal). Run with `python -m unittest
 tests.test_process -v` from the
 repo root.
+
+## fha capture — implementation status
+
+The web-record intake on-ramp (TOOLING §13b). Capture reads the HTML the human
+already has — piped on stdin, or an HTML `--asset` — and stages a **source stub**
+in `inbox/` (SPEC §12.1); it never logs in, fetches behind auth, or mints an
+S-id. Stdlib only (HTML parsed with `html.parser` — no third-party library).
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Generic recipe (M7.5) | ✓ | The universal fallback for an unknown site: title (`<title>`/`og:title`/`<h1>`), URL (`--url`/`<link rel=canonical>`/`<base href>`/`og:url`), accessed-date (today), `repository` (page host), and visible text (~2000 chars, script/style stripped, truncated on a word boundary) as the citation basis. `source_type: website` (the controlled-vocabulary value for BUILD.md's shorthand `web`, so the stub processes cleanly) |
+| Inbox stub | ✓ | `{slug}.notes.md` with light optional frontmatter (title, source_type, citation, repository, source_date, external_links, person-name hints) over a freeform body. Re-parses cleanly via `read_record`, so `fha process` consumes it. Stub and asset slug collisions both uniquify (`slug-2`, `slug-3`); the stub and its `--asset` copy share a stem so they pair by basename without overwriting an existing inbox file |
+| `--asset FILE` | ✓ | Copied alongside the stub with the matching stem; an HTML `--asset` doubles as the page source when nothing is piped. Existing same-stem asset files force a new stem before writing |
+| Flag overrides | ✓ | `--title`/`--type`/`--date` always win over recipe/generic inference; `--type` is validated against the controlled vocabulary and `--date` is validated as EDTF (typos refuse here, not as an unprocessable stub later). A recipe-produced non-EDTF source date is warned and dropped |
+| `--dry-run` | ✓ | Previews the recipe match, stub path, optional asset copy, and research-log write without creating `inbox/` or `.cache/` |
+| Research-log entry | ✓ | Capture is itself a logged search: the row always appends to `.cache/capture_log.jsonl` (the durable copy `fha index` re-ingests into `search_log` on every full rebuild, since that table is dropped and recreated from scratch), and *also* goes straight into `.cache/index.sqlite`'s `search_log` table when it exists (so `fha report`'s "already searched" sees it immediately; `person_id`/`source_id` null — a stub has neither yet). A logging failure warns but never fails the capture |
+| No-asset capture (pointer-only) | ✓ | When the page only points elsewhere and no asset is saved, the stub is written with `asset_elsewhere: true` alongside its `external_links` (TOOLING §13b case (c)) — the explicit flag `fha process` requires before it will mint a source record with no companion file |
+| stdin encoding | ✓ | stdin is read as raw bytes and decoded UTF-8 (not the locale codec), so a piped page's en-dashes/accents survive into the stub |
+| Site recipes (M7.6/M7.7) | ✓ | `tools/capture_recipes/` plug-in modules (`detect`/`extract`, discovered at runtime, tried in ascending `PRIORITY`, generic fallback last): **Ancestry** (collection title, date, household/index persons, image URL), **FamilySearch** (title, date, collection, fact-table persons), **Newspapers.com** (publication, date, page, snippet, citation; `source_type: newspaper`), **FindAGrave** (memorial name, birth/death, cemetery as a place hint, family members). Each detects its own page by host (with an `og:site_name` fallback) and rejects the others'. A broken or failing recipe is skipped with a warning — the page still captures generically |
+
+Automated tests: `tests/test_capture.py` (stdlib `unittest`, no network) drives
+`run_capture` over the anonymized `tests/fixtures/capture-samples/*.html`,
+covering generic frontmatter + jsonl fallback + the `search_log` write path,
+flag overrides + unknown-type/non-EDTF-date refusal, `--dry-run` no-op,
+write-failure exit status, `--asset` stem pairing, slug/asset collision, the
+UTF-8 stdin path, each recipe's extraction, mutually-exclusive recipe detection,
+and the truncation/domain helpers. Run with `python -m unittest
+tests.test_capture -v` from the repo root.
+
+## fha convert-mining — implementation status
+
+One-time migration of a legacy transcript-mining export (the `mining/` folder of
+`sources.txt`, `facts.txt`, `stories.txt`, `questions.txt`, `aliases.txt`, and
+`transcripts/`) into conformant records (TOOLING §11). **Dry-run by default**;
+`--apply` writes. Self-contained re-use of `_lib` primitives (tools never import
+tools — it does not import `process.py`).
+
+| Step / feature | Status | Notes |
+|---|---|---|
+| Sources first | ✓ | Each legacy `S###` → transcript copied to `documents/interviews/{slug}_{S-id}.txt` (renamed with the minted S-id, `original_filename` kept), a `sources/interview/{slug}_{S-id}.md` record scaffolded (`source_type: interview`, `people:` resolved via the alias map), and the extraction pass (model + run date) recorded in `## AI Passes` with human-readable import context in `## Notes` |
+| Facts → suggested claims | ✓ | `facts.txt` markdown rows → `suggested` claims: Claim→`value` (a blank Claim cell is warned and skipped, not imported as an empty-value claim that would lint E010); Earliest/Latest→a single EDTF value or `min/max` interval — same-value/blank collapses to one value, an unknown-final-digit cell maps to the EDTF decade form `X` (TOOLING §11), and a decade/decade or decade/year mismatch becomes the matching interval rather than being silently narrowed or dropped; Confidence H/M/L→`confidence`; type by keyword heuristic (birth/marriage/served/worked/lived… → vocabulary) defaulting to `event` + the Section as `subtype`. `relationship`/`name` are never inferred (relationship needs `roles`). `Update(T###):` continuation lines merge into the preceding claim's `notes` |
+| Anchors | ✓ | Best-effort: the 3 rarest content words of a claim value are searched in the transcript; the first uniquely-matching line (all 3, then 2, then the rarest) → `anchor: line N`, else omitted |
+| Stories → `## Stories` | ✓ | `stories.txt` blocks attach to their source record, person resolved to a `[P-id]` token; a story whose header omits `(S###)` or names an unknown source is warned and its narrative dropped rather than silently lost |
+| Questions → `notes/questions.md` | ✓ | `## Q:` blocks appended (`origin: tool`, `status: open`) with the person/source refs mapped to their new P-id/S-id; a `source:` naming an unrecognized legacy id is warned and that ref omitted (the question still imports) |
+| People + stubs | ✓ | Every named person resolves to a P-id (alias map, else freshly minted); a P-id with no existing record is minted as a `people/stubs/` stub (`tier: stub`, `living: unknown`), so every claim/story/question reference resolves (lint E005-clean) while privacy defaults stay conservative |
+| Audit trail | ✓ | `.cache/convert_mapping.csv` (`legacy_id, new_id, notes`) for every source/claim/person mapping |
+| Apply safety | ✓ | Dry-run is the default. `--apply` refuses if `.cache/convert_mapping.csv` already exists (one-shot repeat-run sentinel) or if any planned destination exists; live writes register their undo *before* the write/copy call (not after), so a write that fails partway (e.g. disk full) still gets cleaned up on rollback instead of leaving an orphaned file; rollback also restores any appended `notes/questions.md` text on a later failure |
+| Result | ✓ | The converted archive lints with no E-level findings (only the expected W102 suggested-claim backlog) — the M7.8 "Done when" |
+
+Automated tests: `tests/test_convert_mining.py` copies
+`tests/fixtures/legacy-export/` to a throwaway tree and exercises the dry-run
+(writes nothing), `--apply` (sources/claims/privacy-safe stubs, story + question
+import, mapping CSV), repeat-apply refusal, rollback after a write failure, the
+AI pass audit block, EDTF/type-heuristic units, the missing-`mining/` error, and
+— the contract — that the converted archive lints with zero errors via
+`lint.run_lint_silent`. Run with `python -m unittest tests.test_convert_mining
+-v` from the repo root.
 
 ## fha packet — implementation status
 

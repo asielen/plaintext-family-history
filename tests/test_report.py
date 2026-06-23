@@ -8,6 +8,7 @@ design), so the fixture here is a tiny real archive tree rather than a
 hand-built .cache/index.sqlite.
 """
 
+import datetime
 import sys
 import tempfile
 import unittest
@@ -347,6 +348,59 @@ class ReportTests(unittest.TestCase):
             '- Test Person [P-aaaaaaaaaa] — Newspaper archive: already searched 2020-01-01',
             lines,
         )
+
+    def test_search_log_calls_out_recent_unreconciled_captures(self) -> None:
+        report.run_report(self.archive_root, {}, full=True)
+
+        db_path = self.archive_root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            today = datetime.date.today().isoformat()
+            conn.execute(
+                "INSERT INTO search_log(date, person_id, question, repository, result) "
+                "VALUES (?, NULL, ?, ?, ?)",
+                (today, 'Captured page', 'site.test', 'staged inbox/page.notes.md'),
+            )
+            stale = (datetime.date.today() - datetime.timedelta(days=400)).isoformat()
+            conn.execute(
+                "INSERT INTO search_log(date, person_id, question, repository, result) "
+                "VALUES (?, NULL, ?, ?, ?)",
+                (stale, 'Old captured page', 'old.test', 'staged inbox/old.notes.md'),
+            )
+            conn.commit()
+
+            lines = report._section_search_log(conn, {'vitals_gap_person_ids': []})
+        finally:
+            conn.close()
+
+        self.assertIn('Recently captured (not yet linked to a person):', lines)
+        self.assertTrue(any('Captured page' in line for line in lines))
+        self.assertFalse(any('Old captured page' in line for line in lines))
+
+    def test_search_log_excludes_general_research_log_entries(self) -> None:
+        # notes/research-log.md (SPEC §16) also logs person_id IS NULL rows for
+        # general/locality searches — those aren't `fha capture` rows and must
+        # not be mislabeled as "Recently captured".
+        report.run_report(self.archive_root, {}, full=True)
+
+        db_path = self.archive_root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            today = datetime.date.today().isoformat()
+            conn.execute(
+                "INSERT INTO search_log(date, person_id, question, repository, result, path) "
+                "VALUES (?, NULL, ?, ?, ?, ?)",
+                (today, 'County land records', 'site.test', 'nil', 'notes/research-log.md'),
+            )
+            conn.commit()
+
+            lines = report._section_search_log(conn, {'vitals_gap_person_ids': []})
+        finally:
+            conn.close()
+
+        self.assertFalse(any('County land records' in line for line in lines))
 
 
 if __name__ == '__main__':

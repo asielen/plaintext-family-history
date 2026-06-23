@@ -1,0 +1,12 @@
+## S001
+| Person | Claim | Earliest | Latest | Confidence | Section | Place |
+|--------|-------|----------|--------|------------|---------|-------|
+| Mary Hartley | Born in Fairview, Kansas | 1890 | 1890 | High | Vitals | Fairview, Kansas |
+| Mary Hartley | Married John Webb | 1912 | 1912 | Medium | Vitals | |
+Update(T001): Mary said the wedding was in April.
+
+## S002
+| Person | Claim | Earliest | Latest | Confidence | Section | Place |
+|--------|-------|----------|--------|------------|---------|-------|
+| Thomas Hartley | Worked as a bookkeeper for the Plains Junction Railroad | 1880 | 1885 | Medium | Work | Fairview, Kansas |
+| Thomas Hartley | Served in the infantry during the war | 1863 | 1865 | Low | Military | |

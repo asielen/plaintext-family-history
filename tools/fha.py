@@ -197,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     from gedcom import register as gedcom_register
     from wikitree import register as wikitree_register
     from process import register as process_register
+    from capture import register as capture_register
+    from convert_mining import register as convert_mining_register
 
     parser = build_parser()
     subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -217,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
     gedcom_register(subs)
     wikitree_register(subs)
     process_register(subs)
+    capture_register(subs)
+    convert_mining_register(subs)
 
     args = parser.parse_args(argv_list)
 

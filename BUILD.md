@@ -37,7 +37,7 @@ the insertion point in the same edit.
 | 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ✓ shipped — M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | ✓ shipped — M5.1 (`fha report` §0–4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6–8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 — Data output | M6.1 – M6.5 | ✓ shipped — M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
-| 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | ◐ in progress — M7.1 (`fha process` documents), M7.2 (`fha process` photos + `--more`), M7.3 (folder triage + variation detection), M7.4 (bundle dissolution) shipped; M7.5–M7.8 future |
+| 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | ✓ shipped — M7.1–M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6–M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
 | 8 | Layer 8 — Publication | M8.1 – M8.5 | future |
 | 9 | Layer 9 — Scaffolding | M9.1 – M9.2 | future |
 
@@ -1133,7 +1133,7 @@ fha process tests/fixtures/bundle-folder/ --root ...
 
 ---
 
-### M7.5 — `fha capture` — paste fallback + generic recipe
+### M7.5 — `fha capture` — paste fallback + generic recipe (✓ shipped)
 
 **One PR.** New file `tools/capture.py`. Wire `fha capture [--url URL] [--title "…"]
 [--type TYPE] [--date DATE] [--asset FILE]` (TOOLING §13b).
@@ -1162,7 +1162,7 @@ fha capture --url "…" --title "Override" --type newspaper
 
 ---
 
-### M7.6 — `fha capture` — site recipes: Ancestry + FamilySearch
+### M7.6 — `fha capture` — site recipes: Ancestry + FamilySearch (✓ shipped)
 
 **One PR.** Create `tools/capture_recipes/` directory with the two genealogy-database
 recipes. Each recipe exposes `detect(html, url) -> bool` and `extract(html, url) -> dict`.
@@ -1185,7 +1185,7 @@ fha capture < tests/fixtures/capture-samples/familysearch.html --url "https://fa
 
 ---
 
-### M7.7 — `fha capture` — site recipes: Newspapers.com + FindAGrave
+### M7.7 — `fha capture` — site recipes: Newspapers.com + FindAGrave (✓ shipped)
 
 **One PR.** Extend `tools/capture_recipes/` with the two remaining recipes, inserted into
 the priority order ahead of the generic fallback: Ancestry → FamilySearch → Newspapers.com
@@ -1206,7 +1206,7 @@ fha capture < tests/fixtures/capture-samples/findagrave.html --url "https://find
 
 ---
 
-### M7.8 — `fha convert-mining`
+### M7.8 — `fha convert-mining` (✓ shipped)
 
 **One PR.** New file `tools/convert_mining.py`. Wire `fha convert-mining [--apply]`
 (TOOLING §11). Default: dry-run. `--apply` required to write.

@@ -1,0 +1,13 @@
+S001
+transcript: T001.txt
+title: Interview with Mary Hartley
+interviewee: Mary Hartley
+date: 2024-03-15
+model: gpt-4-class
+
+S002
+transcript: T002.txt
+title: Interview with Thomas Hartley
+interviewee: Thomas Hartley
+date: 2024-04-02
+model: gpt-4-class

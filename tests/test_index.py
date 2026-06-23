@@ -8,6 +8,7 @@ hooks that insert those rows into the hypotheses/search_log tables consumed
 by report.py sections 5 and 7.
 """
 
+import json
 import sqlite3
 import sys
 import tempfile
@@ -215,6 +216,54 @@ class IndexNotesResearchLogTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
 
+class IndexCaptureLogTests(unittest.TestCase):
+    """`.cache/capture_log.jsonl` rows must re-populate search_log on rebuild
+    (a full rebuild drops and recreates the table, so a row `fha capture`
+    wrote directly into index.sqlite would otherwise be lost)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(index._DDL)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_capture_log_jsonl_rows_ingested(self) -> None:
+        cache = self.archive_root / '.cache'
+        cache.mkdir(parents=True)
+        (cache / 'capture_log.jsonl').write_text(
+            json.dumps({
+                'date': '2024-01-01', 'question': 'Captured page',
+                'repository': 'site.test', 'collection': '', 'terms': '',
+                'result': 'staged inbox/page.notes.md', 'path': 'inbox/page.notes.md',
+            }) + '\n',
+            encoding='utf-8',
+        )
+
+        index._index_capture_log(self.conn, self.archive_root)
+
+        rows = self.conn.execute('SELECT * FROM search_log').fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['question'], 'Captured page')
+        self.assertEqual(rows[0]['path'], 'inbox/page.notes.md')
+        self.assertIsNone(rows[0]['person_id'])
+        self.assertIsNone(rows[0]['source_id'])
+
+    def test_absent_capture_log_does_not_crash(self) -> None:
+        index._index_capture_log(self.conn, self.archive_root)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
+
+    def test_malformed_capture_log_line_skipped(self) -> None:
+        cache = self.archive_root / '.cache'
+        cache.mkdir(parents=True)
+        (cache / 'capture_log.jsonl').write_text('not json\n', encoding='utf-8')
+        index._index_capture_log(self.conn, self.archive_root)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
+
+
 class IndexCitationsPacketOutputTests(unittest.TestCase):
     """fha packet's default out/ dir must not become a citation site, but a
     record tree's own legitimately-named 'out' subdirectory still must."""
@@ -284,6 +333,33 @@ class FullRebuildClearsStaleRowsTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
         finally:
             conn.close()
+
+    def test_capture_log_row_survives_full_rebuild(self) -> None:
+        # A `fha capture` run writes the row straight into index.sqlite *and*
+        # to capture_log.jsonl. Simulate just the jsonl half here (the part
+        # that must outlive a rebuild) and confirm build_index's drop+rebuild
+        # of search_log re-ingests it rather than losing it.
+        cache_dir = self.archive_root / '.cache'
+        cache_dir.mkdir(parents=True)
+        (cache_dir / 'capture_log.jsonl').write_text(
+            json.dumps({
+                'date': '2024-01-01', 'question': 'Captured page',
+                'repository': 'site.test', 'collection': '', 'terms': '',
+                'result': 'staged inbox/page.notes.md', 'path': 'inbox/page.notes.md',
+            }) + '\n',
+            encoding='utf-8',
+        )
+
+        index.build_index(self.archive_root, {})
+        index.build_index(self.archive_root, {})  # a second rebuild must not duplicate-lose it
+
+        conn = sqlite3.connect(str(cache_dir / 'index.sqlite'))
+        try:
+            rows = conn.execute('SELECT question, path FROM search_log').fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], 'Captured page')
 
 
 if __name__ == '__main__':
