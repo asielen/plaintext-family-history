@@ -345,38 +345,36 @@ def _decade_marker(cell: str) -> str | None:
 def legacy_to_edtf(earliest: str, latest: str) -> str | None:
     """Map legacy Earliest/Latest cells to a valid EDTF date, or None.
 
-    Equal (or single) → one value (`1890`, `1890~` when uncertain); a real range
-    → the `min/max` interval. An unknown-final-digit cell (`189?`/`189??`) maps
-    to the EDTF decade form `189X` (TOOLING §11) when the other side agrees or
-    is blank, or to a `189X/190X` decade interval when the two sides disagree.
-    Anything that won't validate as EDTF is dropped rather than written (lint
-    E014 would reject a malformed date).
+    Equal (or single) → one value (`1890`, `1890~` when uncertain, `189X` for
+    an unknown-final-digit decade per TOOLING §11); two different values on
+    either side → the `min/max` interval — decade/decade (`189X/190X`),
+    decade/year (`189X/1900`), or year/year alike. Anything that won't
+    validate as EDTF is dropped rather than written (lint E014 would reject
+    a malformed date).
     """
     e_decade = _decade_marker(earliest)
     l_decade = _decade_marker(latest)
-    if e_decade and (not latest.strip() or e_decade == l_decade):
-        return e_decade if is_valid_edtf(e_decade) else None
-    if l_decade and not earliest.strip():
-        return l_decade if is_valid_edtf(l_decade) else None
-    if e_decade and l_decade:
-        edtf = f'{e_decade}/{l_decade}'
-        return edtf if is_valid_edtf(edtf) else None
-
     e_year, e_approx = _year_marker(earliest)
     l_year, l_approx = _year_marker(latest)
 
     def one(year: str, approx: bool) -> str:
         return f'{year}~' if approx else year
 
-    if e_year and l_year:
-        if e_year == l_year:
-            edtf = one(e_year, e_approx or l_approx)
-        else:
-            edtf = f'{one(e_year, e_approx)}/{one(l_year, l_approx)}'
-    elif e_year:
-        edtf = one(e_year, e_approx)
-    elif l_year:
-        edtf = one(l_year, l_approx)
+    e_bare = e_decade or e_year
+    l_bare = l_decade or l_year
+    e_token = e_decade or (one(e_year, e_approx) if e_year else None)
+    l_token = l_decade or (one(l_year, l_approx) if l_year else None)
+
+    if e_bare and l_bare and e_bare == l_bare:
+        # Same underlying value on both sides (e.g. `1890~`/`1890`) — one
+        # value, with the uncertainty marker if *either* side carried it.
+        edtf = e_decade or one(e_bare, e_approx or l_approx)
+    elif e_token and l_token:
+        edtf = f'{e_token}/{l_token}'
+    elif e_token:
+        edtf = e_token
+    elif l_token:
+        edtf = l_token
     else:
         return None
     return edtf if is_valid_edtf(edtf) else None
@@ -597,6 +595,7 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
     legacy_to_sid: dict[str, str] = {}
     built_sources: list[_Source] = []
     mapping_rows: list[tuple[str, str, str]] = []
+    attached_story_indices: set[int] = set()
 
     documents_root = resolve_path('documents', fha_config, archive_root)
 
@@ -632,10 +631,14 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
             if not person_name:
                 warnings.append(f'{legacy_id}: a fact row has no Person; skipped.')
                 continue
+            value = (row.get('claim') or '').strip()
+            if not value:
+                warnings.append(f'{legacy_id}: a fact row for {person_name!r} has a blank '
+                                 'Claim cell; skipped (would otherwise lint E010).')
+                continue
             person = resolver.resolve(person_name)
             if person.pid not in people_pids:
                 people_pids.append(person.pid)
-            value = (row.get('claim') or '').strip()
             claim_type, subtype = derive_claim_type(value, row.get('section', ''))
             if claim_type not in CLAIM_TYPES:
                 claim_type, subtype = 'event', subtype
@@ -655,8 +658,9 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
 
         # Stories for this source, persons resolved to [P-id] tokens.
         source_stories: list[str] = []
-        for s in stories:
+        for idx, s in enumerate(stories):
             if s.get('source') == legacy_id:
+                attached_story_indices.add(idx)
                 token = ''
                 if s.get('person'):
                     story_person = resolver.resolve(s['person'])
@@ -686,14 +690,26 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
         if legacy_id not in sources_raw:
             warnings.append(f'facts.txt references unknown source {legacy_id}; its rows were skipped.')
 
+    # Stories that never matched a source in the loop above (missing or
+    # unknown source ref) are reported too, not silently dropped.
+    for idx, s in enumerate(stories):
+        if idx not in attached_story_indices:
+            ref = s.get('source') or '(none)'
+            warnings.append(f'stories.txt has a story referencing source {ref!r} '
+                             'that was not converted; its narrative text was skipped.')
+
     # Rendered questions (refs mapped to new ids).
     rendered_questions: list[dict] = []
     for q in questions:
         refs: list[str] = []
         if q.get('person'):
             refs.append(resolver.resolve(q['person']).pid)
-        if q.get('source') and q['source'] in legacy_to_sid:
-            refs.append(legacy_to_sid[q['source']])
+        if q.get('source'):
+            if q['source'] in legacy_to_sid:
+                refs.append(legacy_to_sid[q['source']])
+            else:
+                warnings.append(f'questions.txt references unknown source {q["source"]} '
+                                 f'on question {q["question"]!r}; the source ref was dropped.')
         rendered_questions.append({'question': q['question'], 'refs': refs})
 
     # People mapping + which need stubs (de-duplicated by P-id: multiple alias
@@ -912,8 +928,11 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
 
     def write_new(path: Path, text: str) -> None:
         ensure_parent(path)
-        path.write_text(text, encoding='utf-8')
+        # Register the cleanup before writing, same as copy_new — a
+        # write_text() that fails partway (e.g. disk full) can still leave a
+        # partially-written file behind.
         undo.append(lambda p=path: p.unlink(missing_ok=True))
+        path.write_text(text, encoding='utf-8')
 
     def copy_new(src: Path, dest: Path) -> None:
         ensure_parent(dest)
@@ -943,8 +962,8 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
             block = _render_questions_block(plan.questions)
             if qpath.exists():
                 existing = qpath.read_text(encoding='utf-8')
-                qpath.write_text(existing.rstrip('\n') + '\n\n' + block, encoding='utf-8')
                 undo.append(lambda p=qpath, text=existing: p.write_text(text, encoding='utf-8'))
+                qpath.write_text(existing.rstrip('\n') + '\n\n' + block, encoding='utf-8')
             else:
                 write_new(qpath, '# Open Questions (general)\n\n' + block)
 

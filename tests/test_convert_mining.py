@@ -101,6 +101,40 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertIn('origin: tool', questions)
         self.assertIn('S-', questions)                   # source ref mapped to its S-id
 
+    def test_blank_claim_cell_skipped_with_warning(self) -> None:
+        facts = self.archive / 'mining' / 'facts.txt'
+        text = facts.read_text(encoding='utf-8')
+        text += (
+            '\n| Mary Hartley |  | 1900 | 1900 | High | Vitals | |\n'
+        )
+        facts.write_text(text, encoding='utf-8')
+
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        self.assertTrue(any('blank' in w.lower() and 'Claim' in w for w in plan.warnings))
+        mary_source = next(s for s in plan.sources if s.legacy_id == 'S001')
+        self.assertTrue(all(c.value for c in mary_source.claims))
+
+    def test_unattached_story_warns(self) -> None:
+        stories = self.archive / 'mining' / 'stories.txt'
+        text = stories.read_text(encoding='utf-8')
+        text += '\n## Someone Else (S999)\nAn orphaned story with no matching source.\n'
+        stories.write_text(text, encoding='utf-8')
+
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        self.assertTrue(any('S999' in w and 'story' in w.lower() for w in plan.warnings))
+
+    def test_question_with_unknown_source_warns(self) -> None:
+        questions = self.archive / 'mining' / 'questions.txt'
+        text = questions.read_text(encoding='utf-8')
+        text += '\n## Q: What happened to the missing source?\nsource: S999\n'
+        questions.write_text(text, encoding='utf-8')
+
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        self.assertTrue(any('S999' in w and 'questions.txt' in w for w in plan.warnings))
+        new_q = next(q for q in plan.questions
+                     if q['question'] == 'What happened to the missing source?')
+        self.assertEqual(new_q['refs'], [])
+
     def test_apply_writes_mapping_csv(self) -> None:
         self._apply()
         mapping = (self.archive / '.cache' / 'convert_mapping.csv').read_text(encoding='utf-8')
@@ -165,6 +199,12 @@ class ConvertMiningTestCase(unittest.TestCase):
         # Earliest/Latest land in different decades, each with an unknown
         # final digit -> the EDTF decade interval, not a dropped date.
         self.assertEqual(convert_mining.legacy_to_edtf('189?', '190?'), '189X/190X')
+
+    def test_legacy_to_edtf_mixed_decade_and_year_interval(self) -> None:
+        # One side an unknown-digit decade, the other a concrete year ->
+        # a decade/year interval, not a silently narrowed concrete-only date.
+        self.assertEqual(convert_mining.legacy_to_edtf('189?', '1900'), '189X/1900')
+        self.assertEqual(convert_mining.legacy_to_edtf('1890', '190?'), '1890/190X')
 
     def test_missing_mining_dir_errors(self) -> None:
         empty = self.archive.parent / 'empty'

@@ -2031,6 +2031,10 @@ def _run_process(args: argparse.Namespace) -> int:
         if _is_sidecar_path(file_path):
             companion = _companion_for_sidecar(file_path)
             if companion is None:
+                if args.more:
+                    print('ERROR: --more attaches a file to a record with an asset; '
+                          'a pointer-only source has none.', file=sys.stderr)
+                    return EXIT_ERRORS
                 return process_pointer_only(
                     archive_root, fha_config, file_path,
                     source_type=args.source_type, slug=args.slug, title=args.title,

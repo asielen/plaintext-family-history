@@ -713,6 +713,21 @@ class ProcessTestCase(unittest.TestCase):
         rec = read_record(record)
         self.assertEqual(rec['meta']['title'], 'CLI Title')
 
+    def test_sidecar_pointer_only_rejects_more(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'no-more.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\nexternal_links:\n  - url: https://x.test/y\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        extra = self.tmp / 'extra.txt'
+        extra.write_text('x', encoding='utf-8')
+
+        rc = self._run([str(sidecar), '--more', str(extra), 'attachment'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())  # not consumed on refusal
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
     def test_sidecar_pointer_only_dna_always_restricted(self) -> None:
         sidecar = self.archive / 'documents' / 'census' / 'dna-pointer.notes.md'
         sidecar.write_text(
