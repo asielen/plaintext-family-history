@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ place.name }} — {{ site_title }}{% endblock %}
+{% block content %}
+<article class="place">
+  <h1>{{ place.name }}</h1>
+  <p class="ids">Place {{ place.display_id }}</p>
+
+  <dl class="meta">
+    {% if place.hierarchy %}<dt>Location</dt><dd>{{ place.hierarchy }}</dd>{% endif %}
+    {% if place.alt_names %}<dt>Also known as</dt><dd>{{ place.alt_names | join(', ') }}</dd>{% endif %}
+    {% if place.map_url %}<dt>Map</dt><dd><a href="{{ place.map_url }}">View on OpenStreetMap</a></dd>{% endif %}
+  </dl>
+
+  {% if place.history %}
+  <h2>Names over time</h2>
+  <ul>
+    {% for h in place.history %}<li>{% if h.period %}{{ h.period }}: {% endif %}{{ h.hierarchy }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if place.micro %}
+  <h2>Places within</h2>
+  <ul>
+    {% for m in place.micro %}<li>{{ m }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if place.people %}
+  <h2>People associated</h2>
+  <ul>
+    {% for p in place.people %}<li>{{ p.html }} <span class="note">{{ p.count }} record{{ '' if p.count == 1 else 's' }}</span></li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <h2>Events here</h2>
+  {% if place.claims %}
+  <table class="claims">
+    <thead><tr><th>Type</th><th>Value</th><th>Date</th><th>People</th><th>Source</th></tr></thead>
+    <tbody>
+    {% for c in place.claims %}
+      <tr>
+        <td>{{ c.type }}</td>
+        <td>{{ c.value }}</td>
+        <td>{{ c.date }}</td>
+        <td>{{ c.persons_html }}</td>
+        <td>{{ c.source_html }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No events recorded at this place yet.</p>
+  {% endif %}
+</article>
+{% endblock %}

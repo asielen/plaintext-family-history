@@ -25,7 +25,7 @@ import argparse
 COMMANDS = (
     'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'photoindex',
     'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
-    'process', 'capture', 'convert-mining',
+    'process', 'capture', 'convert-mining', 'site',
 )
 
 
@@ -81,6 +81,30 @@ def _first_command_token(argv: list[str]) -> str | None:
             return None
         return tok
     return None
+
+
+def _load_site_module():
+    """Import tools/site.py under a private module name.
+
+    The tool's command is `fha site`, so its file must be `tools/site.py`
+    (BUILD.md M8.1) — but the stem `site` collides with Python's stdlib `site`
+    module, which is already in sys.modules from interpreter startup. A plain
+    `import site` therefore returns the stdlib module, not ours. Loading the
+    file by path under the alias `fha_site` sidesteps the collision without
+    disturbing the cached stdlib module the way replacing sys.modules['site']
+    would.
+    """
+    import importlib.util
+
+    mod = sys.modules.get('fha_site')
+    if mod is not None:
+        return mod
+    path = Path(__file__).parent / 'site.py'
+    spec = importlib.util.spec_from_file_location('fha_site', path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules['fha_site'] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _unknown_command_exit(command: str) -> int:
@@ -276,6 +300,10 @@ def main(argv: list[str] | None = None) -> int:
         from process import register as process_register
         from capture import register as capture_register
         from convert_mining import register as convert_mining_register
+        # 'site' shadows Python's stdlib site module (already cached in
+        # sys.modules at interpreter startup), so `from site import …` would
+        # find the wrong module. Load tools/site.py by path under a private name.
+        site_register = _load_site_module().register
 
         parser = build_parser()
         subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -298,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         process_register(subs)
         capture_register(subs)
         convert_mining_register(subs)
+        site_register(subs)
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))

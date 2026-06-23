@@ -294,6 +294,44 @@ class IndexCitationsPacketOutputTests(unittest.TestCase):
         self.assertEqual([r['token'] for r in rows], ['p-aaaaaaaaaa'])
 
 
+class IndexPublicationOkTests(unittest.TestCase):
+    """rights.publication_ok must be stored three-state: 1 (true), 0 (explicit
+    false), NULL (absent). The shared exporter predicate COALESCE(publication_ok,
+    1) = 0 — used by gedcom, wikitree, and site — only redacts on a stored 0, so
+    folding an explicit false to NULL (the old behavior) would silently leak a
+    source the human marked unpublishable."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(index._DDL)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _index(self, sid: str, rights_block: str) -> object:
+        path = self.archive_root / 'sources' / 'other' / f'src_{sid}.md'
+        _write(path, f'---\nid: {sid}\ntitle: Test\nsource_type: other\n{rights_block}---\n\n## Claims\n')
+        index._index_source(self.conn, path, self.archive_root, {})
+        return self.conn.execute(
+            'SELECT publication_ok FROM sources WHERE id = ?', (sid.lower(),)
+        ).fetchone()['publication_ok']
+
+    def test_explicit_true_stored_as_one(self) -> None:
+        self.assertEqual(self._index('S-aaaaaaaaaa', 'rights:\n  publication_ok: true\n'), 1)
+
+    def test_explicit_false_stored_as_zero(self) -> None:
+        self.assertEqual(self._index('S-bbbbbbbbbb', 'rights:\n  publication_ok: false\n'), 0)
+
+    def test_absent_rights_stored_as_null(self) -> None:
+        self.assertIsNone(self._index('S-cccccccccc', ''))
+
+    def test_rights_without_publication_ok_stored_as_null(self) -> None:
+        self.assertIsNone(self._index('S-dddddddddd', 'rights:\n  holder: family collection\n'))
+
+
 class FullRebuildClearsStaleRowsTests(unittest.TestCase):
     """A full rebuild must not leave stale hypotheses/search_log rows behind
     once an entry is removed from disk — _drop_tables already lists both

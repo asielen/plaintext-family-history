@@ -157,6 +157,21 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ M7.5-M7.7 - paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; see "fha capture - implementation status" below |
 | `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.8 - one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; see "fha convert-mining - implementation status" below |
 
+## Implemented tools (milestone 8, in progress)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha site [--out PATH] [--standalone \| --linked] [--dry-run]` | `site.py`, `templates/` | ◐ M8.1-M8.4 - static-HTML explorer: source page (M8.1), curated person page (M8.2), place + discoveries pages (M8.3), home page (surname A-Z + discoveries teaser) + standalone redaction audit (M8.4); interactive tree is M8.5 (not yet built). See "fha site - implementation status" below |
+
+`fha site` reads structured data only from `.cache/index.sqlite` (so the site is
+as fresh as the last `fha index`), reads biography/Stories prose from the curated
+person `.md` and the citation text from the source `.md` frontmatter (neither is
+in the index), and reads the photo strip from `.cache/photos.sqlite` when fresh.
+It writes only to the output directory (default `.cache/site/`), never to the
+archive. **Dependencies:** Jinja2 (required); Pillow (optional — standalone image
+derivatives use it when present; without it the standalone site omits images
+rather than copying originals, which would leak EXIF). See `tools/requirements.txt`.
+
 ## fha process - implementation status
 
 This is Stage A (the deterministic mint + mark + scaffold) of the intake
@@ -205,6 +220,66 @@ role hints, already-processed-photo refusal, sidecar-named asset inclusion,
 late-failure rollback, no-asset refusal). Run with `python -m unittest
 tests.test_process -v` from the
 repo root.
+
+## fha site - implementation status
+
+The static-HTML family explorer (TOOLING §12). Reads structured data from
+`.cache/index.sqlite`, prose from the person `.md`, citation text from the
+source `.md` frontmatter, and the photo strip from `.cache/photos.sqlite`.
+Writes only to the output directory.
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Source page (M8.1) | ✓ | Citation block (read from the source `.md` frontmatter, title fallback), source metadata, claims table with status badges (all statuses shown; people linked to their pages), and a files list (thumbnails + links). A malformed source record warns plainly and still renders with its title in place of the citation; one bad page never aborts the build |
+| Person page (M8.2) | ✓ | Summary block from accepted vital claims; biography + Stories HTML (stdlib markdown→HTML + token swap, read from the person `.md`); timeline (accepted + needs-review, decade-grouped — same query as `fha views timeline`, suggested excluded); sources index grouped by `source_type` (same two-table UNION as `fha views sources-index`); photo strip (`photo_people`, one entry per variation group); Friends & Family from the `relationships` edges |
+| Token swap | ✓ | `TOKEN_RE` in prose → relative hrefs: `[P-id]` → person page (or "Living Person" when redacted, or plain name for a stub/page-less person); `[S-id]` → source page (or "Restricted — not included in this publication" when redacted); `[L-id]` → place name (place pages are M8.3, no link yet); any unresolved token → `<mark>[X-xxxx]</mark>` |
+| `--standalone` (default) | ✓ | Self-contained, redacted snapshot. Living/unknown persons get **no page** and render as "Living Person"; restricted, DNA, and `rights.publication_ok: false` sources get **no page** and render as "Restricted…"; image assets become resized (≤1200px), EXIF-stripped derivatives copied into `site/media/`. A page is linked only if it was generated (no dangling redacted links) |
+| `--linked` | ✓ | Local developer preview: real archive paths (no copies), no redaction. Mutually exclusive with `--standalone` |
+| `--out PATH` | ✓ | Output directory (default `.cache/site/` under the archive root); absolute or archive-relative |
+| `--dry-run` | ✓ | Reports how many pages would be built; writes nothing |
+| Idempotent rebuild | ✓ | Each run clears only the subtrees it owns (`persons/`, `sources/`, `media/`, `index.html`) before regenerating, so a record that becomes redacted loses its stale page |
+| Output-path safety | ✓ | Refuses (exit 3) to build into the archive root or another archive's folder (its `sources/` clear-on-rebuild would otherwise delete real records); the default `.cache/site/` is always safe |
+| Place page (M8.3) | ✓ | Name, coords as an OpenStreetMap **URL** (no embedded map), dated `history:`, claims naming the place, contained micro-places (`within:` children, linked), and a people-frequency list. `[L-id]` tokens in prose now link here. People links redact as everywhere; the people-frequency list omits redacted persons entirely so a standalone place page never names a living person |
+| Discoveries page (M8.3) | ✓ | Renders `notes/discoveries.md` through the same prose→HTML + token swap, so `[P-id]`/`[S-id]` mentions link (and living persons redact to "Living Person") for free. Missing/empty file → a plain "nothing logged yet" page |
+| Home page (M8.4) | ✓ | Surname A-Z index (built from `person_pages`, so redacted persons are already excluded), a recent-discoveries teaser (last 5 `##`/`###` sections or top-level bullets of `discoveries.md`, redacted), plus place and source navigation so every generated page is reachable |
+| Standalone redaction audit (M8.4) | ✓ | Enforced structurally: all cross-links resolve against the authoritative `person_pages`/`source_pages`/`place_pages` sets decided once in `prepare()`, so a page is linked only if it was generated. `tests/test_site.py` crawls every emitted standalone page and asserts no `persons/`/`sources/` href points at a missing page |
+| Interactive tree rendering (M8.5) | ⚑ deferred | Future phase; consumes `fha views tree --format json` |
+| Exit codes | ✓ | 0 clean; 1 if any page warned (missing asset, malformed record, image that couldn't be processed); 3 (`EXIT_FAILURE`, the convention `fha packet` uses for can't-run refusals) for the Jinja2-missing, index-absent, and unsafe-output paths, each with a plain install / `fha index` / pick-another-folder hint |
+
+`fha site`'s file is `tools/site.py`, but the module stem `site` collides with
+Python's stdlib `site`; `fha.py` (and `tests/test_site.py`) load it by path under
+the private name `fha_site` to avoid the cached-stdlib-module collision.
+
+**Index dependency note:** M8.1 also corrected `index.py` to store
+`rights.publication_ok` three-state (`1`=true, `0`=explicit false, `NULL`=absent)
+instead of folding explicit false to `NULL`. The shared redaction predicate
+`COALESCE(publication_ok, 1) = 0` (used by `fha site`, `fha gedcom`, `fha wikitree`)
+only fires on a stored `0`, so this is what makes a `publication_ok: false` source
+actually withheld from public output. No DDL or schema-version change (the column
+already existed); rebuild with `fha index`.
+
+Automated tests: `tests/test_site.py` (stdlib `unittest`) builds a synthetic
+`.cache/index.sqlite` (and, where needed, `.cache/photos.sqlite`) the same way
+`tests/test_packet.py` does, and writes the prose/citation `.md` files alongside.
+It covers the source page (citation/claims/status/people-links, missing-asset
+note), source redaction (restricted/DNA/`publication_ok: false` → no page +
+"Restricted" reference; present in `--linked`), the person page (all sections,
+biography token swap including the unresolved-`<mark>` case, timeline
+needs-review-in/suggested-out + decade grouping, grouped F&F and sources),
+person redaction (living/unknown → no page; `unknown` treated as living; stub
+never paged; present in `--linked`), the malformed-source-warns-and-continues
+path, `--dry-run` writing nothing, idempotent rebuild dropping a now-redacted
+page, the no-index status, the unsafe-output refusal (archive root as `--out`),
+the standalone image derivative (resized + EXIF-stripped) vs. linked file link
+vs. non-image "kept in the archive", and the prose→HTML converter
+(headings/bold/lists/links + HTML escaping). M8.3/M8.4 add: the place page
+(coords URL, alt-names, dated history, claims, micro-place links, people list)
+and `[L-id]` token linking; the discoveries page (P/S linking + living-person
+redaction) and the home discoveries teaser + missing-file path; the home surname
+A-Z index and its omission of living persons under standalone; and a
+standalone redaction audit that crawls every emitted page and asserts no
+`persons/`/`sources/` link points at a page that wasn't generated. Run with
+`python -m unittest tests.test_site -v` from the repo root.
 
 ## fha capture - implementation status
 

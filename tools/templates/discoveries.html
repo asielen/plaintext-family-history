@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Discoveries — {{ site_title }}{% endblock %}
+{% block content %}
+<article class="discoveries">
+  <h1>Discoveries</h1>
+  {% if content_html %}
+  {{ content_html }}
+  {% else %}
+  <p class="empty">No discoveries have been logged yet.</p>
+  {% endif %}
+</article>
+{% endblock %}

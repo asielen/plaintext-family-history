@@ -112,6 +112,23 @@ was lost - only temporarily out of reach.
 
 ---
 
+## "Building the website failed" or the site has no photos
+
+**What happened.** Making the family website (`fha site`) needs one extra free program called
+Jinja2, and - just for photos in the shareable version - a second one called Pillow. If a message
+says the site needs Jinja2, that program isn't installed yet. If the site builds but no photos show
+up in the standalone (shareable) version, Pillow is the missing piece.
+
+**Fix.** Run `fha doctor` - near the top it now reports both, with the exact install command. To
+build the site at all, install Jinja2: `python -m pip install jinja2`. For photos in the shareable
+snapshot, also install Pillow: `python -m pip install pillow` (both are in `tools/requirements.txt`,
+so `python -m pip install -r tools/requirements.txt` does it in one go). The website is rebuildable
+any time from your records - nothing about your archive changed. Note that the *shareable*
+(`--standalone`) site leaves photos out rather than copying originals when Pillow is missing, on
+purpose: it never lets a photo's hidden location data slip into something you hand to a relative.
+
+---
+
 ## "I don't have git - how do I undo?"
 
 **What happened.** You don't use GitHub, so there's no commit history to roll back to - but you can

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ site_title }}{% endblock %}
+{% block content %}
+<article class="home">
+  <h1>{{ site_title }}</h1>
+  <p>{{ intro }}</p>
+
+  {% if discoveries %}
+  <h2>Recent discoveries</h2>
+  <div class="discoveries-teaser">
+    {% for d in discoveries %}{{ d }}{% endfor %}
+  </div>
+  <p><a href="discoveries.html">All discoveries →</a></p>
+  {% endif %}
+
+  <h2>People</h2>
+  {% if surnames %}
+  {% for group in surnames %}
+  <h3>{{ group.letter }}</h3>
+  <ul class="index-list">
+    {% for p in group.people %}<li><a href="{{ p.href }}">{{ p.name }}</a></li>{% endfor %}
+  </ul>
+  {% endfor %}
+  {% else %}
+  <p class="empty">No people are published yet.</p>
+  {% endif %}
+
+  {% if places %}
+  <h2>Places</h2>
+  <ul class="index-list">
+    {% for pl in places %}<li><a href="{{ pl.href }}">{{ pl.name }}</a></li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <h2>Sources</h2>
+  {% if sources %}
+  <ul class="index-list">
+    {% for s in sources %}<li><a href="{{ s.href }}">{{ s.title }}</a></li>{% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No sources are published yet.</p>
+  {% endif %}
+</article>
+{% endblock %}

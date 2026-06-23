@@ -657,9 +657,14 @@ def _index_source(
     date_edtf = str(meta.get('source_date', ''))
     mn, mx = edtf_bounds(date_edtf) if date_edtf else ('', '')
     restricted = 1 if meta.get('restricted') in (True, 'true') else 0
+    # Three-state on purpose: exporters distinguish "explicitly not publishable"
+    # from "unset". 1 = rights.publication_ok true; 0 = explicit false; NULL =
+    # absent (publishable by default). The redaction predicate consumers share
+    # is COALESCE(publication_ok, 1) = 0 (gedcom, wikitree, site), which only
+    # fires on a stored 0 — so a false MUST be stored as 0, not folded to NULL.
     pub_ok = meta.get('rights', {})
-    if isinstance(pub_ok, dict):
-        pub_ok = 1 if pub_ok.get('publication_ok') in (True, 'true') else None
+    if isinstance(pub_ok, dict) and 'publication_ok' in pub_ok:
+        pub_ok = 1 if pub_ok.get('publication_ok') in (True, 'true') else 0
     else:
         pub_ok = None
 

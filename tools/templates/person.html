@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}{{ person.name }} — {{ site_title }}{% endblock %}
+{% block content %}
+<article class="person">
+  <h1>{{ person.name }}</h1>
+  <p class="ids">Person {{ person.display_id }}</p>
+
+  {% if person.summary %}
+  <dl class="summary">
+    {% for row in person.summary %}
+    <dt>{{ row.label }}</dt>
+    <dd>{{ row.value }}{% if row.place %} — {{ row.place }}{% endif %} {{ row.source_html }}</dd>
+    {% endfor %}
+  </dl>
+  {% endif %}
+
+  {% if person.biography_html %}
+  <h2>Biography</h2>
+  {{ person.biography_html }}
+  {% endif %}
+
+  <h2>Timeline</h2>
+  {% if person.timeline %}
+  <div class="timeline">
+    {% for group in person.timeline %}
+      {% if group.decade %}<h3>{{ group.decade }}</h3>{% endif %}
+      <ul>
+        {% for e in group.entries %}
+        <li>{{ e.date }} — {{ e.type }}: {{ e.value }}{% if e.place %} @ {{ e.place }}{% endif %} {{ e.source_html }}</li>
+        {% endfor %}
+      </ul>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No dated events recorded yet.</p>
+  {% endif %}
+
+  {% if person.photos %}
+  <h2>Photographs</h2>
+  <div class="photo-strip">
+    {% for p in person.photos %}
+    <figure>
+      {% if p.href %}<a href="{{ p.full_href }}"><img class="thumb" src="{{ p.href }}" alt="{{ p.caption or person.name }}"></a>{% endif %}
+      {% if p.caption %}<figcaption>{{ p.caption }}</figcaption>{% endif %}
+    </figure>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if person.stories_html %}
+  <h2>Stories</h2>
+  {{ person.stories_html }}
+  {% endif %}
+
+  {% if person.family %}
+  <h2>Friends &amp; Family</h2>
+  {% for group in person.family %}
+  <h3>{{ group.label }}</h3>
+  <ul>
+    {% for m in group.members %}<li>{{ m }}</li>{% endfor %}
+  </ul>
+  {% endfor %}
+  {% endif %}
+
+  <h2>Sources</h2>
+  {% if person.sources %}
+  {% for group in person.sources %}
+  <h3>{{ group.source_type }}</h3>
+  <ul>
+    {% for s in group.sources %}<li>{{ s }}</li>{% endfor %}
+  </ul>
+  {% endfor %}
+  {% else %}
+  <p class="empty">No sources cite this person yet.</p>
+  {% endif %}
+</article>
+{% endblock %}

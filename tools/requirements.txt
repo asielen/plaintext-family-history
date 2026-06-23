@@ -1,0 +1,14 @@
+# Python dependencies for the fha tool suite.
+# Install with:  python -m pip install -r tools/requirements.txt
+#
+# Core (every command):
+PyYAML>=6.0
+# Publication (`fha site`, TOOLING §12):
+Jinja2>=3.1
+# Optional — standalone-site image derivatives (`fha site`, no --linked).
+# Without it the standalone site simply omits photos (originals never leave
+# the archive); install it to publish EXIF-stripped web images.
+Pillow>=10.0
+#
+# Not a Python package: exiftool must be on PATH for photo features
+# (fha photoindex, fha process photos). See exiftool.org.

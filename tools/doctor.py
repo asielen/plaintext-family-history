@@ -12,7 +12,7 @@ Checks (in order):
   1. Archive root present, fha.yaml parses              [fatal exit 2 if bad]
   2. Mapped roots (photos/, documents/, …) reachable
   3. exiftool on PATH
-  4. Python deps (PyYAML)
+  4. Python deps (PyYAML; Jinja2/Pillow for `fha site`)
   5. Index freshness    (.cache/index.sqlite vs newest record mtime)
   6. Photoindex freshness  (.cache/photos.sqlite vs photos root mtime)
   7. Lint summary       (E/W counts, import-and-call, no shell-out)
@@ -421,6 +421,27 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
         )
         worst = max(worst, EXIT_WARNINGS)
     print(f'python deps (PyYAML): {_OK}  next: no action needed')
+
+    # Publication deps (fha site). Jinja2 is required for `fha site`, like
+    # exiftool is for photos — its absence is a warning, not a hard error,
+    # because the rest of the suite runs without it. Pillow is purely optional
+    # (standalone-site image derivatives) so its absence is informational only.
+    import importlib.util as _ilu
+    if _ilu.find_spec('jinja2') is not None:
+        print(f'jinja2 (fha site): {_OK}  next: no action needed')
+    else:
+        print(
+            f'jinja2 (fha site): {_WARN} not installed  '
+            'next: `python -m pip install jinja2` to build the family website'
+        )
+        worst = max(worst, EXIT_WARNINGS)
+    if _ilu.find_spec('PIL') is not None:
+        print(f'pillow (fha site images): {_OK}  next: no action needed')
+    else:
+        print(
+            'pillow (fha site images): not installed (optional)  '
+            'next: `python -m pip install pillow` for photos in the standalone site'
+        )
     print()
 
     idx_status, idx_delta = _index_freshness(archive_root)
