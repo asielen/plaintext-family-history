@@ -133,6 +133,7 @@ SECTIONS: list[tuple[str, str, str]] = [
 _SECTION_KEYS = {key for key, _num, _title in SECTIONS}
 
 _SEARCH_LOG_HORIZON_DAYS = 18 * 30   # TOOLING §15a §5 default re-run horizon
+_CAPTURE_RECENCY_DAYS = 30   # how long an unreconciled `fha capture` stays called out here
 
 
 # ── Snapshot ──────────────────────────────────────────────────────────────────
@@ -537,12 +538,21 @@ def _section_contradictions(findings: list) -> list[str]:
 
 def _section_search_log(conn, current: dict) -> list[str]:
     """
-    Annotate leads from the other sections with prior search_log activity.
+    Annotate leads from the other sections with prior search_log activity,
+    then call out recent `fha capture` pages that aren't tied to any lead.
 
     Leads = persons with a vitals gap, a suggested-claim backlog (review
     queue), or a contradiction — the same person sets the other sections
     already surfaced, gathered here rather than threading lead lists between
     section functions.
+
+    Capture rows always carry `person_id IS NULL` (TOOLING §13b: a stub
+    hasn't been reconciled to a person yet), so they can never match a lead
+    above by construction. Without a separate call-out they'd be invisible
+    here even though they're sitting durably in search_log — listing the
+    recent ones (capped to a short window so this doesn't grow into a
+    permanent unread backlog) at least keeps them in view until `fha
+    process` resolves the stub into a real record.
     """
     lead_pids: set[str] = set(current['vitals_gap_person_ids'])
     lead_pids.update(
@@ -557,33 +567,53 @@ def _section_search_log(conn, current: dict) -> list[str]:
             "JOIN claim_persons cp ON cp.claim_id = cl.claim_id WHERE cl.rel = 'contradicts'"
         )
     )
-    if not lead_pids:
-        return ['No leads to check against the search log.']
 
-    horizon = datetime.date.today() - datetime.timedelta(days=_SEARCH_LOG_HORIZON_DAYS)
     lines: list[str] = []
-    for pid in sorted(lead_pids):
-        rows = conn.execute(
-            'SELECT date, collection, repository, result FROM search_log WHERE person_id=? ORDER BY date DESC',
-            (pid,),
-        ).fetchall()
-        if not rows:
+    if lead_pids:
+        horizon = datetime.date.today() - datetime.timedelta(days=_SEARCH_LOG_HORIZON_DAYS)
+        for pid in sorted(lead_pids):
+            rows = conn.execute(
+                'SELECT date, collection, repository, result FROM search_log WHERE person_id=? ORDER BY date DESC',
+                (pid,),
+            ).fetchall()
+            if not rows:
+                continue
+            label = _person_label(conn, pid)
+            for row in rows:
+                try:
+                    stale = datetime.date.fromisoformat(row['date']) < horizon
+                except (TypeError, ValueError):
+                    stale = False
+                result = str(row['result'] or '').strip().lower()
+                nil_result = result in {'nil', 'none', 'no results', 'not found', 'negative'}
+                note = (
+                    'worth re-running (stale nil search)'
+                    if stale and nil_result
+                    else f"already searched {row['date']}"
+                )
+                collection = row['collection'] or row['repository'] or '(unspecified collection)'
+                lines.append(f'- {label} — {collection}: {note}')
+
+    recency = datetime.date.today() - datetime.timedelta(days=_CAPTURE_RECENCY_DAYS)
+    captured = conn.execute(
+        "SELECT date, question, repository, collection FROM search_log "
+        "WHERE person_id IS NULL ORDER BY date DESC LIMIT 20"
+    ).fetchall()
+    capture_lines = []
+    for row in captured:
+        try:
+            recent = datetime.date.fromisoformat(row['date']) >= recency
+        except (TypeError, ValueError):
+            recent = False
+        if not recent:
             continue
-        label = _person_label(conn, pid)
-        for row in rows:
-            try:
-                stale = datetime.date.fromisoformat(row['date']) < horizon
-            except (TypeError, ValueError):
-                stale = False
-            result = str(row['result'] or '').strip().lower()
-            nil_result = result in {'nil', 'none', 'no results', 'not found', 'negative'}
-            note = (
-                'worth re-running (stale nil search)'
-                if stale and nil_result
-                else f"already searched {row['date']}"
-            )
-            collection = row['collection'] or row['repository'] or '(unspecified collection)'
-            lines.append(f'- {label} — {collection}: {note}')
+        collection = row['collection'] or row['repository'] or '(unspecified collection)'
+        capture_lines.append(f"- {row['date']} — {collection}: {row['question']}")
+    if capture_lines:
+        if lines:
+            lines.append('')
+        lines.append('Recently captured (not yet linked to a person):')
+        lines.extend(capture_lines)
 
     return lines or ['No matching search-log entries for current leads.']
 
