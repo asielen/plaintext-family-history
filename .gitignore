@@ -15,6 +15,13 @@ private/
 # …) is real archive content and must stay trackable.
 /out/
 
+# fha install / update-tools footprints — these belong inside a *real archive*,
+# never in the public spec repo. Ignored so a stray local test of `fha install`
+# against a checked-out folder can't accidentally commit them. (manifest.json,
+# the committed packing list, is NOT ignored — it is tracked on purpose.)
+.plainfile-version
+.plainfile-backup/
+
 # But DO keep fixture assets if/when added
 !example-archive/documents/
 !example-archive/photos/

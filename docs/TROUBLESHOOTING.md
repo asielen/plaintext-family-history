@@ -129,6 +129,42 @@ purpose: it never lets a photo's hidden location data slip into something you ha
 
 ---
 
+## Setting up the tools, or "install says it's already installed"
+
+**What happened.** `fha install` is the *first-time* setup - it copies the tools, the rulebooks,
+and the docs into a brand-new archive folder and stamps it. Run a second time on the same folder,
+it stops on purpose ("already has the plainfile tools installed") so it can't quietly overwrite an
+archive you've been working in.
+
+**Fix.** If you're starting fresh, point `install` at a folder that doesn't exist yet (it creates
+it): `python tools/fha.py install my-family-archive --repo .`, run from your copy of the tools.
+If you already have an archive and just want the *newest* tools, that's a different command -
+`fha update-tools` (next entry). If `install` says Python is too old, install Python 3.10 or later
+from python.org; if it warns that exiftool is missing, that's only a heads-up - install still
+finishes, and photo features start working once you add exiftool from exiftool.org. The download
+also works from an unzipped folder, no GitHub required - just point `--repo` at the folder that
+contains `manifest.json`.
+
+---
+
+## After updating the tools, there's a ".plainfile-backup" folder
+
+**What happened.** `fha update-tools` pulls in improved tools without ever overwriting your work.
+If you'd edited one of the tool or rulebook files, it tucked *your* version into
+`.plainfile-backup/{date}/` before laying down the new one, and told you so. A file that was
+retired upstream goes there too. Nothing is deleted - the backup folder is just the safety net.
+
+**Fix.** Nothing is required; the new tools are already in place and working. When you have a
+moment, open the backed-up file alongside the current one, copy over any change of yours worth
+keeping, then delete the `.plainfile-backup` folder - you're the only one who decides when it goes.
+`fha doctor` reminds you it's there until you do. (`fha.yaml` and your `places.yaml` are *never*
+touched by an update - your photo locations and place list stay exactly as you left them.) If
+`update-tools` says it can't find your tools, add `--repo PATH` pointing at the folder that holds
+`manifest.json`; if it says "this does not look like an archive," run it from inside your archive
+folder.
+
+---
+
 ## "I don't have git - how do I undo?"
 
 **What happened.** You don't use GitHub, so there's no commit history to roll back to - but you can

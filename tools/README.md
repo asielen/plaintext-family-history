@@ -172,6 +172,20 @@ archive. **Dependencies:** Jinja2 (required); Pillow (optional — standalone im
 derivatives use it when present; without it the standalone site omits images
 rather than copying originals, which would leak EXIF). See `tools/requirements.txt`.
 
+## Implemented tools (milestone 9)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha install ARCHIVE-PATH [--repo PATH] [--dry-run]` | `scaffold.py`, `manifest.json` | ✓ M9.1 - first-time bootstrap: copy the operating layer + skeleton into a new archive and stamp `.plainfile-version`. See "fha install / fha update-tools - implementation status" below |
+| `fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH]` | `scaffold.py` | ✓ M9.2 - refresh the operating layer from an updated public clone; back up customized/retired files, never delete, never touch skeleton seeds. See below |
+
+`manifest.json` (repo root) is the committed packing list every install/update reads.
+It is regenerated from the repo - not hand-edited - with the maintenance command
+`python tools/scaffold.py write-manifest --repo .` after any change to a tool, doc, or
+skeleton file; `tests/test_scaffold.py`'s manifest-sync test fails the build if the
+committed copy drifts from the repo. The `fha` command surface is exactly `install` +
+`update-tools`; `write-manifest` is a tool-builder-only path, not part of it.
+
 ## fha process - implementation status
 
 This is Stage A (the deterministic mint + mark + scaffold) of the intake
@@ -425,7 +439,48 @@ Automated tests: `tests/test_wikitree.py` builds a small on-disk archive (profil
 | Inbox aging (14 days) | ✓ | printed only when inbox/ dir exists |
 | Counts | ✓ | from index when fresh, else quick scan |
 | E018 findings detail | ✓ | lists findings when present |
+| Tools version (M9) | ✓ | reads `.plainfile-version` (present/absent/unreadable) + counts pending `.plainfile-backup/` files; unreadable stamp → exit 1, else informational. Self-contained read (no import of scaffold.py) |
 | Backup reminder | ✓ | always printed |
+
+## fha install / fha update-tools - implementation status
+
+The scaffolding pair (TOOLING §13c). `manifest.json` is the committed packing list;
+both commands read it and copy operating-layer + skeleton files between a public-repo
+clone (or unzipped download) and a private archive. Generic glue - touches no family data.
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| `manifest.json` | ✓ M9.1 | One JSON object listing every operating-layer + skeleton file with `path`, `category` (`operating`/`skeleton`), `sha256`, `spec_version` (parsed from SPEC.md's version line), and a `src` field on skeleton entries whose archive path drops the `archive-template/` prefix. Built by a repo walk: the root rulebooks (`README.md`/`SPEC.md`/`TOOLING.md`/`AGENTS.md`/`AGENTS_TOOLING.md`/`CLAUDE.md`/`BUILD.md`), all of `tools/` (minus `__pycache__`/`*.pyc`), all of `docs/`, the agent workflow skills under `.claude/skills/`, and the `archive-template/` contents (minus its own `README.md`). Excludes spec-repo furniture (`example-archive/`, `archive-template/` as a folder, `tests/`, `.github/`, `.claude/settings.json`, `PRIVACY.md` - the public-repo "no real data" policy, contradictory inside a real archive - `RELEASE_CHECKLIST.md`, `manifest.json` itself) |
+| docs scope | ✓ | The whole `docs/` folder ships, not just BUILD.md M9.1's named five - they are the floor; a directory rule keeps every doc cross-link intact in an installed archive and auto-covers future docs. The operating layer also ships `README.md` (project orientation) and `.claude/skills/` (the genealogy workflow procedures) - everything a genealogist needs to operate, minus public-repo furniture |
+| `fha install` copy + stamp | ✓ M9.1 | Creates `ARCHIVE-PATH` if absent; copies every manifest file (skeleton remapped to archive root); writes `.plainfile-version` (manifest version, spec version, install timestamp, per-file SHA256). Validates every source exists **before** writing, so a broken clone fails clean with no half-installed archive |
+| Preflight | ✓ M9.1 | Python ≥ 3.10 → friendly download pointer + hard stop if older; `exiftool` missing → advisory only, install still finishes (photo features wait) |
+| Re-install guard | ✓ | Refuses an archive that already has `.plainfile-version` or `tools/fha.py`, pointing at `fha update-tools` - install is one-time |
+| Zip-based / git-free | ✓ M9.1 | `--repo` only needs a directory containing `manifest.json`; `.git/` is never referenced. `--repo` defaults to the tools being run from (correct for a clone or an unzipped download) |
+| `fha install --dry-run` | ✓ | Previews the file/skeleton counts and the stamp path; writes nothing (BUILD.md "every mutating op ships `--dry-run`") |
+| `fha update-tools` reconcile | ✓ M9.2 | Compares the manifest against `.plainfile-version` and classifies each **operating** file: new → copy; unchanged-from-stock (disk == recorded) → overwrite silently; customized (disk differs from recorded) → move to `.plainfile-backup/{date}/` then install stock; already-current (disk == new stock) → no-op. Retired (recorded but gone from the manifest, still on disk) → move to backup. Never deletes |
+| Skeleton-is-install-once | ✓ M9.2 | `update-tools` reconciles only `category: operating` files. Skeleton seeds (`fha.yaml`, `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, the `.gitkeep`s) are **never touched** - they fill with the human's config/data, so refreshing them would clobber it. The stamp carries their checksums over unchanged. This realizes §13c's governing principle ("never silently overwrites your work") for the two files most certain to be customized; surfaced as a TOOLING §13c clarification |
+| Backup safety | ✓ | `.plainfile-backup/{date}/{path}` preserves the archive subtree; a same-day collision gets a `-2`/`-3` suffix so an earlier backup is never overwritten. Per-file outcome messages and the `Done:` summary counts are emitted **after** each operation succeeds (and count only actual successes), so a per-file copy/move `OSError` never produces a false "backed up / updated" line; the failure is reported on stderr and downgrades the run to exit 1 |
+| Stamp rewrite | ✓ | After an update each operating file's recorded baseline is: its new on-disk hash if installed this run; its on-disk hash (== stock) if it was already current; or — if it **failed** this run — the **prior** recorded baseline, never the failed file's current bytes (recording a failed customized file's edit would make the next run treat it as pristine stock and silently overwrite it). Skeleton entries carry over verbatim; retired files that moved drop out, while a retired file whose move failed stays recorded so the next run retries it. `--dry-run` writes no stamp |
+| No-stamp archive | ✓ | An archive whose tools were hand-copied (no `.plainfile-version`) is handled: every differing existing file is treated as customized (backed up, never overwritten); identical hand-copies match new stock and are left alone |
+| `fha update-tools --dry-run` | ✓ M9.2 | Prints the full plain-English would-do plan and a summary line; writes nothing |
+| `--verbose` | ✓ | Also lists files that are already up to date |
+| `--repo` required + archive check | ✓ | Missing `--repo` → the BUILD.md-specified "run from inside your archive, with --repo pointing to your copy of the plainfile tools" message; not-an-archive (auto-detect finds no `fha.yaml`, **or** an explicit `--root` points at a folder without `fha.yaml`) → a distinct plain refusal before any file is written; all exit 3 |
+| `write-manifest` (maintenance) | ✓ | `python tools/scaffold.py write-manifest --repo .` regenerates `manifest.json`; not on the `fha` surface. Kept honest by `tests/test_scaffold.py`'s manifest-sync test |
+| Exit codes | ✓ | 0 clean (incl. install with the exiftool advisory, and an update that backed files up); 1 if some files couldn't be written/moved (reported); 3 for can't-run (Python too old, missing/invalid manifest, re-install refusal, missing `--repo`, not-an-archive, write failure) |
+
+Automated tests: `tests/test_scaffold.py` (stdlib `unittest`) builds a tiny **git-free** fake
+repo (3 operating + 3 skeleton files) and throwaway archives, covering install (copy + remap +
+stamp, dry-run no-op, re-install refusal, missing-source/missing-manifest refusal, Python-too-old
+hard stop, exiftool-advisory-only), every update outcome (no-op, stock-overwrite, customized
+backup, retired quarantine, added file, dry-run no-op, no-stamp hand-copied archive), the critical
+**skeleton-never-touched** safety property, the partial-failure paths (a mocked `shutil.move`
+failure: no false-success output, honest summary counts, and — the data-loss regression — a failed
+customized update keeps the edit safe so the retry backs it up instead of silently overwriting it;
+a failed retired move stays tracked and is retried), the friendly `_cmd_*` error exits (missing
+`--repo`, not-an-archive, **explicit `--root` that isn't an archive**, bad repo), and a
+**manifest-sync** guard that recomputes the manifest from the real repo and asserts the committed
+`manifest.json` still matches (so a forgotten regeneration fails CI).
+Run with `python -m unittest tests.test_scaffold -v` from the repo root.
 
 ## fha find - implementation status
 

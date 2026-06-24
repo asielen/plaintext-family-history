@@ -25,7 +25,7 @@ import argparse
 COMMANDS = (
     'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'photoindex',
     'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
-    'process', 'capture', 'convert-mining', 'site',
+    'process', 'capture', 'convert-mining', 'site', 'install', 'update-tools',
 )
 
 
@@ -300,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         from process import register as process_register
         from capture import register as capture_register
         from convert_mining import register as convert_mining_register
+        from scaffold import register as scaffold_register
         # 'site' shadows Python's stdlib site module (already cached in
         # sys.modules at interpreter startup), so `from site import …` would
         # find the wrong module. Load tools/site.py by path under a private name.
@@ -327,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         capture_register(subs)
         convert_mining_register(subs)
         site_register(subs)
+        scaffold_register(subs)  # adds both 'install' and 'update-tools'
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))

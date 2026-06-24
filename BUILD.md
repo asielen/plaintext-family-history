@@ -49,7 +49,8 @@ the insertion point in the same edit.
 | 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
 | 7 | Layer 7 - Intake pipeline | M7.1-M7.8 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
 | 8 | Layer 8 - Publication | M8.1-M8.5 | ✓ shipped - M8.1 (`fha site` foundations: query layer, Jinja2, source page), M8.2 (person page), M8.3 (place + discoveries pages), M8.4 (home page + standalone redaction audit), M8.5 (interactive trees via a vendored, dependency-free renderer + adapter seam) |
-| 9 | Layer 9 - Scaffolding | M9.1-M9.2 | future |
+| 9 | Layer 9 - Scaffolding | M9.1-M9.2 | ✓ shipped - M9.1 (`fha install` + `manifest.json`: bootstrap an archive's operating layer + skeleton, stamp `.plainfile-version`, zip/git-free), M9.2 (`fha update-tools`: refresh the operating layer, back up customized/retired files, never delete, never touch skeleton seeds) |
+| 10 | Layer 10 - Working-copy mode | M10.1 | ratified, **not yet built** (SPEC §12.4 + TOOLING §13d formalize it; design + done-criteria at the end of this file) |
 
 ---
 
@@ -1382,7 +1383,7 @@ the tool suite is substantially complete.
 
 ---
 
-### M9.1 - `fha install` + `manifest.json`
+### M9.1 - `fha install` + `manifest.json` (✓ shipped)
 
 **One PR.** New file `tools/scaffold.py`. Wire `fha install <archive-path>`. Create
 `manifest.json` at repo root (TOOLING §13c). This phase ships the manifest and the
@@ -1392,15 +1393,19 @@ empty one) is M9.2.
 
 **`manifest.json`:** one JSON object listing every operating-layer file with `path`, `sha256`,
 `spec_version`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`,
-`CLAUDE.md`, `BUILD.md`, and the skeleton (`fha.yaml` template, the empty record dirs, seeded
-`places.yaml`). Also covers the human-facing docs that must ship into every archive:
+`CLAUDE.md`, `BUILD.md`, the public `README.md` (project orientation), the agent workflow
+procedures under `.claude/skills/`, and the skeleton (`fha.yaml` template, the empty record
+dirs, seeded `places.yaml`). The guiding rule is *everything a genealogist needs to operate*,
+not a hand-picked minimum. Also covers the human-facing docs that must ship into every archive:
 `docs/GETTING_STARTED.md`, `docs/SETUP_FROM_ZIP.md`, `docs/CHEATSHEET.md`,
 `docs/TROUBLESHOOTING.md`, `docs/FILING_CABINET.md` (create any that don't exist yet as
 stubs - the manifest entry is the commitment that they will be present in every installed
-archive; `GETTING_STARTED.md` and `SETUP_FROM_ZIP.md` already exist from PR 09).
-Excludes spec-repo furniture: `example-archive/`, `archive-template/` (its
-*contents* seed the skeleton, but the folder itself is never copied into an archive - matching
-TOOLING §13c), `tests/`, `.github/`, public `README.md`, `PRIVACY.md`, `RELEASE_CHECKLIST.md`.
+archive); in practice the *whole* `docs/` folder ships, since those five are a floor and a
+directory rule keeps every doc cross-link intact. Excludes spec-repo furniture: `example-archive/`,
+`archive-template/` (its *contents* seed the skeleton, but the folder itself is never copied into
+an archive - matching TOOLING §13c), `tests/`, `.github/`, `.claude/settings.json`,
+`PRIVACY.md` (the public-repo "no real data" policy - contradictory inside a real archive),
+`RELEASE_CHECKLIST.md`, and `manifest.json` itself.
 
 **`fha install <archive-path>`** (run from repo clone): create skeleton; copy all manifest
 files; write `.plainfile-version` with manifest version + per-file SHA256 checksums.
@@ -1427,7 +1432,7 @@ python tools/fha.py install ./test-archive --repo .   # skeleton; .plainfile-ver
 
 ---
 
-### M9.2 - `fha update-tools`
+### M9.2 - `fha update-tools` (✓ shipped)
 
 **One PR.** Extend `tools/scaffold.py`. Wire `fha update-tools [--dry-run]` (TOOLING §13c).
 
@@ -1446,6 +1451,108 @@ fha update-tools --dry-run --repo .                  # reports plan in plain Eng
 # edit tools/fha.py; fha update-tools → plain "backed up + updated" message
 # no traceback on any error; missing --repo → "Run this command from inside your archive,
 #   with --repo pointing to your copy of the plainfile tools."
+```
+
+---
+
+## Layer 10 - Working-copy mode (Milestone 10 - RATIFIED, not yet built)
+
+**Status: spec ratified, implementation pending.** The working-copy mode is now formalized in
+**SPEC §12.4** (the law) and **TOOLING §13d** (the per-tool design): it is flagged by a visible,
+git-ignored **`WORKING_COPY`** marker file at the archive root - *not* an `fha.yaml` key, because
+the mode is machine-local and an `fha.yaml` key would sync back and flip the main archive too. No
+code is written yet. This section is the build plan; SPEC §12.4 and TOOLING §13d are the contract
+it must satisfy.
+
+**The problem.** A genealogist keeps the *main* archive on one computer, with the photo and
+document libraries living in (often external) asset roots. They want to sync a **plain-text
+working copy** to a second computer via git - which carries the `sources/*.md`, `people/*.md`,
+`places.yaml`, and `notes/` but **not** the binary assets (assets are gitignored or live
+outside the repo). On the second computer they want to do real work that needs no originals:
+write narratives from existing accepted claims, build inference against existing records, drop
+new material into `inbox/` to carry back. The blocker is that the asset-aware tools, run where
+the files are absent, misbehave: `fha photoindex`'s incremental scan **prunes cache rows for
+files it can't find** (it would empty the photo cache), `fha lint` floods E011 ("file missing
+on disk") for every asset, and `fha index` records every `source_files.exists_on_disk = 0`.
+
+**The key insight.** Most tools already survive missing assets - only the *asset* paths break.
+`fha index` rebuilds the **query surface from the plain-text `.md` files**, which *are* present
+in a working copy and are exactly what narrative-writing and inference read. So the rule is not
+"block rebuilds" - it is **"treat assets as assumed-present-elsewhere, never as missing or
+deletable."** `fha index` stays available; only the asset side is neutralized.
+
+**The design - one visible marker file, conservative everywhere.** The flag is the presence of a
+file named `WORKING_COPY` at the archive root (git-ignored, machine-local), holding a plain note
+for whoever finds it:
+```
+WORKING_COPY  (file at the archive root)
+─────────────────────────────────────────
+This is a working copy synced from the main archive. The photo and document
+files don't live here — the tools won't treat them as missing or lost. Delete
+this file to turn the archive back into a full, asset-aware archive.
+```
+A marker file - not an `fha.yaml` key - because the mode is a fact about *this machine's copy*:
+`fha.yaml` syncs, so a key there would be committed and pulled back to the main archive, flipping
+*it* into working-copy mode (the exact failure the mode prevents). The marker is git-ignored, so
+it can never travel. It is *visible* (a human-managed control belongs in the file browser, like
+the rest of the archive); only its existence matters. When present, every tool becomes *more
+conservative, never less*:
+- **lint** suppresses E011/E012 (asset-on-disk checks) and prints one line:
+  `working copy: N asset files assumed present in the main archive` (a note, not a warning).
+- **index** records asset presence as **unknown** (`exists_on_disk = NULL`), not missing (`0`),
+  and skips the on-disk asset-reconciliation glob. The claim/person/source/relationship surface
+  is built normally from the `.md` files.
+- **photoindex scan** refuses and **never prunes** (`this is a working copy — run photo
+  indexing on your main archive`); read-only photo queries return whatever the cache holds.
+- **asset-mutating commands** (`fha process <file>`, `fha photoindex tag-person`, `fha packet`)
+  refuse with a plain `the photo/document files aren't here — do this on your main archive`,
+  exit clean. Plain-text editing, `fha index`, `find`, `views`, `report`, and
+  `fha capture` → `inbox/` all work normally.
+- **doctor** headlines the mode and stops flagging missing asset roots as errors.
+
+**Why it keeps behavior obvious** (the governing constraint): the flag is one visible file the
+human owns; every command announces the mode in one line of output; the mode only ever
+*withholds* destructive/asset actions (never fabricates data, never silently rebuilds over
+absence); the file-browser + text-editor experience is unchanged; and round-trips are safe
+because `.cache/` and `WORKING_COPY` are gitignored (a working copy's caches and mode flag never
+reach the main archive) and the return path is the existing `inbox/` plan. Because a working copy
+never edits `fha.yaml`, that file may keep syncing without conflict.
+
+**Ratified SPEC amendment (SPEC §12.4):** working-copy mode is flagged by a visible, git-ignored
+`WORKING_COPY` marker file at the archive root (existence = mode; content is a human note). Tools
+must treat absent assets as present-but-unavailable (suppress on-disk asset errors, never prune
+asset caches, refuse asset-mutating operations) and must announce the mode. The human opts in/out
+with `fha working-copy on|off` (the friendly front door) or by hand; `fha install`/`update-tools`
+neither create nor remove the marker. The per-tool behaviour is specified in TOOLING §13d.
+
+**Phasing (when ratified):**
+- **M10.1** - new `tools/working_copy.py` providing `fha working-copy on|off|status` (creates /
+  removes the marker + keeps it git-ignored / reports the mode - so the human never has to know
+  the filename). `on` needs no confirm (it only withholds); `off` is the risky direction and
+  **prompts** (`y/N`, default No, `--yes` to bypass) with a warning - sharpened when the asset
+  roots look empty/unreachable - because switching off where the originals are absent would let a
+  photo re-index prune the catalogue. Plus `is_working_copy(archive_root)` plumbing in `_lib`
+  (existence check on the
+  marker, read by every other tool) + lint E011/E012 suppression + a `tests/fixtures/working-copy/`
+  fixture (records present, asset roots empty, a `WORKING_COPY` marker) that lints clean. index
+  `exists_on_disk = NULL` + skip reconciliation. photoindex scan refusal/no-prune.
+  Asset-mutating-command refusals. doctor mode banner. One-line mode banner in the shared CLI
+  entry. Seed a starter archive `.gitignore` (currently `archive-template/` has none) listing
+  `WORKING_COPY`, `.cache/`, `.plainfile-*`, and the local asset roots, so a git-syncing
+  genealogist gets the never-sync-back guarantee for free.
+
+**Done when (target):**
+```sh
+fha working-copy on --root my-copy   # creates WORKING_COPY marker + gitignore entry; plain confirm
+fha working-copy status --root my-copy  # "this is a working copy …"
+# then, with assets absent:
+fha lint --root my-copy          # no E011 flood; one "working copy" note; exits per real findings
+fha index --root my-copy         # builds the claim/person surface; assets exists_on_disk = NULL
+fha photoindex --root my-copy    # refuses, prunes nothing
+fha process some.jpg --root my-copy  # plain "do this on your main archive" refusal
+fha report --root my-copy        # narrative-writing surface works
+fha working-copy off --root my-copy  # WARNS + confirms (are the originals really here?) before
+                                     # re-enabling asset features; --yes to skip the prompt
 ```
 
 ---

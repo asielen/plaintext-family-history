@@ -613,8 +613,8 @@ This pair handles both, and both are **generic glue** (they move operating-layer
 This is the single source of truth for "what gets copied" - when the package grows (a second tools folder, a fifth doc), it's added to the manifest, and `update-tools` automatically knows to copy it.
 The list lives in versioned data, never hardcoded in prose or memory.
 
-The manifest covers the **operating layer** - `tools/` (and any future tool folders), `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md` - and the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
-It explicitly **excludes** spec-repo furniture (`example-archive/`, `archive-template/`, `tests/`, `.github/`, the public `README.md`, `PRIVACY.md`, `RELEASE_CHECKLIST.md`), which never enters an archive.
+The manifest covers the **operating layer** - everything a genealogist needs to operate an archive: `tools/` (and any future tool folders), the rulebooks (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`), the project `README.md`, the whole `docs/` folder, and the agent workflow procedures under `.claude/skills/` - plus the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
+It explicitly **excludes** spec-repo furniture that never enters an archive: `example-archive/`, `archive-template/` (its contents seed the skeleton; the folder itself is not copied), `tests/`, `.github/`, `.claude/settings.json` (the spec-repo's own agent config), `PRIVACY.md` (the public-repo "no real data" policy - actively contradictory inside a real archive), and `RELEASE_CHECKLIST.md`.
 
 **`fha install <archive-path>`** - the first-time bootstrap, **run from a clone of the public repo** (the only place the code exists before anything is copied).
 Creates `<archive-path>` if absent (skeleton + full operating layer), or populates an existing folder that has no tools yet.
@@ -640,6 +640,51 @@ It only adds, replaces-pristine-with-stock, or moves-aside-and-reports.
 Customizations and retired files accumulate in `.plainfile-backup/` for the human to prune when confident - the same project-wide bias as everywhere else: *never lose the human's work; make the human the one who throws things away.*
 You may edit any operating-layer file freely (a tool, `AGENTS.md`, the spec); the checksum compare detects your change and protects it on the next update.
 (`.plainfile-backup/` and `.plainfile-version` are the updater's only footprints; both are safe to inspect or delete by hand.)
+
+**Operating layer vs. skeleton seeds.** The reconciliation above governs the **operating layer** (`tools/`, the rulebooks, the docs). The **skeleton seeds** - `fha.yaml`, the seeded `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, and the `.gitkeep` placeholders - are written **once by `install`** and never touched by `update-tools`. Those two files in particular fill immediately with the human's own configuration (`fha.yaml`'s asset roots) and data (`places.yaml`'s registry), so "refreshing" them upstream would clobber exactly the work the updater exists to protect. The manifest tags each file `operating` or `skeleton`; `update-tools` reconciles only the former and carries the latter's stamp entries over unchanged. (A genuinely improved template reaches an existing archive only when the human opts to copy it; a fresh `install` always gets the latest.)
+
+## 13d. Working-copy mode (the `WORKING_COPY` marker) - asset-less plain-text copies
+
+**Status: ratified (SPEC §12.4); not yet built - `BUILD.md` M10.** Recorded here as the tool-level design.
+
+**The scenario.** The main archive lives on one machine with its photo/document libraries (often external roots). The plain-text core is synced to a second machine via git - `sources/`, `people/`, `places.yaml`, `notes/` travel; the binary assets do not. The genealogist wants to do real work there that needs no originals (write narratives from existing accepted claims, build inference against existing records, drop new material into `inbox/` to carry back). The hazard is that asset-aware tools, run where the files are absent, *misbehave*: `fha photoindex`'s incremental scan **prunes cache rows for files it cannot find** (it would empty the photo cache), `fha lint` floods E011 for every asset, and `fha index` records every `source_files.exists_on_disk = 0`.
+
+**The flag is a git-ignored marker file, not an `fha.yaml` key.** Working-copy status is a property of *this copy on this machine*, so it must never sync. A key in `fha.yaml` would be committed and pulled back to the main archive, silently flipping *it* into working-copy mode - the exact failure the mode exists to prevent. Instead, the presence of a **visible, git-ignored** file `WORKING_COPY` at the archive root is the flag (SPEC §12.4): visible because it is a human-managed control (the whole archive is meant to be legible in a file browser), git-ignored because it must stay machine-local. Only existence matters; the file's content is a plain note for whoever finds it. This also means a working copy never edits `fha.yaml`, so `fha.yaml` may keep syncing without conflict.
+
+**The governing rule.** The marker declares assets **assumed-present-elsewhere, never missing or deletable.** The plain-text surface is unaffected - `fha index` rebuilds the claim/person/source/relationship query surface from the `.md` files (which *are* present), which is exactly what narrative-writing and inference read - so the mode is *not* "block rebuilds"; it neutralises only the **asset** side.
+
+**`fha working-copy on | off | status`** is the friendly front door for the marker, so a
+non-technical genealogist never has to know the filename or its contents (`fha never makes the
+human learn the implementation`). `on` writes `WORKING_COPY` (with its explanatory text) and
+confirms the archive's `.gitignore` lists it - adding the entry, or warning if the copy is not a
+git repo so the never-sync-back guarantee can't be assured; bare/`status` reports the current
+mode. `on` only ever *withholds* asset behaviour, so it needs no confirmation. `off` is the
+asymmetric, **riskier** direction: it re-enables asset-aware behaviour, so on a machine where the
+originals are actually absent, a later `fha photoindex` would prune the catalogue and lint would
+treat every asset as missing. `off` therefore **prompts for confirmation** (`y/N`, default No)
+with a plain warning of that consequence, and sharpens the warning when it can see the risk -
+if the mapped asset roots are unreachable or empty, it says so ("the photos root `C:/Photos`
+looks empty or unreachable - turning the mode off here is probably a mistake") rather than
+silently switching. `--yes` bypasses the prompt for scripted use (the confirm callable is
+injectable for tests, matching `fha places geocode`/`photoindex tag-person`). Each verb is
+idempotent (`on` on an already-flagged copy just confirms it; `off` on a full archive is a no-op
+note) and prints, in plain words, exactly what changed. The command lives in
+`tools/working_copy.py`; the shared predicate below lives in `_lib` so every other tool reads the
+mode without importing it.
+
+| Tool | Behaviour when `WORKING_COPY` is present |
+|---|---|
+| shared (`_lib`) | `is_working_copy(archive_root)` = `(archive_root / 'WORKING_COPY').exists()` - a one-line existence check, no `fha.yaml` parse needed. The shared CLI entry prints a one-line banner (`working copy — photo/document files assumed on the main archive`) so the mode is never silent. |
+| `fha working-copy` | `on` creates the marker (+ ensures the `.gitignore` entry), `off` removes it, `status` reports - the only command that *writes* the marker. `fha install`/`update-tools` never do. |
+| `fha lint` | Suppress E011/E012 (asset-on-disk checks); emit one note (`working copy: N asset files assumed present in the main archive`), not a per-file warning flood. All non-asset codes run normally. |
+| `fha index` | Record `source_files.exists_on_disk = NULL` (unknown), never `0`; skip the on-disk asset-reconciliation glob. The record-derived surface is built unchanged. |
+| `fha photoindex` | A scan **refuses and prunes nothing** (`this is a working copy — run photo indexing on your main archive`). Read-only photo queries return whatever the existing cache holds. |
+| asset-mutating commands | `fha process <file>`, `fha photoindex tag-person`, and `fha packet` refuse with a plain pointer to the main archive (exit clean, not a crash). `fha capture` → `inbox/`, plain-text editing, `find`, `views`, `report` stay available. |
+| `fha doctor` | Headline the mode; stop flagging missing asset roots as errors. |
+
+The archive's own `.gitignore` must list `WORKING_COPY` (and `.cache/`) so the marker cannot be committed. The M10 build therefore also seeds a starter `.gitignore` into the skeleton (archives created from `archive-template/` currently have none) - or, minimally, documents the one-line entry - so a git-syncing genealogist gets the guarantee without having to know to add it.
+
+**Why behaviour stays obvious** (the locked project bias): one visible marker file the human owns; every command announces the mode; the mode only ever *withholds* destructive/asset actions (never fabricates a claim, never silently rebuilds over absence); the file-browser + text-editor experience is unchanged. Round-trips are safe by construction - `.cache/` and `WORKING_COPY` are git-ignored, so a working copy's caches and mode flag never reach the main archive, and the return path is the existing `inbox/` workflow. The marker is written only by `fha working-copy on` (or a hand-created file) and removed only by `fha working-copy off` (or by hand); the scaffolding tools (`fha install`/`update-tools`) never create or remove it - it is the human's declaration about *this* copy.
 
 ## 14. Backlog (ideas, not yet designed)
 
