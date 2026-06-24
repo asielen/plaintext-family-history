@@ -84,7 +84,7 @@ The spec is written so that all of that tooling can be *regenerated* from the do
 
 ## What this is not
 
-- **Not a finished app.** Milestones 1-8 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`) and the static-site generator (`fha site`); only the installer/update tooling (Milestone 9) is still being built.
+- **Not a finished app.** Milestones 1-9 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`), the static-site generator (`fha site`), and the installer/update tooling (`fha install`, `fha update-tools`).
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.

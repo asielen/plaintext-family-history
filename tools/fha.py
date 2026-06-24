@@ -248,6 +248,42 @@ def _intercept_doctor(argv: list[str]) -> int | None:
     return doctor_main(rest)
 
 
+def _intercept_scaffold(argv: list[str]) -> int | None:
+    """
+    Early interception for `fha install …` and `fha update-tools …`.
+
+    scaffold.py only needs stdlib (json, shutil, pathlib) and never imports
+    PyYAML.  Without this intercept a user on a fresh machine (PyYAML not yet
+    installed) hits the ModuleNotFoundError at the bulk-import block below
+    before `fha install` gets a chance to run — which is the very command they
+    need to run in order to satisfy that dependency.
+
+    Returns an exit code when the command is install or update-tools, or None
+    to let normal argparse handling proceed.
+    """
+    command_idx: int | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--debug':
+            i += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            i += 2
+            continue
+        if tok.startswith('--root=') or tok.startswith('--spec-root='):
+            i += 1
+            continue
+        command_idx = i
+        break
+
+    if command_idx is None or argv[command_idx] not in ('install', 'update-tools'):
+        return None
+
+    from scaffold import _standalone_main as scaffold_main
+    return scaffold_main(argv[command_idx:])
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for `fha` (or `python tools/fha.py`).
@@ -278,6 +314,14 @@ def main(argv: list[str] | None = None) -> int:
         # Likewise, intercept 'doctor' before the bulk tool imports below so its
         # guarded yaml check (see _intercept_doctor docstring) gets first crack.
         result = _intercept_doctor(argv_list)
+        if result is not None:
+            return result
+
+        # Intercept 'install' and 'update-tools' before the bulk imports below.
+        # scaffold.py uses only stdlib (json, shutil, pathlib) — it does not need
+        # PyYAML.  Without this intercept a user on a fresh machine (PyYAML not yet
+        # installed) hits a ModuleNotFoundError before `fha install` can run.
+        result = _intercept_scaffold(argv_list)
         if result is not None:
             return result
 

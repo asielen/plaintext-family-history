@@ -493,23 +493,21 @@ def run_install(
     # The guard above already blocks double-installs; this catches the case where a
     # user hand-started an archive (e.g. wrote fha.yaml or seeded their own README)
     # before running `fha install`.
-    if not dry_run:
-        conflicts = [
-            entry['path']
-            for entry in files
-            if entry.get('category') == 'skeleton'
-            and Path(entry['path']).name not in {'.gitkeep', '.gitignore'}
-            and (archive_path / entry['path']).is_file()
-        ]
-        if conflicts:
-            listing = '\n  '.join(conflicts[:10])
-            more = '' if len(conflicts) <= 10 else f'\n  …and {len(conflicts) - 10} more'
-            raise ScaffoldError(
-                f"{archive_path} already contains files that install would overwrite:\n  "
-                f"{listing}{more}\n"
-                "Move or rename them first (or add --force to overwrite), "
-                "then re-run install."
-            )
+    conflicts = [
+        entry['path']
+        for entry in files
+        if entry.get('category') == 'skeleton'
+        and Path(entry['path']).name != '.gitkeep'
+        and (archive_path / entry['path']).is_file()
+    ]
+    if conflicts:
+        listing = '\n  '.join(conflicts[:10])
+        more = '' if len(conflicts) <= 10 else f'\n  …and {len(conflicts) - 10} more'
+        raise ScaffoldError(
+            f"{archive_path} already contains files that install would overwrite:\n  "
+            f"{listing}{more}\n"
+            "Move or rename them first, then re-run install."
+        )
 
     if dry_run:
         print(f'Dry run — would install into: {archive_path}')

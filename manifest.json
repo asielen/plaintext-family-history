@@ -43,7 +43,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "d8b00035b04617f9a2b10227ea678ee363267d937cbf843a287a2df184a51f0b",
+      "sha256": "173b018568cce3461d01e8efa0bca5d7fdf19e83558fc61b464462549de74c19",
       "spec_version": "1.2"
     },
     {
@@ -103,7 +103,7 @@
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "0ec1b72d4533063f3b300a0464c6deb3e6cb3b4dacbde850957b5bb61d7a8629",
+      "sha256": "121daa6d02b4245154bedba01b60c79bf65896687d91580fb80e71f448ff7610",
       "spec_version": "1.2"
     },
     {
@@ -250,7 +250,7 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "735679bb7a0f02ae24b973c727d4eaafecf7e64fc196187a9f9f654fba09746b",
+      "sha256": "4920d08079e069e5bc6b7b3dc4e814ea7bdd4b9bd1828fbf1f2ba95e5e44ee70",
       "spec_version": "1.2"
     },
     {
@@ -322,13 +322,13 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "8a34cfdfcadf02749de0b1bc40221f5f6cd661642180cef34bdf5635bd752e98",
+      "sha256": "285dbc5f373bd3c0afdf31cedc37be3ab94a0b0f939c854f583264744c37159a",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "03a78afe85f164bc956331c381843c962cf0a7acdff3cf3d3385b865213757bc",
+      "sha256": "a083d4b6d8909b8f91f1e1caf987e83e66206c0ec9525b3f6419581f52a08caf",
       "spec_version": "1.2"
     },
     {

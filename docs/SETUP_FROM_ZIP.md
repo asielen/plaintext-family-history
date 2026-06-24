@@ -134,11 +134,18 @@ new zip, unzip it, and copy its `tools/` folder (plus `SPEC.md`, `TOOLING.md`, `
 exactly as they are.
 
 > **The assisted way (optional).** If you'd rather have the tools live *inside* your archive,
-> run `python tools/fha.py install my-family-archive` once from the unzipped workshop - it copies
-> the tools and rulebooks in and stamps them. Then, with each new download, `fha update-tools
-> --repo <the-new-unzipped-folder>` (run from inside your archive) pulls the improvements in for
-> you: it backs up anything you've edited before replacing it, never deletes, and never touches
-> your `fha.yaml` or place list. No git required either way - it only needs the unzipped folder.
+> use `fha install` **instead of** copying `archive-template` in Step 3 — it sets up the archive
+> folder with both the skeleton files and the tools in one step:
+>
+> ```
+> python tools/fha.py install my-family-archive
+> ```
+>
+> Run this from your workshop folder against a **fresh, empty folder name** (not a copy of
+> `archive-template` — the installer creates the skeleton itself). Then, with each new download,
+> `fha update-tools --repo <the-new-unzipped-folder>` (run from inside your archive) pulls the
+> improvements in for you: it backs up anything you've edited before replacing it, never deletes,
+> and never touches your `fha.yaml` or place list. No git required either way.
 
 > **Backups are your safety net, not git.** Since you're not using GitHub, make your own copies:
 > periodically zip your `my-family-archive` folder and keep it somewhere separate - an external

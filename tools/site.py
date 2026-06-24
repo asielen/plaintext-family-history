@@ -144,6 +144,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment-dependent
 _REQUIRED_TABLES = (
     'persons', 'sources', 'claims', 'claim_persons', 'source_files',
     'source_people', 'relationships', 'places', 'person_files',
+    'place_names', 'place_history',
 )
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.gif'}
@@ -876,6 +877,9 @@ class _SiteBuilder:
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (pid,),
         ).fetchall()
+        # Standalone: omit events backed only by withheld sources (same rule as summary vitals).
+        if not self.linked:
+            rows = [r for r in rows if r['source_id'] is None or r['source_id'] in self.source_pages]
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
@@ -920,6 +924,24 @@ class _SiteBuilder:
             for st in sorted(by_type)
         ]
 
+    def _has_public_claim(self, pid1: str, pid2: str) -> bool:
+        """Return True if the two persons share at least one accepted/needs-review claim
+        backed by a public (non-withheld) source or no source at all.
+
+        Used in standalone mode to suppress relationship edges whose only evidence comes
+        from restricted, DNA, or living-linked sources."""
+        rows = self.conn.execute(
+            "SELECT c.source_id FROM claims c "
+            "JOIN claim_persons cp1 ON c.id = cp1.claim_id AND cp1.person_id = ? "
+            "JOIN claim_persons cp2 ON c.id = cp2.claim_id AND cp2.person_id = ? "
+            "WHERE c.status IN ('accepted','needs-review')",
+            (pid1, pid2),
+        ).fetchall()
+        for r in rows:
+            if r['source_id'] is None or r['source_id'] in self.source_pages:
+                return True
+        return not rows  # no claims at all → relationship came from YAML directly, show it
+
     def _person_family(self, pid: str, page_dir: Path) -> list[dict]:
         """Friends & Family from the relationships edges, grouped by relation."""
         rows = self.conn.execute(
@@ -933,6 +955,10 @@ class _SiteBuilder:
             if not self.linked:
                 meta = self.person_meta.get(r['other_id'])
                 if meta and self._person_is_redacted(meta):
+                    continue
+                # Omit relationships whose only evidence is from withheld sources
+                # (restricted, DNA, publication_ok=false, or living-linked).
+                if not self._has_public_claim(pid, r['other_id']):
                     continue
             by_rel.setdefault(r['rel'], []).append(self._person_link(r['other_id'], page_dir))
         groups = []
@@ -950,13 +976,21 @@ class _SiteBuilder:
             return []
         try:
             rows = self.photos_conn.execute(
-                'SELECT DISTINCT ph.group_id, ph.path, ph.caption, ph.is_primary '
+                'SELECT DISTINCT ph.group_id, ph.path, ph.caption, ph.is_primary, ph.source_id '
                 'FROM photo_people pp JOIN photos ph ON pp.path = ph.path '
                 'WHERE pp.person_ref = ?',
                 (pid,),
             ).fetchall()
         except sqlite3.DatabaseError:
             return []
+        # Standalone: exclude photos from withheld sources.
+        # photos.source_id is stored lowercase by normalize_id; compare case-insensitively.
+        if not self.linked:
+            source_pages_lower = {s.lower() for s in self.source_pages}
+            rows = [
+                r for r in rows
+                if not r['source_id'] or r['source_id'].lower() in source_pages_lower
+            ]
         # Standalone: exclude groups that are also tagged to a living person.
         if not self.linked:
             safe: set[str] = set()
