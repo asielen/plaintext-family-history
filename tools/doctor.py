@@ -249,6 +249,8 @@ def _check_tools_version(archive_root: Path) -> int:
     else:
         try:
             stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
+            if not isinstance(stamp, dict):
+                raise ValueError(f'expected a JSON object, got {type(stamp).__name__}')
             ver = stamp.get('manifest_version', '?')
             spec = stamp.get('spec_version', '?')
             installed = stamp.get('installed', '?')

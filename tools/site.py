@@ -221,8 +221,13 @@ def _inline_html(text: str, render_token) -> str:
         if m.group('token'):
             out.append(render_token(m.group('token')))
         elif m.group('ltext') is not None:
-            href = html.escape(m.group('lurl'), quote=True)
-            out.append(f'<a href="{href}">{_escape(m.group("ltext"))}</a>')
+            raw_url = m.group('lurl')
+            safe_scheme = raw_url.startswith(('http://', 'https://', 'mailto:')) or '://' not in raw_url
+            if safe_scheme:
+                href = html.escape(raw_url, quote=True)
+                out.append(f'<a href="{href}">{_escape(m.group("ltext"))}</a>')
+            else:
+                out.append(_escape(m.group('ltext')))
         else:  # bold
             out.append(f'<strong>{_escape(m.group("bold"))}</strong>')
     out.append(_escape(text[pos:]))
@@ -1309,6 +1314,11 @@ class _SiteBuilder:
                 (cur, rel),
             ):
                 other = r['other_id']
+                if not self.linked:
+                    if other not in self.person_pages:
+                        continue
+                    if not self._has_public_claim(cur, other):
+                        continue
                 edges.append({
                     'type': rel, 'from': fmt_id_display(cur), 'to': fmt_id_display(other),
                     'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
@@ -1515,6 +1525,17 @@ def run_site(
         fha_config = load_fha_yaml(archive_root, strict=True)
     except FhaConfigError as exc:
         return {'status': 'bad-config', 'messages': [str(exc)], 'out_dir': out_dir, 'pages': 0}
+
+    roots = fha_config.get('roots', {})
+    if not isinstance(roots, dict):
+        return {'status': 'bad-config', 'messages': [
+            'fha.yaml: `roots` must be a mapping of alias: path pairs'
+        ], 'out_dir': out_dir, 'pages': 0}
+    for _alias, _val in roots.items():
+        if not isinstance(_val, str):
+            return {'status': 'bad-config', 'messages': [
+                f'fha.yaml: roots.{_alias} must be a string path, got {type(_val).__name__}'
+            ], 'out_dir': out_dir, 'pages': 0}
 
     unsafe = _unsafe_output_reason(out_dir, archive_root, fha_config)
     if unsafe:

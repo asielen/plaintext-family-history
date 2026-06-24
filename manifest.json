@@ -244,7 +244,7 @@
     {
       "path": "tools/doctor.py",
       "category": "operating",
-      "sha256": "9dadbc4590bc957de5d1862569d820cc75282714e4c4d93c359d1fea0f14e390",
+      "sha256": "7989018b3ad12f7658b57bacddad5ef27cb8155919ee1aed2865d8d368283c8f",
       "spec_version": "1.2"
     },
     {
@@ -322,13 +322,13 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "285dbc5f373bd3c0afdf31cedc37be3ab94a0b0f939c854f583264744c37159a",
+      "sha256": "67a4e43d311be45a07d56ab0029a1706e8d47a1f7267520cb12389e3a14e5950",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "dbea89a5deb7cb6365185bccb2ff7602d8e9da104536e5bebbdc4071dd9bd49e",
+      "sha256": "3db74c29f39149345a683d0fa58fe043ffd6c367e4c1d1dbdb4b2b7d5d44da65",
       "spec_version": "1.2"
     },
     {

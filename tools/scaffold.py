@@ -493,12 +493,16 @@ def run_install(
     # The guard above already blocks double-installs; this catches the case where a
     # user hand-started an archive (e.g. wrote fha.yaml or seeded their own README)
     # before running `fha install`.
+    # Exception: if a skeleton file is byte-for-byte identical to what install would
+    # place (sha256 match) it was left by a partial previous install that never wrote
+    # the stamp — safe to overwrite so the user can simply re-run install to finish.
     conflicts = [
         entry['path']
         for entry in files
         if entry.get('category') == 'skeleton'
         and Path(entry['path']).name != '.gitkeep'
         and (archive_path / entry['path']).is_file()
+        and _sha256_file(archive_path / entry['path']) != entry.get('sha256')
     ]
     if conflicts:
         listing = '\n  '.join(conflicts[:10])
@@ -602,7 +606,11 @@ def _plan_update(
         if not dest.exists():
             plan['added'].append((archive_path, src))
             continue
-        disk_sum = _sha256_file(dest)
+        try:
+            disk_sum = _sha256_file(dest)
+        except OSError:
+            plan['customized'].append((archive_path, src))
+            continue
         if disk_sum == stock_sum:
             plan['current'].append((archive_path, src))
         elif archive_path in recorded and disk_sum == recorded[archive_path]:
