@@ -160,7 +160,7 @@ Every working session is the same five beats:
 - **Capture** - pull a record off a genealogy site into the inbox (the assistant can do this
   with `fha capture`), or just drop in a scan.
 - **File & process** - "process my inbox," as above.
-- **Review** - accept or set aside the suggested facts.
+- **Review** - accept or set aside the suggested facts (the assistant records each decision with `fha claim`; you are still the one deciding).
 - **Report** - ask "what should I look at today?" The assistant runs `fha report` and reads you
   the review queue, gaps to fill, and research leads.
 

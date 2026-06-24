@@ -86,6 +86,7 @@ from _lib import (
     EXIT_WARNINGS,
     Finding,
     FhaConfigError,
+    Result,
     edtf_bounds,
     fmt_id_display,
     id_type_of,
@@ -228,11 +229,17 @@ def _lint_within_on_settlement(rows: dict[str, str | None]) -> list[Finding]:
     return findings
 
 
-def run_lint(archive_root: Path) -> dict:
-    """Returns {'status': 'ok'|'failed', 'findings': [Finding, ...]}."""
+def run_lint(archive_root: Path) -> Result:
+    """Lint the place registry; return a Result.
+
+    `data` is {'status': 'ok'|'failed', 'findings': [Finding, ...]}.  Result
+    exposes dict-style access (_lib.py), so callers keep reading
+    `result['findings']` unchanged.
+    """
     conn = open_index_db(archive_root, _LINT_REQUIRED_TABLES)
     if conn is None:
-        return {'status': 'failed', 'findings': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE,
+                      data={'status': 'failed', 'findings': []})
 
     try:
         findings: list[Finding] = []
@@ -249,11 +256,13 @@ def run_lint(archive_root: Path) -> dict:
             'Run `fha index` to rebuild.',
             file=sys.stderr,
         )
-        return {'status': 'failed', 'findings': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE,
+                      data={'status': 'failed', 'findings': []})
     finally:
         conn.close()
 
-    return {'status': 'ok', 'findings': findings}
+    exit_code = EXIT_WARNINGS if findings else EXIT_CLEAN
+    return Result(exit_code=exit_code, data={'status': 'ok', 'findings': findings})
 
 
 # ── Candidates: place-text clustering ──────────────────────────────────────────
@@ -421,17 +430,20 @@ def _gps_clusters(
 
 # ── Top-level query ───────────────────────────────────────────────────────────
 
-def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> dict:
+def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> Result:
     """
-    Returns {'status': 'ok'|'failed', 'groups': [str, ...],
-    'place_text_groups': [dict, ...], 'gps_clusters': [dict, ...]}.
+    Cluster unlinked place-text and GPS candidates; return a Result.
 
-    `groups` is a flat list of pre-formatted summary strings — the shape
-    `fha report`'s §6b section expects (it just prints `f"- {g}"` for each).
+    `data` is {'status': 'ok'|'failed', 'groups': [str, ...],
+    'place_text_groups': [dict, ...], 'gps_clusters': [dict, ...]}.  `groups` is a
+    flat list of pre-formatted summary strings — the shape `fha report`'s §6b
+    section expects (it just prints `f"- {g}"` for each).  Result exposes
+    dict-style access (_lib.py), so callers keep reading `result['groups']`.
     """
     conn = open_index_db(archive_root, _CANDIDATES_REQUIRED_TABLES)
     if conn is None:
-        return {'status': 'failed', 'groups': [], 'place_text_groups': [], 'gps_clusters': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={
+            'status': 'failed', 'groups': [], 'place_text_groups': [], 'gps_clusters': []})
 
     try:
         place_text_groups = _place_text_candidates(conn, threshold)
@@ -447,7 +459,8 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
             'Run `fha index` to rebuild.',
             file=sys.stderr,
         )
-        return {'status': 'failed', 'groups': [], 'place_text_groups': [], 'gps_clusters': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={
+            'status': 'failed', 'groups': [], 'place_text_groups': [], 'gps_clusters': []})
     finally:
         conn.close()
 
@@ -462,12 +475,12 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
             f"GPS cluster near {c['lat']:.4f},{c['lon']:.4f} — {c['photo_count']} photo(s), no known place nearby"
         )
 
-    return {
+    return Result(exit_code=EXIT_CLEAN, data={
         'status': 'ok',
         'groups': groups,
         'place_text_groups': place_text_groups,
         'gps_clusters': gps_clusters,
-    }
+    })
 
 
 # ── Geocode ─────────────────────────────────────────────────────────────────────
@@ -714,24 +727,44 @@ def run_geocode(
     offline: bool = False,
     dry_run: bool = False,
     confirm=None,
-) -> dict:
+) -> Result:
     """
     Backfill coords/alt-names for registry places lacking coordinates.
 
     `confirm` is a callable `(prompt: str) -> bool` gating each write (defaults
     to an interactive `[y/N]` reader); injected by tests to exercise the
-    accept/decline paths without real stdin.
+    accept/decline paths without real stdin.  That interactive prompt seam is
+    left exactly as-is (a deferred Phase-3 concern); only the return is
+    standardized here.
 
-    Returns {'status': 'ok'|'failed'|'no-gazetteer'|'not-found',
-             'written': int, 'messages': [str, ...]}.
+    Returns a `Result` whose `data` is {'status': 'ok'|'failed'|'no-gazetteer'|
+    'not-found', 'written': int, 'messages': [str, ...]}, with `changed` listing
+    `places.yaml` when any coordinate block is edited.  Result exposes dict-style
+    access (_lib.py), so callers keep reading `result['status']` / `result['written']`.
     """
+    # status -> process exit code: a 'failed' geocode is a hard error; the soft
+    # outcomes (no gazetteer, place not found) are warnings; 'ok' is clean.
+    _exit_for = {
+        'failed': EXIT_FAILURE, 'not-found': EXIT_WARNINGS,
+        'no-gazetteer': EXIT_WARNINGS, 'ok': EXIT_CLEAN,
+    }
+
+    def _geo_result(status: str, written: int, msgs: list[str],
+                    changed: list[str] | None = None) -> Result:
+        return Result(
+            ok=(status == 'ok'),
+            exit_code=_exit_for.get(status, EXIT_FAILURE),
+            data={'status': status, 'written': written, 'messages': msgs},
+            changed=changed or [],
+        )
+
     messages: list[str] = []
     if confirm is None:
         confirm = _interactive_confirm
 
     conn = open_index_db(archive_root, _GEOCODE_REQUIRED_TABLES, strict=True)
     if conn is None:
-        return {'status': 'failed', 'written': 0, 'messages': messages}
+        return _geo_result('failed', 0, messages)
 
     try:
         if place_id:
@@ -740,8 +773,9 @@ def run_geocode(
                 'SELECT id, name, hierarchy, lat, lon FROM places WHERE id = ?', (pid,)
             ).fetchall()
             if not rows:
-                return {'status': 'not-found', 'written': 0,
-                        'messages': [f'{fmt_id_display(pid)} not found in the place registry.']}
+                return _geo_result(
+                    'not-found', 0,
+                    [f'{fmt_id_display(pid)} not found in the place registry.'])
         else:
             rows = conn.execute(
                 'SELECT id, name, hierarchy, lat, lon FROM places '
@@ -757,13 +791,13 @@ def run_geocode(
             'Run `fha index` to rebuild.',
             file=sys.stderr,
         )
-        return {'status': 'failed', 'written': 0, 'messages': messages}
+        return _geo_result('failed', 0, messages)
     finally:
         conn.close()
 
     if not rows:
         messages.append('No places need geocoding (all have coordinates).')
-        return {'status': 'ok', 'written': 0, 'messages': messages}
+        return _geo_result('ok', 0, messages)
 
     # Gazetteer: cached dump, or download once (unless offline).
     geonames_dir = archive_root / '.cache' / 'geonames'
@@ -774,19 +808,20 @@ def run_geocode(
                 'No GeoNames data cached and --offline set — nothing to match against. '
                 'Re-run without --offline to download the gazetteer once.'
             )
-            return {'status': 'no-gazetteer', 'written': 0, 'messages': messages}
+            return _geo_result('no-gazetteer', 0, messages)
         messages.append(f'Downloading GeoNames dump to {geonames_dir} (one time)...')
         downloaded, err = _download_gazetteer(geonames_dir)
         if downloaded is None:
             messages.append(err or 'gazetteer download failed.')
-            return {'status': 'no-gazetteer', 'written': 0, 'messages': messages}
+            return _geo_result('no-gazetteer', 0, messages)
 
     gazetteer = _load_gazetteer(gaz_path)
     if not gazetteer:
         messages.append(f'GeoNames dump at {gaz_path} is empty or unreadable.')
-        return {'status': 'no-gazetteer', 'written': 0, 'messages': messages}
+        return _geo_result('no-gazetteer', 0, messages)
 
     places_yaml = archive_root / 'places' / 'places.yaml'
+    changed: list[str] = []
     written = 0
     for r in rows:
         pid = r['id']
@@ -827,9 +862,9 @@ def run_geocode(
             text = places_yaml.read_text(encoding='utf-8')
         except OSError as e:
             messages.append(f'ERROR: cannot read {places_yaml}: {e}')
-            return {'status': 'failed', 'written': written, 'messages': messages}
-        new_text, changed = _apply_geocode_to_yaml(text, pid, geo.lat, geo.lon, alt_names)
-        if not changed:
+            return _geo_result('failed', written, messages, changed)
+        new_text, block_changed = _apply_geocode_to_yaml(text, pid, geo.lat, geo.lon, alt_names)
+        if not block_changed:
             messages.append(
                 f'{fmt_id_display(pid)}: block not found in places.yaml — skipped.'
             )
@@ -838,15 +873,17 @@ def run_geocode(
             places_yaml.write_text(new_text, encoding='utf-8')
         except OSError as e:
             messages.append(f'ERROR: cannot write {places_yaml}: {e}')
-            return {'status': 'failed', 'written': written, 'messages': messages}
+            return _geo_result('failed', written, messages, changed)
         written += 1
+        if str(places_yaml) not in changed:
+            changed.append(str(places_yaml))
         messages.append(f'{fmt_id_display(pid)}: coords written.')
 
     if written:
         messages.append(
             'Reminder: re-run `fha index` so the new coordinates enter the query surface.'
         )
-    return {'status': 'ok', 'written': written, 'messages': messages}
+    return _geo_result('ok', written, messages, changed)
 
 
 def _interactive_confirm(prompt: str) -> bool:

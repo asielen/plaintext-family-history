@@ -79,6 +79,15 @@ Validation regex (accepting the subset above) is the linter's date check; anythi
 
 **Exit codes (all tools).** `0` clean · `1` warnings only · `2` errors found · `3` tool failure. `--json` emits machine-readable findings; default output is human lines: `SEVERITY CODE path: message`.
 
+**Structured-result contract (the headless core).** Every command is split into an *engine* and an *interface*, and the seam between them is a single value type, `_lib.Result`:
+
+- **`run_*` computes and returns a `Result`** - a small, JSON-serializable record of what happened. It does not print human-facing report text and does not call `sys.exit`. (File side effects and interactive prompts are out of scope for this rule: a tool that must write `report_2026.md` or ask the human a yes/no question still does so inside `run_*`. The rule governs return values and human-text *printing*, not side effects.)
+- **`_cmd_*` is the only layer that renders a `Result`** to stdout/stderr and returns the process exit code.
+
+A `Result` carries: `ok` (did it succeed - no error-level messages); `exit_code` (the `EXIT_*` constant the CLI returns); `data` (the structured payload a consumer wants - matched records, per-check rows, counts, a rendered string); `messages` (human-facing lines, each a `Message{level, text, next_step, code, path}` - a lint `Finding` folds into one: severity → level, E/W code → code, file → path); and `changed` (paths this operation created, wrote, renamed, or embedded into - empty under `--dry-run`). `lint` is the reference implementation: `run_lint` returns a `Result`; `_cmd_lint` renders both the human text and the `--json` payload from it (§3).
+
+This split is what makes the suite a **headless core**: the `fha` tools are an engine any front door drives. A terminal user, an agent shelling out, the in-process report orchestrator (§15a), and a future click-through UI all call the same `run_*` and read the same structured `Result`; the human-text rendering in `_cmd_*` is just one consumer of it. It is also what keeps **the human the only gate to `accepted`** honest across front doors: the deterministic write-backs (§14a/§14a2/§15a, claim review §3b) return a `Result` describing the one edit they made, but they only run because a human directed them - whatever issues the confirmation (a chat instruction today, a click later) is the gate, not the tool.
+
 ---
 
 ## 2. `fha index` - the index builder
@@ -223,6 +232,21 @@ Run it first after any migration or machine move. **Stated tradeoff:** this spec
 A future `fha doctor --fixity` could add optional checksum verification without making checksums part of the research model.
 
 **Design decision D5 (implemented milestone 2):** Absent optional components (index, photoindex) report as "not yet built" and contribute exit code 1 (warning), not 2 (error).  Doctor is safe to run on a fresh archive with no caches built yet.  Rationale: a missing index or photoindex is a normal state during initial setup and after a clean wipe of `.cache/`; treating it as an error would make doctor hostile to the very situations where it is most useful.
+
+## 3b. `fha claim` - claim-review write-back
+
+The single deterministic write-back a human reaches for during review: moving one claim's `status:` and stamping `reviewed:`.
+
+```
+fha claim <C-id> --status accepted|disputed|rejected|needs-review|superseded
+                 [--reviewed DATE] [--value "…"] [--date EDTF] [--root PATH] [--dry-run]
+```
+
+**Contract (SPEC §8.2).** Only the *human* moves a claim to `accepted`, and an accepted claim must carry a `reviewed:` date (lint E006). The human satisfies that contract by *directing* this tool - the editing method does not matter, only that the decision is theirs - so `--status accepted` always writes a `reviewed:` stamp (the explicit `--reviewed DATE` when given, otherwise today, since a human is at the keyboard). The tool never accepts on its own. `disputed`/`rejected`/`superseded` change status rather than delete, preserving the research trail - `disputed` marks a claim actively contested (e.g. a `contradicts:` standoff) rather than settled, distinct from a `rejected` claim the reviewer has ruled out. `--value`/`--date` let a reviewer correct the claim in the same surgical edit.
+
+The edit is **surgical**: only the one named claim's entry inside its source `.md` `## Claims` block is touched - sibling claims, key order, and hand comments survive - mirroring `places geocode`'s `places.yaml` edit and `process --more`'s frontmatter edit. The claim is located by scanning the `sources/` records directly (the `.md` files are the truth), so the command works even when `\.cache/index.sqlite` is stale or absent; re-run `fha index` after a write to fold the new status into the query surface. A claim whose `value:` is a YAML block scalar is *refused*, not silently corrupted. `run_claim` returns a `Result` whose `changed[]` names the one source file written (empty under `--dry-run`); `_cmd_claim` renders it.
+
+This is the human gate from the engine side: the `review-claims` skill (§16) and `fha report`'s answerable-questions/connections prompts all drive `fha claim`, but the accept decision is always the human's. The detection-candidate write-backs (§14a/§14a2/§15a) live in their own sibling tool, `fha confirm`.
 
 ## 4. `fha id` - minting
 
@@ -698,7 +722,9 @@ The archive's own `.gitignore` must list `WORKING_COPY` (and `.cache/`) so the m
 ## 14a. `fha xref` - cross-reference pass
 
 Triggered at the end of every review session (by the `review-claims` skill) and inside `fha report` - never scheduled. **Deterministic candidates** from the index: (a) corroboration - pairs of accepted/needs-review claims, same person + same type + overlapping EDTF bounds + different sources, not already linked; (b) contradiction - same person + same type + non-overlapping bounds, or same type with incompatible `value`s (vital types only for value comparison; substantive types compare dates only).
-Output: candidate pairs with both claims' context. **Judgment + gate:** the skill layer assesses each candidate; on human confirmation, writes `corroborates:`/`contradicts:` links (incremental reindex follows) and spawns a structured question (origin: tool) for each confirmed contradiction.
+Output (read-only): candidate pairs with both claims' context. `fha xref` never writes - it only proposes.
+
+**Judgment + gate.** The skill layer assesses each candidate; the human picks. The write-back itself is mechanical, so it is its own deterministic command, **`fha confirm xref <C-a> <C-b> --as corroborates|contradicts`** (§14a3): it writes the `corroborates:`/`contradicts:` link reciprocally into both claims' source records (incremental reindex follows) and, for a `contradicts` confirm, spawns a structured question (`origin: tool`, both C-ids referenced) in `notes/questions.md` so lint E009 ("`contradicts:` with no open question") stays satisfied - the same machinery `fha lint --spawn-questions` uses. The detector reads and the confirmer writes are kept apart so `fha xref` can advertise a clean read-only contract: a detector that also wrote would be two owners for one surface.
 
 ## 14a2. `fha cooccur` - connection candidate detection
 
@@ -706,8 +732,7 @@ The recurrence detector pointed at people and named entities - sibling to `fha p
 
 **People co-occurrence → candidate social edges.** From the index: person-pairs named together in **≥2 distinct sources** with no existing `relationship` edge between them (kin or social).
 Rank by co-occurrence count and source variety (different `source_type`s weigh more - a census + a newspaper + a photo back beats three pages of one census).
-Output: candidate pairs with the shared sources and T.E.'s-side context.
-Confirmation mints a `relationship` claim (`subtype: friend|associate|neighbor`, the confirming source cited); dismissal records a tombstone so the pair isn't re-proposed.
+Output (read-only): candidate pairs with the shared sources and T.E.'s-side context. `fha cooccur` only proposes - the writes live in `fha confirm` (§14a3): **`fha confirm cooccur <P-a> <P-b> --source S --subtype friend|associate|neighbor`** mints the `relationship` claim (the confirming source cited), and **`fha confirm dismiss <P-a> <P-b>`** records the tombstone so the pair isn't re-proposed.
 Noise control is the threshold + the human gate: every witness co-occurs with everyone on a document, so low-variety pairs rank low and most are dismissed - threshold tuning is pilot-data work.
 
 **Shared-place co-occurrence → candidate social edges.** Accepted/needs-review claims of different, unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`) with overlapping EDTF date bounds - e.g. two people each placed in the same town the same year by different sources - with no existing `relationship` edge between them. Same exclusion rules as person co-occurrence (existing edge, dismissed tombstone).
@@ -717,6 +742,21 @@ Organizations stay as claim values for now - no dedicated `O-` record type; the 
 No schema change.
 
 All three feed the report; all three render in the FAN view as provisional (dashed) edges distinct from confirmed claims.
+
+## 14a3. `fha confirm` - the detection write-back layer
+
+The deterministic *detection* tools (`fha xref`, `fha cooccur`, `fha places candidates`) only ever read - they print candidate pairs/clusters for a human to judge. `fha confirm` is the matching write floor: once the human has picked a candidate, the write-back is mechanical, so it lives in one tool any front door (chat now, a click later) can drive. Keeping the writes here preserves each detector's read-only contract. Every verb is surgical (sibling claims, key order, and hand comments survive), locates records by scanning `sources/`/`people/` directly (works when the index is stale or absent), ships `--dry-run`, and returns a `Result` whose `changed[]` lists every file written.
+
+| Verb | Write-back |
+|---|---|
+| `confirm xref <C-a> <C-b> --as corroborates\|contradicts` | Confirm an `fha xref` pair: reciprocal `corroborates:`/`contradicts:` link into both source records; a contradiction also spawns the `origin: tool` open question (E009-satisfying). |
+| `confirm cooccur <P-a> <P-b> --source S --subtype friend\|associate\|neighbor [--accept]` | Confirm an `fha cooccur` person-pair: mint a `relationship` claim (source cited). **Minted `suggested` by default** - the confirm proposes the edge; accepting it into a load-bearing graph edge still goes through claim review (§3b), since `_derive_relationships` is accepted-only. `--accept` is the escape hatch for a human treating the confirm *as* the review (stamps `reviewed:` like `fha claim`). |
+| `confirm dismiss <P-a> <P-b>` | Record a co-occurrence pair in `\.cache/cooccur_dismissed.json`, the tombstone `fha cooccur` reads. Nothing else writes this file. |
+| `confirm place <C-id> [<C-id> …] (--name NAME [--hierarchy H] \| --into <L-id>)` | Confirm an `fha places candidates` cluster: mint a new `L-id` place in `places/places.yaml` (or merge via `--into`) **and** relink the named claims' `place:`, so the cluster stops surfacing as unlinked. |
+| `confirm discovery "<text>" [--refs S-…,P-…]` | Append a dated entry (with `[S-]`/`[P-]` refs) to `notes/discoveries.md`, the research-wins log `fha report` §0 leads with. |
+| `confirm draft <P-id>` | Flip a profile's `<!-- AI-DRAFT … -->` markers to `<!-- AI-ACCEPTED … (accepted DATE) -->` (§20: draft prose carries the marker until the human accepts it). The original date/model stay in the marker - provenance preserved, not erased. |
+
+`confirm cooccur`/`dismiss` are the write owners for the `fha cooccur` candidates; `confirm xref` for the `fha xref` candidates; `confirm place` for the `fha places candidates` clusters; `confirm discovery` and `confirm draft` are the report's "act on a discovery" and the `write-biography` skill's "accept this draft" gestures made into deterministic, replayable CLI actions.
 
 ## 14b. `fha views draft-queue` - material awaiting narrative
 
@@ -763,10 +803,12 @@ definition-of-done test commands for every remaining tool.
 
 **Dependency summary:**
 ```
-_lib → index → lint, stubs, views, find, doctor → photoindex → xref, cooccur →
-find --related → report → packet, places, gedcom, wikitree → process → capture →
+_lib → index → lint, stubs, views, find, doctor, claim → photoindex → xref, cooccur →
+confirm → find --related → report → packet, places, gedcom, wikitree → process → capture →
 convert-mining → site → install/update-tools
 ```
+(`claim` rides on `_lib`/`lint` - it edits a source's `## Claims` block and is the review
+gate; `confirm` rides on the detectors whose candidates it writes back.)
 
 **Design decision D8 (implemented, layer 2):** `fha find` and `fha doctor` are layer-2
 deliverables alongside `fha views`. They depend on the index but not on the photoindex or any
@@ -830,6 +872,8 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes hypotheses. |
 | `merge-identities` skill (A) | "Same person" / "two people." Frontier-tier candidate. |
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
+| `fha claim <C-id> --status …` (T C) | The review gesture: move one claim's `status:` (`accepted`/`disputed`/`rejected`/`needs-review`/`superseded`), stamp `reviewed:` (§3b). Driven by `review-claims` and the report's prompts; `accepted` is the human gate. `--value`/`--date`/`--dry-run`. |
+| `fha confirm <verb> …` (T C) | Act on a detection candidate or report prompt: `xref`, `cooccur`, `dismiss`, `place`, `discovery`, `draft` (§14a3). The deterministic write floor under the read-only detectors. Every verb `--dry-run`. |
 | `fha lint` - `/lint` (T C) | After any batch of edits; the done-gate. Flags: `--with-exif`, fix modes (diff-previewed). |
 | `fha doctor` - `/doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |
 | `fha process <file\|folder>` (T C) | Direct intake without the skill conversation; folder mode triages first. |

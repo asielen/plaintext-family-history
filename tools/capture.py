@@ -90,6 +90,7 @@ from _lib import (
     EXIT_FAILURE,
     SOURCE_TYPES,
     FhaConfigError,
+    Result,
     configure_utf8_stdout,
     format_edtf_error,
     format_source_type_error,
@@ -680,8 +681,16 @@ def run_capture(
     asset: Path | None,
     html: str,
     dry_run: bool = False,
-) -> int:
-    """Capture a page into an inbox source stub and log the search (TOOLING §13b)."""
+) -> Result:
+    """Capture a page into an inbox source stub and log the search (TOOLING §13b).
+
+    Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
+    keep working).  The capture narration is printed inline as the stub/asset are
+    staged — those side effects and their progress lines stay here per the
+    structured-result contract — and the staged stub/asset are listed in
+    `changed` (empty under --dry-run).  Raises CaptureError/CaptureWriteError for
+    the `_run_capture` bridge to translate into exit codes.
+    """
     recipes = _load_site_recipes()
     recipe_name, result = choose_recipe(html, url, recipes)
 
@@ -740,7 +749,7 @@ def run_capture(
         if asset_dest is not None:
             print(f'[dry-run] Would copy asset {_rel(asset_dest, archive_root)}')
         print('[dry-run] Would log the search in the index or .cache/capture_log.jsonl')
-        return EXIT_CLEAN
+        return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'recipe': recipe_name})
 
     try:
         inbox.mkdir(parents=True, exist_ok=True)
@@ -785,7 +794,14 @@ def run_capture(
         print('Logged the search in the index (search_log)')
     elif log_sink == 'jsonl':
         print('Logged the search in .cache/capture_log.jsonl')
-    return EXIT_CLEAN
+    changed = [str(stub_path)]
+    if asset_dest is not None:
+        changed.append(str(asset_dest))
+    return Result(
+        exit_code=EXIT_CLEAN,
+        data={'status': 'ok', 'recipe': recipe_name, 'stub': stub_rel},
+        changed=changed,
+    )
 
 
 def _rel(path: Path, archive_root: Path) -> str:
@@ -846,7 +862,7 @@ def _run_capture(args: argparse.Namespace) -> int:
             url=args.url, title=args.title, source_type=args.source_type,
             source_date=args.source_date, asset=asset, html=html,
             dry_run=bool(getattr(args, 'dry_run', False)),
-        )
+        ).exit_code
     except CaptureError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_ERRORS

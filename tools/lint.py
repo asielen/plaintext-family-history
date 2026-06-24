@@ -61,12 +61,15 @@ from _lib import (
     EXIT_WARNINGS,
     FRONT_RE,
     ID_RE,
+    LEVEL_TO_SEVERITY,
     SIGNIFICANCE,
     SOURCE_TYPES,
     TOKEN_RE,
     VITAL_TYPES,
     Finding,
+    Result,
     edtf_bounds,
+    finding_to_message,
     extract_token_ids,
     fmt_id_display,
     format_edtf_error,
@@ -137,9 +140,10 @@ import yaml
 #    _fix_spawn_questions        — append question entries for E009 set (--spawn-questions)
 #
 #  Main entry / CLI
-#    run_lint                    — orchestrates both passes and emits findings
+#    run_lint                    — orchestrates both passes; returns a Result
+#    _cmd_lint                   — render a lint Result (human text or --json) → exit code
 #    register                    — attach 'lint' to the main fha parser
-#    _run_lint                   — argparse → run_lint bridge
+#    _run_lint                   — argparse → run_lint → _cmd_lint bridge
 #    _standalone_main            — for `python tools/lint.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1418,8 +1422,19 @@ def _check_format(path: Path, findings: list[Finding]) -> None:
         findings.append(Finding('W', 'W109', path, 'File uses CRLF line endings'))
 
 
-def _fix_format(path: Path, dry_run: bool = False) -> None:
-    """Apply conservative formatting fixes: CRLF→LF and ensure trailing newline."""
+def _fix_format(
+    path: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """Apply conservative formatting fixes: CRLF→LF and ensure trailing newline.
+
+    Per the structured-result contract (run_* does not print), the per-file
+    progress line goes into `progress` for `_cmd_lint` to render, and a real
+    write is recorded in `changed`.  The file write itself is a side effect that
+    stays here in the compute layer.
+    """
     try:
         text = path.read_text(encoding='utf-8')
     except OSError:
@@ -1429,10 +1444,11 @@ def _fix_format(path: Path, dry_run: bool = False) -> None:
         fixed += '\n'
     if fixed != text:
         if dry_run:
-            print(f'Would fix formatting: {path.name}')
+            progress.append(f'Would fix formatting: {path.name}')
         else:
             path.write_text(fixed, encoding='utf-8')
-            print(f'Fixed formatting: {path.name}')
+            progress.append(f'Fixed formatting: {path.name}')
+            changed.append(str(path))
 
 
 # ── Main lint entry point ─────────────────────────────────────────────────────
@@ -1461,7 +1477,6 @@ def run_lint(
     archive_root: Path,
     fha_config: dict,
     with_exif: bool = False,
-    use_json: bool = False,
     format_check: bool = False,
     format_write: bool = False,
     dry_run: bool = False,
@@ -1469,24 +1484,42 @@ def run_lint(
     spawn_questions: bool = False,
     fix_inventory: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
-) -> int:
+) -> Result:
     """
-    Run all lint checks against archive_root and return an exit code.
-    Report-only by default; mutating fix modes require explicit flags and
-    respect --dry-run. Never modifies original source files or photos.
+    Run all lint checks against archive_root and return a structured `Result`.
+
+    The reference implementation of the structured-result contract (_lib.py): this
+    function computes findings and performs the mutating fix modes (their file
+    writes are side effects that belong in the compute layer), but it does NOT
+    print the human report — `_cmd_lint` renders that from the returned Result.
+    Report-only by default; mutating fix modes require explicit flags and respect
+    --dry-run. Never modifies original source files or photos.
+
+    The Result carries:
+      - messages: every finding, folded into Message form (severity → level).
+      - data.n_errors / data.n_warnings: the counts the summary line needs.
+      - data.progress: the per-operation lines fix modes emit, in order, for
+        `_cmd_lint` to print ahead of the findings report.
+      - data.config_missing: set when there is no fha.yaml (a special early case
+        whose output `_cmd_lint` renders differently — compact JSON, absolute path).
+      - changed: files actually created/written by the fix modes (empty on dry-run).
     """
     # Check that archive root looks right
     if not (archive_root / 'fha.yaml').exists():
         msg = f'No fha.yaml found at {archive_root} — is this an archive root?'
-        if use_json:
-            print(json.dumps([{'severity': 'E', 'code': 'E010',
-                               'path': str(archive_root), 'message': msg}]))
-        else:
-            print(f'E E010 {archive_root}: {msg}')
-            print('Summary: 1 error(s)')
-        return EXIT_ERRORS
+        result = Result(
+            ok=False,
+            exit_code=EXIT_ERRORS,
+            data={'config_missing': True, 'message': msg,
+                  'n_errors': 1, 'n_warnings': 0, 'progress': []},
+        )
+        result.add('error', msg, code='E010', path=archive_root)
+        return result
 
     findings, registry = _run_lint_core(archive_root, fha_config, with_exif=with_exif)
+
+    progress: list[str] = []
+    changed: list[str] = []
 
     # Format checks / fixes
     if format_check or format_write:
@@ -1494,61 +1527,116 @@ def run_lint(
             if '.cache' not in path.parts:
                 _check_format(path, findings)
                 if format_write:
-                    _fix_format(path, dry_run=dry_run)
+                    _fix_format(path, progress, changed, dry_run=dry_run)
 
     # Fix modes (each respects --dry-run via its own parameter)
     if mint_stubs:
-        _fix_mint_stubs(registry, findings, archive_root, dry_run=dry_run)
+        _fix_mint_stubs(registry, archive_root, progress, changed, dry_run=dry_run)
     if spawn_questions:
-        _fix_spawn_questions(registry, findings, archive_root, dry_run=dry_run)
+        _fix_spawn_questions(registry, findings, archive_root, progress, changed, dry_run=dry_run)
     if fix_inventory:
         if dry_run:
-            print('--fix-inventory dry-run: would scan documents root and update files: blocks for E011 set')
+            progress.append('--fix-inventory dry-run: would scan documents root and update files: blocks for E011 set')
         else:
-            print('WARNING: --fix-inventory is not yet implemented.')
-            print('         Run `fha process` on each document to update its source record.')
+            progress.append('WARNING: --fix-inventory is not yet implemented.')
+            progress.append('         Run `fha process` on each document to update its source record.')
 
     # Sort findings by severity then path
     findings.sort(key=lambda f: (f.code, f.path))
 
-    # Report
-    if use_json:
-        print(json.dumps([f.as_dict() for f in findings], indent=2))
+    n_errors = sum(1 for f in findings if f.severity == 'E')
+    n_warnings = sum(1 for f in findings if f.severity == 'W')
+    if n_errors:
+        exit_code = EXIT_ERRORS
+    elif n_warnings:
+        exit_code = EXIT_WARNINGS
     else:
-        for f in findings:
+        exit_code = EXIT_CLEAN
+
+    return Result(
+        ok=(n_errors == 0),
+        exit_code=exit_code,
+        data={'n_errors': n_errors, 'n_warnings': n_warnings, 'progress': progress},
+        messages=[finding_to_message(f) for f in findings],
+        changed=changed,
+    )
+
+
+def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int:
+    """Render a lint Result to stdout and return the process exit code.
+
+    The only layer that prints lint's report.  Reproduces the historical output
+    byte-for-byte: progress lines first (fix-mode operations, both modes), then
+    either the indented `--json` payload or the relative-path findings list plus
+    the summary line.  The no-fha.yaml case keeps its distinct format (compact
+    JSON, absolute path, "Summary: 1 error(s)").
+    """
+    data = result.data
+
+    if data.get('config_missing'):
+        msg = data['message']
+        if use_json:
+            print(json.dumps([{'severity': 'E', 'code': 'E010',
+                               'path': str(archive_root), 'message': msg}]))
+        else:
+            print(f'E E010 {archive_root}: {msg}')
+            print('Summary: 1 error(s)')
+        return result.exit_code
+
+    # Fix-mode progress prints ahead of the report, regardless of --json.
+    for line in data.get('progress', []):
+        print(line)
+
+    messages = result.messages
+
+    if use_json:
+        payload = [
+            {
+                'severity': LEVEL_TO_SEVERITY.get(m.level, m.level),
+                'code': m.code,
+                'path': m.path,
+                'message': m.text,
+            }
+            for m in messages
+        ]
+        print(json.dumps(payload, indent=2))
+    else:
+        for m in messages:
+            severity = LEVEL_TO_SEVERITY.get(m.level, m.level)
             # Make paths relative for readability
             try:
-                rel = Path(f.path).relative_to(archive_root)
-                line = f'{f.severity} {f.code} {rel}: {f.message}'
+                rel = Path(m.path).relative_to(archive_root)
+                line = f'{severity} {m.code} {rel}: {m.text}'
             except ValueError:
-                line = str(f)
+                line = f'{severity} {m.code} {m.path}: {m.text}'
             print(line)
 
-        n_errors = sum(1 for f in findings if f.severity == 'E')
-        n_warnings = sum(1 for f in findings if f.severity == 'W')
+        if not messages:
+            print('✓ No issues found.')
+        else:
+            parts = []
+            if data.get('n_errors'):
+                parts.append(f'{data["n_errors"]} error(s)')
+            if data.get('n_warnings'):
+                parts.append(f'{data["n_warnings"]} warning(s)')
+            print(f'Summary: {", ".join(parts)}')
 
-        if not use_json:
-            if not findings:
-                print('✓ No issues found.')
-            else:
-                parts = []
-                if n_errors:
-                    parts.append(f'{n_errors} error(s)')
-                if n_warnings:
-                    parts.append(f'{n_warnings} warning(s)')
-                print(f'Summary: {", ".join(parts)}')
-
-    if any(f.severity == 'E' for f in findings):
-        return EXIT_ERRORS
-    if any(f.severity == 'W' for f in findings):
-        return EXIT_WARNINGS
-    return EXIT_CLEAN
+    return result.exit_code
 
 
 def _fix_mint_stubs(
-    registry: Registry, findings: list[Finding], archive_root: Path, dry_run: bool = False
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
 ) -> None:
-    """Create missing person stubs (E005 set) in people/stubs/. Respects dry_run."""
+    """Create missing person stubs (E005 set) in people/stubs/. Respects dry_run.
+
+    Per the structured-result contract, the "Created stub:" / "Would create stub:"
+    lines accumulate in `progress` (rendered later by `_cmd_lint`) rather than
+    printing here, and each real write is recorded in `changed`.
+    """
     stubs_dir = archive_root / 'people' / 'stubs'
 
     # Collect pids that appear in claims but have no record
@@ -1564,7 +1652,7 @@ def _fix_mint_stubs(
         if stub_path.exists():
             continue
         if dry_run:
-            print(f'Would create stub: people/stubs/unknown__unknown_{ppid}.md')
+            progress.append(f'Would create stub: people/stubs/unknown__unknown_{ppid}.md')
         else:
             stubs_dir.mkdir(parents=True, exist_ok=True)
             stub_content = (
@@ -1575,19 +1663,30 @@ def _fix_mint_stubs(
                 f'tier: stub\n---\n'
             )
             stub_path.write_text(stub_content, encoding='utf-8')
-            print(f'Created stub: {stub_path.relative_to(archive_root)}')
+            progress.append(f'Created stub: {stub_path.relative_to(archive_root)}')
+            changed.append(str(stub_path))
 
 
 def _fix_spawn_questions(
-    registry: Registry, findings: list[Finding], archive_root: Path, dry_run: bool = False
+    registry: Registry,
+    findings: list[Finding],
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
 ) -> None:
-    """Append templated questions for E009 contradictions. Respects dry_run."""
+    """Append templated questions for E009 contradictions. Respects dry_run.
+
+    Like the other fix modes, progress text accumulates in `progress` and the
+    written questions.md is recorded in `changed`, leaving `_cmd_lint` the only
+    layer that prints.
+    """
     questions_path = archive_root / 'notes' / 'questions.md'
     to_spawn = [f for f in findings if f.code == 'E009']
     if not to_spawn:
         return
     if dry_run:
-        print(f'Would append {len(to_spawn)} question(s) to notes/questions.md')
+        progress.append(f'Would append {len(to_spawn)} question(s) to notes/questions.md')
         return
     (archive_root / 'notes').mkdir(parents=True, exist_ok=True)
     existing = questions_path.read_text(encoding='utf-8') if questions_path.exists() else ''
@@ -1600,7 +1699,8 @@ def _fix_spawn_questions(
         )
     if appended:
         questions_path.write_text(existing + '\n'.join(appended), encoding='utf-8')
-        print(f'Appended {len(appended)} question(s) to {questions_path.relative_to(archive_root)}')
+        progress.append(f'Appended {len(appended)} question(s) to {questions_path.relative_to(archive_root)}')
+        changed.append(str(questions_path))
 
 
 def _today() -> str:
@@ -1669,11 +1769,10 @@ def _run_lint(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     spec_root = getattr(args, 'spec_root', None)
 
-    return run_lint(
+    result = run_lint(
         archive_root=archive_root,
         fha_config=fha_config,
         with_exif=getattr(args, 'with_exif', False),
-        use_json=getattr(args, 'use_json', False),
         format_check=getattr(args, 'format_check', False),
         format_write=getattr(args, 'format_write', False),
         dry_run=getattr(args, 'dry_run', False),
@@ -1682,6 +1781,7 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_inventory=getattr(args, 'fix_inventory', False),
         spec_root=Path(spec_root) if spec_root else None,
     )
+    return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False))
 
 
 # ── Standalone ────────────────────────────────────────────────────────────────

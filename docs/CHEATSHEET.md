@@ -13,7 +13,7 @@ it runs the commands. The command names are here only so nothing feels like a bl
 |---|---|---|
 | **Capture** | "Pull this record into my inbox" (or just drop a scan in `inbox/`) | `fha capture` |
 | **File & process** | "Process the new item in my inbox" | `fha process` |
-| **Review** | "The name and date are right; leave the place as a suggestion" | - (you decide) |
+| **Review** | "The name and date are right; leave the place as a suggestion" | `fha claim` (you decide; it records the decision) |
 | **Report** | "What should I look at today?" | `fha report` |
 
 You never have to type a command. The phrases above are the whole job.

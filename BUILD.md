@@ -12,6 +12,7 @@ Design rationale lives in `TOOLING.md`; this file tells you the sequence and how
 - Shared code only in `tools/_lib.py`.
 - Every subcommand defines its own `--root PATH` flag (argparse does not propagate parent flags).
 - Exit codes: 0 clean · 1 warnings · 2 errors · 3 tool failure.
+- **Engine/interface split.** A command's `run_*` computes and returns a `_lib.Result` (the structured record of what happened - see M1.1); its `_cmd_*` is the only layer that renders that `Result` to stdout/stderr and returns the exit code. `run_*` does not print report text or call `sys.exit`. This is what makes the suite a headless core any front door drives (TOOLING §1) - so every phase's "Done when" implicitly means "the engine returns a `Result` and the interface renders it."
 - Every mutating operation ships `--dry-run`.
 - `tools/README.md` is the authoritative implementation-status record. Update it on every PR.
 
@@ -41,10 +42,10 @@ the insertion point in the same edit.
 
 | Milestone | Layer | Phases | Status |
 |---|---|---|---|
-| 1 | Layer 1 - Foundation | M1.1-M1.8 | ✓ shipped |
+| 1 | Layer 1 - Foundation | M1.1-M1.9 | ✓ shipped - includes the `Result` contract (M1.1), `fha lint` as its reference renderer (M1.4), and `fha claim` the claim-review write-back (M1.9) |
 | 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | ✓ shipped |
 | 3 | Layer 3 - Photo catalog | M3.1-M3.4 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
-| 4 | Layer 4 - Cross-reference & connection | M4.1-M4.3 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
+| 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
 | 7 | Layer 7 - Intake pipeline | M7.1-M7.8 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
@@ -57,14 +58,14 @@ the insertion point in the same edit.
 ## Dependency overview
 
 ```
-_lib ──────────────────────────────────────────────────────── all tools
-index ────────────────────── views, find, doctor, stubs, xref, cooccur,
+_lib (incl. Result) ───────────────────────────────────────── all tools
+index ────────────────────── views, find, doctor, stubs, claim, xref, cooccur,
 │                             report, packet, process, places, site, gedcom,
 │                             wikitree, capture, convert-mining
 │
 photoindex ──────────────── report (triage §), packet (photos), find --text (D7)
 │
-xref + cooccur ──────────── find --related (D4), report (§8)
+xref + cooccur + places ─── find --related (D4), report (§8), confirm (write-back)
 │
 process ──────────────────── capture (hands off to process)
 │
@@ -72,6 +73,10 @@ views tree (JSON) ────────── site (tree rendering adapter)
 │
 install/update-tools ─────── (needs complete tool manifest)
 ```
+
+`claim` is the claim-review write-back (edits a source's `## Claims` block; needs only `_lib`);
+`confirm` is the write-back floor under the read-only detectors (`xref`/`cooccur`/`places
+candidates`) plus the report's discovery prompts and the `write-biography` accept gesture.
 
 Tools with no inbound lines - places, gedcom, wikitree, packet, convert-mining - depend only
 on the index and can be built in any order once the index is stable.
@@ -110,6 +115,16 @@ open `[..1920]` → `(0001-01-01, 1920-12-31)`. Validate with the same regex use
 
 `resolve_path(p, fha_yaml) -> str` - maps the first segment of a record path through
 `fha.yaml`'s `roots:` map; missing alias defaults to `{archive_root}/{alias}`.
+
+**`Result` - the engine/interface seam** (TOOLING §1). `_lib.py` also defines the single value
+type every command returns from its `run_*`: a small JSON-serializable record carrying `ok`
+(no error-level messages), `exit_code` (an `EXIT_*` constant), `data` (the structured payload a
+consumer wants), `messages` (human-facing `Message{level, text, next_step, code, path}` lines -
+a lint `Finding` folds into one), and `changed` (paths created/written/renamed/embedded, empty
+under `--dry-run`). The `EXIT_*` constants live here too. Establishing `Result` in the foundation
+PR is deliberate: it is the contract every later tool's engine returns and every front door reads,
+so it must exist before the first `run_*` is written. The reference renderer arrives with `fha
+lint` (M1.4).
 
 **`fha id mint [TYPE] [-n N]`** - draw N (default 1) IDs of type `P|S|C|L|H`.
 Algorithm: `secrets.choice` over Crockford Base32 alphabet `0-9a-hjkmnpqrstvwxyz` (omit
@@ -232,6 +247,12 @@ fha index --source S-4f5f215e60 --root example-archive  # incremental upsert; ex
 (TOOLING §3). This phase ships the lint engine and the first ten error codes only;
 inventory/keyword/agent-drift errors (E011-E018), all warning codes (W101-W110), and the
 fix/formatter flags are later phases in this same layer.
+
+**Lint is the reference `Result` renderer.** `run_lint` returns a `_lib.Result` (M1.1): each
+`Finding` folds into a `Message` (severity → level, E/W code → code, file → path), and `_cmd_lint`
+renders both the human `SEVERITY CODE path: message` lines and the `--json` payload from that one
+`Result`. Build this split here, cleanly, because every later tool copies it - `run_*` returns the
+data, `_cmd_*` formats it.
 
 Lint builds its own in-memory index (does not require `fha index` to have run first).
 Runs file-by-file then cross-file passes. Collect all findings; print all; never crash on
@@ -372,6 +393,39 @@ interactively. One stub per semicolon-delimited name.
 fha stubs --root example-archive         # creates stubs for any unresolved P-ids
 fha lint --root example-archive          # E005 count drops to 0 after stubs minted
 fha stubs --from-names "Test Person" --root example-archive  # creates one stub
+```
+
+---
+
+### M1.9 - `fha claim` - claim-review write-back
+
+**One PR.** New file `tools/claim.py`. Wire `fha claim <C-id> --status accepted|disputed|rejected|
+needs-review|superseded [--reviewed DATE] [--value "…"] [--date EDTF] [--root PATH] [--dry-run]`
+into `fha.py` (TOOLING §3b). The five `--status` choices are the SPEC §8.1 review outcomes a
+human moves a claim into (out of `suggested`). Belongs in the foundation layer: it is the deterministic half of the
+review flow whose codes lint already defines (E006 - an `accepted` claim must carry `reviewed:`),
+and it needs only `_lib` (`read_record`, the `## Claims` parsing, `Result`).
+
+**The human gate, from the engine side.** Moving a claim's `status:` is the one write a reviewer
+reaches for constantly; this tool makes it a contract-safe CLI action any front door can drive
+(SPEC §8.2). Only the human moves a claim to `accepted`, and an accepted claim must carry a
+`reviewed:` date - so `--status accepted` always stamps `reviewed:` (the given `--reviewed DATE`,
+else today). The tool never accepts on its own; it only executes a decision a human directs.
+`disputed`/`rejected`/`superseded` change status rather than delete, preserving the trail
+(`disputed` = actively contested, distinct from a ruled-out `rejected`).
+
+**Surgical edit.** Touch only the one named claim's entry inside its source `.md` `## Claims`
+block - sibling claims, key order, and hand comments survive (same discipline as `places geocode`
+and `process --more`). Locate the claim by scanning `sources/` directly (the `.md` files are the
+truth), so it works when `.cache/index.sqlite` is stale or absent; a `value:` that is a YAML
+block scalar is refused, not corrupted. `run_claim` returns a `Result` whose `changed[]` names the
+edited source file; re-run `fha index` after a write to fold the new status into the query surface.
+
+**Done when:**
+```sh
+fha claim C-xxxxxxxxxx --status accepted --root example-archive   # status flips; reviewed: stamped today
+fha claim C-xxxxxxxxxx --status rejected --dry-run --root example-archive  # previews; writes nothing
+fha lint --root example-archive          # an accepted claim with reviewed: stays E006-clean
 ```
 
 ---
@@ -747,7 +801,8 @@ Unlocks: `fha find --related` (D4), `fha report` section 8.
 ### M4.1 - `fha xref` (✓ shipped)
 
 **One PR.** New file `tools/xref.py`. Wire into `fha.py`. Does not write to the archive -
-output candidates only. Requires fresh index; exit 3 if absent (TOOLING §14a).
+output candidates only; the human-confirmed write-back is `fha confirm xref` (M4.4). Requires
+fresh index; exit 3 if absent (TOOLING §14a).
 
 **`fha xref`**. Query pairs of accepted/needs-review claims: same person, same type, different
 source, not already linked (`a.id < b.id` deduplication). Post-filter in Python:
@@ -785,8 +840,9 @@ dismissed tombstone, same as person co-occurrence.
 *Org/entity recurrence:* group `claims.value` by `(value, type)` for `occupation`/`military`/
 `membership`; emit groups with ≥2 people or ≥2 sources as shared affiliation hubs.
 
-Tombstone file read at startup; missing = empty dismissed set (not an error). Skill layer
-writes dismissals; this tool only reads.
+Tombstone file read at startup; missing = empty dismissed set (not an error). This tool only
+reads; `fha confirm dismiss` (M4.4) is the writer of the tombstone, and `fha confirm cooccur`
+mints the confirmed relationship claim.
 
 **Done when:**
 ```sh
@@ -836,6 +892,43 @@ fha find --related P-de957bcda1 --date 1880 --root example-archive  # combined
 
 ---
 
+### M4.4 - `fha confirm` - the detection write-back layer (✓ shipped)
+
+**One PR.** New file `tools/confirm.py`. Wire `fha confirm <verb> …` into `fha.py` (TOOLING
+§14a3). The detection tools (`fha xref`, `fha cooccur`, and `fha places candidates` from M6.2)
+are read-only by contract - they print candidates a human judges. `fha confirm` is the matching
+write floor: once the human has picked, the write-back is mechanical, so it lives in one tool any
+front door (chat now, a click later) can drive. Keeping the writes here is what lets each detector
+advertise a clean read-only surface - a detector that also wrote would be two owners for one
+surface.
+
+**The six verbs** (each surgical, each `--dry-run`, each returns a `Result` whose `changed[]`
+lists files written; records located by scanning `sources/`/`people/` directly so a stale or
+absent index is fine):
+
+| Verb | Write-back |
+|---|---|
+| `confirm xref <C-a> <C-b> --as corroborates\|contradicts` | Reciprocal `corroborates:`/`contradicts:` link into both source records; a contradiction also spawns the `origin: tool` open question (E009-satisfying, same template as `lint --spawn-questions`). |
+| `confirm cooccur <P-a> <P-b> --source S --subtype friend\|associate\|neighbor [--accept]` | Mint a `relationship` claim (source cited), `suggested` by default - acceptance into a derived edge still goes through `fha claim` (M1.9), since `_derive_relationships` is accepted-only. `--accept` is the escape hatch (stamps `reviewed:`). |
+| `confirm dismiss <P-a> <P-b>` | Write the `.cache/cooccur_dismissed.json` tombstone `fha cooccur` reads. |
+| `confirm place <C-id> … (--name N [--hierarchy H] \| --into <L-id>)` | Mint/merge an `L-id` in `places/places.yaml` and relink the named claims' `place:` (pairs with `fha places candidates`, M6.2). |
+| `confirm discovery "<text>" [--refs …]` | Append a dated, ref-tagged entry to `notes/discoveries.md` (the log `fha report` §0 leads with, M5). |
+| `confirm draft <P-id>` | Flip a profile's `<!-- AI-DRAFT … -->` markers to `<!-- AI-ACCEPTED … (accepted DATE) -->`, preserving the original date/model (the `write-biography` accept gesture). |
+
+Built once the detectors it serves exist: `xref`/`cooccur`/`dismiss` pair with M4.1/M4.2,
+`place` with `fha places candidates` (M6.2), `discovery`/`draft` with the report (M5) and the
+`write-biography` flow - so `fha confirm` is the capstone of the read → judge → write loop.
+
+**Done when:**
+```sh
+fha confirm xref C-aaaaaaaaaa C-bbbbbbbbbb --as corroborates --root example-archive  # reciprocal links; reindex shows claim_links
+fha confirm cooccur P-aaaaaaaaaa P-bbbbbbbbbb --source S-cccccccccc --subtype friend --root example-archive  # suggested relationship claim
+fha confirm dismiss P-aaaaaaaaaa P-bbbbbbbbbb --dry-run --root example-archive  # previews tombstone write; writes nothing
+fha lint --root example-archive   # a confirmed contradiction stays E009-clean
+```
+
+---
+
 ## Layer 5 - Research report (Milestone 5 - ✓ shipped)
 
 Depends on: photoindex (triage section), xref (corroboration events), cooccur (section 8).
@@ -860,7 +953,10 @@ Depends on: photoindex (triage section), xref (corroboration events), cooccur (s
 `--full` ignores snapshot. After building, write new snapshot.
 
 **Section 0 - Discoveries:** claims moving `needs-review → accepted` since snapshot; questions
-newly `status: answered`; `claim_links` corroboration rows added since snapshot.
+newly `status: answered`; `claim_links` corroboration rows added since snapshot. The report
+prints these; appending a confirmed win to the durable `notes/discoveries.md` log is the human's
+gesture, actioned by `fha confirm discovery "<text>" [--refs …]` (M4.4) - the report proposes,
+the human's confirm writes.
 
 **Section 1 - Review queue** (W102): sources with `suggested` claims, grouped, oldest first.
 
@@ -918,7 +1014,9 @@ else stub with a note.
 person. From `person_files` kind='draft-queue': persons whose file is non-trivially non-empty.
 
 **Section 8 - Possible connections.** Call cooccur logic; format top-10 person-pair candidates
-with "[confirm] [dismiss]" labels.
+with "[confirm] [dismiss]" labels. Acting on a label is `fha confirm cooccur` / `fha confirm
+dismiss` (M4.4); the report itself only prints. The §6b place candidates carry the same
+confirm-or-dismiss prompt, actioned by `fha confirm place`.
 
 **Done when:**
 ```sh

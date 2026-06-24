@@ -29,6 +29,10 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    - adding any other is a proposed decision, not a choice; one
    file per tool under `tools/`, shared code only in `_lib.py`, tools never import tools;
    no network access (geocoder's gazetteer download excepted).
+   Split each command into an engine and an interface (TOOLING §1): `run_*` computes and
+   returns a `_lib.Result` (it does not print report text or call `sys.exit`), and `_cmd_*`
+   is the only layer that renders that `Result` and returns the exit code. `lint` is the
+   reference implementation; this split is what lets any front door drive the same engine.
 5. **Fixtures, not the archive.** Develop and test ONLY against `tests/fixtures/` copies.
    The real archive is never a test bed; destructive paths are exercised on fixtures exclusively.
 6. **Definition of done:** `fha lint` runs clean on the clean pilot fixture; each of the

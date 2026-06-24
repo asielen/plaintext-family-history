@@ -92,6 +92,7 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    Result,
     CLAIM_TYPES,
     FhaConfigError,
     configure_utf8_stdout,
@@ -993,29 +994,45 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> int:
+def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> Result:
+    """Convert a legacy mining export into conformant records; return a Result.
+
+    The plan is printed inline (the human preview is this intake tool's surface);
+    the Result reports the outcome — exit code plus, on a successful --apply, the
+    written record/transcript files in `changed` (a dry-run plan writes nothing
+    and leaves `changed` empty).  Result == int (see _lib.py), so callers and
+    tests comparing against EXIT_* keep working unchanged.
+    """
     mining_dir = archive_root / 'mining'
     try:
         plan = build_plan(archive_root, fha_config, mining_dir)
     except ConvertError as e:
         print(f'ERROR: {e}', file=sys.stderr)
-        return EXIT_ERRORS
+        return Result(ok=False, exit_code=EXIT_ERRORS)
 
+    changed: list[str] = []
     if apply:
         try:
             apply_plan(plan, fha_config)
         except ConvertError as e:
             print(f'ERROR: {e}', file=sys.stderr)
-            return EXIT_ERRORS
+            return Result(ok=False, exit_code=EXIT_ERRORS)
         except OSError as e:
             print(f'ERROR: conversion write failed and was rolled back: {e}', file=sys.stderr)
-            return EXIT_FAILURE
+            return Result(ok=False, exit_code=EXIT_FAILURE)
         print_plan(plan, applied=True)
         print('Wrote .cache/convert_mapping.csv')
         print('Run `fha index` then `fha lint` to review the imported records.')
+        # The records and transcript copies the apply just wrote, mirroring
+        # _planned_destinations so a consumer sees exactly what landed on disk.
+        changed += [str(_record_path(archive_root, s)) for s in plan.sources]
+        changed += [str(s.doc_dest_path) for s in plan.sources if s.transcript_src.is_file()]
+        changed.append(str(archive_root / '.cache' / 'convert_mapping.csv'))
     else:
         print_plan(plan, applied=False)
-    return EXIT_WARNINGS if plan.warnings else EXIT_CLEAN
+    exit_code = EXIT_WARNINGS if plan.warnings else EXIT_CLEAN
+    return Result(exit_code=exit_code, changed=changed,
+                  data={'warnings': list(plan.warnings), 'applied': apply})
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -1044,7 +1061,7 @@ def _run_convert(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
-    return run_convert(archive_root, fha_config, apply=bool(args.apply))
+    return run_convert(archive_root, fha_config, apply=bool(args.apply)).exit_code
 
 
 def _standalone_main(argv: list[str] | None = None) -> int:

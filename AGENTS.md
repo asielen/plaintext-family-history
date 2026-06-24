@@ -130,6 +130,10 @@ fha lint                     verify archive against spec - run after any batch o
 fha index                    rebuild the SQLite query surface (.cache/index.sqlite)
 fha id mint P|S|C|L|H        mint verified IDs
 fha stubs                    create stubs for unresolved person references
+fha claim <C-id> --status …  the review write-back: move a claim's status and stamp
+                            reviewed: (only the human moves a claim to accepted)
+fha confirm <verb> …         act on a detection candidate or report prompt the human
+                            picked (xref/cooccur/dismiss/place/discovery/draft)
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
 fha views timeline|sources-index|brackets     regenerate views
@@ -161,7 +165,7 @@ The process-source skill (when implemented) must handle loosely-written notes gr
 - **Add a source:** confirm the evidence file's location → `fha process` → fill
 frontmatter (SPEC §14) → draft claims (`suggested`) with `anchor:`s → `fha lint`.
 - **Review claims with the human:** take one source's `suggested` list; for each, show
-the claim plus its anchor context; record the human's accept/dispute/edit; set `reviewed:`; finish with `fha lint`.
+the claim plus its anchor context; record the human's decision with `fha claim` (which moves the status and stamps `reviewed:` - directing the tool *is* the human's accept); confirm any resulting corroboration/contradiction with `fha confirm xref`; finish with `fha index` + `fha lint`.
 - **Write or extend a biography:** facts only from `accepted` claims; cite every factual
 sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; cross-link people with `[P-]` tokens verified to exist.
 - **Log searches:** when you search an external collection for the human (or execute a
@@ -169,7 +173,7 @@ research-next plan), write the research-log entry (date, repository, collection,
 Check the log before proposing any search.
 - **AI passes:** record every extraction pass in the source's `## AI Passes` yaml block
 ({date, model, harness, task, outputs, human_reviewed}).
-Draft prose you write into profiles goes inside `<!-- AI-DRAFT ... -->` markers until the human accepts it.
+Draft prose you write into profiles goes inside `<!-- AI-DRAFT ... -->` markers until the human accepts it; on acceptance, `fha confirm draft <P-id>` flips the marker to `<!-- AI-ACCEPTED ... -->` (provenance kept).
 - **Mine a transcript:** be selective - substantive assertions become `suggested` claims
 with anchors; narrative chunks go to `## Stories`; the rest stays in the transcript (it is preserved and searchable; extraction is indexing, not preservation).
 Record your pass in the source's `## AI Passes` block.

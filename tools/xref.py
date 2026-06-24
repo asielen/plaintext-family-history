@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
+    Result,
     edtf_bounds,
     fmt_id_display,
     normalize_place_text,
@@ -157,29 +158,34 @@ def _classify_pair(a: dict, b: dict) -> str | None:
     return 'corroborates'
 
 
-def run_xref(archive_root: Path) -> dict:
+def run_xref(archive_root: Path) -> Result:
     """
     Find corroboration/contradiction candidate claim pairs.
 
-    Returns {'status': 'ok'|'failed', 'groups': [{'person_id', 'person_name',
-    'pairs': [{'kind', 'claim_a', 'claim_b'}, ...]}, ...]}.
+    Returns a `Result` whose `data` is {'status': 'ok'|'failed', 'groups':
+    [{'person_id', 'person_name', 'pairs': [{'kind', 'claim_a', 'claim_b'}, …]},
+    …]}.  Result exposes dict-style access (_lib.py), so callers and tests keep
+    reading `result['status']` / `result['groups']` unchanged.
 
     Each claim dict embedded in a pair carries: id, source_id, source_title,
     type, date_edtf, place_text, value.
     """
     conn = open_index_db(archive_root, _REQUIRED_TABLES)
     if conn is None:
-        return {'status': 'failed', 'groups': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE,
+                      data={'status': 'failed', 'groups': []})
 
     try:
-        return _run_xref_queries(conn)
+        data = _run_xref_queries(conn)
+        return Result(exit_code=EXIT_CLEAN, data=data)
     except sqlite3.OperationalError:
         print(
             'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
             'Run `fha index` to rebuild.',
             file=sys.stderr,
         )
-        return {'status': 'failed', 'groups': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE,
+                      data={'status': 'failed', 'groups': []})
     finally:
         conn.close()
 

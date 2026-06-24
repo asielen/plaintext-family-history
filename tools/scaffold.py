@@ -112,6 +112,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    Result,
     configure_utf8_stdout,
     find_archive_root,
 )
@@ -441,8 +442,8 @@ def run_install(
     repo_root: Path,
     *,
     dry_run: bool = False,
-) -> int:
-    """Create an archive's skeleton + operating layer and stamp it.
+) -> Result:
+    """Create an archive's skeleton + operating layer and stamp it; return a Result.
 
     Run from a public-repo clone (or unzipped download). Copies every manifest
     file into `archive_path`, then writes `.plainfile-version` recording the
@@ -450,8 +451,11 @@ def run_install(
     already carries tools (a `.plainfile-version` or `tools/fha.py`) and points
     the human at `fha update-tools` instead — install is a one-time bootstrap.
 
-    Returns EXIT_CLEAN on success (even with the exiftool advisory), EXIT_FAILURE
-    on a preflight or copy failure. Raises ScaffoldError for the caller to print.
+    Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
+    keep working): EXIT_CLEAN on success (even with the exiftool advisory),
+    EXIT_FAILURE on a preflight failure, with the copied files and version stamp
+    listed in `changed` (empty under --dry-run).  The install narration is
+    printed inline.  Raises ScaffoldError for the caller to print.
     """
     archive_path = Path(archive_path).resolve()
     manifest = load_manifest(repo_root)
@@ -460,7 +464,7 @@ def run_install(
     if not python_ok:
         for m in advisories:
             print(f'ERROR: {m}', file=sys.stderr)
-        return EXIT_FAILURE
+        return Result(ok=False, exit_code=EXIT_FAILURE)
 
     already = archive_path / VERSION_FILE
     if already.is_file():
@@ -522,9 +526,10 @@ def run_install(
         for m in advisories:
             print(f'\nNote: {m}')
         print('\nNothing was written (dry run). Re-run without --dry-run to install.')
-        return EXIT_CLEAN
+        return Result(exit_code=EXIT_CLEAN, data={'dry_run': True, 'file_count': len(files)})
 
     checksums: dict[str, str] = {}
+    changed: list[str] = []
     try:
         archive_path.mkdir(parents=True, exist_ok=True)
         for entry in files:
@@ -533,7 +538,9 @@ def run_install(
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
             checksums[entry['path']] = entry.get('sha256') or _sha256_file(src)
+            changed.append(str(dest))
         _write_version_stamp(archive_path, _stamp_dict(manifest, checksums))
+        changed.append(str(archive_path / VERSION_FILE))
     except OSError as exc:
         raise ScaffoldError(
             f"could not finish installing into {archive_path}: {exc}. "
@@ -549,7 +556,8 @@ def run_install(
     print(f'  3. Run `fha doctor` from inside the archive to check everything is set up.')
     for m in advisories:
         print(f'\nNote: {m}')
-    return EXIT_CLEAN
+    return Result(exit_code=EXIT_CLEAN, changed=changed,
+                  data={'file_count': len(files)})
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
@@ -560,7 +568,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
             Path(args.archive_path),
             repo_root,
             dry_run=bool(getattr(args, 'dry_run', False)),
-        )
+        ).exit_code
     except ScaffoldError as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return EXIT_FAILURE
@@ -637,7 +645,7 @@ def run_update_tools(
     *,
     dry_run: bool = False,
     verbose: bool = False,
-) -> int:
+) -> Result:
     """Refresh the operating layer in an existing archive from a public clone.
 
     Reads the public manifest and the archive's `.plainfile-version`, classifies
@@ -648,8 +656,11 @@ def run_update_tools(
     stamp afterward (operating checksums refreshed; skeleton entries carried over;
     retired entries dropped).
 
-    Returns EXIT_CLEAN on a clean update or dry run. Raises ScaffoldError for the
-    caller to print on any can't-run condition.
+    Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
+    keep working): EXIT_CLEAN on a clean update or dry run, EXIT_WARNINGS when one
+    or more files could not be updated, with the files actually installed (plus
+    the rewritten stamp) listed in `changed` (empty under --dry-run). The update
+    narration is printed inline. Raises ScaffoldError on any can't-run condition.
     """
     archive_root = Path(archive_root).resolve()
     manifest = load_manifest(repo_root)
@@ -697,7 +708,10 @@ def run_update_tools(
             f'and update, {n_retired} retired, {n_current} already up to date.'
         )
         print('Nothing was written (dry run). Re-run without --dry-run to apply.')
-        return EXIT_CLEAN
+        return Result(exit_code=EXIT_CLEAN, data={
+            'dry_run': True, 'added': n_added, 'stock': n_stock,
+            'customized': n_custom, 'retired': n_retired, 'current': n_current,
+        })
 
     # Apply. Each action is individually guarded; a single OSError is reported and
     # downgrades the run to a warning rather than aborting partway. Every per-file
@@ -850,6 +864,13 @@ def run_update_tools(
             f'Your earlier versions are safe in {archive_root / BACKUP_DIR / date_str} — '
             f'review and delete them once you have reconciled your changes.'
         )
+    # Files actually installed this run, plus the rewritten stamp.
+    changed = [str(archive_root / p) for p in installed_ok]
+    changed.append(str(archive_root / VERSION_FILE))
+    update_data = {
+        'added': n_added_ok, 'stock': n_stock_ok, 'customized': n_custom_ok,
+        'retired': n_retired_ok, 'current': n_current,
+    }
     if failures:
         print(file=sys.stderr)
         print(f'{len(failures)} file(s) could not be updated:', file=sys.stderr)
@@ -860,8 +881,9 @@ def run_update_tools(
             'run `fha update-tools` again.',
             file=sys.stderr,
         )
-        return EXIT_WARNINGS
-    return EXIT_CLEAN
+        return Result(ok=False, exit_code=EXIT_WARNINGS, changed=changed,
+                      data={**update_data, 'failures': failures})
+    return Result(exit_code=EXIT_CLEAN, changed=changed, data=update_data)
 
 
 def _report_plan(
@@ -951,7 +973,7 @@ def _cmd_update_tools(args: argparse.Namespace) -> int:
             repo_root,
             dry_run=bool(getattr(args, 'dry_run', False)),
             verbose=bool(getattr(args, 'verbose', False)),
-        )
+        ).exit_code
     except ScaffoldError as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return EXIT_FAILURE

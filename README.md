@@ -168,12 +168,15 @@ implemented and runs cleanly on the example archive: the linting/indexing
 substrate, the view generators and universal locator, the photo catalog, the
 candidate-finding tools (contradiction/corroboration detection, person and
 place co-occurrence, and `fha find --related`'s neighborhood queries), the
+deterministic review write-backs (`fha claim` for claim status, `fha confirm`
+for the detectors' confirm/dismiss), the
 `fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export, and
 the milestone 7 intake tools. See `BUILD.md` for the detailed
 milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
 - [x] `fha id`, `fha index`, `fha lint`, `fha stubs` - the substrate (milestone 1: lint clean on the example archive)
+- [x] `fha claim` - the claim-review write-back: move a claim's status and stamp `reviewed:` (the human gate, as a deterministic command) (milestone 1)
 - [x] `fha views timeline`, `fha views sources-index`, `fha views draft-queue` - view generators (milestone 2)
 - [x] `fha views brackets` - folder maintenance: W103 bracket refresh, W110 Ahnentafel placement (milestone 2)
 - [x] `fha views tree` - relationship tree traversal, neutral JSON + DOT output (milestone 2)
@@ -182,6 +185,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha doctor` - archive health report: index freshness, file integrity, privacy flags (milestone 2)
 - [x] `fha photoindex` - photo catalog: scan/grouping, find, triage/report, reconcile/tag-person (milestone 3)
 - [x] `fha xref`, `fha cooccur` - corroboration/contradiction and co-occurrence candidate detection (milestone 4)
+- [x] `fha confirm` - the write-back floor under the read-only detectors and report prompts: confirm/dismiss a candidate, register a place cluster, log a discovery, accept a draft (milestone 4)
 - [x] `fha find --related` - the neighborhood query: people, places, sources, and time slices (milestone 4)
 - [x] `fha report` - the session research feed: discoveries, review queue, vitals gaps, contradictions, search-log awareness, answerable questions, photo triage, hypotheses, possible connections (milestone 5)
 - [x] `fha packet` - person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)

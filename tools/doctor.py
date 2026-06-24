@@ -56,6 +56,7 @@ from _lib import (
     FhaConfigError,
     INDEX_SCHEMA_VERSION,
     PHOTOINDEX_SCHEMA_VERSION,
+    Result,
     configure_utf8_stdout,
     db_mtime,
     get_roots,
@@ -85,9 +86,10 @@ configure_utf8_stdout()
 #    _counts_from_scan         — quick file walk when index is absent or stale
 #
 #  Top-level
-#    run_doctor                — orchestrate all checks, print report, return exit code
+#    run_doctor                — orchestrate all checks; return a Result (no printing)
+#    _cmd_doctor               — render a doctor Result to stdout → exit code
 #    register                  — attach 'doctor' to the main fha parser
-#    _run_doctor               — argparse → run_doctor bridge
+#    _run_doctor               — argparse → run_doctor → _cmd_doctor bridge
 #    _standalone_main          — for `python tools/doctor.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,7 +227,7 @@ def _counts_from_scan(archive_root: Path) -> dict:
 
 # ── Tools-version check (fha install / fha update-tools, BUILD.md M9) ───────────
 
-def _check_tools_version(archive_root: Path) -> int:
+def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict]) -> int:
     """Report the vendored-tools version stamp and any pending update backups.
 
     `fha install` writes `.plainfile-version` (the manifest version + per-file
@@ -236,16 +238,21 @@ def _check_tools_version(archive_root: Path) -> int:
       - absent stamp   → informational (a hand-assembled archive is fine)
       - unreadable stamp → warning, with the exact recovery command
       - pending backups  → reminder to reconcile + prune (informational)
-    Returns the worst exit contribution (EXIT_CLEAN or EXIT_WARNINGS).
+
+    Per the structured-result contract the report text accumulates in `lines`
+    (rendered later by `_cmd_doctor`) and the structured status lands in `checks`;
+    returns the worst exit contribution (EXIT_CLEAN or EXIT_WARNINGS).
     """
     worst = EXIT_CLEAN
     stamp_path = archive_root / '.plainfile-version'
     if not stamp_path.is_file():
-        print(
+        lines.append(
             'tools version: not stamped (no .plainfile-version)  '
             'next: no action needed if you copied the tools by hand; '
             'or run `fha install` from a tools clone to stamp it'
         )
+        checks.append({'id': 'tools_version', 'status': 'info',
+                       'detail': 'not stamped', 'next_step': None})
     else:
         try:
             stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
@@ -254,29 +261,37 @@ def _check_tools_version(archive_root: Path) -> int:
             ver = stamp.get('manifest_version', '?')
             spec = stamp.get('spec_version', '?')
             installed = stamp.get('installed', '?')
-            print(
+            lines.append(
                 f'tools version: {_OK} manifest {ver}, spec {spec} '
                 f'(installed {installed})  next: `fha update-tools --repo PATH` '
                 f'to pull improvements'
             )
+            checks.append({'id': 'tools_version', 'status': 'ok',
+                           'detail': f'manifest {ver}, spec {spec}',
+                           'next_step': 'fha update-tools --repo PATH'})
         except (ValueError, OSError) as exc:
-            print(
+            lines.append(
                 f'tools version: {_WARN} .plainfile-version is unreadable ({exc})  '
                 f'next: delete {stamp_path} and run '
                 f'`fha update-tools --repo PATH` to rewrite it (your tool files '
                 f'are not affected)'
             )
+            checks.append({'id': 'tools_version', 'status': 'warn',
+                           'detail': f'unreadable ({exc})',
+                           'next_step': f'delete {stamp_path} and run fha update-tools'})
             worst = max(worst, EXIT_WARNINGS)
 
     backup_dir = archive_root / '.plainfile-backup'
     if backup_dir.is_dir():
         pending = sum(1 for p in backup_dir.rglob('*') if p.is_file())
         if pending:
-            print(
+            lines.append(
                 f'update backups: {pending} file(s) saved under {backup_dir}  '
                 f'next: compare them to the current tools, fold in any edits you '
                 f'want to keep, then delete the backup folder'
             )
+            checks.append({'id': 'update_backups', 'status': 'info',
+                           'detail': f'{pending} pending', 'next_step': None})
     return worst
 
 
@@ -433,9 +448,24 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def run_doctor(archive_root: Path, fha_config: dict) -> int:
-    """Run all health checks and print one concrete next step per line."""
+def run_doctor(archive_root: Path, fha_config: dict) -> Result:
+    """Run all health checks and return a structured `Result` (no printing).
+
+    Per the structured-result contract (_lib.py), this compute layer gathers two
+    things and returns them in the Result for `_cmd_doctor` to render:
+      - data['lines']:  the exact report text, one entry per output line (a blank
+        entry is a blank line), so the human report renders byte-for-byte as
+        before — the worst-code ladder and the one-next-step-per-line voice are
+        unchanged.
+      - data['checks']: each check as {id, status, detail, next_step}, so a
+        headless consumer can read the health report as data instead of parsing
+        text.
+    The 0/1/2 exit-code ladder (clean / warnings / errors) becomes the Result's
+    exit_code. Doctor performs no archive mutations, so `changed` stays empty.
+    """
     worst = EXIT_CLEAN
+    lines: list[str] = []
+    checks: list[dict] = []
     root_arg = str(archive_root)
     roots = get_roots(fha_config)
     is_fixture = is_fixture_path(archive_root)
@@ -445,41 +475,51 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
     doctor_cmd = f'fha doctor --root "{root_arg}"'
     troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
 
-    print(f'archive root: {_OK} {archive_root}  next: no action needed')
-    print(f'fha.yaml:     {_OK} {archive_root / "fha.yaml"} loaded  next: no action needed')
-    print()
+    lines.append(f'archive root: {_OK} {archive_root}  next: no action needed')
+    lines.append(f'fha.yaml:     {_OK} {archive_root / "fha.yaml"} loaded  next: no action needed')
+    lines.append('')
+    checks.append({'id': 'archive_root', 'status': 'ok', 'detail': str(archive_root), 'next_step': None})
+    checks.append({'id': 'fha_yaml', 'status': 'ok', 'detail': 'loaded', 'next_step': None})
 
     if roots:
-        print('mapped roots:')
+        lines.append('mapped roots:')
         for alias in roots:
             resolved = resolve_path(alias, fha_config, archive_root)
             if os.path.isdir(resolved):
-                print(f'  {alias} -> {resolved}  {_OK}  next: no action needed')
+                lines.append(f'  {alias} -> {resolved}  {_OK}  next: no action needed')
+                checks.append({'id': f'root:{alias}', 'status': 'ok', 'detail': str(resolved), 'next_step': None})
             elif is_fixture:
-                print(
+                lines.append(
                     f'  {alias} -> {resolved}  {_WARN} fixture path is missing  '
                     f'next: add fixture files or rerun `{doctor_cmd}` on a real archive'
                 )
+                checks.append({'id': f'root:{alias}', 'status': 'warn',
+                               'detail': f'{resolved} fixture path is missing', 'next_step': doctor_cmd})
                 worst = max(worst, EXIT_WARNINGS)
             else:
-                print(
+                lines.append(
                     f'  {alias} -> {resolved}  {_BAD} not reachable  '
                     f'next: fix roots in {archive_root / "fha.yaml"} or create that folder, '
                     f'then run `{doctor_cmd}`'
                 )
+                checks.append({'id': f'root:{alias}', 'status': 'error',
+                               'detail': f'{resolved} not reachable', 'next_step': doctor_cmd})
                 worst = max(worst, EXIT_ERRORS)
-        print()
+        lines.append('')
 
     exiftool_path = shutil.which('exiftool')
     if exiftool_path:
-        print(f'exiftool:  {_OK} {exiftool_path}  next: no action needed')
+        lines.append(f'exiftool:  {_OK} {exiftool_path}  next: no action needed')
+        checks.append({'id': 'exiftool', 'status': 'ok', 'detail': exiftool_path, 'next_step': None})
     else:
-        print(
+        lines.append(
             f'exiftool:  {_WARN} not found on PATH  next: install exiftool, '
             f'then run `{doctor_cmd}`'
         )
+        checks.append({'id': 'exiftool', 'status': 'warn', 'detail': 'not found on PATH', 'next_step': doctor_cmd})
         worst = max(worst, EXIT_WARNINGS)
-    print(f'python deps (PyYAML): {_OK}  next: no action needed')
+    lines.append(f'python deps (PyYAML): {_OK}  next: no action needed')
+    checks.append({'id': 'pyyaml', 'status': 'ok', 'detail': 'installed', 'next_step': None})
 
     # Publication deps (fha site). Jinja2 is required for `fha site`, like
     # exiftool is for photos — its absence is a warning, not a hard error,
@@ -487,55 +527,70 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
     # (standalone-site image derivatives) so its absence is informational only.
     import importlib.util as _ilu
     if _ilu.find_spec('jinja2') is not None:
-        print(f'jinja2 (fha site): {_OK}  next: no action needed')
+        lines.append(f'jinja2 (fha site): {_OK}  next: no action needed')
+        checks.append({'id': 'jinja2', 'status': 'ok', 'detail': 'installed', 'next_step': None})
     else:
-        print(
+        lines.append(
             f'jinja2 (fha site): {_WARN} not installed  '
             'next: `python -m pip install jinja2` to build the family website'
         )
+        checks.append({'id': 'jinja2', 'status': 'warn', 'detail': 'not installed',
+                       'next_step': 'python -m pip install jinja2'})
         worst = max(worst, EXIT_WARNINGS)
     if _ilu.find_spec('PIL') is not None:
-        print(f'pillow (fha site images): {_OK}  next: no action needed')
+        lines.append(f'pillow (fha site images): {_OK}  next: no action needed')
+        checks.append({'id': 'pillow', 'status': 'ok', 'detail': 'installed', 'next_step': None})
     else:
-        print(
+        lines.append(
             'pillow (fha site images): not installed (optional)  '
             'next: `python -m pip install pillow` for photos in the standalone site'
         )
-    print()
+        checks.append({'id': 'pillow', 'status': 'info', 'detail': 'not installed (optional)',
+                       'next_step': 'python -m pip install pillow'})
+    lines.append('')
 
     idx_status, idx_delta = _index_freshness(archive_root)
     idx_path = archive_root / '.cache' / 'index.sqlite'
     if idx_status == 'fresh':
-        print(f'index: {_OK} fresh at {idx_path}  next: no action needed')
+        lines.append(f'index: {_OK} fresh at {idx_path}  next: no action needed')
+        checks.append({'id': 'index', 'status': 'ok', 'detail': 'fresh', 'next_step': None})
     elif idx_status == 'stale':
-        print(f'index: {_WARN} stale by {idx_delta} at {idx_path}  next: run `{index_cmd}`')
+        lines.append(f'index: {_WARN} stale by {idx_delta} at {idx_path}  next: run `{index_cmd}`')
+        checks.append({'id': 'index', 'status': 'warn', 'detail': f'stale by {idx_delta}', 'next_step': index_cmd})
         worst = max(worst, EXIT_WARNINGS)
     elif idx_status in {'unreadable', 'old-schema'}:
         detail = f' ({idx_delta})' if idx_delta else ''
-        print(
+        lines.append(
             f'index: {_WARN} search index is out of date or unreadable{detail}: '
             f'{idx_path}  next: run `{index_cmd}`'
         )
+        checks.append({'id': 'index', 'status': 'warn',
+                       'detail': f'out of date or unreadable{detail}', 'next_step': index_cmd})
         worst = max(worst, EXIT_WARNINGS)
     else:
-        print(f'index: {_WARN} not yet built at {idx_path}  next: run `{index_cmd}`')
+        lines.append(f'index: {_WARN} not yet built at {idx_path}  next: run `{index_cmd}`')
+        checks.append({'id': 'index', 'status': 'warn', 'detail': 'not yet built', 'next_step': index_cmd})
         worst = max(worst, EXIT_WARNINGS)
 
     photo_status, photo_delta = _photoindex_freshness(archive_root, fha_config)
     photo_path = archive_root / '.cache' / 'photos.sqlite'
     if photo_status == 'fresh':
-        print(f'photoindex: {_OK} fresh at {photo_path}  next: no action needed')
+        lines.append(f'photoindex: {_OK} fresh at {photo_path}  next: no action needed')
+        checks.append({'id': 'photoindex', 'status': 'ok', 'detail': 'fresh', 'next_step': None})
     elif photo_status == 'stale':
-        print(f'photoindex: {_WARN} stale by {photo_delta} at {photo_path}  next: run `{photoindex_cmd}`')
+        lines.append(f'photoindex: {_WARN} stale by {photo_delta} at {photo_path}  next: run `{photoindex_cmd}`')
+        checks.append({'id': 'photoindex', 'status': 'warn', 'detail': f'stale by {photo_delta}', 'next_step': photoindex_cmd})
         worst = max(worst, EXIT_WARNINGS)
     elif photo_status in {'unreadable', 'old-schema'}:
         label = 'out of date' if photo_status == 'old-schema' else 'unreadable'
-        print(f'photoindex: {_WARN} {label}: {photo_path}  next: run `{photoindex_cmd}`')
+        lines.append(f'photoindex: {_WARN} {label}: {photo_path}  next: run `{photoindex_cmd}`')
+        checks.append({'id': 'photoindex', 'status': 'warn', 'detail': label, 'next_step': photoindex_cmd})
         worst = max(worst, EXIT_WARNINGS)
     else:
-        print(f'photoindex: {_WARN} not yet built at {photo_path}  next: run `{photoindex_cmd}`')
+        lines.append(f'photoindex: {_WARN} not yet built at {photo_path}  next: run `{photoindex_cmd}`')
+        checks.append({'id': 'photoindex', 'status': 'warn', 'detail': 'not yet built', 'next_step': photoindex_cmd})
         worst = max(worst, EXIT_WARNINGS)
-    print()
+    lines.append('')
 
     e018_findings: list = []
     try:
@@ -543,18 +598,22 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
         n_errors, n_warnings, e018_findings = run_lint_silent(archive_root, fha_config)
         symbol = _OK if n_errors == 0 else _BAD
         action = 'no action needed' if n_errors == 0 and n_warnings == 0 else f'run `{lint_cmd}` for details'
-        print(f'lint: E:{n_errors} W:{n_warnings}  {symbol}  next: {action}')
+        lines.append(f'lint: E:{n_errors} W:{n_warnings}  {symbol}  next: {action}')
+        checks.append({'id': 'lint', 'status': 'ok' if n_errors == 0 else 'error',
+                       'detail': f'E:{n_errors} W:{n_warnings}',
+                       'next_step': None if (n_errors == 0 and n_warnings == 0) else lint_cmd})
         if n_errors > 0:
             worst = max(worst, EXIT_ERRORS)
         elif n_warnings > 0:
             worst = max(worst, EXIT_WARNINGS)
     except Exception as exc:
-        print(
+        lines.append(
             f'lint: {_BAD} lint machinery failed: {exc}  '
             f'next: run `{lint_cmd}`; if it still fails see {troubleshooting}'
         )
+        checks.append({'id': 'lint', 'status': 'warn', 'detail': f'machinery failed: {exc}', 'next_step': lint_cmd})
         worst = max(worst, EXIT_WARNINGS)
-    print()
+    lines.append('')
 
     inbox_dir = archive_root / 'inbox'
     if inbox_dir.is_dir():
@@ -572,15 +631,18 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
         if aged:
             aged.sort(reverse=True)
             oldest_days, oldest_path = aged[0]
-            print(
+            lines.append(
                 f'inbox: {len(aged)} item(s) older than 14 days '
                 f'(oldest: {oldest_path}, {oldest_days} days)  '
                 f'next: preview filing with `fha process "{oldest_path}" --root "{root_arg}" --dry-run`'
             )
+            checks.append({'id': 'inbox', 'status': 'warn',
+                           'detail': f'{len(aged)} item(s) older than 14 days', 'next_step': 'fha process'})
             worst = max(worst, EXIT_WARNINGS)
         else:
-            print(f'inbox: {_OK} no items older than 14 days  next: no action needed')
-        print()
+            lines.append(f'inbox: {_OK} no items older than 14 days  next: no action needed')
+            checks.append({'id': 'inbox', 'status': 'ok', 'detail': 'no aged items', 'next_step': None})
+        lines.append('')
 
     if idx_status == 'fresh':
         counts = _counts_from_index(archive_root)
@@ -593,41 +655,58 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
         counts = _counts_from_scan(archive_root)
         label = 'counts (scanned - index not fresh):'
 
-    print(label)
-    print(f'  sources restricted:  {counts["restricted"]}')
-    print(f'  persons living:      {counts["living"]}')
-    print(f'  persons unknown:     {counts["unknown"]}')
-    print(f'  next: run `{index_cmd}` if these counts look wrong')
-    print()
+    lines.append(label)
+    lines.append(f'  sources restricted:  {counts["restricted"]}')
+    lines.append(f'  persons living:      {counts["living"]}')
+    lines.append(f'  persons unknown:     {counts["unknown"]}')
+    lines.append(f'  next: run `{index_cmd}` if these counts look wrong')
+    lines.append('')
+    checks.append({'id': 'counts', 'status': 'info', 'detail': counts, 'next_step': None})
 
     if e018_findings:
-        print(f'E018 agent-instruction drift ({len(e018_findings)} finding(s)):')
+        lines.append(f'E018 agent-instruction drift ({len(e018_findings)} finding(s)):')
         for f in e018_findings:
             try:
                 rel = Path(f.path).relative_to(archive_root)
             except (ValueError, AttributeError):
                 rel = f.path
-            print(f'  {rel}: {f.message}')
-        print(f'  next: run `{lint_cmd}` and repair the listed instruction files')
+            lines.append(f'  {rel}: {f.message}')
+        lines.append(f'  next: run `{lint_cmd}` and repair the listed instruction files')
+        checks.append({'id': 'e018', 'status': 'warn', 'detail': f'{len(e018_findings)} finding(s)', 'next_step': lint_cmd})
     else:
-        print('E018 findings: none  next: no action needed')
-    print()
+        lines.append('E018 findings: none  next: no action needed')
+        checks.append({'id': 'e018', 'status': 'ok', 'detail': 'none', 'next_step': None})
+    lines.append('')
 
     # ── 11. Tools version (fha install / fha update-tools footprints) ────────
     # Self-contained reads (tools never import tools): .plainfile-version and
     # .plainfile-backup/ are plain JSON / a folder. Surfaces the two new states
     # the scaffolding tools can leave behind so a human is never stuck wondering.
-    worst = max(worst, _check_tools_version(archive_root))
-    print()
+    worst = max(worst, _check_tools_version(archive_root, lines, checks))
+    lines.append('')
 
-    print('-' * 60)
-    print('Backup policy must cover both the archive root and all mapped asset roots.')
-    print(f'Archive root: {archive_root}')
+    lines.append('-' * 60)
+    lines.append('Backup policy must cover both the archive root and all mapped asset roots.')
+    lines.append(f'Archive root: {archive_root}')
     for alias in roots:
-        print(f'Asset root {alias}: {resolve_path(alias, fha_config, archive_root)}')
-    print(f'Next: make sure those paths are included in your backup. More help: {troubleshooting}')
+        lines.append(f'Asset root {alias}: {resolve_path(alias, fha_config, archive_root)}')
+    lines.append(f'Next: make sure those paths are included in your backup. More help: {troubleshooting}')
 
-    return worst
+    return Result(
+        ok=(worst not in (EXIT_ERRORS, EXIT_FAILURE)),
+        exit_code=worst,
+        data={'checks': checks, 'lines': lines, 'counts': counts},
+    )
+
+
+def _cmd_doctor(result: Result) -> int:
+    """Render a doctor Result to stdout and return its exit code.
+
+    The only layer that prints the health report; the line buffer in
+    data['lines'] reproduces the historical output byte-for-byte.
+    """
+    print('\n'.join(result.data['lines']))
+    return result.exit_code
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -660,7 +739,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
         print(f'ERROR: fha.yaml: {exc}', file=sys.stderr)
         return EXIT_ERRORS
 
-    return run_doctor(archive_root, fha_config)
+    return _cmd_doctor(run_doctor(archive_root, fha_config))
 
 
 def _standalone_main(argv: list[str] | None = None) -> int:

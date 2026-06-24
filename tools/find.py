@@ -40,9 +40,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    Result,
     archive_root_missing_message,
     configure_utf8_stdout,
     edtf_bounds,
@@ -99,15 +101,17 @@ configure_utf8_stdout()
 #    _related_claim            — C-id neighborhood: source, persons, place, links, siblings
 #    _related_hypothesis       — H-id neighborhood: person, referencing claims, verifying claim
 #    _related_date             — standalone --date time-slice neighborhood
-#    run_related                — top-level dispatcher for all of the above
+#    _related_dispatch         — top-level neighborhood dispatcher (prints, returns int)
+#    run_related                — wraps _related_dispatch into the Result contract
 #
 #  Public API
 #    find_by_id                — locate a single ID; called by fha id check alias in fha.py
-#    run_find                  — full dispatcher (id | text | --related)
+#    run_find                  — full dispatcher (id | text | --related); returns a Result
+#    _as_find_result           — wrap a find/related exit code into a Result
 #
 #  CLI
 #    register                  — attach 'find' to the main fha parser
-#    _run_find                 — argparse → run_find bridge
+#    _run_find                 — argparse → run_find bridge (returns the int exit code)
 #    _standalone_main          — for `python tools/find.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1639,18 +1643,23 @@ def _related_date(date_bounds: tuple[str, str], date_str: str, conn: sqlite3.Con
     return EXIT_CLEAN
 
 
-def run_related(
+def _related_dispatch(
     related_id: str | None,
     date_filter: str | None,
     archive_root: Path,
     fha_config: dict,
 ) -> int:
     """
-    Top-level --related dispatcher.
+    Top-level --related dispatcher; prints the neighborhood report, returns int.
 
     related_id is None for the standalone `--related --date EDTF` form;
     date_filter is None when narrowing isn't requested. At least one of the
     two must be set (the CLI layer guarantees this — see _run_find).
+
+    Printing stays here (rather than in a renderer) because the neighborhood
+    report is assembled across many small `_related_*`/`_print_*` helpers that
+    each print as they go; `run_related` wraps the resulting exit code into the
+    Result contract without disturbing that byte-for-byte output.
     """
     if related_id is None and date_filter is None:
         print('ERROR: --related requires an ID, --date EDTF, or both.', file=sys.stderr)
@@ -1798,6 +1807,31 @@ def find_by_id(
     return result
 
 
+def _as_find_result(exit_code: int) -> Result:
+    """Wrap a find/related exit code into the structured Result contract.
+
+    find is a read tool: its per-ID and neighborhood reports are printed by the
+    finder/`_related_*` helpers as they run, so that human report is the tool's
+    primary surface.  The Result therefore carries the outcome (exit_code + ok)
+    rather than re-deriving the printed rows; `Result == int` (see _lib.py) keeps
+    every caller and test that compared the old int return against EXIT_*
+    working unchanged.
+    """
+    return Result(ok=(exit_code == EXIT_CLEAN), exit_code=exit_code)
+
+
+def run_related(
+    related_id: str | None,
+    date_filter: str | None,
+    archive_root: Path,
+    fha_config: dict,
+) -> Result:
+    """Run the --related neighborhood report and return a Result (prints inline)."""
+    return _as_find_result(
+        _related_dispatch(related_id, date_filter, archive_root, fha_config)
+    )
+
+
 def run_find(
     id_or_text: str | None,
     archive_root: Path,
@@ -1806,9 +1840,9 @@ def run_find(
     related_id: str | None = None,
     related_requested: bool = False,
     date_filter: str | None = None,
-) -> int:
+) -> Result:
     """
-    Top-level dispatcher:
+    Top-level dispatcher; prints the report and returns a Result:
       - --related <ID> [--date E]  → run_related (M4.3, Design decision D4)
       - --related --date <EDTF>    → run_related, standalone time-slice (related_id None)
       - --text "phrase"            → full-text search
@@ -1818,25 +1852,29 @@ def run_find(
     related_requested distinguishes "--related typed with no ID" (route to
     run_related's standalone date form) from "--related not typed at all"
     (related_id is None in both cases, so the flag alone isn't enough).
+
+    The finder helpers print as they go (find's human report is its surface), so
+    this returns a Result wrapping their exit code rather than print-free data —
+    `_run_find` renders nothing further and just returns `result.exit_code`.
     """
     if related_requested or date_filter is not None:
         return run_related(related_id, date_filter, archive_root, fha_config)
 
     # Text search path
     if text_mode:
-        return _text_search(id_or_text or '', archive_root, fha_config)
+        return _as_find_result(_text_search(id_or_text or '', archive_root, fha_config))
 
     # Bare argument — distinguish ID from text
     if not id_or_text:
         print('ERROR: provide an ID or --text "phrase"', file=sys.stderr)
-        return EXIT_FAILURE
+        return _as_find_result(EXIT_FAILURE)
 
     id_norm = normalize_id(id_or_text)
     if is_valid_id(id_norm):
-        return find_by_id(id_norm, archive_root, fha_config)
+        return _as_find_result(find_by_id(id_norm, archive_root, fha_config))
 
     # Doesn't look like an ID — treat as text search
-    return _text_search(id_or_text, archive_root, fha_config)
+    return _as_find_result(_text_search(id_or_text, archive_root, fha_config))
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1911,8 +1949,10 @@ def _run_find(args: argparse.Namespace) -> int:
         print('ERROR: --date requires --related.', file=sys.stderr)
         return EXIT_FAILURE
 
+    # run_find returns a Result; this CLI bridge renders nothing further (the
+    # finder helpers already printed) and hands fha.py the plain int exit code.
     if text_query is not None:
-        return run_find(text_query, archive_root, fha_config, text_mode=True)
+        return run_find(text_query, archive_root, fha_config, text_mode=True).exit_code
     elif related_requested:
         # `fha find --related --date 1900 P-…` parses as --related-with-no-value
         # + --date 1900 + positional query 'P-…'. Without this rescue the
@@ -1925,9 +1965,9 @@ def _run_find(args: argparse.Namespace) -> int:
         return run_find(
             None, archive_root, fha_config,
             related_id=related_id, related_requested=True, date_filter=date,
-        )
+        ).exit_code
     elif query:
-        return run_find(query, archive_root, fha_config)
+        return run_find(query, archive_root, fha_config).exit_code
     else:
         print('Usage: fha find <ID>  |  fha find --text "phrase"  |  fha find --related <ID> [--date EDTF]',
               file=sys.stderr)

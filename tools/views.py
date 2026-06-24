@@ -60,9 +60,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     TOKEN_RE,             # regex that matches any [X-crockfordid] token in profile text
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    Result,               # the structured-result contract every run_* returns
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
     load_fha_yaml,
     normalize_id,         # lower-cases IDs for consistent set/dict keying
@@ -70,6 +72,29 @@ from _lib import (
     read_record,          # parses YAML front-matter + body from a .md file
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message
 )
+
+
+def _views_result(
+    exit_code: int,
+    *,
+    changed: list[str] | None = None,
+    data: dict | None = None,
+) -> Result:
+    """Build a views Result.
+
+    The view commands generate/delete companion files (side effects) and narrate
+    their progress as they go; that printing stays inline (the prompts in
+    `run_brackets` make it inseparable), so the Result records the outcome — the
+    exit code, whether it succeeded, and the files written/removed in `changed` —
+    rather than re-deriving printed lines.  `ok` is true for clean and
+    warnings-only runs (a generated-but-now-stale-index run still succeeded).
+    """
+    return Result(
+        ok=(exit_code not in (EXIT_ERRORS, EXIT_FAILURE)),
+        exit_code=exit_code,
+        changed=changed or [],
+        data=data or {},
+    )
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
@@ -1380,8 +1405,8 @@ def _apply_bracket_fixes(
     return failures, False
 
 
-def _cmd_brackets(args: argparse.Namespace) -> int:
-    """Handle `fha views brackets [--fix] [--dry-run]`.
+def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -> Result:
+    """Run the bracket/Ahnentafel checks and (with --fix) apply them; return a Result.
 
     Three checks in one pass (TOOLING §7):
       1. W103 — refresh stale bracket lists in couple-folder names.
@@ -1394,19 +1419,18 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
     Without --fix or --dry-run: report only.
     --dry-run: print findings + full preview of changes, exit without writing.
     --fix: print preview, prompt Apply? [y/N], then write.
+
+    The findings, preview, prompt, and per-rename narration stay inline — the
+    interactive Apply? gate is bound to that output and is out of scope to move
+    (a deferred Phase-3 concern).  The Result records the outcome: the issue
+    counts in `data` and, on a successful --fix, the dropped index cache in
+    `changed`.
     """
-    archive_root = resolve_root_arg(args)
-    if archive_root is None:
-        return EXIT_FAILURE
-
-    fix = getattr(args, 'fix', False)
-    dry_run = getattr(args, 'dry_run', False)
-
     # --fix mutates the tree, so it must never run from a stale index; report-only
     # and --dry-run are read-only and tolerate a stale index with a warning.
     conn = open_index_db(archive_root, ('persons',), strict=fix)
     if conn is None:
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
     try:
         # ── W103: bracket list check ──────────────────────────────────────
@@ -1417,7 +1441,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
             fha_cfg = load_fha_yaml(archive_root, strict=True)
         except FhaConfigError as e:
             print(f'ERROR: {e}', file=sys.stderr)
-            return EXIT_FAILURE
+            return _views_result(EXIT_FAILURE)
         root_person_raw = fha_cfg.get('root_person')
         w110: list[dict] = []
 
@@ -1442,6 +1466,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
         w103, w110, w103_suppressed = _compose_folder_renames(w103, w110)
 
         all_issues = w103 + w110
+        issue_data = {'w103': len(w103), 'w110': len(w110)}
 
         # ── Report ────────────────────────────────────────────────────────
         for item in all_issues:
@@ -1457,18 +1482,18 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
 
         if not all_issues:
             print('brackets: no issues found.')
-            return EXIT_CLEAN
+            return _views_result(EXIT_CLEAN, data=issue_data)
 
         if not fix and not dry_run:
             # Report-only mode: findings emitted above, exit with warnings
-            return EXIT_WARNINGS
+            return _views_result(EXIT_WARNINGS, data=issue_data)
 
         # ── Preview ───────────────────────────────────────────────────────
         _print_bracket_preview(w103, w110, archive_root)
 
         if dry_run:
             print('\n(dry-run: no changes written)')
-            return EXIT_WARNINGS
+            return _views_result(EXIT_WARNINGS, data=issue_data)
 
         # ── Confirm and apply ─────────────────────────────────────────────
         try:
@@ -1478,7 +1503,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
 
         if answer != 'y':
             print('Aborted - no changes written.')
-            return EXIT_WARNINGS
+            return _views_result(EXIT_WARNINGS, data=issue_data)
 
         failures, aborted = _apply_bracket_fixes(w103, w110, archive_root)
         if aborted:
@@ -1487,7 +1512,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
                 'exist (see stderr). Resolve the conflicts, then re-run.',
                 file=sys.stderr,
             )
-            return EXIT_FAILURE
+            return _views_result(EXIT_FAILURE, data=issue_data)
 
         # Renames/moves change person_files.path without touching any file's
         # mtime, so newest_record_mtime() can't detect the index is now stale.
@@ -1495,20 +1520,34 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
         conn.close()
         db_path = archive_root / '.cache' / 'index.sqlite'
         db_path.unlink(missing_ok=True)
+        changed = [str(db_path)]
 
         if failures:
             print(
                 f'\nDone with {failures} item(s) not applied - see stderr.'
                 ' Run `fha index` to rebuild the index with updated paths.'
             )
-            return EXIT_WARNINGS
+            return _views_result(EXIT_WARNINGS, changed=changed,
+                                 data={**issue_data, 'failures': failures})
         print(
             '\nDone. Run `fha index` to rebuild the index with updated paths.'
         )
-        return EXIT_CLEAN
+        return _views_result(EXIT_CLEAN, changed=changed, data=issue_data)
 
     finally:
         conn.close()
+
+
+def _cmd_brackets(args: argparse.Namespace) -> int:
+    """argparse → run_brackets bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return run_brackets(
+        archive_root,
+        fix=getattr(args, 'fix', False),
+        dry_run=getattr(args, 'dry_run', False),
+    ).exit_code
 
 
 # ── Tree view ─────────────────────────────────────────────────────────────────
@@ -1740,43 +1779,42 @@ def _tree_to_dot(nodes: dict, edges: dict) -> str:
     return '\n'.join(lines) + '\n'
 
 
-def _cmd_tree(args: argparse.Namespace) -> int:
-    """Handle `fha views tree <P-id> --mode … [--generations N] [--format …] [--out FILE]`.
+def run_tree(
+    archive_root: Path,
+    person_id: str | None,
+    mode: str | None,
+    generations: int | None,
+    fmt: str,
+    out_file: str | None,
+) -> Result:
+    """Build the relationship tree and return a Result (prints the report inline).
 
     Traverses the relationships table from the seed person using BFS and
     emits the result as neutral JSON (TOOLING §7 D3) or GraphViz DOT.
     HTML output is deferred to the site generator (TOOLING §7 D6).
 
     Exit codes follow the §1 convention: 0 clean, 1 warnings, 3 tool failure.
-    Missing index → exit 3 (tool cannot run without it).
+    Missing index → exit 3 (tool cannot run without it).  The rendered tree text
+    lands in `data['output']`; an `--out FILE` write is recorded in `changed`.
     """
-    archive_root = resolve_root_arg(args)
-    if archive_root is None:
-        return EXIT_FAILURE
-
     # HTML is deferred per TOOLING §7 D6
-    fmt = getattr(args, 'format', 'json') or 'json'
     if fmt == 'html':
         print(
             'ERROR: HTML tree output is not yet available. '
             'Use fha site (coming in a later milestone) to render the tree as HTML.',
             file=sys.stderr,
         )
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
-    person_id = getattr(args, 'person_id', None)
     if not person_id:
         print('ERROR: a P-id argument is required.', file=sys.stderr)
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
-    mode = getattr(args, 'mode', None)
     if not mode:
         print('ERROR: --mode ancestors|descendants|fan is required.', file=sys.stderr)
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
     seed_pid = normalize_id(person_id)
-    generations = getattr(args, 'generations', None)
-    out_file = getattr(args, 'out', None)
 
     # Fan mode defaults to 2 hops; ancestors and descendants are unlimited
     # unless the caller supplies --generations.
@@ -1789,12 +1827,12 @@ def _cmd_tree(args: argparse.Namespace) -> int:
 
     conn = open_index_db(archive_root, ('persons',))
     if conn is None:
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
     try:
         row = conn.execute('SELECT id FROM persons WHERE id = ?', (seed_pid,)).fetchone()
         if row is None:
             print(f'ERROR: person {seed_pid!r} not found in index.', file=sys.stderr)
-            return EXIT_WARNINGS
+            return _views_result(EXIT_WARNINGS)
         nodes, edges = _traverse_tree(conn, seed_pid, mode, max_hops)
     finally:
         conn.close()
@@ -1804,78 +1842,119 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     else:
         output = _tree_to_json(seed_pid, mode, nodes, edges)
 
+    changed: list[str] = []
     if out_file:
         Path(out_file).write_text(output, encoding='utf-8')
         print(out_file)
+        changed.append(str(out_file))
     else:
         print(output)
 
-    return EXIT_CLEAN
+    return _views_result(EXIT_CLEAN, changed=changed,
+                         data={'output': output, 'out_file': out_file})
+
+
+def _cmd_tree(args: argparse.Namespace) -> int:
+    """argparse → run_tree bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return run_tree(
+        archive_root,
+        getattr(args, 'person_id', None),
+        getattr(args, 'mode', None),
+        getattr(args, 'generations', None),
+        getattr(args, 'format', 'json') or 'json',
+        getattr(args, 'out', None),
+    ).exit_code
 
 
 # ── CLI command handlers ──────────────────────────────────────────────────────
 
-def _cmd_timeline(args: argparse.Namespace) -> int:
-    archive_root = resolve_root_arg(args)
-    if archive_root is None:
-        return EXIT_FAILURE
+def run_timeline(
+    archive_root: Path,
+    person_id: str | None = None,
+    all_curated: bool = False,
+) -> Result:
+    """Generate timeline companion file(s); return a Result (prints progress inline).
 
+    Generated files are recorded in `changed`; the per-file "timeline ->…" lines
+    stay inline as before so output is byte-for-byte unchanged.
+    """
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
+    changed: list[str] = []
     try:
-        if getattr(args, 'all_curated', False):
+        if all_curated:
             person_ids = _curated_person_ids(conn)
             if not person_ids:
                 print('No curated persons found in index.')
-                return EXIT_CLEAN
+                return _views_result(EXIT_CLEAN)
             count = 0
             for pid in person_ids:
                 out = _generate_timeline(conn, pid, archive_root)
                 if out:
                     print(f'  timeline ->{out.relative_to(archive_root)}')
+                    changed.append(str(out))
                     count += 1
             print(f'Generated {count} timeline file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
                 # post-dates .cache/index.sqlite); warn the same way `refresh` does.
                 print('Run `fha index` to update the search index with the new view file(s).')
-                return EXIT_WARNINGS
-            return EXIT_CLEAN
+                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
-        person_id = getattr(args, 'person_id', None)
         if not person_id:
             print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
-            return EXIT_FAILURE
+            return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
         out = _generate_timeline(conn, pid, archive_root)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
             print('Run `fha index` to update the search index with the new view file.')
-            return EXIT_WARNINGS
-        return EXIT_WARNINGS
+            changed.append(str(out))
+            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+        return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
-        return _refused_exit(e)
+        return _views_result(_refused_exit(e))
     finally:
         conn.close()
 
 
-def _cmd_sources_index(args: argparse.Namespace) -> int:
+def _cmd_timeline(args: argparse.Namespace) -> int:
+    """argparse → run_timeline bridge; returns the process exit code."""
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
+    return run_timeline(
+        archive_root,
+        person_id=getattr(args, 'person_id', None),
+        all_curated=getattr(args, 'all_curated', False),
+    ).exit_code
 
+
+def run_sources_index(
+    archive_root: Path,
+    person_id: str | None = None,
+    all_curated: bool = False,
+    couple_folders_only: bool = False,
+) -> Result:
+    """Generate sources-index companion/couple-folder file(s); return a Result.
+
+    Progress narration stays inline (byte-identical); written files land in
+    `changed`.
+    """
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
+    changed: list[str] = []
     try:
-        all_curated = getattr(args, 'all_curated', False)
-        couple_folders_only = getattr(args, 'couple_folders', False)
-
         if all_curated or couple_folders_only:
             count = 0
             if all_curated:
@@ -1884,12 +1963,14 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
                     out = _generate_sources_index_person(conn, pid, archive_root)
                     if out:
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
+                        changed.append(str(out))
                         count += 1
 
             # Couple-folder sources-index.md files
             for folder_path, person_ids in _couple_folders(conn, archive_root):
                 out = _generate_sources_index_couple_folder(conn, folder_path, person_ids)
                 print(f'  sources-index ->{out.relative_to(archive_root)}')
+                changed.append(str(out))
                 count += 1
 
             print(f'Generated {count} sources-index file(s).')
@@ -1897,88 +1978,120 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
                 # Writing a companion file makes the index stale (its mtime now
                 # post-dates .cache/index.sqlite); warn the same way `refresh` does.
                 print('Run `fha index` to update the search index with the new view file(s).')
-                return EXIT_WARNINGS
-            return EXIT_CLEAN
+                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
-        person_id = getattr(args, 'person_id', None)
         if not person_id:
             print('ERROR: provide a P-id, --all-curated, or --couple-folders.', file=sys.stderr)
-            return EXIT_FAILURE
+            return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
         out = _generate_sources_index_person(conn, pid, archive_root)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
             print('Run `fha index` to update the search index with the new view file.')
-            return EXIT_WARNINGS
-        return EXIT_WARNINGS
+            changed.append(str(out))
+            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+        return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
-        return _refused_exit(e)
+        return _views_result(_refused_exit(e))
     finally:
         conn.close()
 
 
-def _cmd_draft_queue(args: argparse.Namespace) -> int:
+def _cmd_sources_index(args: argparse.Namespace) -> int:
+    """argparse → run_sources_index bridge; returns the process exit code."""
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
+    return run_sources_index(
+        archive_root,
+        person_id=getattr(args, 'person_id', None),
+        all_curated=getattr(args, 'all_curated', False),
+        couple_folders_only=getattr(args, 'couple_folders', False),
+    ).exit_code
 
+
+def run_draft_queue(
+    archive_root: Path,
+    person_id: str | None = None,
+    all_curated: bool = False,
+) -> Result:
+    """Generate draft-queue companion file(s); return a Result (prints inline).
+
+    Written files are recorded in `changed`; progress lines stay byte-identical.
+    """
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
+    changed: list[str] = []
     try:
-        if getattr(args, 'all_curated', False):
+        if all_curated:
             person_ids = _curated_person_ids(conn)
             if not person_ids:
                 print('No curated persons found in index.')
-                return EXIT_CLEAN
+                return _views_result(EXIT_CLEAN)
             count = 0
             for pid in person_ids:
                 out = _generate_draft_queue(conn, pid, archive_root)
                 if out:
                     print(f'  draft-queue ->{out.relative_to(archive_root)}')
+                    changed.append(str(out))
                     count += 1
             print(f'Generated {count} draft-queue file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
                 # post-dates .cache/index.sqlite); warn the same way `refresh` does.
                 print('Run `fha index` to update the search index with the new view file(s).')
-                return EXIT_WARNINGS
-            return EXIT_CLEAN
+                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
-        person_id = getattr(args, 'person_id', None)
         if not person_id:
             print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
-            return EXIT_FAILURE
+            return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
         out = _generate_draft_queue(conn, pid, archive_root)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
             print('Run `fha index` to update the search index with the new view file.')
-            return EXIT_WARNINGS
-        return EXIT_WARNINGS
+            changed.append(str(out))
+            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+        return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
-        return _refused_exit(e)
+        return _views_result(_refused_exit(e))
     finally:
         conn.close()
 
 
-def _cmd_clean(args: argparse.Namespace) -> int:
-    """Handle `fha views clean [--dry-run]`."""
+def _cmd_draft_queue(args: argparse.Namespace) -> int:
+    """argparse → run_draft_queue bridge; returns the process exit code."""
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
+    return run_draft_queue(
+        archive_root,
+        person_id=getattr(args, 'person_id', None),
+        all_curated=getattr(args, 'all_curated', False),
+    ).exit_code
 
-    dry_run = getattr(args, 'dry_run', False)
+
+def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
+    """Delete GENERATED view files; return a Result (prints progress inline).
+
+    Only files whose first non-blank line is the GENERATED marker are removed
+    (hand-authored files are never touched).  Removed paths are recorded in
+    `changed`; under --dry-run nothing is deleted and `changed` stays empty.
+    """
+    dry_run = bool(dry_run)
 
     people_dir = archive_root / 'people'
     if not people_dir.is_dir():
         print('ERROR: people/ directory not found.', file=sys.stderr)
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
     found: list[Path] = []
     for p in sorted(people_dir.rglob('*.md')):
@@ -1993,8 +2106,9 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 
     if not found:
         print('No GENERATED view files found.')
-        return EXIT_CLEAN
+        return _views_result(EXIT_CLEAN)
 
+    changed: list[str] = []
     for p in found:
         rel = p.relative_to(archive_root)
         if dry_run:
@@ -2002,30 +2116,40 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         else:
             p.unlink()
             print(f'  removed {rel}')
+            changed.append(str(p))
 
     verb = 'Would remove' if dry_run else 'Removed'
     print(f'{verb} {len(found)} generated file(s).')
     if not dry_run:
         print('Note: deleted files still appear in .cache/index.sqlite — run `fha index` to update the cache.')
-        return EXIT_WARNINGS
-    return EXIT_CLEAN
+        return _views_result(EXIT_WARNINGS, changed=changed, data={'removed': len(found)})
+    return _views_result(EXIT_CLEAN, data={'removed': 0, 'would_remove': len(found)})
 
 
-def _cmd_refresh(args: argparse.Namespace) -> int:
-    """Handle `fha views refresh`."""
+def _cmd_clean(args: argparse.Namespace) -> int:
+    """argparse → run_clean bridge; returns the process exit code."""
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
+    return run_clean(archive_root, dry_run=getattr(args, 'dry_run', False)).exit_code
 
+
+def run_refresh(archive_root: Path) -> Result:
+    """Regenerate every curated person's view files; return a Result (prints inline).
+
+    Written files are recorded in `changed`; the per-file progress lines stay
+    byte-for-byte as before.
+    """
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
-        return EXIT_FAILURE
+        return _views_result(EXIT_FAILURE)
 
+    changed: list[str] = []
     try:
         person_ids = _curated_person_ids(conn)
         if not person_ids:
             print('No curated persons found in index.')
-            return EXIT_CLEAN
+            return _views_result(EXIT_CLEAN)
 
         _per_person = [
             (_generate_timeline,             'timeline      '),
@@ -2038,12 +2162,14 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
                 out = fn(conn, pid, archive_root)
                 if out:
                     print(f'  {label}->{out.relative_to(archive_root)}')
+                    changed.append(str(out))
                     count += 1
 
         for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
             out = _generate_sources_index_couple_folder(conn, folder_path, pids_in_folder)
             if out:
                 print(f'  sources-index  ->{out.relative_to(archive_root)}')
+                changed.append(str(out))
                 count += 1
 
         print(f'Generated {count} view file(s).')
@@ -2052,13 +2178,21 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
             # stale by definition (newest_record_mtime now post-dates it). Signal
             # that with a warnings exit so `fha index` is run before find/doctor.
             print('Run `fha index` to update the search index with the new view files.')
-            return EXIT_WARNINGS
-        return EXIT_CLEAN
+            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+        return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
     except _ManualFileRefused as e:
-        return _refused_exit(e)
+        return _views_result(_refused_exit(e))
     finally:
         conn.close()
+
+
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    """argparse → run_refresh bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return run_refresh(archive_root).exit_code
 
 
 def _cmd_views_help(args: argparse.Namespace) -> int:

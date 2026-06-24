@@ -79,6 +79,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    Result,
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
@@ -552,7 +553,7 @@ def _emit_source(sid: str, title: str, xref: str) -> list[str]:
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
-def run_gedcom(
+def _gedcom_payload(
     archive_root: Path,
     pid: str | None,
     *,
@@ -677,6 +678,29 @@ def run_gedcom(
                 'person_count': len(included), 'family_count': len(families)}
     finally:
         conn.close()
+
+
+def run_gedcom(
+    archive_root: Path,
+    pid: str | None,
+    *,
+    mode: str = 'descendants',
+    generations: int | None = None,
+    all_persons: bool = False,
+    include_living: bool = False,
+) -> Result:
+    """Build a GEDCOM 5.5.1 export and return a Result.
+
+    `data` is the {'status', 'text', 'messages', 'person_count', 'family_count'}
+    payload `_gedcom_payload` computes; Result exposes dict-style access
+    (_lib.py), so callers keep reading `result['text']` unchanged.  Producing the
+    GEDCOM text is pure (the `_cmd` layer prints/writes it), so `changed` is empty.
+    """
+    payload = _gedcom_payload(
+        archive_root, pid, mode=mode, generations=generations,
+        all_persons=all_persons, include_living=include_living,
+    )
+    return Result(ok=(payload['status'] == 'ok'), data=payload)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────

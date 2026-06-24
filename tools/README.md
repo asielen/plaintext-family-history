@@ -14,6 +14,17 @@ to try; tracebacks are hidden by default and shown only with the global
 PyYAML, malformed `fha.yaml`, missing archive roots, missing exiftool, bad
 `source_type` values, and bad archive-date/EDTF values.
 
+`Result` contract (the headless core): every command splits its engine from its
+interface. The engine (`run_*`) computes and returns a `_lib.Result` - a small,
+JSON-serializable record carrying `ok`, `exit_code`, `data` (the structured
+payload), `messages` (human-facing `Message{level, text, next_step, code, path}`
+lines), and `changed` (paths created/written/renamed/embedded, empty under
+`--dry-run`). The interface (`_cmd_*`) is the only layer that renders a `Result`
+to stdout/stderr and returns the exit code. `lint` is the reference
+implementation. This is what lets any front door - a terminal, an agent shelling
+out, the in-process report orchestrator, a future UI - drive the same engine and
+read the same structured result (TOOLING §1).
+
 ## Implemented tools (milestone 2)
 
 | Tool | File | Status |
@@ -52,9 +63,12 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 | `fha find --related <ID> [--date EDTF]` | `find.py` | ✓ M4.3 - see "fha find - implementation status" below |
 
 `fha xref` and `fha cooccur` follow the TOOLING §14a/§14a2 "deterministic candidates,
-human-confirm gate" discipline: they only print suggestions. Confirming a pair (writing
-`corroborates:`/`contradicts:` links, minting a `relationship` claim, or writing a
-dismissal) is left to a future skill layer - out of scope for M4.1/M4.2. `fha find
+human-confirm gate" discipline: they only print suggestions. The human-confirm write-back
+they leave open now lives in **`fha confirm`** (see "fha confirm - implementation status"
+below): confirming an xref pair writes the `corroborates:`/`contradicts:` links, confirming
+a co-occurrence pair mints a `relationship` claim, and dismissing a pair writes the
+`.cache/cooccur_dismissed.json` tombstone `fha cooccur` reads. The detection tools
+themselves stay read-only - the write owner is `fha confirm`, not the detector. `fha find
 --related` (M4.3) is purely a read query over the data those two tools (plus `relationships`
 and `claim_links`) already populate - it writes nothing.
 
@@ -86,10 +100,10 @@ start importing siblings.
 | §6 Photo triage | ✓ | Embeds `photoindex.run_triage(top=10)`; absent/unreadable photo index reported, not treated as an error |
 | §6b Place candidates | ✓ | `fha places` (BUILD.md M6.2) is built; this section calls `places.run_candidates()` directly - unlinked place-text clusters and GPS clusters, or a "none found" note |
 | §7 Hypotheses & draft queues | ✓ | `hypotheses` table is provisioned but not yet populated by any tool - reports "no open hypotheses" until something writes to it; draft-queue backlog reads `person_files` companion files for non-placeholder content |
-| §8 Possible connections | ✓ | Embeds `cooccur.run_cooccur(threshold=2)` - person pairs, shared-place pairs, and org/entity recurrence hubs, top 10 each, with `[confirm] [dismiss]` labels (confirming/dismissing is still a future skill-layer action, same as `fha cooccur` itself) |
+| §8 Possible connections | ✓ | Embeds `cooccur.run_cooccur(threshold=2)` - person pairs, shared-place pairs, and org/entity recurrence hubs, top 10 each, with `[confirm] [dismiss]` labels. Acting on a label is now `fha confirm cooccur` / `fha confirm dismiss`; `fha report` itself still only prints |
 | `--full` | ✓ | Treats the snapshot baseline as empty for diffing; still writes a fresh snapshot afterward |
 | `--section NAME` | ✓ | Narrows stdout to one section; the persisted snapshot and `.cache/report_{date}.md` always hold the complete report |
-| `notes/discoveries.md` append | ⚑ deferred | TOOLING §15a describes appending confirmed discoveries there with human confirmation - a future skill-layer action, mirroring `fha cooccur`'s read-only tombstone discipline. `fha report` only ever prints |
+| `notes/discoveries.md` append | ✓ (via `fha confirm discovery`) | TOOLING §15a describes appending confirmed discoveries there with human confirmation. `fha report` itself still only prints; the human-confirmed append is `fha confirm discovery "<text>" [--refs …]` |
 
 Automated tests: `tests/test_report.py` builds a tiny on-disk archive fixture (not a
 synthetic index - `fha report` rebuilds from files) and exercises the vitals-gap →
@@ -105,7 +119,7 @@ the place-candidates/photo-triage deferral/absent-cache messages.
 | Already-linked exclusion | ✓ | Any existing `claim_links` row between the two claims (either rel) suppresses the candidate |
 | Person co-occurrence ranking | ✓ | `(source_count desc, source_type variety desc)` |
 | Existing-relationship exclusion | ✓ | Any `relationships` row between the pair (either direction) suppresses the candidate |
-| Dismissed-pairs tombstone | ✓ (read-only) | `.cache/cooccur_dismissed.json`; missing file = empty set, not an error; this tool never writes it |
+| Dismissed-pairs tombstone | ✓ (read-only) | `.cache/cooccur_dismissed.json`; missing file = empty set, not an error; `fha cooccur` never writes it - `fha confirm dismiss` is the writer |
 | Shared-place co-occurrence | ✓ | Different, unlinked people's claims sharing a place (`place_id` else normalized `place_text`) with overlapping EDTF bounds; same exclusion rules as person co-occurrence |
 | Org/entity recurrence | ✓ | Groups `occupation`, `military`, and membership-style `event`/`note` claims by `(category, normalized value)` |
 | `--threshold N` | ✓ | Minimum distinct shared sources for a person co-occurrence candidate (default 2); rejects `< 1` |
@@ -119,6 +133,51 @@ and org-recurrence grouping - without needing a full archive fixture or `exiftoo
 all five ID-type neighborhoods, the standalone and combined `--date` forms, the
 `--related` dispatch sentinel (typed-with-no-value vs. not-typed-at-all), and the
 absent-index/invalid-ID/invalid-EDTF failure paths.
+
+## fha claim - implementation status
+
+The single deterministic claim-review write-back (TOOLING §3b, SPEC §8.2, AGENTS.md): move one
+claim's `status:` and stamp `reviewed:`. The human gate from the engine side - `review-claims`
+and the report's prompts drive it, but the accept decision is always the human's. The edit is a
+surgical text edit of the one named claim's entry inside its source `.md` `## Claims` block
+(sibling claims, key order, comments preserved); the claim is located by scanning `sources/`
+directly, so it works when `.cache/index.sqlite` is stale or absent. `run_claim` returns a
+`_lib.Result` with `changed[]`.
+
+| Command | Flags | Status | Notes |
+|---|---|---|---|
+| `fha claim <C-id> --status accepted\|disputed\|rejected\|needs-review\|superseded` | `--reviewed DATE`, `--value "…"`, `--date EDTF`, `--root`, `--dry-run` | ✓ | The five `--status` choices are the SPEC §8.1 review outcomes. `--status accepted` always stamps `reviewed:` (the given `--reviewed`, else today) - only the human moves a claim to `accepted` (lint E006), and directing this tool *is* the human's decision; the tool never accepts on its own. `disputed`/`rejected`/`superseded` change status rather than delete (trail preserved; `disputed` = actively contested vs. a ruled-out `rejected`). `--value`/`--date` correct the claim in the same surgical edit; a YAML block-scalar `value:` is refused, not corrupted. Missing C-id → exit 3; re-run `fha index` after a write |
+
+Automated tests: `tests/test_claim.py` (stdlib `unittest`) covers the surgical-edit helpers and
+each status transition (the only target claim touched, comments preserved), plus the
+`accepted`-stamps-`reviewed` rule (explicit date and today-default), the block-scalar refusal,
+malformed/unknown-C-id refusals, a `--dry-run`-writes-nothing case, and an end-to-end
+`fha index` + `fha lint` integration check that the status change is reflected on a real archive.
+
+## fha confirm - implementation status
+
+The deterministic write-back layer for the detection tools and the report's confirm/dismiss
+prompts (TOOLING §14a/§14a2/§15a, AGENTS.md). Every verb is a *human-directed* write: the
+detection tools propose, `fha confirm` writes back the human's pick. Source/registry edits
+are surgical text edits (sibling claims, key order, comments preserved), records are located
+by scanning `sources/`/`people/` directly (works when `.cache/index.sqlite` is stale or
+absent), every verb ships `--dry-run`, and each returns a `_lib.Result` with `changed[]`.
+
+| Subcommand | Flags | Status | Notes |
+|---|---|---|---|
+| `fha confirm xref <C-a> <C-b>` | `--as corroborates\|contradicts`, `--root`, `--dry-run` | ✓ | Writes the link **reciprocally** into both claims' source records; a `contradicts` confirm also spawns an `origin: tool` open question in `notes/questions.md` referencing both C-ids (so lint E009 stays satisfied, same template as `fha lint --spawn-questions`). Already-linked → no-op `already`; missing claim → exit 3; self-link / bad C-id → exit 1 |
+| `fha confirm cooccur <P-a> <P-b>` | `--source S-id` (req), `--subtype friend\|associate\|neighbor` (req), `--accept`, `--reviewed DATE`, `--root`, `--dry-run` | ✓ | Mints a `relationship` claim (with `roles:` for E015, cited to `--source`) into that source's `## Claims` block. **Default `suggested`** - the human's confirm proposes; acceptance into a load-bearing `relationships` edge still goes through step-05 review (`fha claim … --status accepted`). `--accept` mints `accepted` + stamps `reviewed:` (today unless given), the only path that yields a derived edge on re-index |
+| `fha confirm dismiss <P-a> <P-b>` | `--root`, `--dry-run` | ✓ | Appends the unordered pair to `.cache/cooccur_dismissed.json` (lowercased ids, deduped) - the tombstone `fha cooccur` reads. No re-index needed. Already-dismissed → no-op `already`; a corrupt tombstone is treated as disposable cache and rebuilt |
+| `fha confirm place <C-id> [<C-id> …]` | `--name NAME`, `--hierarchy TEXT`, `--into L-id`, `--root`, `--dry-run` | ✓ | Registers a place-text cluster: mints a new `L-id` place block in `places/places.yaml` (or merges into an existing one via `--into`) **and** relinks the named claims' `place:` to it, so the cluster stops surfacing as an unlinked `fha places candidates` group. A missing C-id aborts before any write |
+| `fha confirm discovery "<text>"` | `--refs IDS` (comma-separated S-/P-/C-/L-/H-), `--root`, `--dry-run` | ✓ | Appends `- YYYY-MM-DD: <text> [refs]` to `notes/discoveries.md` (the research-wins log `fha report` §0 leads with) |
+| `fha confirm draft <P-id>` | `--root`, `--dry-run` | ✓ | Flips a curated profile's `<!-- AI-DRAFT … -->` markers to `<!-- AI-ACCEPTED … (accepted DATE) -->`, preserving the original date/model (provenance kept, §20). No marker found → exit 3/`none` |
+
+Automated tests: `tests/test_confirm.py` (stdlib `unittest`) covers the pure-text edit helpers
+(link append/idempotence, scalar set, claim append, AI-DRAFT flip) and each verb against a copy
+of `example-archive/`: confirm-xref → `claim_links` present after re-index; contradiction → no
+E009; accepted cooccur → derived `friend` edge (suggested → none); dismiss → pair excluded from
+the next `fha cooccur`; place mint/relink + `--into`; discovery append; draft flip - each with a
+`--dry-run`-writes-nothing and an invalid/not-found case.
 
 ## fha photoindex - implementation status
 

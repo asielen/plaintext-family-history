@@ -102,6 +102,7 @@ from _lib import (
     EXIT_WARNINGS,
     TOKEN_RE,
     FhaConfigError,
+    Result,
     fmt_id_display,
     load_fha_yaml,
     normalize_id,
@@ -904,14 +905,22 @@ def run_report(
     fha_config: dict,
     full: bool = False,
     section: str | None = None,
-) -> dict:
+) -> Result:
     """
     Run the full refresh -> diff -> render -> persist pipeline.
 
-    Returns {'status': 'ok', 'markdown': str, 'exit_code': int}.  `markdown`
-    holds only the requested section's text when `section` is given, but the
-    persisted snapshot and `.cache/report_{date}.md` always hold the complete
-    report — `--section` narrows what's printed this run, not what's recorded.
+    Returns a `Result` whose `data` carries the report as data and as text:
+      - data['status']:   'ok' (kept for back-compat; subscriptable via Result).
+      - data['markdown']: the text to print this run — only the requested
+        section when `section` is given.
+      - data['full_markdown']: the complete report (what the snapshot/cache hold).
+      - data['sections']: the per-section structured bodies (key -> list[str]),
+        so a consumer can read each section as data, not just parsed text.
+    The persisted snapshot and `.cache/report_{date}.md` always hold the complete
+    report — `--section` narrows what's printed this run, not what's recorded —
+    and both written files are listed in `result.changed`.  `result.exit_code`
+    follows the refresh lint pass (0/1/2).  `result['markdown']` etc. work because
+    Result exposes dict-style read access into `data` (_lib.py).
 
     Raises ValueError for an unknown `section` name.
     """
@@ -979,8 +988,10 @@ def run_report(
 
         cache_dir = archive_root / '.cache'
         cache_dir.mkdir(parents=True, exist_ok=True)
-        (cache_dir / f'report_{generated}.md').write_text(full_md, encoding='utf-8')
+        report_path = cache_dir / f'report_{generated}.md'
+        report_path.write_text(full_md, encoding='utf-8')
         _write_snapshot(archive_root, current)
+        snapshot_path = cache_dir / 'last_report.json'
     finally:
         conn.close()
 
@@ -995,7 +1006,17 @@ def run_report(
     else:
         exit_code = EXIT_CLEAN
 
-    return {'status': 'ok', 'markdown': printed_md, 'exit_code': exit_code}
+    return Result(
+        ok=(exit_code != EXIT_ERRORS),
+        exit_code=exit_code,
+        data={
+            'status': 'ok',
+            'markdown': printed_md,
+            'full_markdown': full_md,
+            'sections': bodies,
+        },
+        changed=[str(report_path), str(snapshot_path)],
+    )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1039,7 +1060,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     print(result['markdown'])
-    return result['exit_code']
+    return result.exit_code
 
 
 def _standalone_main(argv: list[str] | None = None) -> int:

@@ -88,6 +88,7 @@ Specifics:
 2. **The spec is the source of truth for tooling.** Every script is an executable copy of rules written in these documents; if a script cannot be regenerated from the spec, the spec is incomplete. If Python fades or every script dies, the archive remains fully usable **by hand** - a person can mint an ID with a dice roll, write a source record from the template, and cite it from a profile with no software at all.
 3. **Python is preferred** for scripts, minimal dependencies, small and single-purpose. No script may be *required*. The preferred language may change in the future.
 4. **Tools report by default** and modify only when explicitly asked.
+5. **The tools are a headless core.** Each tool is an engine that computes and returns a structured result; rendering that result for a human is a separate, replaceable layer. Whatever front door drives the tools - a terminal command, an AI agent shelling out, a batch pipeline, a future click in a UI - calls the same engine and reads the same result. The interface is glue; the engine is the tool. (This is also how the deterministic write-backs stay honest across front doors - see §6.)
 
 **The archive test.** Any tool that touches the archive must pass:
 
@@ -108,7 +109,7 @@ AI is potentially the most powerful layer of this system and the most dangerous 
 
 **The AI contract (locked).** Any AI - any model, any harness, any vendor - that touches the archive must honor:
 
-1. **AI suggestions are not facts.** Every AI-derived assertion enters the claim lifecycle at `status: suggested` and reaches `accepted` only through human review. AI-written text is marked as AI wherever it is stored (keywords, marker blocks); human-written content is never overwritten.
+1. **AI suggestions are not facts.** Every AI-derived assertion enters the claim lifecycle at `status: suggested` and reaches `accepted` only through human review. AI-written text is marked as AI wherever it is stored (keywords, marker blocks); human-written content is never overwritten. The review gate is the human's *decision*, not any one editing method: a tool may perform the actual status change deterministically, but it does so only because a human directed it. Whatever issues that confirmation - a typed instruction today, a click later - is the gate; the tool never moves a claim to `accepted` on its own.
 2. **AI sessions are an interface, never memory.** No conversation, chat history, or agent state is ever the store of record. Anything worth keeping is written into the archive in the formats of this spec, where it is reviewable, diffable, and durable.
 3. **Extraction is indexing, not preservation.** Originals (transcripts especially) are preserved verbatim in the archive, so AI mining can be selective and can be *re-run* anytime as models improve. Each extraction pass over a source is recorded in that source's record (model, date).
 4. AI tooling passes the archive test like everything else.

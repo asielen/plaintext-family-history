@@ -12,6 +12,34 @@ What lives here:
   - Filename grammar parsing  (person and source naming conventions, SPEC §13)
   - Shared constants: claim types, source types, COMPANION_KINDS, significance
   - The Finding class and exit-code constants shared by lint and other tools
+  - The Result contract (see below) every tool's run_* function returns
+
+THE STRUCTURED-RESULT CONTRACT (the rule every `run_*` follows)
+--------------------------------------------------------------
+Every operation a tool performs is split in two:
+
+  - `run_*` **computes** and **returns a `Result`** — a small, JSON-serializable
+    record of what happened.  It does NOT print human-facing report text and does
+    NOT call `sys.exit`.  (File side effects and interactive prompts are out of
+    scope for this rule: a tool that must write `report_2026.md` or ask the human
+    a yes/no question still does so inside `run_*`.  The rule governs return
+    values and human-text *printing*, not side effects.)
+  - `_cmd_*` is the **only** layer that renders a `Result` to stdout/stderr and
+    returns the process exit code.
+
+A `Result` carries:
+  - `ok`        — did the operation succeed (no error-level messages)?
+  - `exit_code` — the process exit code the CLI should return (EXIT_* constants).
+  - `data`      — the structured payload: whatever a consumer would want as data
+                  (matched records, per-check rows, counts, a rendered string …).
+  - `messages`  — human-facing lines, each a `Message{level, text, next_step,
+                  code, path}`.  A lint `Finding` folds into one of these:
+                  severity → level, its E/W code → code, the file → path.
+  - `changed`   — paths this operation created, wrote, renamed, or embedded into
+                  (empty under --dry-run).
+
+`lint` is the reference implementation: `run_lint` returns a `Result`; `_cmd_lint`
+renders the existing human text and `--json` payload from it (TOOLING §3).
 """
 
 from __future__ import annotations
@@ -101,6 +129,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    EXIT_CLEAN / EXIT_WARNINGS / EXIT_ERRORS / EXIT_FAILURE  — shared exit codes
 #    Finding                   — one lint finding: severity + code + path + message
 #    emit_findings             — print findings list and return exit code
+#    Message                   — one human-facing line: level/text/next_step (+code/path)
+#    Result                    — the structured-result contract every run_* returns
+#    finding_to_message        — fold a lint Finding into a Result Message
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1654,3 +1685,147 @@ def emit_findings(findings: list[Finding], use_json: bool = False) -> int:
     if has_warnings:
         return EXIT_WARNINGS
     return EXIT_CLEAN
+
+
+# ── The structured-result contract ────────────────────────────────────────────
+#
+# See the module docstring for the full rule.  In short: `run_*` returns a
+# `Result`; `_cmd_*` renders it.  These two small dataclasses are the shared
+# shape every tool conforms to, so a future consumer (a generator, a console, a
+# UI) can read any tool's output as data instead of re-parsing each tool's text.
+
+# Lint findings carry a one-letter severity ('E'/'W'); the Result contract uses a
+# spelled-out level so a renderer never has to know lint's private alphabet.  The
+# map is exact in both directions because lint only ever emits E or W.
+_SEVERITY_TO_LEVEL: dict[str, str] = {'E': 'error', 'W': 'warning'}
+LEVEL_TO_SEVERITY: dict[str, str] = {'error': 'E', 'warning': 'W'}
+
+
+@dataclasses.dataclass
+class Message:
+    """One human-facing line a Result carries.
+
+    `level` is the severity bucket — 'error', 'warning', or 'info' — so a renderer
+    can count or color without parsing prose.  `text` is the plain-language body.
+    `next_step` is the exact command or action that resolves it (AGENTS.md's
+    "next-step rule"); it is None for purely informational lines, and for lint
+    findings whose fix is already woven into `text`.
+
+    `code` and `path` are optional structured locators.  They exist so a lint
+    `Finding` (an E/W code against a specific file) folds losslessly into this
+    one shape: code carries 'W101' etc., path carries the offending file.  Tools
+    with no codes or no file context leave them None.
+    """
+
+    level: str
+    text: str
+    next_step: str | None = None
+    code: str | None = None
+    path: str | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            'level': self.level,
+            'text': self.text,
+            'next_step': self.next_step,
+            'code': self.code,
+            'path': self.path,
+        }
+
+
+@dataclasses.dataclass(eq=False)
+class Result:
+    """The structured return value of every tool's `run_*` function.
+
+    One small, JSON-serializable record of what an operation computed and did.
+    See the module docstring for the contract this participates in.  The defaults
+    describe a clean, do-nothing success, so a caller can build one up
+    incrementally: `Result().add('info', 'done')` or
+    `Result(data={'rows': rows})`.
+
+    Back-compat by design.  Before this contract, tools' run_* functions returned
+    one of two shapes: a payload dict (`run_xref` → {'status', 'groups'}) or a
+    bare exit-code int (`run_find` → EXIT_CLEAN).  A Result stands in for both so
+    every caller keeps working while run_* uniformly returns a Result:
+      - dict-style read access into `data`  → `result['groups']`, `result.get(k)`
+      - equality with its exit code         → `result == EXIT_CLEAN`
+    That is why `__eq__` is defined here (and the dataclass uses eq=False so this
+    custom one is not overwritten); two Results compare by identity, which is all
+    any caller needs.
+    """
+
+    ok: bool = True
+    exit_code: int = EXIT_CLEAN
+    data: dict = dataclasses.field(default_factory=dict)
+    messages: list[Message] = dataclasses.field(default_factory=list)
+    changed: list[str] = dataclasses.field(default_factory=list)
+
+    def __eq__(self, other: object) -> bool:
+        # `result == EXIT_CLEAN` lets callers/tests that previously received a
+        # bare exit-code int keep comparing against the EXIT_* constants.
+        if isinstance(other, Result):
+            return self is other
+        if isinstance(other, int):
+            return self.exit_code == other
+        return NotImplemented
+
+    def add(
+        self,
+        level: str,
+        text: str,
+        *,
+        next_step: str | None = None,
+        code: str | None = None,
+        path: str | Path | None = None,
+    ) -> 'Result':
+        """Append one human-facing message; returns self so calls can chain."""
+        self.messages.append(
+            Message(level, text, next_step, code,
+                    str(path) if path is not None else None)
+        )
+        return self
+
+    def note_changed(self, path: str | Path) -> 'Result':
+        """Record a file this operation created/wrote/renamed; returns self."""
+        self.changed.append(str(path))
+        return self
+
+    # Dict-style read access into `data`.  Several tools' run_* functions used to
+    # return a plain payload dict (e.g. `run_report` → {'status', 'markdown', …});
+    # exposing `result['markdown']` / `result.get('rows')` lets those callers (and
+    # their tests) keep reading the payload by key while run_* now returns a
+    # Result.  Read-only on purpose — building a Result is done through its fields.
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.data.get(key, default)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.data
+
+    def as_dict(self) -> dict:
+        """Return a fully JSON-serializable view of this Result."""
+        return {
+            'ok': self.ok,
+            'exit_code': self.exit_code,
+            'data': self.data,
+            'messages': [m.as_dict() for m in self.messages],
+            'changed': list(self.changed),
+        }
+
+
+def finding_to_message(finding: Finding) -> Message:
+    """Fold a lint `Finding` into a Result `Message` (severity → level).
+
+    The fix for a lint finding is already woven into its message text (e.g.
+    "... run `fha views brackets --fix` to update"), so `next_step` stays None
+    rather than duplicating it.
+    """
+    return Message(
+        level=_SEVERITY_TO_LEVEL.get(finding.severity, 'info'),
+        text=finding.message,
+        next_step=None,
+        code=finding.code,
+        path=finding.path,
+    )

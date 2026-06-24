@@ -51,6 +51,7 @@ from _lib import (
     INDEX_SCHEMA_VERSION,
     TOKEN_RE,
     FhaConfigError,
+    Result,
     archive_root_missing_message,
     edtf_bounds,
     find_archive_root,
@@ -998,8 +999,16 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
 
 # ── Full build ────────────────────────────────────────────────────────────────
 
-def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> None:
-    """Rebuild the index from scratch."""
+def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> Result:
+    """Rebuild the index from scratch; return a Result summarizing the build.
+
+    The `verbose` progress lines stay inline (they narrate each build step as it
+    runs); the Result reports the build as data instead of only logs — per-table
+    row counts and the schema version in `data`, the rebuilt cache file in
+    `changed`, and `data['mode'] = 'full'` to distinguish this drop-and-rebuild
+    from the incremental `upsert_source` path.  An in-process caller (e.g.
+    `fha report`'s refresh) can read what was built without parsing the logs.
+    """
     cache_dir = archive_root / '.cache'
     db_path = cache_dir / 'index.sqlite'
 
@@ -1073,6 +1082,18 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
     if verbose:
         size_kb = db_path.stat().st_size // 1024
         print(f'Done. Index at {db_path} ({size_kb} KB)')
+
+    return Result(
+        exit_code=EXIT_CLEAN,
+        data={
+            'mode': 'full',
+            'schema_version': INDEX_SCHEMA_VERSION,
+            'persons': person_count,
+            'sources': source_count,
+            'db_path': str(db_path),
+        },
+        changed=[str(db_path)],
+    )
 
 
 def _find_source_file(archive_root: Path, sid: str) -> Path | None:

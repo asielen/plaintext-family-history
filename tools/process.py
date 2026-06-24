@@ -119,6 +119,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
+    Result,
     PHOTO_EXTENSIONS,
     SOURCE_TYPES,
     FhaConfigError,
@@ -2214,6 +2215,22 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'list. Photos only; use `fha photoindex tag-person` to tag '
                         'photos already processed.')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
+
+
+def run_process(args: argparse.Namespace) -> Result:
+    """Structured entry point for `fha process`; returns a Result.
+
+    `fha process` is an interactive intake flow — it prints its plan and prompts
+    the human inline (the `_prompt`/variation-set seams), and the asset
+    relocate/rename operations register their own undo callbacks and roll back on
+    failure (e.g. `relocate_undo()` above). Per the structured-result contract,
+    those prompts, their narration, and the rollback machinery stay exactly where
+    they are (a deferred Phase-3 concern). This wraps the flow's exit code into a
+    Result (Result == int, so callers/tests comparing against EXIT_* keep
+    working); the per-file rename/undo detail is reported inline by the flow.
+    """
+    exit_code = _run_process(args)
+    return Result(ok=(exit_code not in (EXIT_ERRORS, EXIT_FAILURE)), exit_code=exit_code)
 
 
 def _run_process(args: argparse.Namespace) -> int:

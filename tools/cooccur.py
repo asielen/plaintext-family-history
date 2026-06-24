@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
+    Result,
     edtf_bounds,
     fmt_id_display,
     normalize_place_text,
@@ -390,14 +391,19 @@ def _org_recurrence(conn: sqlite3.Connection, threshold: int = 2) -> list[dict]:
 
 # ── Top-level query ───────────────────────────────────────────────────────────
 
-def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
+def run_cooccur(archive_root: Path, threshold: int = 2) -> Result:
     """
-    Returns {'status': 'ok'|'failed', 'person_pairs': [...],
-    'place_pairs': [...], 'org_groups': [...]}.
+    Detect connection candidates from the index.
+
+    Returns a `Result` whose `data` is {'status': 'ok'|'failed', 'person_pairs':
+    [...], 'place_pairs': [...], 'org_groups': [...]}.  Result exposes dict-style
+    access (_lib.py), so callers keep reading `result['person_pairs']` unchanged.
     """
     conn = open_index_db(archive_root, _REQUIRED_TABLES)
     if conn is None:
-        return {'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={
+            'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': [],
+        })
 
     try:
         dismissed = _load_dismissed(archive_root)
@@ -410,16 +416,18 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
             'Run `fha index` to rebuild.',
             file=sys.stderr,
         )
-        return {'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={
+            'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': [],
+        })
     finally:
         conn.close()
 
-    return {
+    return Result(exit_code=EXIT_CLEAN, data={
         'status': 'ok',
         'person_pairs': person_pairs,
         'place_pairs': place_pairs,
         'org_groups': org_groups,
-    }
+    })
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

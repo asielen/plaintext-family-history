@@ -111,6 +111,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    Result,
     TOKEN_RE,
     FhaConfigError,
     configure_utf8_stdout,
@@ -1500,14 +1501,14 @@ class _SiteBuilder:
 
 # ── Core / CLI ──────────────────────────────────────────────────────────────
 
-def run_site(
+def _site_payload(
     archive_root: Path,
     out_dir: Path,
     *,
     linked: bool = False,
     dry_run: bool = False,
 ) -> dict:
-    """Library entry point. Build the site and return a result dict.
+    """Build the site and return a result dict.
 
     Returns {'status', 'messages', 'out_dir', 'pages'} where status is one of:
       'no-jinja'    — Jinja2 not installed (CLI prints an install hint)
@@ -1570,6 +1571,26 @@ def run_site(
     finally:
         builder.close()
         conn.close()
+
+
+def run_site(
+    archive_root: Path,
+    out_dir: Path,
+    *,
+    linked: bool = False,
+    dry_run: bool = False,
+) -> Result:
+    """Library entry point. Build the site and return a Result.
+
+    `data` is the `_site_payload` dict ({'status', 'messages', 'out_dir',
+    'pages'}); Result exposes dict-style access (_lib.py), so callers keep
+    reading `result['status']` / `result['pages']` unchanged.  A real build lists
+    the written output directory in `changed`; a --dry-run (status 'dry-run')
+    writes nothing and leaves `changed` empty.
+    """
+    payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run)
+    changed = [str(payload['out_dir'])] if payload['status'] == 'ok' else []
+    return Result(ok=(payload['status'] in ('ok', 'dry-run')), data=payload, changed=changed)
 
 
 def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -> str | None:

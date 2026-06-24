@@ -106,6 +106,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    Result,
     configure_utf8_stdout,
     fmt_id_display,
     load_fha_yaml,
@@ -603,7 +604,7 @@ def _display_path(path: Path, archive_root: Path) -> str:
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
-def run_packet(
+def _packet_payload(
     archive_root: Path,
     pid: str,
     out_dir: Path,
@@ -942,6 +943,45 @@ def run_packet(
         return {'status': 'ok', 'packet_dir': packet_dir, 'zip_path': zip_path, 'messages': messages}
     finally:
         conn.close()
+
+
+def run_packet(
+    archive_root: Path,
+    pid: str,
+    out_dir: Path,
+    *,
+    include_research: bool = False,
+    include_restricted: bool = False,
+    include_dna: bool = False,
+    no_photos: bool = False,
+    dry_run: bool = False,
+    overwrite: bool = False,
+) -> Result:
+    """Build a person packet and return a Result.
+
+    `data` is the `_packet_payload` dict ({'status', 'packet_dir', 'zip_path',
+    'messages'}); Result exposes dict-style access (_lib.py), so callers keep
+    reading `result['status']` / `result['packet_dir']` unchanged.  On a real
+    build the written packet directory and zip are listed in `changed`; a
+    --dry-run (status 'dry-run') writes nothing and leaves `changed` empty.
+    """
+    payload = _packet_payload(
+        archive_root, pid, out_dir,
+        include_research=include_research, include_restricted=include_restricted,
+        include_dna=include_dna, no_photos=no_photos, dry_run=dry_run,
+        overwrite=overwrite,
+    )
+    changed: list[str] = []
+    if payload['status'] == 'ok':
+        for key in ('packet_dir', 'zip_path'):
+            value = payload.get(key)
+            if value:
+                changed.append(str(value))
+    return Result(
+        ok=(payload['status'] in ('ok', 'dry-run')),
+        data=payload,
+        changed=changed,
+    )
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
