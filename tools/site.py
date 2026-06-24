@@ -457,8 +457,20 @@ class _SiteBuilder:
             self.place_meta[row['id']] = row
             self.place_names[row['id']] = row['name'] or ''
 
+        # Build a map of source → linked person ids (for the living-subject check below).
+        source_living: set[str] = set()
+        if not self.linked:
+            for row in self.conn.execute(
+                "SELECT sp.source_id FROM source_people sp JOIN persons p ON sp.person_id = p.id "
+                "WHERE p.living IN ('true','unknown')"
+            ):
+                source_living.add(row['source_id'])
+
         for sid, row in self.source_meta.items():
             if self.linked or not self._source_is_redacted(row):
+                # Standalone: also exclude sources whose people list includes a living person.
+                if not self.linked and sid in source_living:
+                    continue
                 self.source_pages.add(sid)
         # Places are never themselves redacted (a place is not a living person);
         # every registry place gets a page, and the person links inside it follow
@@ -708,10 +720,17 @@ class _SiteBuilder:
         # current) are withheld from public output, matching the timeline's
         # rule. `--linked` (developer preview) shows every status with its badge.
         status_filter = '' if self.linked else "AND status IN ('accepted', 'needs-review')"
+        living_filter = (
+            '' if self.linked else
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
+            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
+            ")"
+        )
         claims = []
         for c in self.conn.execute(
-            'SELECT id, type, value, date_edtf, place_id, place_text, status FROM claims '
-            f'WHERE source_id = ? {status_filter} ORDER BY '
+            'SELECT id, type, value, date_edtf, place_id, place_text, status FROM claims c '
+            f'WHERE source_id = ? {status_filter} {living_filter} ORDER BY '
             "CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min ASC",
             (sid,),
         ):
@@ -786,6 +805,12 @@ class _SiteBuilder:
             "WHERE cp.person_id = ? AND c.status = 'accepted' AND c.type IN ('birth','death','marriage','baptism','burial')",
             (pid,),
         ).fetchall()
+        # Standalone: withold vitals whose only support is a withheld source; a fact
+        # established exclusively by a restricted/DNA/publication_ok=false source must
+        # not appear as a public datum with the citation silently redacted.
+        if not self.linked:
+            rows = [r for r in rows
+                    if r['source_id'] is None or r['source_id'] in self.source_pages]
         by_type: dict[str, sqlite3.Row] = {}
         for r in rows:
             by_type.setdefault(r['type'], r)   # first accepted of each type
@@ -818,10 +843,17 @@ class _SiteBuilder:
         """Accepted + needs-review claims, grouped by decade (TOOLING §12 — the
         same query and shape as `fha views timeline`'s main chronology; suggested
         claims are excluded from the published timeline)."""
+        living_filter = (
+            '' if self.linked else
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
+            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
+            ")"
+        )
         rows = self.conn.execute(
             "SELECT DISTINCT c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
-            "WHERE cp.person_id = ? AND c.status IN ('accepted','needs-review') "
+            f"WHERE cp.person_id = ? AND c.status IN ('accepted','needs-review') {living_filter} "
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (pid,),
         ).fetchall()
@@ -895,6 +927,36 @@ class _SiteBuilder:
             ).fetchall()
         except sqlite3.DatabaseError:
             return []
+        # Standalone: exclude groups that are also tagged to a living person.
+        if not self.linked:
+            safe: set[str] = set()
+            unsafe: set[str] = set()
+            for r in rows:
+                gkey = r['group_id'] or r['path']
+                if gkey in safe or gkey in unsafe:
+                    continue
+                try:
+                    if r['group_id']:
+                        co_refs = self.photos_conn.execute(
+                            'SELECT DISTINCT pp.person_ref FROM photo_people pp '
+                            'JOIN photos ph ON pp.path = ph.path WHERE ph.group_id = ?',
+                            (r['group_id'],),
+                        ).fetchall()
+                    else:
+                        co_refs = self.photos_conn.execute(
+                            'SELECT DISTINCT person_ref FROM photo_people WHERE path = ?',
+                            (r['path'],),
+                        ).fetchall()
+                except sqlite3.DatabaseError:
+                    safe.add(gkey)
+                    continue
+                has_living = any(
+                    self._person_is_redacted(self.person_meta[ref['person_ref']])
+                    for ref in co_refs if ref['person_ref'] in self.person_meta
+                )
+                (unsafe if has_living else safe).add(gkey)
+            rows = [r for r in rows if (r['group_id'] or r['path']) not in unsafe]
+
         # One representative per group: prefer the group's primary.
         best: dict[str, sqlite3.Row] = {}
         for r in rows:
@@ -955,10 +1017,17 @@ class _SiteBuilder:
                 "ORDER BY CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min", (lid,))
         ]
 
+        living_filter = (
+            '' if self.linked else
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
+            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
+            ")"
+        )
         claim_rows = self.conn.execute(
-            "SELECT id, type, value, date_edtf, date_min, source_id FROM claims "
-            "WHERE place_id = ? AND status IN ('accepted','needs-review') "
-            "ORDER BY CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min ASC",
+            "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.source_id FROM claims c "
+            f"WHERE c.place_id = ? AND c.status IN ('accepted','needs-review') {living_filter} "
+            "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (lid,),
         ).fetchall()
         claims = []
@@ -1240,7 +1309,12 @@ class _SiteBuilder:
         if root_person and root_person in self.person_meta:
             apex = self._apex_ancestor(root_person)
             apex_meta = self.person_meta.get(apex)
-            apex_name = apex_meta['name'] if apex_meta and apex_meta['name'] else fmt_id_display(apex)
+            if not self.linked and apex_meta and self._person_is_redacted(apex_meta):
+                apex_name = _LIVING_LABEL
+            elif apex_meta and apex_meta['name']:
+                apex_name = apex_meta['name']
+            else:
+                apex_name = fmt_id_display(apex)
             # Descendant explorer: keep the full lineage but render the first few
             # generations up front so a large family doesn't paint thousands of
             # nodes at once (the reader expands forward).
@@ -1322,7 +1396,9 @@ def run_site(
 
     Returns {'status', 'messages', 'out_dir', 'pages'} where status is one of:
       'no-jinja'    — Jinja2 not installed (CLI prints an install hint)
-      'no-index'    — index absent/unreadable (open_index_db already explained)
+      'no-index'    — index absent/unreadable/stale (open_index_db already explained;
+                      standalone builds refuse a stale index — run `fha index` first)
+      'bad-config'  — fha.yaml is malformed (message carries the detail)
       'bad-output'  — output dir would clobber archive content (CLI explains)
       'dry-run'     — would build N pages; nothing written
       'ok'          — built; 'messages' non-empty means finished with warnings
@@ -1330,12 +1406,19 @@ def run_site(
     if jinja2 is None:
         return {'status': 'no-jinja', 'messages': [], 'out_dir': out_dir, 'pages': 0}
 
-    fha_config = load_fha_yaml(archive_root)
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as exc:
+        return {'status': 'bad-config', 'messages': [str(exc)], 'out_dir': out_dir, 'pages': 0}
+
     unsafe = _unsafe_output_reason(out_dir, archive_root, fha_config)
     if unsafe:
         return {'status': 'bad-output', 'messages': [unsafe], 'out_dir': out_dir, 'pages': 0}
 
-    conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=False)
+    # Standalone builds refuse a stale index to avoid publishing redacted persons whose
+    # living flag was changed since the last `fha index` run.  Linked (dev preview)
+    # mode only warns — a slightly stale preview beats no preview.
+    conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=not linked)
     if conn is None:
         return {'status': 'no-index', 'messages': [], 'out_dir': out_dir, 'pages': 0}
 
@@ -1441,6 +1524,8 @@ def _cmd_site(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     if status == 'no-index':
         return EXIT_FAILURE   # open_index_db already printed the cause + fix
+    if status == 'bad-config':
+        return EXIT_FAILURE   # the config error message is already in result['messages']
     if status == 'bad-output':
         return EXIT_FAILURE   # the refusal message is already in result['messages']
 
