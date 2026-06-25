@@ -960,13 +960,13 @@ def run_find(
     """
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return Result(ok=False, data={'status': status, 'rows': []})
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': status, 'rows': []})
 
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return Result(ok=False, data={'status': 'unreadable', 'rows': []})
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
         try:
             filters: list[set[str]] = []
             if person:
@@ -1026,7 +1026,7 @@ def run_find(
                     rows.append(dict(row))
             return Result(data={'status': status, 'rows': rows})
         except sqlite3.Error:
-            return Result(ok=False, data={'status': 'unreadable', 'rows': []})
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
     finally:
         conn.close()
 
@@ -1338,11 +1338,13 @@ def run_reconcile(
     }
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return Result(ok=False, data={'status': status, 'root_found': True, **empty})
+        return Result(ok=False, exit_code=EXIT_FAILURE,
+                      data={'status': status, 'root_found': True, **empty})
 
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
-        return Result(ok=False, data={
+        # A missing photos root is a warning, not a failure (mirrors _cmd_reconcile).
+        return Result(ok=False, exit_code=EXIT_WARNINGS, data={
             'status': status, 'root_found': False, 'photos_root': str(photos_root), **empty})
     on_disk = _on_disk_aliases(photos_root, fha_config, archive_root)
 
@@ -1351,7 +1353,8 @@ def run_reconcile(
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return Result(ok=False, data={'status': 'unreadable', 'root_found': True, **empty})
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', 'root_found': True, **empty})
         try:
             cached = {
                 row['path']: row['source_id']
@@ -1422,7 +1425,8 @@ def run_reconcile(
                 'new_unsourced': new_unsourced,
             }
         except sqlite3.Error:
-            return Result(ok=False, data={'status': 'unreadable', 'root_found': True, **empty})
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', 'root_found': True, **empty})
     finally:
         conn.close()
 
@@ -1443,8 +1447,9 @@ def run_reconcile(
         except OSError:
             pass
     # photos.sqlite is a disposable cache (AGENTS.md), so reconcile's row moves
-    # are not archive-content changes; `changed` stays empty.
-    return Result(data=result)
+    # are not archive-content changes; `changed` stays empty. Unresolved missing
+    # files are a warning (mirrors _cmd_reconcile).
+    return Result(exit_code=(EXIT_WARNINGS if result['missing'] else EXIT_CLEAN), data=result)
 
 
 # ── Tag-person (fha photoindex tag-person — BUILD.md M3.4) ───────────────
@@ -1479,14 +1484,14 @@ def run_tag_person_plan(
 
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return Result(ok=False, data={
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={
             'status': status, 'person_id': person_id, 'candidates': [], 'already_tagged': []})
 
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return Result(ok=False, data={
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={
                 'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []})
         try:
             if from_face_tag:
@@ -1518,7 +1523,7 @@ def run_tag_person_plan(
                 'already_tagged': [p for p in candidate_paths if p in already],
             })
         except sqlite3.Error:
-            return Result(ok=False, data={
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={
                 'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []})
     finally:
         conn.close()
@@ -1667,6 +1672,7 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
         conn.close()
     return Result(
         ok=(not failed),
+        exit_code=(EXIT_FAILURE if failed else EXIT_CLEAN),
         data={'tagged': tagged, 'failed': failed},
         changed=list(tagged),
     )
@@ -1774,7 +1780,8 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     """
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
-        return Result(ok=False, data={
+        # A missing photos root is a warning, not a failure (mirrors _cmd_scan).
+        return Result(ok=False, exit_code=EXIT_WARNINGS, data={
             'photos_root': str(photos_root), 'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
             'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
