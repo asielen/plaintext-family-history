@@ -49,7 +49,7 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "ad04266c93b63d5138f0031382d9bf08a4b2e033d8a943e4510290cd02e79e1a",
+      "sha256": "5518f1ef18efcc761ce2207e9668822d43f4efaa939d8e9660f8d971dcdb99e4",
       "spec_version": "1.2"
     },
     {
@@ -262,19 +262,19 @@
     {
       "path": "tools/doctor.py",
       "category": "operating",
-      "sha256": "6c67124e883400419e99b32be4dda88e19353a39f7e4f843d53a7ea35beb87b3",
+      "sha256": "68a2a0fec0d79c4d7cdb78ca6edf1d1213dd6082ee1f09b9c987b3830c1f4e61",
       "spec_version": "1.2"
     },
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "41ff49e3de8d1a81199c2cbf05e1a8f4065e8dc97862af1cf0ce64f18028a3e5",
+      "sha256": "ae5a4e2920a634a114036697f20847512989a4dda6084b848e75e87bbf244883",
       "spec_version": "1.2"
     },
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "64b4adf87a4f4027ce4880bc01a7c4d9dd9ac201636270f1a4f8251a9938586a",
+      "sha256": "0ee494e0bd781bf25e3ec41b30477051d1d42418192a14f08f8d0af2c218cadb",
       "spec_version": "1.2"
     },
     {
@@ -298,19 +298,19 @@
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "bbb9c814df6be413e3bb878c6c1bc21725c163a8b372895913d79ab67a42d251",
+      "sha256": "2fc2942ee4cfa4bca4350ecf91022077a978460c699e95421919842b036fd1eb",
       "spec_version": "1.2"
     },
     {
       "path": "tools/packet.py",
       "category": "operating",
-      "sha256": "b5848957a85b088e4d17b3dea79034e96348b1b41c6b55144388d2b1b289b9d3",
+      "sha256": "4e6800fb3f0c1156a2a4bfd8259ec7f1d290fa67b0124ec6863860ca3f908fc7",
       "spec_version": "1.2"
     },
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "b31d622199d9a0b7063a46d0ff0c8e479c52889e03ba247876cf84aa86e2ec01",
+      "sha256": "93f82041de57765ecb4b1202e3210f6013e340d8eabd5fcb1bc775e6678f5feb",
       "spec_version": "1.2"
     },
     {
@@ -334,7 +334,7 @@
     {
       "path": "tools/requirements.txt",
       "category": "operating",
-      "sha256": "349e1f441188b2e197003a7b344a5c8b6413baa922df776f702605643f7978ba",
+      "sha256": "714c5c44331f2b4fdf36c270e7143c7096507cd0368f82243d6935ca9f7cec9e",
       "spec_version": "1.2"
     },
     {
@@ -358,55 +358,55 @@
     {
       "path": "tools/templates/_tree.html",
       "category": "operating",
-      "sha256": "de0618af01e9234406e4886dc00c546cf7c8e38ade8e3adb43a550cbc24cacf0",
+      "sha256": "a944c2c8d7ac1364f5471335c7569cbb604e85922cdd76934e610b76af75b296",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/base.html",
       "category": "operating",
-      "sha256": "a0878f500bec88538ed9f2a407f7560abdc19ac5fea4c77b7d5c6e427a72605b",
+      "sha256": "4df036f3fa266a5a2880091ebd74d88db6b98efb1b3acf8a70828e670f714245",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/discoveries.html",
       "category": "operating",
-      "sha256": "1e3972d466105299292e3315ad4e44f85b1cc0563d1265a3f83aac9a71d42c3b",
+      "sha256": "1a96356fdb4c453418acfd7275b2fed8eda108a2bbb130c64314b4fbdf3036cf",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/index.html",
       "category": "operating",
-      "sha256": "8825a0556d3f5c1fa8e7b5c456e263137788e5f5bff5807abf4fbc10cd71aaec",
+      "sha256": "50a51fd44628f5956438a6bc7a0072a2e343b9b637a52a7c3545c377bb665c64",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "f96ba98cf7913f61168491dcc7d718971df0aeaa7ad5ed28cbfd0a5a281b5d45",
+      "sha256": "e9e02c05cec3ec07a49419e0effbd5e64811d2210b25d95b49a7eb0ad94ec3ab",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/place.html",
       "category": "operating",
-      "sha256": "94d0a0f7fd623c2f7fc18e263bc69a101bafca16b2a9bc705d9c8b85ab4fb1e2",
+      "sha256": "adbfdaa522d8bf9758fde2f9d16d01ddbc49dae8797f2969e941cc5a2cf55b1f",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/source.html",
       "category": "operating",
-      "sha256": "2ea2c440673cf8ce8c7b368a2eece1393fbbb4e86ab339869252dc4f9dfeae81",
+      "sha256": "29916c14ddf0ddc78e599c18b6e694e82776f25327a989d4515619e1fe90089f",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "cafc1014b2ed9c363ef4e76077401e7f7a639b15adec2abbeca219984051c2c2",
+      "sha256": "1f9f659ad12c34631b7b37839f1d2cfa5e81cc8726100fdbcf2a100401511450",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/vendor/tree-adapter.js",
       "category": "operating",
-      "sha256": "10a49416a3f18e11e510ff555d3daeffadf946c8d7ef53d55a596d1059fded40",
+      "sha256": "aafd78820c980ed921965600b1e19aef09236ad96c02ded451f6fcd90867b841",
       "spec_version": "1.2"
     },
     {
@@ -430,7 +430,7 @@
     {
       "path": "tools/working_copy.py",
       "category": "operating",
-      "sha256": "619bd5501ab56a8b71e4f2d02260b975e7a2266e0fc01c5f3a177af58710a93a",
+      "sha256": "80606ec75993ae85597db7e9be772799c6e935ee01825ee36d97d8810bfe27ad",
       "spec_version": "1.2"
     },
     {

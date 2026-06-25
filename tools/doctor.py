@@ -499,7 +499,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
             if os.path.isdir(resolved):
                 lines.append(f'  {alias} -> {resolved}  {_OK}  next: no action needed')
                 checks.append({'id': f'root:{alias}', 'status': 'ok', 'detail': str(resolved), 'next_step': None})
-            elif wc_mode:
+            elif wc_mode and alias in ('photos', 'documents'):
                 lines.append(
                     f'  {alias} -> {resolved}  (not present — assumed on main machine)'
                 )
@@ -591,7 +591,16 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
 
     photo_status, photo_delta = _photoindex_freshness(archive_root, fha_config)
     photo_path = archive_root / '.cache' / 'photos.sqlite'
-    if wc_mode:
+    if wc_mode and photo_status in {'unreadable', 'old-schema'}:
+        label = 'out of date' if photo_status == 'old-schema' else 'unreadable'
+        lines.append(
+            f'photoindex: {_WARN} {label}: {photo_path}'
+            f'  next: copy a fresh cache from the main machine'
+        )
+        checks.append({'id': 'photoindex', 'status': 'warn', 'detail': label,
+                       'next_step': 'copy cache from main machine'})
+        worst = max(worst, EXIT_WARNINGS)
+    elif wc_mode:
         lines.append(
             f'photoindex: (paused in working-copy mode — run `{photoindex_cmd}` on the main machine)'
         )

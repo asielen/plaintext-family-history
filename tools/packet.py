@@ -966,6 +966,18 @@ def run_packet(
     build the written packet directory and zip are listed in `changed`; a
     --dry-run (status 'dry-run') writes nothing and leaves `changed` empty.
     """
+    if is_working_copy(archive_root):
+        return Result(
+            ok=False,
+            exit_code=EXIT_CLEAN,
+            data={'status': 'working-copy'},
+        ).add(
+            'warning',
+            'fha packet is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.',
+        )
+
     payload = _packet_payload(
         archive_root, pid, out_dir,
         include_research=include_research, include_restricted=include_restricted,

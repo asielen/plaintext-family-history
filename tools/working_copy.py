@@ -25,6 +25,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
+    EXIT_WARNINGS,
     FhaConfigError,
     Result,
     configure_utf8_stdout,
@@ -119,6 +120,15 @@ def _asset_root_risk_notes(archive_root: Path) -> list[str]:
     return notes
 
 
+def _invalidate_index(archive_root: Path) -> None:
+    """Delete the query index so exists_on_disk is recomputed after a mode toggle."""
+    index = archive_root / '.cache' / 'index.sqlite'
+    try:
+        index.unlink(missing_ok=True)
+    except OSError:
+        pass  # best-effort; index is a disposable cache and will be rebuilt on next use
+
+
 def _format_message(msg: object) -> str:
     """Render a Result message whether an older caller supplied text or Message."""
     text = getattr(msg, 'text', str(msg))
@@ -157,11 +167,15 @@ def run_working_copy_on(archive_root: Path) -> Result:
     try:
         _ensure_gitignore_entry(archive_root)
     except OSError as exc:
+        result.exit_code = EXIT_WARNINGS
         result.add(
             'warning',
             f'Could not update .gitignore: {exc}',
             next_step='Add WORKING_COPY to .gitignore by hand before syncing this archive.',
         )
+
+    # Invalidate the index so exists_on_disk values are recomputed in WC context.
+    _invalidate_index(archive_root)
 
     return result
 
@@ -188,12 +202,14 @@ def run_working_copy_off(archive_root: Path) -> Result:
             f'Could not remove the WORKING_COPY marker at {marker}: {exc}',
             next_step='Check folder permissions, then run `fha working-copy off` again.',
         )
-    return Result(
+    result = Result(
         ok=True,
         exit_code=EXIT_CLEAN,
         data={'status': 'turned-off', 'marker': str(marker)},
         messages=[],
     )
+    _invalidate_index(archive_root)
+    return result
 
 
 def run_working_copy_status(archive_root: Path) -> Result:
@@ -215,6 +231,10 @@ def _cmd_on(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         print('error: cannot find archive root — pass --root or run from inside the archive.',
+              file=sys.stderr)
+        return EXIT_ERRORS
+    if not (archive_root / 'fha.yaml').exists():
+        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
               file=sys.stderr)
         return EXIT_ERRORS
 
