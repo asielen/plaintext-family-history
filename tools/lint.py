@@ -570,7 +570,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         ppid = normalize_id(str(p_raw))
         if ppid and not registry.has_person(ppid):
             findings.append(Finding('E', 'E005', path,
-                f'Source people: references person {ppid} but no person record exists'))
+                f'Source people: references person {ppid} but no person record exists — '
+                'create a stub with `fha stubs`, or fix the P-id.'))
 
     # E007 / E017 / source_type check
     source_type = str(meta.get('source_type', ''))
@@ -635,7 +636,9 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         claim_type = str(claim.get('type', ''))
         if claim_type and claim_type not in CLAIM_TYPES:
             findings.append(Finding('E', 'E007', path,
-                f'Claim {cid} type {claim_type!r} not in vocabulary'))
+                f'Claim {cid} type {claim_type!r} is not a known claim type. '
+                f'Use one of: {", ".join(sorted(CLAIM_TYPES))} '
+                '(for anything else, use type: event or note with a free-text subtype:).'))
 
         # E006: accepted claim must have reviewed
         status = str(claim.get('status', ''))
@@ -655,7 +658,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         # E015: relationship claim must have roles
         if claim_type == 'relationship' and not claim.get('roles'):
             findings.append(Finding('E', 'E015', path,
-                f'Claim {cid} (type: relationship) missing roles:'))
+                f'Claim {cid} (type: relationship) is missing its roles: field — add roles: '
+                'naming each person\'s part (e.g. roles: [parent, child] or [spouse, spouse]).'))
 
         # W109: accepted claim missing notes when it's substantive OR a low-confidence vital
         sig = SIGNIFICANCE.get(claim_type, 'incidental')
@@ -665,7 +669,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             is_low_confidence_vital = sig == 'vital' and confidence == 'low'
             if is_substantive or is_low_confidence_vital:
                 findings.append(Finding('W', 'W109', path,
-                    f'Claim {cid} ({claim_type}) missing notes context (W109)'))
+                    f'Claim {cid} ({claim_type}) is accepted but has no notes: context — '
+                    'add a short notes: line explaining the evidence behind it.'))
 
     # E011: file inventory checks
     inventory_paths: set[str] = set()
@@ -956,13 +961,15 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # E004: orphan reference
             for ref_path, ref_line in refs[:3]:   # report first 3 sites
                 findings.append(Finding('E', 'E004', ref_path,
-                    f'Orphan reference [{token_id}] (line {ref_line}) — no matching record'))
+                    f'Orphan reference [{token_id}] (line {ref_line}) — no matching record. '
+                    'Create the missing record (for a person, run `fha stubs`) or fix the ID.'))
 
         if tid_type == 'P' and not registry.has_person(token_id):
             # E005: referenced person has no record at all
             for ref_path, ref_line in refs[:1]:
                 findings.append(Finding('E', 'E005', ref_path,
-                    f'P-id {token_id} referenced at line {ref_line} but no person record exists'))
+                    f'P-id {token_id} referenced at line {ref_line} but no person record exists — '
+                    'create a stub with `fha stubs`, or fix the ID.'))
 
     # E004: check persons referenced in claim `persons:` fields
     for sid, claims in registry.source_claims.items():
@@ -971,7 +978,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             for ppid in _claim_person_ids(claim):
                 if not registry.has_person(ppid):
                     findings.append(Finding('E', 'E005', src_path,
-                        f'Claim {claim.get("id","?")} references person {ppid} but no person record exists'))
+                        f'Claim {claim.get("id","?")} references person {ppid} but no person record exists — '
+                        'create a stub with `fha stubs`, or fix the P-id.'))
 
             # place reference — forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id that doesn't resolve is a broken link
@@ -1014,7 +1022,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     # Check if an open question references both C-ids
                     if not _has_question_for(cid, tid, registry):
                         findings.append(Finding('E', 'E009', src_path,
-                            f'Claim {cid} contradicts {tid} but no open question references both'))
+                            f'Claim {cid} contradicts {tid} but no open question records the conflict — '
+                            'run `fha lint --spawn-questions` to open one, or add a `## Q:` block to notes/questions.md.'))
 
     # E013: summary block drift for curated profiles
     children_of = _build_children_of(registry)   # parent_pid → {child_pids}

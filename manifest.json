@@ -292,7 +292,7 @@
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "b5f6c81be41ef56d499df2ae68ce07027187ae516d93440c37a4fd077778377c",
+      "sha256": "9f1aa2862f21c05e02a2edc51360b1941dc85ab2f85d73dc1dbcb19c406d2562",
       "spec_version": "1.2"
     },
     {
