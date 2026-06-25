@@ -452,16 +452,34 @@ def run_confirm_xref(
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
-    for path, _before, after in previews:
+    written: list[tuple[Path, str]] = []   # (path, pristine text) for rollback
+    for path, before, after in previews:
         try:
             path.write_text(after, encoding='utf-8')
         except OSError as e:
             return _fail(result, 'failed', f'cannot write {path}: {e}')
+        written.append((path, before))
         result.note_changed(path)
         result.add('info', f'Wrote {relation} link in {path.name}', path=path)
 
     if relation == 'contradicts':
-        q_path = _spawn_contradiction_question(archive_root, ca, cb)
+        # A `contradicts:` link only satisfies E009 once a co-occurring open
+        # question exists. If spawning it fails (no notes/ dir, unreadable or
+        # unwritable questions.md, disk full), roll the source edits back so we
+        # never leave dangling contradicts: links without their question.
+        try:
+            q_path = _spawn_contradiction_question(archive_root, ca, cb)
+        except OSError as e:
+            for path, before in reversed(written):
+                try:
+                    path.write_text(before, encoding='utf-8')
+                except OSError:
+                    pass
+            result.changed.clear()
+            return _fail(result, 'failed',
+                         'linked the sources but could not spawn the required '
+                         f'contradiction question ({e}); rolled the link writes back. '
+                         'Nothing was changed.')
         result.data['question_spawned'] = True
         result.note_changed(q_path)
         result.add('info', f'Spawned an open question in {q_path}', path=q_path)
@@ -779,15 +797,24 @@ def run_confirm_place(
     new_block_lines = _place_block_lines(place_id, name, hierarchy) if into is None else None
 
     # Plan every edit before writing so a failure leaves nothing half-done.
-    relink_previews: list[tuple[Path, str, str, str]] = []   # (path, cid, before, after)
+    # Several claims can live in the same source file; chain each edit onto the
+    # accumulated text (not the pristine original) so two C-ids in one record
+    # both survive. Building each preview from the original would make the last
+    # write for that path clobber the earlier relinks while still reporting
+    # every C-id as relinked.
+    file_originals: dict[Path, str] = {}     # path -> pristine text (for rollback)
+    file_edits: dict[Path, str] = {}         # path -> text after all its claims
     for cid, path in claim_paths.items():
-        before = path.read_text(encoding='utf-8')
+        before = file_edits.get(path)
+        if before is None:
+            before = path.read_text(encoding='utf-8')
+            file_originals[path] = before
         after, changed = _set_scalar_on_claim(before, cid, 'place', place_disp)
         if not changed:
             return _notfound(result,
                              f'Found {fmt_id_display(cid)} but could not edit its claims block '
                              f'in {path}. Check the block by hand.')
-        relink_previews.append((path, cid, before, after))
+        file_edits[path] = after
 
     if dry_run:
         result.data['status'] = 'ok'
@@ -797,30 +824,63 @@ def run_confirm_place(
                 result.add('info', '  ' + ln)
         else:
             result.add('info', f'[dry-run] Would relink claims to existing place {place_disp}.')
-        for path, cid, before, after in relink_previews:
+        for cid, path in claim_paths.items():
             result.add('info', f'[dry-run] Would set place: {place_disp} on {fmt_id_display(cid)} in {path.name}')
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
+    # Apply every planned write, rolling back on the first failure so the
+    # cluster is either fully relinked or left untouched — no new place stranded
+    # with only some of its claims relinked. We restore in reverse: source files
+    # to their pristine text, then the place registry to its prior state (or
+    # remove it if this run created it).
+    places_existed = places_yaml.exists()
+    places_prior: str | None = None
+    written_files: list[Path] = []
+
+    def _rollback() -> None:
+        for p in reversed(written_files):
+            try:
+                p.write_text(file_originals[p], encoding='utf-8')
+            except OSError:
+                pass
+        if into is None:
+            try:
+                if places_existed:
+                    places_yaml.write_text(places_prior or '', encoding='utf-8')
+                elif places_yaml.exists():
+                    places_yaml.unlink()
+            except OSError:
+                pass
+
     # 1. Registry write (new place only).
     if into is None:
         try:
-            existing = places_yaml.read_text(encoding='utf-8') if places_yaml.exists() else ''
+            places_prior = places_yaml.read_text(encoding='utf-8') if places_existed else None
+            existing = places_prior or ''
             sep = '' if (not existing or existing.endswith('\n')) else '\n'
             places_yaml.parent.mkdir(parents=True, exist_ok=True)
             places_yaml.write_text(existing + sep + '\n'.join(new_block_lines) + '\n', encoding='utf-8')
         except OSError as e:
             return _fail(result, 'failed', f'cannot write {places_yaml}: {e}')
-        result.note_changed(places_yaml)
-        result.add('info', f'Registered place {place_disp} ({name}) in {places_yaml.name}', path=places_yaml)
 
-    # 2. Relink claims.
-    for path, cid, _before, after in relink_previews:
+    # 2. Relink claims — one write per source file (all of a file's claims are
+    #    already folded into file_edits[path]).
+    for path, after in file_edits.items():
         try:
             path.write_text(after, encoding='utf-8')
         except OSError as e:
+            _rollback()
             return _fail(result, 'failed', f'cannot write {path}: {e}')
+        written_files.append(path)
+
+    # All writes landed — now it is safe to record what changed.
+    if into is None:
+        result.note_changed(places_yaml)
+        result.add('info', f'Registered place {place_disp} ({name}) in {places_yaml.name}', path=places_yaml)
+    for path in file_edits:
         result.note_changed(path)
+    for cid in claim_paths:
         result.data['relinked'].append(fmt_id_display(cid))
 
     result.data['status'] = 'ok'

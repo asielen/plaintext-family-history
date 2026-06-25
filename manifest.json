@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-06-24",
+  "generated": "2026-06-25",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -12,7 +12,7 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "bf17aa9c13c8a546d0b147b676d15d0b05192b2c73e68d8cd8e2c762829b0947",
+      "sha256": "d98ed4e0715a19253a4f27c145eb0ce1fb8a7eb1dbbd23dc496a2eab9cb37301",
       "spec_version": "1.2",
       "src": "archive-template/.gitignore"
     },
@@ -238,7 +238,7 @@
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "296bf679c611d0c18f7400de5d8c9ce9a9f8fe20ecd370c7fde72e8a432dc9ca",
+      "sha256": "f8b8cc5b5e9ece66fcf232e65938cbba99e49e9bb77f4c0c964073d7d0212e7d",
       "spec_version": "1.2"
     },
     {
@@ -298,7 +298,7 @@
     {
       "path": "tools/packet.py",
       "category": "operating",
-      "sha256": "e88b45d7e68b2b73d6e9fe8d727a6ab61ba8f2d871d4a99b231bf55567fe90d3",
+      "sha256": "2aef6605532c9929fbf1a30db7799be871d397781bbbd1f91c100e6ea97bee78",
       "spec_version": "1.2"
     },
     {
@@ -328,7 +328,7 @@
     {
       "path": "tools/requirements.txt",
       "category": "operating",
-      "sha256": "349e1f441188b2e197003a7b344a5c8b6413baa922df776f702605643f7978ba",
+      "sha256": "714c5c44331f2b4fdf36c270e7143c7096507cd0368f82243d6935ca9f7cec9e",
       "spec_version": "1.2"
     },
     {
@@ -352,55 +352,55 @@
     {
       "path": "tools/templates/_tree.html",
       "category": "operating",
-      "sha256": "de0618af01e9234406e4886dc00c546cf7c8e38ade8e3adb43a550cbc24cacf0",
+      "sha256": "a944c2c8d7ac1364f5471335c7569cbb604e85922cdd76934e610b76af75b296",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/base.html",
       "category": "operating",
-      "sha256": "a0878f500bec88538ed9f2a407f7560abdc19ac5fea4c77b7d5c6e427a72605b",
+      "sha256": "4df036f3fa266a5a2880091ebd74d88db6b98efb1b3acf8a70828e670f714245",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/discoveries.html",
       "category": "operating",
-      "sha256": "1e3972d466105299292e3315ad4e44f85b1cc0563d1265a3f83aac9a71d42c3b",
+      "sha256": "1a96356fdb4c453418acfd7275b2fed8eda108a2bbb130c64314b4fbdf3036cf",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/index.html",
       "category": "operating",
-      "sha256": "8825a0556d3f5c1fa8e7b5c456e263137788e5f5bff5807abf4fbc10cd71aaec",
+      "sha256": "50a51fd44628f5956438a6bc7a0072a2e343b9b637a52a7c3545c377bb665c64",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "f96ba98cf7913f61168491dcc7d718971df0aeaa7ad5ed28cbfd0a5a281b5d45",
+      "sha256": "e9e02c05cec3ec07a49419e0effbd5e64811d2210b25d95b49a7eb0ad94ec3ab",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/place.html",
       "category": "operating",
-      "sha256": "94d0a0f7fd623c2f7fc18e263bc69a101bafca16b2a9bc705d9c8b85ab4fb1e2",
+      "sha256": "adbfdaa522d8bf9758fde2f9d16d01ddbc49dae8797f2969e941cc5a2cf55b1f",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/source.html",
       "category": "operating",
-      "sha256": "2ea2c440673cf8ce8c7b368a2eece1393fbbb4e86ab339869252dc4f9dfeae81",
+      "sha256": "29916c14ddf0ddc78e599c18b6e694e82776f25327a989d4515619e1fe90089f",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "cafc1014b2ed9c363ef4e76077401e7f7a639b15adec2abbeca219984051c2c2",
+      "sha256": "1f9f659ad12c34631b7b37839f1d2cfa5e81cc8726100fdbcf2a100401511450",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/vendor/tree-adapter.js",
       "category": "operating",
-      "sha256": "10a49416a3f18e11e510ff555d3daeffadf946c8d7ef53d55a596d1059fded40",
+      "sha256": "aafd78820c980ed921965600b1e19aef09236ad96c02ded451f6fcd90867b841",
       "spec_version": "1.2"
     },
     {

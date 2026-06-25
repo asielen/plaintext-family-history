@@ -977,8 +977,21 @@ def run_packet(
             value = payload.get(key)
             if value:
                 changed.append(str(value))
+    status = payload['status']
+    # Map the payload status to the process exit code headless callers should
+    # return.  `_cmd_packet` keeps its own per-status printing, but both paths
+    # agree on the code: a clean/dry-run build that still emitted notes warns,
+    # the soft "nothing built" statuses warn, and structural failures fail.
+    if status in ('ok', 'dry-run'):
+        exit_code = EXIT_WARNINGS if payload.get('messages') else EXIT_CLEAN
+    elif status in ('not-found', 'not-curated'):
+        exit_code = EXIT_WARNINGS
+    else:  # no-index, bad-output-path, bad-config, living-subject,
+           # no-photoindex, output-exists, write-failed
+        exit_code = EXIT_FAILURE
     return Result(
-        ok=(payload['status'] in ('ok', 'dry-run')),
+        ok=(status in ('ok', 'dry-run')),
+        exit_code=exit_code,
         data=payload,
         changed=changed,
     )

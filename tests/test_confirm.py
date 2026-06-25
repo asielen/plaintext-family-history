@@ -272,6 +272,7 @@ class ConfirmArchiveTests(unittest.TestCase):
 
     def test_dismiss_excludes_from_next_cooccur(self) -> None:
         # PERSON_1/PERSON_3 co-occur in the example; dismiss removes them.
+        self._reindex().close()   # run_cooccur reads .cache/index.sqlite
         before = cooccur.run_cooccur(self.root)
         present = any(
             frozenset((c['person_a'], c['person_b'])) == frozenset((PERSON_1.lower(), PERSON_3.lower()))
@@ -317,6 +318,30 @@ class ConfirmArchiveTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(row['place_id'], lid.lower())
+
+    def test_place_relinks_all_claims_in_one_source_file(self) -> None:
+        # Regression: two claims that live in the SAME source record must both
+        # keep their relink. Building each preview from the pristine file text
+        # and then writing them one after another let the second write clobber
+        # the first relink while still reporting both C-ids as relinked.
+        c1, c2 = 'C-fc0000001a', 'C-fc0000002b'   # both in S-fc3456789d
+        result = confirm.run_confirm_place(
+            self.root, claim_ids=[c1, c2], name='Marsh Creek', hierarchy='Marsh Creek, Kansas, USA')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['relinked'], [c1, c2])
+        lid = result['place_id']
+        conn = self._reindex()
+        try:
+            placed = {
+                cid: conn.execute(
+                    'SELECT place_id FROM claims WHERE id=?', (cid.lower(),)).fetchone()['place_id']
+                for cid in (c1, c2)
+            }
+        finally:
+            conn.close()
+        self.assertEqual(placed[c1], lid.lower())
+        self.assertEqual(placed[c2], lid.lower(),
+                         'second claim in the same source file lost its relink')
 
     def test_place_into_existing(self) -> None:
         result = confirm.run_confirm_place(
