@@ -319,16 +319,24 @@ def _keyword_to_edtf(pattern: str) -> str | None:
     if year_c == '?':
         return None
 
-    parts = [year]
-    suffix = '~' if year_c == '~' else ''
+    # Collect the present, non-'?' components with their per-component markers.
+    comps: list[tuple[str, str | None]] = [(year, year_c)]
     if month and month_c != '?':
-        parts.append(month)
-        suffix = '~' if month_c == '~' else ''
+        comps.append((month, month_c))
         if day and day_c != '?':
-            parts.append(day)
-            suffix = '~' if day_c == '~' else ''
+            comps.append((day, day_c))
 
-    edtf = '-'.join(parts) + suffix
+    if len(comps) == 1:
+        # Year only: an approximate year trails its qualifier (EDTF `1960~`).
+        edtf = year + ('~' if year_c == '~' else '')
+    else:
+        # Multi-component: EDTF qualifies a component with a '~' written
+        # immediately *before* it (SPEC §20: `Y!M~` -> `1960-~05`), so a
+        # per-component best-guess marker is preserved on the right component
+        # instead of being collapsed into one trailing '~' (or dropped when a
+        # confident component follows the approximate one).
+        edtf = '-'.join(('~' + comp if mark == '~' else comp) for comp, mark in comps)
+
     return edtf if is_valid_edtf(edtf) else None
 
 

@@ -59,6 +59,17 @@ class PhotoindexTests(unittest.TestCase):
             self.assertFalse(scan['root_found'])
             self.assertEqual(scan.exit_code, EXIT_WARNINGS)
 
+    def test_keyword_to_edtf_preserves_component_approximation(self) -> None:
+        # SPEC §20 date-mapping table — a per-component best-guess marker must
+        # land on the right component (1960!-05~ -> 1960-~05), not collapse to a
+        # trailing '~' or get dropped when a confident component follows.
+        self.assertEqual(photoindex._keyword_to_edtf('1942!-11!-25!'), '1942-11-25')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!-05!'), '1960-05')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!-05~'), '1960-~05')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!'), '1960')
+        self.assertEqual(photoindex._keyword_to_edtf('1960~'), '1960~')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!-05!-12~'), '1960-05-~12')
+
     def test_scan_groups_variants_flags_date_conflict_and_indexes_pid_keyword(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
