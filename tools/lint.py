@@ -222,14 +222,26 @@ _SOURCE_FILENAME_RE = re.compile(
     r'^[a-z0-9][a-z0-9\-]*_S-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
 _PERSON_FILENAME_RE = re.compile(
-    r'^[a-z][a-z_]*__[a-z][a-z_]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
+    # Optional MERGED-INTO-P-<survivor>__ tombstone prefix (SPEC §9): a merged
+    # person's file persists forever under this rename, so the grammar must
+    # accept it rather than flag the spec-mandated form as a bad filename.
+    r'^(MERGED-INTO-P-[0-9a-hjkmnp-tv-z]{10}__)?'
+    r'[a-z][a-z_]*__[a-z][a-z_]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
 
 # ── Required-field sets ───────────────────────────────────────────────────────
 
 REQUIRED_PERSON_FIELDS = {'id', 'name', 'living'}
 REQUIRED_SOURCE_FIELDS = {'id', 'title', 'source_type'}
-REQUIRED_CLAIM_FIELDS  = {'id', 'type', 'persons', 'value', 'status'}
+REQUIRED_CLAIM_FIELDS  = {'id', 'type', 'persons', 'value', 'status', 'confidence'}
+
+# Controlled vocabularies validated by E019 (SPEC §8.1 status lifecycle, §8.5
+# confidence). Values outside these sets are typos that would silently corrupt
+# accepted-claim rollups (e.g. `status: acccepted` is never counted as accepted).
+VALID_CLAIM_STATUS = frozenset({
+    'suggested', 'needs-review', 'accepted', 'disputed', 'rejected', 'superseded',
+})
+VALID_CONFIDENCE = frozenset({'high', 'medium', 'low'})
 
 # ── Summary block parsing (E013) ──────────────────────────────────────────────
 
@@ -646,6 +658,18 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         if status == 'accepted' and not reviewed:
             findings.append(Finding('E', 'E006', path,
                 f'Accepted claim {cid} missing reviewed date'))
+
+        # E019: status / confidence must come from their controlled vocabularies
+        # (SPEC §8.1, §8.5). A typo'd value lints clean today but silently drops
+        # the claim from accepted-claim rollups, so catch it.
+        if status and status not in VALID_CLAIM_STATUS:
+            findings.append(Finding('E', 'E019', path,
+                f'Claim {cid} status {status!r} is not a valid review status. '
+                f'Use one of: {", ".join(sorted(VALID_CLAIM_STATUS))}.'))
+        conf_value = str(claim.get('confidence', ''))
+        if conf_value and conf_value not in VALID_CONFIDENCE:
+            findings.append(Finding('E', 'E019', path,
+                f'Claim {cid} confidence {conf_value!r} is not valid — use high, medium, or low.'))
 
         # E014: Claim date EDTF check (forgiving: loose-but-clear → W109 suggestion)
         _check_date_value(claim.get('date', ''), 'date', f'Claim {cid}: ', path, findings)

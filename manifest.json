@@ -55,7 +55,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "16efdb3fc48be9263432f52ca170b953d76397993dddb43e7f41b453e7837a73",
+      "sha256": "5e94ed5294aa6acc3d09a751cd0841e4faeed3ae32adc992e6375f4645b92e62",
       "spec_version": "1.2"
     },
     {
@@ -292,7 +292,7 @@
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "9f1aa2862f21c05e02a2edc51360b1941dc85ab2f85d73dc1dbcb19c406d2562",
+      "sha256": "75a511581b7a6bfa6a646ddb8a0f42a622af987b1fd77c82aa04498c583a1271",
       "spec_version": "1.2"
     },
     {

@@ -162,5 +162,62 @@ class LintForgivingDateTests(unittest.TestCase):
         self.assertTrue(e004)
 
 
+class LintControlledVocabularyTests(unittest.TestCase):
+    """E010 confidence presence + E019 status/confidence value checks (SPEC §8.1/§8.5),
+    and the SPEC §9 MERGED-INTO tombstone filename grammar."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources' / 'notes').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('root_person: P-1111111111\n', encoding='utf-8')
+        (self.root / 'people' / 'stubs' / 'doe__jane_P-1111111111.md').write_text(
+            _PERSON_MD, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _lint_claim(self, *, status: str = 'accepted', confidence: str | None = 'high') -> list:
+        src = (
+            '---\nid: S-1111111111\ntitle: Test source\nsource_type: other\n---\n\n'
+            '## Claims\n\n```yaml\n'
+            '- value: a fact\n  id: C-1111111111\n  type: birth\n'
+            '  persons: [P-1111111111]\n  date: 1870\n'
+            f'  status: {status}\n'
+            + (f'  confidence: {confidence}\n' if confidence is not None else '')
+            + ('  reviewed: 2020-01-01\n' if status == 'accepted' else '')
+            + '```\n'
+        )
+        (self.root / 'sources' / 'notes' / 'test_S-1111111111.md').write_text(src, encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        return findings
+
+    def test_valid_status_and_confidence_clean(self) -> None:
+        findings = self._lint_claim(status='accepted', confidence='high')
+        self.assertFalse([f for f in findings if f.code == 'E019'])
+        self.assertFalse([f for f in findings if f.code == 'E010' and 'confidence' in f.message])
+
+    def test_missing_confidence_is_e010(self) -> None:
+        findings = self._lint_claim(confidence=None)
+        self.assertTrue([f for f in findings if f.code == 'E010' and 'confidence' in f.message])
+
+    def test_invalid_status_is_e019(self) -> None:
+        findings = self._lint_claim(status='acccepted')
+        e019 = [f for f in findings if f.code == 'E019' and 'status' in f.message]
+        self.assertTrue(e019)
+        self.assertIn('acccepted', e019[0].message)
+
+    def test_invalid_confidence_is_e019(self) -> None:
+        findings = self._lint_claim(confidence='very-high')
+        self.assertTrue([f for f in findings if f.code == 'E019' and 'confidence' in f.message])
+
+    def test_merged_into_tombstone_filename_matches_grammar(self) -> None:
+        self.assertTrue(lint._PERSON_FILENAME_RE.fullmatch(
+            'MERGED-INTO-P-de957bcda1__hartley__thomas_P-1234567890'))
+        self.assertTrue(lint._PERSON_FILENAME_RE.fullmatch('cole__margaret_P-4d5e6f7g8h'))
+        self.assertFalse(lint._PERSON_FILENAME_RE.fullmatch('notaperson'))
+
+
 if __name__ == '__main__':
     unittest.main()
