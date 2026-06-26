@@ -168,8 +168,6 @@ def _rewrite_prose(
     text, edits, ambiguous = _rewrite_wikilinks(text, alias_map, clashes)
 
     def upgrade_legacy(m: re.Match) -> str:
-        nonlocal edits
-        edits += 1
         return f'[[{fmt_id_display(normalize_id(m.group(1)))}]]'
 
     new_text, n = LEGACY_TOKEN_RE.subn(upgrade_legacy, text)

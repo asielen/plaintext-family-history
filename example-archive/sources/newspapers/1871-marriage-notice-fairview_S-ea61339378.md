@@ -9,8 +9,8 @@ repository: example collection
 citation: >
   Marriage notice, Fairview newspaper, March 1871 (fictional example record).
 people:
-  - "[[Thomas Edward Hartley]]"
-  - "[[Margaret A. Cole]]"
+  - "[[P-de957bcda1|Thomas Edward Hartley]]"
+  - "[[P-cd795c61e0|Margaret A. Cole]]"
 files:
   - file: documents/newspapers/1871-marriage-notice_S-ea61339378.txt
     role: clipping

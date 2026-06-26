@@ -210,6 +210,30 @@
       "src": "archive-template/sources/_TEMPLATE.source.md"
     },
     {
+      "path": "tools/.pytest_cache/.gitignore",
+      "category": "operating",
+      "sha256": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/.pytest_cache/CACHEDIR.TAG",
+      "category": "operating",
+      "sha256": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/.pytest_cache/README.md",
+      "category": "operating",
+      "sha256": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/.pytest_cache/v/cache/nodeids",
+      "category": "operating",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "spec_version": "1.2"
+    },
+    {
       "path": "tools/README.md",
       "category": "operating",
       "sha256": "68404780f02c23562b473d0f8fde2fbc1cc32cf9b50f3f6fb7cc998519646562",
@@ -332,7 +356,7 @@
     {
       "path": "tools/normalize_links.py",
       "category": "operating",
-      "sha256": "bc43654887e2c6fb437d989d4573a94f5b029f661f2b94335cfeb691de213378",
+      "sha256": "06d14931a3ce73d64458e509c6335e0ee38ae3db27b00dd536e4b2cb0a259169",
       "spec_version": "1.2"
     },
     {
