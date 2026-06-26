@@ -31,7 +31,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "4de4688ec454bb5a32a70827cadbf149ce051aa45e1fea385ff9d791e25132e5",
+      "sha256": "7a6a598d6329d30d673295b080554c5e9e75d21ca965dde49c1d01cd7b31e4df",
       "spec_version": "1.2"
     },
     {
@@ -49,13 +49,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "5f3503e3312f8c599980701d9f211f45851bb7f087a1a018bd4fbe12fe03b56b",
+      "sha256": "139558aa1c31097280b6a872e13fd4c9846ae2bb073337170489f114a5370b89",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "4a6821d84eda1f58d8a22a2e30e7a56e76af539da0e047d9b336dc4ec3ec5458",
+      "sha256": "9b8007dafa27eca367f07ae93ce859f94a78dba9031fefc808cfb80eb8f04939",
       "spec_version": "1.2"
     },
     {
