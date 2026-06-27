@@ -870,6 +870,7 @@ def read_record(path: str | Path) -> dict:
     except OSError as e:
         return {
             'meta': {}, 'claims': [], 'stories': None, 'body': '',
+            'unfenced_claims': False,
             'parse_errors': [('E010', f'Cannot read file: {e}')],
         }
 
@@ -912,7 +913,10 @@ def read_record(path: str | Path) -> dict:
     # silently invisible (a data-loss trap), read them when the section content
     # UNMISTAKABLY parses as a YAML list of claim-like mappings. Conservative:
     # arbitrary prose under the heading is never force-read as claims.
-    if not claims:
+    # Guard: only check for unfenced claims when there was no fenced block at all
+    # (cm_match is None) — not when the fenced block merely had malformed YAML,
+    # which would leave claims=[] and trigger a false W114 + double-wrap.
+    if not claims and cm_match is None:
         unfenced = _read_unfenced_claims(body)
         if unfenced:
             claims = [_coerce_yaml(c) for c in unfenced]

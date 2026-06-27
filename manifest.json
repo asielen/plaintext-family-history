@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-06-26",
+  "generated": "2026-06-27",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -242,7 +242,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "2005df42d07559a82a04421efa4df7eb1638aaa55b18e10115f074396eadf2b1",
+      "sha256": "5de45226bdf513c8a16b76a7257bc955433b91916da2fd8121982fdc72c1fc24",
       "spec_version": "1.2"
     },
     {
@@ -344,19 +344,19 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "ddedfb853a7d34b28f82fef49c54b715f3b4ef4e6ea5f30761cce3f41cd491d9",
+      "sha256": "ad0c25d2a67173d6bcd67981a2391907df4658f4e3d1d69881edd38606f9715c",
       "spec_version": "1.2"
     },
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "165a9fa2bb93fe4b97bff7f1883f87fb834c7843d72b57e49639bba4a22ab082",
+      "sha256": "7d5137674e7c96e8d720d723c8cc730872699d8a68e44aaebafe32f7e4edcec3",
       "spec_version": "1.2"
     },
     {
       "path": "tools/normalize_links.py",
       "category": "operating",
-      "sha256": "06d14931a3ce73d64458e509c6335e0ee38ae3db27b00dd536e4b2cb0a259169",
+      "sha256": "6ebace8ae00be098e850e2f23038024154bc71d23d5103739eb5d18ff6aa6cce",
       "spec_version": "1.2"
     },
     {
@@ -404,7 +404,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "89761fe7971f0864c7f3eb077d28f84f7b870e245c79151d2e188c4c5f136b61",
+      "sha256": "f42dc84166f065bb9533a0b9194fddaf020b931820781c23cb31fe9652c8687e",
       "spec_version": "1.2"
     },
     {

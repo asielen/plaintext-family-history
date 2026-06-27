@@ -1095,6 +1095,8 @@ def _index_citations_for_file(
                 resolved = resolve_ref(target, alias_map)
                 if not resolved:
                     continue
+                if resolved.startswith('c-'):
+                    cited_cids.add(resolved)
                 conn.execute(
                     'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
                     (resolved, resolved[0].upper(), rel, lineno),

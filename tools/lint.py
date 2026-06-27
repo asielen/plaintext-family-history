@@ -559,6 +559,9 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
     # Register in registry
     if is_companion:
         registry.person_companion_paths.setdefault(pid, []).append(path)
+        # Accumulate companion body text so _needs_sourcing_backlog can scan TODOs
+        # across all files belonging to this person, not just the profile.
+        registry.person_bodies[pid] = registry.person_bodies.get(pid, '') + '\n' + rec['body']
     else:
         registry.person_profile_paths.setdefault(pid, []).append(path)
         registry.person_meta[pid] = meta
@@ -2002,6 +2005,15 @@ def _insert_id_and_aliases(text: str, new_id: str, slug: str) -> str:
     an alias so existing `[[slug]]` links keep resolving; the new ID self-aliases."""
     fm = FRONT_RE.match(text)
     has_aliases = bool(fm) and re.search(r'^aliases:', fm.group(1), re.M)
+    has_id = bool(fm) and re.search(r'^id:', fm.group(1), re.M)
+    if fm and has_id:
+        # Replace the existing blank `id:` line in-place rather than prepending a
+        # duplicate key (last-key-wins in YAML would silently discard the new value).
+        # FRONT_RE group(1) excludes the final \n before ---, so reassemble fully.
+        fm_replaced = re.sub(r'^id:[ \t]*$', f'id: {new_id}', fm.group(1), flags=re.M)
+        if not has_aliases:
+            fm_replaced = f'aliases: [{new_id}, {slug}]\n' + fm_replaced
+        return f'---\n{fm_replaced}\n---\n' + text[fm.end():]
     lines = [f'id: {new_id}']
     if not has_aliases:
         lines.append(f'aliases: [{new_id}, {slug}]')

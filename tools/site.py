@@ -477,10 +477,12 @@ class _SiteBuilder:
         # Alias resolve map (clash-aware): lets a prose `[[Ken Smith]]` / `[[stem]]`
         # name-link resolve to its canonical ID so a living person referenced only
         # by name is still redacted — the privacy hole the display-text form opens.
+        self._alias_table_ok: bool = False
         idx: dict[str, set[str]] = {}
         try:
             for alias, cid in self.conn.execute('SELECT alias, canonical_id FROM aliases'):
                 idx.setdefault(alias, set()).add(cid)
+            self._alias_table_ok = True
         except sqlite3.OperationalError:
             pass   # pre-alias index: no name-link resolution, ID tokens still work
         self.alias_map: dict[str, str] = {
@@ -593,6 +595,11 @@ class _SiteBuilder:
                 pid, kind = resolved, id_type_of(resolved)
             else:
                 # Inert Obsidian link, not a broken citation → plain text.
+                # Exception: when the aliases table is absent (stale index) we
+                # can't distinguish a non-record link from an unresolved living
+                # person — redact in standalone mode rather than leak a name.
+                if not self.linked and not self._alias_table_ok:
+                    return f'<span class="redacted">{_LIVING_LABEL}</span>'
                 return _escape(in_display or token)
 
         display = fmt_id_display(pid)
