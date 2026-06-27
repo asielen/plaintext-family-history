@@ -8,6 +8,7 @@ here, reusing the committed capture-samples HTML as the raw `page.html`.
 Run: python -m unittest tests.test_capture_ingest -v   (from the repo root)
 """
 
+import io
 import json
 import sys
 import tempfile
@@ -229,6 +230,53 @@ class IngestTestCase(unittest.TestCase):
                                  staging_dir=str(self.tmp / 'nope'), dry_run=False)
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertEqual(res.data['status'], 'no-staging')
+
+    # ── capture.json schema versioning ──────────────────────────────────────────
+
+    def test_newer_schema_warns_but_still_ingests(self) -> None:
+        _make_bundle(self.staging, 'future', page_html=_sample('ancestry'),
+                     capture_json={'schema': capture._CAPTURE_JSON_SCHEMA + 5,
+                                   'url': 'https://x/1', 'asset_mode': 'none'})
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)        # never refused
+        self.assertIn('newer than this tool', err.getvalue())
+
+    def test_current_and_absent_schema_are_silent(self) -> None:
+        _make_bundle(self.staging, 'cur', page_html=_sample('ancestry'),
+                     capture_json={'schema': capture._CAPTURE_JSON_SCHEMA,
+                                   'url': 'https://x/1', 'asset_mode': 'none'})
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            self._ingest()
+        self.assertNotIn('newer than this tool', err.getvalue())
+
+    # ── doctor staged-captures nudge ────────────────────────────────────────────
+
+    def test_staged_bundles_helper(self) -> None:
+        self._two_clean_bundles()
+        staging, pending = capture.staged_bundles(
+            {'capture_staging': str(self.staging)})
+        self.assertEqual(staging, self.staging.resolve())
+        self.assertEqual(len(pending), 2)
+        # After a sweep, the helper reports none pending (parked names excluded).
+        self._ingest()
+        _, pending2 = capture.staged_bundles({'capture_staging': str(self.staging)})
+        self.assertEqual(pending2, [])
+
+    def test_doctor_warns_on_pending_bundles(self) -> None:
+        import doctor
+        self._two_clean_bundles()
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n'
+            f'capture_staging: "{self.staging.as_posix()}"\n', encoding='utf-8')
+        config = load_fha_yaml(self.archive, strict=True)
+        res = doctor.run_doctor(self.archive, config)
+        check = next(c for c in res.data['checks'] if c['id'] == 'staged-captures')
+        self.assertEqual(check['status'], 'warn')
+        self.assertEqual(check['next_step'], 'fha capture --ingest')
+        self.assertTrue(any('staged captures: 2 bundle' in ln for ln in res.data['lines']))
 
 
 if __name__ == '__main__':

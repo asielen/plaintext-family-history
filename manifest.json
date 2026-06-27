@@ -31,7 +31,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "b98c523fc0f29f94a2a3d994b1959e10ef50cb35774a58b3fd168e77a2c5968d",
+      "sha256": "a9bc5334a51c7057b3d583e755037dab8dff00d3dc0f64277731be0dbceeb7b1",
       "spec_version": "1.2"
     },
     {
@@ -61,7 +61,7 @@
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "e990aeca5aa72bb4e50854526041212ec172f639ab0635eb066c24f6043adab1",
+      "sha256": "7eb2d36fdb576dc1c21bc8f8e1f8b92099ebaa5a6c70e2f060d0db89626971a9",
       "spec_version": "1.2"
     },
     {
@@ -224,7 +224,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "07de04fde68da3f1a74e5d0a72bcabaf9d316e8231e2f98c48ccd5bd114c48d2",
+      "sha256": "d32516dce9071882262aad43576995d6061c9ab81ad031a3f88243be4f2f9f4f",
       "spec_version": "1.2"
     },
     {
@@ -290,7 +290,7 @@
     {
       "path": "tools/doctor.py",
       "category": "operating",
-      "sha256": "8305926a99491f9d8b79e9d76cfc93da11680c0b2a40839c93c44b42dbe76754",
+      "sha256": "03155633ac51f10c6ce86f94bc07097e5324c90a5af0553e37e3e9368dbb073f",
       "spec_version": "1.2"
     },
     {

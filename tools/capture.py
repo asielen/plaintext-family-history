@@ -117,6 +117,13 @@ _GENERIC_SOURCE_TYPE = 'website'
 # article doesn't bloat every stub (BUILD.md M7.5: "visible text … ~2000 chars").
 _BODY_CHAR_CAP = 2000
 
+# Staged-bundle `capture.json` schema version (TOOLING_INGESTION §3). Bump only on
+# an INCOMPATIBLE shape change. Ingest is forgiving: an absent `schema` is treated
+# as current (legacy/hand-authored bundles), and a NEWER schema is read for the
+# fields it shares with a one-line warning — never refused. So a companion can add
+# fields without breaking older tools, and newer tools read older bundles as-is.
+_CAPTURE_JSON_SCHEMA = 1
+
 
 def _today() -> str:
     return datetime.date.today().isoformat()
@@ -884,6 +891,21 @@ def _iter_bundles(staging: Path) -> list[Path]:
     )
 
 
+def staged_bundles(fha_config: dict, staging_dir: str | None = None) -> tuple[Path, list[Path]]:
+    """Resolve the staging folder and list its un-ingested bundles.
+
+    The shared discovery used by both `run_ingest` (to sweep) and `fha doctor`
+    (to nudge "you have N captures waiting"). A bundle whose name is already
+    parked in `.ingested/` is excluded, so the count reflects real outstanding
+    work. Returns `(staging_dir, [])` when the folder doesn't exist yet.
+    """
+    staging = _resolve_staging_dir(staging_dir, fha_config)
+    if not staging.is_dir():
+        return staging, []
+    ingested = staging / _INGESTED_DIRNAME
+    return staging, [b for b in _iter_bundles(staging) if not (ingested / b.name).exists()]
+
+
 def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
     """Read a staged bundle (§3 contract): `capture.json` + `page.html` + optional asset.
 
@@ -904,6 +926,15 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
         raise BundleError(f"could not read capture.json: {e}") from e
     if not isinstance(cap, dict):
         raise BundleError("capture.json is not a JSON object")
+
+    # Forgiving schema check (never refuse): a newer companion may add fields a
+    # current tool doesn't know — read what we share, nudge the human to update.
+    schema = cap.get('schema')
+    if isinstance(schema, int) and schema > _CAPTURE_JSON_SCHEMA:
+        print(f'WARNING: bundle {bundle.name} declares capture.json schema '
+              f'{schema}, newer than this tool reads ({_CAPTURE_JSON_SCHEMA}); '
+              f'filing the fields it shares. Run `fha update-tools` if anything '
+              f'looks missing.', file=sys.stderr)
 
     asset: Path | None = None
     if cap.get('asset_mode') != 'none':

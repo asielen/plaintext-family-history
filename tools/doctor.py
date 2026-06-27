@@ -17,6 +17,7 @@ Checks (in order):
   6. Photoindex freshness  (.cache/photos.sqlite vs photos root mtime)
   7. Lint summary       (E/W counts, import-and-call, no shell-out)
   8. Inbox aging        (items older than 14 days)
+  8b. Staged captures   (browser-companion bundles waiting for `fha capture --ingest`)
   9. Counts             (restricted sources, living/unknown persons)
  10. E018 findings      (agent-instruction drift details)
  11. Tools version      (.plainfile-version + pending update backups)
@@ -679,6 +680,29 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         else:
             lines.append(f'inbox: {_OK} no items older than 14 days  next: no action needed')
             checks.append({'id': 'inbox', 'status': 'ok', 'detail': 'no aged items', 'next_step': None})
+        lines.append('')
+
+    # ── Staged captures waiting to be ingested ───────────────────────────────
+    # The browser companion drops bundles in a Downloads-tree staging folder
+    # (TOOLING_INGESTION §6); nothing sweeps them automatically. Only surface
+    # this when the folder exists at all (most machines never run the companion).
+    from capture import staged_bundles
+    staging_dir, pending = staged_bundles(fha_config)
+    if staging_dir.is_dir():
+        ingest_cmd = f'fha capture --ingest --root "{root_arg}"'
+        if pending:
+            lines.append(
+                f'staged captures: {len(pending)} bundle(s) in {staging_dir} '
+                f'waiting to be filed  next: run `{ingest_cmd}`'
+            )
+            checks.append({'id': 'staged-captures', 'status': 'warn',
+                           'detail': f'{len(pending)} bundle(s) waiting',
+                           'next_step': 'fha capture --ingest'})
+            worst = max(worst, EXIT_WARNINGS)
+        else:
+            lines.append(f'staged captures: {_OK} none waiting  next: no action needed')
+            checks.append({'id': 'staged-captures', 'status': 'ok',
+                           'detail': 'none waiting', 'next_step': None})
         lines.append('')
 
     if idx_status == 'fresh':

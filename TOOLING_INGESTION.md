@@ -102,6 +102,7 @@ A staged bundle is a folder containing:
 
 ```json
 {
+  "schema": 1,
   "url": "https://www.ancestry.com/...",
   "title": "1880 United States Federal Census - Thomas Hartley",
   "accessed": "2026-06-24",
@@ -115,21 +116,21 @@ A staged bundle is a folder containing:
 }
 ```
 
-Every field except `url` is optional. `notes` is the human's free-text body; `people` carries **at minimum the name of a person the record is about** - the one hint the engine most wants and review most needs. `recipe_hint` is the browser's *guess*; the engine still runs detection on `page.html` and may overrule it.
+Every field except `url` is optional. `notes` is the human's free-text body; `people` carries **at minimum the name of a person the record is about** - the one hint the engine most wants and review most needs. `recipe_hint` is the browser's *guess*; the engine still runs detection on `page.html` and may overrule it. `schema` is the `capture.json` shape version (current: **1**, the `capture._CAPTURE_JSON_SCHEMA` constant) and exists so the companion and the backend can evolve independently - ingest is **forgiving** about it: an *absent* `schema` is read as the current version (legacy/hand-authored bundles), and a *newer* one is read for the fields it shares with a one-line "run `fha update-tools`" warning, **never refused**. Bump it only on an incompatible shape change.
 
 ---
 
 ## 4. Delivery forms (front-ends onto one engine)
 
-Four ways to feed the engine, in increasing polish and increasing install cost. **One backend serves them all.**
+The front-ends, in increasing polish and increasing install cost. **One backend serves them all:** every form converges on the §3 staged-bundle contract (or, for the paste floor, on the engine directly).
 
 ### 4.1 Paste fallback - *the v1 path, shipping today*
 
 The human copies the page (or saves the HTML) and pipes it in: `pbpaste | fha capture --url …`, or `fha capture --asset saved-page.html --url …`. Needs nothing new - no extension, no browser permission. This is the always-available floor and the path every other form degrades to. It produces the inbox stub directly.
 
-### 4.2 Bookmarklet - *zero-install, single-file*
+### 4.2 Bookmarklet - *not pursued*
 
-A `javascript:` bookmark that, on click, grabs `document.documentElement.outerHTML` and the URL, opens a tiny notes prompt, and triggers a **single-file download** (a `Blob` + `<a download>`) of a combined `.html` snapshot with the notes embedded, into the browser's Downloads. No bundle folder, no multi-asset support, no fetch - but it works in any browser with nothing installed. The human later runs `fha capture --ingest` (§6) on the download, or pipes the saved file in by hand. Good for case (b); weak for case (a).
+> **Decision (M7.9):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
 
 ### 4.3 Browser extension - *the nice panel* (§5)
 
@@ -257,6 +258,8 @@ fha capture --ingest [DIR] [--dry-run]
 
 `--dry-run` reports the plan - which bundles, which recipe each matched, which stub each would become - and writes nothing. Ingest is idempotent: a bundle already swept (present in `.ingested/`) is skipped, so re-running after an interruption is safe. A malformed bundle (no `page.html`, unreadable `capture.json`) is reported and left in place, never silently dropped.
 
+Because nothing sweeps automatically (the no-watcher rule), the human has to *remember* to run `--ingest` - so **`fha doctor` surfaces the nudge**: when the staging folder holds un-ingested bundles it reports `staged captures: N bundle(s) … waiting  next: run \`fha capture --ingest\``, the same name-the-next-step treatment as inbox aging. It only speaks up when the staging folder exists (most machines never run the companion), so it is silent noise-free elsewhere.
+
 **Working-copy interaction (SPEC §12.4):** `--ingest` writes only to `inbox/` and reads no originals, so it stays available on a `WORKING_COPY` machine - captures made while travelling sweep into the inbox to carry back, exactly like any other inbox material.
 
 ---
@@ -280,9 +283,10 @@ These bind every delivery form and the engine alike:
 | Engine `fha capture` (paste fallback, recipes, generic, stub render, research-log) | **built** ([`tools/capture.py`](tools/capture.py)) |
 | Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
 | `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD.md M7.9) |
+| `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD.md M7.9) - warns when bundles sit in the staging folder waiting for `--ingest` |
 | Browser extension (§5) | **designed, not built** - lives in `browser-companion/`, not the archive operating layer |
 | Native-messaging host (§5.7) | **designed, not built** - optional v2 |
-| Bookmarklet (§4.2) | **designed, not built** |
+| Bookmarklet (§4.2) | **not pursued** - the extension is the front-end; the paste fallback is the floor (see §4.2) |
 
 The build order that follows the spine's own logic: `--ingest` first (it makes *any* staged bundle useful and is a thin wrapper over the existing engine), then the extension (which produces those bundles), then the native host as a seamless-path upgrade. A concrete milestone breakdown belongs in [`BUILD.md`](BUILD.md); this document is the design it implements against.
 

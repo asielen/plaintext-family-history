@@ -1372,8 +1372,17 @@ nothing. Writes only to `inbox/`, so it stays available in WORKING_COPY mode. Po
 (`asset_mode: none`) bundles flow through with no asset → the stub's existing
 `asset_elsewhere: true` path fires (case (c)).
 
+Two companions land in the same PR:
+- **`fha doctor` nudge.** Since nothing sweeps automatically, `doctor` warns when bundles sit
+  waiting (`staged captures: N … next: run \`fha capture --ingest\``), mirroring inbox aging -
+  via a shared `capture.staged_bundles(fha_config)` helper, and only when the staging folder
+  exists (silent on machines that never run the companion).
+- **`capture.json` schema version.** A `schema:` field (current `capture._CAPTURE_JSON_SCHEMA`
+  = 1) lets the companion and backend evolve independently; ingest is forgiving - absent = current,
+  newer = read shared fields + warn, never refused.
+
 Add `tests/test_capture_ingest.py` (builds bundles in a temp staging dir from the existing
-`capture-samples/*.html`).
+`capture-samples/*.html`); cover the doctor nudge and the newer-schema warning too.
 
 **Done when:**
 ```sh
