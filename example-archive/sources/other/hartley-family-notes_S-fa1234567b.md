@@ -1,5 +1,6 @@
 ---
 id: S-fa1234567b
+aliases: [S-fa1234567b]
 title: Hartley family notes — typescript, circa 1940
 source_type: other
 source_date: 1940~
@@ -8,7 +9,12 @@ repository: example collection
 citation: >
   Hartley, unknown compiler. "Hartley Family Notes," typescript, ca. 1940 (fictional
   example document; transcription held in example collection).
-people: [P-de957bcda1, P-cd795c61e0, P-fa7541e871, P-8h9jkambne, P-6f7g8h9jka]
+people:
+  - "[[P-de957bcda1|Thomas Edward Hartley]]"
+  - "[[P-cd795c61e0|Margaret A. Cole]]"
+  - "[[P-fa7541e871|Calvin George Hartley]]"
+  - "[[P-8h9jkambne|Harriet Frances Webb]]"
+  - "[[P-6f7g8h9jka|Warren Calvin Hartley]]"
 files:
   - file: documents/transcripts/hartley-family-notes_S-fa1234567b.txt
     role: transcription

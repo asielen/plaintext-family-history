@@ -29,7 +29,7 @@ It is the blueprint for a simple future proof system for family research. The go
 
 Three things live at arm's length from each other, by design:
 
-1. **This repo** (public): the spec (`SPEC.md`, `TOOLING.md`, `AGENTS.md`), the docs, the generic `fha` tools, an empty `archive-template/`, and a fictional `example-archive/` fixture.
+1. **This repo** (public): the spec (`SPEC.md`, `TOOLING.md`, `AGENTS.md`), the docs, the generic `fha` tools, an `archive-template/` with copy-paste record templates, and a fictional `example-archive/` fixture.
 2. **The tools** (public, in `tools/`): generic - they operate on *any* conforming archive and hold no family data. Publishing them is the manifestation of the spec. Tools are replaceable glue, regenerable from the spec.
 3. **Your archive** (private, separate repo): your real family's records, created from `archive-template/`, depending on this repo's spec and tools but never living inside it. Public examples stay fictional; your groceries don't go in the cookbook.
 
@@ -105,6 +105,8 @@ Your existing photos and documents plus FIVE record types, all plain Markdown/YA
 Around those, a rebuildable **index** (SQLite, regenerated from the files) powers search, family-tree generation, contradiction detection, and a research report - none of it authoritative, all of it disposable.
 The operating loop is simple: **capture → file → process → review → report**, with human review the only gate to an accepted fact.
 
+**Linking, the human way.** You connect records by name. In any profile or note, cite a source or cross-link a person by writing the name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works just as well. Don't worry about making an ID: name your file something sensible, link to it by name, and if you ever run the tools the linter quietly assigns the IDs and tidies everything. The five copy-paste templates in [`archive-template/`](archive-template/) give you a filled-in starting point for each record type.
+
 ## Repository layout
 
 ```
@@ -118,7 +120,7 @@ plainfile-family-history/
 │   ├── GETTING_STARTED.md
 │   ├── GLOSSARY.md
 │   └── FAQ.md
-├── archive-template/    ← empty skeleton (+ fha.yaml) to copy when starting your own (private) archive
+├── archive-template/    ← skeleton + copy-paste record templates (+ fha.yaml) to start your own (private) archive
 ├── example-archive/     ← a small, fully fictional worked example (+ its own fha.yaml)
 ├── tools/               ← the generic fha command suite (see tools/README.md)
 ├── tests/               ← automated tests and fixtures for the tools

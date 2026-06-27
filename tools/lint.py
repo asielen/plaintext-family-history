@@ -62,21 +62,30 @@ from _lib import (
     FRONT_RE,
     ID_RE,
     LEVEL_TO_SEVERITY,
+    PROVISIONAL_VITAL_FIELDS,
     SIGNIFICANCE,
     SOURCE_TYPES,
+    mint_ids,
     TOKEN_RE,
     VITAL_TYPES,
     Finding,
     Result,
+    alias_clashes,
+    build_alias_map,
     edtf_bounds,
     finding_to_message,
     extract_token_ids,
+    extract_wikilinks,
+    link_field_refs,
+    resolve_ref,
+    strip_link_wrapper,
     fmt_id_display,
     format_edtf_error,
     format_exiftool_error,
     format_source_type_error,
     id_type_of,
     is_fixture_path,
+    is_template_file,
     is_working_copy,
     is_valid_edtf,
     is_valid_id,
@@ -187,6 +196,20 @@ class Registry:
         # Persons: {P-id: meta_dict}
         self.person_meta: dict[str, dict] = {}
 
+        # Person profile bodies: {P-id: body_text} — read once during the walk so
+        # the needs-sourcing backlog can scan for `(TODO: import source)` prose
+        # without re-reading every file.
+        self.person_bodies: dict[str, str] = {}
+
+        # Source files whose `## Claims` content was read UNfenced (a human forgot
+        # the ```yaml fence): {S-id: path}. `fha lint --fix-claims-fence` wraps them.
+        self.unfenced_claim_sources: dict[str, Path] = {}
+
+        # Hand-authored records with NO id: and a filename lacking the `_{ID}`
+        # suffix — a valid pre-machine state (SPEC §4/§10). Auto-mintable, not an
+        # error: [(path, 'P'|'S')]. `fha lint --fix-ids` mints + renames + aliases.
+        self.idless_records: list[tuple[Path, str]] = []
+
         # Source meta: {S-id: meta_dict}
         self.source_meta: dict[str, dict] = {}
 
@@ -195,6 +218,16 @@ class Registry:
 
         # All token IDs referenced in prose/frontmatter (value → list of (path, line))
         self.token_refs: dict[str, list[tuple[Path, int]]] = {}
+
+        # Non-ID name/stem wikilinks in prose (lowercased target → [(path, line)]).
+        # `[[Ken Smith]]` lands here, not in token_refs; used to tell a LATENT
+        # name clash from an ACTIVE one (a link that actually uses the ambiguous
+        # name and so must be pinned to an ID).
+        self.name_link_refs: dict[str, list[tuple[Path, int]]] = {}
+
+        # Source frontmatter cross-link fields ({S-id: {'people': [...], ...}}),
+        # captured raw so Pass 2 can resolve them through the alias map.
+        self.source_links: dict[str, dict[str, list[str]]] = {}
 
         # Questions file content (for E009)
         self.questions_content: str = ''
@@ -304,14 +337,12 @@ def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]
         seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(summary_text)
         segment = summary_text[seg_start:seg_end].strip()
 
-        p_ids = [
-            normalize_id(t.strip('[]'))
-            for t in re.findall(r'\[P-[0-9a-hjkmnp-tv-z]{10}\]', segment, re.I)
-        ]
-        s_ids = [
-            normalize_id(t.strip('[]'))
-            for t in re.findall(r'\[S-[0-9a-hjkmnp-tv-z]{10}\]', segment, re.I)
-        ]
+        # The citation is the contract: extract the bare IDs from the segment's
+        # tokens (new `[[P-…|display]]` or legacy `[P-…]`), comparing on the ID and
+        # ignoring any display text. extract_token_ids handles both bracket forms.
+        seg_ids = extract_token_ids(segment)
+        p_ids = [i for i in seg_ids if id_type_of(i) == 'P']
+        s_ids = [i for i in seg_ids if id_type_of(i) == 'S']
         results.append((label, segment, p_ids, s_ids))
 
     return results
@@ -380,11 +411,20 @@ def _check_date_value(
 # ── Walk and collect ─────────────────────────────────────────────────────────
 
 def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
-    """Index all [ID] citation/cross-link tokens in text into registry.token_refs."""
+    """Index citation tokens in text.
+
+    ID tokens (`[[S-…]]`, legacy `[S-…]`) go to `token_refs` for the E004/E005
+    resolution checks. Non-ID name/stem wikilinks (`[[Ken Smith]]`) go to
+    `name_link_refs` — they are ordinary Obsidian links, never E004 candidates,
+    but a name link is what makes a name clash ACTIVE (must be pinned to an ID)."""
     for lineno, line in enumerate(text.splitlines(), start=1):
         for m in TOKEN_RE.finditer(line):
             tid = normalize_id(m.group(1))
             registry.token_refs.setdefault(tid, []).append((path, lineno))
+        for target, _disp, _frag, _span in extract_wikilinks(line):
+            if id_type_of(target):
+                continue   # ID wikilinks are already handled above
+            registry.name_link_refs.setdefault(target.lower(), []).append((path, lineno))
 
 
 def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding]) -> None:
@@ -457,6 +497,8 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
 
 def _process_person_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
     """Process one person file into the registry, with file-level checks."""
+    if is_template_file(path):
+        return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
 
@@ -506,14 +548,24 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
         if is_companion and parsed:
             pid = normalize_id(parsed['id_str'])
             registry.person_companion_paths.setdefault(pid, []).append(path)
+        elif not pid_raw and parsed is None:
+            # A hand-authored, id-less record (no `id:`, no `_{P-id}` in the
+            # filename). Not an error — auto-mintable on the next `fha lint
+            # --fix-ids`. Surfaced (not silently dropped, which was the data-loss
+            # trap) so the human sees it.
+            registry.idless_records.append((path, 'P'))
         return   # can't do further cross-reference checks without record metadata
 
     # Register in registry
     if is_companion:
         registry.person_companion_paths.setdefault(pid, []).append(path)
+        # Accumulate companion body text so _needs_sourcing_backlog can scan TODOs
+        # across all files belonging to this person, not just the profile.
+        registry.person_bodies[pid] = registry.person_bodies.get(pid, '') + '\n' + rec['body']
     else:
         registry.person_profile_paths.setdefault(pid, []).append(path)
         registry.person_meta[pid] = meta
+        registry.person_bodies[pid] = rec['body']
 
     registry.all_record_ids[pid] = path
 
@@ -535,6 +587,8 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
 
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
     """Process one source file into the registry, with file-level checks."""
+    if is_template_file(path):
+        return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
 
@@ -552,6 +606,11 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     # E002 / filename grammar: {slug}_{S-id}.md
     stem = path.stem
     parsed = parse_filename(path)
+    # A hand-authored, id-less record (no `id:`, no `_{S-id}` in the filename) is
+    # a valid pre-machine state — auto-mintable, not an E002 grammar error.
+    if not sid_raw and parsed is None:
+        registry.idless_records.append((path, 'S'))
+        return
     if not _SOURCE_FILENAME_RE.fullmatch(stem):
         findings.append(Finding('E', 'E002', path,
             f'Source filename fails SPEC §13 grammar: {path.name}'))
@@ -579,13 +638,22 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             findings.append(Finding('E', 'E010', path,
                 f'Source record missing required field: {field!r}'))
 
-    # E005: source-level people list must resolve, because index.py consumes it.
-    for p_raw in (meta.get('people') or []):
-        ppid = normalize_id(str(p_raw))
-        if ppid and not registry.has_person(ppid):
+    # E005: a source's people: list must resolve, because index.py consumes it.
+    # The field is now name-first-capable (`people: ["[[Ken Smith]]"]`): a bare
+    # P-id that names no record is still the integrity error it always was, but a
+    # name link is resolved against the alias map in Pass 2 (where every person is
+    # known), so it is captured here rather than judged. An unresolved *name* is
+    # never a hard error — it is forgiving input, not a typo'd ID.
+    people_refs = link_field_refs(meta.get('people'))
+    for ref in people_refs:
+        if id_type_of(ref) == 'P' and not registry.has_person(normalize_id(ref)):
             findings.append(Finding('E', 'E005', path,
-                f'Source people: references person {ppid} but no person record exists — '
-                'create a stub with `fha stubs`, or fix the P-id.'))
+                f'Source people: references person {fmt_id_display(normalize_id(ref))} but no '
+                'person record exists — create a stub with `fha stubs`, or fix the P-id.'))
+    registry.source_links[sid] = {
+        'people': people_refs,
+        'places': link_field_refs(meta.get('places')),
+    }
 
     # E007 / E017 / source_type check
     source_type = str(meta.get('source_type', ''))
@@ -614,6 +682,16 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     # Claims
     claims = rec['claims']
     registry.source_claims[sid] = claims
+
+    # W114: claims typed under ## Claims without the ```yaml fence. read_record
+    # already reads them (so no data is lost — they index fine), but the fence is
+    # the canonical form; offer to wrap it rather than leave the record untidy.
+    if rec.get('unfenced_claims'):
+        registry.unfenced_claim_sources[sid] = path
+        findings.append(Finding('W', 'W114', path,
+            'Claims under "## Claims" are not in a ```yaml fence. They still read '
+            'correctly, but run `fha lint --fix-claims-fence` to wrap them in the '
+            'canonical fenced block.'))
 
     for claim in claims:
         if not isinstance(claim, dict):
@@ -965,6 +1043,91 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
 
 # ── Cross-file checks ─────────────────────────────────────────────────────────
 
+def _alias_records(registry: Registry) -> list[dict]:
+    """Assemble the records `build_alias_map`/`alias_clashes` operate on, from
+    everything Pass 1 collected: persons (id + name + variants + stems), sources
+    (id + stems), and the bare IDs of places/hypotheses (so a stem colliding with
+    one is caught). Place names are not available to lint's on-disk registry, so
+    place-name clashes are out of scope here (the index carries those)."""
+    records: list[dict] = []
+    for pid, meta in registry.person_meta.items():
+        records.append({
+            'id': pid,
+            'name': meta.get('name'),
+            'name_variants': meta.get('name_variants') or [],
+            'aliases': meta.get('aliases') or [],
+        })
+    for sid, meta in registry.source_meta.items():
+        records.append({'id': sid, 'aliases': meta.get('aliases') or []})
+    for rid in (registry.place_ids | registry.hypothesis_ids):
+        records.append({'id': rid})
+    return records
+
+
+def _self_alias_ok(meta: dict, cid: str) -> bool:
+    """True if a record either declares no `aliases:` (hasn't opted into the
+    layer — not nagged) or its `aliases:` already includes its own canonical ID.
+
+    Scoped this way on purpose: pre-alias records simply have no `aliases:` field
+    and are left alone (forgiving, AGENTS.md), while a record that DID add aliases
+    must carry the self-ID — the one line that makes `[[S-…]]` click through."""
+    aliases = meta.get('aliases')
+    if not aliases:
+        return True
+    entries = aliases if isinstance(aliases, list) else [aliases]
+    present = {strip_link_wrapper(str(a)).lower() for a in entries}
+    return normalize_id(cid) in present
+
+
+def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
+    """The alias-layer maintenance + integrity checks (Pass 2).
+
+      - W111 self-alias: a record that uses `aliases:` but omits its own ID.
+      - W112 latent clash: one string names ≥2 records, but nothing links by it
+        yet — normal in genealogy (same-name people), just a heads-up.
+      - W113 active clash: a real `[[John Smith]]` (prose) or `people: [[John
+        Smith]]` (frontmatter) link uses an ambiguous name — must be pinned to an
+        ID. The system never guesses which record; the human (or `fha
+        normalize-links`) chooses.
+    """
+    # W111 — self-alias present where the record opted into the alias layer.
+    for pid, meta in registry.person_meta.items():
+        if not _self_alias_ok(meta, pid):
+            path = registry.person_profile_paths.get(pid, [Path(pid)])[0]
+            findings.append(Finding('W', 'W111', path,
+                f"aliases: is missing this record's own ID {fmt_id_display(pid)} — add it so "
+                f'[[{fmt_id_display(pid)}]] resolves in Obsidian (run `fha normalize-links`)'))
+    for sid, meta in registry.source_meta.items():
+        if not _self_alias_ok(meta, sid):
+            path = registry.source_paths.get(sid, Path(sid))
+            findings.append(Finding('W', 'W111', path,
+                f"aliases: is missing this record's own ID {fmt_id_display(sid)} — add it so "
+                f'[[{fmt_id_display(sid)}]] resolves in Obsidian (run `fha normalize-links`)'))
+
+    # W112 / W113 — name/stem clashes.
+    clashes = alias_clashes(_alias_records(registry))
+    for name, ids in sorted(clashes.items()):
+        # Active sites: a prose name-wikilink, or a frontmatter people:/places:
+        # entry that uses the ambiguous string.
+        active_sites: list[tuple[Path, int | None]] = list(registry.name_link_refs.get(name, []))
+        for sid, links in registry.source_links.items():
+            for field in ('people', 'places'):
+                for ref in links.get(field, []):
+                    if strip_link_wrapper(ref).lower() == name:
+                        active_sites.append((registry.source_paths.get(sid, Path(sid)), None))
+        id_list = ', '.join(fmt_id_display(i) for i in ids)
+        if active_sites:
+            site_path, _line = active_sites[0]
+            findings.append(Finding('W', 'W113', site_path,
+                f"'{name}' is ambiguous — it names {len(ids)} records ({id_list}); a link uses "
+                f'it but the system never guesses which. Pin it to an ID (run `fha normalize-links`).'))
+        else:
+            anchor = registry.all_record_ids.get(ids[0], Path(ids[0]))
+            findings.append(Finding('W', 'W112', anchor,
+                f"'{name}' names {len(ids)} records ({id_list}); any link to it must be pinned "
+                'to an ID (it cannot resolve by name alone).'))
+
+
 def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: bool = False) -> None:
     """
     Pass 2: checks that require the full registry.
@@ -976,6 +1139,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     """
 
     known_ids = registry.all_known_ids()
+
+    # Alias-layer maintenance + integrity (self-alias, name/stem clashes).
+    _alias_checks(registry, findings)
 
     # E001: duplicate person profiles
     for pid, paths in registry.person_profile_paths.items():
@@ -1438,13 +1604,13 @@ def _check_agent_drift(archive_root: Path, findings: list[Finding]) -> None:
 # ── Format check ─────────────────────────────────────────────────────────────
 
 _FRONTMATTER_KEY_ORDER_PERSONS = [
-    'id', 'name', 'name_variants', 'face_tags', 'sex', 'living',
+    'id', 'aliases', 'name', 'name_variants', 'face_tags', 'sex', 'living',
     'no_known_marriages', 'no_known_children', 'external_ids', 'created', 'tier',
 ]
 _FRONTMATTER_KEY_ORDER_SOURCES = [
-    'id', 'title', 'source_type', 'source_date', 'source_class', 'repository',
-    'citation', 'external_links', 'people', 'restricted', 'provenance', 'rights',
-    'physical_location', 'files', 'created',
+    'id', 'aliases', 'title', 'source_type', 'source_date', 'source_class',
+    'repository', 'citation', 'external_links', 'people', 'places', 'restricted',
+    'provenance', 'rights', 'physical_location', 'files', 'created',
 ]
 
 
@@ -1525,6 +1691,8 @@ def run_lint(
     mint_stubs: bool = False,
     spawn_questions: bool = False,
     fix_inventory: bool = False,
+    fix_claims_fence: bool = False,
+    fix_ids: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
 ) -> Result:
     """
@@ -1573,7 +1741,7 @@ def run_lint(
     # Format checks / fixes
     if format_check or format_write:
         for path in archive_root.rglob('*.md'):
-            if '.cache' not in path.parts:
+            if '.cache' not in path.parts and not is_template_file(path):
                 _check_format(path, findings)
                 if format_write:
                     _fix_format(path, progress, changed, dry_run=dry_run)
@@ -1589,6 +1757,10 @@ def run_lint(
         else:
             progress.append('WARNING: --fix-inventory is not yet implemented.')
             progress.append('         Run `fha process` on each document to update its source record.')
+    if fix_claims_fence:
+        _fix_claims_fence(registry, archive_root, progress, changed, dry_run=dry_run)
+    if fix_ids:
+        _fix_mint_ids(registry, archive_root, progress, changed, dry_run=dry_run)
 
     # Sort findings by severity then path
     findings.sort(key=lambda f: (f.code, f.path))
@@ -1602,11 +1774,25 @@ def run_lint(
     else:
         exit_code = EXIT_CLEAN
 
+    # Informational needs-sourcing worklist — deliberately NOT a finding, so it
+    # never moves the exit code off its documented level (it is a worklist, like
+    # the suggested-claim backlog, not a gate).
+    backlog = _needs_sourcing_backlog(registry)
+
+    # Hand-authored id-less records: reported as auto-mintable (not E002/E010), so
+    # a human's pre-machine record is surfaced and completable, never silently lost.
+    mintable = [
+        f'{path.relative_to(archive_root)}: no ID yet (hand-authored) — run '
+        '`fha lint --fix-ids` to add one (the filename slug is kept as an alias, '
+        'so existing [[links]] keep working).'
+        for path, _kind in registry.idless_records
+    ]
+
     return Result(
         ok=(n_errors == 0),
         exit_code=exit_code,
         data={'n_errors': n_errors, 'n_warnings': n_warnings, 'progress': progress,
-              'wc_note': wc_note},
+              'wc_note': wc_note, 'backlog': backlog, 'mintable': mintable},
         messages=[finding_to_message(f) for f in findings],
         changed=changed,
     )
@@ -1677,7 +1863,213 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
                 parts.append(f'{data["n_warnings"]} warning(s)')
             print(f'Summary: {", ".join(parts)}')
 
+        # Informational worklists, printed after the findings/summary so they
+        # never read as part of the pass/fail report (no effect on exit code).
+        mintable = data.get('mintable') or []
+        if mintable:
+            print('\nAuto-mintable records (no ID yet — not errors):')
+            for line in mintable:
+                print(f'  - {line}')
+        backlog = data.get('backlog') or []
+        if backlog:
+            print('\nNeeds sourcing (worklist — informational, not errors):')
+            for line in backlog:
+                print(f'  - {line}')
+
     return result.exit_code
+
+
+_TODO_SOURCE_RE = re.compile(r'\(TODO:\s*import source\)', re.I)
+
+
+def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
+    """{(P-id, 'birth'|'death')} for every accepted vital claim naming a person.
+
+    A sourced, accepted vital claim SUPERSEDES the provisional `birth:`/`death:`
+    field, so the needs-sourcing backlog stops listing that field once one exists."""
+    out: set[tuple[str, str]] = set()
+    for claims in registry.source_claims.values():
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            ctype = str(claim.get('type', ''))
+            if ctype in PROVISIONAL_VITAL_FIELDS and str(claim.get('status', '')) == 'accepted':
+                for ppid in _claim_person_ids(claim):
+                    out.add((ppid, ctype))
+    return out
+
+
+def _needs_sourcing_backlog(registry: Registry) -> list[str]:
+    """An INFORMATIONAL worklist (never an error or warning): per person, a
+    provisional `birth:`/`death:` not yet backed by an accepted claim, and prose
+    marked `(TODO: import source)`. The inverse of the W101 vitals-gap check — it
+    flags a present-but-unsourced vital, not a missing one. A provisional date is
+    a legitimate starting state, so this nudges toward a source, never blocks."""
+    accepted = _accepted_vital_pids(registry)
+    lines: list[str] = []
+    for pid in sorted(registry.person_meta):
+        meta = registry.person_meta[pid]
+        name = str(meta.get('name') or fmt_id_display(pid))
+        for field in sorted(PROVISIONAL_VITAL_FIELDS):
+            value = str(meta.get(field, '')).strip()
+            if not value or (pid, field) in accepted:
+                continue   # absent, or already superseded by an accepted claim
+            lines.append(
+                f'{name} ({fmt_id_display(pid)}): provisional {field}: {value!r} — '
+                f'recorded but not yet backed by a source. Add one when you can '
+                f'(e.g. `fha process` the record, then accept a {field} claim).'
+            )
+        n_todo = len(_TODO_SOURCE_RE.findall(registry.person_bodies.get(pid, '')))
+        if n_todo:
+            lines.append(
+                f'{name} ({fmt_id_display(pid)}): {n_todo} prose passage(s) marked '
+                f'"(TODO: import source)" — still to be sourced.'
+            )
+    return lines
+
+
+def _wrap_unfenced_claims(path: Path) -> str | None:
+    """Return `path`'s text with the unfenced `## Claims` content wrapped in a
+    ```yaml fence, or None if there is nothing to wrap. Text surgery only — the
+    YAML the human typed is preserved verbatim, just fenced."""
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    m = re.search(r'(^##\s+Claims\s*\r?\n)(.*?)(?=^##\s|\Z)', text, re.S | re.M)
+    if not m:
+        return None
+    content = m.group(2)
+    fence_line = re.compile(r'^\s*```[a-zA-Z]*\s*$')
+    yaml_text = '\n'.join(
+        ln for ln in content.splitlines() if not fence_line.match(ln)
+    ).strip('\n')
+    if not yaml_text.strip():
+        return None
+    tail = text[m.end():]
+    sep = '\n' if tail.startswith('##') else ''
+    new_section = m.group(1) + f'```yaml\n{yaml_text}\n```\n' + sep
+    return text[:m.start()] + new_section + tail
+
+
+def _fix_claims_fence(
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """Wrap every source whose `## Claims` content was read unfenced in a proper
+    ```yaml fence. Previewed under --dry-run; never silently rewrites."""
+    for sid, path in sorted(registry.unfenced_claim_sources.items()):
+        wrapped = _wrap_unfenced_claims(path)
+        if wrapped is None:
+            continue
+        rel = path.relative_to(archive_root)
+        if dry_run:
+            progress.append(f'--fix-claims-fence dry-run: would wrap the claims in {rel} in a ```yaml fence')
+        else:
+            path.write_text(wrapped, encoding='utf-8')
+            progress.append(f'Wrapped claims fence: {rel}')
+            changed.append(str(path))
+
+
+def _slugify_segment(text: str) -> str:
+    """Lowercase hyphen-slug for a source filename / alias (SPEC §13 slug grammar)."""
+    s = re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')
+    return s or 'source'
+
+
+def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
+    """(surname, given) for the §13 person filename `{surname}__{given}_{P-id}`.
+
+    Derived from the `name:` field — surname is the last word, given the rest —
+    falling back to the hand-filename when there is no usable name. Letters only,
+    so the generated filename matches the strict person grammar and lint won't
+    immediately re-flag it."""
+    def letters(word: str) -> str:
+        return re.sub(r'[^a-z]+', '', word.lower())
+    parts = [p for p in str(name).split() if letters(p)]
+    if len(parts) >= 2:
+        return (letters(parts[-1]) or 'unknown',
+                '_'.join(letters(p) for p in parts[:-1]) or 'unknown')
+    if parts:
+        return letters(parts[0]) or 'unknown', 'unknown'
+    seg = re.sub(r'[^a-z]+', '', fallback_slug.lower())
+    return (seg or 'unknown'), 'unknown'
+
+
+def _insert_id_and_aliases(text: str, new_id: str, slug: str) -> str:
+    """Add `id:` and `aliases:` at the top of a record's frontmatter (creating the
+    frontmatter if the hand-author wrote none). The filename slug is preserved as
+    an alias so existing `[[slug]]` links keep resolving; the new ID self-aliases."""
+    fm = FRONT_RE.match(text)
+    has_aliases = bool(fm) and re.search(r'^aliases:', fm.group(1), re.M)
+    has_id = bool(fm) and re.search(r'^id:', fm.group(1), re.M)
+    if fm and has_id:
+        # Replace the existing blank `id:` line in-place rather than prepending a
+        # duplicate key (last-key-wins in YAML would silently discard the new value).
+        # FRONT_RE group(1) excludes the final \n before ---, so reassemble fully.
+        fm_replaced = re.sub(r'^id:[ \t]*$', f'id: {new_id}', fm.group(1), flags=re.M)
+        if not has_aliases:
+            fm_replaced = f'aliases: [{new_id}, {slug}]\n' + fm_replaced
+        return f'---\n{fm_replaced}\n---\n' + text[fm.end():]
+    lines = [f'id: {new_id}']
+    if not has_aliases:
+        lines.append(f'aliases: [{new_id}, {slug}]')
+    insert = '\n'.join(lines) + '\n'
+    if fm:
+        open_end = text.index('\n', text.index('---')) + 1
+        return text[:open_end] + insert + text[open_end:]
+    return f'---\n{insert}---\n\n{text}'
+
+
+def _fix_mint_ids(
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """Mint an ID for each hand-authored, id-less record, write it into the
+    frontmatter, rename the file to the §13 grammar, and KEEP the filename slug as
+    an alias (so a human's `[[slug]]` links keep resolving). Previewed under
+    --dry-run; never an error, always an explicit, opt-in completion."""
+    remaining: list[tuple[Path, str]] = []
+    for path, kind in registry.idless_records:
+        if not path.exists():
+            continue
+        new_id = mint_ids(kind, 1, archive_root)[0]
+        slug = _slugify_segment(path.stem)
+        try:
+            text = path.read_text(encoding='utf-8')
+        except OSError:
+            remaining.append((path, kind))
+            continue
+        if kind == 'P':
+            name = str(read_record(path)['meta'].get('name', ''))
+            surname, given = _person_filename_parts(name, path.stem)
+            new_name = f'{surname}__{given}_{new_id}.md'
+        else:
+            new_name = f'{slug}_{new_id}.md'
+        new_path = path.with_name(new_name)
+        rel = path.relative_to(archive_root)
+        new_rel = new_path.relative_to(archive_root)
+        if dry_run:
+            progress.append(
+                f'--fix-ids dry-run: would mint {new_id} for {rel}, rename → {new_rel}, '
+                f'and keep slug {slug!r} as an alias')
+            remaining.append((path, kind))
+            continue
+        path.write_text(_insert_id_and_aliases(text, new_id, slug), encoding='utf-8')
+        if new_path != path and not new_path.exists():
+            path.rename(new_path)
+            changed.append(str(new_path))
+        else:
+            new_rel = rel
+            changed.append(str(path))
+        progress.append(f'Minted {new_id} for {new_rel} (slug {slug!r} kept as an alias)')
+    registry.idless_records = remaining
 
 
 def _fix_mint_stubs(
@@ -1808,6 +2200,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                    help='Create person stubs for E005 set')
     p.add_argument('--spawn-questions', action='store_true',
                    help='Append questions to notes/questions.md for E009 contradictions')
+    p.add_argument('--fix-claims-fence', action='store_true',
+                   help='Wrap hand-written claims that forgot the ```yaml fence (with --dry-run to preview)')
+    p.add_argument('--fix-ids', action='store_true',
+                   help='Mint IDs for hand-authored id-less records, renaming and keeping the slug as an alias (with --dry-run to preview)')
     p.add_argument('--fix-inventory', action='store_true',
                    help='Regenerate files: from ID glob for E011 set')
     p.set_defaults(func=_run_lint)
@@ -1835,6 +2231,8 @@ def _run_lint(args: argparse.Namespace) -> int:
         mint_stubs=getattr(args, 'mint_stubs', False),
         spawn_questions=getattr(args, 'spawn_questions', False),
         fix_inventory=getattr(args, 'fix_inventory', False),
+        fix_claims_fence=getattr(args, 'fix_claims_fence', False),
+        fix_ids=getattr(args, 'fix_ids', False),
         spec_root=Path(spec_root) if spec_root else None,
     )
     return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False))
@@ -1857,6 +2255,8 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--mint-stubs', action='store_true')
     parser.add_argument('--spawn-questions', action='store_true')
+    parser.add_argument('--fix-claims-fence', action='store_true')
+    parser.add_argument('--fix-ids', action='store_true')
     parser.add_argument('--fix-inventory', action='store_true')
     args = parser.parse_args(argv)
     return _run_lint(args)

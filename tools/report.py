@@ -100,7 +100,7 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
-    TOKEN_RE,
+    extract_token_ids,
     FhaConfigError,
     Result,
     fmt_id_display,
@@ -807,8 +807,7 @@ def _person_has_draft_queue_backlog(conn, archive_root: Path, person_id: str) ->
         return False
     body = rec['body']
     cited_sids = {
-        normalize_id(m.group(1)) for m in TOKEN_RE.finditer(body)
-        if m.group(1).lower().startswith('s-')
+        tid for tid in extract_token_ids(body) if tid.startswith('s-')
     }
     accepted_sids = {
         normalize_id(r[0]) for r in conn.execute(

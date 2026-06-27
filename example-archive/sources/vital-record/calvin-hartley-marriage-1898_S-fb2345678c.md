@@ -1,5 +1,6 @@
 ---
 id: S-fb2345678c
+aliases: [S-fb2345678c]
 title: Marriage certificate — Calvin Hartley & Harriet Webb, 1898
 source_type: vital-record
 source_date: 1898-04-22
@@ -8,7 +9,9 @@ repository: example collection
 citation: >
   Breton County Clerk, Marriage Register Vol. 4, p. 112 (Calvin Hartley & Harriet Frances
   Webb, 22 April 1898, Fairview, Kansas). Fictional example record.
-people: [P-fa7541e871, P-8h9jkambne]
+people:
+  - "[[P-fa7541e871|Calvin George Hartley]]"
+  - "[[P-8h9jkambne|Harriet Frances Webb]]"
 files:
   - file: documents/vital-records/calvin-harriet-marriage-1898_S-fb2345678c.txt
     role: transcription

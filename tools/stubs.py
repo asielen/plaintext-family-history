@@ -67,11 +67,22 @@ def _stub_filename(pid: str, name: str | None) -> str:
 
 def _stub_content(pid: str, name: str | None) -> str:
     display_name = name if name and name.lower() != 'unknown' else 'unknown'
+    # `aliases:` carries the P-id from birth — the line that makes a bare
+    # `[[P-…]]` cite click through in Obsidian. The display name registers as an
+    # alias automatically (the index reads it from `name:`), so a hand-typed
+    # `[[Name]]` resolves once the stub is promoted to a real name.
+    # Provisional birth/death are offered as commented placeholders: an honest
+    # estimate of current knowledge is a legitimate starting state (a tool will
+    # later nudge for a source), so the field is discoverable without being
+    # required and without faking an unsourced fact until the human fills it in.
     return (
         f'---\n'
         f'id: {pid}\n'
+        f'aliases: [{pid}]\n'
         f'name: {display_name}\n'
         f'living: unknown\n'
+        f'# birth:   # an honest guess is fine — a tool will remind you to add a source later\n'
+        f'# death:   # same here; leave commented until you know\n'
         f'created: {_today()}\n'
         f'tier: stub\n'
         f'---\n'

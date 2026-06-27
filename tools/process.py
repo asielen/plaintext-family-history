@@ -412,6 +412,7 @@ def _scaffold_text(
     provenance: str | None = None,
     external_links: list[dict] | None = None,
     people: list[str] | None = None,
+    stem: str | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -436,10 +437,22 @@ def _scaffold_text(
     record's `people:` field so `fha index` indexes the photo-to-person link
     and `fha find --related P-xxx` surfaces the photo source without requiring
     any face-region placement (the "photos, no photo manager" path, TOOLING §FAQ).
+
+    `aliases:` ships from birth carrying the canonical S-id — the one line that
+    makes a bare `[[S-…]]` cite click through in Obsidian. A `stem` (a human tag
+    the source was known by before it had an ID — the inbox basename or a notes
+    hint) is preserved as a second alias so old `[[stem]]` references keep
+    resolving after processing.
     """
+    aliases = [s_id]
+    if stem:
+        stem_alias = _slugify(stem)
+        if stem_alias and stem_alias != s_id.lower():
+            aliases.append(stem_alias)
     lines = [
         '---',
         f'id: {s_id}',
+        f'aliases: [{", ".join(aliases)}]',
         f'title: {_yaml_inline(title)}',
         f'source_type: {source_type}',
     ]
@@ -1165,6 +1178,10 @@ def process_document(
     if record_path.exists():
         raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
 
+    # The original inbox basename is the human tag the source was known by; keep
+    # it as an alias so any `[[old-name]]` reference still resolves once the file
+    # is renamed to `{slug}_{S-id}`. _scaffold_text drops it when it matches the
+    # slug the filename already carries (no redundant alias).
     text = _scaffold_text(
         sid, final_title, source_type,
         [{'file': file_alias, 'role': 'primary', 'original_filename': file_path.name}],
@@ -1174,6 +1191,7 @@ def process_document(
         repository=_sidecar_str(sidecar_meta, 'repository'),
         source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        stem=file_path.stem if _slugify(file_path.stem) != final_slug else None,
     )
 
     if dry_run:

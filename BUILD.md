@@ -98,7 +98,12 @@ Everything else depends on these. Build in the order listed.
 
 ```python
 ID_RE     = re.compile(r'\b([PSCLH])-([0-9a-hjkmnp-tv-z]{10})\b', re.I)
-TOKEN_RE  = re.compile(r'\[([PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]', re.I)
+# [[ID]] / [[ID|display]] / [[ID#frag]] - one capture group (the ID); the optional second
+# bracket each side also matches the tolerated single-bracket [ID] form, so one chokepoint
+# resolves both. WIKILINK_RE additionally matches name/stem links ([[Ken Smith]]).
+TOKEN_RE  = re.compile(r'\[\[?([PSCLH]-[0-9a-hjkmnp-tv-z]{10})(?:#[^|\]]*)?(?:\|[^\]]*)?\]\]?', re.I)
+LEGACY_TOKEN_RE = re.compile(r'(?<!\[)\[([PSCLH]-[0-9a-hjkmnp-tv-z]{10})\](?!\])', re.I)
+WIKILINK_RE = re.compile(r'\[\[([^\[\]|#]+?)(?:#[^|\]]*)?(?:\|[^\]]*)?\]\]', re.I)
 FRONT_RE  = re.compile(r'\A---\r?\n(.*?)\r?\n---\r?\n', re.S)
 CLAIMS_RE = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 ```
@@ -150,8 +155,8 @@ python -c "from _lib import edtf_bounds; print(edtf_bounds('185X'))"
 
 **Full rebuild algorithm:**
 1. Glob `sources/**/*.md`, `people/**/*.md`, `places/places.yaml`, `notes/**/*.md`.
-2. Parse each with `read_record()`; insert in one transaction.
-3. Scan all prose bodies for `TOKEN_RE` → `citations` table.
+2. Parse each with `read_record()`; insert in one transaction, building the `aliases` table from every record's `aliases:` plus persons'/places' `name` & variants.
+3. Scan all prose bodies for `TOKEN_RE` → `citations` table, storing each citation's resolved canonical ID (a `[[stem]]`/`[[Name]]` reference resolves through the alias map). Strip the `[[ ]]` wrapper from frontmatter `people:`/`places:`/note `persons:`/`sources:` and resolve each to an ID (`source_people`/`source_places`); add on-demand C-id aliases (a source aliases a `C-…` only when a `[[C-…]]` citation exists).
 4. Glob asset trees for filenames carrying S-ids → `source_files` reconciliation.
 5. Build FTS tables.
 
@@ -161,6 +166,7 @@ python -c "from _lib import edtf_bounds; print(edtf_bounds('185X'))"
 CREATE TABLE persons(id TEXT PRIMARY KEY, name TEXT NOT NULL, surname TEXT, sex TEXT,
   living TEXT NOT NULL, tier TEXT NOT NULL, status TEXT DEFAULT 'active',
   merged_into TEXT, no_known_marriages INTEGER DEFAULT 0, no_known_children INTEGER DEFAULT 0,
+  birth TEXT, death TEXT,   -- optional provisional, unsourced vital estimates (SPEC §9)
   path TEXT NOT NULL);
 CREATE TABLE person_variants(person_id TEXT, variant TEXT);
 CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
@@ -186,6 +192,7 @@ CREATE TABLE claims(id TEXT PRIMARY KEY, source_id TEXT NOT NULL, type TEXT NOT 
 CREATE TABLE claim_persons(claim_id TEXT, person_id TEXT, position INTEGER, role TEXT);
 CREATE TABLE claim_links(claim_id TEXT, rel TEXT, target_id TEXT);
 CREATE TABLE source_people(source_id TEXT, person_id TEXT);
+CREATE TABLE source_places(source_id TEXT, place_id TEXT);   -- from a source's frontmatter places: links
 
 -- relationships is populated by M1.3 (incremental upsert + derivation);
 -- create it here so the schema is complete from the first migration.
@@ -202,7 +209,9 @@ CREATE TABLE search_log(date TEXT, person_id TEXT, question TEXT,
   repository TEXT, collection TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT);
 CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, hypothesis TEXT,
   basis TEXT, verify TEXT, origin TEXT, status TEXT, verified_claim TEXT, path TEXT);
-CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);
+CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);  -- token = resolved canonical ID
+-- aliases: the resolution surface (canonical ID + human stems + on-demand C-ids + person/place name & variants)
+CREATE TABLE aliases(alias TEXT, canonical_id TEXT, kind TEXT);  -- kind: id | stem | name | variant | claim
 
 CREATE VIRTUAL TABLE notes_fts USING fts5(path, content);
 CREATE VIRTUAL TABLE transcripts_fts USING fts5(source_id, path, content);
@@ -245,7 +254,7 @@ fha index --source S-4f5f215e60 --root example-archive  # incremental upsert; ex
 
 **One PR.** New file `tools/lint.py`. Wire `fha lint [--root PATH] [--json]` into `fha.py`
 (TOOLING §3). This phase ships the lint engine and the first ten error codes only;
-inventory/keyword/agent-drift errors (E011-E018), all warning codes (W101-W110), and the
+inventory/keyword/agent-drift errors (E011-E018), all warning codes (W101-W114), and the
 fix/formatter flags are later phases in this same layer.
 
 **Lint is the reference `Result` renderer.** `run_lint` returns a `_lib.Result` (M1.1): each
@@ -306,7 +315,7 @@ command (TOOLING §3).
 
 **E013 parsing detail.** Scan the summary text (H1 to first `## Section`) with `finditer` on
 `**Label:**` pattern - do NOT split by line (inline multi-label form exists). Extract
-`[S-id]` and `[P-id]` tokens per segment; compare to accepted claims of the matching type.
+`[[S-id]]` and `[[P-id]]` links per segment; compare to accepted claims of the matching type.
 
 **E011 `missing-fixture` suppression.** Suppress entirely when the archive path is under
 `example-archive/` or `tests/fixtures/` - stub asset references are intentional in those
@@ -323,7 +332,7 @@ fha lint --root example-archive --with-exif  # exits without crash (E012 path)
 
 ---
 
-### M1.6 - `fha lint` - warning codes (W101-W110)
+### M1.6 - `fha lint` - warning codes (W101-W114)
 
 **One PR.** Extend `tools/lint.py`. No new flags - warnings ride the existing `fha lint`
 invocation (TOOLING §3).
@@ -342,6 +351,12 @@ invocation (TOOLING §3).
 | W108 | `README.md` older than last `SPEC.md` change |
 | W109 | Non-vital accepted claim missing `notes` context; also catch-all for unrecognized `source_type` |
 | W110 | Ahnentafel placement issue (requires `root_person` in `fha.yaml`) |
+| W111 | Record using `aliases:` omits its own canonical ID (auto-fixed by `fha normalize-links`) |
+| W112 | Latent alias clash - one alias string names ≥2 records, nothing links by it yet |
+| W113 | Active alias clash - an ambiguous `[[name]]` link in use; manual detangle, never auto-resolved |
+| W114 | Claim-shaped YAML under `## Claims` without a ` ```yaml ` fence (read anyway; `--fix-claims-fence`) |
+
+Plus an informational **needs-sourcing backlog** (not a finding, never moves the exit code): a provisional `birth:`/`death:` or `(TODO: import source)` line with no backing accepted claim.
 
 **Done when:**
 ```sh
@@ -355,15 +370,17 @@ fha lint --root tests/fixtures/broken-W103  # fires W103
 ### M1.7 - `fha lint` - fix modes + formatter
 
 **One PR.** Extend `tools/lint.py`. Wire `[--dry-run] [--mint-stubs] [--spawn-questions]
-[--fix-inventory] [--format-check] [--format-write]` into `fha.py` (TOOLING §3).
+[--fix-inventory] [--fix-claims-fence] [--fix-ids] [--format-check] [--format-write]` into `fha.py` (TOOLING §3).
 
 **Fix modes** (gated behind explicit flags; always diff-previewed with `--dry-run`):
 - `--mint-stubs` (E005): create stubs in `people/stubs/`
 - `--spawn-questions` (E009): append templated question to `notes/questions.md`
 - `--fix-inventory` (E011): placeholder/deferred - prints a warning and suggests `fha process`; full ID-glob rebuild is not yet implemented
+- `--fix-claims-fence` (W114): wrap unfenced `## Claims` content in a ` ```yaml ` fence
+- `--fix-ids`: mint + rename an id-less hand-authored record to the §13 grammar, keeping the filename slug as an alias
 
 **Formatter** (`--format-check` / `--format-write`): final-newline and CRLF line-ending hygiene (initial subset). Frontmatter key order, lowercase ID normalization, blank-line hygiene, and YAML list indentation are deferred.
-`--format-write` applies what `--format-check` reports. Never rewrites prose.
+`--format-write` applies what `--format-check` reports. Never rewrites prose. Link normalization is the separate `fha normalize-links` (single-bracket/stem/name-link → canonical `[[ ]]`, dry-run default, keeps stems in `aliases:`), deliberately not part of the formatter.
 
 **Done when:**
 ```sh
@@ -465,10 +482,10 @@ that folder; union their source_ids; write `sources-index.md` at the folder root
 the folder is its context).
 
 **`fha views draft-queue [P-id | --all-curated]`** → `…_draft-queue_{P-id}.md`.
-Load the person's profile body. Extract all `[S-id]` tokens via `TOKEN_RE`. Query all accepted
+Load the person's profile body. Extract all `[[S-id]]` links via `TOKEN_RE`. Query all accepted
 claims for the person → collect distinct `source_id`s. Set-diff: sources with accepted claims
-NOT represented by any `[S-id]` token = the uncited backlog. Per uncited source: show title +
-`[S-id]`, then indent each uncited claim as `{type}: {value} - {date_edtf}`. If diff is empty,
+NOT represented by any `[[S-id]]` link = the uncited backlog. Per uncited source: show title +
+`[[S-id]]`, then indent each uncited claim as `{type}: {value} - {date_edtf}`. If diff is empty,
 write: `All accepted claims are cited in the profile.`
 
 **Done when:**
@@ -622,10 +639,10 @@ status (accepted: N, needs-review: N, suggested: N).
 grep source file); claim status, type, value; `corroborates`/`contradicts` links.
 
 `<L-id>`: entry from `places` table (name, hierarchy, coords); every claim where
-`place_id = ?`; every record body mentioning `[L-id]` (from `citations`).
+`place_id = ?`; every record body mentioning `[[L-id]]` (from `citations`).
 
 `<H-id>`: hypothesis entry from `hypotheses` table (status, basis, verified_claim); research
-file path; every record body mentioning `[H-id]` token.
+file path; every record body mentioning `[[H-id]]` link.
 
 **`--text "…"`**: query `notes_fts` FTS table (if index present) then do a `re.search` pass
 over sources, people, notes, and configured documents root. For each hit: path + context
@@ -1132,9 +1149,9 @@ fha gedcom P-de957bcda1 --mode descendants --root example-archive  # valid .ged 
 **One PR.** New file `tools/wikitree.py`. Wire `fha wikitree <P-id> [--out FILE]`
 (TOOLING §13).
 
-`[S-id]` in profile body → `<ref name="S-id"/>` at use; definitions collected into hidden
+`[[S-id]]` in profile body → `<ref name="S-id"/>` at use; definitions collected into hidden
 `<div name="references">` block (deduplicated). Factual sentences with cited claim `place`/
-`date` → `<span class="spacetime" data-loc="…" data-date="ISO">`. `[P-id]` → WikiTree link
+`date` → `<span class="spacetime" data-loc="…" data-date="ISO">`. `[[P-id]]` → WikiTree link
 from `person_external`; plain name if absent. Ancestry image URLs in `external_links` →
 `{{Ancestry Image|db|id}}`. Template hooks: `tools/wikitree_templates.yaml`. Output to stdout;
 `--out FILE` writes.
@@ -1352,8 +1369,10 @@ person-specific half of redaction) is M8.2.
 The site reads all structured data from `.cache/index.sqlite` directly - not from generated
 `.md` view files.
 
-`tools/templates/` directory with `base.html` layout. Token swap: `TOKEN_RE` → relative hrefs;
-unresolved tokens → `<mark>[X-xxxx]</mark>`. Minimal stdlib HTML converter for prose
+`tools/templates/` directory with `base.html` layout. Token swap: each `[[ID]]` link → a relative
+href (preferring its `|display` label, else the resolved name); a name/stem `[[ ]]` resolves through
+the alias map (a `living` person so named is redacted name-and-all), an unresolved non-ID `[[stem]]`
+renders as plain text, and an unresolved well-formed ID link → `<mark>[[X-xxxx]]</mark>`. Minimal stdlib HTML converter for prose
 (headings, bold, lists, links) - no markdown library.
 
 `--standalone` (default): web-optimized derivatives (max 1200px, EXIF stripped) into
@@ -1395,7 +1414,7 @@ at all under `--standalone`.
 ```sh
 fha site --root example-archive --linked
 # Thomas Hartley person page: summary, bio, timeline, sources, F&F rendered
-# [S-xxxx] tokens in bio -> link to source page
+# [[S-xxxx]] links in bio -> link to source page
 fha site --root example-archive
 # a living/unknown person generates no page; nothing else links to one
 ```

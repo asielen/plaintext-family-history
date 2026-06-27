@@ -49,6 +49,23 @@ You don't need real dates. Say it the way you'd say it out loud - the tool store
 | "no idea" | nothing - it stays blank, honestly |
 
 A guess clearly marked as a guess is always better than a wrong exact date.
+And it's fine to jot a birth or death date before you've found the record - write it down, and the
+assistant keeps it on a gentle "still to source" list until the evidence turns up.
+
+---
+
+## How to link to a source or person
+
+Write the name in **double brackets**. That's the whole trick.
+
+| You write | It links to |
+|---|---|
+| `[[Grandpa Joe]]` | the person named Grandpa Joe (a nickname is fine) |
+| `[[Hartley family bible]]` | that source record |
+| `born in [[Fairview]]` | the place |
+
+Don't worry about IDs - name your file something sensible, link to it by name, and if you ever run
+`fha lint` it assigns the durable IDs and keeps your name-links working. You never have to make one.
 
 ---
 

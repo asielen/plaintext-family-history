@@ -1,5 +1,8 @@
 # Glossary
 
+**Alias** - any name that points at a record: its ID, its filename, a person's name and nicknames, a place's other names. It's what lets you link by name - type `[[Grandpa Joe]]` and the archive knows which person you mean. The tools keep each record's aliases in sync so your name-links keep working even after files are renamed.
+*Example: a person named "Margaret A. Cole" also answers to `[[Margaret Cole]]`; both resolve to the same record.*
+
 **Archive** - the durable, file-first store: plain text and standard formats on disk.
 The source of truth.
 *Example: the `my-family-archive` folder on your computer - every record in it opens in Notepad, today or in fifty years.*
@@ -34,9 +37,15 @@ Powers search, trees, reports.
 Never authoritative.
 *Example: delete `.cache/index.sqlite` and rebuild it any time with `fha index` - nothing is lost.*
 
+**Link** (`[[ ]]`) - how prose connects to records: a name or ID in double brackets, like `[[Grandpa Joe]]` or `[[S-1a2b3c4d5e]]`. It's plain text you can read in any editor, a clickable link in a wiki-style editor, and it always resolves to a stable ID underneath. A citation on a fact is just a link to its source.
+*Example: "born in [[L-7c1a9f4e22|Fairview]]" links the place; "[[S-1a2b3c4d5e]]" after a sentence cites the evidence.*
+
 **Person** (`P-`) - a human.
-Identity, flags, and prose; their facts live in claims, not in the person record.
+Identity, flags, and prose; their sourced facts live in claims. A person record may also hold a **provisional** birth/death estimate (see *Provisional date*) until a sourced claim supersedes it.
 *Example: Thomas Edward Hartley lives in a file named `hartley__thomas_edward_P-9c2f4a8b1e.md`.*
+
+**Provisional date** - a birth or death date you jot down before you've found the record that proves it. Recording what you know now is a normal, encouraged starting state, not an error: the tools simply remind you it still needs a source, and when you add a sourced birth/death claim it takes over.
+*Example: you're fairly sure great-grandma was born around 1849, so you write `birth: 1849~` on her record - and it shows up on the "still to source" list until a certificate turns up.*
 
 **Place** (`L-`) - a physical location, identified by coordinates, with a dated name/jurisdiction history.
 One record per physical place, forever.

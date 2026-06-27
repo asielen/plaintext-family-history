@@ -151,6 +151,25 @@ That's a filed record. You just did the core loop of the whole system.
 
 ---
 
+## Doing it by hand (no tools, no IDs)
+
+You don't need the assistant or the tools to add to your archive - the copy-paste templates in
+[`../archive-template/`](../archive-template/) let you write a record in any text editor.
+
+- **Name files plainly.** Call a file `grandpas-letter.md` or `hartley-thomas.md` - whatever makes
+  sense to you. Don't worry about making an ID; that's the tools' job.
+- **Link by name.** To cite a source or point at a person, write its name in double brackets:
+  `[[Grandpa Joe]]`, `[[Hartley family bible]]`, `born in [[Fairview]]`. A nickname works too.
+- **Jot what you only half-know.** Fairly sure great-grandma was born around 1849? Write
+  `birth: 1849~` on her record. It's a *provisional* date - perfectly fine to record now, and the
+  assistant keeps it on a "still to source" list until the proof turns up.
+
+If you ever run `fha lint`, it quietly assigns the durable IDs, keeps your filename as an alias so
+your `[[name]]` links keep working, and tidies everything. IDs are just sturdier for the long
+haul - filenames change and can repeat - but you never have to create one.
+
+---
+
 ## The daily rhythm
 
 Every working session is the same five beats:

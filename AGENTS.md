@@ -95,11 +95,14 @@ notes/                  general research; notes/questions.md = question log
 
 ## Format quick reference
 
-- **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` - lowercase, letters `ilou` omitted; H = hypothesis; never converts to C - verification mints a new claim and links both ways). Never invent one ad hoc - mint with `fha id mint <TYPE>` (or draw 10 chars from that alphabet and verify the string appears nowhere in the tree).
+- **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` - lowercase, letters `ilou` omitted; H = hypothesis; never converts to C - verification mints a new claim and links both ways). The ID is the machine identity: mint with `fha id mint <TYPE>` (or, by hand, draw 10 chars from that alphabet and verify the string appears nowhere in the tree). A record a human created with no ID yet is valid - the linter mints one on contact and keeps the filename/name as an alias; never block on a missing ID.
 IDs are immutable and never reused.
 - **Filenames:** sources `{slug}_{S-id}.md`; documents-root source files
 `{slug}[-{copy}][-{role}]_{S-id}.{ext}` (photos-root files are NEVER renamed); person files `{surname}__{given_names}[_{kind}]_{P-id}.md` (birth surname, double underscore).
-- **Dates:** EDTF only (`1850`, `1850~`, `185X`, `1850-05`, `1871-02/1871-03`).
+- **Dates:** EDTF only (`1850`, `1850~`, `185X`, `1850-05`, `1871-02/1871-03`). A person record
+may carry an optional **provisional** `birth:` / `death:` estimate - the unsourced date you know
+before you have the record. That is a normal starting state, not an error: record it, and the
+linter lists it as still needing a source until a `birth`/`death` claim supersedes it.
 **You** write the precise form; the human never has to learn the codes. Translate
 his plain words into the stored form for him - map the hedge to the right uncertainty:
   - "around / about / roughly / circa 1870" → `1870~` (approximate)
@@ -112,8 +115,13 @@ his plain words into the stored form for him - map the hedge to the right uncert
   shape above), ask one short plain question - never quiz him on EDTF, never refuse. The
   tools are forgiving too: if a hand-edited date like `circa 1870` or `1870s` slips through,
   `fha lint` understands it and suggests the stored form (a gentle warning, not an error).
-- **Citations:** factual prose cites sources with bare `[S-xxxx]` tokens; `[P-xxxx]`
-cross-links people. **Uncited prose is story/context, never fact** - write accordingly.
+- **Citations:** factual prose cites sources with `[[S-xxxx]]` links; `[[P-xxxx]]`
+cross-links people, `[[L-xxxx]]` a place, and `[[C-xxxx]]` is the rare claim-level citation.
+The link carries the immutable ID and may add a readable display after a pipe
+(`[[P-xxxx|Margaret Cole]]`); you can also link by name (`[[Margaret Cole]]`) and the alias
+layer resolves it. Acceptance is lenient - a single-bracket `[S-xxxx]`, a bare ID, or a name
+all still resolve - but **write the `[[ ]]` form**. **Uncited prose is story/context, never
+fact** - write accordingly.
 - **Claims:** YAML list under `## Claims` in the source file; schema in SPEC §8.4.
 Required: `id, type, persons, value, status`; `roles:` required for relationship claims.
 AI-drafted ⇒ `status: suggested`, and populate the Mills analysis fields (`information`, `evidence`; `source_class` on the source) by default.
@@ -137,6 +145,7 @@ fha confirm <verb> …         act on a detection candidate or report prompt the
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
 fha views timeline|sources-index|brackets     regenerate views
+fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default)
 fha photoindex find ...      query the photo library (never bulk-read photos/)
 fha find <ID|text>           locate anything: record + assets + citations for an ID;
                             FTS across records, notes, transcripts, photo captions
@@ -167,7 +176,7 @@ frontmatter (SPEC §14) → draft claims (`suggested`) with `anchor:`s → `fha 
 - **Review claims with the human:** take one source's `suggested` list; for each, show
 the claim plus its anchor context; record the human's decision with `fha claim` (which moves the status and stamps `reviewed:` - directing the tool *is* the human's accept); confirm any resulting corroboration/contradiction with `fha confirm xref`; finish with `fha index` + `fha lint`.
 - **Write or extend a biography:** facts only from `accepted` claims; cite every factual
-sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; cross-link people with `[P-]` tokens verified to exist.
+sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; cross-link people with `[[P-…]]` links verified to exist.
 - **Log searches:** when you search an external collection for the human (or execute a
 research-next plan), write the research-log entry (date, repository, collection, terms, result incl. nil).
 Check the log before proposing any search.

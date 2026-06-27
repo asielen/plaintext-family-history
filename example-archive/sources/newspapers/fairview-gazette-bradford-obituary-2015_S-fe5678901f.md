@@ -1,5 +1,6 @@
 ---
 id: S-fe5678901f
+aliases: [S-fe5678901f]
 title: Obituary — James Robert Bradford, Fairview Gazette, November 2015
 source_type: newspaper
 source_date: 2015-11-07
@@ -8,7 +9,10 @@ repository: example collection
 citation: >
   "James Robert Bradford, 1955–2015," Fairview Gazette, 7 November 2015, p. 4.
   Fictional example record.
-people: [P-2b3c4d5e6f, P-3c4d5e6f7g, P-0a1b2c3d4e]
+people:
+  - "[[P-2b3c4d5e6f|James Robert Bradford]]"
+  - "[[P-3c4d5e6f7g|Carol Anne Simmons]]"
+  - "[[P-0a1b2c3d4e|Alex James Bradford]]"
 files:
   - file: documents/newspapers/fairview-gazette-bradford-obituary-2015_S-fe5678901f.txt
     role: clipping

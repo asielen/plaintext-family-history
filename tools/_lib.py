@@ -65,7 +65,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #  Constants and patterns
 #    CROCKFORD_ALPHA           — the 32-char ID alphabet (i l o u omitted)
-#    ID_RE, TOKEN_RE           — bare ID and [ID] token patterns (SPEC §10)
+#    ID_RE                     — bare ID pattern (SPEC §10)
+#    TOKEN_RE, LEGACY_TOKEN_RE — [[ID]] / [[ID|display]] / [[ID#frag]] citation
+#                                 tokens (superset incl. legacy [ID]) (SPEC §10)
 #    FRONT_RE, CLAIMS_RE       — frontmatter and fenced claims block patterns
 #    SIGNIFICANCE              — claim type → 'vital'/'substantive'/'incidental'
 #    CLAIM_TYPES, VITAL_TYPES  — frozensets derived from SIGNIFICANCE
@@ -115,7 +117,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Filename / path helpers
 #    is_working_copy           — WORKING_COPY marker present at archive root?
 #    is_fixture_path           — path under example-archive/ or tests/fixtures/?
-#    extract_token_ids         — all [ID] tokens from a text block
+#    extract_tokens            — (id, display, fragment, span) per citation token
+#    extract_token_ids         — the IDs of all citation tokens in a text block
 #    extract_bare_ids          — all bare IDs from a text block
 #    normalize_place_text      — lowercase/collapse-whitespace key for comparing
 #                                 free-text place names without a shared place_id
@@ -145,8 +148,70 @@ CROCKFORD_ALPHA = '0123456789abcdefghjkmnpqrstvwxyz'
 # Matches any bare ID in text (case-insensitive)
 ID_RE = re.compile(r'\b([PSCLH])-([0-9a-hjkmnp-tv-z]{10})\b', re.I)
 
-# Matches [ID] citation/cross-link tokens
-TOKEN_RE = re.compile(r'\[([PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]', re.I)
+# The bare ID sub-pattern shared by every bracketed-token regex below.  Kept in
+# one place so the token grammar and the ID grammar can never drift apart; it is
+# exactly the `ID_RE` body without word boundaries or the split type/body groups.
+_TOKEN_ID = r'[PSCLH]-[0-9a-hjkmnp-tv-z]{10}'
+
+# Matches in-prose citation/cross-link tokens.  This is the single chokepoint
+# every consumer (index, find, wikitree, site, packet, report, lint) resolves
+# through, so it is deliberately a *superset*:
+#
+#   [[S-…]]                 canonical wikilink
+#   [[P-…|Margaret Cole]]   …with a |display alias (renderer text; ignored here)
+#   [[S-…#Claims]]          …with an Obsidian #heading fragment (parse-only)
+#   [[C-…#^x|note]]         …with a #^block fragment and a display alias
+#   [S-…]                   legacy single-bracket form (still resolved, forgivingly)
+#
+# Exactly ONE capturing group — the load-bearing ID — so the historical
+# `TOKEN_RE.findall(text)` / `m.group(1)` consumers keep returning the ID and
+# nothing else.  The |display and #fragment are matched but NOT captured here;
+# the renderers that must re-emit display text use `extract_tokens()` instead.
+# The optional second bracket on each side (`\[?` / `\]?`) is what makes the
+# single-bracket legacy form resolve through the same pattern.
+TOKEN_RE = re.compile(
+    r'\[\[?'                # one or two opening brackets
+    rf'({_TOKEN_ID})'       # 1: the ID (the only captured, load-bearing group)
+    r'(?:#[^|\]]*)?'        # optional #heading / #^block fragment (parse-only)
+    r'(?:\|[^\]]*)?'        # optional |display alias
+    r'\]\]?',               # one or two closing brackets
+    re.I,
+)
+
+# The same grammar as TOKEN_RE, but capturing the fragment and display so the
+# renderers (wikitree, site) can re-emit a human's chosen display text.  Powers
+# `extract_tokens()`; consumers that only need IDs stay on TOKEN_RE so their
+# `findall`/`group(1)` contract is untouched.
+_TOKEN_PARTS_RE = re.compile(
+    r'\[\[?'
+    rf'({_TOKEN_ID})'       # 1: ID (load-bearing)
+    r'(?:#([^|\]]*))?'      # 2: #fragment (parse-only; no tool ever emits one)
+    r'(?:\|([^\]]*))?'      # 3: |display alias
+    r'\]\]?',
+    re.I,
+)
+
+# The legacy single-bracket form on its own, used by the explicit normalize pass
+# to find `[ID]` tokens worth upgrading to `[[ID]]`.  The lookbehind/lookahead
+# keep it from matching the inner brackets of an already-canonical `[[ID]]`, so a
+# normalize sweep never double-counts or re-wraps a token that is already double.
+LEGACY_TOKEN_RE = re.compile(
+    rf'(?<!\[)\[({_TOKEN_ID})\](?!\])',
+    re.I,
+)
+
+# Any double-bracket Obsidian wikilink, whose target may be an ID *or* a human
+# name/stem (`[[Ken Smith]]`, `[[grandmas-album]]`, `[[P-…|Ken Smith]]`). Looser
+# than TOKEN_RE — it does not require an ID body — so the citation indexer and
+# `fha normalize-links` can find name/stem links that resolve through the alias
+# map. Captures: 1 target, 2 #fragment, 3 |display.
+WIKILINK_RE = re.compile(
+    r'\[\['
+    r'([^\[\]|#]+?)'        # 1: target (id, name, or stem) — no brackets/pipe/hash
+    r'(?:#([^\[\]|]*))?'    # 2: optional #heading / #^block fragment
+    r'(?:\|([^\[\]]*))?'    # 3: optional |display alias
+    r'\]\]'
+)
 
 # Extracts YAML frontmatter (between first --- pair)
 FRONT_RE = re.compile(r'\A---\r?\n(.*?)\r?\n---\r?\n', re.S)
@@ -172,6 +237,19 @@ CLAIM_TYPES: frozenset[str] = frozenset(SIGNIFICANCE.keys())
 VITAL_TYPES: frozenset[str] = frozenset(
     t for t, sig in SIGNIFICANCE.items() if sig == 'vital'
 )
+
+# Optional, UNSOURCED person-record fields: an honest estimate of current
+# knowledge ("Grandpa, b. 1923") a hand-author may jot down long before any
+# source exists. They are explicitly non-load-bearing — like the §8.6 convenience
+# flags — and a real `birth`/`death` claim supersedes them the moment it exists.
+# Tools must never count a provisional date as a satisfied vital for completeness
+# scoring; the linter only *tracks* it on a gentle needs-sourcing worklist.
+PROVISIONAL_VITAL_FIELDS: frozenset[str] = frozenset({'birth', 'death'})
+
+# The keys that mark a YAML mapping as a claim, used to recognise hand-written
+# claims a human typed under `## Claims` but forgot to fence (read_record reads
+# them anyway so they are never silently lost; lint offers to wrap the fence).
+_CLAIM_MARKER_KEYS: frozenset[str] = frozenset({'id', 'type', 'value', 'persons', 'status'})
 
 SOURCE_TYPES: frozenset[str] = frozenset({
     'census', 'vital-record', 'newspaper', 'photo', 'interview', 'letter',
@@ -280,7 +358,13 @@ COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-in
 # 1) = 0`, which only fires on a stored 0 — so a v1 index (false → NULL) would
 # silently under-redact publication_ok:false sources. Bumping forces `fha index`
 # to rebuild before the redaction-critical consumers (site/gedcom/wikitree) trust it.
-INDEX_SCHEMA_VERSION = 2
+# v3: adds the `aliases` table (the resolution surface — record IDs, human
+# stems, on-demand C-ids, person/place names) and the `source_places` edge.
+# A v2 index lacks both, so name-first cross-links and stem citations would
+# silently fail to resolve until a rebuild; bumping forces `fha index` to run.
+# v4: adds the provisional `birth`/`death` person columns (unsourced estimates
+# the needs-sourcing backlog reads) — a v3 index lacks them, so bump to rebuild.
+INDEX_SCHEMA_VERSION = 4
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 
@@ -772,6 +856,9 @@ def read_record(path: str | Path) -> dict:
             'claims': list,         parsed claim dicts (empty on failure)
             'stories': str | None,  ## Stories section body
             'body': str,            full body text (after frontmatter)
+            'unfenced_claims': bool, claims were read from an UNfenced `## Claims`
+                                     section (a human forgot the ```yaml fence);
+                                     lint offers to wrap it. False normally.
             'parse_errors': list,   [(code, message), ...]
         }
     """
@@ -783,6 +870,7 @@ def read_record(path: str | Path) -> dict:
     except OSError as e:
         return {
             'meta': {}, 'claims': [], 'stories': None, 'body': '',
+            'unfenced_claims': False,
             'parse_errors': [('E010', f'Cannot read file: {e}')],
         }
 
@@ -803,6 +891,7 @@ def read_record(path: str | Path) -> dict:
 
     # Claims block
     claims: list[dict] = []
+    unfenced_claims = False
     cm_match = CLAIMS_RE.search(body)
     if cm_match:
         try:
@@ -819,6 +908,20 @@ def read_record(path: str | Path) -> dict:
         except yaml.YAMLError as e:
             errors.append(('E010', f'Claims YAML error: {format_record_yaml_error(path, e, section="claims")}'))
 
+    # Forgiving-input (boomer-durable-05): a hand-author may type claims under
+    # `## Claims` but forget the ```yaml fence. Rather than let those claims be
+    # silently invisible (a data-loss trap), read them when the section content
+    # UNMISTAKABLY parses as a YAML list of claim-like mappings. Conservative:
+    # arbitrary prose under the heading is never force-read as claims.
+    # Guard: only check for unfenced claims when there was no fenced block at all
+    # (cm_match is None) — not when the fenced block merely had malformed YAML,
+    # which would leave claims=[] and trigger a false W114 + double-wrap.
+    if not claims and cm_match is None:
+        unfenced = _read_unfenced_claims(body)
+        if unfenced:
+            claims = [_coerce_yaml(c) for c in unfenced]
+            unfenced_claims = True
+
     # Stories section
     stories: str | None = None
     sm = re.search(r'^## Stories\s*\r?\n(.*?)(?=^## |\Z)', body, re.S | re.M)
@@ -832,8 +935,47 @@ def read_record(path: str | Path) -> dict:
         'claims': claims,
         'stories': stories,
         'body': body,
+        'unfenced_claims': unfenced_claims,
         'parse_errors': errors,
     }
+
+
+# The text of a `## Claims` section, up to the next `##` heading or EOF.
+_CLAIMS_SECTION_RE = re.compile(r'^##\s+Claims\s*\r?\n(.*?)(?=^##\s|\Z)', re.S | re.M)
+_FENCE_LINE_RE = re.compile(r'^\s*```[a-zA-Z]*\s*$')
+
+
+def _read_unfenced_claims(body: str) -> list[dict] | None:
+    """Return a list of claim mappings written under `## Claims` without a fence,
+    or None when the section is absent, empty, or not unmistakably a claim list.
+
+    Conservative on purpose (the section is the structured-data layer): the
+    content must parse as a non-empty YAML list whose every item is a mapping
+    carrying at least one claim key (id/type/value/persons/status). Stray fence
+    lines from a half-typed ```block are tolerated; anything else returns None so
+    plain prose under the heading is never mistaken for claims."""
+    if yaml is None:
+        return None
+    m = _CLAIMS_SECTION_RE.search(body)
+    if not m:
+        return None
+    # Drop any stray fence lines (e.g. an opening ``` with no close) so the
+    # remaining content is the bare YAML a human typed.
+    lines = [ln for ln in m.group(1).splitlines() if not _FENCE_LINE_RE.match(ln)]
+    text = '\n'.join(lines).strip()
+    if not text:
+        return None
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    if not all(isinstance(item, dict) for item in parsed):
+        return None
+    if not all(_CLAIM_MARKER_KEYS & set(item.keys()) for item in parsed):
+        return None
+    return parsed
 
 
 def parse_filename(path: str | Path) -> dict | None:
@@ -1476,14 +1618,221 @@ def is_fixture_path(path: str | Path) -> bool:
     )
 
 
+def is_template_file(path: str | Path) -> bool:
+    """Return True for a copy-paste template (`_TEMPLATE.*`) that ships in the
+    archive to teach the by-hand record forms (SPEC §5.2).
+
+    Templates live alongside real records (`sources/_TEMPLATE.source.md`,
+    `people/_TEMPLATE.person.md`, …) but are NOT records — they carry placeholder
+    IDs and commented examples. Every record walk (lint, index, views, normalize)
+    skips them so a template is never parsed as a malformed record or indexed."""
+    return Path(path).name.startswith('_TEMPLATE')
+
+
+def extract_tokens(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int]]]:
+    """Return one (id, display, fragment, span) tuple per citation token.
+
+    Recognises every form the grammar accepts — canonical `[[ID]]`,
+    `[[ID|display]]`, `[[ID#fragment]]`, `[[ID#^block|display]]`, and the legacy
+    single-bracket `[ID]` — in document order, non-overlapping.
+
+      - `id`        the resolved ID, lowercased.  This is the only load-bearing
+                    value; display and fragment NEVER alter it.
+      - `display`   the `|alias` text a human typed, stripped, or None.  Renderers
+                    (wikitree, site) re-emit this; everyone else ignores it.
+      - `fragment`  a tolerated Obsidian `#heading` / `#^block` anchor, stripped of
+                    its leading `#`, or None.  Parse-only: no tool ever emits a
+                    fragment, and it is dropped from the resolved ID by design.
+      - `span`      the (start, end) offsets of the whole token in `text`, for a
+                    renderer that rewrites it in place.
+
+    `extract_token_ids` is the simple ID list built on top of this; reach for the
+    tuples only when you need the display text or the span.
+    """
+    tokens: list[tuple[str, str | None, str | None, tuple[int, int]]] = []
+    for m in _TOKEN_PARTS_RE.finditer(text):
+        fragment = m.group(2)
+        if fragment is not None:
+            fragment = fragment.strip() or None
+        display = m.group(3)
+        if display is not None:
+            display = display.strip() or None
+        tokens.append((m.group(1).lower(), display, fragment, m.span()))
+    return tokens
+
+
 def extract_token_ids(text: str) -> list[str]:
-    """Return all [ID] token values found in text (lowercased)."""
-    return [m.group(1).lower() for m in TOKEN_RE.finditer(text)]
+    """Return the canonical ID of every citation token in text (lowercased).
+
+    One entry per token occurrence, in document order, regardless of bracket
+    count, `|display`, or `#fragment` — `[[S-…|Name]]`, `[[S-…#Claims]]`, and a
+    legacy `[S-…]` all reduce to the same `s-…`.
+    """
+    return [tok[0] for tok in extract_tokens(text)]
 
 
 def extract_bare_ids(text: str) -> list[str]:
     """Return all bare ID values found in text (lowercased)."""
     return [m.group(0).lower() for m in ID_RE.finditer(text)]
+
+
+# ── Alias resolution layer ────────────────────────────────────────────────────
+#
+# The `aliases:` field on every record is the universal resolution surface: it
+# carries the record's own canonical ID (so a bare `[[S-…]]` clicks through in
+# Obsidian), any human stem the owner typed (`grandmas-album`), on-demand C-ids,
+# and — for people and places — the display `name` and its variants, so a
+# hand-typed `[[Ken Smith]]` or `[[Fairview]]` resolves to the right record.
+#
+# These helpers are the read-time, NON-mutating resolver every front door shares.
+# Resolution order is: exact canonical ID → alias string → unresolved (None). An
+# alias that names ≥2 distinct records is a CLASH: it is kept out of the resolve
+# map entirely (so a bare ambiguous name never silently picks a record — a
+# data-integrity rule, SPEC §7) and surfaced separately for the linter to flag.
+
+# A wikilink wrapper around a reference, with optional #fragment and |display.
+# The target may be an ID *or* a human name/stem, so this is looser than
+# TOKEN_RE (which requires an ID body): it just unwraps `[[ … ]]` / `[ … ]`.
+_WIKILINK_WRAP_RE = re.compile(r'^\[\[(?P<inner>.*)\]\]$|^\[(?P<inner1>[^\[\]]*)\]$', re.S)
+
+
+def strip_link_wrapper(ref: str) -> str:
+    """Reduce a reference to its bare target: unwrap `[[ ]]`/`[ ]`, drop any
+    `|display` and `#fragment`, and trim. `[[Ken Smith]]` → `Ken Smith`,
+    `[[P-x|Name]]` → `P-x`, `[[S-x#Claims]]` → `S-x`, `grandmas-album` → itself.
+
+    The load-bearing target is whatever a human would expect the link to point
+    at; display text and heading anchors are presentation only and never alter
+    resolution (mirrors the `[[ ]]` token grammar's treatment of them)."""
+    if ref is None:
+        return ''
+    s = str(ref).strip()
+    m = _WIKILINK_WRAP_RE.match(s)
+    if m:
+        s = (m.group('inner') if m.group('inner') is not None else m.group('inner1')).strip()
+    s = s.split('|', 1)[0]          # drop |display
+    s = s.split('#', 1)[0]          # drop #fragment / #^block
+    return s.strip()
+
+
+def link_field_refs(value: Any) -> list[str]:
+    """Extract reference strings from a link-valued frontmatter field.
+
+    A source's `people:`/`places:` (and a note's `persons:`/`sources:`) may be
+    authored in any of the forgiving forms a hand-editor (often in Obsidian, no
+    code editor) produces:
+      - bare IDs:                 `[P-x, P-y]`              → ['P-x', 'P-y']
+      - quoted wikilinks:         `["[[Ken Smith]]"]`      → ['Ken Smith']
+      - quoted ID+display:        `["[[P-x|Ken Smith]]"]`  → ['P-x']
+      - an UNquoted `[[Name]]`, which YAML parses as a nested list
+        (`people: [[Ken Smith]]` → [['Ken Smith']])        → ['Ken Smith']
+
+    Returns the bare target strings (wrappers/display/fragment stripped); the
+    caller resolves each via `resolve_ref`. Empty entries are dropped."""
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    refs: list[str] = []
+    for item in items:
+        if isinstance(item, list):
+            # An unquoted `[[X]]` reached us as a YAML nested sequence; rejoin
+            # its tokens and unwrap as a wikilink target.
+            inner = ' '.join(str(x) for x in item).strip()
+            target = strip_link_wrapper(f'[[{inner}]]')
+        else:
+            target = strip_link_wrapper(str(item))
+        if target:
+            refs.append(target)
+    return refs
+
+
+def _record_alias_strings(rec: dict) -> list[str]:
+    """Every string that should resolve to a record: its ID, its `aliases:`
+    entries, and (people/places) the display `name` plus name/alt variants.
+
+    Tolerant of the field names both record types use, so one helper feeds both
+    the resolve map and the clash check."""
+    out: list[str] = []
+    rid = rec.get('id')
+    if rid:
+        out.append(str(rid))
+    for a in rec.get('aliases') or []:
+        out.append(str(a))
+    if rec.get('name'):
+        out.append(str(rec['name']))
+    for v in rec.get('name_variants') or []:
+        out.append(str(v))
+    for v in rec.get('alt_names') or []:
+        out.append(str(v))
+    return out
+
+
+def _alias_index(records: Any) -> dict[str, set[str]]:
+    """alias_lower → {canonical_id, …}. A multi-id set is a clash."""
+    idx: dict[str, set[str]] = {}
+    for rec in records:
+        cid = normalize_id(str(rec.get('id', '')))
+        if not cid:
+            continue
+        for s in _record_alias_strings(rec):
+            key = strip_link_wrapper(s).lower()
+            if key:
+                idx.setdefault(key, set()).add(cid)
+    return idx
+
+
+def build_alias_map(records: Any) -> dict[str, str]:
+    """Build the resolve map `alias_lower → canonical_id` from record dicts.
+
+    Each record is a dict with at least `id`; optional `aliases`, `name`,
+    `name_variants`, `alt_names`. Only UNAMBIGUOUS aliases are included — a
+    string naming ≥2 records (two "John Smith"s, or a stem colliding with another
+    record) is omitted so `resolve_ref` returns None rather than guessing. Use
+    `alias_clashes` to enumerate the omitted ambiguous strings."""
+    return {a: next(iter(ids)) for a, ids in _alias_index(records).items() if len(ids) == 1}
+
+
+def alias_clashes(records: Any) -> dict[str, list[str]]:
+    """alias_lower → sorted list of the ≥2 canonical IDs that share it.
+
+    Same input as `build_alias_map`. These are the strings a bare reference must
+    never silently resolve (SPEC §7: same-name people are normal; the link has to
+    be pinned to an ID). The linter turns each into a latent or active finding."""
+    return {a: sorted(ids) for a, ids in _alias_index(records).items() if len(ids) > 1}
+
+
+def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
+    """Resolve one reference (an ID, a human stem, or a name) to a canonical ID.
+
+    `ref` may carry a wikilink wrapper, a `|display`, or a `#fragment`; all are
+    stripped before lookup. Returns the canonical ID, or None when the reference
+    matches no alias OR is ambiguous (clashing aliases are absent from the map by
+    construction). Always read-only — never mutates anything."""
+    key = strip_link_wrapper(ref).lower()
+    if not key:
+        return None
+    return alias_map.get(key)
+
+
+def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int]]]:
+    """Return one (target, display, fragment, span) tuple per `[[ ]]` wikilink.
+
+    Unlike `extract_tokens` (ID tokens only), this also yields name/stem links
+    like `[[Ken Smith]]` whose target is not an ID — the citation indexer and
+    `fha normalize-links` resolve those through the alias map. `target` is
+    returned trimmed but with original case (a name lookup lowercases itself)."""
+    out: list[tuple[str, str | None, str | None, tuple[int, int]]] = []
+    for m in WIKILINK_RE.finditer(text):
+        target = m.group(1).strip()
+        frag = m.group(2)
+        disp = m.group(3)
+        if frag is not None:
+            frag = frag.strip() or None
+        if disp is not None:
+            disp = disp.strip() or None
+        if target:
+            out.append((target, disp, frag, m.span()))
+    return out
 
 
 # ── Archive freshness ─────────────────────────────────────────────────────────

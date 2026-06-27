@@ -1,7 +1,19 @@
 # Archive Template
 
 Copy this folder's contents to start your own family archive.
-This is the empty skeleton a real archive grows from - `inbox/` for new material, `sources/` for evidence records, `people/` for person records, `places/places.yaml`, `notes/`.
+This is the skeleton a real archive grows from - `inbox/` for new material, `sources/` for evidence records, `people/` for person records, `places/places.yaml`, `notes/`.
+
+## Record templates (copy, fill in, done)
+
+Each record folder ships a `_TEMPLATE.*` file you can copy by hand - no tools needed:
+
+- `people/_TEMPLATE.person.md` - a curated person profile
+- `people/stubs/_TEMPLATE.stub.md` - a one-line stub for someone you only need to reference
+- `sources/_TEMPLATE.source.md` - an evidence record with its claims
+- `places/places.yaml` - a commented `_TEMPLATE` place entry at the top
+- `inbox/_TEMPLATE.notes.md` - a note to drop beside new material
+
+Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-letter.md`), fill it in, and you're done. **You link records by name:** in any profile or note, cite a source or cross-link a person by writing its name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works too. **Don't worry about making an ID:** the templates leave that to the tools. If you ever run `fha lint`, it assigns the IDs, keeps your filename as an alias so your `[[name]]` links keep working, and tidies everything. IDs are just sturdier for the long haul - filenames change and can repeat - but you never have to create one.
 
 **Your archive is a separate, private repository** - never commit real family data to the public spec repo.
 See the repo root `README.md` ("Repo, tools, and your archive") for how the public spec/tools and your private archive relate.

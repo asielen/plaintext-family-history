@@ -1,5 +1,6 @@
 ---
 id: S-ea61339378
+aliases: [S-ea61339378]
 title: Marriage notice — Thomas Hartley & Margaret Cole, 1871
 source_type: newspaper
 source_date: 1871-03~
@@ -7,7 +8,9 @@ source_class: original
 repository: example collection
 citation: >
   Marriage notice, Fairview newspaper, March 1871 (fictional example record).
-people: [P-de957bcda1, P-cd795c61e0]
+people:
+  - "[[P-de957bcda1|Thomas Edward Hartley]]"
+  - "[[P-cd795c61e0|Margaret A. Cole]]"
 files:
   - file: documents/newspapers/1871-marriage-notice_S-ea61339378.txt
     role: clipping

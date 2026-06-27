@@ -1,5 +1,6 @@
 ---
 id: S-4f5f215e60
+aliases: [S-4f5f215e60, C-d22ce0ac77]
 title: 1880 U.S. Census — Hartley household, Fairview, Kansas
 source_type: census
 source_date: 1880-06~
@@ -7,7 +8,13 @@ source_class: original
 repository: example collection
 citation: >
   1880 U.S. Federal Census, Fairview, Breton County, Kansas (fictional example record).
-people: [P-de957bcda1, P-cd795c61e0, P-c4b26bb4bc, P-83e768cacb]
+people:
+  - "[[P-de957bcda1|Thomas Edward Hartley]]"
+  - "[[P-cd795c61e0|Margaret A. Cole]]"
+  - "[[P-c4b26bb4bc|Ethel Hartley]]"
+  - "[[P-83e768cacb|Frances Hartley]]"
+places:
+  - "[[L-7c1a9f4e22|Fairview]]"
 files:
   - file: documents/census/1880-fairview-hartley_S-4f5f215e60.txt
     role: page-1

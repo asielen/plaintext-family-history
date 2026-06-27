@@ -54,16 +54,21 @@ from _lib import (
     Result,
     archive_root_missing_message,
     edtf_bounds,
+    extract_wikilinks,
     find_archive_root,
     id_type_of,
+    is_template_file,
     is_valid_id,
     is_working_copy,
+    link_field_refs,
     load_fha_yaml,
     normalize_id,
     parse_filename,
     read_record,
     resolve_path,
+    resolve_ref,
     sqlite_cache_schema_status,
+    strip_link_wrapper,
 )
 
 import yaml
@@ -139,6 +144,8 @@ CREATE TABLE IF NOT EXISTS persons(
   merged_into TEXT,
   no_known_marriages INTEGER DEFAULT 0,
   no_known_children INTEGER DEFAULT 0,
+  birth TEXT,                 -- provisional, unsourced birth EDTF (non-load-bearing)
+  death TEXT,                 -- provisional, unsourced death EDTF (non-load-bearing)
   path TEXT NOT NULL
 );
 -- person_variants: alternate searchable names from person records.
@@ -282,13 +289,31 @@ CREATE TABLE IF NOT EXISTS hypotheses(
   path TEXT
 );
 
--- citations: [ID] token locations by file and line number.
+-- citations: citation/cross-link token locations by file and line number.
+-- `token` holds the RESOLVED canonical ID — a `[[grandmas-album]]` stem or a
+-- `[[Ken Smith]]` name that resolves via the alias map is recorded as the
+-- record's ID, so every query is ID-uniform regardless of the surface text.
 CREATE TABLE IF NOT EXISTS citations(
   token TEXT,
   kind TEXT,
   path TEXT,
   line INTEGER
 );
+
+-- aliases: the resolution surface every front door (find, lint, normalize)
+-- shares. One row per string that resolves to a record: its own canonical ID,
+-- any human stem, an on-demand C-id (added only when a `[[C-…]]` citation
+-- exists), and a person's/place's display name + variants. `alias` is stored
+-- lowercased. Pure projection — disposable, rebuilt by `fha index`.
+CREATE TABLE IF NOT EXISTS aliases(
+  alias TEXT,            -- lowercased reference string
+  canonical_id TEXT,     -- the record it resolves to
+  kind TEXT              -- id | stem | name | variant | claim
+);
+
+-- source_places: source-to-place edges from a source's `places:` frontmatter
+-- (resolved to L-ids), the location half of the human graph surface.
+CREATE TABLE IF NOT EXISTS source_places(source_id TEXT, place_id TEXT);
 
 -- notes_fts: full-text search over notes and record prose.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
@@ -317,13 +342,78 @@ def _drop_tables(conn: sqlite3.Connection) -> None:
         'meta',
         'persons', 'person_variants', 'person_face_tags', 'person_files',
         'person_external', 'sources', 'source_files', 'claims', 'claim_persons',
-        'claim_links', 'source_people', 'relationships', 'places', 'place_names',
-        'place_history', 'search_log', 'hypotheses', 'citations',
-        'notes_fts', 'transcripts_fts',
+        'claim_links', 'source_people', 'source_places', 'relationships',
+        'places', 'place_names', 'place_history', 'search_log', 'hypotheses',
+        'citations', 'aliases', 'notes_fts', 'transcripts_fts',
     ]
     for t in tables:
         conn.execute(f'DROP TABLE IF EXISTS {t}')
     conn.commit()
+
+
+# ── Alias resolution surface ──────────────────────────────────────────────────
+
+def _insert_record_aliases(
+    conn: sqlite3.Connection,
+    canonical_id: str,
+    *,
+    stems: tuple[str, ...] = (),
+    names: tuple[str, ...] = (),
+    variants: tuple[str, ...] = (),
+) -> None:
+    """Insert the alias rows for one record: its own canonical ID (always — the
+    line that makes `[[S-…]]` click through in Obsidian), plus any human stems,
+    display name(s), and name/alt variants. Strings are unwrapped and lowercased;
+    blanks and per-record duplicates are skipped."""
+    canonical_id = normalize_id(canonical_id)
+    if not canonical_id:
+        return
+    seen: set[str] = set()
+
+    def add(value: str, kind: str) -> None:
+        key = strip_link_wrapper(str(value)).lower()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        conn.execute(
+            'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+            (key, canonical_id, kind),
+        )
+
+    add(canonical_id, 'id')
+    for s in stems:
+        add(s, 'stem')
+    for n in names:
+        add(n, 'name')
+    for v in variants:
+        add(v, 'variant')
+
+
+def _resolve_map_from_aliases(conn: sqlite3.Connection) -> dict[str, str]:
+    """Build the read-time resolve map `alias → canonical_id` from the aliases
+    table. Clash-aware: an alias naming ≥2 distinct records is omitted, so a bare
+    ambiguous name never silently resolves (SPEC §7) — the linter flags it."""
+    idx: dict[str, set[str]] = {}
+    for alias, cid in conn.execute('SELECT alias, canonical_id FROM aliases'):
+        idx.setdefault(alias, set()).add(cid)
+    return {a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1}
+
+
+def _resolve_link_field(value: object, alias_map: dict[str, str] | None) -> list[str]:
+    """Resolve a link-valued frontmatter field (`people:`/`places:`) to canonical
+    IDs. Each entry may be a bare ID, a `[[Name]]`, a `[[P-…|Name]]`, or the
+    nested-list shape an unquoted `[[Name]]` parses into. A name that resolves via
+    the alias map becomes its ID; an unresolved-but-ID-shaped entry is kept as-is
+    (a possibly-dangling bare ID, which lint flags); an unresolved name draws no
+    edge (inert until some record claims it as an alias)."""
+    out: list[str] = []
+    for ref in link_field_refs(value):
+        resolved = resolve_ref(ref, alias_map) if alias_map else None
+        if resolved:
+            out.append(resolved)
+        elif id_type_of(ref):
+            out.append(normalize_id(ref))
+    return out
 
 
 def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
@@ -365,8 +455,17 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
             (pid, place.get('name'), place.get('hierarchy'), place.get('within'),
              lat, lon),
         )
-        for alt in (place.get('alt_names') or []):
+        alt_names = [str(a) for a in (place.get('alt_names') or [])]
+        for alt in alt_names:
             conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (pid, alt))
+        # Register the place's name + alt_names as aliases so a hand-typed
+        # `[[Fairview]]` resolves to its L-id in Obsidian and our tools.
+        place_name = place.get('name')
+        _insert_record_aliases(
+            conn, pid,
+            names=(str(place_name),) if place_name else (),
+            variants=tuple(alt_names),
+        )
         for h in (place.get('history') or []):
             if isinstance(h, dict):
                 period = str(h.get('period', ''))
@@ -546,6 +645,8 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     frontmatter name may include middle names or honorifics while the filename
     slug is always the birth surname.
     """
+    if is_template_file(path):
+        return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
 
@@ -587,8 +688,8 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         conn.execute(
             '''INSERT OR REPLACE INTO persons
                (id, name, surname, sex, living, tier, status, merged_into,
-                no_known_marriages, no_known_children, path)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                no_known_marriages, no_known_children, birth, death, path)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (
                 pid, name, surname,
                 str(meta.get('sex', '')),
@@ -598,11 +699,23 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
                 normalize_id(str(meta.get('merged_into', ''))) or None,
                 1 if meta.get('no_known_marriages') in (True, 'true') else 0,
                 1 if meta.get('no_known_children') in (True, 'true') else 0,
+                str(meta.get('birth', '')) or None,
+                str(meta.get('death', '')) or None,
                 str(path.relative_to(archive_root)),
             ),
         )
-        for v in (meta.get('name_variants') or []):
-            conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, str(v)))
+        variants = [str(v) for v in (meta.get('name_variants') or [])]
+        for v in variants:
+            conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
+        # Register this person's resolution surface: the P-id (so `[[P-…]]`
+        # clicks through), any hand-typed `aliases:` stems, the display name, and
+        # each name variant — so `[[Ken Smith]]` resolves to the right P-id.
+        _insert_record_aliases(
+            conn, pid,
+            stems=tuple(str(a) for a in (meta.get('aliases') or [])),
+            names=(name,) if name and name != 'unknown' else (),
+            variants=tuple(variants),
+        )
         for t in (meta.get('face_tags') or []):
             conn.execute('INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', (pid, str(t)))
         ext_ids = meta.get('external_ids') or {}
@@ -645,8 +758,17 @@ def _index_source(
     path: Path,
     archive_root: Path,
     fha_config: dict,
+    alias_map: dict[str, str] | None = None,
 ) -> None:
-    """Index one source markdown file."""
+    """Index one source markdown file.
+
+    `alias_map`, when supplied, resolves name-first frontmatter link fields
+    (`people:`/`places:`) — e.g. `people: ["[[Ken Smith]]"]` → the matching
+    P-id. Without it the fields are read the legacy bare-ID way, so this stays
+    callable for the incremental and test paths that pass no map.
+    """
+    if is_template_file(path):
+        return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
 
@@ -688,14 +810,28 @@ def _index_source(
         ),
     )
 
-    # People listed on the source
-    for p in (meta.get('people') or []):
-        pid = normalize_id(str(p))
-        if pid:
-            conn.execute(
-                'INSERT INTO source_people(source_id, person_id) VALUES (?,?)',
-                (sid, pid),
-            )
+    # Register the source's own resolution surface: the S-id (so `[[S-…]]`
+    # clicks through) plus any hand-typed `aliases:` stems (`grandmas-album`).
+    _insert_record_aliases(
+        conn, sid,
+        stems=tuple(str(a) for a in (meta.get('aliases') or [])),
+    )
+
+    # People listed on the source — the human graph surface (frontmatter
+    # cross-links). Entries may be bare P-ids or name-first `[[Ken Smith]]`
+    # links; resolve each to a canonical P-id via the alias map.
+    for pid in _resolve_link_field(meta.get('people'), alias_map):
+        conn.execute(
+            'INSERT INTO source_people(source_id, person_id) VALUES (?,?)',
+            (sid, pid),
+        )
+
+    # Places the source involves — optional location half of the graph surface.
+    for lid in _resolve_link_field(meta.get('places'), alias_map):
+        conn.execute(
+            'INSERT INTO source_places(source_id, place_id) VALUES (?,?)',
+            (sid, lid),
+        )
 
     # File inventory
     for f in (meta.get('files') or []):
@@ -880,8 +1016,25 @@ def _index_capture_log(conn: sqlite3.Connection, archive_root: Path) -> None:
             )
 
 
-def _index_citations(conn: sqlite3.Connection, archive_root: Path) -> None:
-    """Scan all .md files for [ID] citation tokens."""
+def _index_citations(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    alias_map: dict[str, str] | None = None,
+) -> None:
+    """Scan all .md files for citation tokens and record the RESOLVED canonical ID.
+
+    Two kinds of token are picked up:
+      - ID tokens (`[[S-…]]`, legacy `[S-…]`) — stored as their own lowercased ID,
+        exactly as before. Dangling IDs are still recorded; lint flags them.
+      - name/stem wikilinks (`[[grandmas-album]]`, `[[Ken Smith]]`) — stored as
+        the record's ID *only when* `alias_map` resolves them, so a stem citation
+        is ID-uniform with an ID citation. An unresolved name link is inert (it's
+        an ordinary Obsidian note-link, not a citation) and recorded nowhere.
+
+    As a side effect, a cited `[[C-…]]` registers that C-id as an alias of its
+    owning source — the on-demand C-id aliasing (added only when the citation
+    actually exists, so a 60-claim interview carries no dead weight).
+    """
     from _lib import TOKEN_RE
     # archive_root/out/ is fha packet's default, gitignored output directory
     # (TOOLING §8) — disposable export copies, not archive truth, so they
@@ -889,23 +1042,83 @@ def _index_citations(conn: sqlite3.Connection, archive_root: Path) -> None:
     # is skipped — a record tree's own 'out' subdirectory (sources/out/, …)
     # is real archive content and must still be scanned.
     packet_out_root = archive_root / 'out'
+    cited_cids: set[str] = set()
     for path in archive_root.rglob('*.md'):
         if '.cache' in path.parts:
             continue
         if path.is_relative_to(packet_out_root):
             continue
-        try:
-            lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()
-        except OSError:
-            continue
-        for lineno, line in enumerate(lines, start=1):
-            for m in TOKEN_RE.finditer(line):
-                token = m.group(1).lower()
-                kind = token[0].upper()
+        cited_cids |= _index_citations_for_file(conn, path, archive_root, alias_map)
+
+    _register_cited_claim_aliases(conn, cited_cids)
+
+
+def _index_citations_for_file(
+    conn: sqlite3.Connection,
+    path: Path,
+    archive_root: Path,
+    alias_map: dict[str, str] | None = None,
+) -> set[str]:
+    """Scan one .md file for citation tokens, inserting one citations row per
+    occurrence (resolved canonical ID), and return the set of C-ids it cites.
+
+    Shared by the full scan and the incremental upsert so both record citations
+    — ID tokens and resolved name/stem wikilinks — identically. The caller turns
+    the returned C-ids into on-demand source aliases via
+    `_register_cited_claim_aliases`."""
+    from _lib import TOKEN_RE
+    if is_template_file(path):
+        return set()   # `_TEMPLATE.*` placeholder tokens are not citations
+    try:
+        lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()
+    except OSError:
+        return set()
+    rel = str(path.relative_to(archive_root))
+    cited_cids: set[str] = set()
+    for lineno, line in enumerate(lines, start=1):
+        for m in TOKEN_RE.finditer(line):
+            token = m.group(1).lower()
+            kind = token[0].upper()
+            if kind == 'C':
+                cited_cids.add(token)
+            conn.execute(
+                'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
+                (token, kind, rel, lineno),
+            )
+        # Name/stem wikilinks resolve through the alias map to the record's
+        # canonical ID. ID-shaped targets are skipped here — already handled by
+        # the TOKEN_RE pass above — so `[[S-…]]` is never double-counted.
+        if alias_map:
+            for target, _disp, _frag, _span in extract_wikilinks(line):
+                if id_type_of(target):
+                    continue
+                resolved = resolve_ref(target, alias_map)
+                if not resolved:
+                    continue
+                if resolved.startswith('c-'):
+                    cited_cids.add(resolved)
                 conn.execute(
                     'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
-                    (token, kind, str(path.relative_to(archive_root)), lineno),
+                    (resolved, resolved[0].upper(), rel, lineno),
                 )
+    return cited_cids
+
+
+def _register_cited_claim_aliases(conn: sqlite3.Connection, cited_cids: set[str]) -> None:
+    """On-demand C-id aliasing: for each cited C-id, register it as an alias of
+    its owning source so `[[C-…]]` opens the source record (the claim's home,
+    SPEC §8.7). Only cited C-ids get a row — a claim nobody links to stays out of
+    the alias surface, keeping a many-claim source lean."""
+    for cid in sorted(cited_cids):
+        row = conn.execute('SELECT source_id FROM claims WHERE id=?', (cid,)).fetchone()
+        if row is None:
+            continue
+        source_id = row[0] if not isinstance(row, sqlite3.Row) else row['source_id']
+        if source_id:
+            conn.execute(
+                'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+                (cid, normalize_id(str(source_id)), 'claim'),
+            )
 
 
 def _derive_relationships(conn: sqlite3.Connection) -> None:
@@ -1052,12 +1265,17 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             if verbose:
                 print(f'  indexed {person_count} person files')
 
+            # Resolve map for name-first frontmatter links — persons and places
+            # are fully indexed (their names registered as aliases) before any
+            # source's `people:`/`places:` is read.
+            link_alias_map = _resolve_map_from_aliases(conn)
+
             # Sources
             sources_root = archive_root / 'sources'
             source_count = 0
             if sources_root.exists():
                 for path in sources_root.rglob('*.md'):
-                    _index_source(conn, path, archive_root, fha_config)
+                    _index_source(conn, path, archive_root, fha_config, link_alias_map)
                     source_count += 1
             if verbose:
                 print(f'  indexed {source_count} source files')
@@ -1068,8 +1286,10 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             # Capture log (durability: survives a search_log drop/rebuild)
             _index_capture_log(conn, archive_root)
 
-            # Citation scan
-            _index_citations(conn, archive_root)
+            # Citation scan — the full alias map now includes source stems, so a
+            # `[[grandmas-album]]` prose link resolves to its S-id and a cited
+            # `[[C-…]]` registers its on-demand source alias.
+            _index_citations(conn, archive_root, _resolve_map_from_aliases(conn))
 
             # Relationship derivation
             _derive_relationships(conn)
@@ -1207,24 +1427,36 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
             conn.execute('DELETE FROM sources WHERE id=?', (sid,))
             conn.execute('DELETE FROM source_files WHERE source_id=?', (sid,))
             conn.execute('DELETE FROM source_people WHERE source_id=?', (sid,))
+            conn.execute('DELETE FROM source_places WHERE source_id=?', (sid,))
+            # Drop this source's alias rows (its own id/stems and any on-demand
+            # C-id aliases owned by it) so a renamed stem or removed citation
+            # doesn't leave a stale resolution behind.
+            conn.execute('DELETE FROM aliases WHERE canonical_id=?', (sid,))
             # Forward-safety: drop any transcript rows for this source so a future
             # transcript-indexing pass cannot leave stale FTS content behind.
             conn.execute('DELETE FROM transcripts_fts WHERE source_id=?', (sid,))
 
-            _index_source(conn, found, archive_root, fha_config)
-            # Re-add citation tokens for the re-indexed source file.
-            try:
-                lines = found.read_text(encoding='utf-8', errors='ignore').splitlines()
-            except OSError:
-                lines = []
-            rel = str(found.relative_to(archive_root))
-            for lineno, line in enumerate(lines, start=1):
-                for m in TOKEN_RE.finditer(line):
-                    token = m.group(1).lower()
-                    conn.execute(
-                        'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
-                        (token, token[0].upper(), rel, lineno),
-                    )
+            # Resolve map for this source's name-first frontmatter links and its
+            # prose stem citations. Persons/places are unchanged on an upsert, so
+            # the surviving alias rows already carry their names.
+            link_alias_map = _resolve_map_from_aliases(conn)
+            _index_source(conn, found, archive_root, fha_config, link_alias_map)
+            # Re-scan citations for the re-indexed source file (resolving stems),
+            # with the map refreshed to include this source's reinserted stems.
+            _index_citations_for_file(
+                conn, found, archive_root, _resolve_map_from_aliases(conn),
+            )
+            # Rebuild this source's on-demand C-id aliases from EVERY citation
+            # site, not just its own file — a `[[C-…]]` to one of its claims may
+            # live in a person profile we didn't rescan, and we just dropped the
+            # alias row above.
+            this_claims = {
+                row[0] for row in conn.execute('SELECT id FROM claims WHERE source_id=?', (sid,))
+            }
+            cited_here = {
+                row[0] for row in conn.execute("SELECT DISTINCT token FROM citations WHERE kind='C'")
+            }
+            _register_cited_claim_aliases(conn, cited_here & this_claims)
 
             _derive_relationships(conn)
     finally:

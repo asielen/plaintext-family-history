@@ -50,10 +50,17 @@ The linter treats hand-edits below that header as a warning.
 
 ```python
 ID_RE      = re.compile(r'\b([PSCLH])-([0-9a-hjkmnp-tv-z]{10})\b', re.I)   # Crockford Base32, case-insensitive match
-TOKEN_RE   = re.compile(r'\[([PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]', re.I)     # citations/cross-links
+# Prose citation/cross-link tokens: [[ID]] / [[ID|display]] / [[ID#frag]] - one capture group, the
+# load-bearing ID. Deliberately a superset: the optional second bracket each side also matches the
+# tolerated single-bracket [ID] form, so every consumer resolves both through one chokepoint.
+TOKEN_RE   = re.compile(r'\[\[?([PSCLH]-[0-9a-hjkmnp-tv-z]{10})(?:#[^|\]]*)?(?:\|[^\]]*)?\]\]?', re.I)
+LEGACY_TOKEN_RE = re.compile(r'(?<!\[)\[([PSCLH]-[0-9a-hjkmnp-tv-z]{10})\](?!\])', re.I)  # single-bracket only
+WIKILINK_RE = re.compile(r'\[\[([^\[\]|#]+?)(?:#[^|\]]*)?(?:\|[^\]]*)?\]\]', re.I)         # [[name/stem]] (id OR name)
 FRONT_RE   = re.compile(r'\A---\r?\n(.*?)\r?\n---\r?\n', re.S)  # YAML frontmatter
 CLAIMS_RE  = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 ```
+
+Tokens resolve through the alias map (`build_alias_map` / `resolve_ref`): a `[[S-…]]` clicks through because the source record carries the ID in `aliases:`, and a non-ID `[[stem]]` / `[[Ken Smith]]` resolves only if some record claims it as an alias - otherwise it is an inert note-link, not a citation. `TOKEN_RE` is the ID-only chokepoint (its `findall`/`group(1)` is the bare ID); `WIKILINK_RE` is the looser name/stem matcher the citation indexer and `fha normalize-links` use to resolve name-links; `LEGACY_TOKEN_RE` finds single-bracket tokens worth upgrading. `ID_RE`, `FRONT_RE`, `CLAIMS_RE` are unchanged.
 
 `read_record(path)` → `{meta: dict, claims: list, stories: str|None, body: str}`.
 The parser **normalizes YAML scalars**: booleans (`living: false`) and dates (`created: 2026-06-12`, read as date objects) are coerced to the canonical strings the index expects (`living TEXT` holds `'true'|'false'|'unknown'`; dates serialize back to ISO).
@@ -100,7 +107,7 @@ Never appended; never authoritative.
 Deletion order matters (child tables before parent rows): collect claim IDs first, then delete `claim_persons` and `claim_links` by those IDs, then delete `claims`; capture `sources.path` before deletion, then delete `citations` by that path, then delete `notes_fts` rows by that path (the FTS virtual table is not covered by FK cascade and accumulates duplicate bodies on upsert), then delete `sources`/`source_files`/`source_people`. Reversing parent/child order leaves orphan rows because the parent subquery finds nothing.
 Full rebuild remains the periodic truth-check; any discrepancy between incremental and full states is a bug in incremental, by definition.
 
-**Build algorithm.** (1) glob `sources/**/*.md`, `people/**/*.md`, `places/places.yaml`, `notes/**/*.md`; (2) parse each with the parsing layer; (3) insert in one transaction; (4) scan all prose bodies for `TOKEN_RE` → citations table; (5) glob asset trees for filenames carrying S-ids → files table reconciliation; (6) build FTS tables.
+**Build algorithm.** (1) glob `sources/**/*.md`, `people/**/*.md`, `places/places.yaml`, `notes/**/*.md`; (2) parse each with the parsing layer; (3) insert in one transaction, building an **alias map** from every record's `aliases:` plus persons'/places' `name` & variants (the `aliases` table); (4) scan all prose bodies for `TOKEN_RE` → citations table, recording each citation's **resolved canonical ID** so a `[[stem]]`- or `[[Name]]`-cited reference is stored ID-uniform; (4a) strip the `[[ ]]` wrapper from frontmatter link-fields (`people:` / `places:` / note `persons:`/`sources:`) and resolve each to an ID the same way (`source_people` / `source_places`); on-demand C-id aliases are derived here - a source aliases a `C-…` only when a `[[C-…]]` citation to it exists; (5) glob asset trees for filenames carrying S-ids → files table reconciliation; (6) build FTS tables.
 Target: full rebuild of a mature archive (~5k sources, ~30k claims) in under a minute; correctness over speed.
 
 **Schema (DDL).**
@@ -110,7 +117,9 @@ CREATE TABLE persons(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, surname TEXT, sex TEXT,
   living TEXT NOT NULL,            -- 'true' | 'false' | 'unknown' (unknown = living for exports)
   tier TEXT NOT NULL, status TEXT DEFAULT 'active', merged_into TEXT,
-  no_known_marriages INTEGER DEFAULT 0, no_known_children INTEGER DEFAULT 0, path TEXT NOT NULL);
+  no_known_marriages INTEGER DEFAULT 0, no_known_children INTEGER DEFAULT 0,
+  birth TEXT, death TEXT,         -- optional provisional, unsourced vital estimates (§9; non-load-bearing)
+  path TEXT NOT NULL);
 CREATE TABLE person_variants(person_id TEXT, variant TEXT);
 CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
 CREATE TABLE person_files(person_id TEXT, kind TEXT, path TEXT, generated INTEGER DEFAULT 0,
@@ -140,6 +149,7 @@ CREATE TABLE claims(
 CREATE TABLE claim_persons(claim_id TEXT, person_id TEXT, position INTEGER, role TEXT);
 CREATE TABLE claim_links(claim_id TEXT, rel TEXT, target_id TEXT); -- corroborates|contradicts
 CREATE TABLE source_people(source_id TEXT, person_id TEXT);  -- people: any source (speakers, photo subjects, household)
+CREATE TABLE source_places(source_id TEXT, place_id TEXT);   -- places: any source (resolved from frontmatter [[L-…]] links)
 
 -- Derived, rebuildable edge list for graph traversal (NOT new truth - flattened from
 -- accepted relationship/marriage/divorce/death claims; every edge keeps its source claim_id).
@@ -159,7 +169,12 @@ CREATE TABLE search_log(date TEXT, person_id TEXT, question TEXT,
 CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, hypothesis TEXT,
   basis TEXT, verify TEXT, origin TEXT, status TEXT, verified_claim TEXT, path TEXT);
 
-CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);
+CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);  -- token = resolved canonical ID
+
+-- aliases: the resolution surface every front door (find, lint, normalize) shares. One row per
+-- string that resolves to a record: its canonical ID, any human stem, an on-demand C-id (added only
+-- when a [[C-…]] citation exists), and a person's/place's display name + variants. Lowercased.
+CREATE TABLE aliases(alias TEXT, canonical_id TEXT, kind TEXT);  -- kind: id | stem | name | variant | claim
 
 CREATE VIRTUAL TABLE notes_fts USING fts5(path, content);
 CREATE VIRTUAL TABLE transcripts_fts USING fts5(source_id, path, content);
@@ -188,7 +203,7 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 | E001 | Duplicate ID | A non-person record ID in two records' frontmatter is an error. For `P-id`s, one primary profile **plus** its companion files (`_research`, `_timeline`, `_sources-index`, `_draft-queue`) may share the ID; two primary *profile* files with one `P-id` is the error. |
 | E002 | Malformed ID / filename | filename fails the §13 grammars; ID fails `ID_RE` |
 | E003 | Filename ID ≠ record ID | compare filename suffix to frontmatter `id` |
-| E004 | Orphan reference | any `[token]`, `persons:`, `place:`, `corroborates/contradicts` target not found |
+| E004 | Orphan reference | a `[[token]]` link, `persons:`, `place:`, or `corroborates/contradicts` target not found - **resolved through the alias map first**: a dangling well-formed `[[S-…]]` stays an error; an unresolved non-ID `[[stem]]` is an inert note-link, not a finding |
 | E005 | Referenced person lacks a stub | P-id appears anywhere but no person record parses with it |
 | E006 | `accepted` claim missing `reviewed` | field check |
 | E007 | Claim type outside vocabulary | membership in §8.2 set |
@@ -197,7 +212,7 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 | E010 | Frontmatter schema failure | required fields per record kind |
 | E011 | Inventory ↔ disk mismatch | `files:` entry missing on disk (path resolved via fha.yaml) - except `status: missing-fixture` under `example-archive/` or `tests/` (any directory named `tests`), which is **suppressed entirely** (no finding emitted); a `missing-fixture` in a real archive (not under those roots) is an error; or an on-disk file carrying this S-id - by filename (documents root) or embedded `SOURCE:` keyword scan (photos root, `--with-exif`) - absent from inventory |
 | E012 | Embedded source-keyword disagreement | documents root: `SOURCE:` keyword must agree with the filename S-id and inventory. Photos root: `SOURCE:` must agree with the record inventory - photos carry no filename S-ids by design. (`--with-exif`, slower) |
-| E013 | Summary block drift | parse `**Born/Died/Married/Parents/Children:**` lines; compare cited `[S-]`/`[P-]` ids and dates against accepted claims for that person; mismatch → error, summary line lacking any accepted claim → warning W104 |
+| E013 | Summary block drift | parse `**Born/Died/Married/Parents/Children:**` lines; compare cited `[[S-…]]`/`[[P-…]]` ids (display after a `|` ignored) and dates against accepted claims for that person; mismatch → error, summary line lacking any accepted claim → warning W104 |
 | E014 | Non-EDTF date | validation regex |
 | E015 | `type: relationship` claim missing `roles:` | field check |
 | E016 | New claim references a merged person directly | resolve via `merged_into`; flag for cleanup |
@@ -205,12 +220,14 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 | E018 | Agent-instruction drift (partial) | AGENTS.md references deprecated commands (`fha promote`) or photo-rename instructions; skills scan and full drift detection are deferred |
 | E019 | Field value outside its controlled vocabulary | claim `status` not in the §8.1 lifecycle set (`suggested`/`needs-review`/`accepted`/`disputed`/`rejected`/`superseded`); `confidence` not in `high`/`medium`/`low` (§8.5). Presence of `confidence` itself is E010. |
 
-Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header (deferred: detection requires mtime tracking; the check is a no-op in milestone 2) · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge); also used as the catch-all code for unrecognized `source_type` vocabulary and for file-format issues surfaced by `--format-check` (missing final newline, CRLF line endings) - a future cleanup may give these their own codes · **W110** Ahnentafel placement issue (requires `root_person` in `fha.yaml`): a direct-line couple folder's numeric prefix does not match the derived Ahnentafel number, or a direct-line person's files live in the wrong couple folder - `fha views brackets --fix` resolves both. If `root_person` is set but names a person with no existing record, W110 is emitted on `fha.yaml` itself explaining the skip (and placement checks are suppressed).
+Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header (deferred: detection requires mtime tracking; the check is a no-op in milestone 2) · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge); also used as the catch-all code for unrecognized `source_type` vocabulary and for file-format issues surfaced by `--format-check` (missing final newline, CRLF line endings) - a future cleanup may give these their own codes · **W110** Ahnentafel placement issue (requires `root_person` in `fha.yaml`): a direct-line couple folder's numeric prefix does not match the derived Ahnentafel number, or a direct-line person's files live in the wrong couple folder - `fha views brackets --fix` resolves both. If `root_person` is set but names a person with no existing record, W110 is emitted on `fha.yaml` itself explaining the skip (and placement checks are suppressed). · **W111** Missing self-alias - a record using `aliases:` omits its own canonical ID (the line that makes `[[ID]]` resolve in Obsidian); `fha normalize-links` adds it. · **W112** Latent alias clash - one alias string names ≥2 records (two same-named people/places, or a stem collision) but nothing links by it yet; a heads-up, normal in genealogy. · **W113** Active alias clash - a real `[[John Smith]]` link (prose or frontmatter `people:`/`places:`) uses an ambiguous name; **manual detangle, never auto-resolved** - pin it to its ID (`[[P-…|John Smith]]`), which is the §7 reason P-ids disambiguate duplicate names. · **W114** Unfenced claims - claim-shaped YAML under `## Claims` not inside a ` ```yaml ` fence; read anyway (never lost), warn + offer `--fix-claims-fence`.
+
+**Needs-sourcing backlog** (informational, not a gate, never moves the exit code): a provisional `birth:`/`death:` (§9) or a `(TODO: import source)` prose line with no backing accepted claim is listed as still to be sourced - the inverse of the W101 vitals gap (a present-but-unsourced vital, not a missing one). A sourced claim supersedes it.
 
 **Formatter** (`fha lint --format-check` / `--format-write`): conservative normalization only - final-newline and CRLF line-ending hygiene (milestone 2 subset). Frontmatter key order, lowercase ID normalization, blank-line hygiene, and YAML list indentation are deferred.
 Never rewrites prose beyond trailing whitespace.
 
-**Fix modes** (each gated behind an explicit flag; use `--dry-run` to preview what would change before writing): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → placeholder/deferred; prints a warning and suggests `fha process` instead).
+**Fix modes** (each gated behind an explicit flag; use `--dry-run` to preview what would change before writing): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → placeholder/deferred; prints a warning and suggests `fha process` instead), `--fix-claims-fence` (W114 → wrap unfenced `## Claims` content in a ` ```yaml ` fence), `--fix-ids` (mint + rename an id-less hand-authored record to the §13 grammar, keeping its filename slug as an alias). Link normalization is **not** a fix mode here - it is the separate `fha normalize-links` (§17), kept out of the formatter, which never rewrites prose.
 
 **Required claim fields enforced by E010:** `id`, `type`, `persons`, `value`, `status`, `confidence`. `confidence` is required per SPEC §8.5; tooling derives a default from `source_type` at mint time, and the linter enforces its presence (a missing one is E010, an out-of-vocabulary value is E019). The `source_type` vocabulary remains a **W109** warning by design (an archive may legitimately extend it by logged decision before the spec catches up); only the claim `status`/`confidence` closed sets are hard E019 errors.
 
@@ -219,9 +236,9 @@ The parser must handle **both** layout styles:
 - *Multi-line:* one `**Label:**` per line - the common case in hand-authored profiles.
 - *Inline (single-line):* multiple `**Label:**` markers on one line (e.g. `**Born:** … **Married:** … **Parents:** …` all run together) - occurs in practice when the block was written without explicit line breaks.
 
-Implementation: scan the summary text (up to the first `## Section`) with `finditer` on the `**Label:**` pattern; split into segments between consecutive label positions; extract `[S-id]` and `[P-id]` tokens from each segment. Do **not** split by line - line splitting fails on the inline form.
+Implementation: scan the summary text (up to the first `## Section`) with `finditer` on the `**Label:**` pattern; split into segments between consecutive label positions; extract `[[S-id]]` and `[[P-id]]` link ids from each segment (the `|display` and `#fragment` are ignored - the ID is the load-bearing capture). Do **not** split by line - line splitting fails on the inline form.
 
-Comparison rule: each `[S-id]` in a segment must correspond to an `accepted` claim of the matching type (`birth`/`death`/`marriage`) for this person from that source; `[P-id]`s in Parents/Children must match accepted `relationship` claims. Display text is not parsed for equality - the citation is the contract.
+Comparison rule: each `[[S-id]]` in a segment must correspond to an `accepted` claim of the matching type (`birth`/`death`/`marriage`) for this person from that source; `[[P-id]]`s in Parents/Children must match accepted `relationship` claims. Display text is not parsed for equality - the citation (ID) is the contract.
 
 ---
 
@@ -372,9 +389,9 @@ Lint E012 for photos checks keyword↔inventory agreement (no filename carrier).
 
 All write GENERATED-headed `.md` into the tree; all derive purely from the index.
 
-- **`fha views timeline [P-id|--all-curated]`** → `…_timeline_{P-id}.md`: accepted + needs-review claims for the person, sorted by `date_min`, grouped by decade, each line `EDTF - type: value [S-id]`, suggested claims listed in a trailing "unreviewed" section.
+- **`fha views timeline [P-id|--all-curated]`** → `…_timeline_{P-id}.md`: accepted + needs-review claims for the person, sorted by `date_min`, grouped by decade, each line `EDTF - type: value [[S-id]]`, suggested claims listed in a trailing "unreviewed" section.
 - **`fha views draft-queue [P-id|--all-curated]`** → `…_draft-queue_{P-id}.md`: accepted claims whose source is not cited in the profile body - the writing backlog. Consumed by the `write-biography` skill. See §14b for the full design.
-- **`fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]`** → traverses the `relationships` edges from the person. `ancestors`: parent-edges recursively (pedigree). `descendants`: child-edges recursively (the v1 hero - "all descendants of T.E."); spouse edges are added as one-hop leaf nodes per visited descendant (in-law branches appear as connected nodes without recursing into their own lineages). `fan`: the person plus kin plus social edges, two hops by default; `--generations N` overrides the hop depth. All modes use BFS with a visited-set cycle guard. Every node carries its `[P-id]` (→ links to the person page) and every edge its source `claim_id`. Output is **the neutral tree JSON** - the stable data contract (nodes: `{p_id, name, vitals, sex}`; edges: `{type, from, to, claim_id, dates}`) - or GraphViz DOT. Nodes and edges are deduplicated (by P-id for nodes, by `(from, to, type)` for edges). This JSON is what the spec pins down; the *rendering* of it (the site's vendored tree library, styling) is deliberately left to the build. A renderer adapter maps this neutral shape to whatever library is in use. **Node vitals field:** `{"birth": edtf_or_null, "death": edtf_or_null}` where each value is the `date_edtf` from the first accepted claim of the matching vital type for that person, or null if none. (D3) **Edge dates field:** `dates.start` / `dates.end` are populated only for spouse edges (marriage and divorce/death dates from the `relationships` table); all other edge types carry `null` for both. **`--format html` is deferred to the site generator (milestone N):** passing it emits an error directing the user to `fha site`. (D6)
+- **`fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]`** → traverses the `relationships` edges from the person. `ancestors`: parent-edges recursively (pedigree). `descendants`: child-edges recursively (the v1 hero - "all descendants of T.E."); spouse edges are added as one-hop leaf nodes per visited descendant (in-law branches appear as connected nodes without recursing into their own lineages). `fan`: the person plus kin plus social edges, two hops by default; `--generations N` overrides the hop depth. All modes use BFS with a visited-set cycle guard. Every node carries its `[[P-id]]` (→ links to the person page) and every edge its source `claim_id`. Output is **the neutral tree JSON** - the stable data contract (nodes: `{p_id, name, vitals, sex}`; edges: `{type, from, to, claim_id, dates}`) - or GraphViz DOT. Nodes and edges are deduplicated (by P-id for nodes, by `(from, to, type)` for edges). This JSON is what the spec pins down; the *rendering* of it (the site's vendored tree library, styling) is deliberately left to the build. A renderer adapter maps this neutral shape to whatever library is in use. **Node vitals field:** `{"birth": edtf_or_null, "death": edtf_or_null}` where each value is the `date_edtf` from the first accepted claim of the matching vital type for that person, or null if none. (D3) **Edge dates field:** `dates.start` / `dates.end` are populated only for spouse edges (marriage and divorce/death dates from the `relationships` table); all other edge types carry `null` for both. **`--format html` is deferred to the site generator (milestone N):** passing it emits an error directing the user to `fha site`. (D6)
 - **`fha views sources-index`** → per curated person and per couple folder: every source with ≥1 claim naming the person(s), grouped by source_type, with paths. The couple-folder version is written as `sources-index.md` at the folder root (no P-id - the folder is its context).
 - **`fha views brackets`** → folder maintenance for the `people/` tree, covering three concerns in one pass (all previewed as diffs; `--fix` applies them):
   1. **Bracket lists** - refresh stale `[child, …]` annotations in couple-folder names from accepted `relationship` claims. (W103)
@@ -515,7 +532,7 @@ Migrates a legacy transcript-mining pipeline output (`facts.txt` table rows, `st
 1. **Sources first:** each legacy `S###`/transcript → copy transcript into `documents/interviews/`, process (mint S-id, rename, scaffold record with `people:` resolved via alias files → P-ids, `source_type: interview`), record the legacy extraction pass in `## Notes` (model: gpt-4-class, dates from run headers).
 2. **Facts → claims:** parse the markdown table rows + `Update(T###)` continuation lines (merge updates into the claim's `notes`). Field map: Claim→`value`; Earliest/Latest→EDTF (`same date` → single value; range → interval; their `~`/`??` → EDTF `~`/`X`); Confidence High/Medium/Low→`confidence`; Section → dropped; `status: suggested` for all (AI-extracted); `type` assigned by keyword heuristics (birth/marriage/served/lived-at → vocabulary) defaulting to `event` + `subtype` from the legacy Section.
 3. **Anchors:** best-effort - take the 3 rarest content words of `value`, search the transcript; a unique window → `anchor: line N`; else omit.
-4. **Stories → `## Stories`**, people refs resolved to P-ids; **questions → `notes/questions.md`** (`open`, with `[S-id]` references mapped).
+4. **Stories → `## Stories`**, people refs resolved to P-ids; **questions → `notes/questions.md`** (`open`, with `[[S-id]]` references mapped).
 5. **Audit trail:** write `\.cache/convert_mapping.csv` (`legacy_id, new_id, notes`) and a dry-run report; `--apply` to write. Unresolvable people → minted stubs via §5.
 
 ---
@@ -527,7 +544,7 @@ Migrates a legacy transcript-mining pipeline output (`facts.txt` table rows, `st
 **Scope: the whole-family site** - the archive as a browsable website, not a single profile (the packet embeds a one-person slice of the same generator).
 
 **Pages:** **Home** - an **interactive descendant explorer** (v1 hero): expand/collapse nodes forward from a root ancestor, each node linking to its person page; plus an ancestor-pedigree view and the surname A-Z index and recent-discoveries teaser.
-All rendered from the `relationships` edges; no server, works from `file://`. **Person (curated)** - summary block; biography with `[S-]` rendered as numbered footnotes, `[P-]` as links; **timeline** (HTML rendering of the same index query as `fha views timeline`: accepted + needs-review claims sorted by date, grouped by decade, each entry showing type, value, and source link - the HTML and `.md` views share the same query and format); photo strip (via §9 person resolution, i.e. face_tags); Stories; Friends & Family; **sources index** (HTML rendering of the same index query as `fha views sources-index`: every source with ≥1 claim naming the person, grouped by source_type, with citation and file links - the HTML and `.md` views share the same query). **Person (stub)** - one-line entries on their couple's section. **Source** - citation, metadata, claims table with status badges, thumbnails + file links. **Place** - name, coords (map *URLs*, no embedded map dependency), dated `history:`, claims naming it, contained micro-places (`within:` children). **Discoveries** - rendered from `notes/discoveries.md`.
+All rendered from the `relationships` edges; no server, works from `file://`. **Person (curated)** - summary block; biography with `[[S-…]]` rendered as numbered footnotes, `[[P-…]]` as links; **timeline** (HTML rendering of the same index query as `fha views timeline`: accepted + needs-review claims sorted by date, grouped by decade, each entry showing type, value, and source link - the HTML and `.md` views share the same query and format); photo strip (via §9 person resolution, i.e. face_tags); Stories; Friends & Family; **sources index** (HTML rendering of the same index query as `fha views sources-index`: every source with ≥1 claim naming the person, grouped by source_type, with citation and file links - the HTML and `.md` views share the same query). **Person (stub)** - one-line entries on their couple's section. **Source** - citation, metadata, claims table with status badges, thumbnails + file links. **Place** - name, coords (map *URLs*, no embedded map dependency), dated `history:`, claims naming it, contained micro-places (`within:` children). **Discoveries** - rendered from `notes/discoveries.md`.
 
 **Assets - self-contained snapshot by default.** The generated site is a **standalone snapshot**, not a live view of the archive: the generator produces its **own web-optimized image derivatives** (resized, EXIF stripped so living-person/location metadata never leaks) and copies them into the site folder, so the site depends on *nothing* outside itself - deploy it to a USB stick, a static host, or hand it to a relative, with the archive absent.
 Full-resolution originals never leave the archive; the site carries derivatives only.
@@ -539,7 +556,7 @@ Thumbnails/derivatives via PIL.
 **Data source - SQLite index, not .md views.** The site reads all structured data (claims, relationships, vitals, sources, citations, place references) directly from `.cache/index.sqlite`, making the output as fresh as the last `fha index` run. The generated companion `.md` views (timeline, sources-index, draft-queue) are *not* read - they are research aids for the agent, not the site's input. Biography prose and Stories sections are read directly from the curated person `.md` file (the only parts that live in prose, not structured claims). This means `fha site` is independent of `fha views` - a site can be generated without ever running `fha views`.
 
 **Implementation:** Jinja2 templates in `tools/templates/`; biography/stories prose rendered to HTML via a minimal stdlib converter (headings, bold, lists, links - the profile format is deliberately simple) to avoid a markdown dependency; structured fact sections (timeline, sources table, relationships) rendered from index queries; image derivatives via `PIL`.
-Token swap: `TOKEN_RE` → relative hrefs; unresolved tokens render highlighted (already lint errors).
+Token swap: each `[[ID]]` link → a relative href, preferring its `|display` text for the label and falling back to the resolved record name; a name/stem `[[ ]]` resolves through the alias map (so a `living` person named by `[[P-…]]` or `[[Name]]` is redacted name-and-all), and an unresolved non-ID `[[stem]]` renders as plain text, not a broken-cite. Unresolved well-formed ID links render highlighted (already lint errors).
 
 **Tree rendering - borrow the engine.** The interactive trees (descendant explorer, ancestor pedigree, FAN graph) are rendered by a **vendored client-side library**, not hand-rolled D3 - current best candidate **family-chart** (donatso, MIT, D3-based, framework-agnostic, has its own JSON input format).
 It is a *replaceable rendering adapter* in the borrow-the-engines spirit: `fha views tree` emits the neutral tree JSON (§14b), the site bundles the library and feeds it that JSON (mapped to the library's format), and swapping renderers later touches only the adapter.
@@ -553,13 +570,13 @@ Verdict + alternatives (Yakubovich/descendant_tree, others) evaluated in the own
 
 Renders a curated profile to the user's **extended WikiTree dialect** (established in existing profiles, e.g. Hartley-6084), not vanilla markup:
 
-- **Named-ref convention:** `[S-id]` → `<ref name="S-id"/>` at use sites; full `<ref name="S-id">{citation}</ref>` definitions gathered into the hidden `<div name="references" style="display: none">` block at top (the dialect's reuse pattern).
+- **Named-ref convention:** `[[S-id]]` → `<ref name="S-id"/>` at use sites; full `<ref name="S-id">{citation}</ref>` definitions gathered into the hidden `<div name="references" style="display: none">` block at top (the dialect's reuse pattern).
 - **Spacetime spans, auto-generated:** each factual statement backed by a cited claim with `place`/`date` wraps in `<span class="spacetime" data-loc="{place name}" data-date="{ISO date}">…</span>` - the dialect's machine-readable annotations, emitted from claims instead of hand-built.
-- `[P-id]` → `[[{external_ids.wikitree}|{name}]]` where recorded; plain name otherwise.
+- `[[P-id]]` → `[[{external_ids.wikitree}|{name}]]` where recorded; plain name otherwise.
 - `{{Ancestry Image|db|id}}` emitted from source `external_links` matching Ancestry image refs.
 - **Template hooks:** optional claim-type→infobox mappings (e.g. military service → `{{US Civil War}}` with enlisted/mustered fields) in `tools/wikitree_templates.yaml`.
 - Sections map 1:1 (the profile structure and the dialect already agree); `== Sources ==` ends with `<references/>`. Output to stdout or file; never uploads.
-- **Privacy (mandatory, SPEC §21 - fail closed, no opt-in).** WikiTree is a public-publication path, so it enforces the redaction contract with no `--include-living`/`--include-restricted` escape hatch (unlike `fha gedcom`'s `--include-living`): a `living: true`/`living: unknown` **subject** is refused outright; a profile that cites any `restricted: true`, `source_type: dna`, or `rights.publication_ok: false` source is refused (the offending sources are named for cleanup, not silently dropped); and any *other* living/unknown person referenced by a `[P-id]` token in the rendered prose is redacted to `[living person]`. Restricted/DNA sources are also filtered at the SQL layer as defense in depth.
+- **Privacy (mandatory, SPEC §21 - fail closed, no opt-in).** WikiTree is a public-publication path, so it enforces the redaction contract with no `--include-living`/`--include-restricted` escape hatch (unlike `fha gedcom`'s `--include-living`): a `living: true`/`living: unknown` **subject** is refused outright; a profile that cites any `restricted: true`, `source_type: dna`, or `rights.publication_ok: false` source is refused (the offending sources are named for cleanup, not silently dropped); and any *other* living/unknown person referenced by a `[[P-id]]` link in the rendered prose is redacted to `[living person]`. Restricted/DNA sources are also filtered at the SQL layer as defense in depth.
 
 ---
 
@@ -567,7 +584,7 @@ Renders a curated profile to the user's **extended WikiTree dialect** (establish
 
 Derives a standard GEDCOM 5.5.1 file at export time - never stored, never re-imported as truth (GEDCOM is a one-way export bridge; the plain-file archive remains the corpus). `fha gedcom <P-id> [--mode descendants|ancestors|connected] [--generations N]` or `--all`.
 From the `relationships` edges and vital claims: INDI records (name, sex, birth/death/marriage from accepted vital claims with dates), FAM records (from spouse + child edges). `living`/`unknown` persons are redacted by default (living individuals → name withheld, à la standard privacy); `--include-living` overrides.
-Sources: each fact's `[S-id]` becomes a SOUR note referencing the source citation.
+Sources: each fact's `[[S-id]]` becomes a SOUR note referencing the source citation.
 Output is a `.ged` file; round-tripping back in is explicitly unsupported - GEDCOM is a one-way bridge to other apps.
 
 ## 13b. `fha capture` - web record capture (the intake on-ramp)
@@ -672,7 +689,7 @@ The archive's own `.gitignore` must list `WORKING_COPY` (and `.cache/`) so the m
 |---|---|
 | `photo-context` skill | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - the pipeline's captions get smarter as the archive grows. Writes are marked as AI per §20. |
 | WikiTree importer | Reverse of §13 for legacy profiles: named refs → draft source records (Ancestry/Newspapers.com citation patterns recognized), spacetime spans → claim date/place hints, wikilinks → external_ids, sections → profile scaffold; everything enters `suggested`. The existing WikiTree corpus is migration source material. |
-| Citation assistant | Match uncited factual sentences in profiles against accepted claims (person + type + date overlap); suggest `[S-]` insertions as a diff. |
+| Citation assistant | Match uncited factual sentences in profiles against accepted claims (person + type + date overlap); suggest `[[S-…]]` insertions as a diff. |
 | Auto-anchor refinement | Re-run anchor matching with better text alignment for converter output. |
 
 ## 14a. `fha xref` - cross-reference pass
@@ -709,14 +726,14 @@ The deterministic *detection* tools (`fha xref`, `fha cooccur`, `fha places cand
 | `confirm cooccur <P-a> <P-b> --source S --subtype friend\|associate\|neighbor [--accept]` | Confirm an `fha cooccur` person-pair: mint a `relationship` claim (source cited). **Minted `suggested` by default** - the confirm proposes the edge; accepting it into a load-bearing graph edge still goes through claim review (§3b), since `_derive_relationships` is accepted-only. `--accept` is the escape hatch for a human treating the confirm *as* the review (stamps `reviewed:` like `fha claim`). |
 | `confirm dismiss <P-a> <P-b>` | Record a co-occurrence pair in `\.cache/cooccur_dismissed.json`, the tombstone `fha cooccur` reads. Nothing else writes this file. |
 | `confirm place <C-id> [<C-id> …] (--name NAME [--hierarchy H] \| --into <L-id>)` | Confirm an `fha places candidates` cluster: mint a new `L-id` place in `places/places.yaml` (or merge via `--into`) **and** relink the named claims' `place:`, so the cluster stops surfacing as unlinked. |
-| `confirm discovery "<text>" [--refs S-…,P-…]` | Append a dated entry (with `[S-]`/`[P-]` refs) to `notes/discoveries.md`, the research-wins log `fha report` §0 leads with. |
+| `confirm discovery "<text>" [--refs S-…,P-…]` | Append a dated entry (with `[[S-…]]`/`[[P-…]]` refs) to `notes/discoveries.md`, the research-wins log `fha report` §0 leads with. |
 | `confirm draft <P-id>` | Flip a profile's `<!-- AI-DRAFT … -->` markers to `<!-- AI-ACCEPTED … (accepted DATE) -->` (§20: draft prose carries the marker until the human accepts it). The original date/model stay in the marker - provenance preserved, not erased. |
 
 `confirm cooccur`/`dismiss` are the write owners for the `fha cooccur` candidates; `confirm xref` for the `fha xref` candidates; `confirm place` for the `fha places candidates` clusters; `confirm discovery` and `confirm draft` are the report's "act on a discovery" and the `write-biography` skill's "accept this draft" gestures made into deterministic, replayable CLI actions.
 
 ## 14b. `fha views draft-queue` - material awaiting narrative
 
-Per curated person: accepted claims whose source is **not cited** in the person's profile (`[S-id]` token absent from the profile body) - the writing backlog, computed as a set diff.
+Per curated person: accepted claims whose source is **not cited** in the person's profile (`[[S-id]]` link absent from the profile body) - the writing backlog, computed as a set diff.
 Generated view next to the timeline; consumed by the `write-biography` skill; surfaced in the report.
 
 ## 15a. `fha report` - the session report (research feed)
@@ -727,13 +744,13 @@ Surfaced in the workbench as the `/today` skill (the skill runs the report, then
 **Steps.** (1) `fha photoindex` incremental refresh; (2) `fha index` rebuild; (3) lint in report mode; (4) diff current IDs/statuses against the snapshot in `.cache/last_report.json`; (5) assemble sections; (6) write the new snapshot.
 
 **Sections.** *(Discoveries lead - the report is a research narrative first, a chore list second.)*
-0. **Discoveries since last session** - questions answered, contradictions resolved, first corroborations (a claim gaining its first independent second source), profiles newly vital-complete, confirmed connections. With confirmation, each is appended to `notes/discoveries.md` (dated, with `[S-]`/`[P-]` refs) - the durable log of research wins.
+0. **Discoveries since last session** - questions answered, contradictions resolved, first corroborations (a claim gaining its first independent second source), profiles newly vital-complete, confirmed connections. With confirmation, each is appended to `notes/discoveries.md` (dated, with `[[S-…]]`/`[[P-…]]` refs) - the durable log of research wins.
 1. **Review queue** - suggested claims grouped by source, oldest first (lint W102).
 2. **New since last session** - sources, claims, people added/changed (the snapshot diff).
 3. **Vitals gaps** - curated people first, then people touched since last report (lint W101).
 4. **Contradictions** - `contradicts:` pairs lacking an open question (lint E009 set).
 5. **Search-log awareness** - leads in any section are annotated "already searched (date)" from the search_log; nils older than a configurable horizon (default 18 months) are flagged as worth re-running (collections grow).
-5b. **Answerable questions** - open questions whose referenced gap (person+type) now has an accepted claim, or whose referenced C-ids changed status: each *proposed* for `answered [S-…]` or review. **Closing requires human confirmation** - the report proposes, never executes.
+5b. **Answerable questions** - open questions whose referenced gap (person+type) now has an accepted claim, or whose referenced C-ids changed status: each *proposed* for `answered [[S-…]]` or review. **Closing requires human confirmation** - the report proposes, never executes.
 6. **Photo processing triage** - top N candidates (§15b).
 6b. **Place candidates** - recurring unlinked `place_text` clusters and GPS clusters (`fha places candidates`), with elevate-or-dismiss prompts.
 7. **Hypotheses & draft queues** - open hypotheses awaiting verification; per-person draft-queue counts (§14b).
@@ -798,7 +815,7 @@ The configuration below is what makes any conforming harness genealogy-aware, an
 - `mine-transcript` - the invoked extraction pass: selective claim drafting (`suggested` + `anchor:`), name→P-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), stories to `## Stories`, the pass recorded in `## Notes` (model, date). Never runs unrequested.
 - `today` - run `fha report`, narrate it discoveries-first, offer to start the top item.
 - `research-next` - inference and steering (checks the research log FIRST - never proposes a search already logged unless the nil has aged past the re-run horizon; emits plan-shaped output whose executed searches are logged back): combine open questions, vitals gaps, and open hypotheses with historical context (which record sets exist for the time/place, where they are held, what era events imply) into concrete research leads; may draft hypotheses (origin: agent) into research files - leads and hypotheses, never claims.
-- `write-biography` - drafting rules for profiles: citation density (§16 of SPEC), uncited-prose-is-context, summary-block format, `[P-]`/`[S-]` tokens only from verified IDs.
+- `write-biography` - drafting rules for profiles: citation density (§16 of SPEC), uncited-prose-is-context, summary-block format, `[[P-…]]`/`[[S-…]]` links only from verified IDs.
 
 **External roots in the workbench.** When `fha.yaml` maps a root outside the archive, the harness needs access granted: for Claude Code, launch with `--add-dir <photos-root>` (the settings-file `additionalDirectories` route has had reliability reports; prefer the flag, e.g. in a small launch script committed next to fha.yaml).
 The agent still must not bulk-read asset trees - access exists for exiftool/process/packet operations, not ingestion.
@@ -851,6 +868,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha gedcom <P-id\|--all>` (T C) | Exporting relationships+vitals to GEDCOM for another genealogy app. One-way; redacts living/unknown. |
 | `fha views tree <P-id> --mode …` (T C) | Generating an ancestor/descendant/FAN tree (json/html/dot). |
 | `fha views timeline\|sources-index\|draft-queue\|brackets` (T C) | Manual view refresh (review sessions auto-trigger); `brackets --fix` after family-structure changes - also verifies and corrects Ahnentafel folder numbers and person file placement (requires `root_person` in `fha.yaml`). |
+| `fha normalize-links [--dry-run \| --write]` (T C) | Tidy citations/cross-links to the standard form: single-bracket `[S-…]` → `[[S-…]]`; a resolved human stem → canonical `[[S-…]]` (keeping the stem in `aliases:`); a resolved frontmatter name-link `[[Ken Smith]]` → `[[P-…\|Ken Smith]]`. Flags ambiguous name-links (alias clash, W113) rather than guessing. Dry-run by default; returns a `Result`. Sits beside the formatter - deliberately not part of it (the formatter never rewrites prose). |
 | `fha places geocode` / `places lint` (T C) | Coordinate backfill (human-confirmed); registry hygiene. |
 | `fha convert-mining [--apply]` (T C) | One-time: legacy ChatGPT mining migration. |
 | `fha photoindex find / report` (T C, deferred after scan/schema phase) | Ad-hoc photo search; cross-variant date-conflict review. |

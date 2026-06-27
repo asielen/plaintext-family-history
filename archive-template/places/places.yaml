@@ -1,6 +1,11 @@
-# Place registry - one record per physical location (SPEC §15). Empty to start.
-# Example shape:
-# - id: L-xxxxxxxxxx
-#   name: Springfield
-#   coords: [39.8, -89.6]
-#   hierarchy: Springfield, Sangamon County, Illinois, USA
+# Place registry - one record per physical location (SPEC §15). One file for all
+# places. Empty to start. Copy the commented _TEMPLATE block below, uncomment it,
+# and fill it in. Once a place is here, type [[Fairview]] anywhere and it links.
+
+# - id: L-__________        # _TEMPLATE - OPTIONAL code: 10 chars, digits and a-z but NOT i,l,o,u
+#                           # (e.g. L-3b8k0wq5tn). A tool can also generate one for you.
+#   name: Fairview          # what you call this place
+#   coords: [39.8, -89.6]   # OPTIONAL - latitude, longitude (look it up on a map, or leave it out)
+#   hierarchy: Fairview, Breton County, Kansas, USA   # OPTIONAL - the full place, largest last
+#   alt_names:              # OPTIONAL - other names it's gone by, so [[old name]] still links
+#     - Fair View

@@ -85,7 +85,7 @@ Own the format and the glue; borrow the hard engines (exiftool, OCR, transcripti
 Specifics:
 
 1. **Nothing generated is load-bearing.** Indexes, search, caches, generated views, embeddings - all rebuildable from the archive. Delete any of them and the next run restores them.
-2. **The spec is the source of truth for tooling.** Every script is an executable copy of rules written in these documents; if a script cannot be regenerated from the spec, the spec is incomplete. If Python fades or every script dies, the archive remains fully usable **by hand** - a person can mint an ID with a dice roll, write a source record from the template, and cite it from a profile with no software at all.
+2. **The spec is the source of truth for tooling.** Every script is an executable copy of rules written in these documents; if a script cannot be regenerated from the spec, the spec is incomplete. If Python fades or every script dies, the archive remains fully usable **by hand** - a person names a file, fills in the shipped template (`archive-template/`), and links to it by name (`[[grandpas-letter]]`), with no software at all. The machine IDs are a convenience the tools add and maintain; a human never has to create one.
 3. **Python is preferred** for scripts, minimal dependencies, small and single-purpose. No script may be *required*. The preferred language may change in the future.
 4. **Tools report by default** and modify only when explicitly asked.
 5. **The tools are a headless core.** Each tool is an engine that computes and returns a structured result; rendering that result for a human is a separate, replaceable layer. Whatever front door drives the tools - a terminal command, an AI agent shelling out, a batch pipeline, a future click in a UI - calls the same engine and reads the same result. The interface is glue; the engine is the tool. (This is also how the deterministic write-backs stay honest across front doors - see §6.)
@@ -141,8 +141,8 @@ IDs are assigned at processing, on need - the processing path (§4) applied to i
 **What each ID is for** - the usage map that justifies each one's existence:
 
 - **`S-` ids** are the *citation and retrieval unit*: prose cites them (§17), filenames carry them, embedded keywords repeat them. If you only ever interact with the archive as a reader, S-ids are the only IDs you need.
-- **`C-` ids** are the *assertion unit*, used almost entirely by tooling and active research: claim-to-claim links (`corroborates`, `contradicts`, supersession), review tracking and backlogs, the linter's cross-checks (summary block ↔ accepted claims), generated timelines, and the rare precision citation `[C-…]` for one disputed assertion. Readers never need them; the system does.
-- **`P-` ids** make people unambiguously linkable across name changes, spelling variants, and duplicate names - in claims' `persons:` lists, in profile cross-links, in photo keywords (§20).
+- **`C-` ids** are the *assertion unit*, used almost entirely by tooling and active research: claim-to-claim links (`corroborates`, `contradicts`, supersession), review tracking and backlogs, the linter's cross-checks (summary block ↔ accepted claims), generated timelines, and the rare precision citation `[[C-…]]` for one disputed assertion. Readers never need them; the system does.
+- **`P-` ids** make people unambiguously linkable across name changes, spelling variants, and duplicate names - in claims' `persons:` lists, in profile cross-links, in photo keywords (§20) - which is why a human-typed name resolves to a person only when it is unambiguous, and a shared name (two `John Smith`s) is pinned to its ID.
 - **`L-` ids** keep places stable across renamings and spelling variants in claims.
 - **`H-` ids** give hypotheses stable handles for the report (tracking across sessions), question references, and the discovery join ("a hypothesis from 2024 verified today"). **An H-id never converts to a C-id** - IDs are immutable and typed for life. Verification mints a *new* claim from the found source; hypothesis records `verified → C-…`, claim carries optional `hypothesis: H-…` back-pointer; both persist.
 
@@ -255,6 +255,8 @@ Some of the most important genealogical findings are *absences*: a person who ne
 
 This keeps completeness honest: a person isn't "missing" a marriage if we've confirmed there wasn't one. **Living persons** (`living: true|unknown`) are likewise never flagged for a missing death - the vitals-completeness check (§8.2) treats death as inapplicable while living.
 
+The same low-ceremony pattern covers **provisional vital estimates**: optional `birth:` / `death:` fields on a person record (§9) hold the unsourced date you know before you have found the record. Like the absence flags, they are assertions of current knowledge, not sourced facts; the linter lists them as needing a source, and a sourced `birth`/`death` claim supersedes them. Recording what you know before you can prove it is a legitimate starting state, not an error.
+
 ### 8.7 Claims are a background layer
 
 A human reading the archive never needs claims: prose cites *sources*, and the reader's path is profile → source record → file.
@@ -262,6 +264,8 @@ Claims exist to power tooling - timelines, completeness checks, sources-indexes,
 The source file is each claim's durable, human-readable home (the post-it on the document in the drawer); all *querying* happens against the generated index, rebuilt from disk on demand.
 Tooling must abstract claims away from readers while depending on them completely - the full design implications live in `TOOLING.md`.
 The cost of files-as-truth - edit, then reindex - is accepted.
+
+Claims live in a fenced ` ```yaml ` block - not because the parser needs the fence but because it helps markdown tooling render cleanly instead of as a garbled mess, and keeps a value's stray `#` or `*` literal. (Frontmatter needs no fence only because it is treated as a special entity by markdown editors such as Obsidian, which is also why frontmatter links can be clickable and a fenced block's cannot - and why the cross-linking lives in the frontmatter `people:` / `places:` fields (§14), not the claims block.) Inside the claims block, IDs are written **bare** (`persons: [P-…]`, `place: L-…`) - structured data, not `[[ ]]` links. If you write claims by hand and forget the `yaml` fence, the tools still read claim-shaped content under `## Claims`, and the linter will later add the fence for you - the fence is the preferred form, not a trap.
 
 ## 9. Persons `LOCKED`
 
@@ -276,7 +280,13 @@ Source records get the parallel treatment: `status: superseded`, `superseded_by:
 ```yaml
 name: Thomas Edward Hartley     # required; preferred display name
 id: P-de957bcda1                 # required
-name_variants: [T. E. Hartley]    # optional
+aliases:                         # link-resolution handles, tool-maintained: the ID (so [[P-…]]
+  - P-de957bcda1                 #   resolves in Obsidian) + the name & variants (so [[Thomas
+  - Thomas Edward Hartley        #   Edward Hartley]] resolves) + any human stem you like.
+  - T. E. Hartley                #   Distinct in purpose from name_variants (display) - see §18.
+name_variants: [T. E. Hartley]    # optional; display variants (mirrored into aliases)
+birth: 1840~                     # optional PROVISIONAL estimate (unsourced); EDTF; superseded by a
+death: 1941                      #   birth/death claim. Linter tracks these toward a source (§8.6).
 face_tags: ["Thomas Edward Hartley"]   # optional: EXACT face/people-tag strings meaning
                                  # this person in the photo library (§20) - the durable
                                  # name→P-id resolution; one line here vs retagging photos
@@ -291,10 +301,15 @@ created: 2026-06-10
 tier: curated                    # stub | curated
 ```
 
-Birth and death dates are **not** person fields - they are claims.
-The person record is identity, flags, and prose; facts live with evidence.
+The person record is identity, flags, and prose; sourced facts live with evidence, as claims. The record may carry optional **provisional** `birth:` / `death:` estimates - most genealogists expect to record those as core data points. Like any fact they want a source: add a `birth`/`death` claim tagged to the person, and that sourced claim supersedes the frontmatter estimate. When run, the linter matches the provisional `birth:`/`death:` values against sourced birth/death claims to keep them aligned, and lists any still needing a source (§8.6).
+
+A person's `name` and each `name_variants` entry are mirrored into `aliases:`, so typing `[[Thomas Edward Hartley]]` resolves to that person without needing the unique ID. People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[P-…|John Smith]]`). You get the best of both worlds - the stable unique ID and an easy-to-read name.
 
 ## 10. Identifiers `LOCKED`
+
+The system does not expect a human to create an ID. A person references records by **filename and name**; the **ID is the machine identity**, assigned by tools, not by people. A hand-written record may carry no ID until a tool first touches it - a valid pre-machine state (§4); on contact a tool mints the ID, records the filename/name as an alias so existing name-links keep resolving, and maintains it thereafter.
+
+The ID is the more durable identity. A filename is mutable and can collide; an ID is immutable and unique (format below), so machine references hold across renames, spelling changes, and duplicate names. Name-based references work while names stay unique - IDs are stronger, which is why tools assign one to every record.
 
 ```
 {TYPE}-{10 random Crockford Base32 characters}   e.g.  P-3kq9v8x2m1, S-7n4hp0wztb
@@ -306,6 +321,7 @@ The person record is identity, flags, and prose; facts live with evidence.
 - **IDs are immutable** - never changed, never reused, including for deleted records.
 - **No registry.** IDs are random, so no counter or ID database exists. **The archive itself is the registry**: every record carries its ID, so the set of used IDs is always derivable by walking the tree. Minting tools generate a candidate and check existence (against the tree, or the rebuildable index as a cache). Two machines mint independently. Sequential IDs are rejected precisely because they would require the registry this design avoids.
 - IDs are assigned **on need** (at processing), never in bulk to unprocessed files (§7).
+- **Minting is the machine's job.** `fha id mint` - or any tool, on first contact with an id-less record - generates a candidate and checks it appears nowhere in the tree. A human may mint one by hand (ten characters from the alphabet above, checked absent), but nothing requires it.
 
 ## 11. Dates: EDTF everywhere `LOCKED`
 
@@ -454,6 +470,8 @@ The plain-text surface stays fully usable: rebuilding the query index from recor
 
 Every record file is **self-identifying** - its ID is in its filename, so files survive separation from their folders, and searching an ID finds everything carrying it.
 
+The ID-in-filename is the **formalized** form, maintained by tools. A record a person creates by hand may be named however they like - `john-smith.md`, `grandpas-letter.md` - with no ID suffix, a valid pre-machine state (§10): the human identifies it by name. On first tool contact the file is renamed to the grammar below, with the original name preserved both as the mutable `slug` and as an alias, so existing `[[name]]` links keep resolving. From then on the filename carries the ID and the self-identifying invariant holds.
+
 - **Source records:** `{slug}_{S-id}.md` - slug lowercase hyphenated, mutable; ID immutable.
 - **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` - the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) - but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`… Copies: `b`, `c`, `negative`… Derivative views: `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`) marking supplementary detail images, never independent sources. Note: `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` - it is the physical film or glass-plate source material for the root image. Suffix parsing priority order: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; remaining stem = base id (see `TOOLING.md` §6 for the full algorithm). Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions - "text from alternate version" tags - so any copy reveals the others.)
 - **Person files:** `{surname}__{given_names}[_{kind}]_{P-id}.md` - **double underscore** after the surname (families sort together), underscores within given names, **birth surname always** (keeps women findable under the name in their early records; matches WikiTree practice). `kind` ∈ `research` | `timeline` | `sources-index` | `draft-queue`.
@@ -468,6 +486,8 @@ Frontmatter carries metadata and the file inventory; `## Claims` carries all of 
 ```markdown
 ---
 id: S-b237895f31
+aliases:                       # link-resolution handles: the ID (so [[S-…]] resolves) + any human
+  - S-b237895f31               #   stem you used before processing (e.g. the inbox filename)
 title: Campaign card for T. E. Hartley, Clerk of the District Court, 1880
 source_type: photo            # census | vital-record | photo | interview | letter | newspaper | …
 source_date: 1880-11~         # EDTF; the date OF the source itself
@@ -478,8 +498,11 @@ citation: >
   Court, Fairview, Kansas, circa November 1880.
 external_links:
   - https://www.wikitree.com/photo.php/f/f6/Hartley-6084-1.jpg
-people: [P-…, P-…]            # P-ids this source involves/depicts - interview speakers,
-                              #   people in a photo, a census household; feeds the index
+people:                        # who this source involves/depicts - the human cross-link surface,
+  - "[[P-…|Thomas Hartley]]"    #   link-valued so it draws an Obsidian graph edge; hand-editable by
+  - "[[P-…|Margaret Cole]]"     #   name ([[Margaret Cole]]), settled to [[P-…|Name]] by the tools
+places:                        # optional; where the source is set - same link form; may be
+  - "[[L-…|Fairview]]"          #   hand-added or synced from the claims' place: fields
 restricted: true              # only when applicable (§19); DNA always
 provenance: "Robert Hartley's collection, acquired 2025"   # optional: where the original came from
 rights:                       # optional publication metadata (tooling flattens
@@ -509,7 +532,7 @@ created: 2026-06-10
 `- {date, model, harness, task, outputs: […], human_reviewed: bool}`)
 
 ## Stories
-(narrative chunks mined from the source, each with topics + [P-…] refs - feedstock
+(narrative chunks mined from the source, each with topics + [[P-…]] refs - feedstock
 for profile Stories sections)
 
 ## Notes
@@ -521,10 +544,12 @@ Each file may carry an optional `status:` - omitted means present; **`missing-fi
 For documents-root files the link has three carriers (filename, inventory, embedded keyword where supported); for photos-root files, two (inventory + keyword - filenames are sacred).
 Tooling verifies the carriers agree.
 
+The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so an Obsidian-only editor can cross-link by name and draw the graph edges, hand-editable, normalized to the stable `[[P-…|Name]]` / `[[L-…|Name]]` form by the tools. The claims block (§8) instead requires **bare** IDs - `persons: [P-…]`, `place: L-…` - because it is structured data in a fenced block; links live in the frontmatter, not the claims (§8.7). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
+
 **Source type vocabulary** (controlled, expandable by logged decision - same pattern as claim types): `census` · `vital-record` · `newspaper` · `photo` · `interview` · `letter` · `military-record` · `land-record` · `probate` · `directory` · `dna` · `book` · `website` · `artifact` · `proof-argument` · `other` (+ free-text `subtype` when nothing fits).
 
 **Proof-argument sources.** A conclusion resting on indirect or negative evidence is written as an **authored source**: `sources/proofs/{slug}_{S-id}.md`, `source_type: proof-argument`, `source_class: authored`.
-The body *is* the argument, citing the contributing claims and sources with normal `[C-]`/`[S-]` tokens (the linter verifies them); the concluded claim(s) live in the proof's own `## Claims` block - the proof is their source - typically with `evidence: indirect`.
+The body *is* the argument, citing the contributing claims and sources with normal `[[C-…]]`/`[[S-…]]` links (the linter verifies them); the concluded claim(s) live in the proof's own `## Claims` block - the proof is their source - typically with `evidence: indirect`.
 Biographies then cite the proof like any source.
 
 **DNA sources.** `source_type: dna`, **always** `restricted: true`.
@@ -584,11 +609,11 @@ Per the filename grammars of §13, a curated person has, in their couple folder:
 ```markdown
 # Thomas Edward Hartley (1840-1941)
 
-**Born:** 3 Mar 1840 - Easton, Carrow Co., New York [S-xxxx]
-**Died:** 19 Jan 1941 - Riverton, California [S-xxxx]
-**Married:** Margaret A. Cole [P-cd795c61e0] - Feb/Mar 1871, Fairview, Kansas [S-ea61339378]
-**Parents:** Caleb Comstock Hartley [P-075114a0f8] · Chastina Augusta Reed [P-d00c678c1a]
-**Children:** Ethel [P-c4b26bb4bc] · Frances [P-83e768cacb] · Calvin [P-fa7541e871] · Edward [P-4b9d197ee4]
+**Born:** 3 Mar 1840 - Easton, Carrow Co., New York [[S-xxxx]]
+**Died:** 19 Jan 1941 - Riverton, California [[S-xxxx]]
+**Married:** [[P-cd795c61e0|Margaret A. Cole]] - Feb/Mar 1871, Fairview, Kansas [[S-ea61339378]]
+**Parents:** [[P-075114a0f8|Caleb Comstock Hartley]] · [[P-d00c678c1a|Chastina Augusta Reed]]
+**Children:** [[P-c4b26bb4bc|Ethel]] · [[P-83e768cacb|Frances]] · [[P-fa7541e871|Calvin]] · [[P-4b9d197ee4|Edward]]
 
 ## Biography
 (chaptered by era/place)
@@ -604,7 +629,7 @@ Per the filename grammars of §13, a curated person has, in their couple folder:
 In the body sections, factual statements should carry **all relevant citations** - every source that supports the fact - since the body is where corroboration is shown.
 (Tooling may suggest missing citations by matching prose against claims; see `TOOLING.md`.)
 
-The summary block is hand-curated denormalization of claims: every line cites; cross-links use `[P-xxxx]` tokens (zero-hop - person filenames carry IDs, so searching the token finds the person). **Tooling cross-checks the block against accepted claims and flags drift.**
+The summary block is hand-curated denormalization of claims: every line cites; cross-links use `[[P-xxxx]]` links (zero-hop - person filenames carry IDs, so searching the link's ID finds the person). **Tooling cross-checks the block against accepted claims and flags drift.**
 
 The research file body: `## Research Notes`, `## Open Questions`, `## Hypotheses`, `## Research Log`.
 
@@ -613,11 +638,11 @@ Entries are **dated** (collections grow; a nil from 2024 is worth re-running in 
 Format:
 ```yaml
 - date: 2026-06-12
-  question: "[H-…] / [Q ref] / free text objective"
+  question: "[[H-…]] / [Q ref] / free text objective"
   repository: Ancestry
   collection: "Kansas State Census, 1875"
   terms: "Hartley, Breton Co."
-  result: nil          # nil | found [S-xxxx] | partial (note)
+  result: nil          # nil | found [[S-xxxx]] | partial (note)
 ```
 Multi-person/locality searches log to `notes/research-log.md` with the same format. `research-next` and the report **check the log first** - "already searched (date)" is surfaced before any lead is proposed. **Hypotheses are where unsourced placeholder beliefs live** - a guess is never a claim (claims require sources by definition).
 Structure per hypothesis: `id:` (`H-` per §10), `hypothesis:` (the belief), `basis:` (reasoning/context), `verify:` (what evidence would settle it), `origin:` (`human` | `agent`), `status:` (`open` · `verified → C-xxxx` · `abandoned`).
@@ -631,19 +656,23 @@ Person-specific research lives in that person's research file, never here.
 
 - `notes/research/` - working notes spanning people or topics.
 - `notes/narratives/` - formal multi-person write-ups; every factual claim cites a source or is explicitly marked context/speculation; exportable.
-- `notes/questions.md` - single file of general open questions. Format per question: an `## Q:` heading, then `origin:` (`human` | `tool` | `agent` - machine questions are marked at birth), `status:` (`open` · `answered [S-xxxx]` · `closed (not pursuing)`), `refs:` (related `[P-]`/`[C-]` ids), and a `context:` list of dated, origin-attributed findings appended over time. Closing without an answer is a legitimate, recordable research outcome. Tooling may propose answers/closures and append context; status changes require human confirmation.
+- `notes/questions.md` - single file of general open questions. Format per question: an `## Q:` heading, then `origin:` (`human` | `tool` | `agent` - machine questions are marked at birth), `status:` (`open` · `answered [[S-xxxx]]` · `closed (not pursuing)`), `refs:` (related `[[P-…]]`/`[[C-…]]` links), and a `context:` list of dated, origin-attributed findings appended over time. Closing without an answer is a legitimate, recordable research outcome. Tooling may propose answers/closures and append context; status changes require human confirmation.
 
-Notes connect to the core through ID tokens in their text (and, for structured notes, frontmatter `persons:` / `sources:` lists). **A script reading only IDs must be able to reconstruct every connection** - app features (wikilinks, plugins) are sugar, never load-bearing.
+Notes connect to the core elements through ID links in their text, and linked frontmatter `persons:` / `sources:` / `places:` lists. **A script reading only the IDs those links resolve to must be able to reconstruct every connection** - the bare ID is the load-bearing part; the double brackets are durable plain-text delimiters, and the editor's *resolution and graphing* of them is front-end sugar, never load-bearing.
 
 ## 18. Citations and linking `LOCKED`
 
-Bare ID tokens, greppable and tool-verifiable:
+Double-bracket ID links, greppable and tool-verifiable:
 
-- **`[S-xxxx]` is the standard citation** on factual statements in any narrative body. It matches natural research practice - footnotes cite evidence - and is zero-hop: searching the token surfaces the source record *and* its files together.
-- `[C-xxxx]` is permitted when claim-level precision matters (one disputed assertion and its status) - the exception.
-- `[P-xxxx]` cross-links people; zero-hop via person filenames.
+- **`[[S-xxxx]]` is the standard citation** on factual statements in any narrative body. It matches natural research practice - footnotes cite evidence - and is zero-hop: searching the ID surfaces the source record *and* its files together (the bare `S-xxxx` is a substring of the link). The double brackets are durable delimiters - plain text in any editor, and a live link in a wiki-style editor where the source record carries the ID as an alias (§14).
+- The link always carries the **immutable ID**, never the slug or filename, so a citation survives a record rename. An optional display follows a pipe: `[[P-xxxx|Margaret Cole]]` reads as the name and links by ID.
+- `[[C-xxxx]]` is permitted when claim-level precision matters (one disputed assertion and its status) - the exception; it resolves to the claim's source record (§8.7).
+- `[[P-xxxx]]` cross-links people; `[[L-xxxx]]` a place. Both zero-hop via the record's ID/alias.
+- **Forgiving by default.** A hand-typed single-bracket `[S-xxxx]`, a bare `S-xxxx`, a human alias (`[[grandmas-album]]`), or an Obsidian fragment (`[[S-xxxx#Notes]]`) all still resolve; `fha normalize-links` tidies them to the standard form on request, never rejecting them.
 - **Uncited prose is by definition story/context, never fact.** The fact-safety rule, expressed as syntax.
-- Exporters swap tokens for refs/links; the WikiTree exporter renders `[S-…]` as `<ref>` blocks from the source's `citation` field.
+- Exporters swap links for refs; the WikiTree exporter renders `[[S-…]]` as `<ref>` blocks from the source's `citation` field, and redacts the display name of any `living`/`unknown` person (§19).
+
+**Resolution and the alias surface.** A `[[ ]]` link's target may be an ID or a name/stem; either resolves to a canonical ID through the record's `aliases:`. Three related fields stay distinct in purpose so they never conflate: **`aliases:`** are link-resolution handles - the canonical ID, any human stems, and (for persons *and* places) the `name` plus its `name_variants` / `alt_names` mirrored in, so a name-link resolves; **`name_variants:` / `alt_names:`** are the display/genealogical name variants a human curates - the *source* the tool mirrors into `aliases:`; **`face_tags:`** are exact photo people-tag strings (§20). The human edits `name` / `name_variants` / `alt_names`; the tool keeps `aliases:` in sync. Because mirrored names can collide (two `Springfield`s, two `John Smith`s), the alias-clash check (`TOOLING.md` §3) governs all of them, and a clashing name resolves only when pinned to its ID (§7).
 
 ## 19. Privacy `LOCKED`
 
@@ -730,8 +759,8 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **Place geocoder** | Backfill `coords` and `alt_names` in `places.yaml` from an offline gazetteer, with human confirmation. |
 | **Interview converter** | Migrate the prior transcript-mining output (T###/R###/Q### records) into conformant sources, `suggested` claims with anchors, stories, and questions. |
 | **Static site generator** | Render the archive as a **self-contained static HTML snapshot** - its own web-optimized asset derivatives, only publication-eligible material (living/unknown redacted, restricted/DNA excluded), interactive trees via a vendored rendering library fed a neutral JSON contract. No server, no accounts, no dependency on the archive once generated; works from a USB stick; embeds in packets. Visual design is built live, not specified here; the JSON data contract is. |
-| **WikiTree exporter** | Render a curated profile to WikiTree markup; `[S-]` tokens → `<ref>` citations. |
+| **WikiTree exporter** | Render a curated profile to WikiTree markup; `[[S-…]]` links → `<ref>` citations. |
 | **Doctor** | One health command: root + `fha.yaml` + mapped roots reachable; exiftool/Python present; index & photoindex freshness; lint summary; inbox aging; restricted/living/unknown counts; agent-instruction drift (stale command or skill names in AGENTS/skills). |
 | **Formatter** | Conservative normalization as a lint feature (`--format-check/--format-write`): key order, ID casing, blank lines, final newline - never rewrites prose. |
 | **Web capture** | Turn an open record page into an inbox source stub: scrape citation info from the HTML, accept a dropped/fetched asset (or store the page itself as an HTML asset when the page *is* the record), write a research-log entry, and stage for the processing pipeline. Site recipes for common sources; generic scrape as default. Sits on the open page - no credentialed scraping. *Engine `fha capture` (paste fallback) is built; the browser companion (extension/bookmarklet/native host/Claude-in-Chrome) is fully designed in TOOLING_INGESTION.md, build pending.* |
-| **Citation assistant** *(backlog)* | Suggest missing `[S-]` citations by matching uncited prose against accepted claims. |
+| **Citation assistant** *(backlog)* | Suggest missing `[[S-…]]` citations by matching uncited prose against accepted claims. |

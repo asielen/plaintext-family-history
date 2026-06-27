@@ -112,7 +112,6 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
-    TOKEN_RE,
     FhaConfigError,
     configure_utf8_stdout,
     fmt_id_display,
@@ -120,6 +119,7 @@ from _lib import (
     is_working_copy,
     load_fha_yaml,
     normalize_id,
+    strip_link_wrapper,
     open_index_db,
     photoindex_status,
     read_record,
@@ -196,11 +196,13 @@ def _escape(text: str) -> str:
 
 
 # Inline constructs, tried left to right. A markdown link `[text](url)` is
-# matched before an `[ID]` token so a token never half-matches a link; bold is
-# last. Anything not matched is literal text and gets escaped.
+# matched before a token so a token never half-matches a link; the `[[ ]]`
+# wikilink is matched before the legacy single-bracket `[ID]`; bold is last.
+# Anything not matched is literal text and gets escaped.
 _INLINE_RE = re.compile(
     r'\[(?P<ltext>[^\]]+)\]\((?P<lurl>[^)\s]+)\)'                 # [text](url)
-    r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # [ID] token
+    r'|\[\[(?P<wtarget>[^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|(?P<wdisp>[^\[\]]*))?\]\]'  # [[target|disp]]
+    r'|\[(?P<token>[PSCLH]-[0-9a-hjkmnp-tv-z]{10})\]'            # legacy [ID] token
     r'|\*\*(?P<bold>.+?)\*\*',                                    # **bold**
     re.I,
 )
@@ -209,18 +211,24 @@ _INLINE_RE = re.compile(
 def _inline_html(text: str, render_token) -> str:
     """Render one block of inline prose to HTML.
 
-    Handles markdown links, archive `[ID]` tokens (delegated to `render_token`,
-    which already returns safe HTML), and `**bold**`. Every run of literal text
-    between constructs is HTML-escaped, so a stray `<` in a biography can never
-    inject markup. `render_token` is the only source of un-escaped HTML and it
-    is fully under our control (it emits anchors and spans we build).
+    Handles markdown links, archive citation tokens (`[[ID|display]]` /
+    `[[name]]` / legacy `[ID]`, delegated to `render_token`, which already
+    returns safe HTML), and `**bold**`. Every run of literal text between
+    constructs is HTML-escaped, so a stray `<` in a biography can never inject
+    markup. `render_token` is the only source of un-escaped HTML and it is fully
+    under our control (it emits anchors and spans we build).
+
+    `render_token(target, display=None)` accepts an ID *or* a human name/stem
+    (resolved through the alias map) plus the optional in-token display text.
     """
     out: list[str] = []
     pos = 0
     for m in _INLINE_RE.finditer(text):
         out.append(_escape(text[pos:m.start()]))
         pos = m.end()
-        if m.group('token'):
+        if m.group('wtarget') is not None:
+            out.append(render_token(m.group('wtarget').strip(), m.group('wdisp')))
+        elif m.group('token'):
             out.append(render_token(m.group('token')))
         elif m.group('ltext') is not None:
             raw_url = m.group('lurl')
@@ -429,6 +437,7 @@ class _SiteBuilder:
         self.source_meta: dict[str, sqlite3.Row] = {}
         self.place_meta: dict[str, sqlite3.Row] = {}
         self.place_names: dict[str, str] = {}   # id → display name (token rendering)
+        self.alias_map: dict[str, str] = {}     # lowercased name/stem → canonical id
         self.person_pages: set[str] = set()   # normalized pids that get a page
         self.source_pages: set[str] = set()   # normalized sids that get a page
         self.place_pages: set[str] = set()    # normalized lids that get a page
@@ -464,6 +473,21 @@ class _SiteBuilder:
         for row in self.conn.execute('SELECT id, name, hierarchy, within, lat, lon FROM places'):
             self.place_meta[row['id']] = row
             self.place_names[row['id']] = row['name'] or ''
+
+        # Alias resolve map (clash-aware): lets a prose `[[Ken Smith]]` / `[[stem]]`
+        # name-link resolve to its canonical ID so a living person referenced only
+        # by name is still redacted — the privacy hole the display-text form opens.
+        self._alias_table_ok: bool = False
+        idx: dict[str, set[str]] = {}
+        try:
+            for alias, cid in self.conn.execute('SELECT alias, canonical_id FROM aliases'):
+                idx.setdefault(alias, set()).add(cid)
+            self._alias_table_ok = True
+        except sqlite3.OperationalError:
+            pass   # pre-alias index: no name-link resolution, ID tokens still work
+        self.alias_map: dict[str, str] = {
+            a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1
+        }
 
         # Build the set of source ids that name a living person — checked via both the
         # explicit source_people table (frontmatter `people:`) and via claim_persons
@@ -545,26 +569,47 @@ class _SiteBuilder:
 
     # — token rendering —
 
-    def render_token(self, token: str, page_dir: Path) -> str:
-        """Render one `[ID]` token to HTML, relative to the page being built.
+    def render_token(self, token: str, page_dir: Path, in_display: str | None = None) -> str:
+        """Render one citation token to HTML, relative to the page being built.
+
+        `token` is an ID *or* a human name/stem; a name/stem is resolved through
+        the alias map first. `in_display` is the text a human wrote inside the
+        token (`[[P-id|Margaret Cole]]`) and is preferred over the resolved
+        record name — EXCEPT for a redacted living person, where neither the name
+        nor the in-token display is ever emitted.
 
         P-id → link to the person page when one exists; "Living Person" when the
         person is redacted under standalone; otherwise the plain (escaped) name.
         S-id → link to the source page, or "Restricted — not included…" when
         withheld. L-id → link to the place page (places are never redacted).
-        Any token whose target is absent from the index renders highlighted —
-        `<mark>[X-xxxx]</mark>` — exactly as TOOLING §12 / BUILD M8.1 specify
-        (these are already lint errors, surfaced rather than hidden).
+        A dangling *ID* token renders highlighted — `<mark>[X-xxxx]</mark>` (TOOLING
+        §12 / BUILD M8.1; already a lint error). An unresolved *name/stem* link is
+        an ordinary Obsidian note-link, not a citation, and renders as plain text.
         """
         pid = normalize_id(token)
         kind = id_type_of(pid)
+        if kind is None:
+            # A name/stem wikilink target — resolve through the alias map.
+            resolved = self.alias_map.get(strip_link_wrapper(token).lower())
+            if resolved:
+                pid, kind = resolved, id_type_of(resolved)
+            else:
+                # Inert Obsidian link, not a broken citation → plain text.
+                # Exception: when the aliases table is absent (stale index) we
+                # can't distinguish a non-record link from an unresolved living
+                # person — redact in standalone mode rather than leak a name.
+                if not self.linked and not self._alias_table_ok:
+                    return f'<span class="redacted">{_LIVING_LABEL}</span>'
+                return _escape(in_display or token)
+
         display = fmt_id_display(pid)
+        in_display = (in_display or '').strip() or None
 
         if kind == 'P' and pid in self.person_meta:
             row = self.person_meta[pid]
             if not self.linked and self._person_is_redacted(row):
                 return f'<span class="redacted">{_LIVING_LABEL}</span>'
-            name = _escape(row['name'] or display)
+            name = _escape(in_display or row['name'] or display)
             if pid in self.person_pages:
                 href = html.escape(_rel_href(self.persons_dir / _page_filename(pid), page_dir), quote=True)
                 return f'<a href="{href}">{name}</a>'
@@ -575,18 +620,18 @@ class _SiteBuilder:
             # or linked to a living person) renders as the redacted label in standalone.
             if not self.linked and pid not in self.source_pages:
                 return f'<span class="redacted">{_RESTRICTED_LABEL}</span>'
-            title = _escape(row['title'] or display)
+            title = _escape(in_display or row['title'] or display)
             if pid in self.source_pages:
                 href = html.escape(_rel_href(self.sources_dir / _page_filename(pid), page_dir), quote=True)
                 return f'<a href="{href}">{title}</a>'
             return title
         if kind == 'L' and pid in self.place_meta:
-            name = _escape(self.place_names.get(pid) or display)
+            name = _escape(in_display or self.place_names.get(pid) or display)
             if pid in self.place_pages:
                 href = html.escape(_rel_href(self.places_dir / _page_filename(pid), page_dir), quote=True)
                 return f'<a href="{href}">{name}</a>'
             return name
-        # Unresolved token — surfaced as the literal [X-xxxx] form, not hidden
+        # Unresolved ID token — surfaced as the literal [X-xxxx] form, not hidden
         # (TOOLING §12 / BUILD M8.1; these are already lint errors).
         return f'<mark>[{_escape(display)}]</mark>'
 
@@ -869,7 +914,7 @@ class _SiteBuilder:
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); skipping its prose.')
             return '', ''
-        render = lambda tok: self.render_token(tok, page_dir)  # noqa: E731 - tiny closure
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         bio = _extract_section(rec['body'], 'Biography')
         biography_html = _prose_to_html(bio, render) if bio else ''
         stories_html = _prose_to_html(rec['stories'], render) if rec['stories'] else ''
@@ -1185,7 +1230,7 @@ class _SiteBuilder:
         page rather than a broken link from the home teaser."""
         body, _entries = self._read_discoveries()
         page_dir = self.out_dir
-        render = lambda tok: self.render_token(tok, page_dir)  # noqa: E731
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
         content_html = _prose_to_html(body, render) if body else ''
         self._write_page(self.out_dir / 'discoveries.html', 'discoveries.html', {
             'content_html': self._markup(content_html) if content_html else None,
@@ -1378,7 +1423,7 @@ class _SiteBuilder:
         built from `person_pages`, which already excludes redacted persons under
         standalone — so the home page never lists or links a living person."""
         page_dir = self.out_dir
-        render = lambda tok: self.render_token(tok, page_dir)  # noqa: E731
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
 
         # Surname A-Z: group curated (non-redacted) people by surname initial.
         by_letter: dict[str, list[dict]] = {}

@@ -476,9 +476,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
-                    PRAGMA user_version=2;
+                    PRAGMA user_version=4;
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '2');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -551,9 +551,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
-                    PRAGMA user_version=2;
+                    PRAGMA user_version=4;
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '2');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -614,9 +614,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
-                    PRAGMA user_version=2;
+                    PRAGMA user_version=4;
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '2');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -705,9 +705,9 @@ class PhotoindexTests(unittest.TestCase):
             try:
                 conn.executescript(
                     """
-                    PRAGMA user_version=2;
+                    PRAGMA user_version=4;
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '2');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);

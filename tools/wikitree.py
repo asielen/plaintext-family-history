@@ -73,9 +73,10 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
-    TOKEN_RE,
     configure_utf8_stdout,
     edtf_bounds,
+    extract_token_ids,
+    extract_tokens,
     fmt_id_display,
     id_type_of,
     is_valid_id,
@@ -318,8 +319,7 @@ def _restricted_source_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3
     leakage.
     """
     source_ids = sorted({
-        normalize_id(t) for t in TOKEN_RE.findall(text)
-        if id_type_of(normalize_id(t)) == 'S'
+        t for t in extract_token_ids(text) if id_type_of(t) == 'S'
     })
     if not source_ids:
         return []
@@ -355,18 +355,24 @@ def _convert_heading(line: str) -> str | None:
 def _render_tokens(
     conn: sqlite3.Connection, text: str, used_sources: list[str], person_cache: dict,
 ) -> str:
-    """Render all [ID] tokens in `text` left to right.
+    """Render all citation tokens in `text` left to right.
 
-    `[S-id]` → self-closing ref (and registered in `used_sources`); `[P-id]` →
+    `[[S-id]]` → self-closing ref (and registered in `used_sources`); `[[P-id]]` →
     a WikiTree link, folded onto a preceding "Name " when the prose already
-    names the person (so "Margaret A. Cole [P-id]" doesn't render the name
-    twice); `[L-id]` → place name; anything else → the display id."""
+    names the person (so "Margaret A. Cole [[P-id]]" doesn't render the name
+    twice); `[[L-id]]` → place name; anything else → the display id.
+
+    When the human wrote the display *inside* the token (`[[P-id|Margaret Cole]]`),
+    that display is explicit — use it as the link text and suppress the
+    preceding-name folding (the fold exists only to avoid printing an
+    already-present name twice, which doesn't apply when the name is in-token).
+    Both bracket forms and the legacy single-bracket `[P-id]` flow through here."""
     out: list[str] = []
     pos = 0
-    for m in TOKEN_RE.finditer(text):
-        out.append(text[pos:m.start()])
-        pos = m.end()
-        pid = normalize_id(m.group(1))
+    for pid_raw, display, _fragment, (start, end) in extract_tokens(text):
+        out.append(text[pos:start])
+        pos = end
+        pid = normalize_id(pid_raw)
         kind = id_type_of(pid)
         if kind == 'S':
             if pid not in used_sources:
@@ -375,10 +381,15 @@ def _render_tokens(
         elif kind == 'P':
             name, forms, wikitree_id, living = _person_info(conn, pid, person_cache)
             if living in ('true', 'unknown'):
+                # Privacy: strip a preceding prose name; never emit the in-token
+                # display name either (it is simply not appended).
                 redacted = _redact_living_name(''.join(out), forms) if forms else None
                 if redacted is not None:
                     out = [redacted]
                 out.append('[living person]')
+            elif display:
+                # Explicit in-token display: use it as the link text, no folding.
+                out.append(_person_token_form(pid, display, wikitree_id))
             else:
                 folded = _fold_preceding_name(''.join(out), forms, wikitree_id) if forms else None
                 if folded is not None:
@@ -386,10 +397,13 @@ def _render_tokens(
                 else:
                     out.append(_person_token_form(pid, name, wikitree_id))
         elif kind == 'L':
-            row = conn.execute('SELECT name FROM places WHERE id = ?', (pid,)).fetchone()
-            out.append(row['name'] if row and row['name'] else fmt_id_display(pid))
+            if display:
+                out.append(display)
+            else:
+                row = conn.execute('SELECT name FROM places WHERE id = ?', (pid,)).fetchone()
+                out.append(row['name'] if row and row['name'] else fmt_id_display(pid))
         else:
-            out.append(fmt_id_display(pid))
+            out.append(display or fmt_id_display(pid))
     out.append(text[pos:])
     # Collapse runs of spaces left where a redundant cross-ref token was dropped.
     return re.sub(r' {2,}', ' ', ''.join(out))
@@ -431,8 +445,7 @@ def _transform_line(
     out_sentences: list[str] = []
     for sentence in _split_sentences(line):
         sids = [
-            normalize_id(t) for t in TOKEN_RE.findall(sentence)
-            if id_type_of(normalize_id(t)) == 'S'
+            t for t in extract_token_ids(sentence) if id_type_of(t) == 'S'
         ]
         rendered = _render_tokens(conn, sentence, used_sources, person_cache)
         if len(sids) == 1 and sids[0] in spacetime:

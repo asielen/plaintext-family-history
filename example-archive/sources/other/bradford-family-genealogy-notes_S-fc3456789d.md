@@ -1,5 +1,6 @@
 ---
 id: S-fc3456789d
+aliases: [S-fc3456789d]
 title: Bradford family genealogy notes — handwritten, undated
 source_type: other
 source_date: 1980~
@@ -8,8 +9,14 @@ repository: example collection
 citation: >
   Bradford, Carol A. "Bradford Family Genealogy Notes," handwritten manuscript, ca. 1980
   (fictional example document; photocopy held in example collection).
-people: [P-4d5e6f7g8h, P-5e6f7g8h9j, P-6f7g8h9jka, P-7g8h9jkamb,
-         P-2b3c4d5e6f, P-3c4d5e6f7g, P-0a1b2c3d4e]
+people:
+  - "[[P-4d5e6f7g8h|George Arthur Bradford]]"
+  - "[[P-5e6f7g8h9j|Edith Louise Hartley]]"
+  - "[[P-6f7g8h9jka|Warren Calvin Hartley]]"
+  - "[[P-7g8h9jkamb|Clara Mabel Frost]]"
+  - "[[P-2b3c4d5e6f|James Robert Bradford]]"
+  - "[[P-3c4d5e6f7g|Carol Anne Simmons]]"
+  - "[[P-0a1b2c3d4e|Alex James Bradford]]"
 files:
   - file: documents/transcripts/bradford-family-genealogy-notes_S-fc3456789d.txt
     role: transcription

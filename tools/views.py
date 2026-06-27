@@ -58,7 +58,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    TOKEN_RE,             # regex that matches any [X-crockfordid] token in profile text
+    extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -276,23 +276,31 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
 
 
 def _format_sid(source_id: str) -> str:
-    """Format a source ID as a citation token: s-xxx ->[S-xxx]."""
-    return f'[{fmt_id_display(source_id)}]'
+    """Format a source ID as a citation token: s-xxx -> [[S-xxx]]."""
+    return f'[[{fmt_id_display(source_id)}]]'
 
 
 def _place_label(place_text: str | None, place_id: str | None,
                  conn: sqlite3.Connection) -> str | None:
     """
     Return a place display string for a claim line.
-    Prefers place_text (as written in the source) over a place-table lookup.
+
+    A generated view is markdown (not the bare claims YAML), so this is one of
+    the few surfaces where a claim's place can actually be clickable in Obsidian:
+    a registered `place_id` renders as `[[L-…|label]]` (ID load-bearing, the
+    as-written text preserved as display); a claim with only free `place_text`
+    and no L-id stays plain. Prefers place_text over the registry name for the label.
     """
-    if place_text:
-        return place_text
-    if place_id:
+    label = place_text
+    if not label and place_id:
         row = conn.execute('SELECT name FROM places WHERE id = ?', (place_id,)).fetchone()
         if row and row['name']:
-            return row['name']
-    return None
+            label = row['name']
+    if not label:
+        return None
+    if place_id:
+        return f'[[{fmt_id_display(place_id)}|{label}]]'
+    return label
 
 
 def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
@@ -630,9 +638,10 @@ def _generate_draft_queue(
     but the profile body contains no [S-id] citation token for it.
 
     HOW "CITED" IS DETERMINED: we scan the profile body (not the YAML front-
-    matter) for [S-xxx] tokens using TOKEN_RE.  The body is where the summary
-    block and biography prose live.  If an S-id token appears anywhere in the
-    body, that source is considered cited and omitted from the queue.
+    matter) for citation tokens via extract_token_ids (new `[[S-…]]` or legacy
+    `[S-…]`).  The body is where the summary block and biography prose live.  If
+    an S-id token appears anywhere in the body, that source is considered cited
+    and omitted from the queue.
 
     HOW THE DIFF WORKS:
       accepted_sids  = {source_ids with ≥1 accepted claim for this person}
@@ -653,11 +662,10 @@ def _generate_draft_queue(
 
     rec = read_record(profile_p)
     body = rec['body']
-    # TOKEN_RE matches [X-crockfordid]; we filter to S- only (source citations)
-    cited_sids: set[str] = set(
-        normalize_id(m.group(1)) for m in TOKEN_RE.finditer(body)
-        if m.group(1).lower().startswith('s-')
-    )
+    # Citation tokens (new `[[S-…]]` or legacy `[S-…]`); filter to S- sources.
+    cited_sids: set[str] = {
+        tid for tid in extract_token_ids(body) if tid.startswith('s-')
+    }
 
     accepted_rows = conn.execute(
         """

@@ -34,6 +34,9 @@ Claims carry a confidence level and a review status.
 And guesses live as *hypotheses* - a separate, clearly-labeled state - until evidence promotes them to sourced claims.
 The linter flags anything that drifts.
 
+### Do I have to make IDs, or know everything before I write it down?
+No to both. You name a file something sensible and link to records by name - `[[Grandpa Joe]]`, `[[Hartley family bible]]`, a nickname works too. The machine IDs are the tools' job: run `fha lint` and it assigns them, keeps your filename as an alias so your name-links keep working, and tidies up. And you can record what you only half-know - a birth year you're fairly sure of but can't yet prove goes down as a *provisional* date, and the assistant just keeps it on a "still to source" list until the record turns up. Recording what you know before you can prove it is the normal starting point.
+
 ### Do I have to use Claude Code?
 No. The agent instructions live in `AGENTS.md`, a plain document any capable agent can read; `CLAUDE.md` is a one-line pointer to it.
 Claude Code is the reference harness, but the design deliberately avoids locking to it.

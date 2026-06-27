@@ -26,7 +26,7 @@ COMMANDS = (
     'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'photoindex',
     'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
     'process', 'capture', 'convert-mining', 'claim', 'confirm', 'site', 'install',
-    'update-tools', 'working-copy',
+    'update-tools', 'working-copy', 'normalize-links',
 )
 
 
@@ -362,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         from confirm import register as confirm_register
         from scaffold import register as scaffold_register
         from working_copy import register as working_copy_register
+        from normalize_links import register as normalize_links_register
         # 'site' shadows Python's stdlib site module (already cached in
         # sys.modules at interpreter startup), so `from site import …` would
         # find the wrong module. Load tools/site.py by path under a private name.
@@ -393,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         site_register(subs)
         scaffold_register(subs)  # adds both 'install' and 'update-tools'
         working_copy_register(subs)
+        normalize_links_register(subs)
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))
