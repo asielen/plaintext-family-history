@@ -196,11 +196,12 @@ A fourth choice, **none** (case (c) pointer-only), writes citation + `external_l
 ```jsonc
 {
   "manifest_version": 3,
-  "name": "Plainfile Family History - Capture",
+  "name": "Plaintext Family History - Capture",
   "version": "0.1.0",
   "action": { "default_title": "Capture this record" },
   "background": { "service_worker": "background.js" },
-  "permissions": ["activeTab", "scripting", "downloads", "storage"],
+  "side_panel": { "default_path": "panel.html" },
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "sidePanel"],
   "optional_permissions": ["nativeMessaging"],
   "host_permissions": ["<all_urls>"]
 }
@@ -209,6 +210,7 @@ A fourth choice, **none** (case (c) pointer-only), writes citation + `external_l
 - `activeTab` + `scripting` - read the current page's DOM only when the human invokes the companion (no ambient page access).
 - `downloads` - write the staged bundle into `Downloads/fha-inbox/…`.
 - `storage` - remember the human's preferences (default asset mode, capture-folder name, whether the native host is installed).
+- `sidePanel` (+ the `side_panel` key) - show the Phase-1→4 panel (§5.3) over the page via Chrome's side-panel API. Not a privacy-sensitive grant - it only lets the extension open its own panel - so it holds the least-privilege intent while enabling the described UX.
 - `nativeMessaging` is **optional** - requested only if the human opts into the §5.7 seamless path.
 - `host_permissions: <all_urls>` is needed only for the case-(a) cross-site asset `fetch`; it can be narrowed to the recipe domains for a tighter build. The DOM read itself rides on `activeTab` and needs no host grant.
 
@@ -234,6 +236,8 @@ This is a deliberate architecture choice, not laziness:
 | none | citation + `external_links` only | `asset_elsewhere: true`; lands in the research-to-do |
 
 The companion never silently produces a worse asset than it claims: a screenshot is labelled provisional, a pointer-only capture is labelled asset-elsewhere, a single-file snapshot is honest that it is a *copy of the page* not the original record, and review sees every flag. And the raw `page.html` is saved in every mode, so a preservation asset that is hard to re-parse (a PDF, a bulky inlined snapshot) never costs the recipe its clean scrape source.
+
+**Carrying the provisional flag (the core build's convention).** `capture.json` schema 1 (§3) has no dedicated provisional field, so a flagged screenshot is surfaced where review will always read it: the companion prepends a `[provisional image — a cleaner original may exist …]` line to the human's `notes` body, which `fha capture --ingest` files as the stub body. This keeps the *core* extension within the existing seam - no schema change, no new ingest field - while still never hiding that a better scan may exist. A first-class `asset_provisional` field is deliberately deferred to a separate layer (a future `capture.json` schema 2 + the ingest/stub plumbing to honor it); see §9.
 
 ### 5.7 Native-messaging host (the seamless upgrade)
 
@@ -284,8 +288,8 @@ These bind every delivery form and the engine alike:
 | Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
 | `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD.md M7.9) |
 | `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD.md M7.9) - warns when bundles sit in the staging folder waiting for `--ingest` |
-| Browser extension (§5) | **designed, not built** - lives in `browser-companion/`, not the archive operating layer |
-| Native-messaging host (§5.7) | **designed, not built** - optional v2 |
+| Browser extension (§5) | **built** ([`browser-companion/`](browser-companion/), MV3) - the four-phase side panel, generic pre-fill, all five asset modes, and the staged-bundle download path; lives outside the archive operating layer (not a `manifest.json` entry). The seamless native-host path (§5.7) is scaffolded but inert until its backend ships |
+| Native-messaging host (§5.7) | **designed, not built** - optional v2, a separate layer on top of the core extension |
 | Bookmarklet (§4.2) | **not pursued** - the extension is the front-end; the paste fallback is the floor (see §4.2) |
 
 The build order that follows the spine's own logic: `--ingest` first (it makes *any* staged bundle useful and is a thin wrapper over the existing engine), then the extension (which produces those bundles), then the native host as a seamless-path upgrade. A concrete milestone breakdown belongs in [`BUILD.md`](BUILD.md); this document is the design it implements against.
@@ -299,3 +303,4 @@ The build order that follows the spine's own logic: `--ingest` first (it makes *
 - **Single-file vs. PDF as the case-(b) default.** Single-file HTML stays scrapeable and is one-click in MV3, but bloats on image-heavy pages and can miss CORS-locked sub-resources; PDF renders faithfully but isn't reliably one-click (needs `chrome.debugger` or the native host) and can't be re-parsed. v1 leans single-file, with PDF offered via the human's *Save as PDF* + drag-drop (c). Whether to bundle a vendored SingleFile-style inliner or write a minimal one is a build-time call.
 - **How much to inline.** Images and CSS are the must-haves for case (b); fonts, web-components, and lazy-loaded media are diminishing returns against snapshot size. Settle the inlining scope when the extension is built.
 - **Recipe parity in the panel.** Whether to let a recipe ship an *optional* JS pre-fill snippet for a richer Phase-2 glance, without becoming a second source of truth. Kept out of v1 to hold the §5.5 line.
+- **First-class provisional/asset flags.** The core build carries a provisional screenshot as a `notes` line (§5.6), since schema 1 has no field for it. A future *separate layer* could add an `asset_provisional` field to a `capture.json` schema 2 and teach `fha capture --ingest` / the stub render to honor it as structured metadata (a stub frontmatter flag review can filter on), rather than free-text in the body. Deferred so the core extension stays inside the existing seam.

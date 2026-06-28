@@ -41,22 +41,22 @@ committed, so a PR that changes a tool but forgets to regenerate fails CI.
 -------------------------------------------------------------------------
 Preflight (Python ≥ 3.10; exiftool on PATH — a friendly heads-up, never a hard
 stop), then copy every manifest file into the archive and stamp
-`.plainfile-version` (the manifest version + the per-file checksums received).
+`.plaintext-version` (the manifest version + the per-file checksums received).
 Works from a git clone OR an unzipped download (`--repo` only needs a directory
 containing `manifest.json`; `.git/` is never assumed) — the zip path is
 first-class for non-technical users (docs/SETUP_FROM_ZIP.md).
 
 `fha update-tools [--dry-run] --repo PATH`  (run from inside an archive)
 -----------------------------------------------------------------------
-Compare the public manifest against the archive's `.plainfile-version`, reconcile
+Compare the public manifest against the archive's `.plaintext-version`, reconcile
 only the OPERATING layer, and NEVER destroy anything:
 
   - new file in the manifest                    → copy it in
   - file unchanged from the stock you installed  → overwrite silently
   - file you customized (checksum differs)       → move yours to
-                                                   .plainfile-backup/{date}/,
+                                                   .plaintext-backup/{date}/,
                                                    install stock, and report it
-  - file retired from the manifest upstream      → move to .plainfile-backup/,
+  - file retired from the manifest upstream      → move to .plaintext-backup/,
                                                    report (never deleted)
 
 The governing principle: the updater only adds, replaces-pristine-with-stock, or
@@ -77,10 +77,10 @@ CODE MAP
     _resolve_repo_root         — locate the clone/zip dir holding manifest.json
 
   Version stamp + backups
-    _load_version_stamp        — read .plainfile-version (None if absent)
-    _stamp_dict                — build a .plainfile-version payload
-    _write_version_stamp       — write .plainfile-version
-    _unique_backup_path        — collision-free .plainfile-backup/{date}/ path
+    _load_version_stamp        — read .plaintext-version (None if absent)
+    _stamp_dict                — build a .plaintext-version payload
+    _write_version_stamp       — write .plaintext-version
+    _unique_backup_path        — collision-free .plaintext-backup/{date}/ path
 
   Install (M9.1)
     _preflight                 — Python/exiftool checks → (ok, messages)
@@ -156,8 +156,8 @@ _SKELETON_EXCLUDE = {'README.md'}
 
 # The two on-disk footprints of the updater. Both are safe to inspect or delete
 # by hand; neither is ever copied or compared as part of the operating layer.
-VERSION_FILE = '.plainfile-version'
-BACKUP_DIR = '.plainfile-backup'
+VERSION_FILE = '.plaintext-version'
+BACKUP_DIR = '.plaintext-backup'
 
 
 # ── Errors / checksums ─────────────────────────────────────────────────────────
@@ -322,20 +322,20 @@ def load_manifest(repo_root: Path) -> dict:
     if not path.is_file():
         raise ScaffoldError(
             f"no manifest.json in {repo_root}. Point --repo at your copy of the "
-            f"plainfile tools — the folder that contains manifest.json, SPEC.md, "
+            f"plaintext tools — the folder that contains manifest.json, SPEC.md, "
             f"and the tools/ folder (a git clone or an unzipped download both work)."
         )
     try:
         manifest = json.loads(path.read_text(encoding='utf-8'))
     except (json.JSONDecodeError, OSError) as exc:
         raise ScaffoldError(
-            f"could not read {path}: {exc}. Re-download the plainfile tools and "
+            f"could not read {path}: {exc}. Re-download the plaintext tools and "
             f"try again."
         ) from exc
     if not isinstance(manifest, dict) or not isinstance(manifest.get('files'), list):
         raise ScaffoldError(
             f"{path} is not a valid manifest (expected a 'files' list). "
-            f"Re-download the plainfile tools and try again."
+            f"Re-download the plaintext tools and try again."
         )
     return manifest
 
@@ -357,7 +357,7 @@ def _resolve_repo_root(repo_arg: str | None) -> Path:
 # ── Version stamp + backups ─────────────────────────────────────────────────────
 
 def _load_version_stamp(archive_root: Path) -> dict | None:
-    """Read .plainfile-version; return None if absent, raise on corruption."""
+    """Read .plaintext-version; return None if absent, raise on corruption."""
     path = archive_root / VERSION_FILE
     if not path.is_file():
         return None
@@ -375,7 +375,7 @@ def _load_version_stamp(archive_root: Path) -> dict | None:
 
 
 def _stamp_dict(manifest: dict, checksums: dict[str, str]) -> dict:
-    """Build a .plainfile-version payload from a manifest + the checksums installed."""
+    """Build a .plaintext-version payload from a manifest + the checksums installed."""
     return {
         'manifest_version': manifest.get('manifest_version', MANIFEST_VERSION),
         'spec_version': manifest.get('spec_version', 'unknown'),
@@ -385,16 +385,16 @@ def _stamp_dict(manifest: dict, checksums: dict[str, str]) -> dict:
 
 
 def _write_version_stamp(archive_root: Path, stamp: dict) -> None:
-    """Write .plainfile-version (pretty JSON, trailing newline)."""
+    """Write .plaintext-version (pretty JSON, trailing newline)."""
     path = archive_root / VERSION_FILE
     path.write_text(json.dumps(stamp, indent=2) + '\n', encoding='utf-8')
 
 
 def _unique_backup_path(archive_root: Path, rel_path: str, date_str: str) -> Path:
-    """Compute a collision-free .plainfile-backup/{date}/{rel_path} destination.
+    """Compute a collision-free .plaintext-backup/{date}/{rel_path} destination.
 
     Backups preserve the archive-relative subtree (so a backed-up tools/fha.py
-    lands at .plainfile-backup/{date}/tools/fha.py). If that target already
+    lands at .plaintext-backup/{date}/tools/fha.py). If that target already
     exists — e.g. two updates the same day each move a re-edited file — a numeric
     suffix (-2, -3, …) is added so an earlier backup is never overwritten. The
     updater's whole promise is that nothing is lost.
@@ -447,9 +447,9 @@ def run_install(
     """Create an archive's skeleton + operating layer and stamp it; return a Result.
 
     Run from a public-repo clone (or unzipped download). Copies every manifest
-    file into `archive_path`, then writes `.plainfile-version` recording the
+    file into `archive_path`, then writes `.plaintext-version` recording the
     manifest version and the per-file checksums received. Refuses an archive that
-    already carries tools (a `.plainfile-version` or `tools/fha.py`) and points
+    already carries tools (a `.plaintext-version` or `tools/fha.py`) and points
     the human at `fha update-tools` instead — install is a one-time bootstrap.
 
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
@@ -470,7 +470,7 @@ def run_install(
     already = archive_path / VERSION_FILE
     if already.is_file():
         raise ScaffoldError(
-            f"{archive_path} already has the plainfile tools installed. To refresh "
+            f"{archive_path} already has the plaintext tools installed. To refresh "
             f"them with improvements from the public repo, run from inside that "
             f"archive:\n  fha update-tools --repo \"{repo_root}\""
         )
@@ -489,7 +489,7 @@ def run_install(
         listing = '\n  '.join(missing[:10])
         more = '' if len(missing) <= 10 else f'\n  …and {len(missing) - 10} more'
         raise ScaffoldError(
-            f"your copy of the plainfile tools is missing {len(missing)} file(s) "
+            f"your copy of the plaintext tools is missing {len(missing)} file(s) "
             f"the manifest expects:\n  {listing}{more}\n"
             f"Re-download or re-clone the tools, then run install again."
         )
@@ -549,7 +549,7 @@ def run_install(
             f"install again."
         ) from exc
 
-    print(f'Installed the plainfile tools into: {archive_path}')
+    print(f'Installed the plaintext tools into: {archive_path}')
     print(f'  {len(files)} file(s) copied; recorded in {archive_path / VERSION_FILE}')
     print('\nNext steps:')
     print(f'  1. Edit {archive_path / "fha.yaml"} to point at your photos and documents.')
@@ -591,7 +591,7 @@ def _plan_update(
       stock      — on disk, unchanged from the stock you installed, stock improved
                    → overwrite silently
       customized — on disk and different from what you installed → back up + install
-      retired    — recorded in .plainfile-version but gone from the manifest, and
+      retired    — recorded in .plaintext-version but gone from the manifest, and
                    still on disk → move to backup
 
     Only "operating" files are considered. Skeleton seeds (fha.yaml, places.yaml,
@@ -649,7 +649,7 @@ def run_update_tools(
 ) -> Result:
     """Refresh the operating layer in an existing archive from a public clone.
 
-    Reads the public manifest and the archive's `.plainfile-version`, classifies
+    Reads the public manifest and the archive's `.plaintext-version`, classifies
     each operating file (_plan_update), then either previews (`--dry-run`) or
     applies the plan: copy new files, silently overwrite stock-unchanged ones,
     back up customized ones before installing stock, and quarantine retired ones.
@@ -689,7 +689,7 @@ def run_update_tools(
         listing = '\n  '.join(missing[:10])
         more = '' if len(missing) <= 10 else f'\n  …and {len(missing) - 10} more'
         raise ScaffoldError(
-            f"your copy of the plainfile tools is missing {len(missing)} file(s) "
+            f"your copy of the plaintext tools is missing {len(missing)} file(s) "
             f"the manifest expects:\n  {listing}{more}\n"
             f"Re-download or re-clone the tools, then run `fha update-tools` again."
         )
@@ -805,7 +805,7 @@ def run_update_tools(
         backups_made = True
         print(
             f'Moved {archive_path} to {backup} — it is no longer part of the '
-            f'plainfile tools (kept, not deleted).'
+            f'plaintext tools (kept, not deleted).'
         )
 
     if verbose:
@@ -918,7 +918,7 @@ def _report_plan(
         backup = _unique_backup_path(archive_root, archive_path, date_str)
         print(
             f'Would move {archive_path} to {backup} — it is no longer part of the '
-            f'plainfile tools (kept, not deleted).'
+            f'plaintext tools (kept, not deleted).'
         )
 
     if verbose:
@@ -932,9 +932,9 @@ def _cmd_update_tools(args: argparse.Namespace) -> int:
     if not repo_arg:
         print(
             'ERROR: run this command from inside your archive, with --repo '
-            'pointing to your copy of the plainfile tools (the folder that '
+            'pointing to your copy of the plaintext tools (the folder that '
             'contains manifest.json). Example:\n'
-            '  fha update-tools --repo /path/to/plainfile-tools',
+            '  fha update-tools --repo /path/to/plaintext-tools',
             file=sys.stderr,
         )
         return EXIT_FAILURE
@@ -986,9 +986,9 @@ def register(subs: argparse._SubParsersAction) -> None:
     """Register both `install` and `update-tools` onto the main fha parser."""
     p_install = subs.add_parser(
         'install',
-        help='Bootstrap a new private archive with the plainfile operating layer.',
+        help='Bootstrap a new private archive with the plaintext operating layer.',
         description=(
-            'Copy the plainfile tools, rulebooks, and docs into a new archive and '
+            'Copy the plaintext tools, rulebooks, and docs into a new archive and '
             'stamp it. Run this once from your clone (or unzipped download) of the '
             'public tools. Afterwards, refresh with `fha update-tools`.'
         ),
@@ -1000,7 +1000,7 @@ def register(subs: argparse._SubParsersAction) -> None:
     )
     p_install.add_argument(
         '--repo', metavar='PATH',
-        help='Your copy of the plainfile tools (folder with manifest.json). '
+        help='Your copy of the plaintext tools (folder with manifest.json). '
              'Defaults to the tools you are running from.',
     )
     p_install.add_argument(
@@ -1022,7 +1022,7 @@ def register(subs: argparse._SubParsersAction) -> None:
     )
     p_update.add_argument(
         '--repo', metavar='PATH',
-        help='Your updated copy of the plainfile tools (folder with manifest.json).',
+        help='Your updated copy of the plaintext tools (folder with manifest.json).',
     )
     p_update.add_argument(
         '--dry-run', action='store_true', dest='dry_run',
@@ -1045,7 +1045,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog='fha scaffold',
-        description='Install / update the plainfile operating layer in an archive.',
+        description='Install / update the plaintext operating layer in an archive.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest='command', metavar='COMMAND')

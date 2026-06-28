@@ -1,4 +1,4 @@
-# Plainfile Family History
+# Plaintext Family History
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
@@ -6,7 +6,7 @@
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
-Plainfile is that filing cabinet, built to last. Plain files at the foundation, with search, structured claims, and an AI research layer stacked *on top of* the files, never *instead of* them.
+Plaintext is that filing cabinet, built to last. Plain files at the foundation, with search, structured claims, and an AI research layer stacked *on top of* the files, never *instead of* them.
 Delete every layer above and the archive still works, the way the drawer still works.
 
 ## Which one are you?
@@ -40,7 +40,7 @@ Three things live at arm's length from each other, by design:
 In practice you end up with **two separate repositories** - one public, one private:
 
 ```
-plainfile-family-history/   ← PUBLIC:  the spec + the generic tools (this repo)
+plaintext-family-history/   ← PUBLIC:  the spec + the generic tools (this repo)
 my-family-archive/          ← PRIVATE: your real family's records
 ```
 
@@ -49,7 +49,7 @@ The only relationship is that your private archive *uses the tools* that live in
 There are two ways to get those tools to your archive:
 
 - **Vendor (copy them in).** Copy this repo's `tools/` folder into your private archive so the tools live *beside* your data. The archive becomes fully self-contained - it works on any machine, offline, forever, even if this repo disappears. Updating means re-copying `tools/` when they improve. *Recommended for a personal archive - it matches the "survives tool churn, usable from a USB stick" goal.*
-- **Install (once packaging exists).** *Not available yet.* Once the `fha` suite is packaged, you'll be able to install it from this repo (`pip install git+https://github.com/YOURNAME/plainfile-family-history.git`) and call `fha` from anywhere. Cleaner day-to-day (tools live in one place), but your archive then depends on the tools being installed separately. Until then, use the vendored-copy model above.
+- **Install (once packaging exists).** *Not available yet.* Once the `fha` suite is packaged, you'll be able to install it from this repo (`pip install git+https://github.com/YOURNAME/plaintext-family-history.git`) and call `fha` from anywhere. Cleaner day-to-day (tools live in one place), but your archive then depends on the tools being installed separately. Until then, use the vendored-copy model above.
 
 Either way, **your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.
 
@@ -74,7 +74,7 @@ Either way, **your private family data never enters this public repo.** The publ
 
 ## What this is
 
-Plainfile is an **archive-first** system.
+Plaintext is an **archive-first** system.
 The durable archive - plain text and standard file formats on disk - is the source of truth.
 Every other moving part (the search index, the AI assistant, any genealogy app or website) is an optional, replaceable helper built *from* the archive and rebuildable *from scratch*.
 
@@ -110,7 +110,7 @@ The operating loop is simple: **capture → file → process → review → repo
 ## Repository layout
 
 ```
-plainfile-family-history/
+plaintext-family-history/
 ├── README.md            ← you are here
 ├── SPEC.md              ← the law: philosophy, data model, physical format, governance
 ├── TOOLING.md           ← implementation design for every supporting tool (the fha suite)
@@ -205,7 +205,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 ## A complementary project
 
 A related project worth studying: if your interest is the *research* half - autonomous AI research loops, archive guides for specific countries, prompt templates for pushing a family tree backward - see [**autoresearch-genealogy**](https://github.com/mattprusak/autoresearch-genealogy) by Matt Prusak.
-It and Plainfile arrived independently at the same files-first, Claude-Code-driven philosophy from different angles: that project is a research *playbook*, this one is the *filing system* the findings live in.
+It and Plaintext arrived independently at the same files-first, Claude-Code-driven philosophy from different angles: that project is a research *playbook*, this one is the *filing system* the findings live in.
 They complement each other well.
 
 ## Contributing

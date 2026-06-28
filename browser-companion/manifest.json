@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Plaintext Family History (Capture)",
+  "version": "0.1.0",
+  "description": "Stage an open genealogy record page into your archive's inbox as a capture bundle. Fast, forgiving capture now; structured review later.",
+  "action": { "default_title": "Capture this record" },
+  "background": { "service_worker": "src/background.js" },
+  "side_panel": { "default_path": "src/panel.html" },
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "sidePanel"],
+  "optional_permissions": ["nativeMessaging"],
+  "host_permissions": ["<all_urls>"]
+}

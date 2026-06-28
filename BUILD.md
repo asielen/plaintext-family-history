@@ -48,9 +48,9 @@ the insertion point in the same edit.
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
-| 7 | Layer 7 - Intake pipeline | M7.1-M7.9 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`), M7.9 (`fha capture --ingest` staged-bundle sweep) |
+| 7 | Layer 7 - Intake pipeline | M7.1-M7.10 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`), M7.9 (`fha capture --ingest` staged-bundle sweep), M7.10 (`browser-companion/` MV3 capture extension, core only) |
 | 8 | Layer 8 - Publication | M8.1-M8.5 | ✓ shipped - M8.1 (`fha site` foundations: query layer, Jinja2, source page), M8.2 (person page), M8.3 (place + discoveries pages), M8.4 (home page + standalone redaction audit), M8.5 (interactive trees via a vendored, dependency-free renderer + adapter seam) |
-| 9 | Layer 9 - Scaffolding | M9.1-M9.2 | ✓ shipped - M9.1 (`fha install` + `manifest.json`: bootstrap an archive's operating layer + skeleton, stamp `.plainfile-version`, zip/git-free), M9.2 (`fha update-tools`: refresh the operating layer, back up customized/retired files, never delete, never touch skeleton seeds) |
+| 9 | Layer 9 - Scaffolding | M9.1-M9.2 | ✓ shipped - M9.1 (`fha install` + `manifest.json`: bootstrap an archive's operating layer + skeleton, stamp `.plaintext-version`, zip/git-free), M9.2 (`fha update-tools`: refresh the operating layer, back up customized/retired files, never delete, never touch skeleton seeds) |
 | 10 | Layer 10 - Working-copy mode | M10.1 | ✓ shipped - `fha working-copy on|off|status`, marker plumbing, asset-check suppression, asset-command refusals |
 
 ---
@@ -1393,6 +1393,51 @@ fha capture --ingest <staging-dir>                                   # stubs in 
 
 ---
 
+### M7.10 - Browser companion - the capture extension (✓ shipped, core only)
+
+**One PR.** A Manifest V3 browser extension in [`browser-companion/`](browser-companion/)
+(TOOLING_INGESTION §5), the everyday front-end that produces the staged bundles M7.9's
+`--ingest` already consumes. It lives **outside** the Python tool suite and the archive
+operating layer - installed in the browser, not vendored by `fha install`, so it is **not**
+a `manifest.json` entry. No new Python; the backend contract was finished in M7.9.
+
+Scope is the **core** extension only:
+- The four-phase side panel (§5.3): Invoke → Confirm (generic pre-fill, editable) → Capture
+  the evidence (the five asset modes: fetch / single-file / pdf-via-handoff / manual / none)
+  → Stage (write the bundle, never mint a record).
+- Generic in-browser pre-fill only (§5.5): `<title>`/`og:title`, canonical URL,
+  `article:published_time`, JSON-LD Person names, largest image, hostname → `recipe_hint`.
+  The authoritative per-site parsing stays in the Python recipes, which re-run on the saved
+  `page.html` at ingest. The browser captures; Python extracts.
+- The §5.1 transport: assemble `page.html` + optional `asset.<ext>` + `capture.json`
+  (schema 1, §3) in memory, write them via `chrome.downloads.download()` into
+  `Downloads/fha-inbox/<slug>-<timestamp>/`. The panel reports exactly where the bundle went
+  and that `fha capture --ingest` files it - it never pretends Downloads is the archive.
+- A minimal single-file inliner (§9): images + stylesheet text inlined, scripts dropped,
+  bounded; `page.html` is always saved alongside so scraping never depends on the snapshot.
+- A provisional screenshot is surfaced as a `notes` line, since schema 1 has no field for it
+  (§5.6). `sidePanel` is added to the §5.4 least-privilege set for the panel UX.
+
+Two pieces are **explicitly out of this milestone, as separate layers:**
+- **Native-messaging host (§5.7)** - the seamless "straight into `inbox/`" upgrade. Its
+  extension-side hook is scaffolded and inert (off unless a host answers); the Python host
+  (`fha capture --host` / `--install-host`) is deferred v2.
+- **First-class `asset_provisional` metadata** - a `capture.json` schema 2 field + ingest
+  plumbing, deferred (§9).
+
+Add `tests/test_browser_companion.py`: validate the MV3 manifest + that every file it names
+exists, and round-trip the committed `browser-companion/test-bundle/` (built in the exact
+shape the panel writes) through `fha capture --ingest` to prove the output contract against
+the live backend. (No browser-driven harness in this repo; the JS runs only in a browser.)
+
+**Done when:**
+```sh
+python -m unittest tests.test_browser_companion -v   # manifest valid; example bundle ingests clean
+# load-unpacked in Chrome → capture a record → fha capture --ingest --dry-run sees the bundle
+```
+
+---
+
 ## Layer 8 - Publication (Milestone 8)
 
 Depends on: index, photoindex (photo strips), `fha views tree --format json` (tree data
@@ -1567,7 +1612,7 @@ an archive - matching TOOLING §13c), `tests/`, `.github/`, `.claude/settings.js
 `RELEASE_CHECKLIST.md`, and `manifest.json` itself.
 
 **`fha install <archive-path>`** (run from repo clone): create skeleton; copy all manifest
-files; write `.plainfile-version` with manifest version + per-file SHA256 checksums.
+files; write `.plaintext-version` with manifest version + per-file SHA256 checksums.
 
 **Preflight checks (first-day UX bar):** before writing anything, `fha install` checks
 Python ≥ 3.10 and `exiftool` on PATH. Failures produce plain, friendly guidance - not a
@@ -1582,7 +1627,7 @@ This is the primary install path for non-technical users (see PR 09 / `docs/SETU
 
 **Done when:**
 ```sh
-python tools/fha.py install ./test-archive --repo .   # skeleton; .plainfile-version written
+python tools/fha.py install ./test-archive --repo .   # skeleton; .plaintext-version written
 # Python < 3.10 → friendly message, no traceback
 # exiftool absent → friendly guidance message, install proceeds (not a hard stop)
 # --repo pointing to an unzipped download (no .git/) → same result as a git clone
@@ -1596,12 +1641,12 @@ python tools/fha.py install ./test-archive --repo .   # skeleton; .plainfile-ver
 **One PR.** Extend `tools/scaffold.py`. Wire `fha update-tools [--dry-run]` (TOOLING §13c).
 
 **`fha update-tools [--dry-run]`** (run from within an archive; `--repo PATH` required):
-compare manifest against `.plainfile-version`. For each file - new → copy in; unchanged
+compare manifest against `.plaintext-version`. For each file - new → copy in; unchanged
 (checksum matches) → overwrite silently; customized (checksum differs) → move to
-`.plainfile-backup/{date}/` and report; retired from manifest → move to backup and report.
+`.plaintext-backup/{date}/` and report; retired from manifest → move to backup and report.
 Never deletes. Never silently overwrites customized files. All output is plain English -
 "Updating tools/index.py (unchanged)" or "Your edited tools/fha.py has been backed up to
-.plainfile-backup/2026-06-22/fha.py - the new version is now in tools/fha.py." No technical
+.plaintext-backup/2026-06-22/fha.py - the new version is now in tools/fha.py." No technical
 diffs or checksums shown by default; `--verbose` may add them.
 
 **Done when:**
@@ -1609,7 +1654,7 @@ diffs or checksums shown by default; `--verbose` may add them.
 fha update-tools --dry-run --repo .                  # reports plan in plain English; no writes
 # edit tools/fha.py; fha update-tools → plain "backed up + updated" message
 # no traceback on any error; missing --repo → "Run this command from inside your archive,
-#   with --repo pointing to your copy of the plainfile tools."
+#   with --repo pointing to your copy of the plaintext tools."
 ```
 
 ---
@@ -1696,7 +1741,7 @@ neither create nor remove the marker. The per-tool behaviour is specified in TOO
   `exists_on_disk = NULL` + skip reconciliation. photoindex scan refusal/no-prune.
   Asset-mutating-command refusals. doctor mode banner. One-line mode banner in the shared CLI
   entry. Seed a starter archive `.gitignore` (currently `archive-template/` has none) listing
-  `WORKING_COPY`, `.cache/`, `.plainfile-*`, and the local asset roots, so a git-syncing
+  `WORKING_COPY`, `.cache/`, `.plaintext-*`, and the local asset roots, so a git-syncing
   genealogist gets the never-sync-back guarantee for free.
 
 **Done when (target):**

@@ -1,6 +1,6 @@
 # Privacy & Example-Data Policy
 
-This repository is the public **spec and tooling** for Plainfile.
+This repository is the public **spec and tooling** for Plaintext.
 It must never contain real, private family-history data.
 
 - **Examples are fictional.** Use the Hartley family in `example-archive/`, or invent

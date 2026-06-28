@@ -1,4 +1,4 @@
-# Plainfile Family History - Documentation Index
+# Plaintext Family History - Documentation Index
 
 > Lost? Start at the [main README](../README.md) - the "Which one are you?" table there points to the right door.
 

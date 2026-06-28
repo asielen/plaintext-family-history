@@ -291,6 +291,130 @@ class IngestTestCase(unittest.TestCase):
         rec = read_record(self._stubs()[0])
         self.assertTrue(rec['meta'].get('asset_elsewhere'))
 
+    # ── schema 2: the assets[] list and the "both" case ─────────────────────────
+
+    def _bundle_dirs(self) -> list[Path]:
+        return sorted(p for p in (self.archive / 'inbox').iterdir() if p.is_dir())
+
+    def test_schema2_single_asset_files_as_lone_sidecar(self) -> None:
+        # One asset in the schema-2 list → the SPEC §12.1 lone-sidecar stub, same
+        # as schema 1's single asset (a folder would be overkill for one file).
+        bundle = self.staging / 's2-single'
+        bundle.mkdir(parents=True)
+        (bundle / 'page.html').write_text(_sample('ancestry'), encoding='utf-8')
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': 'https://www.ancestry.com/rec/1', 'accessed': '2026-06-24',
+            'assets': [{'file': 'record.jpg', 'role': 'record', 'mode': 'manual'}],
+        }), encoding='utf-8')
+        (bundle / 'record.jpg').write_bytes(b'\xff\xd8\xff\xe0 fake jpeg')
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        self.assertEqual(len(self._stubs()), 1)        # lone sidecar
+        self.assertEqual(self._bundle_dirs(), [])      # no bundle folder
+        jpgs = [p for p in (self.archive / 'inbox').iterdir() if p.suffix == '.jpg']
+        self.assertEqual(len(jpgs), 1)
+
+    def test_schema2_both_case_files_as_bundle_folder(self) -> None:
+        # Two assets (page copy + record) → a §12.1 bundle FOLDER with notes.md +
+        # both assets + per-file role hints fha process reads.
+        bundle = self.staging / 's2-both'
+        bundle.mkdir(parents=True)
+        (bundle / 'page.html').write_text(_sample('ancestry'), encoding='utf-8')
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': 'https://www.ancestry.com/rec/1', 'accessed': '2026-06-24',
+            'people': ['Thomas Hartley'], 'notes': 'Both artifacts saved.',
+            'assets': [
+                {'file': 'record.jpg', 'role': 'record', 'mode': 'fetch'},
+                {'file': 'page-copy.html', 'role': 'webpage', 'mode': 'singlefile'},
+            ],
+        }), encoding='utf-8')
+        (bundle / 'record.jpg').write_bytes(b'\xff\xd8\xff\xe0 fake jpeg')
+        (bundle / 'page-copy.html').write_text('<html>snapshot</html>', encoding='utf-8')
+
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        self.assertEqual(self._stubs(), [])            # no lone sidecar
+        dirs = self._bundle_dirs()
+        self.assertEqual(len(dirs), 1)
+        folder = dirs[0]
+        self.assertTrue((folder / 'notes.md').is_file())
+        self.assertTrue((folder / 'record.jpg').is_file())
+        self.assertTrue((folder / 'page-copy.html').is_file())
+        # page.html is the scrape source, consumed at ingest — never filed.
+        self.assertFalse((folder / 'page.html').exists())
+
+        rec = read_record(folder / 'notes.md')
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertIn('Both artifacts saved.', rec['body'])
+        self.assertIn('Thomas Hartley', rec['meta']['people'])
+        by_name = {f['file']: f.get('role') for f in rec['meta']['files']}
+        self.assertEqual(by_name.get('record.jpg'), 'record')
+        self.assertEqual(by_name.get('page-copy.html'), 'webpage')
+
+    def test_schema2_empty_assets_is_pointer_only(self) -> None:
+        # assets: [] (the panel's pointer-only emission) → asset_elsewhere stub.
+        bundle = self.staging / 's2-pointer'
+        bundle.mkdir(parents=True)
+        (bundle / 'page.html').write_text(_sample('ancestry'), encoding='utf-8')
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': 'https://x/held-elsewhere', 'assets': [],
+        }), encoding='utf-8')
+        self._ingest()
+        self.assertEqual(self._bundle_dirs(), [])
+        rec = read_record(self._stubs()[0])
+        self.assertTrue(rec['meta'].get('asset_elsewhere'))
+
+    def test_snapshot_only_bundle_parses_the_webpage_asset(self) -> None:
+        # A bundle that omits the raw page.html still ingests: the webpage-role
+        # HTML snapshot is parsed as the scrape source (it preserves JSON-LD/meta),
+        # and is the single companion of the lone-sidecar stub.
+        bundle = self.staging / 'snapshot-only'
+        bundle.mkdir(parents=True)
+        # No page.html — only the single-file snapshot asset.
+        (bundle / 'page-copy.html').write_text(_sample('ancestry'), encoding='utf-8')
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': 'https://www.ancestry.com/rec/1', 'accessed': '2026-06-24',
+            'assets': [{'file': 'page-copy.html', 'role': 'webpage', 'mode': 'singlefile'}],
+        }), encoding='utf-8')
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        self.assertEqual(res.data['failed'], 0)
+        stubs = self._stubs()
+        self.assertEqual(len(stubs), 1)
+        rec = read_record(stubs[0])
+        self.assertEqual(rec['parse_errors'], [])
+
+    def test_bundle_with_no_html_scrape_source_is_malformed(self) -> None:
+        # Neither page.html nor any HTML asset → no scrape source → reported,
+        # left in place (never silently dropped).
+        bundle = self.staging / 'no-html'
+        bundle.mkdir(parents=True)
+        (bundle / 'capture.json').write_text(json.dumps({
+            'schema': 2, 'url': 'https://x/1',
+            'assets': [{'file': 'record.jpg', 'role': 'record', 'mode': 'manual'}],
+        }), encoding='utf-8')
+        (bundle / 'record.jpg').write_bytes(b'\xff\xd8\xff\xe0 fake jpeg')
+        import io
+        from unittest import mock
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            res = self._ingest()
+        self.assertEqual(res.data['failed'], 1)
+        self.assertEqual(res.data['ingested'], 0)
+        self.assertTrue(bundle.exists())
+
+    def test_schema1_bundle_still_ingests_back_compat(self) -> None:
+        # A legacy schema-1 bundle (flat asset_mode/asset_file) still files as the
+        # lone-sidecar stub, unchanged — back-compat is non-negotiable.
+        _make_bundle(self.staging, 's1-legacy', page_html=_sample('ancestry'),
+                     capture_json={'schema': 1, 'url': 'https://x/1',
+                                   'asset_mode': 'singlefile', 'asset_file': 'asset.html'},
+                     asset=('asset.html', b'<html>legacy snapshot</html>'))
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        self.assertEqual(len(self._stubs()), 1)
+        self.assertEqual(self._bundle_dirs(), [])
+
     # ── CLI dispatch + config/default resolution ────────────────────────────────
 
     def test_cli_ingest_dispatch(self) -> None:

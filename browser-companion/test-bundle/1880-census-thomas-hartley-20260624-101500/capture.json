@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "url": "https://www.ancestry.com/discoveryui-content/view/12345:6742",
+  "title": "1880 United States Federal Census — Thomas Hartley",
+  "accessed": "2026-06-24",
+  "source_date": "1880",
+  "source_type": "census",
+  "assets": [
+    { "file": "record.jpg", "role": "record", "mode": "manual", "provisional": true },
+    { "file": "page-copy.html", "role": "webpage", "mode": "singlefile" }
+  ],
+  "people": ["Thomas Hartley", "Margaret Hartley", "Ethel Hartley"],
+  "notes": "Bob's great-grandfather's household. The boy listed as 'Calvin' is Cal.",
+  "recipe_hint": "ancestry"
+}

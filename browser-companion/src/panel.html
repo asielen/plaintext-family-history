@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Capture this record</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <!--
+      The capture panel, the four phases of TOOLING_INGESTION §5.3 mapped to the
+      capture-to-file spine. Invoke (Phase 1) is the act of opening this panel; the
+      numbered steps below are Confirm (2), Save the record (3), and Stage (4).
+      The panel never blocks on a decision answerable in two seconds; everything
+      but the asset is optional, and a hurried human can click straight to Stage.
+
+      Step 3 carries the mockup design: a "keep a copy of the whole page" toggle
+      (its own checkbox, composes with the evidence choice) plus a two-option
+      evidence picker (Yes: url box + drop box; No: the page copy is the record).
+      Print-to-PDF is gone; single-file HTML supersedes it, and real PDFs still
+      work via url or drop.
+    -->
+    <div class="panel" role="region" aria-label="Capture this record">
+      <header>
+        <h1>Capture this record</h1>
+        <p id="recipe-banner" class="banner">Reading the page…</p>
+      </header>
+
+      <main>
+        <!-- STEP 1 - Confirm, don't fill. Editable pre-filled fields. -->
+        <section id="phase-confirm" aria-labelledby="confirm-h">
+          <div class="step-h">
+            <span class="step-num" aria-hidden="true">1</span>
+            <h2 id="confirm-h">Is this right?</h2>
+            <span class="sub">all optional</span>
+          </div>
+
+          <label for="f-title">Title</label>
+          <input id="f-title" type="text" placeholder="e.g. 1880 U.S. Census, Thomas Hartley" />
+
+          <div class="row">
+            <div class="col">
+              <label for="f-date">Record date</label>
+              <input id="f-date" type="text" placeholder="e.g. 1880, June 1880, about 1880" />
+            </div>
+            <div class="col">
+              <label for="f-type">Kind</label>
+              <select id="f-type">
+                <option value="">Auto-detect at filing</option>
+              </select>
+            </div>
+          </div>
+
+          <label for="f-repo">Where it's from</label>
+          <input id="f-repo" type="text" placeholder="website or archive name" />
+
+          <label for="f-url">Page address</label>
+          <input id="f-url" type="text" readonly />
+
+          <fieldset id="people-box">
+            <legend>People this record is about</legend>
+            <div id="people-list" class="people-list"></div>
+            <div class="add-person">
+              <input id="f-add-person" type="text" placeholder="Add a name" />
+              <button id="btn-add-person" type="button" class="ghost">Add</button>
+            </div>
+            <p class="hint">Select all people who are included in this record. These will be
+              treated like hints, not full claims, until you review them offline.</p>
+          </fieldset>
+
+          <label for="f-notes">Notes</label>
+          <textarea id="f-notes" rows="4"
+            placeholder="Who is this for? What should you remember about it?"></textarea>
+        </section>
+
+        <!-- STEP 2 - Save the record. The one thing that can't be redone. -->
+        <section id="phase-asset" aria-labelledby="asset-h">
+          <div class="step-h">
+            <span class="step-num" aria-hidden="true">2</span>
+            <h2 id="asset-h">Save the record</h2>
+          </div>
+          <p class="hint" style="margin-top:0">Webpages often change, save a snapshot so you
+            have the exact record as you saw it today.</p>
+
+          <!-- 2a - the page copy: its own toggle, composes with the choice below. -->
+          <label class="opt recommended" id="page-copy-card">
+            <span class="opt-top">
+              <input type="checkbox" id="cb-pagecopy" checked />
+              <span class="opt-title">Keep a copy of the whole page</span>
+              <span class="pill">Recommended</span>
+            </span>
+            <span class="opt-desc">A self-contained copy for context that survives the
+              original disappearing.</span>
+          </label>
+
+          <!-- 2b - the actual evidence file: just two choices. -->
+          <p class="subq" id="evidence-h">Is there a specific file that's the actual record?</p>
+          <div class="asset-cards" id="asset-cards" role="radiogroup" aria-labelledby="evidence-h">
+            <label class="opt is-selected" data-mode="yes">
+              <span class="opt-top">
+                <input type="radio" name="assetMode" value="yes" checked />
+                <span class="opt-title">Yes, save the actual file</span>
+                <span class="pill">Selected</span>
+              </span>
+              <span class="opt-desc">Provide the direct url, or download the file and drop it
+                here, to package it for your records.</span>
+              <span class="opt-controls">
+                <label class="mini" for="f-asset-url">File address on the page
+                  <span class="muted-note">(best guess, edit if it's wrong)</span></label>
+                <input id="f-asset-url" type="text" placeholder="image or PDF address" />
+                <span class="or-divider"><span>or</span></span>
+                <span id="dropzone" class="dropzone" tabindex="0" role="button"
+                  aria-label="Drop a file here, or click to choose">Drop a file here, or click to choose</span>
+                <label class="check">
+                  <input id="f-provisional" type="checkbox" />
+                  <span>The file I'm providing is a screen capture, not the original document
+                    <span class="mini">(so reviewers know to look for a clearer original later)</span></span>
+                </label>
+              </span>
+            </label>
+
+            <label class="opt" data-mode="none">
+              <span class="opt-top">
+                <input type="radio" name="assetMode" value="none" />
+                <span class="opt-title">No, the page copy is the record</span>
+                <span class="pill">Selected</span>
+              </span>
+              <span class="opt-desc">For memorials, index entries, and write-ups where the
+                page itself is the evidence.</span>
+            </label>
+          </div>
+
+          <p id="asset-status" class="asset-status" role="status"></p>
+        </section>
+
+        <!-- STEP 3 - Stage, don't process. -->
+        <section id="phase-stage" class="end">
+          <div class="step-h">
+            <span class="step-num" aria-hidden="true">3</span>
+            <h2>Stage it</h2>
+          </div>
+          <button id="btn-capture" type="button" class="primary">Capture &amp; save</button>
+
+          <div id="handoff" class="handoff">
+            <p class="h-title">✓ Saved. Nothing is lost.</p>
+            <p id="handoff-body" class="h-body">This creates a source package in your
+              Downloads folder. To integrate it into your research: open your archive and run
+              the command below to file it into your inbox, then review and process it.</p>
+            <div class="cmd-row">
+              <span id="cmd-text" class="cmd">fha capture --ingest</span>
+              <button id="btn-copy-cmd" type="button" class="copy-btn">Copy</button>
+            </div>
+            <p class="reassure">Until you run it the package sits safely in Downloads, so you
+              can't lose it.</p>
+          </div>
+          <p id="stage-result" class="stage-result" role="status"></p>
+        </section>
+
+        <details id="settings">
+          <summary>Settings</summary>
+          <label for="f-folder">Staging folder (under Downloads)</label>
+          <input id="f-folder" type="text" value="fha-inbox" />
+          <label for="f-default-evidence">Default for "Is there a specific file?"</label>
+          <select id="f-default-evidence">
+            <option value="yes">Yes, save the actual file</option>
+            <option value="none">No, the page copy is the record</option>
+          </select>
+          <p class="hint">After capturing, file everything with
+            <code>fha capture --ingest</code> in your archive.</p>
+        </details>
+      </main>
+    </div>
+
+    <!-- Classic scripts, loaded in dependency order; each attaches to window.FHA. -->
+    <script src="lib/capture-json.js"></script>
+    <script src="lib/bundle.js"></script>
+    <script src="lib/native-host.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>

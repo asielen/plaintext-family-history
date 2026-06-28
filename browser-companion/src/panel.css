@@ -1,0 +1,201 @@
+/* panel.css - plain, legible styling for the capture side panel.
+   The reader is a non-technical genealogist (AGENTS.md "Who you serve"): calm
+   defaults, generous targets, no chrome that competes with the page they're
+   capturing. System fonts only; no web fonts, no external assets.
+
+   This carries the approved design from private/capture-panel-mockup.html:
+   larger type, 44px+ touch targets, numbered steps, the recommended-option
+   cards, and the green post-capture handoff card. */
+
+:root {
+  --fg: #1c1c1c;
+  --muted: #5c5c5c;
+  --line: #d8d8d2;
+  --accent: #3a6b4f;
+  --accent-soft: #eef4f0;
+  --accent-fg: #ffffff;
+  --bg: #faf9f5;
+  --panel: #ffffff;
+  --warn: #8a5a00;
+  --error: #9a2a2a;
+  --ok: #2f6b3a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+header {
+  padding: 16px 18px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+h1 { font-size: 19px; margin: 0 0 4px; }
+
+.banner { margin: 0; font-size: 14px; color: var(--muted); }
+.banner.recipe { color: var(--accent); font-weight: 600; }
+
+main { padding: 6px 18px 22px; }
+
+/* Numbered steps: a sense of "a few quick things, then the button". */
+section { margin: 18px 0; }
+.step-h { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.step-num {
+  flex: none;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--accent); color: var(--accent-fg);
+  font-size: 14px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.step-h h2 { font-size: 16px; margin: 0; }
+.step-h .sub { font-size: 13px; color: var(--muted); margin-left: auto; }
+
+label { display: block; font-size: 14px; color: var(--muted); margin: 12px 0 4px; }
+
+input[type="text"], textarea, select {
+  width: 100%;
+  padding: 10px 11px;
+  font: inherit;
+  color: var(--fg);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-height: 44px;
+}
+textarea { resize: vertical; min-height: 84px; }
+input[readonly] { background: #f0efea; color: var(--muted); }
+select {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 19px, calc(100% - 13px) 19px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.row { display: flex; gap: 12px; }
+.col { flex: 1; }
+.hint { font-size: 13px; color: var(--muted); margin: 7px 0 0; }
+
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 14px 0 0; padding: 10px 12px 12px; }
+legend { font-size: 14px; color: var(--muted); padding: 0 5px; }
+
+.people-list { display: flex; flex-direction: column; gap: 4px; }
+.people-list label {
+  display: flex; align-items: center; gap: 9px; margin: 0;
+  font-size: 16px; color: var(--fg); padding: 5px 4px; border-radius: 6px;
+}
+.people-list label:hover { background: #fff; }
+.people-list input { width: 20px; height: 20px; }
+.add-person { display: flex; gap: 8px; margin-top: 10px; }
+.add-person input { flex: 1; }
+
+button {
+  font: inherit; padding: 10px 14px; border: 1px solid var(--line);
+  border-radius: 6px; background: #fff; color: var(--fg); cursor: pointer; min-height: 44px;
+}
+button:hover { background: #f0efea; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.ghost { font-size: 14px; min-height: 40px; padding: 8px 12px; }
+
+/* Asset options as cards; the recommended one dominates. */
+.asset-cards { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.opt {
+  display: block; border: 1.5px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; cursor: pointer; background: #fff; position: relative;
+  transition: border-color .12s, background .12s, box-shadow .12s;
+}
+.opt:hover { border-color: #b9c6bd; }
+.opt .opt-top { display: flex; align-items: center; gap: 10px; }
+.opt input { width: 20px; height: 20px; flex: none; }
+.opt .opt-title { font-size: 16px; font-weight: 600; }
+.opt .opt-desc { display: block; font-size: 13.5px; color: var(--muted); margin: 4px 0 0 30px; }
+.opt.recommended { border-color: var(--accent); background: var(--accent-soft); }
+.opt input:checked ~ .pill, .opt.recommended .pill { display: inline-block; }
+.pill {
+  display: none; margin-left: auto; font-size: 11.5px; font-weight: 700;
+  color: var(--accent-fg); background: var(--accent);
+  padding: 2px 9px; border-radius: 999px; letter-spacing: .03em;
+}
+.opt.is-selected { box-shadow: 0 0 0 3px rgba(58,107,79,.15); border-color: var(--accent); }
+.opt.unchecked { opacity: .62; background: #fff; border-color: var(--line); }
+.opt.unchecked .pill { background: var(--muted); }
+
+.opt-controls { margin: 10px 0 0 30px; display: none; flex-wrap: wrap; gap: 8px; }
+.opt.is-selected .opt-controls { display: flex; }
+.opt-controls input[type="text"] { flex: 1 1 100%; }
+
+.subq { font-size: 15px; font-weight: 600; margin: 18px 0 8px; }
+.mini { display: block; font-size: 13px; color: var(--muted); margin: 2px 0 4px; }
+.muted-note { font-style: italic; }
+
+.check { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; color: var(--fg); margin: 6px 0 0; flex: 1 1 100%; }
+.check input { width: 20px; height: 20px; flex: none; margin-top: 1px; }
+
+.or-divider { flex: 1 1 100%; text-align: center; font-size: 12.5px; color: var(--muted); position: relative; margin: 10px 0 6px; }
+.or-divider span { background: #fff; padding: 0 10px; position: relative; z-index: 1; }
+.or-divider::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--line); }
+
+.dropzone {
+  flex: 1 1 100%; border: 2px dashed var(--line); border-radius: 8px;
+  padding: 20px; text-align: center; color: var(--muted); background: #fff; font-size: 14px;
+  cursor: pointer;
+}
+.dropzone:hover { border-color: #b9c6bd; }
+.dropzone.dragover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.dropzone.has-file { border-style: solid; border-color: var(--accent); color: var(--fg); }
+
+.asset-status { font-size: 14px; margin: 12px 0 0; min-height: 1.2em; white-space: pre-wrap; }
+.asset-status.ok { color: var(--ok); }
+.asset-status.warn { color: var(--warn); }
+.asset-status.error { color: var(--error); }
+
+/* The end button + the all-important handoff card. */
+.end { margin-top: 22px; }
+button.primary {
+  background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+  font-weight: 700; width: 100%; padding: 15px; font-size: 18px; border-radius: 10px; min-height: 54px;
+}
+button.primary:hover { filter: brightness(1.05); background: var(--accent); }
+
+.handoff {
+  display: none; margin-top: 16px; border: 1.5px solid var(--accent);
+  background: var(--accent-soft); border-radius: 12px; padding: 16px;
+}
+.handoff.show { display: block; }
+.handoff .h-title { font-size: 16px; font-weight: 700; color: var(--ok); margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+.handoff .h-body { font-size: 14.5px; margin: 0 0 12px; }
+.cmd-row { display: flex; gap: 8px; align-items: stretch; }
+.cmd {
+  flex: 1; font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 14px; background: #1f2a23; color: #eaf3ec; padding: 11px 12px;
+  border-radius: 8px; display: flex; align-items: center; overflow-x: auto; white-space: nowrap;
+}
+.copy-btn { flex: none; background: #fff; border: 1px solid var(--accent); color: var(--accent); font-weight: 600; border-radius: 8px; padding: 0 14px; min-height: 0; }
+.copy-btn:hover { background: var(--accent); color: #fff; }
+.reassure { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+
+.stage-result { font-size: 13px; margin: 8px 0 0; white-space: pre-wrap; }
+.stage-result.ok { color: var(--ok); }
+.stage-result.warn { color: var(--warn); }
+.stage-result.error { color: var(--error); }
+.stage-result code, .hint code {
+  background: #ece9e0;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+details#settings { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
+details#settings summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+details#settings label { margin-top: 12px; }
+details#settings .hint code { background: #ece9e0; padding: 1px 5px; border-radius: 3px; font-size: 13px; }

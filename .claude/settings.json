@@ -17,7 +17,7 @@
       "PowerShell(gh auth status)",
       "PowerShell(Test-Path \"$env:ProgramFiles\\\\GitHub CLI\\\\gh.exe\"; Test-Path \"$env:LOCALAPPDATA\\\\GitHub CLI\\\\gh.exe\"; where.exe gh 2>&1; winget list --id GitHub.cli 2>&1)",
       "PowerShell(& \"$env:ProgramFiles\\\\GitHub CLI\\\\gh.exe\" auth status)",
-      "Bash(curl -s \"https://api.github.com/repos/asielen/plainfile-family-history/*)",
+      "Bash(curl -s \"https://api.github.com/repos/asielen/plaintext-family-history/*)",
       "Bash(python tools/fha.py index --root example-archive)",
       "Bash(echo \"LINT_EXIT=$?\")",
       "Bash(echo \"CAND_EXIT=$?\")",

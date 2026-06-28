@@ -1,4 +1,4 @@
-# SPEC.md - Plainfile Family History
+# SPEC.md - Plaintext Family History
 
 *The durable, file-first family-history archive - the specification.*
 

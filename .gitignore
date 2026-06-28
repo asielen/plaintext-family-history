@@ -19,8 +19,8 @@ private/
 # never in the public spec repo. Ignored so a stray local test of `fha install`
 # against a checked-out folder can't accidentally commit them. (manifest.json,
 # the committed packing list, is NOT ignored — it is tracked on purpose.)
-.plainfile-version
-.plainfile-backup/
+.plaintext-version
+.plaintext-backup/
 
 # But DO keep fixture assets if/when added
 !example-archive/documents/

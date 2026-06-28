@@ -1,7 +1,7 @@
-# Contributing to Plainfile Family History
+# Contributing to Plaintext Family History
 
 Thanks for your interest.
-Plainfile is an operating **spec**, so contributions look a little different from a typical code project.
+Plaintext is an operating **spec**, so contributions look a little different from a typical code project.
 
 ## What's most useful right now
 

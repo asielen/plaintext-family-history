@@ -122,7 +122,25 @@ _BODY_CHAR_CAP = 2000
 # as current (legacy/hand-authored bundles), and a NEWER schema is read for the
 # fields it shares with a one-line warning — never refused. So a companion can add
 # fields without breaking older tools, and newer tools read older bundles as-is.
-_CAPTURE_JSON_SCHEMA = 1
+#
+# Schema 2 replaced the single `asset_mode`/`asset_file` pair with an
+# `assets: [{file, role, mode, provisional?}]` LIST so one capture can carry BOTH
+# a self-contained page copy (role `webpage`) AND a separate evidence file (role
+# `record`) — the "both" case. Ingest reads BOTH shapes: schema 1's flat pair is
+# still honored, so older bundles keep filing unchanged (`_read_bundle`).
+#
+# How each lands in the inbox follows SPEC §12.1's stub grammar:
+#   • zero or one asset → the lone-sidecar stub `{stem}.notes.md` (+ same-stem
+#     asset, or pointer-only) — `run_capture`, unchanged.
+#   • two or more assets → a §12.1 BUNDLE FOLDER `inbox/<slug>/` holding a single
+#     `notes.md` (freeform body + light frontmatter hints, incl. per-file `files:`
+#     role hints) plus every asset, exactly the shape `fha process` dissolves into
+#     one source with a populated `files:` inventory — `_ingest_bundle_folder`.
+_CAPTURE_JSON_SCHEMA = 2
+
+# Role given to a staged asset that carries no explicit role: it is the record
+# evidence, the natural primary of the bundle.
+_DEFAULT_ASSET_ROLE = 'record'
 
 
 def _today() -> str:
@@ -688,6 +706,71 @@ def _read_html(asset: Path | None) -> str:
     return ''
 
 
+def _resolve_recipe_result(
+    *,
+    url: str | None,
+    title: str | None,
+    source_type: str | None,
+    source_date: str | None,
+    html: str,
+    notes: str | None,
+    people: list[str] | None,
+) -> tuple[str, RecipeResult]:
+    """Choose a recipe and apply the explicit/override fields (the human's nudge).
+
+    Shared by the lone-sidecar path (`run_capture`) and the §12.1 bundle-folder
+    path (`_ingest_bundle_folder`), so both resolve title/type/date/notes/people
+    identically. `--title`/`--type`/`--date` (and the staged-bundle
+    `notes`/`people` overrides) always win over the recipe's scrape (§13b).
+    Returns `(recipe_name, result)`.
+    """
+    recipe_name, result = choose_recipe(html, url, _load_site_recipes())
+
+    if title:
+        result.title = title
+    if source_type:
+        st = source_type.strip().lower()
+        if st not in SOURCE_TYPES:
+            raise CaptureError(format_source_type_error(source_type, where='--type'))
+        result.source_type = st
+    elif result.source_type not in SOURCE_TYPES:
+        # A recipe must still stay within vocabulary; the generic default already
+        # does, but a misbehaving recipe shouldn't write a bad stub.
+        result.source_type = _GENERIC_SOURCE_TYPE
+    if source_date:
+        normalized = normalize_date(source_date)
+        if normalized is None:
+            raise CaptureError(format_edtf_error(source_date, field='--date'))
+        result.source_date = normalized
+    elif result.source_date and not is_valid_edtf(str(result.source_date)):
+        normalized = normalize_date(str(result.source_date))
+        if normalized is None:
+            print(f'WARNING: recipe produced a source_date {result.source_date!r} '
+                  'that the archive could not read; dropping it from the stub.',
+                  file=sys.stderr)
+            result.source_date = None
+        else:
+            result.source_date = normalized
+
+    # Staged-bundle overrides (TOOLING_INGESTION §6): the human's curated body and
+    # names win over the recipe's scrape, exactly like --title/--type/--date above.
+    if notes is not None:
+        result.body = notes
+    if people is not None:
+        # Human names first, then any recipe-found name not already present
+        # (case-insensitive dedup, preserving each name's first-seen spelling).
+        seen = {name.strip().lower() for name in people}
+        merged = list(people)
+        merged += [n for n in result.people if n.strip().lower() not in seen]
+        result.people = merged
+
+    # An explicit url that no recipe surfaced still belongs in external_links.
+    if url and not any((isinstance(l, dict) and l.get('url') == url) for l in result.external_links):
+        result.external_links.insert(0, {'url': url})
+
+    return recipe_name, result
+
+
 def run_capture(
     archive_root: Path,
     fha_config: dict,
@@ -720,53 +803,10 @@ def run_capture(
     `people` are their curated name hints (unioned ahead of any recipe-found
     names, deduplicated).
     """
-    recipes = _load_site_recipes()
-    recipe_name, result = choose_recipe(html, url, recipes)
-
-    # Explicit flags always win over recipe/generic inference (§13b: the human's
-    # nudge beats the scrape). --type is validated against the controlled
-    # vocabulary so a typo surfaces here, not as an unprocessable stub later.
-    if title:
-        result.title = title
-    if source_type:
-        st = source_type.strip().lower()
-        if st not in SOURCE_TYPES:
-            raise CaptureError(format_source_type_error(source_type, where='--type'))
-        result.source_type = st
-    elif result.source_type not in SOURCE_TYPES:
-        # A recipe must still stay within vocabulary; guard the generic default
-        # already does, but a misbehaving recipe shouldn't write a bad stub.
-        result.source_type = _GENERIC_SOURCE_TYPE
-    if source_date:
-        normalized = normalize_date(source_date)
-        if normalized is None:
-            raise CaptureError(format_edtf_error(source_date, field='--date'))
-        result.source_date = normalized
-    elif result.source_date and not is_valid_edtf(str(result.source_date)):
-        normalized = normalize_date(str(result.source_date))
-        if normalized is None:
-            print(f'WARNING: recipe produced a source_date {result.source_date!r} '
-                  'that the archive could not read; dropping it from the stub.',
-                  file=sys.stderr)
-            result.source_date = None
-        else:
-            result.source_date = normalized
-
-    # Staged-bundle overrides (TOOLING_INGESTION §6): the human's curated body and
-    # names win over the recipe's scrape, exactly like --title/--type/--date above.
-    if notes is not None:
-        result.body = notes
-    if people is not None:
-        # Human names first, then any recipe-found name not already present
-        # (case-insensitive dedup, preserving each name's first-seen spelling).
-        seen = {name.strip().lower() for name in people}
-        merged = list(people)
-        merged += [n for n in result.people if n.strip().lower() not in seen]
-        result.people = merged
-
-    # An explicit --url that no recipe surfaced still belongs in external_links.
-    if url and not any((isinstance(l, dict) and l.get('url') == url) for l in result.external_links):
-        result.external_links.insert(0, {'url': url})
+    recipe_name, result = _resolve_recipe_result(
+        url=url, title=title, source_type=source_type, source_date=source_date,
+        html=html, notes=notes, people=people,
+    )
 
     accessed = accessed or _today()
     if not result.title:
@@ -853,6 +893,188 @@ def _rel(path: Path, archive_root: Path) -> str:
         return path.as_posix()
 
 
+# ── Multi-asset ingest: the §12.1 inbox bundle folder (the "both" case) ─────────
+
+def _unique_bundle_dir(inbox: Path, slug: str) -> Path:
+    """Return an inbox bundle-folder path (`slug`, else `slug-2`, …) free of clash."""
+    name = slug
+    n = 2
+    while (inbox / name).exists():
+        name = f'{slug}-{n}'
+        n += 1
+    return inbox / name
+
+
+def _render_bundle_notes(
+    result: RecipeResult,
+    *,
+    accessed: str,
+    assets: list[tuple[str, str]],
+) -> str:
+    """Render a §12.1 bundle `notes.md`: light hint frontmatter + per-file roles + prose.
+
+    `assets` is a list of `(filename, role)` pairs filed in the bundle folder. The
+    frontmatter mirrors the lone-sidecar stub's hints (title/source_type/citation/
+    repository/source_date/external_links/people) and adds the `files:` role
+    inventory `fha process` reads when it dissolves the bundle into one source
+    (each file → the record's `files:` inventory with its role). The body is the
+    human's notes (or the page's visible text), which flow into `## Notes`.
+    """
+    lines = ['---']
+    if result.title:
+        lines.append(f'title: {_yaml_inline(result.title)}')
+    lines.append(f'source_type: {result.source_type}')
+    if result.citation:
+        lines.append('citation: >')
+        lines += [f'  {ln}' for ln in (result.citation.splitlines() or [''])]
+    if result.repository:
+        lines.append(f'repository: {_yaml_inline(result.repository)}')
+    if result.source_date:
+        lines.append(f'source_date: {_yaml_inline(result.source_date)}')
+    if result.external_links:
+        lines.append('external_links:')
+        for link in result.external_links:
+            url = link.get('url') if isinstance(link, dict) else str(link)
+            if not url:
+                continue
+            lines.append(f'  - url: {_yaml_inline(str(url))}')
+            link_accessed = (link.get('accessed') if isinstance(link, dict) else None) or accessed
+            lines.append(f'    accessed: {_yaml_inline(str(link_accessed))}')
+    if result.people:
+        lines.append('people:')
+        lines += [f'  - {_yaml_inline(str(name))}' for name in result.people]
+    if assets:
+        lines.append('files:')
+        for filename, role in assets:
+            lines.append(f'  - file: {_yaml_inline(filename)}')
+            if role:
+                lines.append(f'    role: {_yaml_inline(role)}')
+    lines.append('---')
+    lines.append('')
+    body = result.body.strip()
+    lines.append(body if body else '*(captured page — no visible text extracted)*')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def _ingest_bundle_folder(
+    archive_root: Path,
+    fha_config: dict,
+    *,
+    url: str | None,
+    title: str | None,
+    source_type: str | None,
+    source_date: str | None,
+    html: str,
+    accessed: str | None,
+    notes: str | None,
+    people: list[str] | None,
+    assets: list[tuple[Path, str]],
+    dry_run: bool = False,
+) -> Result:
+    """File a multi-asset capture as a §12.1 inbox BUNDLE FOLDER (the "both" case).
+
+    SPEC §12.1: the moment a stub has more than one file it is a bundle folder
+    `inbox/<slug>/` holding one `notes.md` plus every asset, the folder grouping
+    them until `fha process` dissolves it into a single source (one S-id, each
+    file in the record's `files:` inventory with its role, notes → `## Notes`).
+
+    The raw `page.html` is the scrape source the recipe re-extracts from here (as
+    in the lone-sidecar path); it is NOT copied in as a durable asset, so the
+    bundle folder holds only `notes.md` + the page copy + the evidence file (the
+    capture's three durable artifacts). Mirrors `run_capture`'s recipe/override
+    resolution and research-log write so the only difference is the on-disk shape.
+    """
+    recipe_name, result = _resolve_recipe_result(
+        url=url, title=title, source_type=source_type, source_date=source_date,
+        html=html, notes=notes, people=people,
+    )
+    accessed = accessed or _today()
+    if not result.title:
+        result.title = domain_of(url) or 'captured page'
+
+    slug = _slugify(result.title)
+    inbox = resolve_path('inbox', fha_config, archive_root)
+    folder = _unique_bundle_dir(inbox, slug)
+
+    # Plan the destination filenames (keep each asset's own name; the page copy and
+    # evidence already arrive uniquely named). A name clash between two assets is a
+    # malformed bundle the engine should refuse before writing anything.
+    planned: list[tuple[Path, str, str]] = []  # (src, dest_name, role)
+    used: set[str] = set()
+    for src, role in assets:
+        dest_name = src.name
+        if dest_name in used:
+            raise CaptureError(
+                f'bundle has two assets named {dest_name!r}; cannot file them together'
+            )
+        used.add(dest_name)
+        planned.append((src, dest_name, role))
+
+    asset_hints = [(dest_name, role) for _, dest_name, role in planned]
+    notes_text = _render_bundle_notes(result, accessed=accessed, assets=asset_hints)
+
+    matched = 'generic recipe' if recipe_name == 'generic' else f'{recipe_name} recipe'
+    notes_rel = _rel(folder / 'notes.md', archive_root)
+    if dry_run:
+        print(f'[dry-run] Would capture via {matched} ({result.source_type})')
+        print(f'[dry-run] Would stage bundle folder {_rel(folder, archive_root)}/ with:')
+        print(f'[dry-run]   notes.md')
+        for _, dest_name, role in planned:
+            print(f'[dry-run]   {dest_name}  (role: {role})')
+        print('[dry-run] Would log the search in the index or .cache/capture_log.jsonl')
+        return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'recipe': recipe_name})
+
+    try:
+        folder.mkdir(parents=True, exist_ok=False)
+    except OSError as e:
+        raise CaptureWriteError(
+            f'could not create bundle folder {_rel(folder, archive_root)}: {e}'
+        ) from e
+    try:
+        (folder / 'notes.md').write_text(notes_text, encoding='utf-8')
+        for src, dest_name, _role in planned:
+            shutil.copy2(src, folder / dest_name)
+    except OSError as e:
+        # Roll the partial folder back so a failed write never leaves a half bundle.
+        shutil.rmtree(folder, ignore_errors=True)
+        raise CaptureWriteError(
+            f'could not stage bundle folder {_rel(folder, archive_root)}: {e}'
+        ) from e
+
+    log_sink = _write_capture_log(
+        archive_root,
+        date=accessed,
+        question=result.title or '',
+        repository=result.repository or domain_of(url),
+        collection=result.collection,
+        terms=result.terms,
+        result=f'staged {notes_rel}',
+        stub_rel=notes_rel,
+    )
+
+    print(f'Captured via {matched} ({result.source_type})')
+    print(f'Staged bundle folder {_rel(folder, archive_root)}/')
+    print(f'  notes.md')
+    for _, dest_name, role in planned:
+        print(f'  {dest_name}  (role: {role})')
+    if result.people:
+        print(f'Person hints: {", ".join(result.people)}')
+    if log_sink == 'index':
+        print('Logged the search in the index (search_log)')
+    elif log_sink == 'jsonl':
+        print('Logged the search in .cache/capture_log.jsonl')
+
+    changed = [str(folder / 'notes.md')]
+    changed += [str(folder / dest_name) for _, dest_name, _ in planned]
+    return Result(
+        exit_code=EXIT_CLEAN,
+        data={'status': 'ok', 'recipe': recipe_name, 'stub': notes_rel,
+              'bundle_folder': True},
+        changed=changed,
+    )
+
+
 # ── Ingest: sweep staged bundles into the inbox (TOOLING_INGESTION §6) ──────────
 
 # Where the browser companion (and the bookmarklet / native host) drop staged
@@ -906,17 +1128,33 @@ def staged_bundles(fha_config: dict, staging_dir: str | None = None) -> tuple[Pa
     return staging, [b for b in _iter_bundles(staging) if not (ingested / b.name).exists()]
 
 
-def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
-    """Read a staged bundle (§3 contract): `capture.json` + `page.html` + optional asset.
+def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
+    """Read a staged bundle (§3 contract): `capture.json` + `page.html` + assets.
+
+    Returns `(capture_json, page_html, assets)` where `assets` is a list of
+    `(path, role)` pairs in capture.json order (empty for a pointer-only
+    capture). Both capture.json schemas are read:
+
+      • schema 2: an `assets: [{file, role, mode, provisional?}]` list — one entry
+        per staged file, each with its role (`webpage` for the page copy,
+        `record`/`front` for the evidence).
+      • schema 1: the flat `asset_mode` / `asset_file` pair (one asset, or none),
+        given the default `record` role.
+
+    `run_ingest` then files zero/one asset as a lone-sidecar stub and two-or-more
+    as a §12.1 bundle folder.
+
+    The scrape source is `page.html` (the always-saved raw DOM, §3) when present;
+    if a bundle omits it, the `webpage`-role HTML asset (the single-file snapshot)
+    is parsed instead — the recipe reads title/canonical/meta/JSON-LD/tables, all
+    of which a JSON-LD-preserving snapshot still carries. This keeps ingest
+    working for a snapshot-only bundle without dropping the §3 page.html contract
+    for the bundles that ship it.
 
     Raises BundleError (left-in-place, reported) when the bundle is malformed:
-    missing `page.html`, or a missing/unreadable/invalid `capture.json`. The
-    asset is optional — absent for case-(c) pointer-only captures, and skipped
-    when `capture.json` declares `asset_mode: none`.
+    no parseable HTML scrape source at all, or a missing/unreadable/invalid
+    `capture.json`.
     """
-    page = bundle / 'page.html'
-    if not page.is_file():
-        raise BundleError("missing page.html (the raw captured DOM)")
     cap_path = bundle / 'capture.json'
     if not cap_path.is_file():
         raise BundleError("missing capture.json")
@@ -963,23 +1201,94 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
         cap['people'] = [str(x) for x in people
                          if x is not None and not isinstance(x, (list, dict))]
 
-    asset: Path | None = None
-    if cap.get('asset_mode') != 'none':
-        named = cap.get('asset_file')
-        if named:
-            cand = bundle / str(named)
-            if cand.is_file():
-                asset = cand
-        if asset is None:
-            # Fall back to any file named `asset.<ext>` (asset.jpg/.pdf/.html, and
-            # multi-extension like asset.tar.gz — `startswith` catches what a
-            # `stem == 'asset'` test would miss; a bare extensionless `asset` is
-            # skipped since it can't be staged with a suffix).
-            for p in sorted(bundle.iterdir()):
-                if p.is_file() and p.name.startswith('asset.'):
-                    asset = p
-                    break
-    return cap, page.read_text(encoding='utf-8', errors='replace'), asset
+    assets = _resolve_bundle_assets(bundle, cap)
+
+    # Scrape source: the raw page.html when shipped, else the webpage-role HTML
+    # snapshot (single-file snapshots preserve JSON-LD/meta, so they parse), else
+    # the first .html/.htm asset. A bundle with neither has no scrape source.
+    page = bundle / 'page.html'
+    if page.is_file():
+        html = page.read_text(encoding='utf-8', errors='replace')
+    else:
+        scrape = _scrape_source_from_assets(assets)
+        if scrape is None:
+            raise BundleError(
+                "no scrape source: bundle has neither page.html nor an HTML asset")
+        html = scrape.read_text(encoding='utf-8', errors='replace')
+    return cap, html, assets
+
+
+def _scrape_source_from_assets(assets: list[tuple[Path, str]]) -> Path | None:
+    """Pick the HTML asset to parse when a bundle omits the raw page.html.
+
+    Prefers the `webpage`-role asset (the page snapshot); falls back to the first
+    `.html`/`.htm` asset. Returns None when no asset is HTML.
+    """
+    html_exts = ('.html', '.htm', '.xhtml')
+    for path, role in assets:
+        if role == 'webpage' and path.suffix.lower() in html_exts:
+            return path
+    for path, _role in assets:
+        if path.suffix.lower() in html_exts:
+            return path
+    return None
+
+
+def _bundle_file(bundle: Path, named) -> Path | None:
+    """Resolve a capture.json-named asset file inside a bundle, if it exists.
+
+    Names are taken as relative to the bundle and confined to it (a `..` or
+    absolute path that escapes the bundle is ignored), since a staged bundle's
+    asset must live inside the bundle the sweep is reading. `page.html` and
+    `capture.json` are never returned as assets — they are the bundle scaffolding.
+    """
+    if not named:
+        return None
+    base = Path(str(named)).name
+    if base in ('page.html', 'capture.json'):
+        return None
+    cand = bundle / base
+    return cand if cand.is_file() else None
+
+
+def _resolve_bundle_assets(bundle: Path, cap: dict) -> list[tuple[Path, str]]:
+    """Resolve a bundle's assets to an ordered list of `(path, role)` pairs.
+
+    Schema 2 (`assets:` list) and schema 1 (`asset_mode`/`asset_file`) both flow
+    through here. Order is preserved (record-then-webpage as the panel emits, so
+    the record evidence is the natural primary). Roles are normalized to a string;
+    an asset with no role becomes the default `record`.
+    """
+    out: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+
+    assets = cap.get('assets')
+    if isinstance(assets, list):
+        for item in assets:
+            if not isinstance(item, dict):
+                continue
+            path = _bundle_file(bundle, item.get('file'))
+            if path is None or path.name in seen:
+                continue
+            role = str(item.get('role') or '').strip().lower() or _DEFAULT_ASSET_ROLE
+            out.append((path, role))
+            seen.add(path.name)
+        return out
+
+    # ── schema 1 fallback: the flat asset_mode / asset_file pair ───────────────
+    if cap.get('asset_mode') == 'none':
+        return []
+    asset = _bundle_file(bundle, cap.get('asset_file'))
+    if asset is None:
+        # Fall back to any file named `asset.<ext>` (asset.jpg/.pdf/.html, and
+        # multi-extension like asset.tar.gz — `startswith` catches what a
+        # `stem == 'asset'` test would miss; a bare extensionless `asset` is
+        # skipped since it can't be staged with a suffix).
+        for p in sorted(bundle.iterdir()):
+            if p.is_file() and p.name.startswith('asset.'):
+                asset = p
+                break
+    return [(asset, _DEFAULT_ASSET_ROLE)] if asset is not None else []
 
 
 def _park_ingested(bundle: Path, ingested_dir: Path) -> None:
@@ -1032,7 +1341,7 @@ def run_ingest(
             outcomes.append({'bundle': name, 'status': 'skipped'})
             continue
         try:
-            cap, html, asset = _read_bundle(bundle)
+            cap, html, assets = _read_bundle(bundle)
         except BundleError as e:
             print(f'WARNING: skipping malformed bundle {name}: {e}', file=sys.stderr)
             print(f'         left in place at {bundle}', file=sys.stderr)
@@ -1044,19 +1353,37 @@ def run_ingest(
         prefix = '[dry-run] ' if dry_run else ''
         print(f'{prefix}Ingesting bundle {name}:')
         try:
-            result = run_capture(
-                archive_root, fha_config,
-                url=cap.get('url'),
-                title=cap.get('title'),
-                source_type=cap.get('source_type'),
-                source_date=cap.get('source_date'),
-                asset=asset,
-                html=html,
-                accessed=cap.get('accessed'),
-                notes=cap.get('notes'),
-                people=cap.get('people'),
-                dry_run=dry_run,
-            )
+            # SPEC §12.1: zero/one asset → a lone-sidecar stub; two-or-more → a
+            # bundle FOLDER (the schema-2 "both" case). Both paths re-extract from
+            # page.html and apply the same capture.json overrides.
+            if len(assets) >= 2:
+                result = _ingest_bundle_folder(
+                    archive_root, fha_config,
+                    url=cap.get('url'),
+                    title=cap.get('title'),
+                    source_type=cap.get('source_type'),
+                    source_date=cap.get('source_date'),
+                    html=html,
+                    accessed=cap.get('accessed'),
+                    notes=cap.get('notes'),
+                    people=cap.get('people'),
+                    assets=assets,
+                    dry_run=dry_run,
+                )
+            else:
+                result = run_capture(
+                    archive_root, fha_config,
+                    url=cap.get('url'),
+                    title=cap.get('title'),
+                    source_type=cap.get('source_type'),
+                    source_date=cap.get('source_date'),
+                    asset=assets[0][0] if assets else None,
+                    html=html,
+                    accessed=cap.get('accessed'),
+                    notes=cap.get('notes'),
+                    people=cap.get('people'),
+                    dry_run=dry_run,
+                )
         except (CaptureError, CaptureWriteError) as e:
             print(f'WARNING: could not ingest {name}: {e}', file=sys.stderr)
             print(f'         left in place at {bundle}', file=sys.stderr)

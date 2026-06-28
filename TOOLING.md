@@ -1,4 +1,4 @@
-# TOOLING.md - Plainfile Family History: Tooling Design
+# TOOLING.md - Plaintext Family History: Tooling Design
 
 **Who this is for:** developers building or extending the `fha` tool suite. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
@@ -617,28 +617,28 @@ It explicitly **excludes** spec-repo furniture that never enters an archive: `ex
 
 **`fha install <archive-path>`** - the first-time bootstrap, **run from a clone of the public repo** (the only place the code exists before anything is copied).
 Creates `<archive-path>` if absent (skeleton + full operating layer), or populates an existing folder that has no tools yet.
-Stamps `.plainfile-version` recording the manifest version and per-file checksums received.
+Stamps `.plaintext-version` recording the manifest version and per-file checksums received.
 After this the archive is self-contained - tools and rulebook both vendored - and `update-tools` can run from within it.
 *(Bootstrap note: `install` necessarily runs from the clone, e.g. `python tools/fha.py install ~/my-family-archive`, because the archive has no `fha` yet. This is the one command that can't be run from the archive - by definition.)*
 
 **`fha update-tools`** - run from the archive (or the clone, pointed at it) any time the public repo improves.
-Reads the public manifest, compares against the archive's `.plainfile-version` stamp, and reconciles **without ever destroying anything**:
+Reads the public manifest, compares against the archive's `.plaintext-version` stamp, and reconciles **without ever destroying anything**:
 
 | Situation | What update-tools does |
 |---|---|
 | Manifest has a **new** file/folder | Copy it in. |
 | File is **unchanged from stock** (checksum matches the recorded version) | Overwrite silently - no work to lose. |
-| File was **customized** (checksum differs - you edited it) | Move your version to `.plainfile-backup/{date}/`, install the new stock version, and **report it** so you can reconcile your changes. |
-| File **removed from the manifest** upstream (a tool retired/renamed) | Move it to `.plainfile-backup/{date}/` - **never deleted** - and report it. |
+| File was **customized** (checksum differs - you edited it) | Move your version to `.plaintext-backup/{date}/`, install the new stock version, and **report it** so you can reconcile your changes. |
+| File **removed from the manifest** upstream (a tool retired/renamed) | Move it to `.plaintext-backup/{date}/` - **never deleted** - and report it. |
 
 Then it refreshes the stamp and prints a summary (added / updated / backed-up / quarantined, with the backup path).
 `--dry-run` reports the plan without writing.
 
 **The governing principle: the updater never deletes and never silently overwrites your work.**
 It only adds, replaces-pristine-with-stock, or moves-aside-and-reports.
-Customizations and retired files accumulate in `.plainfile-backup/` for the human to prune when confident - the same project-wide bias as everywhere else: *never lose the human's work; make the human the one who throws things away.*
+Customizations and retired files accumulate in `.plaintext-backup/` for the human to prune when confident - the same project-wide bias as everywhere else: *never lose the human's work; make the human the one who throws things away.*
 You may edit any operating-layer file freely (a tool, `AGENTS.md`, the spec); the checksum compare detects your change and protects it on the next update.
-(`.plainfile-backup/` and `.plainfile-version` are the updater's only footprints; both are safe to inspect or delete by hand.)
+(`.plaintext-backup/` and `.plaintext-version` are the updater's only footprints; both are safe to inspect or delete by hand.)
 
 **Operating layer vs. skeleton seeds.** The reconciliation above governs the **operating layer** (`tools/`, the rulebooks, the docs). The **skeleton seeds** - `fha.yaml`, the seeded `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, and the `.gitkeep` placeholders - are written **once by `install`** and never touched by `update-tools`. Those two files in particular fill immediately with the human's own configuration (`fha.yaml`'s asset roots) and data (`places.yaml`'s registry), so "refreshing" them upstream would clobber exactly the work the updater exists to protect. The manifest tags each file `operating` or `skeleton`; `update-tools` reconciles only the former and carries the latter's stamp entries over unchanged. (A genuinely improved template reaches an existing archive only when the human opts to copy it; a fresh `install` always gets the latest.)
 

@@ -14,7 +14,7 @@ inbox/
 WORKING_COPY
 
 # Backup directory created by fha update-tools.
-.plainfile-backup/
+.plaintext-backup/
 
 # Python bytecode written by the fha tools at runtime.
 __pycache__/

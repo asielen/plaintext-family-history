@@ -20,7 +20,7 @@ Checks (in order):
   8b. Staged captures   (browser-companion bundles waiting for `fha capture --ingest`)
   9. Counts             (restricted sources, living/unknown persons)
  10. E018 findings      (agent-instruction drift details)
- 11. Tools version      (.plainfile-version + pending update backups)
+ 11. Tools version      (.plaintext-version + pending update backups)
  12. Backup reminder    (always printed)
 
 Exit codes: 0 = all pass; 1 = warnings only; 2 = errors.  TOOLING §3a.
@@ -232,9 +232,9 @@ def _counts_from_scan(archive_root: Path) -> dict:
 def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict]) -> int:
     """Report the vendored-tools version stamp and any pending update backups.
 
-    `fha install` writes `.plainfile-version` (the manifest version + per-file
+    `fha install` writes `.plaintext-version` (the manifest version + per-file
     checksums received); `fha update-tools` moves anything it can't safely
-    overwrite into `.plainfile-backup/{date}/`. Both are plain artifacts this
+    overwrite into `.plaintext-backup/{date}/`. Both are plain artifacts this
     check reads directly rather than importing scaffold.py (tools never import
     tools). The three states a human could otherwise be stuck on:
       - absent stamp   → informational (a hand-assembled archive is fine)
@@ -246,10 +246,10 @@ def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict
     returns the worst exit contribution (EXIT_CLEAN or EXIT_WARNINGS).
     """
     worst = EXIT_CLEAN
-    stamp_path = archive_root / '.plainfile-version'
+    stamp_path = archive_root / '.plaintext-version'
     if not stamp_path.is_file():
         lines.append(
-            'tools version: not stamped (no .plainfile-version)  '
+            'tools version: not stamped (no .plaintext-version)  '
             'next: no action needed if you copied the tools by hand; '
             'or run `fha install` from a tools clone to stamp it'
         )
@@ -273,7 +273,7 @@ def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict
                            'next_step': 'fha update-tools --repo PATH'})
         except (ValueError, OSError) as exc:
             lines.append(
-                f'tools version: {_WARN} .plainfile-version is unreadable ({exc})  '
+                f'tools version: {_WARN} .plaintext-version is unreadable ({exc})  '
                 f'next: delete {stamp_path} and run '
                 f'`fha update-tools --repo PATH` to rewrite it (your tool files '
                 f'are not affected)'
@@ -283,7 +283,7 @@ def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict
                            'next_step': f'delete {stamp_path} and run fha update-tools'})
             worst = max(worst, EXIT_WARNINGS)
 
-    backup_dir = archive_root / '.plainfile-backup'
+    backup_dir = archive_root / '.plaintext-backup'
     if backup_dir.is_dir():
         pending = sum(1 for p in backup_dir.rglob('*') if p.is_file())
         if pending:
@@ -740,8 +740,8 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     lines.append('')
 
     # ── 11. Tools version (fha install / fha update-tools footprints) ────────
-    # Self-contained reads (tools never import tools): .plainfile-version and
-    # .plainfile-backup/ are plain JSON / a folder. Surfaces the two new states
+    # Self-contained reads (tools never import tools): .plaintext-version and
+    # .plaintext-backup/ are plain JSON / a folder. Surfaces the two new states
     # the scaffolding tools can leave behind so a human is never stuck wondering.
     worst = max(worst, _check_tools_version(archive_root, lines, checks))
     lines.append('')

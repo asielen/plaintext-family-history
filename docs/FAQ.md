@@ -18,7 +18,7 @@ Some assistant workflows are still future skill-layer work; the durable part is 
 
 ### How is this different from Gramps, webtrees, Ancestry, etc.?
 Those are genealogy *applications* - excellent, but database- or service-first: your data lives in their store or schema.
-Plainfile inverts that.
+Plaintext inverts that.
 The archive is plain files you own; a genealogy app can be *fed* from it (via GEDCOM export) but never owns it.
 If you love an app's tree view, generate a GEDCOM and use it - the truth stays in your files.
 

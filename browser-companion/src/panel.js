@@ -1,0 +1,595 @@
+// panel.js - the capture panel controller (TOOLING_INGESTION §5.3, the 4 phases).
+//
+// This wires the side-panel DOM to the in-page content script and the bundle
+// writer. It holds NO authoritative knowledge of any site - it gathers a generic
+// pre-fill, lets the human nudge it, captures the evidence, and stages a bundle
+// (§5.5: the browser captures; Python extracts). The panel's only insistence is
+// on the asset (Step 2), the one thing that can't be redone once the page is
+// closed; everything else is optional and a hurried human clicks straight to
+// Capture.
+//
+// The design (private/capture-panel-mockup.html) composes two independent
+// choices in Step 2:
+//   • a "keep a copy of the whole page" CHECKBOX (its own toggle, default on)
+//     that produces a self-contained single-file snapshot (role `webpage`), AND
+//   • a two-option evidence picker: "Yes, save the actual file" (a pre-filled
+//     url box from the detected image plus a drop box; no separate fetch button,
+//     Capture pulls it) or "No, the page copy is the record".
+// A capture can therefore carry BOTH a page copy and a separate evidence file
+// (the "both" case): the bundle records them in capture.json's `assets:` list
+// (schema 2) and the always-saved raw page.html stays the scrape source.
+//
+// Flow:
+//   init     → find the active tab, inject content.js, pull the pre-fill (P1→P2)
+//   step 2   → page-copy toggle + evidence picker (url or drop), provisional flag
+//   capture  → grab fresh page.html, build the page copy + evidence, stage bundle
+//
+// Classic script; depends on window.FHA.{captureJson,bundle,nativeHost}.
+
+(function () {
+  const { captureJson, bundle, nativeHost } = window.FHA;
+
+  // Friendly labels over the controlled source_type vocabulary (_lib.SOURCE_TYPES).
+  // "Auto-detect" (blank) is the safe default - the Python recipe sets the real
+  // type from page.html; a stored value here only pre-empts that when the human
+  // chooses one. Every value is in-vocabulary so ingest never refuses the stub.
+  const SOURCE_TYPES = [
+    ['census', 'Census'],
+    ['vital-record', 'Vital record (birth/marriage/death)'],
+    ['newspaper', 'Newspaper'],
+    ['photo', 'Photo'],
+    ['interview', 'Interview'],
+    ['letter', 'Letter'],
+    ['military-record', 'Military record'],
+    ['land-record', 'Land record'],
+    ['probate', 'Probate / will'],
+    ['directory', 'Directory'],
+    ['dna', 'DNA'],
+    ['book', 'Book'],
+    ['website', 'Website'],
+    ['artifact', 'Artifact'],
+    ['proof-argument', 'Proof argument'],
+    ['other', 'Other'],
+  ];
+
+  const RECIPE_LABELS = {
+    ancestry: 'an Ancestry record',
+    familysearch: 'a FamilySearch record',
+    newspapers: 'a Newspapers.com clipping',
+    findagrave: 'a Find a Grave memorial',
+  };
+
+  // ── panel state ───────────────────────────────────────────────────────────
+  const state = {
+    tabId: null,
+    prefill: null,
+    // The dropped/chosen evidence file, when the human supplies one directly
+    // (the "or drop a file" path). A url in the box is pulled at Capture time.
+    droppedAsset: null, // { blob, ext, filename } | null
+    folder: 'fha-inbox',
+    busy: false,
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  // ── chrome plumbing (promise wrappers) ──────────────────────────────────────
+
+  function queryActiveTab() {
+    return new Promise((resolve) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) =>
+        resolve(tabs && tabs[0] ? tabs[0] : null)
+      );
+    });
+  }
+
+  function sendToTab(tabId, msg) {
+    return new Promise((resolve, reject) => {
+      chrome.tabs.sendMessage(tabId, msg, (resp) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(resp);
+        }
+      });
+    });
+  }
+
+  async function injectContent(tabId) {
+    // activeTab + scripting: the content script is injected only here, on the
+    // human's invocation - never ambient (§5.4). content.js self-guards against a
+    // second injection, so calling this again on the same page is harmless.
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['src/content.js'],
+    });
+  }
+
+  // ── Step 1: confirm ──────────────────────────────────────────────────────────
+
+  function populateTypeSelect() {
+    const sel = $('f-type');
+    for (const [value, label] of SOURCE_TYPES) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+  }
+
+  function renderPeople(names) {
+    const list = $('people-list');
+    list.innerHTML = '';
+    (names || []).forEach((name) => addPersonRow(name, true));
+  }
+
+  function addPersonRow(name, checked) {
+    const list = $('people-list');
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = checked !== false;
+    cb.dataset.name = name;
+    const span = document.createElement('span');
+    span.textContent = name;
+    label.appendChild(cb);
+    label.appendChild(span);
+    list.appendChild(label);
+  }
+
+  function checkedPeople() {
+    return Array.from($('people-list').querySelectorAll('input:checked')).map(
+      (cb) => cb.dataset.name
+    );
+  }
+
+  function applyPrefill(prefill) {
+    state.prefill = prefill;
+    $('f-title').value = prefill.title || '';
+    $('f-date').value = prefill.sourceDate || '';
+    $('f-repo').value = prefill.repository || '';
+    $('f-url').value = prefill.url || '';
+    renderPeople(prefill.people);
+    // Pre-fill the evidence url box with the best-guess image/PDF the page exposed.
+    if (prefill.imageUrl) $('f-asset-url').value = prefill.imageUrl;
+    else if (prefill.pdfUrl) $('f-asset-url').value = prefill.pdfUrl;
+
+    const banner = $('recipe-banner');
+    const hintLabel = RECIPE_LABELS[prefill.recipeHint];
+    if (hintLabel) {
+      banner.textContent = 'Looks like ' + hintLabel + '. Filing will confirm it.';
+      banner.classList.add('recipe');
+    } else {
+      banner.textContent = 'Generic capture, filing will read the page itself.';
+    }
+    updateAssetStatus();
+  }
+
+  // ── Step 2: page-copy toggle + evidence picker ───────────────────────────────
+
+  function pageCopyOn() {
+    return $('cb-pagecopy').checked;
+  }
+
+  function evidenceMode() {
+    const r = document.querySelector('input[name="assetMode"]:checked');
+    return r ? r.value : 'yes';
+  }
+
+  function evidenceUrl() {
+    return ($('f-asset-url').value || '').trim();
+  }
+
+  function hasEvidence() {
+    if (evidenceMode() !== 'yes') return false;
+    return !!(state.droppedAsset || evidenceUrl());
+  }
+
+  // A running, plain-language summary of what the capture will contain, so the
+  // human can see the "both" composition before pressing Capture.
+  function updateAssetStatus() {
+    const parts = [];
+    if (pageCopyOn()) parts.push('Whole-page copy ✓');
+    if (evidenceMode() === 'yes') {
+      if (state.droppedAsset) {
+        const note = $('f-provisional').checked ? ' (screen capture)' : '';
+        parts.push('Record file: ' + state.droppedAsset.filename + note);
+      } else if (evidenceUrl()) {
+        parts.push('Record file: from page address');
+      } else {
+        parts.push('Record file: add an address or drop a file');
+      }
+    } else {
+      parts.push('the page copy is the record');
+    }
+    const ok = pageCopyOn() || hasEvidence();
+    setAssetStatus(
+      parts.join('   ·   ') || 'Nothing yet. Tick the page copy or pick a file.',
+      ok ? 'ok' : 'warn'
+    );
+  }
+
+  function setAssetStatus(text, cls) {
+    const el = $('asset-status');
+    el.textContent = text;
+    el.className = 'asset-status' + (cls ? ' ' + cls : '');
+  }
+
+  function selectEvidenceCard(mode) {
+    $('asset-cards').querySelectorAll('.opt').forEach((o) =>
+      o.classList.toggle('is-selected', o.dataset.mode === mode)
+    );
+  }
+
+  // ── dropped-file handling ────────────────────────────────────────────────────
+
+  function extOfFile(file) {
+    const m = (file.name || '').match(/\.([a-z0-9]{1,6})$/i);
+    return m ? m[1].toLowerCase() : 'bin';
+  }
+
+  function acceptDroppedFile(file) {
+    const ext = extOfFile(file);
+    state.droppedAsset = { blob: file, ext, filename: file.name };
+    const dz = $('dropzone');
+    dz.classList.add('has-file');
+    dz.textContent = file.name;
+    updateAssetStatus();
+  }
+
+  function wireDropzone(el) {
+    if (!el) return;
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.style.display = 'none';
+    document.body.appendChild(picker);
+
+    const open = () => picker.click();
+    el.addEventListener('click', open);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    });
+    picker.addEventListener('change', () => {
+      if (picker.files && picker.files[0]) acceptDroppedFile(picker.files[0]);
+    });
+
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      el.classList.add('dragover');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('dragover'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.classList.remove('dragover');
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) acceptDroppedFile(file);
+    });
+  }
+
+  function describeSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  // ── Step 3: assemble + stage the bundle ──────────────────────────────────────
+
+  function gatherNotes(provisional) {
+    let notes = $('f-notes').value;
+    if (!notes.trim()) notes = '';
+    // schema-2 capture.json carries the provisional flag structurally (on the
+    // record asset), but we ALSO surface it in the notes body - the one place
+    // review always reads (§5.6 "review sees every flag") - so a flagged screen
+    // capture is visible whether or not a tool honors the structured flag yet.
+    if (provisional) {
+      const flag = '[provisional image: a cleaner original may exist behind the paywall]';
+      notes = notes ? flag + '\n\n' + notes : flag;
+    }
+    return notes;
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result);
+        const comma = result.indexOf(',');
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error || new Error('read failed'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Build the page-copy asset (role `webpage`): a self-contained single-file
+  // snapshot from the content script. Returns { blob, filename } or throws.
+  async function buildPageCopy() {
+    const resp = await sendToTab(state.tabId, { action: 'singlefile' });
+    if (!resp || !resp.ok || !resp.html) {
+      throw new Error((resp && resp.error) || 'could not build the page copy');
+    }
+    return {
+      blob: new Blob([resp.html], { type: 'text/html' }),
+      filename: 'page-copy.html',
+    };
+  }
+
+  // Resolve the evidence asset (role `record`): the dropped file as-is, or pull
+  // the url in the box from the page's own session (no separate fetch button -
+  // Capture pulls it). Returns { blob, filename } or throws.
+  async function buildEvidence() {
+    if (state.droppedAsset) {
+      return { blob: state.droppedAsset.blob, filename: 'record.' + state.droppedAsset.ext };
+    }
+    const url = evidenceUrl();
+    const resp = await sendToTab(state.tabId, { action: 'fetchAsset', url });
+    if (!resp || !resp.ok) {
+      throw new Error((resp && resp.error) || 'could not pull that file from the page');
+    }
+    const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
+    return { blob, filename: 'record.' + (resp.ext || 'bin') };
+  }
+
+  async function capture() {
+    if (state.busy) return;
+
+    const wantPageCopy = pageCopyOn();
+    const wantEvidence = evidenceMode() === 'yes';
+    if (!wantPageCopy && !wantEvidence) {
+      setStageResult(
+        'Tick "Keep a copy of the whole page", or choose to save the actual file.',
+        'warn'
+      );
+      return;
+    }
+    if (wantEvidence && !state.droppedAsset && !evidenceUrl()) {
+      setStageResult(
+        'Add the file address or drop a file, or switch to "No, the page copy is the record".',
+        'warn'
+      );
+      return;
+    }
+
+    state.busy = true;
+    $('btn-capture').disabled = true;
+    setStageResult('Capturing…', '');
+
+    try {
+      // page.html is always saved - grab it fresh at capture time so any
+      // late-settling content is in the raw DOM the recipe re-extracts from.
+      const pageResp = await sendToTab(state.tabId, { action: 'pagehtml' });
+      if (!pageResp || !pageResp.ok || !pageResp.html) {
+        throw new Error('could not read the page, reload it and try again');
+      }
+
+      // Compose the asset list (the "both" case): the page copy and/or the
+      // record evidence. Each entry carries its role so ingest files it right.
+      const provisional = wantEvidence && !!$('f-provisional').checked;
+      const assets = []; // { filename, blob, role, mode, provisional }
+      if (wantPageCopy) {
+        const pc = await buildPageCopy();
+        assets.push({
+          filename: pc.filename, blob: pc.blob,
+          role: 'webpage', mode: 'singlefile',
+        });
+      }
+      if (wantEvidence) {
+        const ev = await buildEvidence();
+        assets.push({
+          filename: ev.filename, blob: ev.blob,
+          role: 'record', mode: state.droppedAsset ? 'manual' : 'fetch',
+          provisional,
+        });
+      }
+
+      const title = $('f-title').value.trim();
+      const fields = {
+        url: $('f-url').value.trim() || (state.prefill && state.prefill.url),
+        title,
+        accessed: captureJson.accessedDate(),
+        sourceDate: $('f-date').value.trim(),
+        sourceType: $('f-type').value,
+        people: checkedPeople(),
+        notes: gatherNotes(provisional),
+        recipeHint: state.prefill && state.prefill.recipeHint,
+        assets: assets.map((a) => ({
+          file: a.filename, role: a.role, mode: a.mode,
+          provisional: !!a.provisional,
+        })),
+      };
+      const cap = captureJson.build(fields);
+      const bundleName = captureJson.bundleName(title || (cap.url || 'capture'));
+
+      const spec = {
+        folder: state.folder,
+        bundleName,
+        pageHtml: pageResp.html,
+        assets: assets.map((a) => ({ filename: a.filename, blob: a.blob })),
+        captureJson: cap,
+      };
+
+      // Seamless path (§5.7) when the human opted in and a host answers; else the
+      // honest staging-folder download (§5.1). The extension never claims it
+      // reached the archive when it only reached Downloads.
+      let viaHost = false;
+      if (await nativeHost.isAvailable()) {
+        try {
+          const hostAssets = [];
+          for (const a of assets) {
+            hostAssets.push({
+              filename: a.filename,
+              base64: await blobToBase64(a.blob),
+            });
+          }
+          const resp = await nativeHost.sendBundle({
+            bundleName,
+            pageHtml: pageResp.html,
+            captureJson: cap,
+            assets: hostAssets,
+          });
+          viaHost = true;
+          reportStaged(resp.stub || 'your archive inbox', true);
+        } catch (e) {
+          // Fall back to the download path rather than failing the capture.
+          viaHost = false;
+        }
+      }
+      if (!viaHost) {
+        const result = await bundle.writeBundle(spec);
+        reportStaged(result.dir, false);
+      }
+
+      resetForNext();
+    } catch (e) {
+      setStageResult('Could not capture: ' + e.message, 'error');
+    } finally {
+      state.busy = false;
+      $('btn-capture').disabled = false;
+    }
+  }
+
+  function reportStaged(where, viaHost) {
+    if (viaHost) {
+      setStageResult('Filed straight into your archive: ' + where, 'ok');
+      $('handoff').classList.remove('show');
+      return;
+    }
+    // Be exact about where it went, and reveal the handoff card with the
+    // copyable ingest command (§5.1): the panel never pretends Downloads is the
+    // archive.
+    setStageResult('Staged to Downloads/' + where, 'ok');
+    $('handoff').classList.add('show');
+  }
+
+  function setStageResult(text, cls) {
+    const el = $('stage-result');
+    el.textContent = text;
+    el.className = 'stage-result' + (cls ? ' ' + cls : '');
+  }
+
+  function resetForNext() {
+    // Batch capture is the natural mode (§5.3): a research sitting yields a dozen
+    // bundles. Clear the evidence so the next page starts fresh, but leave the
+    // panel open and the settings intact.
+    state.droppedAsset = null;
+    const drop = $('dropzone');
+    if (drop) {
+      drop.classList.remove('has-file');
+      drop.textContent = 'Drop a file here, or click to choose';
+    }
+    $('f-provisional').checked = false;
+    updateAssetStatus();
+  }
+
+  // ── settings (chrome.storage) ────────────────────────────────────────────────
+
+  function loadSettings() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(
+        { captureFolder: 'fha-inbox', defaultEvidence: 'yes', pageCopyDefault: true },
+        (cfg) => {
+          state.folder = cfg.captureFolder || 'fha-inbox';
+          $('f-folder').value = state.folder;
+          $('f-default-evidence').value = cfg.defaultEvidence || 'yes';
+          $('cb-pagecopy').checked = cfg.pageCopyDefault !== false;
+          resolve(cfg);
+        }
+      );
+    });
+  }
+
+  function wireSettings() {
+    $('f-folder').addEventListener('change', () => {
+      state.folder = $('f-folder').value.trim() || 'fha-inbox';
+      chrome.storage.local.set({ captureFolder: state.folder });
+    });
+    $('f-default-evidence').addEventListener('change', () => {
+      chrome.storage.local.set({ defaultEvidence: $('f-default-evidence').value });
+    });
+  }
+
+  function selectEvidenceMode(mode) {
+    const radio = document.querySelector(
+      'input[name="assetMode"][value="' + mode + '"]'
+    );
+    if (radio) radio.checked = true;
+    selectEvidenceCard(mode);
+  }
+
+  function copyCmd(btn) {
+    const text = $('cmd-text').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(text);
+    const old = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => (btn.textContent = old), 1400);
+  }
+
+  // ── init ─────────────────────────────────────────────────────────────────────
+
+  function wireEvents() {
+    $('cb-pagecopy').addEventListener('change', () => {
+      $('page-copy-card').classList.toggle('unchecked', !pageCopyOn());
+      chrome.storage.local.set({ pageCopyDefault: pageCopyOn() });
+      updateAssetStatus();
+    });
+    document.querySelectorAll('input[name="assetMode"]').forEach((r) =>
+      r.addEventListener('change', () => {
+        selectEvidenceCard(evidenceMode());
+        updateAssetStatus();
+      })
+    );
+    $('f-asset-url').addEventListener('input', updateAssetStatus);
+    $('f-provisional').addEventListener('change', updateAssetStatus);
+    $('btn-capture').addEventListener('click', capture);
+    $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));
+    $('btn-add-person').addEventListener('click', () => {
+      const name = $('f-add-person').value.trim();
+      if (name) {
+        addPersonRow(name, true);
+        $('f-add-person').value = '';
+      }
+    });
+    $('f-add-person').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') $('btn-add-person').click();
+    });
+    wireDropzone($('dropzone'));
+  }
+
+  async function init() {
+    populateTypeSelect();
+    wireEvents();
+    wireSettings();
+    const cfg = await loadSettings();
+    $('page-copy-card').classList.toggle('unchecked', !pageCopyOn());
+
+    const tab = await queryActiveTab();
+    if (!tab || !tab.id || !/^https?:/i.test(tab.url || '')) {
+      $('recipe-banner').textContent =
+        'Open a record page (an http/https site) to capture it.';
+      $('btn-capture').disabled = true;
+      return;
+    }
+    state.tabId = tab.id;
+
+    try {
+      await injectContent(tab.id);
+      const resp = await sendToTab(tab.id, { action: 'prefill' });
+      if (resp && resp.ok) applyPrefill(resp.prefill);
+      else throw new Error((resp && resp.error) || 'no pre-fill');
+    } catch (e) {
+      // A restricted page (chrome://, the web store) or a page that hasn't
+      // finished loading. Don't dead-end: explain and let the human still type.
+      $('recipe-banner').textContent =
+        "Couldn't read this page automatically. Type the details below, or reload and reopen.";
+      $('f-url').value = tab.url || '';
+    }
+
+    // Honor the saved default evidence option as the initial selection.
+    selectEvidenceMode((cfg && cfg.defaultEvidence) || 'yes');
+    updateAssetStatus();
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+})();

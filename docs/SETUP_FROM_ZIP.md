@@ -14,7 +14,7 @@ is the natural next read).
 
 ## Step 1 - Unzip it somewhere permanent
 
-Find the zip file (often named something like `plainfile-family-history.zip`). Unzip it into a
+Find the zip file (often named something like `plaintext-family-history.zip`). Unzip it into a
 place you'll keep for the long haul - your **Documents** folder is perfect. Avoid Downloads or
 Desktop, which people tend to clean out.
 

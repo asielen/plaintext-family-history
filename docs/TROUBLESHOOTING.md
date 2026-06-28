@@ -133,7 +133,7 @@ purpose: it never lets a photo's hidden location data slip into something you ha
 
 **What happened.** `fha install` is the *first-time* setup - it copies the tools, the rulebooks,
 and the docs into a brand-new archive folder and stamps it. Run a second time on the same folder,
-it stops on purpose ("already has the plainfile tools installed") so it can't quietly overwrite an
+it stops on purpose ("already has the plaintext tools installed") so it can't quietly overwrite an
 archive you've been working in.
 
 **Fix.** If you're starting fresh, point `install` at a folder that doesn't exist yet (it creates
@@ -147,16 +147,16 @@ contains `manifest.json`.
 
 ---
 
-## After updating the tools, there's a ".plainfile-backup" folder
+## After updating the tools, there's a ".plaintext-backup" folder
 
 **What happened.** `fha update-tools` pulls in improved tools without ever overwriting your work.
 If you'd edited one of the tool or rulebook files, it tucked *your* version into
-`.plainfile-backup/{date}/` before laying down the new one, and told you so. A file that was
+`.plaintext-backup/{date}/` before laying down the new one, and told you so. A file that was
 retired upstream goes there too. Nothing is deleted - the backup folder is just the safety net.
 
 **Fix.** Nothing is required; the new tools are already in place and working. When you have a
 moment, open the backed-up file alongside the current one, copy over any change of yours worth
-keeping, then delete the `.plainfile-backup` folder - you're the only one who decides when it goes.
+keeping, then delete the `.plaintext-backup` folder - you're the only one who decides when it goes.
 `fha doctor` reminds you it's there until you do. (`fha.yaml` and your `places.yaml` are *never*
 touched by an update - your photo locations and place list stay exactly as you left them.) If
 `update-tools` says it can't find your tools, add `--repo PATH` pointing at the folder that holds

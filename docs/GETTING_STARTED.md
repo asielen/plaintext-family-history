@@ -1,6 +1,6 @@
 # Getting Started - Your First Day
 
-**Who this is for:** a genealogist setting up their own Plainfile archive and filing a first
+**Who this is for:** a genealogist setting up their own Plaintext archive and filing a first
 document. No programming required - you'll work with an AI assistant that runs the commands for you.
 
 - **Were you sent here to hand over photos or documents?** You don't need any of this - see
@@ -65,7 +65,7 @@ no harm, the rest still works.
 
 ### 3. Your AI assistant (required)
 
-Plainfile is *operated* through an AI coding assistant - it reads the project's rules, runs the
+Plaintext is *operated* through an AI coding assistant - it reads the project's rules, runs the
 `fha` commands, and drafts sourced facts for you to approve. You never have to memorize a
 command; you ask in plain English. The reference assistant is
 **[Claude Code](https://www.anthropic.com/claude-code)** - follow the install instructions on

@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-06-26",
+  "generated": "2026-06-27",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -12,14 +12,14 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "d98ed4e0715a19253a4f27c145eb0ce1fb8a7eb1dbbd23dc496a2eab9cb37301",
+      "sha256": "2863490a8fa93b5cac3313d3b08929664a011054c96cbf7e40a91e7edd0ac965",
       "spec_version": "1.2",
       "src": "archive-template/.gitignore"
     },
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "c621df81e190693c507ac747848ea5828fd6a3798fa1ea9dfa3b0cedd74732c0",
+      "sha256": "81887a073e71500e9a1a23de76df96d05ed5e297e988da405c16d9fc9bea2857",
       "spec_version": "1.2"
     },
     {
@@ -31,7 +31,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "a9bc5334a51c7057b3d583e755037dab8dff00d3dc0f64277731be0dbceeb7b1",
+      "sha256": "b94ff399b59092736cc7ad45ad1df57516dbd680b75f67f5c749ba259d7e6410",
       "spec_version": "1.2"
     },
     {
@@ -43,25 +43,25 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "4d5c088152b205fa5feaf653e9db9f3944dc4f1aff7952a8b5812086fa0d7ae9",
+      "sha256": "327034867ed288a4305cf57d30236a2e47524f2a9e2da27807ee7471008455d7",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "139558aa1c31097280b6a872e13fd4c9846ae2bb073337170489f114a5370b89",
+      "sha256": "d1183ccb3ce55807bf783e4b126906f567f4477bf9cb0ce1c575150dfd3fdbd7",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "6d018d2fa792a91bab250ba6dcedd82213713587b02bdd1be05ae73a4b715bc8",
+      "sha256": "1b76b578de7d385722177c2fc380f40f9870f29ef3bee0f4fc733a750157a78f",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "7eb2d36fdb576dc1c21bc8f8e1f8b92099ebaa5a6c70e2f060d0db89626971a9",
+      "sha256": "eaa8041016967636138ded5eb39ad6db50f430c61879d1ff2e53fa39dbc7bce4",
       "spec_version": "1.2"
     },
     {
@@ -79,7 +79,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "c89a5cff6485cb91c9a836715a7127319c368d4a5209be81420110b6c0f9967d",
+      "sha256": "bfc9f2ff3b1df3ddba4a2e6765de72fc468b7bbe869644b34b7bd74c4a00911b",
       "spec_version": "1.2"
     },
     {
@@ -91,7 +91,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "88a485cfb5aec6be5b3059ff55b6e0edd196ce96a252770b0e4262801592b61e",
+      "sha256": "02174ea19e98e092a1c850431fac11028617448faf4f178ab933fee09d95b49f",
       "spec_version": "1.2"
     },
     {
@@ -103,19 +103,19 @@
     {
       "path": "docs/README.md",
       "category": "operating",
-      "sha256": "5190a55cf8e70d4b51e79f399933f179bedf29a4ab5e4d33490b9766fcd1545f",
+      "sha256": "59427f988af75c39564a646c16bd6f5ffbf22c46c69d18493f16f697834f1327",
       "spec_version": "1.2"
     },
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "121daa6d02b4245154bedba01b60c79bf65896687d91580fb80e71f448ff7610",
+      "sha256": "a41dce110004448e683418ccc68857eefb4ad183ebae299b8a48332897116ff8",
       "spec_version": "1.2"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "5305c13feb50e2aaf7bfe934722c4c05e182999aa22d7defb382b2fdd4004bae",
+      "sha256": "f529f4f748a84a22c565bbf8306793d7100b13444cc5b2396dd10e721f9ee328",
       "spec_version": "1.2"
     },
     {
@@ -212,7 +212,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "668d670857655ef02da965c10aef2684c9ae740c656ab548e574839f5acdf868",
+      "sha256": "a74e0ef870190fca4b140786a5089c230594b969efac16878c08e4a1e9747b3b",
       "spec_version": "1.2"
     },
     {
@@ -224,7 +224,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "e156774e475016299493425376149f12ac32b47696138e91f5377f4f87a3e5b5",
+      "sha256": "689a2ef3c94b245e3e97a983ee63f797f1f07735b68f26fb435b378b11bf15c6",
       "spec_version": "1.2"
     },
     {
@@ -290,7 +290,7 @@
     {
       "path": "tools/doctor.py",
       "category": "operating",
-      "sha256": "03155633ac51f10c6ce86f94bc07097e5324c90a5af0553e37e3e9368dbb073f",
+      "sha256": "14d7c5326a79056e61daa86ee7a129aa1254290924e7c94b85e15b5af55ccf94",
       "spec_version": "1.2"
     },
     {
@@ -374,7 +374,7 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "c562027c48f01fcf878580ced205f0403930d8a9c6fdc4ae4284175f51b05f40",
+      "sha256": "c9bf787b0daa3017869d7996879f63d90073b2f5dd8e1720bb69b3b950799aac",
       "spec_version": "1.2"
     },
     {

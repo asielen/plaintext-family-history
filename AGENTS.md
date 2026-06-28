@@ -4,7 +4,7 @@
 
 ## Repo context first
 
-If you are working in the **public Plainfile spec repo** (it contains `SPEC.md`, `TOOLING.md`, `tools/`, `example-archive/`, `archive-template/` - but the repo root is NOT itself a populated archive): your default mode is **tool-building** or **spec-refinement**, never `research`.
+If you are working in the **public Plaintext spec repo** (it contains `SPEC.md`, `TOOLING.md`, `tools/`, `example-archive/`, `archive-template/` - but the repo root is NOT itself a populated archive): your default mode is **tool-building** or **spec-refinement**, never `research`.
 Do not treat the repo root as a family archive.
 Use `example-archive/` only as a fictional fixture.
 Never add real family data.
