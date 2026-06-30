@@ -701,7 +701,7 @@ def _gedcom_payload(
 
         def _public_claim_row(row: sqlite3.Row) -> bool:
             """A vital/marriage row not withheld by source or per-claim restriction."""
-            if str(row['id']) in restricted_claims:
+            if normalize_id(str(row['id'])) in restricted_claims:
                 return False
             return not row['source_id'] or row['source_id'] not in restricted_sources
 

@@ -709,16 +709,26 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
                 str(path.relative_to(archive_root)),
             ),
         )
-        all_variants = [v['value'] if isinstance(v, dict) else str(v)
-                        for v in (meta.get('name_variants') or [])
-                        if not isinstance(v, dict) or v.get('value')]
         # Restricted variants (deadnames, SPEC §18) go into aliases for internal
         # link resolution only — they must not enter person_variants, which feeds
         # public rendering paths (WikiTree fold forms, search display, etc.).
-        public_variants = [v['value'] if isinstance(v, dict) else str(v)
-                           for v in (meta.get('name_variants') or [])
-                           if (not isinstance(v, dict) or v.get('value'))
-                           and not (isinstance(v, dict) and _is_restricted_value(v.get('restricted')))]
+        # Single pass over the raw list (entries are still dicts or strings here);
+        # deriving public_variants from the already-flattened all_variants strings
+        # would break the isinstance check needed to detect the restricted flag.
+        all_variants: list[str] = []
+        public_variants: list[str] = []
+        for _v in (meta.get('name_variants') or []):
+            if isinstance(_v, dict):
+                _val = _v.get('value')
+                if not _val:
+                    continue
+                all_variants.append(_val)
+                if not _is_restricted_value(_v.get('restricted')):
+                    public_variants.append(_val)
+            else:
+                _s = str(_v)
+                all_variants.append(_s)
+                public_variants.append(_s)
         for v in public_variants:
             conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
         # Register this person's resolution surface: the P-id (so `[[P-…]]`

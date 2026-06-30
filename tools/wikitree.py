@@ -350,7 +350,7 @@ def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str]
         ).fetchone()
         if row is None:
             continue
-        cid = row[0] if not isinstance(row, sqlite3.Row) else row['canonical_id']
+        cid = row['canonical_id']
         if not cid:
             continue
         kind = id_type_of(cid)

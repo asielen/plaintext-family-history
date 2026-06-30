@@ -595,7 +595,7 @@ def _load_source_people(
                     (raw,),
                 ).fetchone()
                 if alias_row:
-                    cid = alias_row['canonical_id'] if hasattr(alias_row, 'keys') else alias_row[0]
+                    cid = alias_row['canonical_id']
                     if cid and id_type_of(cid) == 'P':
                         pids.append(normalize_id(cid))
         if pids:

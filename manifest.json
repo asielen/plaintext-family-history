@@ -314,7 +314,7 @@
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "3d362ba6b1f8aa82163cbf8f2925a7a6506eea0be53a5d11819db38f53200f39",
+      "sha256": "ea888da4e043df7fb79529a9cb445b4b3806b65aca03671f83f993173defbe11",
       "spec_version": "1.2"
     },
     {
@@ -326,7 +326,7 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "ab797c964c22c853ef1b5c57355d8e2a955b38e6ce0fd1c9d249ea05f46c79f4",
+      "sha256": "0668114865cb9d73df73b548c9621e44747915b55cd18dc67162c90de62c855a",
       "spec_version": "1.2"
     },
     {
@@ -350,7 +350,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "3890cf60662f55ca53dae32ff53142ec1b40054a20dbe4385438cd5abe7c1901",
+      "sha256": "880b7b9d3e5165833b826a156ba3ffc8e8f802ddfc9c43c8ef15ad42d7eafac4",
       "spec_version": "1.2"
     },
     {
@@ -464,7 +464,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "c05304448d40bd52f5f7fdaca02b9306f5e7128c4687d06f589824e376ef7e2d",
+      "sha256": "ad564f8e8c775e2bd5da8488499d3dd20680b13a4324886728f5f5dba07200a0",
       "spec_version": "1.2"
     },
     {
