@@ -230,7 +230,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "d77ba32863cd4d56608881c61bc93858a2aa88ccaa8f8f474cf2c4bcff11cd93",
+      "sha256": "1b72ee85dac82e62de1241f98e8fbcd5b2891006d8dc0dc316deb57cfde94a25",
       "spec_version": "1.2"
     },
     {

@@ -255,6 +255,19 @@ class HostInstallTestCase(unittest.TestCase):
         self.assertNotEqual(chrome, edge)
         self.assertIn('edge', edge)
 
+    def test_host_rejects_dry_run(self) -> None:
+        # --host --dry-run must be refused: the host files live bundles into the
+        # inbox, so there is no no-mutation preview to honor.
+        import argparse
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'arch'
+            (archive / 'people').mkdir(parents=True)
+            (archive / 'fha.yaml').write_text('schema: 1\n', encoding='utf-8')
+            args = argparse.Namespace(
+                root=str(archive), host=True, dry_run=True, install_host=False,
+                ingest=False, extension_id=None, host_manifest_dir=None, browser='chrome')
+            self.assertEqual(capture._run_capture(args), capture.EXIT_FAILURE)
+
     def test_install_dry_run_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / 'arch'

@@ -1882,6 +1882,14 @@ def _run_capture(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return EXIT_FAILURE
     if getattr(args, 'host', False):
+        if getattr(args, 'dry_run', False):
+            # The host is a live server: its `ingest` action files real bundles
+            # into inbox/. There is nothing to preview, so honor --dry-run's
+            # no-mutation contract by refusing the combination up front.
+            print('ERROR: --dry-run is not compatible with --host (the native '
+                  'host files live capture bundles into the inbox; there is '
+                  'nothing to preview).', file=sys.stderr)
+            return EXIT_FAILURE
         return run_host(archive_root, fha_config)
 
     # The --ingest sweep is a distinct mode: it reads staged bundles, not stdin.
