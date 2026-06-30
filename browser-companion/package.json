@@ -4,9 +4,10 @@
   "description": "Browser extension for staging genealogy record captures (TOOLING_INGESTION §5).",
   "private": true,
   "scripts": {
-    "test": "node --test tests/test-harvest.js tests/test-iiif.js",
+    "test": "node --test tests/test-harvest.js tests/test-iiif.js tests/test-readiness.js",
     "test:harvest": "node --test tests/test-harvest.js",
-    "test:iiif": "node --test tests/test-iiif.js"
+    "test:iiif": "node --test tests/test-iiif.js",
+    "test:readiness": "node --test tests/test-readiness.js"
   },
   "engines": {
     "node": ">=18"

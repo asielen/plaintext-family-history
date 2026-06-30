@@ -200,6 +200,39 @@
     return link ? absUrl(link.href) : null;
   }
 
+  // ── Capture-timing guard (08-A) ─────────────────────────────────────────────
+  // Canonical reference + tests in src/lib/capture-readiness.js; keep in sync.
+  const EMPTY_DETAIL_PHRASES = [
+    'no record has been selected',
+    'no record selected',
+    'no record is selected',
+    'select a record to',
+    'no results to display',
+    'no details to show',
+  ];
+
+  function detailLooksUnpopulated(text) {
+    const t = String(text || '').toLowerCase();
+    return EMPTY_DETAIL_PHRASES.some((p) => t.indexOf(p) !== -1);
+  }
+
+  // A capture taken before the record detail is open serializes an empty panel
+  // and silently yields nothing to extract (EX20). Warn so the human opens the
+  // detail first. Generic heuristic: the known "nothing selected" phrases, or a
+  // record-shaped page (image viewer / fact panel) with almost no detail cells.
+  function captureWarning() {
+    const text = (document.body && (document.body.innerText || document.body.textContent)) || '';
+    if (detailLooksUnpopulated(text)) {
+      return 'The record detail looks empty (“no record selected”). Open the record so its full data is captured.';
+    }
+    const cells = document.querySelectorAll('.grid-cell, [data-testid]').length;
+    const isRecordPage = /\/(imageviewer|search\/collections|ark:)/i.test(location.href);
+    if (isRecordPage && cells > 0 && cells < 4) {
+      return 'Only a little record detail is loaded. Open/expand the record before capturing so the full data is saved.';
+    }
+    return null;
+  }
+
   // ── Ancestry image-viewer detection (asset ACQUISITION, not extraction) ──────
   //
   // This is the one site-specific affordance in the companion, and it is
@@ -482,6 +515,9 @@
       // A public archive whose full image can be fetched automatically (IIIF);
       // the panel can offer the one-click fetch instead of a manual download.
       iiif: !!detectIiifImageUrl(),
+      // A non-null warning when the detail panel looks empty/unloaded at capture
+      // time (08-A) - the panel shows it so the human opens the record first.
+      warning: captureWarning(),
     };
   }
 
