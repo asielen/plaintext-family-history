@@ -266,7 +266,7 @@
     {
       "path": "tools/capture_recipes/newspapers.py",
       "category": "operating",
-      "sha256": "543b21bf95f1cc7ac5a0b80d9346542daf238c5b5d78e3376f8df42ffa1a8e9b",
+      "sha256": "faa5e92ef6ca65bee6b4cf830f71a313a788444a32a35b26a510b0000e18d681",
       "spec_version": "1.2"
     },
     {

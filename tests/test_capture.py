@@ -276,7 +276,39 @@ class CaptureTestCase(unittest.TestCase):
         meta = read_record(self._only_stub())['meta']
         self.assertEqual(meta['source_type'], 'newspaper')
         self.assertEqual(meta['repository'], 'The Fairview Gazette')
+        # No "Mon DD, YYYY" phrase in og:description here → year-only fallback
+        # (proves the harvest_date path still fires).
         self.assertEqual(meta['source_date'], '1898')
+
+    def test_newspapers_wholepage_full_date_and_clean_citation(self) -> None:
+        # EX3 shape: nav-style og:title, full date in og:description, no clip id.
+        rc = self._capture(_sample('newspapers-wholepage'),
+                           url='https://www.newspapers.com/image/1046785212/')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_date'], '1884-08-07')        # full ISO date
+        # The nav-style page title is not quoted into the citation as a headline.
+        self.assertNotIn('"Aug 07, 1884', meta['citation'])
+        self.assertIn('The Fairview Gazette, 7 Aug 1884, p. 3', meta['citation'])
+        # No clipping_id → only the viewer URL, no clip link.
+        self.assertEqual([link['url'] for link in meta['external_links']],
+                         ['https://www.newspapers.com/image/1046785212/'])
+
+    def test_newspapers_clip_emits_public_clip_link(self) -> None:
+        # EX9 shape: clipping_id on the URL → durable public clip link emitted.
+        rc = self._capture(
+            _sample('newspapers-clip'),
+            url='https://www.newspapers.com/image/1046785212/?match=1&clipping_id=152871046')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_date'], '1904-03-10')
+        # The clip link is the durable, subscription-free citation anchor. The
+        # stub frontmatter persists url + accessed per link (not the recipe's
+        # `label`), and the viewer URL stays first.
+        links = meta['external_links']
+        self.assertEqual(links[0]['url'],
+                         'https://www.newspapers.com/image/1046785212/?match=1&clipping_id=152871046')
+        self.assertEqual(links[1]['url'], 'https://www.newspapers.com/clip/152871046/')
 
     def test_findagrave_recipe(self) -> None:
         rc = self._capture(_sample('findagrave'),

@@ -48,3 +48,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Claude Code agent worktrees (harness-managed, never commit)
+.claude/worktrees/
