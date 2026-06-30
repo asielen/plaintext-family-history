@@ -63,6 +63,21 @@ test('isNonPersonLdNode — Person type is not non-person', () => {
   assert.equal(isNonPersonLdNode({ '@type': 'Person', name: 'Alice Smith' }), false);
 });
 
+test('isNonPersonLdNode — explicit Person with an address is still a person', () => {
+  assert.equal(isNonPersonLdNode({
+    '@type': 'Person', name: 'Alice Smith',
+    address: { '@type': 'PostalAddress', streetAddress: '1 Main St' },
+  }), false);
+});
+
+test('harvestFromLd — keeps a Person that carries an address', () => {
+  const ld = JSON.stringify({
+    '@type': 'Person', name: 'Alice Smith',
+    address: { '@type': 'PostalAddress', addressLocality: 'Boston' },
+  });
+  assert.deepEqual(harvestFromLd([ld]), ['Alice Smith']);
+});
+
 test('isNonPersonLdNode — plain object without @type is not non-person', () => {
   assert.equal(isNonPersonLdNode({ name: 'Generic Thing' }), false);
 });

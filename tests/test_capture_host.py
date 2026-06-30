@@ -138,7 +138,7 @@ class HostArchiveTestCase(unittest.TestCase):
     def test_suggest_names_matches_name_and_alias(self) -> None:
         self._person('sielen01.md', 'Mark B Sielen', 'P-sielen01', 'Marky Sielen')
         self._person('hartley1.md', 'Calvin Hartley', 'P-hartley1')
-        resp = capture._host_suggest_names(self.archive, 'siel', 8)
+        resp = capture._host_suggest_names(self.archive, self.config, 'siel', 8)
         self.assertTrue(resp['ok'])
         self.assertIn('Mark B Sielen', resp['names'])
         self.assertIn('Marky Sielen', resp['names'])          # alias matched
@@ -148,8 +148,8 @@ class HostArchiveTestCase(unittest.TestCase):
     def test_suggest_names_respects_limit_and_empty(self) -> None:
         self._person('a.md', 'Anna Smith', 'P-aaaaaa01')
         self._person('b.md', 'Anne Smith', 'P-bbbbbb01')
-        self.assertEqual(len(capture._host_suggest_names(self.archive, 'smith', 1)['names']), 1)
-        self.assertEqual(capture._host_suggest_names(self.archive, 'zzz', 8)['names'], [])
+        self.assertEqual(len(capture._host_suggest_names(self.archive, self.config, 'smith', 1)['names']), 1)
+        self.assertEqual(capture._host_suggest_names(self.archive, self.config, 'zzz', 8)['names'], [])
 
     # ── Capability 3: checkUrl ───────────────────────────────────────────────
 
@@ -158,14 +158,14 @@ class HostArchiveTestCase(unittest.TestCase):
                      'https://www.ancestry.com/imageviewer/collections/1/images/X?_phsrc=a&pId=9')
         # The same record, different throwaway params + a www/slash difference.
         resp = capture._host_check_url(
-            self.archive,
+            self.archive, self.config,
             'https://ancestry.com/imageviewer/collections/1/images/X/?queryId=zzz')
         self.assertTrue(resp['known'])
         self.assertEqual(resp['source'], 'S-aaaa1111')
 
     def test_check_url_unknown_is_clean(self) -> None:
         self._source('s1.md', 'S-aaaa1111', 'https://www.ancestry.com/a/b')
-        resp = capture._host_check_url(self.archive, 'https://www.ancestry.com/totally/new')
+        resp = capture._host_check_url(self.archive, self.config, 'https://www.ancestry.com/totally/new')
         self.assertEqual(resp, {'ok': True, 'known': False})
 
     # ── run_host loop over framed streams ────────────────────────────────────
@@ -202,6 +202,18 @@ class HostInstallTestCase(unittest.TestCase):
             self.assertEqual(manifest['type'], 'stdio')
             self.assertEqual(manifest['allowed_origins'], ['chrome-extension://abcdefghij/'])
             self.assertTrue(Path(manifest['path']).is_file())          # launcher exists
+            # The launcher points at the real CLI entrypoint, tools/fha.py.
+            self.assertIn('fha.py', Path(manifest['path']).read_text())
+
+    def test_install_dry_run_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'arch'
+            archive.mkdir()
+            target = Path(tmp) / 'nm'
+            rc = capture._install_host(archive, extension_id='abcdefghij',
+                                       manifest_dir=str(target), dry_run=True)
+            self.assertEqual(rc, capture.EXIT_CLEAN)
+            self.assertFalse(target.exists())          # nothing written under dry-run
 
 
 if __name__ == '__main__':

@@ -230,7 +230,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "5b94bbb6842ef538902d975b50f7fae94dced129616b78e6c9a39aeb6802f543",
+      "sha256": "8aad0cf5564bc1183502df1a25538fed69d288d42453d85b900fe8bc02888016",
       "spec_version": "1.2"
     },
     {
@@ -242,19 +242,19 @@
     {
       "path": "tools/capture_recipes/_common.py",
       "category": "operating",
-      "sha256": "51cfd372cf6d3b702202e5ebf0edb881c588f1d908c50b703d3cff4d75da3ff1",
+      "sha256": "377a87dd139729814949b612e8be2b3232393e7b13df0def6703e070f7b1996d",
       "spec_version": "1.2"
     },
     {
       "path": "tools/capture_recipes/ancestry.py",
       "category": "operating",
-      "sha256": "b81ba602c2192fc3bca50537acd97f59d2a1a0cb6101892e5413970f3879b6e4",
+      "sha256": "4727b604879278889b084066b4f4913378aa1ad2b50bb7153c0a402f1e54dce8",
       "spec_version": "1.2"
     },
     {
       "path": "tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "20448a0fde0a7d24003362898e604186b58f17fc7bf8e14824e388c3ba6678bf",
+      "sha256": "41bce446e9d1a787218b44898eefdd209842c3f64e90ea205f8f5c3a645cab3b",
       "spec_version": "1.2"
     },
     {
@@ -266,7 +266,7 @@
     {
       "path": "tools/capture_recipes/newspapers.py",
       "category": "operating",
-      "sha256": "faa5e92ef6ca65bee6b4cf830f71a313a788444a32a35b26a510b0000e18d681",
+      "sha256": "71eaecaae7cb0020095a334aabbc215831bc62ea4d65de4834aa8b7e294aaac1",
       "spec_version": "1.2"
     },
     {

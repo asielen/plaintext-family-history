@@ -52,9 +52,15 @@ def _parse_full_date(text: str | None) -> tuple[str | None, str | None]:
     m = _FULLDATE_RE.search(text)
     if not m:
         return None, None
+    # "Sept" is an extremely common newspaper-dateline abbreviation that strptime
+    # rejects (it accepts only the C-locale "Sep"); normalize it so the full
+    # date isn't silently discarded down to a year.
+    month = m.group(1)
+    if month.lower() == 'sept':
+        month = 'Sep'
     for fmt in ('%b %d %Y', '%B %d %Y'):
         try:
-            d = datetime.strptime(f'{m.group(1)} {m.group(2)} {m.group(3)}', fmt).date()
+            d = datetime.strptime(f'{month} {m.group(2)} {m.group(3)}', fmt).date()
         except ValueError:
             continue
         return d.isoformat(), f'{d.day} {d.strftime("%b")} {d.year}'

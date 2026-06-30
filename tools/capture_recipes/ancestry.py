@@ -166,8 +166,11 @@ def extract(html: str, url: str | None) -> dict:
     if not people:
         people = _people_from_grid(_grid_rows(html))
 
+    # Body fallback for the date (Ancestry ships no og: date), but only the head
+    # of the visible text: a full page.text scan tends to grab a footer copyright
+    # year ("© 1996-2026") and file it as the source date.
     source_date = harvest_date(
-        collection, title, meta_content(page, 'og:description'), page.text)
+        collection, title, meta_content(page, 'og:description'), page.text[:400])
     source_type = source_type_from_text(f'{collection} {title}', 'website')
 
     citation_bits = [title.rstrip('.')]

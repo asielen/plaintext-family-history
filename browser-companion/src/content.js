@@ -102,6 +102,10 @@
   function isNonPersonLdNode(node) {
     const type = node['@type'];
     const types = Array.isArray(type) ? type : (type ? [type] : []);
+    // An explicit Person is a person even when it carries an address/geo
+    // (schema.org Person inherits `address` from Thing, and obituary/genealogy
+    // pages routinely attach a residence) — never let the place heuristic drop it.
+    if (types.includes('Person')) return false;
     if (types.some((t) => NON_PERSON_TYPES.has(t))) return true;
     // Also treat nodes with address/geo sub-objects as places even when @type
     // is absent or set to something generic like "Thing".

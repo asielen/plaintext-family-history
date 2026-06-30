@@ -372,6 +372,15 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual([link['url'] for link in meta['external_links']],
                          ['https://www.newspapers.com/image/1046785212/'])
 
+    def test_newspapers_parses_sept_abbreviation(self) -> None:
+        # "Sept" is a very common dateline abbreviation strptime rejects; the
+        # recipe must still recover the full date instead of degrading to a year.
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from capture_recipes import newspapers
+        iso, cite = newspapers._parse_full_date('Sept 05, 1900')
+        self.assertEqual(iso, '1900-09-05')
+        self.assertEqual(cite, '5 Sep 1900')
+
     def test_newspapers_clip_emits_public_clip_link(self) -> None:
         # EX9 shape: clipping_id on the URL → durable public clip link emitted.
         rc = self._capture(
@@ -449,6 +458,8 @@ class LabelGuardTestCase(unittest.TestCase):
         'Calvin Hartley', 'Edith May Hartley', 'Harriet Webb',
         "Mary O'Brien", 'Jean-Luc Picard', 'John Q. Adams',
         'Larry Page', 'John Ward', 'Sarah Young',
+        # Surnames that collide with field-label tail words: must still pass.
+        'Mary Place', 'John Race', 'Anna Roll',
     ]
 
     def setUp(self) -> None:
@@ -491,6 +502,22 @@ class LabelGuardTestCase(unittest.TestCase):
     def test_bare_label_with_no_value_is_dropped(self) -> None:
         # A known label in a single-column row must never leak as a person.
         self.assertEqual(self.common.people_from_table([['Birth Date'], ['Event Type']]), [])
+
+    def test_collision_surname_in_household_row_survives(self) -> None:
+        # A person whose surname doubles as a field-label word ("Place") must
+        # not be mistaken for a label and dropped from a household table.
+        rows = [
+            ['Name', 'Relationship', 'Age'],          # header row, skipped
+            ['Mary Place', 'Head', '38'],
+            ['John Race', 'Boarder', '24'],
+        ]
+        self.assertEqual(self.common.people_from_table(rows),
+                         ['Mary Place', 'John Race'])
+
+    def test_domain_place_label_still_caught(self) -> None:
+        # "<domain> Place" remains a label even though bare "Place" is a surname.
+        for label in ('Birth Place', 'Event Place', 'Residence Place'):
+            self.assertTrue(self.common.is_field_label(label), f'{label!r} not a label')
 
 
 if __name__ == '__main__':

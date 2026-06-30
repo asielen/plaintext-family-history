@@ -42,8 +42,12 @@ PRIORITY = 20
 _TITLE_COLLECTION_RE = re.compile(r'^(?P<person>.+?),\s*["“\'](?P<collection>.+?)["”\']\s*$')
 
 # The React content panel renders the subject as "Given Name: <v> … Surname: <v>".
+# The given-name capture is restricted to name characters (no digits/colons) so
+# it can't span an intervening fact like "Sex: Male Birth Date: 1905" and emit a
+# garbage subject; if such fields intervene the match simply fails (no subject
+# from this path) rather than producing a bad name.
 _GIVEN_SURNAME_RE = re.compile(
-    r'Given Name:\s*(.+?)\s+Surname:\s*([A-Za-z][\w.\'\-]+)', re.I)
+    r"Given Name:\s*([A-Za-z][A-Za-z .'\-]*?)\s+Surname:\s*([A-Za-z][\w.'\-]+)", re.I)
 
 # "Others on/in This Record" lists the household; the names sit in data-testid
 # attributes (a stabler hook than FamilySearch's hashed CSS-module classes).

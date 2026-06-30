@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime
 import functools
 import importlib
@@ -1555,6 +1556,8 @@ def _host_ingest(archive_root: Path, fha_config: dict, msg: dict) -> dict:
         text = capture_json if isinstance(capture_json, str) else json.dumps(capture_json)
         (bundle / 'capture.json').write_text(text, encoding='utf-8')
         for asset in (msg.get('assets') or []):
+            if not isinstance(asset, dict):
+                return {'ok': False, 'error': 'each asset must be an object'}
             fn = _safe_member_name(asset.get('filename'), '')
             if not fn:
                 continue
@@ -1574,10 +1577,10 @@ def _host_ingest(archive_root: Path, fha_config: dict, msg: dict) -> dict:
     return {'ok': False, 'error': 'capture was not filed'}
 
 
-def _host_suggest_names(archive_root: Path, q: str | None, limit: int) -> dict:
+def _host_suggest_names(archive_root: Path, fha_config: dict, q: str | None, limit: int) -> dict:
     """Archive person names + aliases matching `q` (read-only, suggestion-only)."""
     query = (q or '').strip().lower()
-    people_dir = archive_root / 'people'
+    people_dir = resolve_path('people', fha_config, archive_root)
     names: list[str] = []
     seen: set[str] = set()
     if people_dir.is_dir():
@@ -1618,13 +1621,17 @@ def _normalize_source_url(url: str | None) -> str:
     return f'{host}{path}' if host else ''
 
 
-def _host_check_url(archive_root: Path, url: str | None) -> dict:
-    """Whether a source URL is already captured (by normalized host+path)."""
+def _host_check_url(archive_root: Path, fha_config: dict, url: str | None) -> dict:
+    """Whether a source URL is already captured (by normalized host+path).
+
+    Scans the *configured* sources/inbox roots (an archive may map either outside
+    the tree via fha.yaml), so a URL already staged in a relocated inbox is found.
+    """
     target = _normalize_source_url(url)
     if not target:
         return {'ok': True, 'known': False}
     for sub in ('sources', 'inbox'):
-        root = archive_root / sub
+        root = resolve_path(sub, fha_config, archive_root)
         if not root.is_dir():
             continue
         for md in sorted(root.rglob('*.md')):
@@ -1653,9 +1660,9 @@ def _host_dispatch(archive_root: Path, fha_config: dict, msg: dict) -> dict:
             limit = int(msg.get('limit') or 8)
         except (TypeError, ValueError):
             limit = 8
-        return _host_suggest_names(archive_root, msg.get('q'), limit)
+        return _host_suggest_names(archive_root, fha_config, msg.get('q'), limit)
     if action == 'checkUrl':
-        return _host_check_url(archive_root, msg.get('url'))
+        return _host_check_url(archive_root, fha_config, msg.get('url'))
     return {'ok': False, 'error': f'unsupported action: {action!r}'}
 
 
@@ -1667,40 +1674,45 @@ def run_host(archive_root: Path, fha_config: dict, *, stdin=None, stdout=None) -
         try:
             msg = _read_native_message(stdin)
         except (BundleError, ValueError, json.JSONDecodeError) as e:
-            _write_native_message(stdout, {'ok': False, 'error': str(e)})
+            try:
+                _write_native_message(stdout, {'ok': False, 'error': str(e)})
+            except OSError:  # browser already closed the pipe
+                return EXIT_CLEAN
             return EXIT_ERRORS
         if msg is None:
             return EXIT_CLEAN
         try:
-            resp = _host_dispatch(archive_root, fha_config, msg)
+            # Native-messaging stdout must carry ONLY framed messages, but a
+            # handler (run_ingest) prints progress lines. `stdout` above is the
+            # real binary channel, captured before this redirect, so routing any
+            # stray stdout to stderr keeps the protocol uncorrupted.
+            with contextlib.redirect_stdout(sys.stderr):
+                resp = _host_dispatch(archive_root, fha_config, msg)
         except Exception as e:  # noqa: BLE001 - a single request must never crash the host
             resp = {'ok': False, 'error': f'unexpected error: {e}'}
-        _write_native_message(stdout, resp)
+        try:
+            _write_native_message(stdout, resp)
+        except OSError:  # browser closed stdout - exit quietly, not with a traceback
+            return EXIT_CLEAN
 
 
 def _install_host(archive_root: Path, *, extension_id: str | None,
-                  manifest_dir: str | None) -> int:
-    """Write the native-messaging manifest (+ launcher) registering this `fha`.
+                  manifest_dir: str | None, dry_run: bool = False) -> int:
+    """Write the native-messaging manifest (+ launcher) registering this CLI.
 
     `manifest_dir` overrides the per-OS native-messaging location (used by tests
     and for a non-default browser profile). The launcher is a tiny wrapper that
-    invokes this interpreter on this `fha` with `capture --host --root <archive>`.
+    invokes this interpreter on `tools/fha.py` with `capture --host --root
+    <archive>`. `dry_run` previews the paths without writing anything.
     """
     target_dir = Path(manifest_dir) if manifest_dir else _native_manifest_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    fha_entry = Path(__file__).resolve().parents[1] / 'fha'
-    if os.name == 'nt':
-        launcher = target_dir / 'fha-capture-host.bat'
-        launcher.write_text(
-            f'@echo off\r\n"{sys.executable}" "{fha_entry}" capture --host '
-            f'--root "{archive_root}" %*\r\n', encoding='utf-8')
-    else:
-        launcher = target_dir / 'fha-capture-host.sh'
-        launcher.write_text(
-            f'#!/bin/sh\nexec "{sys.executable}" "{fha_entry}" capture --host '
-            f'--root "{archive_root}" "$@"\n', encoding='utf-8')
-        os.chmod(launcher, 0o755)
+    # The CLI is run as `tools/fha.py` (there is no bare `fha` executable in the
+    # repo/installed layout); point the launcher at the real entrypoint.
+    fha_entry = Path(__file__).resolve().parent / 'fha.py'
+    ext = '.bat' if os.name == 'nt' else '.sh'
+    launcher = target_dir / f'fha-capture-host{ext}'
+    manifest_path = target_dir / f'{_NATIVE_HOST_NAME}.json'
 
     origin = f'chrome-extension://{extension_id}/' if extension_id else \
         'chrome-extension://REPLACE_WITH_EXTENSION_ID/'
@@ -1711,10 +1723,37 @@ def _install_host(archive_root: Path, *, extension_id: str | None,
         'type': 'stdio',
         'allowed_origins': [origin],
     }
-    manifest_path = target_dir / f'{_NATIVE_HOST_NAME}.json'
+
+    if dry_run:
+        print(f'[dry-run] would write native-messaging manifest → {manifest_path}')
+        print(f'[dry-run] would write launcher → {launcher}')
+        return EXIT_CLEAN
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    # The browser appends args when it launches the host (the calling extension's
+    # origin on every platform, plus `--parent-window=<HWND>` on Windows). The
+    # host reads only stdin/stdout, so the launcher must NOT forward them - the
+    # CLI parses strictly and an unrecognized positional would abort host startup.
+    if os.name == 'nt':
+        launcher.write_text(
+            f'@echo off\r\n"{sys.executable}" "{fha_entry}" capture --host '
+            f'--root "{archive_root}"\r\n', encoding='utf-8')
+    else:
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{fha_entry}" capture --host '
+            f'--root "{archive_root}"\n', encoding='utf-8')
+        os.chmod(launcher, 0o755)
+
     manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     print(f'Wrote native-messaging manifest → {manifest_path}')
     print(f'Launcher → {launcher}')
+    if os.name == 'nt':
+        # Chrome/Edge discover Windows hosts via the registry, not a directory
+        # scan, so the manifest alone is not enough - point the user at the key.
+        print('NOTE: on Windows the browser finds the host through the registry. '
+              'Register it with:\n'
+              f'  REG ADD "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\'
+              f'{_NATIVE_HOST_NAME}" /ve /t REG_SZ /d "{manifest_path}" /f')
     if not extension_id:
         print('NOTE: edit "allowed_origins" to your extension id '
               '(chrome://extensions → the companion → ID), or re-run with '
@@ -1785,11 +1824,19 @@ def _run_capture(args: argparse.Namespace) -> int:
 
     # The native-messaging host and its installer are distinct modes.
     if getattr(args, 'install_host', False):
-        return _install_host(
-            archive_root,
-            extension_id=getattr(args, 'extension_id', None),
-            manifest_dir=getattr(args, 'host_manifest_dir', None),
-        )
+        try:
+            return _install_host(
+                archive_root,
+                extension_id=getattr(args, 'extension_id', None),
+                manifest_dir=getattr(args, 'host_manifest_dir', None),
+                dry_run=getattr(args, 'dry_run', False),
+            )
+        except OSError as e:
+            # The browser's native-messaging dir may be missing/protected; report
+            # the path and bail cleanly instead of dumping a traceback.
+            print(f'ERROR: could not write the native-messaging host: {e}',
+                  file=sys.stderr)
+            return EXIT_FAILURE
     if getattr(args, 'host', False):
         return run_host(archive_root, fha_config)
 

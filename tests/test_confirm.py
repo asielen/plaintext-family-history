@@ -280,11 +280,18 @@ class ConfirmArchiveTests(unittest.TestCase):
         conn = self._reindex()
         try:
             claim = conn.execute('SELECT status FROM claims WHERE id=?', (cid,)).fetchone()
-            edges = conn.execute("SELECT * FROM relationships WHERE rel='associate'").fetchall()
+            # Scope to the suggested pair: the example archive legitimately carries
+            # other (accepted) associate edges - e.g. the lodge-roster FAN-club tie -
+            # so assert only that THIS suggested claim derived no edge of its own.
+            edges = {
+                frozenset((r['person_id'], r['other_id']))
+                for r in conn.execute(
+                    "SELECT person_id, other_id FROM relationships WHERE rel='associate'")
+            }
         finally:
             conn.close()
         self.assertEqual(claim['status'], 'suggested')
-        self.assertEqual(edges, [])
+        self.assertNotIn(frozenset((PERSON_1.lower(), PERSON_3.lower())), edges)
 
     def test_cooccur_accept_derives_edge(self) -> None:
         result = confirm.run_confirm_cooccur(

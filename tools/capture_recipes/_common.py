@@ -32,25 +32,39 @@ _YEAR_RE = re.compile(r'\b(1[5-9]\d{2}|20\d{2})\b')
 _NAME_LABEL_RE = re.compile(r'\bname\b', re.IGNORECASE)
 
 # A cell whose final token is one of these is a record fact-label ("Birth Date",
-# "Event Place", "Marital Status", "Estimated Birth Year") rather than a person.
-# The set is deliberately limited to field-category terms that are not plausible
-# as the *last* token of a real personal name, so the guard never silently drops
-# a genuine name (TOOLING §13b: an unknown label that looks like a name is
+# "Marital Status", "Estimated Birth Year") rather than a person. The set is
+# deliberately limited to field-category terms that are not plausible as the
+# *last* token of a real personal name, so the guard never silently drops a
+# genuine name (TOOLING §13b: an unknown label that looks like a name is
 # tolerable noise the reviewer unticks; a *known* label must never leak). Words
-# that double as common surnames (Page, Ward, House, Young, …) are intentionally
-# excluded - those labels are caught by the structural label/value read instead.
+# that double as real surnames (Page, Ward, House, Young, Place, Race, Roll, …)
+# are intentionally excluded - their labels are caught by the structural
+# label/value read or, for the common "<domain> Place" form, by _PLACE_LABEL_RE.
 _LABEL_TAIL_RE = re.compile(
-    r"\b(name|date|place|year|status|type|number|age|sex|gender|race|"
+    r"\b(name|date|year|status|type|number|age|sex|gender|"
     r"occupation|residence|relationship|relation|title|nativity|"
-    r"citizenship|district|enumeration|roll|industry|employer|grade|"
+    r"citizenship|district|enumeration|industry|employer|grade|"
     r"school|completed|marital)\b[\s.:]*$",
+    re.IGNORECASE,
+)
+
+# "<place-domain word> Place" / "… Residence" is a fact label ("Birth Place",
+# "Event Place", "Residence Place"); a bare "<given> Place" (the surname
+# "Place") is a real name and must not match. "Place"/"Race"/"Roll" are kept
+# out of _LABEL_TAIL_RE precisely because they are attested surnames - they
+# only read as a label when a place-domain word precedes them.
+_PLACE_LABEL_RE = re.compile(
+    r"\b(?:birth|death|event|residence|marriage|burial|baptism|christening|"
+    r"census|arrival|departure|immigration|emigration|naturali[sz]ation|"
+    r"origin|home|native|last|current|former)\s+(?:place|residence)\b[\s.:]*$",
     re.IGNORECASE,
 )
 
 # Whole-cell fact labels that don't end in a label-tail word (their final token
 # doubles as a surname, so only the exact full-string match is safe to reject).
 _FIELD_LABELS = frozenset({
-    'relation to head of house', 'head of household', 'others in record',
+    'relation to head of house', 'head of household',
+    'others on this record', 'others in this record', 'others in record',
 })
 
 
@@ -61,8 +75,8 @@ def is_field_label(text: str) -> bool:
     leak into the people list because they read like short alpha phrases. In a
     label/value table the value lives in the *next* cell, so a label cell is
     never itself a person. Recognized three ways, cheapest first: an exact
-    header/field-label string, the word "name" anywhere, or a field-category
-    tail word.
+    header/field-label string, the word "name" anywhere, a "<domain> Place"
+    label, or a field-category tail word.
     """
     t = (text or '').strip().lower().rstrip(':').strip()
     if not t:
@@ -70,6 +84,8 @@ def is_field_label(text: str) -> bool:
     if t in _HEADER_WORDS or t in _FIELD_LABELS:
         return True
     if _NAME_LABEL_RE.search(t):
+        return True
+    if _PLACE_LABEL_RE.search(t):
         return True
     return bool(_LABEL_TAIL_RE.search(t))
 
