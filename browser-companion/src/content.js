@@ -356,6 +356,99 @@
     }
   }
 
+  // ── IIIF full-image auto-fetch (open archives) ───────────────────────────────
+  // IIIF is an open standard, so this is GENERIC asset acquisition (it does not
+  // break the "browser stays generic" line). Canonical reference + tests live in
+  // src/lib/iiif.js; keep this copy in sync. A content script can't import, so the
+  // regex/helpers are duplicated here.
+  const IIIF_IMAGE_RE = new RegExp(
+    '^(.+?)' +
+    '/(full|square|\\d+,\\d+,\\d+,\\d+|pct:[\\d.]+,[\\d.]+,[\\d.]+,[\\d.]+)' +
+    '/([^/]+)' +
+    '/(!?[\\d.]+)' +
+    '/(default|color|colour|gray|grey|bitonal|native)' +
+    '\\.(jpe?g|tiff?|png|gif|jp2|webp|pdf)$',
+    'i'
+  );
+
+  function iiifFullImageCandidates(url) {
+    const m = IIIF_IMAGE_RE.exec(String(url || ''));
+    if (!m) return [];
+    const base = m[1];
+    return [base + '/full/full/0/default.jpg', base + '/full/max/0/default.jpg'];
+  }
+
+  // The first IIIF Image-API URL present in the DOM (img/source src + srcset,
+  // anchor href). The browser's largest rendered <img> is a derivative; this
+  // finds a URL we can rewrite to the full image instead.
+  function detectIiifImageUrl() {
+    const urls = [];
+    document.querySelectorAll('img[src], source[src], a[href], link[href]').forEach((el) => {
+      const v = el.getAttribute('src') || el.getAttribute('href');
+      if (v) urls.push(absUrl(v));
+    });
+    document.querySelectorAll('img[srcset], source[srcset]').forEach((el) => {
+      (el.getAttribute('srcset') || '').split(',').forEach((part) => {
+        const u = part.trim().split(/\s+/)[0];
+        if (u) urls.push(absUrl(u));
+      });
+    });
+    for (const u of urls) {
+      if (IIIF_IMAGE_RE.test(u)) return u;
+    }
+    return null;
+  }
+
+  // An error page or a derivative is small; a full archival scan is not. Lower
+  // than the Ancestry bar because a full/full request already asks for the
+  // largest the server allows (so it is rarely a thumbnail) - this only catches
+  // an error body or an empty response masquerading as the image.
+  const IIIF_MIN_FULL_BYTES = 12 * 1024;
+
+  // Fetch the full-res IIIF image for the current page. Public domain, no auth,
+  // so a plain fetch suffices (simpler than the Ancestry token dance). Tries
+  // full/full (2.x) then full/max (3.x); size-guards the result. Same result
+  // shape as fetchAsset so the panel consumes it identically.
+  async function fetchIiifFullImage() {
+    const seed = detectIiifImageUrl();
+    if (!seed) {
+      return { ok: false, error: 'no IIIF image was found on this page' };
+    }
+    const candidates = iiifFullImageCandidates(seed);
+    let lastError = 'the IIIF image would not come through';
+    for (const imgUrl of candidates) {
+      try {
+        const resp = await fetch(imgUrl, { credentials: 'omit' });
+        if (!resp.ok) {
+          lastError = 'the IIIF server returned HTTP ' + resp.status;
+          continue;
+        }
+        const blob = await resp.blob();
+        if (blob.size < IIIF_MIN_FULL_BYTES) {
+          lastError =
+            'the IIIF image came back too small (' +
+            Math.round(blob.size / 1024) +
+            ' KB) to be the full record';
+          continue;
+        }
+        const base64 = await blobToBase64(blob);
+        const ext = extFromContentType(
+          blob.type || resp.headers.get('content-type'),
+          imgUrl
+        );
+        return {
+          ok: true,
+          base64,
+          ext: ext === 'bin' ? 'jpg' : ext,
+          contentType: blob.type || 'image/jpeg',
+        };
+      } catch (e) {
+        lastError = 'could not reach the IIIF image service';
+      }
+    }
+    return { ok: false, error: lastError };
+  }
+
   function buildPrefill() {
     const url = location.href;
     const canonical = absUrl(
@@ -386,6 +479,9 @@
       pdfUrl: detectPdf(),
       recipeHint: recipeHint(url),
       ancestryImageViewer: !!ancestry,
+      // A public archive whose full image can be fetched automatically (IIIF);
+      // the panel can offer the one-click fetch instead of a manual download.
+      iiif: !!detectIiifImageUrl(),
     };
   }
 
@@ -576,6 +672,12 @@
         // Full-res Ancestry record fetch for the current page, in-session.
         // Same result shape as fetchAsset so the panel handles both alike.
         fetchAncestryFullImage()
+          .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true; // async response
+      case 'iiifImage':
+        // Full-res IIIF image fetch (open archives) for the current page.
+        fetchIiifFullImage()
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true; // async response
