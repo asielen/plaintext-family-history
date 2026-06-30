@@ -384,6 +384,11 @@ class CaptureTestCase(unittest.TestCase):
             familysearch._subject_from_text(
                 'Given Name: Ana Surname: De La Cruz Birth Date: 1880'),
             'Ana De La Cruz')
+        # A possessive relationship label ("Mother's Name:") is a boundary too.
+        self.assertEqual(
+            familysearch._subject_from_text(
+                "Given Name: Martin Surname: Van Buren Mother's Name: Jane"),
+            'Martin Van Buren')
 
     def test_generic_keeps_hyphen_descriptor_and_year(self) -> None:
         # A record title using a plain hyphen ("Jane Smith - 1920 Census") is not
@@ -544,6 +549,17 @@ class LabelGuardTestCase(unittest.TestCase):
         # "<domain> Place" remains a label even though bare "Place" is a surname.
         for label in ('Birth Place', 'Event Place', 'Residence Place'):
             self.assertTrue(self.common.is_field_label(label), f'{label!r} not a label')
+
+    def test_place_value_is_not_promoted_to_a_person(self) -> None:
+        # A place/date/status label's value is NOT a person; only a name-bearing
+        # label ("Father's Name") reads its value cell.
+        rows = [
+            ['Birth Place', 'New York'],
+            ['Event Place', 'Los Angeles'],
+            ['Marital Status', 'Married'],
+            ["Father's Name", 'William Smith'],   # name-bearing → value IS read
+        ]
+        self.assertEqual(self.common.people_from_table(rows), ['William Smith'])
 
 
 if __name__ == '__main__':

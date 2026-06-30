@@ -54,10 +54,14 @@ _FS_NEXT_LABEL = (
     r"relationship|relation|marital|occupation|nativity|citizenship|others|"
     r"events?|sources?|record"
 )
+# A possessive relationship label ("Mother's Name:", "Father's Name:") is also a
+# surname boundary - the bare `[A-Za-z]+:` stop doesn't see the `'s`, so match it
+# explicitly (straight or curly apostrophe).
 _GIVEN_SURNAME_RE = re.compile(
     r"Given Name:\s*([A-Za-z][A-Za-z .'\-]*?)\s+"
     r"Surname:\s*([A-Za-z][A-Za-z.'\-]*"
-    r"(?:\s+(?![A-Za-z]+:)(?!(?:" + _FS_NEXT_LABEL + r")\b)[A-Za-z][A-Za-z.'\-]*)*)",
+    r"(?:\s+(?![A-Za-z]+:)(?![A-Za-z]+['’]s\b)(?!(?:" + _FS_NEXT_LABEL + r")\b)"
+    r"[A-Za-z][A-Za-z.'\-]*)*)",
     re.I)
 
 # "Others on/in This Record" lists the household; the names sit in data-testid

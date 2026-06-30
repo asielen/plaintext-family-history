@@ -110,8 +110,11 @@ def people_from_table(rows: list[list[str]], *, name_col: int = 0, limit: int = 
     `["Birth Date", "1850"]`, as in FamilySearch/Ancestry record-detail fact
     tables) is detected by its label cell (`is_field_label`) and the value cell
     is read instead - otherwise the label itself would pass `looks_like_name`
-    and be mistaken for a person. A label cell with no value cell is dropped, so
-    a known field label can never leak as a person.
+    and be mistaken for a person. Only a *name-bearing* label ("Father's Name")
+    has a person in its value cell; a place/date/status label ("Birth Place")
+    does not, so its value is dropped rather than promoted - else "Birth Place |
+    New York" would leak "New York" as a person. A label with no value cell is
+    likewise dropped, so a known field label can never leak as a person.
     """
     people: list[str] = []
     for row in rows:
@@ -119,7 +122,10 @@ def people_from_table(rows: list[list[str]], *, name_col: int = 0, limit: int = 
             continue
         cell = row[name_col].strip()
         if is_field_label(cell):
-            cell = row[name_col + 1].strip() if len(row) > name_col + 1 else ''
+            if _NAME_LABEL_RE.search(cell) and len(row) > name_col + 1:
+                cell = row[name_col + 1].strip()
+            else:
+                cell = ''
         if looks_like_name(cell) and cell not in people:
             people.append(cell)
         if len(people) >= limit:
