@@ -376,6 +376,30 @@ def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path) -> set[
     return out
 
 
+def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
+    """Claim ids that carry a per-claim `restricted:` marker in their source record.
+
+    The claims table stores no claim-level `restricted` column; the flag lives
+    in the source record file.  This function reads every source record whose
+    source is otherwise public (index-restricted sources are already excluded by
+    `_public_source_filter_sql`) to collect per-claim ids that are withheld."""
+    out: set[str] = set()
+    for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
+        if row['restricted'] or not row['path']:
+            continue
+        try:
+            rec = read_record(archive_root / row['path'])
+        except Exception:
+            continue
+        for claim in rec.get('claims') or []:
+            if not isinstance(claim, dict):
+                continue
+            cid = str(claim.get('id', '')).strip()
+            if cid and _is_restricted_value(claim.get('restricted')):
+                out.add(cid)
+    return out
+
+
 def _public_source_filter_sql() -> str:
     """SQL predicate for public/export-safe sources.
 
@@ -398,7 +422,7 @@ def _load_vitals(conn: sqlite3.Connection, pids: set[str]) -> dict[tuple[str, st
     placeholders = ','.join('?' * len(pids))
     rows = conn.execute(
         f"""
-        SELECT cp.person_id, c.type, c.date_edtf, c.place_id, c.place_text, c.source_id
+        SELECT cp.person_id, c.id, c.type, c.date_edtf, c.place_id, c.place_text, c.source_id
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         JOIN sources s ON s.id = c.source_id
@@ -673,9 +697,12 @@ def _gedcom_payload(
         # restricted=1 / DNA / publication_ok=0; this catches what it can't see.
         restricted_persons = _restricted_person_ids(archive_root, persons)
         restricted_sources = _restricted_source_ids(conn, archive_root)
+        restricted_claims = _restricted_claim_ids(conn, archive_root)
 
         def _public_claim_row(row: sqlite3.Row) -> bool:
-            """A vital/marriage row whose source is not a free-text-restricted one."""
+            """A vital/marriage row not withheld by source or per-claim restriction."""
+            if str(row['id']) in restricted_claims:
+                return False
             return not row['source_id'] or row['source_id'] not in restricted_sources
 
         # One load of the relationship graph serves both traversal and family

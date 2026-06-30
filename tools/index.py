@@ -704,7 +704,9 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
                 str(path.relative_to(archive_root)),
             ),
         )
-        variants = [str(v) for v in (meta.get('name_variants') or [])]
+        variants = [v['value'] if isinstance(v, dict) else str(v)
+                    for v in (meta.get('name_variants') or [])
+                    if not isinstance(v, dict) or v.get('value')]
         for v in variants:
             conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
         # Register this person's resolution surface: the P-id (so `[[P-…]]`
@@ -1204,6 +1206,26 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                             'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                             (p2, rel, p1, cid, dmin, dmax),
                         )
+            else:
+                # Directional power-tie roles: enslaved/enslaver, employer/employee.
+                # Each directed pair gets an asymmetric edge so callers can
+                # distinguish victim from perpetrator (SPEC §8.2).
+                for (role_a, edge_a), (role_b, edge_b) in (
+                    (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
+                    (('employee', 'employee'), ('employer', 'employer')),
+                ):
+                    a_ids = [p for p, r in all_persons if r == role_a]
+                    b_ids = [p for p, r in all_persons if r == role_b]
+                    for pa in a_ids:
+                        for pb in b_ids:
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (pa, edge_a, pb, cid, dmin, dmax),
+                            )
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (pb, edge_b, pa, cid, dmin, dmax),
+                            )
         elif ctype == 'marriage':
             for i, p1 in enumerate(pids):
                 for p2 in pids[i+1:]:

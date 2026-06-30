@@ -578,11 +578,16 @@ def _load_source_people(
         rec = find_source_record(archive_root, sid)
         if rec is None:
             continue
-        pids = [
-            normalize_id(str(p))
-            for p in (rec.get('meta') or {}).get('people') or []
-            if p and id_type_of(str(p)) == 'P'
-        ]
+        pids = []
+        for p in (rec.get('meta') or {}).get('people') or []:
+            if not p:
+                continue
+            raw = str(p).strip()
+            # Support bare P-ids and [[P-id]] wikilink form.
+            if raw.startswith('[[') and raw.endswith(']]'):
+                raw = raw[2:-2].split('|')[0].strip()
+            if id_type_of(raw) == 'P':
+                pids.append(normalize_id(raw))
         if pids:
             result[normalize_id(sid)] = pids
     return result

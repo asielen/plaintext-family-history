@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-06-29",
+  "generated": "2026-06-30",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -308,13 +308,13 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "1a3bf75555fa0ab8b5309cc2b2dc149ce721e27176d60d52fc5bfa92f1f33c20",
+      "sha256": "bc73550144eae8c164db380a5156fe07067c672ee342b4249fe76afb154df0be",
       "spec_version": "1.2"
     },
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "3bfaa9a6a53a0f8a3a736d70e278c5ae5b62aa367ef269284493705f6cd0cdc4",
+      "sha256": "2ed9aa72cd6c4ef68369418e7585e724c70103b55500f0c30cde76c75b94b92f",
       "spec_version": "1.2"
     },
     {
@@ -326,7 +326,7 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "fc721f1e7a685a2c801dfdce8858b771b6cc19088d240d9317a40467ae5f76e9",
+      "sha256": "3551274c4b1612196616849935ada59eb7f6bc8b6955b004ed4609237815eea9",
       "spec_version": "1.2"
     },
     {
@@ -350,7 +350,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "14a659c6f97c1b86ed740ef044c9f7e6c53b50751f07bd4aebdd0b7bd87899a0",
+      "sha256": "bda62c11110d0bdc40a6f7b40905450fb8151cd63bc142d47c509d2ecd0fdca2",
       "spec_version": "1.2"
     },
     {
@@ -392,7 +392,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "c279da1ec1255a3bd5a6d7c38539544dd8cf53aafceefcfd086e9ec04f6153c6",
+      "sha256": "adb0cf10ceaf49be19823b2013433c94b2e52b3d1f82e13cc4ebd729754c4219",
       "spec_version": "1.2"
     },
     {

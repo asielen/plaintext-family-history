@@ -940,7 +940,8 @@ def _person_org_hubs(
         WHERE c.status IN ('accepted', 'needs-review')
           AND (c.negated IS NULL OR c.negated = 0)
           AND (c.type IN ('occupation', 'military')
-               OR (c.type IN ('event', 'note') AND LOWER(COALESCE(c.subtype, '')) = 'membership'))
+               OR (c.type IN ('event', 'note') AND LOWER(COALESCE(c.subtype, '')) = 'membership')
+               OR (c.type = 'relationship' AND LOWER(COALESCE(c.subtype, '')) = 'member-of'))
     '''
     params: list = []
     if date_bounds:

@@ -1100,13 +1100,15 @@ class _SiteBuilder:
         Used in standalone mode to suppress relationship edges whose only evidence comes
         from restricted, DNA, or living-linked sources."""
         rows = self.conn.execute(
-            "SELECT c.source_id FROM claims c "
+            "SELECT c.id, c.source_id FROM claims c "
             "JOIN claim_persons cp1 ON c.id = cp1.claim_id AND cp1.person_id = ? "
             "JOIN claim_persons cp2 ON c.id = cp2.claim_id AND cp2.person_id = ? "
             "WHERE c.status IN ('accepted','needs-review')",
             (pid1, pid2),
         ).fetchall()
         for r in rows:
+            if normalize_id(str(r['id'])) in self.restricted_claims:
+                continue
             if r['source_id'] is None or r['source_id'] in self.source_pages:
                 return True
         return not rows  # no claims at all → relationship came from YAML directly, show it
@@ -1391,11 +1393,13 @@ class _SiteBuilder:
         Mirrors `fha views tree`'s node vitals (TOOLING §7 D3)."""
         vitals = {'birth': None, 'death': None}
         for r in self.conn.execute(
-            "SELECT c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted'",
             (pid,),
         ):
-            # Standalone: skip dates whose only source is withheld (restricted/living).
+            # Standalone: skip dates from restricted claims or withheld sources.
+            if not self.linked and normalize_id(str(r['id'])) in self.restricted_claims:
+                continue
             if not self.linked and r['source_id'] is not None and r['source_id'] not in self.source_pages:
                 continue
             if vitals.get(r['type']) is None:
