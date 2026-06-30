@@ -41,13 +41,24 @@ PRIORITY = 20
 # quoted tail is the collection, the head is the record's subject person.
 _TITLE_COLLECTION_RE = re.compile(r'^(?P<person>.+?),\s*["“\'](?P<collection>.+?)["”\']\s*$')
 
-# The React content panel renders the subject as "Given Name: <v> … Surname: <v>".
-# The given-name capture is restricted to name characters (no digits/colons) so
-# it can't span an intervening fact like "Sex: Male Birth Date: 1905" and emit a
-# garbage subject; if such fields intervene the match simply fails (no subject
-# from this path) rather than producing a bad name.
+# The React content panel renders the subject as "Given Name: <v> … Surname: <v>"
+# in whitespace-collapsed text. The given-name capture is restricted to name
+# characters (no digits/colons) so it can't span an intervening fact like
+# "Sex: Male Birth Date: 1905". The surname continues past one token so a
+# multi-word surname (Van Buren, De La Cruz) is kept whole, but stops at the
+# next "Label:" boundary or a known fact-label word so it doesn't swallow the
+# following field.
+_FS_NEXT_LABEL = (
+    r"birth|death|event|census|marriage|burial|baptism|christening|residence|"
+    r"immigration|emigration|sex|age|race|gender|born|died|place|date|"
+    r"relationship|relation|marital|occupation|nativity|citizenship|others|"
+    r"events?|sources?|record"
+)
 _GIVEN_SURNAME_RE = re.compile(
-    r"Given Name:\s*([A-Za-z][A-Za-z .'\-]*?)\s+Surname:\s*([A-Za-z][\w.'\-]+)", re.I)
+    r"Given Name:\s*([A-Za-z][A-Za-z .'\-]*?)\s+"
+    r"Surname:\s*([A-Za-z][A-Za-z.'\-]*"
+    r"(?:\s+(?![A-Za-z]+:)(?!(?:" + _FS_NEXT_LABEL + r")\b)[A-Za-z][A-Za-z.'\-]*)*)",
+    re.I)
 
 # "Others on/in This Record" lists the household; the names sit in data-testid
 # attributes (a stabler hook than FamilySearch's hashed CSS-module classes).

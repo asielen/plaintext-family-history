@@ -127,6 +127,17 @@ class HostArchiveTestCase(unittest.TestCase):
         self.assertFalse(resp['ok'])
         self.assertIn('captureJson', resp['error'])
 
+    def test_ingest_rejects_empty_asset_data(self) -> None:
+        # A filename with absent/blank base64 must error, not file a 0-byte image.
+        msg = {
+            'action': 'ingest', 'bundleName': 'rec',
+            'captureJson': {'schema': 2, 'url': 'https://x/1', 'accessed': '2026-06-24'},
+            'assets': [{'filename': 'record.jpg', 'base64': '   '}],
+        }
+        resp = capture._host_dispatch(self.archive, self.config, msg)
+        self.assertFalse(resp['ok'])
+        self.assertIn('no data', resp['error'])
+
     def test_ingest_rejects_path_traversal_asset(self) -> None:
         # A malicious filename must not escape the bundle dir; it's sanitized to
         # a single segment, so the write stays inside the temp staging folder.
@@ -167,6 +178,20 @@ class HostArchiveTestCase(unittest.TestCase):
         self._source('s1.md', 'S-aaaa1111', 'https://www.ancestry.com/a/b')
         resp = capture._host_check_url(self.archive, self.config, 'https://www.ancestry.com/totally/new')
         self.assertEqual(resp, {'ok': True, 'known': False})
+
+    def test_check_url_distinguishes_clipping_ids(self) -> None:
+        # Two clippings off the same Newspapers.com image page differ only by
+        # clipping_id; capturing one must not mark the other already-captured.
+        self._source('s1.md', 'S-bbbb2222',
+                     'https://www.newspapers.com/image/123/?clipping_id=111')
+        same = capture._host_check_url(
+            self.archive, self.config,
+            'https://www.newspapers.com/image/123/?clipping_id=111&_phsrc=x')
+        self.assertTrue(same['known'])                       # same clip, throwaway param
+        other = capture._host_check_url(
+            self.archive, self.config,
+            'https://www.newspapers.com/image/123/?clipping_id=222')
+        self.assertFalse(other['known'])                     # different clip
 
     # ── run_host loop over framed streams ────────────────────────────────────
 

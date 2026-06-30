@@ -87,7 +87,7 @@ import tempfile
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -119,10 +119,13 @@ configure_utf8_stdout()
 # `fha process` refuses an out-of-vocabulary source_type hint.
 _GENERIC_SOURCE_TYPE = 'website'
 
-# A trailing " | Site Name" / " - Site Name" / " — Site Name" tail on a page
-# <title> is the site chrome, not the record title (e.g. KU Libraries Digital
-# Collections). Stripped only off the page.title fallback, never off og:title.
-_SITE_SUFFIX_RE = re.compile(r'\s+[|–—\-]\s+[^|–—\-]+$')
+# A trailing " | Site Name" / " — Site Name" tail on a page <title> is site
+# chrome, not the record title (e.g. KU Libraries Digital Collections). Stripped
+# only off the page.title fallback, never off og:title. The plain hyphen is
+# deliberately NOT a separator here: a record title like "Jane Smith - 1920
+# Census" legitimately uses one, and stripping it would drop the descriptor (and
+# hide the year from the harvest below).
+_SITE_SUFFIX_RE = re.compile(r'\s+[|–—]\s+[^|–—]+$')
 
 # A four-digit year (1500s-2099) to harvest as the source_date guess when a page
 # ships no explicit published date - the same window the recipes' harvest uses.
@@ -1561,10 +1564,17 @@ def _host_ingest(archive_root: Path, fha_config: dict, msg: dict) -> dict:
             fn = _safe_member_name(asset.get('filename'), '')
             if not fn:
                 continue
+            b64 = asset.get('base64')
+            # Strip transport whitespace, then require real data: an absent/blank
+            # value must not silently file a zero-byte record image as success.
+            stripped = re.sub(r'\s', '', b64) if isinstance(b64, str) else ''
+            if not stripped:
+                return {'ok': False, 'error': f'asset {fn!r} has no data'}
             try:
-                (bundle / fn).write_bytes(base64.b64decode(asset.get('base64') or ''))
+                data = base64.b64decode(stripped, validate=True)
             except (ValueError, TypeError):
                 return {'ok': False, 'error': f'asset {fn!r} is not valid base64'}
+            (bundle / fn).write_bytes(data)
         try:
             result = run_ingest(archive_root, fha_config, staging_dir=str(Path(tmp)))
         except CaptureWriteError as e:
@@ -1606,19 +1616,33 @@ def _host_suggest_names(archive_root: Path, fha_config: dict, q: str | None, lim
     return {'ok': True, 'names': names[:max(0, limit)]}
 
 
+# Query params that carry the durable record identity (not per-visit chrome) and
+# so must survive normalization. Newspapers.com clippings share one image path
+# and differ only by `clipping_id`, so dropping the whole query would conflate
+# two distinct clips.
+_DURABLE_QUERY_KEYS = ('clipping_id',)
+
+
 def _normalize_source_url(url: str | None) -> str:
-    """`host+path` (www- and trailing-slash-stripped, query dropped) for dup checks.
+    """`host+path(+durable id)` for dup checks: www- and trailing-slash-stripped,
+    per-visit query dropped but a durable record id kept.
 
     Ancestry/FamilySearch URLs carry throwaway params (`_phsrc`, `pId`, …) that
-    change each visit; the stable record id lives in the path, so comparing
-    host+path catches the same record across visits (§ Capability 3, v1).
+    change each visit; the stable record id usually lives in the path. But a
+    Newspapers.com clip's identity is the `clipping_id` query param, so that one
+    is preserved - otherwise two clippings off the same image page collapse to
+    one and a valid new capture is wrongly reported already-captured.
     """
     p = urlparse(url or '')
     host = (p.netloc or '').lower()
     if host.startswith('www.'):
         host = host[4:]
+    if not host:
+        return ''
     path = (p.path or '').rstrip('/')
-    return f'{host}{path}' if host else ''
+    qs = parse_qs(p.query)
+    ids = [f'{k}={qs[k][0]}' for k in _DURABLE_QUERY_KEYS if qs.get(k)]
+    return f'{host}{path}' + ('?' + '&'.join(sorted(ids)) if ids else '')
 
 
 def _host_check_url(archive_root: Path, fha_config: dict, url: str | None) -> dict:

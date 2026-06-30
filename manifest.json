@@ -230,7 +230,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "8aad0cf5564bc1183502df1a25538fed69d288d42453d85b900fe8bc02888016",
+      "sha256": "1615da52e870f5f2d5ca40c2305895de086703b7fb42c4a63e943843cc1b0b8a",
       "spec_version": "1.2"
     },
     {
@@ -254,7 +254,7 @@
     {
       "path": "tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "41bce446e9d1a787218b44898eefdd209842c3f64e90ea205f8f5c3a645cab3b",
+      "sha256": "1dd248d1866668b062b0e4132e1818cc857ab3c460dc63dee9ac384e2bf86f07",
       "spec_version": "1.2"
     },
     {

@@ -372,6 +372,32 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual([link['url'] for link in meta['external_links']],
                          ['https://www.newspapers.com/image/1046785212/'])
 
+    def test_familysearch_multiword_surname(self) -> None:
+        # A spaced surname (Van Buren / De La Cruz) must be kept whole, not
+        # truncated to its first token, and must stop at the next fact label.
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from capture_recipes import familysearch
+        self.assertEqual(
+            familysearch._subject_from_text('Given Name: Martin Surname: Van Buren Sex: Male'),
+            'Martin Van Buren')
+        self.assertEqual(
+            familysearch._subject_from_text(
+                'Given Name: Ana Surname: De La Cruz Birth Date: 1880'),
+            'Ana De La Cruz')
+
+    def test_generic_keeps_hyphen_descriptor_and_year(self) -> None:
+        # A record title using a plain hyphen ("Jane Smith - 1920 Census") is not
+        # site chrome: keep the descriptor and let the year harvest see 1920.
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import capture as capture_mod
+        self.assertEqual(
+            capture_mod._strip_site_suffix('Jane Smith - 1920 Census'),
+            'Jane Smith - 1920 Census')
+        # A genuine " | Site" tail is still stripped.
+        self.assertEqual(
+            capture_mod._strip_site_suffix('Panoramic map, 1910 | Example Libraries'),
+            'Panoramic map, 1910')
+
     def test_newspapers_parses_sept_abbreviation(self) -> None:
         # "Sept" is a very common dateline abbreviation strptime rejects; the
         # recipe must still recover the full date instead of degrading to a year.
