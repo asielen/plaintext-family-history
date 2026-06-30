@@ -209,16 +209,19 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(res.data['ingested'], 1)
         self.assertIn('42', self._stubs()[0].read_text(encoding='utf-8'))
 
-    def test_curated_people_replace_recipe_scrape(self) -> None:
-        # The capture.json people list is the panel's checklist after the human
-        # unticked suggestions, so it must REPLACE the recipe scrape - recipe-
-        # found names must NOT be merged back (or an unticked name reappears).
+    def test_curated_people_merge_keeps_recipe_found_relatives(self) -> None:
+        # The capture.json people list is additive, not a replacement: the human's
+        # curated name comes first, but recipe-found household/family names (which
+        # the panel never showed) must NOT be dropped. The human's name leads.
         _make_bundle(self.staging, 'b-people', page_html=_sample('ancestry'),
                      capture_json={'url': 'https://www.ancestry.com/rec/9',
                                    'asset_mode': 'none', 'people': ['Thomas Hartley']})
         self._ingest()
-        self.assertEqual(read_record(self._stubs()[0])['meta']['people'],
-                         ['Thomas Hartley'])
+        people = read_record(self._stubs()[0])['meta']['people']
+        self.assertEqual(people[0], 'Thomas Hartley')          # human name leads
+        self.assertGreater(len(people), 1)                     # recipe relatives kept
+        # The ancestry sample's grid people survive the merge.
+        self.assertIn('Calvin Hartley', people)
 
     def test_capture_json_repository_override(self) -> None:
         # A human correction to "Where it's from" (capture.json repository) wins

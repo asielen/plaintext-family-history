@@ -61,7 +61,7 @@
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "3ec9335f3e9cd6475ca60d28e5b8b179801273e9aeabf41f113ff69f6a6c115d",
+      "sha256": "b1517ca04f865adefc8cf7b86922e2c716c6f4fd4c4f92fe90c91068886fbef2",
       "spec_version": "1.2"
     },
     {
@@ -218,7 +218,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "eafc6faf949ecb2eb1caba98f25bf6860e434ffe7e7c2ab23f0e12f7fffd6f0a",
+      "sha256": "6f10af78e703a5fd6f94e237f4a1c9674ad11ae9fdfbc9742cf96068873ad3d4",
       "spec_version": "1.2"
     },
     {
@@ -230,7 +230,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "0e94a7cbc5712ae2e46c888755bb01bd27ff86306c9b2dd614c2c611a4ee4993",
+      "sha256": "8b837c0e467545b67394f5555166b7f24c2e24bec76ec4ec6083aba727293d78",
       "spec_version": "1.2"
     },
     {
@@ -254,7 +254,7 @@
     {
       "path": "tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "0c41336328140e489aca72af0d51662d3f15ce2f77332bdb4592fd281205e75a",
+      "sha256": "75bea0a603963db135427e8e3044752a5612b448eae5a06a50c5fa52b7aa2478",
       "spec_version": "1.2"
     },
     {

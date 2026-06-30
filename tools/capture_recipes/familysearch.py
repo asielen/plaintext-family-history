@@ -60,8 +60,11 @@ _FS_NEXT_LABEL = (
 _GIVEN_SURNAME_RE = re.compile(
     r"Given Name:\s*([A-Za-z][A-Za-z .'\-]*?)\s+"
     r"Surname:\s*([A-Za-z][A-Za-z.'\-]*"
+    # Continue past at most 3 more tokens (covers De La Cruz / Van Der Berg)
+    # while stopping at a Label:/possessive/known-fact-word boundary, so the
+    # surname can't run away into trailing free text in the collapsed panel.
     r"(?:\s+(?![A-Za-z]+:)(?![A-Za-z]+['’]s\b)(?!(?:" + _FS_NEXT_LABEL + r")\b)"
-    r"[A-Za-z][A-Za-z.'\-]*)*)",
+    r"[A-Za-z][A-Za-z.'\-]*){0,3})",
     re.I)
 
 # "Others on/in This Record" lists the household; the names sit in data-testid

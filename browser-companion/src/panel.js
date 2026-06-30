@@ -163,19 +163,27 @@
     $('f-date').value = prefill.sourceDate || '';
     $('f-repo').value = prefill.repository || '';
     $('f-url').value = prefill.url || '';
+    // Reset the per-record fields the prefill doesn't otherwise set, so a batch
+    // re-prefill (on navigation) never carries the previous record's notes or
+    // chosen kind onto the next page. (Auto-detect = blank kind.)
+    $('f-notes').value = '';
+    $('f-type').value = prefill.sourceType || '';
     renderPeople(prefill.people);
     // Pre-fill the evidence url box with the best-guess image/PDF the page
     // exposed - EXCEPT where the visible image is a downsized derivative and an
     // auto path can fetch the real file: an Ancestry image-viewer page (the EX7
     // 507x600 thumbnail trap) or an open-archive IIIF page (the rendered <img>
     // is a derivative). There the URL box is left empty and the auto path
-    // supplies the full record on Capture.
+    // supplies the full record on Capture. Any other page clears a stale URL so
+    // a previous record's address can't be re-fetched as this one's evidence.
     if (prefill.ancestryImageViewer || prefill.iiif) {
       $('f-asset-url').value = '';
     } else if (prefill.imageUrl) {
       $('f-asset-url').value = prefill.imageUrl;
     } else if (prefill.pdfUrl) {
       $('f-asset-url').value = prefill.pdfUrl;
+    } else {
+      $('f-asset-url').value = '';
     }
     applyAncestryNote(!!prefill.ancestryImageViewer);
 
@@ -404,17 +412,27 @@
     }
     if (!url && state.iiif) {
       // Open-standard IIIF: fetch the full image (content.js rewrites the
-      // derivative's URL to full/full then full/max). No auth, so a plain fetch;
-      // a failure points at the manual fallbacks like the Ancestry path.
+      // derivative's URL to full/full then full/max). No auth, so a plain fetch.
       const resp = await sendToTab(state.tabId, { action: 'iiifImage' });
-      if (!resp || !resp.ok) {
-        throw new Error(
-          ((resp && resp.error) || 'could not fetch the full IIIF image') +
-            '. You can paste an image address or drop a file in instead.'
-        );
+      if (resp && resp.ok) {
+        const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
+        return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'iiif' };
       }
-      const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
-      return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'iiif' };
+      // The full-image fetch failed (rewritten URL 404, CORS). Rather than lose
+      // the record entirely, fall back to the visible derivative the page
+      // exposed, if any, before giving up.
+      const derivative = state.prefill && state.prefill.imageUrl;
+      if (derivative) {
+        const dResp = await sendToTab(state.tabId, { action: 'fetchAsset', url: derivative });
+        if (dResp && dResp.ok) {
+          const blob = bundle.base64ToBlob(dResp.base64, dResp.contentType);
+          return { blob, filename: 'record.' + (dResp.ext || 'jpg'), mode: 'iiif-derivative' };
+        }
+      }
+      throw new Error(
+        ((resp && resp.error) || 'could not fetch the full IIIF image') +
+          '. You can paste an image address or drop a file in instead.'
+      );
     }
     const resp = await sendToTab(state.tabId, { action: 'fetchAsset', url });
     if (!resp || !resp.ok) {
@@ -610,12 +628,9 @@
   async function refreshOnNavigation(tabId, changeInfo) {
     if (tabId !== state.tabId || state.busy) return;
     if (changeInfo.status !== 'complete') return;
-    let tab;
-    try {
-      tab = await new Promise((resolve) => chrome.tabs.get(tabId, resolve));
-    } catch (e) {
-      return;
-    }
+    const tab = await new Promise((resolve) =>
+      chrome.tabs.get(tabId, (t) => resolve(chrome.runtime.lastError ? null : t))
+    );
     if (!tab || !/^https?:/i.test(tab.url || '') || tab.url === state.prefilledUrl) return;
     try {
       await injectContent(tabId);

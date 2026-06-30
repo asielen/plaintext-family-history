@@ -803,19 +803,20 @@ def _resolve_recipe_result(
     if notes is not None:
         result.body = notes
     if people is not None:
-        # The curated list is AUTHORITATIVE: it is the panel's people checklist
-        # after the human ticked/unticked suggestions, so it replaces the recipe
-        # scrape entirely - re-adding recipe-found names would resurrect a
-        # suggestion the human deliberately removed (case-insensitive dedup,
-        # preserving each name's first-seen spelling).
-        seen: set[str] = set()
-        curated: list[str] = []
-        for name in people:
-            key = name.strip().lower()
-            if key and key not in seen:
-                seen.add(key)
-                curated.append(name)
-        result.people = curated
+        # The human's curated names come first, then any recipe-found name not
+        # already present (case-insensitive dedup, preserving each name's
+        # first-seen spelling). This is additive on purpose: the panel's people
+        # come from the in-browser JSON-LD/microdata harvest, while the Python
+        # recipe extracts household/family people from tables the panel never
+        # showed - replacing rather than merging would silently DROP those
+        # recipe-found relatives (e.g. a Find a Grave family list). People are
+        # review hints the reviewer reconciles, so extra noise is tolerable but
+        # lost relatives are not. (Place-shaped label noise is already kept out
+        # by the _common.py people guard.)
+        seen = {name.strip().lower() for name in people}
+        merged = list(people)
+        merged += [n for n in result.people if n.strip().lower() not in seen]
+        result.people = merged
 
     # An explicit url that no recipe surfaced still belongs in external_links.
     if url and not any((isinstance(l, dict) and l.get('url') == url) for l in result.external_links):
@@ -1324,6 +1325,10 @@ def _resolve_bundle_assets(bundle: Path, cap: dict) -> list[tuple[Path, str]]:
             if not isinstance(item, dict):
                 continue
             declared = item.get('file')
+            # The scaffolding files are not assets (a producer that lists one is
+            # harmlessly ignored, not treated as a missing-asset error).
+            if declared and Path(str(declared)).name in ('page.html', 'capture.json'):
+                continue
             path = _bundle_file(bundle, declared)
             if path is None:
                 # A file listed in capture.json is part of the completed-capture
