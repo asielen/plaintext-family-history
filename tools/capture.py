@@ -113,6 +113,24 @@ configure_utf8_stdout()
 # `fha process` refuses an out-of-vocabulary source_type hint.
 _GENERIC_SOURCE_TYPE = 'website'
 
+# A trailing " | Site Name" / " - Site Name" / " — Site Name" tail on a page
+# <title> is the site chrome, not the record title (e.g. KU Libraries Digital
+# Collections). Stripped only off the page.title fallback, never off og:title.
+_SITE_SUFFIX_RE = re.compile(r'\s+[|–—\-]\s+[^|–—\-]+$')
+
+# A four-digit year (1500s-2099) to harvest as the source_date guess when a page
+# ships no explicit published date - the same window the recipes' harvest uses.
+_GENERIC_YEAR_RE = re.compile(r'\b(1[5-9]\d{2}|20\d{2})\b')
+
+
+def _strip_site_suffix(title: str | None) -> str | None:
+    """Drop a trailing " | / - / — Site Name" tail; keep the title if that's all."""
+    if not title:
+        return title
+    stripped = _SITE_SUFFIX_RE.sub('', title).strip()
+    return stripped or title
+
+
 # Visible-text body is a citation *basis*, not the whole page - cap it so a long
 # article doesn't bloat every stub (BUILD.md M7.5: "visible text … ~2000 chars").
 _BODY_CHAR_CAP = 2000
@@ -382,10 +400,24 @@ def generic_extract(html: str, url: str | None) -> RecipeResult:
     page = parse_html(html)
     page_url = first_nonempty(url, page.canonical, page.base_href,
                               meta_content(page, 'og:url'))
-    title = first_nonempty(page.title, meta_content(page, 'og:title'), page.h1) \
-        or (domain_of(page_url) or 'captured page')
+    # Prefer the clean og:title; fall back to page.title with its site-suffix
+    # stripped (a print-shop run-on or " | Site" tail is not the record title),
+    # then the h1.
+    title = first_nonempty(
+        meta_content(page, 'og:title'),
+        _strip_site_suffix(page.title),
+        page.h1,
+    ) or (domain_of(page_url) or 'captured page')
     repository = domain_of(page_url)
     accessed = _today()
+
+    # An explicit published date wins; otherwise harvest a year from the title
+    # or og:description (a citation guess the reviewer refines).
+    source_date = first_nonempty(meta_content(page, 'article:published_time'))
+    if not source_date:
+        ym = _GENERIC_YEAR_RE.search(
+            ' '.join(filter(None, [title, meta_content(page, 'og:description')])))
+        source_date = ym.group(1) if ym else None
 
     citation_bits = [title.rstrip('.')]
     if repository:
@@ -400,7 +432,7 @@ def generic_extract(html: str, url: str | None) -> RecipeResult:
         source_type=_GENERIC_SOURCE_TYPE,
         citation=citation,
         repository=repository or None,
-        source_date=first_nonempty(meta_content(page, 'article:published_time')),
+        source_date=source_date,
         external_links=external_links,
         people=[],
         body=visible_text(page),

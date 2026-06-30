@@ -208,6 +208,25 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertIn('Smith–Jones', self._only_stub().read_text(encoding='utf-8'))
 
+    def test_generic_prefers_ogtitle_over_junk_page_title(self) -> None:
+        # EX19 shape: og:title is clean; page.title is a print-shop run-on.
+        rc = self._capture(_sample('open-archive-luna'),
+                           url='https://maps.example.com/luna/detail/9981')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['title'], 'National City and Vicinity')
+        self.assertEqual(meta['source_date'], '1887')        # harvested from og:description
+
+    def test_generic_strips_site_suffix_and_harvests_title_year(self) -> None:
+        # EX18 shape: no og:title; strip the " | Site" chrome and harvest the
+        # year from the title.
+        rc = self._capture(_sample('open-archive-islandora'),
+                           url='https://digital.example.edu/items/fairview-1910')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['title'], 'Panoramic map of Fairview, 1910')
+        self.assertEqual(meta['source_date'], '1910')
+
     # ── M7.6 / M7.7 recipes ─────────────────────────────────────────────────────
 
     def test_recipe_detection_is_mutually_exclusive(self) -> None:
