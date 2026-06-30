@@ -1,0 +1,9 @@
+# Your place registry - one entry per real-world location. Optional, but handy
+# once the same town shows up in several records. Copy the block below for each
+# place. (Coordinates are optional; they just pin the location precisely.)
+
+# - name: Millbrook
+#   hierarchy: Millbrook, Dutchess County, New York, USA
+#   coords: [41.7860, -73.6940]
+#   alt_names: [Mill Brook]
+#   notes: where the family lived in the 1900s
