@@ -248,7 +248,7 @@
     {
       "path": "tools/capture_recipes/ancestry.py",
       "category": "operating",
-      "sha256": "08fc7a602ec30f88e6af0e1525a074029ca7f806ff8844c3424a06369969f28a",
+      "sha256": "b81ba602c2192fc3bca50537acd97f59d2a1a0cb6101892e5413970f3879b6e4",
       "spec_version": "1.2"
     },
     {

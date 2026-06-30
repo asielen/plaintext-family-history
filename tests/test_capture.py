@@ -264,6 +264,36 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Edith Hartley', meta['people'])
         self.assertEqual(meta['source_date'], '1880')
 
+    def test_ancestry_imageviewer_grid_people_and_hint_title(self) -> None:
+        # EX5 shape: no household <table>; the detail panel is a grid of
+        # grid-cell divs (Surname/Given Name columns). The grid reader recovers
+        # the people the table path returns [] for, and the tree-hint <h1> is
+        # kept out of the title.
+        rc = self._capture(_sample('ancestry-imageviewer'),
+                           url='https://www.ancestry.com/imageviewer/collections/2442/images/x')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_type'], 'census')
+        self.assertEqual(meta['source_date'], '1940')
+        self.assertIn('Calvin Hartley', meta['people'])           # Given Name + Surname
+        self.assertIn('Edith Hartley', meta['people'])
+        self.assertNotIn('Given Name', meta['people'])            # label never leaks
+        self.assertNotIn('Surname', meta['people'])
+        self.assertNotIn('Does', meta['title'])                   # hint prompt not the title
+
+    def test_ancestry_offsite_index_pointer(self) -> None:
+        # An Ancestry "Index" record embedding a Newspapers.com clip URL surfaces
+        # it as an external link so the reviewer can go upstream (WS B.5).
+        html = ('<html><head><meta property="og:site_name" content="Ancestry">'
+                '<meta property="og:title" content="California Newspapers Index">'
+                '</head><body><a href="https://www.newspapers.com/clip/152871046/">'
+                'View on Newspapers.com</a></body></html>')
+        rc = self._capture(html, url='https://www.ancestry.com/search/collections/9/records/5')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        urls = [link['url'] for link in meta['external_links']]
+        self.assertIn('https://www.newspapers.com/clip/152871046/', urls)
+
     def test_familysearch_recipe(self) -> None:
         rc = self._capture(_sample('familysearch'),
                            url='https://www.familysearch.org/ark:/61903/1:1:X')
