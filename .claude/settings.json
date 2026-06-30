@@ -32,6 +32,7 @@
       "PowerShell(python -c \"import yaml; print\\('pyyaml ok'\\)\" 2>&1)",
       "PowerShell(python --version)",
       "Bash(python -c ' *)",
+      "PowerShell(python -c ' *)",
       "Bash(python tools/fha.py places geocode --all --root example-archive --offline)",
       "Bash(python tools/fha.py gedcom P-de957bcda1 --mode descendants --root example-archive)",
       "Bash(python tools/fha.py wikitree P-de957bcda1 --root example-archive)",
