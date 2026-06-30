@@ -70,15 +70,19 @@ library (the project adds no dependency before Jinja2 in M8).
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
 import functools
 import importlib
 import json
+import os
 import pkgutil
 import re
 import shutil
 import sqlite3
+import struct
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -99,6 +103,7 @@ from _lib import (
     is_valid_edtf,
     load_fha_yaml,
     normalize_date,
+    read_record,
     resolve_path,
     resolve_root_arg,
 )
@@ -1476,6 +1481,259 @@ def run_ingest(
     )
 
 
+# ── Native-messaging host (TOOLING_INGESTION §5.7) ─────────────────────────────
+#
+# The browser launches `fha capture --host` on demand (no resident daemon) and
+# exchanges length-prefixed JSON over stdin/stdout. One write (file a bundle
+# straight into inbox/, reusing run_ingest) and two read-only queries (name
+# autocomplete, already-captured check) - everything against the local archive,
+# nothing published (§7). The extension's `nativeHost.sendBundle()` already
+# speaks this; only this backend was missing.
+
+_NATIVE_HOST_NAME = 'com.plaintext.fha_capture'
+_NATIVE_HOST_PROTOCOL = 1
+# Cap a frame so a garbled length prefix can't make the host allocate wildly; a
+# bundle with a base64 asset or two is a few MB, 64 MiB is comfortable headroom.
+_NATIVE_MAX_FRAME = 64 * 1024 * 1024
+
+
+def _read_native_message(stream) -> dict | None:
+    """One length-prefixed JSON message from `stream`, or `None` at clean EOF.
+
+    Native-messaging framing: a 4-byte unsigned length in native byte order,
+    then that many UTF-8 JSON bytes. A short/oversized/garbled frame raises
+    `BundleError` rather than hanging or over-allocating.
+    """
+    raw_len = stream.read(4)
+    if not raw_len:
+        return None
+    if len(raw_len) < 4:
+        raise BundleError('native message length prefix truncated')
+    (length,) = struct.unpack('@I', raw_len)
+    if length == 0:
+        return {}
+    if length > _NATIVE_MAX_FRAME:
+        raise BundleError(f'native message too large ({length} bytes)')
+    payload = stream.read(length)
+    if len(payload) < length:
+        raise BundleError('native message body truncated')
+    return json.loads(payload.decode('utf-8'))
+
+
+def _write_native_message(stream, obj: dict) -> None:
+    """Write `obj` as one length-prefixed JSON native message and flush."""
+    data = json.dumps(obj).encode('utf-8')
+    stream.write(struct.pack('@I', len(data)))
+    stream.write(data)
+    stream.flush()
+
+
+def _safe_member_name(name: str | None, default: str) -> str:
+    """A browser-supplied bundle/file name reduced to a single safe path segment."""
+    base = os.path.basename((name or '').replace('\\', '/').strip())
+    base = re.sub(r'[^A-Za-z0-9._-]', '-', base).strip('.-')
+    return base or default
+
+
+def _host_ingest(archive_root: Path, fha_config: dict, msg: dict) -> dict:
+    """Materialize the framed bundle and file it through the normal ingest path.
+
+    The transport is the only new thing: write `page.html` + `capture.json` +
+    the base64 assets into a temp staging dir and call `run_ingest` wholesale, so
+    the stub is byte-identical to the `--ingest` / paste-fallback path (§6 seam).
+    """
+    capture_json = msg.get('captureJson')
+    if capture_json in (None, ''):
+        return {'ok': False, 'error': 'missing captureJson'}
+    bundle_name = _safe_member_name(msg.get('bundleName'), f'capture-{_today()}')
+    with tempfile.TemporaryDirectory(prefix='fha-host-') as tmp:
+        bundle = Path(tmp) / bundle_name
+        bundle.mkdir(parents=True)
+        page_html = msg.get('pageHtml')
+        if page_html is not None:
+            (bundle / 'page.html').write_text(page_html, encoding='utf-8')
+        text = capture_json if isinstance(capture_json, str) else json.dumps(capture_json)
+        (bundle / 'capture.json').write_text(text, encoding='utf-8')
+        for asset in (msg.get('assets') or []):
+            fn = _safe_member_name(asset.get('filename'), '')
+            if not fn:
+                continue
+            try:
+                (bundle / fn).write_bytes(base64.b64decode(asset.get('base64') or ''))
+            except (ValueError, TypeError):
+                return {'ok': False, 'error': f'asset {fn!r} is not valid base64'}
+        try:
+            result = run_ingest(archive_root, fha_config, staging_dir=str(Path(tmp)))
+        except CaptureWriteError as e:
+            return {'ok': False, 'error': str(e)}
+    for outcome in result.data.get('bundles', []):
+        if outcome.get('bundle') == bundle_name:
+            if outcome.get('stub'):
+                return {'ok': True, 'stub': outcome['stub']}
+            return {'ok': False, 'error': outcome.get('error') or 'bundle could not be filed'}
+    return {'ok': False, 'error': 'capture was not filed'}
+
+
+def _host_suggest_names(archive_root: Path, q: str | None, limit: int) -> dict:
+    """Archive person names + aliases matching `q` (read-only, suggestion-only)."""
+    query = (q or '').strip().lower()
+    people_dir = archive_root / 'people'
+    names: list[str] = []
+    seen: set[str] = set()
+    if people_dir.is_dir():
+        for md in sorted(people_dir.rglob('*.md')):
+            if md.name.startswith('_'):                  # templates
+                continue
+            try:
+                meta = (read_record(md).get('meta') or {})
+            except Exception:                            # noqa: BLE001 - skip a bad file
+                continue
+            candidates = [str(meta['name'])] if meta.get('name') else []
+            for alias in (meta.get('aliases') or []):
+                alias = str(alias)
+                if not re.match(r'^[PSLC]-[A-Za-z0-9]+$', alias):  # skip id aliases
+                    candidates.append(alias)
+            for name in candidates:
+                key = name.lower()
+                if key in seen or (query and query not in key):
+                    continue
+                seen.add(key)
+                names.append(name)
+    names.sort(key=lambda n: (not n.lower().startswith(query), n.lower()))
+    return {'ok': True, 'names': names[:max(0, limit)]}
+
+
+def _normalize_source_url(url: str | None) -> str:
+    """`host+path` (www- and trailing-slash-stripped, query dropped) for dup checks.
+
+    Ancestry/FamilySearch URLs carry throwaway params (`_phsrc`, `pId`, …) that
+    change each visit; the stable record id lives in the path, so comparing
+    host+path catches the same record across visits (§ Capability 3, v1).
+    """
+    p = urlparse(url or '')
+    host = (p.netloc or '').lower()
+    if host.startswith('www.'):
+        host = host[4:]
+    path = (p.path or '').rstrip('/')
+    return f'{host}{path}' if host else ''
+
+
+def _host_check_url(archive_root: Path, url: str | None) -> dict:
+    """Whether a source URL is already captured (by normalized host+path)."""
+    target = _normalize_source_url(url)
+    if not target:
+        return {'ok': True, 'known': False}
+    for sub in ('sources', 'inbox'):
+        root = archive_root / sub
+        if not root.is_dir():
+            continue
+        for md in sorted(root.rglob('*.md')):
+            try:
+                meta = (read_record(md).get('meta') or {})
+            except Exception:                            # noqa: BLE001
+                continue
+            for link in (meta.get('external_links') or []):
+                href = link.get('url') if isinstance(link, dict) else link
+                if href and _normalize_source_url(href) == target:
+                    return {'ok': True, 'known': True,
+                            'source': meta.get('id'),
+                            'date': meta.get('source_date') or meta.get('created')}
+    return {'ok': True, 'known': False}
+
+
+def _host_dispatch(archive_root: Path, fha_config: dict, msg: dict) -> dict:
+    """Route one native-messaging request to its handler (unknown → clean error)."""
+    action = (msg.get('action') or msg.get('type') or '').strip()
+    if action == 'ping':
+        return {'ok': True, 'v': _NATIVE_HOST_PROTOCOL}
+    if action in ('ingest', 'file'):
+        return _host_ingest(archive_root, fha_config, msg)
+    if action == 'suggestNames':
+        try:
+            limit = int(msg.get('limit') or 8)
+        except (TypeError, ValueError):
+            limit = 8
+        return _host_suggest_names(archive_root, msg.get('q'), limit)
+    if action == 'checkUrl':
+        return _host_check_url(archive_root, msg.get('url'))
+    return {'ok': False, 'error': f'unsupported action: {action!r}'}
+
+
+def run_host(archive_root: Path, fha_config: dict, *, stdin=None, stdout=None) -> int:
+    """Serve native-messaging requests until EOF (one read, one query, no daemon)."""
+    stdin = stdin if stdin is not None else sys.stdin.buffer
+    stdout = stdout if stdout is not None else sys.stdout.buffer
+    while True:
+        try:
+            msg = _read_native_message(stdin)
+        except (BundleError, ValueError, json.JSONDecodeError) as e:
+            _write_native_message(stdout, {'ok': False, 'error': str(e)})
+            return EXIT_ERRORS
+        if msg is None:
+            return EXIT_CLEAN
+        try:
+            resp = _host_dispatch(archive_root, fha_config, msg)
+        except Exception as e:  # noqa: BLE001 - a single request must never crash the host
+            resp = {'ok': False, 'error': f'unexpected error: {e}'}
+        _write_native_message(stdout, resp)
+
+
+def _install_host(archive_root: Path, *, extension_id: str | None,
+                  manifest_dir: str | None) -> int:
+    """Write the native-messaging manifest (+ launcher) registering this `fha`.
+
+    `manifest_dir` overrides the per-OS native-messaging location (used by tests
+    and for a non-default browser profile). The launcher is a tiny wrapper that
+    invokes this interpreter on this `fha` with `capture --host --root <archive>`.
+    """
+    target_dir = Path(manifest_dir) if manifest_dir else _native_manifest_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    fha_entry = Path(__file__).resolve().parents[1] / 'fha'
+    if os.name == 'nt':
+        launcher = target_dir / 'fha-capture-host.bat'
+        launcher.write_text(
+            f'@echo off\r\n"{sys.executable}" "{fha_entry}" capture --host '
+            f'--root "{archive_root}" %*\r\n', encoding='utf-8')
+    else:
+        launcher = target_dir / 'fha-capture-host.sh'
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{fha_entry}" capture --host '
+            f'--root "{archive_root}" "$@"\n', encoding='utf-8')
+        os.chmod(launcher, 0o755)
+
+    origin = f'chrome-extension://{extension_id}/' if extension_id else \
+        'chrome-extension://REPLACE_WITH_EXTENSION_ID/'
+    manifest = {
+        'name': _NATIVE_HOST_NAME,
+        'description': 'Plaintext Family History capture host',
+        'path': str(launcher),
+        'type': 'stdio',
+        'allowed_origins': [origin],
+    }
+    manifest_path = target_dir / f'{_NATIVE_HOST_NAME}.json'
+    manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    print(f'Wrote native-messaging manifest → {manifest_path}')
+    print(f'Launcher → {launcher}')
+    if not extension_id:
+        print('NOTE: edit "allowed_origins" to your extension id '
+              '(chrome://extensions → the companion → ID), or re-run with '
+              '--extension-id.')
+    return EXIT_CLEAN
+
+
+def _native_manifest_dir() -> Path:
+    """The per-OS Chrome native-messaging hosts directory."""
+    home = Path.home()
+    if os.name == 'nt':
+        return Path(os.environ.get('LOCALAPPDATA', home)) / 'Google' / 'Chrome' / \
+            'User Data' / 'NativeMessagingHosts'
+    if sys.platform == 'darwin':
+        return home / 'Library' / 'Application Support' / 'Google' / 'Chrome' / \
+            'NativeMessagingHosts'
+    return home / '.config' / 'google-chrome' / 'NativeMessagingHosts'
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -1502,6 +1760,16 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--ingest', nargs='?', const=True, default=False, metavar='DIR',
                    help='Sweep staged capture bundles from DIR (default: the '
                         'capture_staging folder or ~/Downloads/fha-inbox) into the inbox')
+    p.add_argument('--host', action='store_true',
+                   help='Run as the browser native-messaging host (stdin/stdout '
+                        'framed JSON); launched by the companion, not by hand')
+    p.add_argument('--install-host', action='store_true',
+                   help='Register the native-messaging host manifest for the browser')
+    p.add_argument('--extension-id', metavar='ID',
+                   help='Companion extension id for --install-host allowed_origins')
+    p.add_argument('--host-manifest-dir', metavar='DIR',
+                   help='Override where --install-host writes the manifest (default: '
+                        "the browser's native-messaging hosts dir)")
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -1514,6 +1782,16 @@ def _run_capture(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    # The native-messaging host and its installer are distinct modes.
+    if getattr(args, 'install_host', False):
+        return _install_host(
+            archive_root,
+            extension_id=getattr(args, 'extension_id', None),
+            manifest_dir=getattr(args, 'host_manifest_dir', None),
+        )
+    if getattr(args, 'host', False):
+        return run_host(archive_root, fha_config)
 
     # The --ingest sweep is a distinct mode: it reads staged bundles, not stdin.
     ingest = getattr(args, 'ingest', False)
