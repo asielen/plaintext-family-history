@@ -331,6 +331,39 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
     return out
 
 
+_WIKILINK_TARGET_RE = re.compile(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]')
+
+
+def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str], set[str]]:
+    """Return (source_ids, person_ids) resolved from bare name-style wikilinks.
+
+    extract_token_ids() handles [[S-id]] / [[P-id]] tokens; this catches the
+    alias form [[Source Title]] or [[Person Name]] where the target is a title
+    or name alias rather than a bare ID.  Each target is looked up in the
+    aliases table and split by kind (S → source, P → person)."""
+    source_ids: set[str] = set()
+    person_ids: set[str] = set()
+    for m in _WIKILINK_TARGET_RE.finditer(text):
+        target = m.group(1).strip()
+        if is_valid_id(target):
+            continue  # already handled by extract_token_ids
+        row = conn.execute(
+            'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE LIMIT 1',
+            (target,),
+        ).fetchone()
+        if row is None:
+            continue
+        cid = row[0] if not isinstance(row, sqlite3.Row) else row['canonical_id']
+        if not cid:
+            continue
+        kind = id_type_of(cid)
+        if kind == 'S':
+            source_ids.add(cid)
+        elif kind == 'P':
+            person_ids.add(cid)
+    return source_ids, person_ids
+
+
 def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[sqlite3.Row]:
     """Non-publishable source tokens cited in the profile body.
 
@@ -342,9 +375,10 @@ def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     `restricted=0` in the index, so cited sources are also read from their
     record files to catch it.
     """
+    extra_sids, _ = _resolve_wikilink_ids(conn, text)
     source_ids = sorted({
         t for t in extract_token_ids(text) if id_type_of(t) == 'S'
-    })
+    } | extra_sids)
     if not source_ids:
         return []
     placeholders = ','.join('?' * len(source_ids))
@@ -381,9 +415,10 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     (any value) can't appear in public WikiTree output. The index has no
     person-level `restricted` column, so each linked person's record file is
     read. Returns the offending persons (id + name) for the cleanup message."""
+    _, extra_pids = _resolve_wikilink_ids(conn, text)
     person_ids = sorted({
         t for t in extract_token_ids(text) if id_type_of(t) == 'P'
-    })
+    } | extra_pids)
     if not person_ids:
         return []
     placeholders = ','.join('?' * len(person_ids))
