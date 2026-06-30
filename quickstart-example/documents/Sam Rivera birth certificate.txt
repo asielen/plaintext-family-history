@@ -1,0 +1,12 @@
+[FICTIONAL STAND-IN DOCUMENT - for the example archive only]
+
+STATE OF NEW YORK - CERTIFICATE OF LIVE BIRTH
+
+Name of child:   Samuel Rivera
+Date of birth:   April 12, 1985
+Place of birth:  Millbrook, Dutchess County, New York
+Father:          Michael Rivera
+Mother:          Linda Rivera (born Brooks)
+
+(In a real archive this would be a scanned image or PDF of the actual
+certificate. Here it's plain text so the example needs no binary files.)

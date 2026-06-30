@@ -35,7 +35,7 @@ places:                    # OPTIONAL - where this source is set
 # original_language: de   # OPTIONAL - the language of the source itself, if not English (de, fr, la, ...)
 files:                     # OPTIONAL - the photo or scan this source points at
   - file: documents/put-your-file-here.jpg
-    role: primary
+    role: primary         # if there's just one file for this source, leave this as "primary"
     # language: de        # OPTIONAL - the language of THIS file
   # - file: documents/put-your-file-here-translation.md
   #   role: translation   # an English version of a foreign record, filed beside the original

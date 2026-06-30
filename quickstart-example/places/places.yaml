@@ -1,0 +1,14 @@
+# Places this family lived. One entry per real-world location.
+
+- name: Millbrook
+  hierarchy: Millbrook, Dutchess County, New York, USA
+  coords: [41.7860, -73.6940]
+  notes: where the Rivera family settled
+
+- name: Albany
+  hierarchy: Albany, Albany County, New York, USA
+  notes: where the Lee family lived
+
+- name: Poughkeepsie
+  hierarchy: Poughkeepsie, Dutchess County, New York, USA
+  notes: where the Brooks family lived; the county seat

@@ -1,0 +1,6 @@
+# fha.yaml - settings for this archive. (Only the optional helper tools read it;
+# this example was built entirely by hand without them.)
+
+roots:
+  photos: photos
+  documents: documents

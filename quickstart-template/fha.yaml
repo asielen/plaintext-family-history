@@ -1,0 +1,12 @@
+# fha.yaml - settings for your archive. Plain text; edit with any text editor.
+# You only need this if you later try the optional helper tools. Building by hand,
+# it does nothing - so you can ignore it for now.
+
+roots:
+  photos: photos          # where your photos live. Keep "photos" to use the folder
+  documents: documents    # in here, or put a full path like C:/Users/you/Pictures
+  # inbox: inbox          # (use forward slashes / even on Windows)
+
+# root_person: (optional) the tools use this to number the ancestor folders for
+# you automatically. Leave it blank while building by hand - the folder numbers
+# above are just friendly labels, nothing reads them.

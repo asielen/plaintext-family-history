@@ -23,10 +23,10 @@ filed and processed into sources.
 Permanent random IDs: `P-` people, `S-` sources, `C-` claims, `L-` places, `H-` hypotheses. A statement you can trust carries an `[S-…]` citation; uncited prose is story or context.
 
 ## Where the rules live
-This sample lives inside the public Plaintext spec repository, so it does not duplicate the governing documents - they sit at the **repository root**, one level up:
+The governing documents are:
 
 - `SPEC.md` - the law of the archive (formats, the on-disk tree, what every field means).
 - `TOOLING.md` - the design of the `fha` tools.
 - `AGENTS.md` / `CLAUDE.md` - operating instructions for AI assistants.
 
-A **real** archive is created from `archive-template/` and carries its own copies of these files at its root, so it travels as a self-contained, self-documenting bundle. If you share this `example-archive/` on its own, include the repo-root `SPEC.md` (or this note) so a reader knows where the rules are.
+If you downloaded this as a **zip**, those files are bundled right here alongside this README - it travels as a self-contained, self-documenting bundle. If you are browsing this inside the public Plaintext spec repository instead, they sit at the **repository root**, one level up (the repo doesn't duplicate them into every sample).
