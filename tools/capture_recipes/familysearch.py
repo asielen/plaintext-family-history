@@ -1,11 +1,22 @@
 """FamilySearch recipe for `fha capture` (TOOLING §13b).
 
 Recognizes a FamilySearch record or tree-person page and recovers the title,
-the event date, the collection, and the persons named in the fact table.
-Detection is by host (`familysearch.org`), with `og:site_name` as the fallback.
+the event date, the collection, and the persons named in the record. Detection
+is by host (`familysearch.org`), with `og:site_name` as the fallback.
+
+FamilySearch is an Ancestry-class outlier (no `og:`/JSON-LD; React detail
+panels) and is inconsistent across record types: a *content/record* page renders
+facts as "Label: Value" text with the collection as the title, while an
+*index/landing* page uses label/value tables with the *person* as the title.
+So the recipe reads people three ways - the guarded table path, the React
+content panel ("Given Name:/Surname:" + the "Others on This Record" list), and
+the title-person of an index page - and separates a person-as-title from the
+collection so the date/type still re-derive.
 """
 
 from __future__ import annotations
+
+import re
 
 from capture import (
     domain_of,
@@ -17,12 +28,28 @@ from capture import (
 )
 from capture_recipes._common import (
     harvest_date,
+    is_field_label,
+    looks_like_name,
     people_from_table,
     source_type_from_text,
 )
 
 SOURCE_NAME = 'FamilySearch'
 PRIORITY = 20
+
+# An index/landing page titles itself `Person, "Collection"` (no og: meta) - the
+# quoted tail is the collection, the head is the record's subject person.
+_TITLE_COLLECTION_RE = re.compile(r'^(?P<person>.+?),\s*["“\'](?P<collection>.+?)["”\']\s*$')
+
+# The React content panel renders the subject as "Given Name: <v> … Surname: <v>".
+_GIVEN_SURNAME_RE = re.compile(
+    r'Given Name:\s*(.+?)\s+Surname:\s*([A-Za-z][\w.\'\-]+)', re.I)
+
+# "Others on/in This Record" lists the household; the names sit in data-testid
+# attributes (a stabler hook than FamilySearch's hashed CSS-module classes).
+_OTHERS_RE = re.compile(r'Others (?:on|in) This Record', re.I)
+_SECTION_END_RE = re.compile(r'\b(?:Events?|Sources?|Record Information|New Event)\b')
+_TESTID_RE = re.compile(r'data-testid="([^"]+)"')
 
 
 def detect(html: str, url: str | None) -> bool:
@@ -32,27 +59,77 @@ def detect(html: str, url: str | None) -> bool:
     return (meta_content(page, 'og:site_name') or '').strip().lower().startswith('familysearch')
 
 
-def extract(html: str, url: str | None) -> dict:
-    page = parse_html(html)
-    title = first_nonempty(
+def _split_title_collection(page) -> tuple[str, str, str | None]:
+    """`(title, collection, title_person)`.
+
+    On an index/landing page the `<title>` is the person with the collection in
+    a quoted tail (`Mark B Sielen, "California, Birth Index, 1905-1995"`);
+    recover the collection (so date/type re-derive) and surface the person.
+    Otherwise the title is the og:title/h1 and the collection comes from the
+    meta/description sources.
+    """
+    m = _TITLE_COLLECTION_RE.match((page.title or '').strip())
+    if m and looks_like_name(m.group('person')):
+        collection = m.group('collection').strip()
+        return collection, collection, m.group('person').strip()
+    raw_title = first_nonempty(
         meta_content(page, 'og:title'), page.h1, page.title,
     ) or 'FamilySearch record'
-    # FamilySearch labels the collection in the description or a dedicated meta.
     collection = first_nonempty(
         meta_content(page, 'fs:collection', 'collection'),
         meta_content(page, 'og:description'),
-        title,
-    ) or title
+        raw_title,
+    ) or raw_title
+    return raw_title, collection, None
 
+
+def _subject_from_text(text: str) -> str | None:
+    """The content panel's subject, from its "Given Name: … Surname: …" text."""
+    m = _GIVEN_SURNAME_RE.search(text or '')
+    if not m:
+        return None
+    name = f'{m.group(1).strip()} {m.group(2).strip()}'
+    return name if looks_like_name(name) else None
+
+
+def _household_from_html(html: str) -> list[str]:
+    """Names from the "Others on This Record" list (their data-testid values)."""
+    m = _OTHERS_RE.search(html)
+    if not m:
+        return []
+    rest = html[m.end():]
+    end = _SECTION_END_RE.search(rest)
+    if end:
+        rest = rest[:end.start()]
+    names: list[str] = []
+    for tid in _TESTID_RE.findall(rest):
+        tid = tid.strip()
+        if looks_like_name(tid) and not is_field_label(tid) and tid not in names:
+            names.append(tid)
+    return names
+
+
+def extract(html: str, url: str | None) -> dict:
+    page = parse_html(html)
+    title, collection, title_person = _split_title_collection(page)
+
+    # People, in order of reliability: a guarded label/value table, then the
+    # React content panel (subject + household), then the index-page title
+    # person. Never the labels (the shared _common.py guard).
     people: list[str] = []
     for rows in extract_tables(html):
         people = people_from_table(rows)
         if people:
             break
-    # A tree-person page may have no fact table; the subject is the title/h1.
+    if not people:
+        subject = _subject_from_text(page.text) or title_person
+        if subject and looks_like_name(subject):
+            people.append(subject)
+        for member in _household_from_html(html):
+            if member not in people:
+                people.append(member)
     if not people:
         subject = first_nonempty(page.h1, meta_content(page, 'og:title'))
-        from capture_recipes._common import looks_like_name
         if subject and looks_like_name(subject):
             people = [subject]
 

@@ -288,6 +288,35 @@ class CaptureTestCase(unittest.TestCase):
         self.assertNotIn("Mother's Name", meta['people'])
         self.assertNotIn('Birth Date', meta['people'])       # fact label, not a person
 
+    def test_familysearch_content_page_grid_people(self) -> None:
+        # EX13 shape: React content panel, no table. The subject comes from the
+        # "Given Name:/Surname:" text and the household from the "Others on This
+        # Record" data-testid names. title/date/type already work; people was [].
+        rc = self._capture(_sample('familysearch-content'),
+                           url='https://www.familysearch.org/ark:/61903/3:1:XXYY-ZZZ')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_type'], 'census')
+        self.assertEqual(meta['source_date'], '1860')
+        self.assertIn('William W Church', meta['people'])         # subject, not []
+        self.assertIn('Caleb C Church', meta['people'])           # household member
+        self.assertNotIn('Given Name', meta['people'])            # label never leaks
+
+    def test_familysearch_index_page_title_collection_split(self) -> None:
+        # EX14 shape: the <title> is the person with the collection quoted; the
+        # split recovers the collection so the type re-derives (vital-record,
+        # not the generic 'website') and the person is captured, not the labels.
+        rc = self._capture(_sample('familysearch-index'),
+                           url='https://www.familysearch.org/ark:/61903/1:1:AAAA-111')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_type'], 'vital-record')
+        self.assertEqual(meta['source_date'], '1905')
+        self.assertEqual(meta['title'], 'California, Birth Index, 1905-1995')
+        self.assertIn('Mark B Sielen', meta['people'])
+        self.assertNotIn('Event Type', meta['people'])
+        self.assertNotIn('Event Place', meta['people'])
+
     def test_newspapers_recipe(self) -> None:
         rc = self._capture(_sample('newspapers'),
                            url='https://www.newspapers.com/clip/1/x/')
