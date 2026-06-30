@@ -550,6 +550,25 @@ class _SiteBuilder:
                 "WHERE p.living IN ('true','unknown') AND c.source_id IS NOT NULL"
             ):
                 source_living.add(row['source_id'])
+            # Also exclude sources naming a person-level restricted person
+            # (deceased but carrying `restricted: by-request`). The person's
+            # page is suppressed by _person_is_redacted; the source page must
+            # follow suit so the facts don't leak through the source view.
+            if self.restricted_persons:
+                placeholders = ','.join('?' * len(self.restricted_persons))
+                rp = list(self.restricted_persons)
+                for row in self.conn.execute(
+                    f"SELECT sp.source_id FROM source_people sp WHERE sp.person_id IN ({placeholders})",
+                    rp,
+                ):
+                    source_living.add(row['source_id'])
+                for row in self.conn.execute(
+                    f"SELECT DISTINCT c.source_id FROM claims c "
+                    f"JOIN claim_persons cp ON c.id = cp.claim_id "
+                    f"WHERE cp.person_id IN ({placeholders}) AND c.source_id IS NOT NULL",
+                    rp,
+                ):
+                    source_living.add(row['source_id'])
 
         for sid, row in self.source_meta.items():
             if self.linked or not self._source_is_redacted(row):

@@ -394,7 +394,7 @@ def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[s
         for claim in rec.get('claims') or []:
             if not isinstance(claim, dict):
                 continue
-            cid = str(claim.get('id', '')).strip()
+            cid = normalize_id(str(claim.get('id', '')).strip())
             if cid and _is_restricted_value(claim.get('restricted')):
                 out.add(cid)
     return out
@@ -717,7 +717,8 @@ def _gedcom_payload(
                    LEFT JOIN sources s ON s.id = c.source_id
                    WHERE r.claim_id IS NULL OR {_public_source_filter_sql()}"""
             ).fetchall()
-            if not r['source_id'] or r['source_id'] not in restricted_sources
+            if (not r['source_id'] or r['source_id'] not in restricted_sources)
+            and (r['claim_id'] is None or normalize_id(str(r['claim_id'])) not in restricted_claims)
         ])
 
         if all_persons:

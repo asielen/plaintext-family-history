@@ -225,12 +225,9 @@ def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str |
             'SELECT variant FROM person_variants WHERE person_id = ?', (pid,)
         ).fetchall():
             variant = v['variant']
-            # A restricted name variant (a deadname, SPEC §18) is recorded as a
-            # `{value:, restricted: true}` mapping; the index stores it as the
-            # stringified mapping. Such a value must never become a published
-            # name form, so skip any variant that is a serialized mapping rather
-            # than a plain name string - the unrestricted display name links instead.
-            if variant and not variant.lstrip().startswith('{'):
+            # Restricted name variants (deadnames, SPEC §18) are excluded from
+            # person_variants at index time, so every entry here is public.
+            if variant:
                 forms.append(variant)
     # Deduplicate, longest first so 'Margaret A. Cole' beats 'Margaret'.
     forms = sorted({f for f in forms if f}, key=len, reverse=True)
@@ -362,6 +359,29 @@ def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str]
         elif kind == 'P':
             person_ids.add(cid)
     return source_ids, person_ids
+
+
+def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
+    """Claim IDs carrying a per-claim `restricted:` marker in their source record.
+
+    The claims table has no claim-level `restricted` column — the flag lives in
+    the source record file. Reads every public (non-index-restricted) source file
+    and collects claim IDs where the claim dict's `restricted:` is truthy."""
+    out: set[str] = set()
+    for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
+        if row['restricted'] or not row['path']:
+            continue
+        try:
+            rec = read_record(archive_root / row['path'])
+        except Exception:
+            continue
+        for claim in rec.get('claims') or []:
+            if not isinstance(claim, dict):
+                continue
+            cid = normalize_id(str(claim.get('id', '')).strip())
+            if cid and _is_restricted_value(claim.get('restricted')):
+                out.add(cid)
+    return out
 
 
 def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[sqlite3.Row]:
@@ -583,13 +603,16 @@ def _claim_attr(conn: sqlite3.Connection, claim: sqlite3.Row, attr: str) -> str:
     return ''
 
 
-def _render_templates(conn: sqlite3.Connection, pid: str, templates: dict) -> list[str]:
+def _render_templates(
+    conn: sqlite3.Connection, pid: str, templates: dict,
+    restricted_claims: set[str] | None = None,
+) -> list[str]:
     """Render infobox templates for the subject from the claim-type hooks file."""
     if not templates:
         return []
     rows = conn.execute(
         """
-        SELECT c.type, c.subtype, c.date_edtf, c.place_id, c.place_text, c.value
+        SELECT c.id, c.type, c.subtype, c.date_edtf, c.place_id, c.place_text, c.value
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         JOIN sources s ON s.id = c.source_id
@@ -600,6 +623,8 @@ def _render_templates(conn: sqlite3.Connection, pid: str, templates: dict) -> li
         """,
         (pid,),
     ).fetchall()
+    if restricted_claims:
+        rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
     out: list[str] = []
     for c in rows:
         spec = templates.get(c['type'])
@@ -695,6 +720,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                     ]}
         spacetime = _spacetime_index(conn, pid)
         templates = _load_templates()
+        claim_restricted = _restricted_claim_ids(conn, archive_root)
 
         used_sources: list[str] = []
         person_cache: dict = {}
@@ -736,7 +762,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                 citation = _source_reference(archive_root, row)
                 ref_defs.append(f'<ref name="{fid}">{citation}</ref>')
 
-        template_lines = _render_templates(conn, pid, templates)
+        template_lines = _render_templates(conn, pid, templates, claim_restricted)
 
         out: list[str] = []
         out.append('<div name="references" style="display: none">')

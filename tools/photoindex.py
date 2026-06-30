@@ -583,11 +583,21 @@ def _load_source_people(
             if not p:
                 continue
             raw = str(p).strip()
-            # Support bare P-ids and [[P-id]] wikilink form.
+            # Support bare P-ids and [[P-id]] / [[Person Name]] wikilink forms.
             if raw.startswith('[[') and raw.endswith(']]'):
                 raw = raw[2:-2].split('|')[0].strip()
             if id_type_of(raw) == 'P':
                 pids.append(normalize_id(raw))
+            else:
+                # Name-style target: resolve via aliases table.
+                alias_row = conn.execute(
+                    'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE LIMIT 1',
+                    (raw,),
+                ).fetchone()
+                if alias_row:
+                    cid = alias_row['canonical_id'] if hasattr(alias_row, 'keys') else alias_row[0]
+                    if cid and id_type_of(cid) == 'P':
+                        pids.append(normalize_id(cid))
         if pids:
             result[normalize_id(sid)] = pids
     return result

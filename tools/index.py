@@ -113,6 +113,11 @@ import yaml
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _is_restricted_value(value) -> bool:
+    """True when a `restricted:` field value withholds a record from public output."""
+    return value not in (None, False, '', 'false')
+
+
 # ── DDL ───────────────────────────────────────────────────────────────────────
 # Schema mirrors the SPEC record model plus derived tables for query speed.
 # Foreign keys are OFF - forward references are valid and lint enforces integrity.
@@ -704,19 +709,28 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
                 str(path.relative_to(archive_root)),
             ),
         )
-        variants = [v['value'] if isinstance(v, dict) else str(v)
-                    for v in (meta.get('name_variants') or [])
-                    if not isinstance(v, dict) or v.get('value')]
-        for v in variants:
+        all_variants = [v['value'] if isinstance(v, dict) else str(v)
+                        for v in (meta.get('name_variants') or [])
+                        if not isinstance(v, dict) or v.get('value')]
+        # Restricted variants (deadnames, SPEC §18) go into aliases for internal
+        # link resolution only — they must not enter person_variants, which feeds
+        # public rendering paths (WikiTree fold forms, search display, etc.).
+        public_variants = [v['value'] if isinstance(v, dict) else str(v)
+                           for v in (meta.get('name_variants') or [])
+                           if (not isinstance(v, dict) or v.get('value'))
+                           and not (isinstance(v, dict) and _is_restricted_value(v.get('restricted')))]
+        for v in public_variants:
             conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
         # Register this person's resolution surface: the P-id (so `[[P-…]]`
         # clicks through), any hand-typed `aliases:` stems, the display name, and
         # each name variant - so `[[Ken Smith]]` resolves to the right P-id.
+        # All variants (including restricted) go into aliases so name-wikilinks
+        # to former names still resolve internally; render paths redact the display.
         _insert_record_aliases(
             conn, pid,
             stems=tuple(str(a) for a in (meta.get('aliases') or [])),
             names=(name,) if name and name != 'unknown' else (),
-            variants=tuple(variants),
+            variants=tuple(all_variants),
         )
         for t in (meta.get('face_tags') or []):
             conn.execute('INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', (pid, str(t)))
