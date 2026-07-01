@@ -16,7 +16,7 @@ Delete every layer above and the archive still works, the way the drawer still w
 | A genealogist who wants to use this system | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) |
 | A genealogist who got a zip and doesn't use git/GitHub | [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) |
 | Someone the owner sent documents to | [`docs/CONTRIBUTING_SOURCES.md`](docs/CONTRIBUTING_SOURCES.md) |
-| A developer building or extending the tools | [`BUILD.md`](BUILD.md) then [`TOOLING.md`](TOOLING.md) |
+| A developer building or extending the tools | [`BUILD.md`](BUILD.md) then [`TOOLING.md`](TOOLING.md) (core); the capture on-ramp is [`BUILD_INGESTION.md`](BUILD_INGESTION.md)/[`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); the workbench skills are [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md)/[`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) |
 | Here to understand or rebuild the spec | [`SPEC.md`](SPEC.md) |
 
 ---
@@ -115,7 +115,10 @@ The operating loop is simple: **capture → file → process → review → repo
 plaintext-family-history/
 ├── README.md            ← you are here
 ├── SPEC.md              ← the law: philosophy, data model, physical format, governance
-├── TOOLING.md           ← implementation design for every supporting tool (the fha suite)
+├── TOOLING.md           ← implementation design for the core fha tools
+│                          (+ TOOLING_INGESTION.md capture on-ramp, TOOLING_INTERFACE.md skills)
+├── BUILD.md             ← build sequence for the core tools
+│                          (+ BUILD_INGESTION.md, BUILD_INTERFACE.md - one per TOOLING doc)
 ├── AGENTS.md            ← canonical operating instructions for the AI agent
 ├── CLAUDE.md            ← Claude Code entry point (defers to AGENTS.md)
 ├── docs/                ← supporting documentation
@@ -146,7 +149,7 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 | Document | Read it for |
 |---|---|
 | **[SPEC.md](SPEC.md)** | The complete specification - what exists, how it lives on disk, and the rules that never bend. Start here. |
-| **[TOOLING.md](TOOLING.md)** | How every tool is built, in enough detail to rewrite it from scratch. The `fha` command suite, the index schema, the linter rules. |
+| **[TOOLING.md](TOOLING.md)** | How the core tools are built, in enough detail to rewrite from scratch. The `fha` command suite, the index schema, the linter rules. Two siblings cover the rest by concern: **[TOOLING_INGESTION.md](TOOLING_INGESTION.md)** (capture/inbox on-ramp) and **[TOOLING_INTERFACE.md](TOOLING_INTERFACE.md)** (workbench + skills). Each has a matching build doc (`BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`). |
 | **[AGENTS.md](AGENTS.md)** | What an AI agent may and may not do inside the archive - the contract, the operating modes, the workflows. |
 | **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** | A practical first-session walkthrough. |
 | **[docs/GLOSSARY.md](docs/GLOSSARY.md)** | Every term and ID type defined. |

@@ -19,10 +19,14 @@
 
 ## For developers
 
+Design is split by concern; each design doc has a matching build doc.
+
 | Document | Who it's for |
 |---|---|
-| [../BUILD.md](../BUILD.md) | Build sequence for the `fha` CLI - start here before touching code |
-| [../TOOLING.md](../TOOLING.md) | Deep implementation design for every tool - enough to rebuild from scratch |
+| [../BUILD.md](../BUILD.md) | Build sequence for the core `fha` CLI - start here before touching code |
+| [../TOOLING.md](../TOOLING.md) | Deep implementation design for the core tools - enough to rebuild from scratch |
+| [../BUILD_INGESTION.md](../BUILD_INGESTION.md) / [../TOOLING_INGESTION.md](../TOOLING_INGESTION.md) | The capture / inbox / web on-ramp: build sequence + design |
+| [../BUILD_INTERFACE.md](../BUILD_INTERFACE.md) / [../TOOLING_INTERFACE.md](../TOOLING_INTERFACE.md) | The workbench harness + workflow skills (the AI interface): build sequence + design |
 | [../tools/README.md](../tools/README.md) | Per-tool implementation status tables (flags, error codes, test coverage) |
 
 ## Spec and governance

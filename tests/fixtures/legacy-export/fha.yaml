@@ -1,4 +1,4 @@
-# Legacy-export conversion fixture for `fha convert-mining` (BUILD.md M7.8).
+# Legacy-export conversion fixture for `fha convert-mining` (BUILD.md M7.5).
 # The mining/ folder holds the pre-conversion ChatGPT-mining artifacts; running
 # `fha convert-mining --apply` against this root scaffolds conformant records.
 roots:

@@ -225,7 +225,7 @@ recorded here (not silently) as proposed spec clarifications:
   drag-drop is gone: the single-file HTML snapshot supersedes it (§9's case-(b)
   default), and a real PDF still files fine through the "Yes, save the actual
   file" path (paste its url, or drop the PDF). One fewer mode to explain.
-- **Bookmarklet is not here, by design.** §4.2 (the M7.9 decision): a
+- **Bookmarklet is not here, by design.** §4.2 (the MG2.1 decision): a
   `javascript:` bookmark can only trigger a single combined `.html` download,
   never the staged-bundle folder `--ingest` consumes. The **extension is the
   front-end**; the **paste fallback** (`pbpaste | fha capture …`) is the

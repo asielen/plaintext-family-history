@@ -10,6 +10,14 @@ Tools are conveniences: the archive works by hand without them, and every artifa
 
 Tooling design changes that affect the spec must be reflected in SPEC.md; all changes are recorded in git history.
 
+**This doc covers the core `fha` tools.** Two sibling design docs carve out the layers that only sketch here, each with its own build doc:
+
+| Doc | Concern | Build doc |
+|---|---|---|
+| **`TOOLING.md`** (this doc) | core `fha` tools (index, lint, views, find, process, site, …) | [`BUILD.md`](BUILD.md) |
+| [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) | capture / inbox / web on-ramp | [`BUILD_INGESTION.md`](BUILD_INGESTION.md) |
+| [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) | workbench harness + workflow skills (the AI interface) | [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) |
+
 **Operating principles for all tools:** no daemons, watchers, or schedulers - freshness is refresh-on-use (cheap incremental refreshes run at the start of any tool that needs them, notably `fha report`).
 Deterministic work belongs in `fha` tools; AI judgment belongs in workbench skills; human review is the only gate to `accepted`.
 AI passes are always *invoked* and recorded - nothing mines, extracts, or classifies silently.
@@ -619,7 +627,7 @@ This pair handles both, and both are **generic glue** (they move operating-layer
 This is the single source of truth for "what gets copied" - when the package grows (a second tools folder, a fifth doc), it's added to the manifest, and `update-tools` automatically knows to copy it.
 The list lives in versioned data, never hardcoded in prose or memory.
 
-The manifest covers the **operating layer** - everything a genealogist needs to operate an archive: `tools/` (and any future tool folders), the rulebooks (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`), the project `README.md`, the whole `docs/` folder, and the agent workflow procedures under `.claude/skills/` - plus the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
+The manifest covers the **operating layer** - everything a genealogist needs to operate an archive: `tools/` (and any future tool folders), the rulebooks (`SPEC.md`, `TOOLING.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`), the project `README.md`, the whole `docs/` folder, and the agent workflow procedures under `.claude/skills/` - plus the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
 It explicitly **excludes** spec-repo furniture that never enters an archive: `example-archive/`, `archive-template/` (its contents seed the skeleton; the folder itself is not copied), `tests/`, `.github/`, `.claude/settings.json` (the spec-repo's own agent config), `PRIVACY.md` (the public-repo "no real data" policy - actively contradictory inside a real archive), and `RELEASE_CHECKLIST.md`.
 
 **`fha install <archive-path>`** - the first-time bootstrap, **run from a clone of the public repo** (the only place the code exists before anything is copied).
@@ -696,7 +704,6 @@ The archive's own `.gitignore` must list `WORKING_COPY` (and `.cache/`) so the m
 
 | Idea | Sketch |
 |---|---|
-| `photo-context` skill | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - the pipeline's captions get smarter as the archive grows. Writes are marked as AI per §20. |
 | WikiTree importer | Reverse of §13 for legacy profiles: named refs → draft source records (Ancestry/Newspapers.com citation patterns recognized), spacetime spans → claim date/place hints, wikilinks → external_ids, sections → profile scaffold; everything enters `suggested`. The existing WikiTree corpus is migration source material. |
 | Citation assistant | Match uncited factual sentences in profiles against accepted claims (person + type + date overlap); suggest `[[S-…]]` insertions as a diff. |
 | Auto-anchor refinement | Re-run anchor matching with better text alignment for converter output. |
@@ -779,9 +786,11 @@ Feeds report §15a.6. *(Flagged as a future-intelligence focus: a model-assisted
 
 ## 15. Build order & testing
 
-See **`BUILD.md`** (repo root) for the full, annotated build sequence - which tools are built,
-which are pending, the dependency graph, PR-sized chunk descriptions with algorithm details, and
-definition-of-done test commands for every remaining tool.
+See **`BUILD.md`** (repo root) for the full, annotated build sequence of the core tools - which
+are built, which are pending, the dependency graph, PR-sized chunk descriptions with algorithm
+details, and definition-of-done test commands. The two sibling layers have their own build docs:
+**[`BUILD_INGESTION.md`](BUILD_INGESTION.md)** (capture + browser companion) and
+**[`BUILD_INTERFACE.md`](BUILD_INTERFACE.md)** (workbench skills).
 
 **Dependency summary:**
 ```
@@ -806,34 +815,11 @@ any tool is declared done; `tools/README.md` is the authoritative build-status r
 
 ---
 
-## 16. The research workbench (harness configuration)
+## 16. The research workbench & skills (the AI interface)
 
-**Pattern (SPEC §6):** an agentic CLI harness opened on the archive root, beside a plain text editor - human and AI edit the same files.
-Claude Code is the operating choice, not a required one.
-The configuration below is what makes any conforming harness genealogy-aware, and what keeps the choice reversible.
+> **Full design: [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md).** The workbench harness configuration (vendor-lock rules, external-root access, model-tier selection, session hygiene) and every workflow skill (`review-claims`, `process-source`, `mine-transcript`, `today`, `research-next`, `write-biography`, `merge-identities`, `place-research`, and the `photo-context` skill backlog) are specified there in full, with the build sequence in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md). This section is the summary that the rest of TOOLING/SPEC cross-references.
 
-**Vendor-lock prevention rules.**
-1. **`AGENTS.md` is canonical.** All agent operating instructions live there, in plain markdown, harness-agnostic. `CLAUDE.md` is a one-line deferral (`Read and follow AGENTS.md.`) plus, at most, Claude-Code-specific notes. Any other harness's convention file (e.g. for Codex or Gemini CLI) gets the same one-line deferral.
-2. **Skills are portable.** Workflow skills live in `.claude/skills/{name}/SKILL.md` using the open SKILL.md standard (adopted beyond Claude Code); they contain instructions and `fha` invocations only - no harness APIs.
-3. **No harness-only state is load-bearing.** Session memory, harness caches, and MCP configurations are disposable; anything worth keeping is written into archive records. Switching harnesses must cost one afternoon, not a migration.
-4. The harness's "knowledge" of the archive is the **index and the `fha` tools**, never bulk file ingestion - ten thousand photos cost zero context because photo questions are `fha photoindex` calls.
-
-**Initial skills (build alongside linter v1).**
-- `review-claims` - Stage C: walk a source's `suggested` backlog (guided one-by-one, or open the source file for self-serve skimming - human's choice); capture accept/dispute/edit and manual claim additions; set `reviewed`; finish with incremental reindex, `fha xref`, and lint.
-- `process-source` - the pipeline driver. If the inbox item is a **source stub** (a `*.notes.md` sidecar or a bundle folder, SPEC §12.1), its frontmatter + notes seed Stage A (pre-filling §14 frontmatter) and its parsed-person/vital hints seed Stage B's draft; otherwise Stage A starts from the bare file. Stage A `fha process`; Stage B AI draft (file reading incl. vision, entity resolution with candidate proposals against the index, `suggested` claims + stories); hand-off to `review-claims` for Stage C; ends with incremental reindex + `fha xref`. The stub is consumed - promoted into the source record, not left behind.
-- `mine-transcript` - the invoked extraction pass: selective claim drafting (`suggested` + `anchor:`), name→P-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), stories to `## Stories`, the pass recorded in `## Notes` (model, date). Never runs unrequested.
-- `today` - run `fha report`, narrate it discoveries-first, offer to start the top item.
-- `research-next` - inference and steering (checks the research log FIRST - never proposes a search already logged unless the nil has aged past the re-run horizon; emits plan-shaped output whose executed searches are logged back): combine open questions, vitals gaps, and open hypotheses with historical context (which record sets exist for the time/place, where they are held, what era events imply) into concrete research leads; may draft hypotheses (origin: agent) into research files - leads and hypotheses, never claims.
-- `write-biography` - drafting rules for profiles: citation density (§16 of SPEC), uncited-prose-is-context, summary-block format, `[[P-…]]`/`[[S-…]]` links only from verified IDs.
-
-**External roots in the workbench.** When `fha.yaml` maps a root outside the archive, the harness needs access granted: for Claude Code, launch with `--add-dir <photos-root>` (the settings-file `additionalDirectories` route has had reliability reports; prefer the flag, e.g. in a small launch script committed next to fha.yaml).
-The agent still must not bulk-read asset trees - access exists for exiftool/process/packet operations, not ingestion.
-
-**Model selection (workbench economics).** Deterministic `fha` tools cost no model credits - the deterministic/judgment split is also the cost model.
-For model work, tier by judgment density, not habit: the **workhorse tier** (currently Claude Sonnet) is the default for tool-building, processing, review, and drafting; the **frontier tier** (currently Claude Opus / Fable) is escalated per task for proof arguments, merge/separate judgment, brick-wall research, spec-refinement, and stuck debugging - the tell is *cheap to attempt, expensive to get wrong*; the **fast tier** (currently Claude Haiku) serves batch API pipelines only after a sample-quality bake-off (handwriting transcription degrades quietly on small models).
-Switch per session (`/model`); the tiers are roles, not vendors - any harness's equivalents slot in.
-
-**Workbench session hygiene** (enforced by AGENTS.md): run `fha lint` after any batch of edits; never bypass `fha process` for renames; new claims always `status: suggested` when AI-drafted; never edit below a GENERATED header.
+The interface layer sits on top of the deterministic `fha` tools: **deterministic work belongs in `fha` tools; AI judgment belongs in workbench skills; human review is the only gate to `accepted`.** Skills are portable `.claude/skills/{name}/SKILL.md` files - instructions plus `fha` invocations, no harness APIs - so the harness choice stays reversible. `AGENTS.md` is the canonical, harness-agnostic operating instruction; `CLAUDE.md` is a one-line deferral to it. No skill has been built yet; the tools they will orchestrate are all shipped.
 
 ---
 

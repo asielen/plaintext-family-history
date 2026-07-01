@@ -115,7 +115,7 @@ AI is potentially the most powerful layer of this system and the most dangerous 
 4. AI tooling passes the archive test like everything else.
 
 The day-to-day research workbench is an **agentic CLI harness opened on the archive root** - an AI that reads and edits the files directly, runs the `fha` tools as its hands, and sits beside a plain text editor so human and AI work the same files in the same place. **Claude Code is the current operating choice; it is not a required one.** Vendor lock-in is prevented structurally: the harness configuration lives in open formats at the archive root (`AGENTS.md` as the canonical agent instructions, with `CLAUDE.md` deferring to it; skills in the portable SKILL.md standard), no harness-only state is ever load-bearing, and any agent harness honoring the contract above is an acceptable drop-in.
-Harness configuration is specified in `TOOLING.md` §16.
+Harness configuration and the workflow skills are specified in `TOOLING_INTERFACE.md` (summarized in `TOOLING.md` §16).
 Other modes keep their own surfaces: chat projects for thought-partnership, headless pipelines for batch work, Obsidian/Lightroom/the generated site for human browsing.
 
 ---

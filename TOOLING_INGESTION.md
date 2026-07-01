@@ -6,6 +6,8 @@
 
 This document is a focused expansion of one tool family that the main [`TOOLING.md`](TOOLING.md) only sketches: the **capture / inbox / ingestion** on-ramp. SPEC.md Part III (§12.1) states *what* a source stub is and how assets and records separate; TOOLING.md §13b names the `fha capture` engine; this document specifies *how* the whole intake spine works end to end - the engine, every delivery form that feeds it, and the browser companion in enough detail to build it in any language.
 
+It is one of three sibling design docs, each with its own build doc: [`TOOLING.md`](TOOLING.md) (core tools) → [`BUILD.md`](BUILD.md); **this doc** (ingestion) → [`BUILD_INGESTION.md`](BUILD_INGESTION.md); [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) (workbench + skills) → [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md).
+
 The governing rule carried from TOOLING.md applies here without exception: **tools have no daemons, watchers, or schedulers.** Freshness is refresh-on-use. Capture stages material; nothing sweeps it automatically; a human (or a workbench skill) runs the next step. The browser companion is a *dumb, replaceable front-end* - it stages raw material, and the durable Python tooling decides what that material means.
 
 ---
@@ -137,7 +139,7 @@ The human copies the page (or saves the HTML) and pipes it in: `pbpaste | fha ca
 
 ### 4.2 Bookmarklet - *not pursued*
 
-> **Decision (M7.9):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
+> **Decision (MG2.1):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
 
 ### 4.3 Browser extension - *the nice panel* (§5)
 
@@ -293,19 +295,19 @@ These bind every delivery form and the engine alike:
 |---|---|
 | Engine `fha capture` (paste fallback, recipes, generic, stub render, research-log) | **built** ([`tools/capture.py`](tools/capture.py)) |
 | Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
-| `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD.md M7.9) |
-| `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD.md M7.9) - warns when bundles sit in the staging folder waiting for `--ingest` |
+| `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD_INGESTION.md MG2.1) |
+| `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD_INGESTION.md MG2.1) - warns when bundles sit in the staging folder waiting for `--ingest` |
 | Browser extension (§5) | **built** ([`browser-companion/`](browser-companion/), MV3) - the four-phase side panel, generic pre-fill, all five asset modes, and the staged-bundle download path; lives outside the archive operating layer (not a `manifest.json` entry). The seamless native-host path (§5.7) now ships end to end: its backend (below) plus the extension front-end that consumes it (IIIF/warning panel wiring and the opt-in `nativeMessaging` permission request in `native-host.js`), which stays OFF by default behind the "file straight into my archive" toggle |
 | Native-messaging host backend (§5.7) | **built** ([`tools/capture.py`](tools/capture.py) `fha capture --host` / `--install-host`; [`tests/test_capture_host.py`](tests/test_capture_host.py)) - length-prefixed stdin/stdout JSON: files a framed bundle into the configured `inbox/` (via `run_ingest`), plus read-only `suggestNames` / `checkUrl`. The extension front-end that drives it (the `nativeMessaging` permission request + `isAvailable` gate) is the deferred activation step |
 | Bookmarklet (§4.2) | **not pursued** - the extension is the front-end; the paste fallback is the floor (see §4.2) |
 
-The build order that follows the spine's own logic: `--ingest` first (it makes *any* staged bundle useful and is a thin wrapper over the existing engine), then the extension (which produces those bundles), then the native host as a seamless-path upgrade. A concrete milestone breakdown belongs in [`BUILD.md`](BUILD.md); this document is the design it implements against.
+The build order that follows the spine's own logic: the engine first, then `--ingest` (it makes *any* staged bundle useful and is a thin wrapper over the existing engine), then the extension (which produces those bundles), then the native host as a seamless-path upgrade. The concrete, phased milestone breakdown lives in [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (the MG series: engine MG1.1-MG1.3, `--ingest` MG2.1, browser companion MG2.2, native host MG2.3); this document is the design it implements against.
 
 ---
 
 ## 9. Open questions (deferred, not decided)
 
-- **Capture-folder discovery.** *Resolved when `--ingest` was built (M7.9):* the sweep resolves `DIR` in the order **explicit positional arg → `fha.yaml` `capture_staging:` key → default `~/Downloads/fha-inbox/`**. `capture_staging` is read straight off the config and `~`-expanded - it is *not* an archive root (it lives under the browser's Downloads tree), so it is never routed through `resolve_path`. The extension's own `storage` of a chosen folder is a browser-side convenience layered on top, not a backend concern.
+- **Capture-folder discovery.** *Resolved when `--ingest` was built (MG2.1):* the sweep resolves `DIR` in the order **explicit positional arg → `fha.yaml` `capture_staging:` key → default `~/Downloads/fha-inbox/`**. `capture_staging` is read straight off the config and `~`-expanded - it is *not* an archive root (it lives under the browser's Downloads tree), so it is never routed through `resolve_path`. The extension's own `storage` of a chosen folder is a browser-side convenience layered on top, not a backend concern.
 - **Tiled-viewer assets.** The Ancestry image viewer serves tiles, not a single file; case-(a) fetch can't reassemble them. v1 answer is the (c) screenshot `provisional-image`; a tile-stitcher is explicitly out of scope (and near the §2.4 boundary).
 - **Single-file vs. PDF as the case-(b) default.** Single-file HTML stays scrapeable and is one-click in MV3, but bloats on image-heavy pages and can miss CORS-locked sub-resources; PDF renders faithfully but isn't reliably one-click (needs `chrome.debugger` or the native host) and can't be re-parsed. v1 leans single-file, with PDF offered via the human's *Save as PDF* + drag-drop (c). Whether to bundle a vendored SingleFile-style inliner or write a minimal one is a build-time call.
 - **How much to inline.** Images and CSS are the must-haves for case (b); fonts, web-components, and lazy-loaded media are diminishing returns against snapshot size. Settle the inlining scope when the extension is built.

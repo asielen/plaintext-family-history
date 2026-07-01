@@ -22,7 +22,8 @@ After copying:
 1. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples below).
 2. Bring in the **operating layer** from the public repo. From your clone or unzipped download,
    copy the `tools/`, `docs/`, and `.claude/skills/` folders plus the root rulebooks
-   (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`,
+   (`SPEC.md`, `TOOLING.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS.md`,
+   `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`,
    `README.md`) into this archive folder.
    *(Alternatively, `fha install` does this in one step - but it must run against a **fresh,
    empty** folder name, not a copy of this template. If you've already copied archive-template,

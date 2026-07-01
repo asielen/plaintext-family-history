@@ -2,10 +2,18 @@
 
 **Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
-This file is the complete build guide for the `fha` CLI, written as if nothing exists yet.
+This file is the complete build guide for the **core** `fha` CLI, written as if nothing exists yet.
 Every tool appears in dependency order with the same level of detail - algorithm, constraints,
 and done criteria. Implementation status is tracked separately in `tools/README.md`.
 Design rationale lives in `TOOLING.md`; this file tells you the sequence and how to verify it.
+
+Two sibling layers have their own design + build docs and are **not** covered here, each with
+its own milestone numbering: the capture / inbox on-ramp
+([`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) → [`BUILD_INGESTION.md`](BUILD_INGESTION.md),
+the **MG** series) and the workbench skills / AI interface
+([`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) → [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md),
+the **MI** series). This file's Layer 7 covers only the deterministic core intake:
+`fha process` (M7.1-M7.4) and `fha convert-mining` (M7.5).
 
 **Tool conventions (all PRs):**
 - One Python file per tool under `tools/`. Tools never import other tools.
@@ -48,7 +56,7 @@ the insertion point in the same edit.
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
-| 7 | Layer 7 - Intake pipeline | M7.1-M7.10 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`), M7.9 (`fha capture --ingest` staged-bundle sweep), M7.10 (`browser-companion/` MV3 capture extension, core only) |
+| 7 | Layer 7 - Intake pipeline (core side) | M7.1-M7.5 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha convert-mining`). The `fha capture` on-ramp is a separate track in [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (MG series). |
 | 8 | Layer 8 - Publication | M8.1-M8.5 | ✓ shipped - M8.1 (`fha site` foundations: query layer, Jinja2, source page), M8.2 (person page), M8.3 (place + discoveries pages), M8.4 (home page + standalone redaction audit), M8.5 (interactive trees via a vendored, dependency-free renderer + adapter seam) |
 | 9 | Layer 9 - Scaffolding | M9.1-M9.2 | ✓ shipped - M9.1 (`fha install` + `manifest.json`: bootstrap an archive's operating layer + skeleton, stamp `.plaintext-version`, zip/git-free), M9.2 (`fha update-tools`: refresh the operating layer, back up customized/retired files, never delete, never touch skeleton seeds) |
 | 10 | Layer 10 - Working-copy mode | M10.1 | ✓ shipped - `fha working-copy on|off|status`, marker plumbing, asset-check suppression, asset-command refusals |
@@ -1164,12 +1172,17 @@ fha wikitree P-de957bcda1 --root example-archive   # valid WikiTree markup to st
 
 ---
 
-## Layer 7 - Intake pipeline (Milestone 7)
+## Layer 7 - Intake pipeline (Milestone 7 - core side)
 
-`fha process` depends on: index, lint. `fha capture` hands off to process.
-`fha convert-mining` depends on: index, lint, stubs. `fha process` is split into four PRs
-and `fha capture`'s site recipes into two - variation detection, bundle dissolution, and
-the four site recipes are each significant scope on their own.
+`fha process` depends on: index, lint. `fha convert-mining` depends on: index, lint, stubs.
+`fha process` is split into four PRs - variation detection and bundle dissolution are each
+significant scope on their own.
+
+This layer is the deterministic core of intake: `fha process` (M7.1-M7.4) and the
+`fha convert-mining` importer (M7.5). The `fha capture` web on-ramp - engine, recipes,
+`--ingest` sweep, browser companion, native host - is a separate track in
+[`BUILD_INGESTION.md`](BUILD_INGESTION.md) (the MG series; design in
+[`TOOLING_INGESTION.md`](TOOLING_INGESTION.md)) and hands off to `fha process`.
 
 ---
 
@@ -1259,80 +1272,7 @@ fha process tests/fixtures/bundle-folder/ --root ...
 
 ---
 
-### M7.5 - `fha capture` - paste fallback + generic recipe (✓ shipped)
-
-**One PR.** New file `tools/capture.py`. Wire `fha capture [--url URL] [--title "…"]
-[--type TYPE] [--date DATE] [--asset FILE]` (TOOLING §13b).
-
-Read HTML from stdin or `--asset`. Generic recipe: extract title (from `<title>` or `<h1>`),
-URL (from `<base href>` or `<link rel="canonical">` or `--url`), accessed-date (today).
-Create source stub in `inbox/` as `{slug}.notes.md`:
-```yaml
-title: "…"
-source_type: web
-citation: "…, accessed {date}"
-repository: "{domain}"
-external_links:
-  - url: "…"
-    accessed: "{date}"
-```
-Body: visible text (strip tags, ~2000 chars). `--asset FILE`: copy alongside stub. Write
-research-log entry to `search_log` (via index if present; `.cache/capture_log.jsonl` fallback).
-
-**Done when:**
-```sh
-echo "<html><title>Test</title></html>" | fha capture --url "https://example.com"
-# stub in inbox/ with correct frontmatter
-fha capture --url "…" --title "Override" --type newspaper
-```
-
----
-
-### M7.6 - `fha capture` - site recipes: Ancestry + FamilySearch (✓ shipped)
-
-**One PR.** Create `tools/capture_recipes/` directory with the two genealogy-database
-recipes. Each recipe exposes `detect(html, url) -> bool` and `extract(html, url) -> dict`.
-`fha capture` tries recipes in priority order: Ancestry → FamilySearch → generic fallback
-(Newspapers.com and FindAGrave are added by M7.7, ahead of the fallback).
-
-Minimum extraction per site (TOOLING §13b): Ancestry (collection title, date, persons in
-household/index table, image URL); FamilySearch (title, date, collection, persons from fact
-table).
-
-Add `tests/fixtures/capture-samples/` with one anonymized HTML snippet per site.
-
-**Done when:**
-```sh
-fha capture < tests/fixtures/capture-samples/ancestry.html --url "https://ancestry.com/…"
-# routes to Ancestry recipe; correct source_type
-fha capture < tests/fixtures/capture-samples/familysearch.html --url "https://familysearch.org/…"
-# each recipe: detect() True for own sample, False for the other's
-```
-
----
-
-### M7.7 - `fha capture` - site recipes: Newspapers.com + FindAGrave (✓ shipped)
-
-**One PR.** Extend `tools/capture_recipes/` with the two remaining recipes, inserted into
-the priority order ahead of the generic fallback: Ancestry → FamilySearch → Newspapers.com
-→ FindAGrave → generic fallback.
-
-Minimum extraction per site (TOOLING §13b): Newspapers.com (publication, date, page, article
-snippet, formatted citation); FindAGrave (memorial name, birth/death, cemetery as
-`place_text`, persons).
-
-Add one anonymized HTML snippet per site to `tests/fixtures/capture-samples/`.
-
-**Done when:**
-```sh
-fha capture < tests/fixtures/capture-samples/newspapers.html --url "https://newspapers.com/…"
-fha capture < tests/fixtures/capture-samples/findagrave.html --url "https://findagrave.com/…"
-# each of the four recipes: detect() True for its own sample, False for the other three
-```
-
----
-
-### M7.8 - `fha convert-mining` (✓ shipped)
+### M7.5 - `fha convert-mining` (✓ shipped)
 
 **One PR.** New file `tools/convert_mining.py`. Wire `fha convert-mining [--apply]`
 (TOOLING §11). Default: dry-run. `--apply` required to write.
@@ -1347,93 +1287,6 @@ questions → `notes/questions.md`. Write `.cache/convert_mapping.csv` (legacy_i
 ```sh
 fha convert-mining --root tests/fixtures/legacy-export         # dry-run: prints plan
 fha convert-mining --root tests/fixtures/legacy-export --apply # writes; lint exits clean
-```
-
----
-
-### M7.9 - `fha capture --ingest` - the staged-bundle sweep (✓ shipped)
-
-**One PR.** Extend `tools/capture.py` with a new mode (not a new tool): `fha capture
---ingest [DIR] [--dry-run]` (TOOLING_INGESTION §6). This is the local bridge from a
-browser-staged bundle to a real inbox stub - the prerequisite for the browser companion
-(§5), whose only output is such a bundle and which nothing consumed before this.
-
-Algorithm: resolve `DIR` (explicit arg → `fha.yaml` `capture_staging:` → default
-`~/Downloads/fha-inbox`). For each `<slug>-<timestamp>/` bundle (`page.html` + optional
-`asset.*` + `capture.json`, §3): read + validate it, then run `run_capture` wholesale -
-`page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as explicit
-overrides (`url`/`title`/`type`/`date`/`accessed`/`notes`/`people`). `run_capture` gained
-optional `accessed`/`notes`/`people` params (inert when unset, so the paste path stays
-byte-identical), so the ingested stub equals the paste-fallback's exactly. On success the
-bundle is **parked** in `.ingested/` (moved, never hard-deleted). Idempotent (a name already
-in `.ingested/` is skipped); resilient (a malformed bundle - missing `page.html`, bad
-`capture.json` - is reported and left in place, never aborting siblings); `--dry-run` writes
-nothing. Writes only to `inbox/`, so it stays available in WORKING_COPY mode. Pointer-only
-(`asset_mode: none`) bundles flow through with no asset → the stub's existing
-`asset_elsewhere: true` path fires (case (c)).
-
-Two companions land in the same PR:
-- **`fha doctor` nudge.** Since nothing sweeps automatically, `doctor` warns when bundles sit
-  waiting (`staged captures: N … next: run \`fha capture --ingest\``), mirroring inbox aging -
-  via a shared `capture.staged_bundles(fha_config)` helper, and only when the staging folder
-  exists (silent on machines that never run the companion).
-- **`capture.json` schema version.** A `schema:` field (current `capture._CAPTURE_JSON_SCHEMA`
-  = 1) lets the companion and backend evolve independently; ingest is forgiving - absent = current,
-  newer = read shared fields + warn, never refused.
-
-Add `tests/test_capture_ingest.py` (builds bundles in a temp staging dir from the existing
-`capture-samples/*.html`); cover the doctor nudge and the newer-schema warning too.
-
-**Done when:**
-```sh
-fha capture --ingest tests/fixtures/capture-staging/clean --dry-run  # plan only, no writes
-fha capture --ingest <staging-dir>                                   # stubs in inbox/, bundles parked
-# ingested stub is byte-identical to the paste-fallback's; re-run is a no-op
-```
-
----
-
-### M7.10 - Browser companion - the capture extension (✓ shipped, core only)
-
-**One PR.** A Manifest V3 browser extension in [`browser-companion/`](browser-companion/)
-(TOOLING_INGESTION §5), the everyday front-end that produces the staged bundles M7.9's
-`--ingest` already consumes. It lives **outside** the Python tool suite and the archive
-operating layer - installed in the browser, not vendored by `fha install`, so it is **not**
-a `manifest.json` entry. No new Python; the backend contract was finished in M7.9.
-
-Scope is the **core** extension only:
-- The four-phase side panel (§5.3): Invoke → Confirm (generic pre-fill, editable) → Capture
-  the evidence (the five asset modes: fetch / single-file / pdf-via-handoff / manual / none)
-  → Stage (write the bundle, never mint a record).
-- Generic in-browser pre-fill only (§5.5): `<title>`/`og:title`, canonical URL,
-  `article:published_time`, JSON-LD Person names, largest image, hostname → `recipe_hint`.
-  The authoritative per-site parsing stays in the Python recipes, which re-run on the saved
-  `page.html` at ingest. The browser captures; Python extracts.
-- The §5.1 transport: assemble `page.html` + optional `asset.<ext>` + `capture.json`
-  (schema 1, §3) in memory, write them via `chrome.downloads.download()` into
-  `Downloads/fha-inbox/<slug>-<timestamp>/`. The panel reports exactly where the bundle went
-  and that `fha capture --ingest` files it - it never pretends Downloads is the archive.
-- A minimal single-file inliner (§9): images + stylesheet text inlined, scripts dropped,
-  bounded; `page.html` is always saved alongside so scraping never depends on the snapshot.
-- A provisional screenshot is surfaced as a `notes` line, since schema 1 has no field for it
-  (§5.6). `sidePanel` is added to the §5.4 least-privilege set for the panel UX.
-
-Two pieces are **explicitly out of this milestone, as separate layers:**
-- **Native-messaging host (§5.7)** - the seamless "straight into `inbox/`" upgrade. Its
-  extension-side hook is scaffolded and inert (off unless a host answers); the Python host
-  (`fha capture --host` / `--install-host`) is deferred v2.
-- **First-class `asset_provisional` metadata** - a `capture.json` schema 2 field + ingest
-  plumbing, deferred (§9).
-
-Add `tests/test_browser_companion.py`: validate the MV3 manifest + that every file it names
-exists, and round-trip the committed `browser-companion/test-bundle/` (built in the exact
-shape the panel writes) through `fha capture --ingest` to prove the output contract against
-the live backend. (No browser-driven harness in this repo; the JS runs only in a browser.)
-
-**Done when:**
-```sh
-python -m unittest tests.test_browser_companion -v   # manifest valid; example bundle ingests clean
-# load-unpacked in Chrome → capture a record → fha capture --ingest --dry-run sees the bundle
 ```
 
 ---

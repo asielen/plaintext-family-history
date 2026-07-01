@@ -81,7 +81,10 @@ Summarize what changed and where; list any proposed-but-unapproved decisions; su
 ## The map
 
 ```
-SPEC.md TOOLING.md      law + tool design (read before structural work)
+SPEC.md                 the law (read before structural work)
+TOOLING*.md             tool design by concern: TOOLING.md (core),
+                        TOOLING_INGESTION.md (capture/inbox), TOOLING_INTERFACE.md (skills)
+BUILD*.md               build sequences, one per TOOLING doc (BUILD / _INGESTION / _INTERFACE)
 photos/{year}/          originals - read-only to you (except spec'd keyword writes via tools)
                         NOTE: asset roots may live OUTSIDE this folder - resolve any
                         photos/ or documents/ path through fha.yaml roots first

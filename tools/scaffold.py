@@ -134,10 +134,13 @@ _ROOT_OPERATING_DOCS = (
     'SPEC.md',
     'TOOLING.md',
     'TOOLING_INGESTION.md',
+    'TOOLING_INTERFACE.md',
     'AGENTS.md',
     'AGENTS_TOOLING.md',
     'CLAUDE.md',
     'BUILD.md',
+    'BUILD_INGESTION.md',
+    'BUILD_INTERFACE.md',
 )
 
 # Subtrees walked whole for the operating layer. `.claude/skills/` carries the

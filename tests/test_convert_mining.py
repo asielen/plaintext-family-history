@@ -1,9 +1,9 @@
-"""Tests for `fha convert-mining` (BUILD.md M7.8 - legacy interview migration).
+"""Tests for `fha convert-mining` (BUILD.md M7.5 - legacy interview migration).
 
 Copies the tests/fixtures/legacy-export/ input to a throwaway tree, exercises
 the dry-run (writes nothing) and `--apply` (mints sources/claims/person stubs,
 imports stories + questions, writes the mapping), and asserts the converted
-archive lints with no errors - the M7.8 "Done when" contract.
+archive lints with no errors - the M7.5 "Done when" contract.
 
 Run: python -m unittest tests.test_convert_mining -v   (from the repo root)
 """

@@ -1,4 +1,4 @@
-"""Tests for `fha capture --ingest` (BUILD.md M7.9, TOOLING_INGESTION §6).
+"""Tests for `fha capture --ingest` (BUILD_INGESTION.md MG2.1, TOOLING_INGESTION §6).
 
 The sweep reads staged bundles (`page.html` + optional `asset.*` + `capture.json`)
 and feeds each through `run_capture` wholesale, then parks the bundle in

@@ -18,7 +18,7 @@ boundary). The browser companion is a thinner front-end onto this same backend.
 
 Two extraction layers:
 
-  * **Site recipes** (`tools/capture_recipes/`, M7.6/M7.7) - Ancestry,
+  * **Site recipes** (`tools/capture_recipes/`, MG1.2/MG1.3) - Ancestry,
     FamilySearch, Newspapers.com, FindAGrave each know where that site keeps the
     title, date, collection, repository, image URL, and the persons it lists.
     Recipes are *data*: a module exposing `detect(html, url)` and
@@ -114,7 +114,7 @@ import yaml
 configure_utf8_stdout()
 
 # The generic fallback's source_type. SPEC §14 / _lib.SOURCE_TYPES spell the
-# web vocabulary term `website` (BUILD.md M7.5 writes the shorthand `web`); we
+# web vocabulary term `website` (BUILD_INGESTION.md MG1.1 writes the shorthand `web`); we
 # emit the controlled-vocabulary value so the staged stub processes cleanly -
 # `fha process` refuses an out-of-vocabulary source_type hint.
 _GENERIC_SOURCE_TYPE = 'website'
@@ -141,7 +141,7 @@ def _strip_site_suffix(title: str | None) -> str | None:
 
 
 # Visible-text body is a citation *basis*, not the whole page - cap it so a long
-# article doesn't bloat every stub (BUILD.md M7.5: "visible text … ~2000 chars").
+# article doesn't bloat every stub (BUILD_INGESTION.md MG1.1: "visible text … ~2000 chars").
 _BODY_CHAR_CAP = 2000
 
 # Staged-bundle `capture.json` schema version (TOOLING_INGESTION §3). Bump only on
@@ -721,7 +721,7 @@ def _read_html(asset: Path | None) -> str:
 
     The paste-fallback path pipes the page on stdin (`… | fha capture`); when no
     stdin is piped, an `--asset` that is itself the saved page is read as the
-    HTML (BUILD.md M7.5: "Read HTML from stdin or `--asset`"). A binary asset
+    HTML (BUILD_INGESTION.md MG1.1: "Read HTML from stdin or `--asset`"). A binary asset
     (an image download) yields no usable HTML - the generic recipe then works
     from `--url`/`--title` alone.
     """
