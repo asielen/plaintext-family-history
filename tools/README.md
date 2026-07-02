@@ -43,7 +43,7 @@ read the same structured result (TOOLING §1).
 | `fha relate <P-A> <P-B>` | `relate.py` | ✓ blood relationship (LCA over genetic edges: cousin/removal/lineal/aunt-uncle) + shortest social path (BFS over all edges); `--json`; structured `Result`. Requires a real index (exit 3 if absent/unreadable). ⚑ `--include-hypotheses` deferred (index derives only accepted edges) |
 | `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher |
 
-Views require a fresh `.cache/index.sqlite` (run `fha index` first). `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches. Both `.cache/index.sqlite` and `.cache/photos.sqlite` carry a `meta.schema_version` row plus `PRAGMA user_version`; missing, old, corrupt, or unreadable caches are treated as disposable and rebuilt by `fha index` / `fha photoindex`.
+Views require a fresh `.cache/index.sqlite` (run `fha index` first). The per-person timeline/sources-index/draft-queue forms skip a stub person with a plain note and exit 1 - companion views are curated-person files (SPEC §16); covered by `tests/test_views_stub_guard.py`. `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches. Both `.cache/index.sqlite` and `.cache/photos.sqlite` carry a `meta.schema_version` row plus `PRAGMA user_version`; missing, old, corrupt, or unreadable caches are treated as disposable and rebuilt by `fha index` / `fha photoindex`.
 Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.
 
 ## Implemented tools (milestone 3, in progress)
@@ -619,8 +619,9 @@ Run with `python -m unittest tests.test_scaffold -v` from the repo root.
 | `fha lint` | `lint.py` | ✓ see lint status table below |
 | `fha stubs` | `stubs.py` | ✓ scan + mint stubs |
 
-`fha lint --root example-archive` exits 1 with one expected W101 - the fictional Thomas Hartley
-has no located death record, which is intentional for a minimal fixture.
+`fha lint --root example-archive` exits 1 with the documented baseline warnings (TOOLING.md §15):
+W101 (the fictional Thomas Hartley has no located death record) and W102 (one suggested claim
+staged on the family-portrait source as review-demo material) - both intentional for the fixture.
 No E-level errors. The `example-archive/` is a demonstration fixture permitted to carry documented
 known warnings; the `tests/fixtures/` clean fixture (not yet built) must exit 0.
 

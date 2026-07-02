@@ -44,12 +44,22 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    table - or present but neither working nor marked deferred - is documentation debt that
    blocks handoff. Do not declare a tool done while any flag or code is in an undocumented
    partial state.
-7. **README review.** Before handoff, scan `README.md`, `docs/GETTING_STARTED.md`, and
-   `tools/README.md` for any reference to the changed tool's behavior, flags, or build
-   status and update anything now inaccurate. A working tool that a README still calls
-   "not yet implemented," or whose flags the getting-started guide misdescribes, is a
-   documentation bug. (The README rule from AGENTS.md spec-refinement mode binds tool-building
-   as much as spec-refinement.)
+7. **Status sweep.** Implementation status lives in more docs than the one nearest the
+   change, and it goes stale in the summaries, not the source: the nearest BUILD doc gets
+   updated while the cross-reference spots keep saying "pending." Before handoff - whenever
+   a build lands, a deferred step ships, or a decision reverses - update every statement of
+   that status in the same change. The known status-summary locations: the owning
+   `BUILD*.md`'s status tables and headers, the sibling TOOLING doc's build-status section,
+   `SPEC.md` Part IV status notes, `README.md` (the badge, "Status & roadmap", and its other
+   status sentences - "What this is not", Quick start step 3),
+   `TOOLING.md` §16/§17 summaries, `AGENTS.md`, `tools/README.md`, and any companion README
+   the change touches (e.g. `browser-companion/README.md`) - plus
+   `docs/GETTING_STARTED.md` for anything user-facing. Then grep the repo for the phrase
+   being retired - "build pending", "not yet built", "when implemented", "deferred", the
+   old schema or version constant - and fix every survivor before closing. A working tool
+   that a README still calls "not yet implemented," or whose flags the getting-started
+   guide misdescribes, is a documentation bug. (The README rule from AGENTS.md
+   spec-refinement mode binds tool-building as much as spec-refinement.)
 8. **Spec and Tooling review.** Review `SPEC.md` and `TOOLING.md` for any decision made
    during the build that they do not yet capture - the goal is that those docs alone can
    regenerate the tooling. In **tool-building** mode you do NOT edit SPEC/TOOLING directly:

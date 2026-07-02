@@ -1,12 +1,78 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-06-30",
+  "generated": "2026-07-02",
   "files": [
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "37b2d489f1b1acf83c543db63f4380f618a28c1aec0e6ed37c6d8cb48acdae96",
+      "sha256": "bcf3a3f66dd417bf601e0ad3ac9e40848b69193530f1f7d2daa2fc0b178b8497",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/_STANDARD.md",
+      "category": "operating",
+      "sha256": "6d7124115343c1b869c4ff34825422aa58bda0439449ac8d75755612e5ec7242",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/merge-identities/GAP.md",
+      "category": "operating",
+      "sha256": "ccbc8d21828dfdb620d83ac9c8850af9f0bb9ba6894e4a533e9b1c310ab8a15f",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/merge-identities/SKILL.md",
+      "category": "operating",
+      "sha256": "8b1bdb102415fe750bf391dcd7151f1c3e6215b3bb5a96743e98531dc01a57eb",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/mine-transcript/SKILL.md",
+      "category": "operating",
+      "sha256": "96b9f77eb01bfdd132436ab7852c7ac612c4b0af70c6f6666346fd3772968a47",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/photo-context/DESIGN.md",
+      "category": "operating",
+      "sha256": "70facf741389fb2dd29914c07e2c3b328fa8de21f1ba020644e6802a83c73459",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/place-research/SKILL.md",
+      "category": "operating",
+      "sha256": "c7a296e0d465c4c9f20bb9724ab44ee096d9714d3aee9cae3e2cd9a5efe73e8e",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/process-source/SKILL.md",
+      "category": "operating",
+      "sha256": "c2d38dbb1cc0a24222bc328b4ce1e71bc339796d31f512e1f133b41824f515be",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/research-next/SKILL.md",
+      "category": "operating",
+      "sha256": "d7bd67807fce4a18b478ee50c708129d0856b6e6410a1c3b1cc891bf3c3d1c06",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/review-claims/SKILL.md",
+      "category": "operating",
+      "sha256": "ba74642454e628d9b4f24790d1255f318606149ac35a40be016269a03e00f906",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/today/SKILL.md",
+      "category": "operating",
+      "sha256": "891cd74786432cd0eada2387fdb0b70d8de3bc65d32897b1ef4e2a9e038882f6",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/write-biography/SKILL.md",
+      "category": "operating",
+      "sha256": "3b87158c87a4cc1ae6540f3e29eddaf10a37599b8916affad14ab865b964b8ad",
       "spec_version": "1.2"
     },
     {
@@ -19,31 +85,31 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "f1bbc4f0a2c6921ea1ae1a0ce6701acb2f8dbef5e224add8e314bcce0b23f293",
+      "sha256": "f2e95c2faff4ab8b63dbdd6e343306f496f8732cd63450e9ef2f5527cbd15d02",
       "spec_version": "1.2"
     },
     {
       "path": "AGENTS_TOOLING.md",
       "category": "operating",
-      "sha256": "a32f856d4eae6ced16c11c82e96fadddfe48543fed04ad5d89942e0aa5a2dcc5",
+      "sha256": "9b45731fa470b0dd7f93dbc489d9e853b81ddf31f767c94b7ba4aa5bb9e0be72",
       "spec_version": "1.2"
     },
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "0cc7d3a57a2f4cfbd1da402c1d2ec18d05e9bb65c44cda3300df318f6f3af50d",
+      "sha256": "4e24486c3b2ddddbd8b1aced0eac06bbf3050ba7e2366585cb3766a240380a6e",
       "spec_version": "1.2"
     },
     {
       "path": "BUILD_INGESTION.md",
       "category": "operating",
-      "sha256": "6f4a104f34bc0f18551c601d769821e6cf06077d8647dbad6ce4f6f4dee633e8",
+      "sha256": "462c1cdfd0ad88999983140b94c8b4e99541b9e0ae5e03f8d5735d922872ec16",
       "spec_version": "1.2"
     },
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "d9592b66cdbf8c875fe77cbb6c39ef8159971d4980df458857b5022e1051ad5b",
+      "sha256": "6411c8c4061d551067e6f6e3b1528347776c5f7eeeb837ffb738f64ab26bc550",
       "spec_version": "1.2"
     },
     {
@@ -55,31 +121,31 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "a14a6d6bd55043592dc1d801871180ac62dbf7240b8f95cbc0ac87aac652819e",
+      "sha256": "3c7590b78788ad8b7356e03fb11ebd37b10e4a07f02659e51d39713bc5bda588",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "bf54c59efc380a4caf6d81a617ce848bdb227f44a52907509c2d38e936a6776d",
+      "sha256": "2c95ea154ce7e5d3a0b25aff64c07d75831f78aaad0a687a0be234bcaff98a3d",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "9c4f7c4bc34284dd383968023100a7422717c21be272a0a1e83b98ae82ff8850",
+      "sha256": "8e6d8174195f8d8f2e6829602f90bb0bd0c5a893866fbfb28f1243132f74a7ce",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "a31de13c72e338db2a727216434897ebb5e24c3b449404624311602714904bf0",
+      "sha256": "4defc070c8009ed47983acaac4d08d0e966a5f44ac4ed7ebbad9d0c7651ad2a5",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "2ff940e139d4167421eca9c82d00fd1d651cd1e1d5f45786da61e0c09b0c7e8d",
+      "sha256": "add02c52e6afaa2f920e671314222abaa6051e53855af493e5d7c822d45a320a",
       "spec_version": "1.2"
     },
     {
@@ -236,7 +302,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "263ed763ead5591cec1486c4c64258a313e1d5eb5159eba1847a5dc9c2a2129a",
+      "sha256": "a9de08bcf37080a5060b8e624374804794160f34ba3780d15664309560bf07af",
       "spec_version": "1.2"
     },
     {
@@ -476,7 +542,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "5b2ac160b21b53c185d9e009c94be9c7826d297e6c02035bb7449b586febda96",
+      "sha256": "75cb910ea83ac4cb982d4231418d3ac9e1188bd07c019bf3a6646769900448b6",
       "spec_version": "1.2"
     },
     {

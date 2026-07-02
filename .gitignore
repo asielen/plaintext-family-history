@@ -38,9 +38,12 @@ dist/
 build/
 *.egg-info/
 
-# Local Claude Code state - machine-specific permissions, never shared.
+# Local Claude Code state - permission grants are PERSONAL, never shared.
+# A committed settings.json would pre-approve commands for everyone who clones
+# this public repo; each user must approve their own permissions instead.
 # (Tracked .claude/ content such as .claude/skills/ stays committed.)
 .claude/settings.local.json
+.claude/settings.json
 
 # OS / editor noise
 .DS_Store

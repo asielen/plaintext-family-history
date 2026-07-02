@@ -368,7 +368,7 @@ Plus an informational **needs-sourcing backlog** (not a finding, never moves the
 
 **Done when:**
 ```sh
-fha lint --root example-archive              # exits 1; exactly one W101
+fha lint --root example-archive              # exits 1; baseline W101 + W102 (TOOLING §15)
 fha lint --root tests/fixtures/broken-W103  # fires W103
 # repeat for each W code that has a broken fixture
 ```
@@ -501,7 +501,7 @@ write: `All accepted claims are cited in the profile.`
 fha views timeline P-de957bcda1 --root example-archive   # file generated; GENERATED header
 fha views sources-index --all-curated --couple-folders --root example-archive
 fha views draft-queue P-de957bcda1 --root example-archive  # non-empty (profile is sparse)
-fha lint --root example-archive   # still exits 1 W101; W105 does not fire on GENERATED files
+fha lint --root example-archive   # still exits 1 (baseline W101 + W102); W105 does not fire on GENERATED files
 ```
 
 ---
@@ -583,7 +583,7 @@ fha views tree P-de957bcda1 --mode descendants --format json --root example-arch
 # valid JSON; vitals populated; edges carry claim_id
 fha views tree P-de957bcda1 --mode ancestors --format dot --root example-archive
 fha views clean --root example-archive --dry-run    # lists GENERATED files
-fha views refresh --root example-archive            # regenerates all; lint still exits 1 W101
+fha views refresh --root example-archive            # regenerates all; lint still exits 1 (baseline W101 + W102)
 ```
 
 ---
@@ -681,7 +681,7 @@ fha id check P-de957bcda1 --root example-archive    # same output as fha find P-
 
 ---
 
-## Layer 3 - Photo catalog (Milestone 3 - ◐ in progress)
+## Layer 3 - Photo catalog (Milestone 3 - ✓ shipped)
 
 Depends on: index.
 Unlocks: `fha find --text` photo captions (D7), photo gathering in `fha packet`, triage
@@ -1615,8 +1615,10 @@ fha working-copy off --root my-copy  # WARNS + confirms (are the originals reall
 
 ## Testing invariants (all PRs)
 
-Every PR must leave `fha lint --root example-archive` exiting 1 with exactly the documented
-W101 (Thomas Hartley death record absent - intentional). No new errors or warnings may appear.
+Every PR must leave `fha lint --root example-archive` exiting 1 with only the documented
+baseline warnings (TOOLING.md §15 - currently W101, Thomas Hartley's intentionally absent death
+record, and W102, one suggested claim staged as review-demo material). No new errors or warnings
+may appear.
 Broken fixtures in `tests/fixtures/broken-{CODE}/` must continue to fire their targeted code.
 Any new lint code being implemented in that PR requires a new broken fixture for it.
 
