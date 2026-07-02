@@ -82,6 +82,10 @@ Thomas Hartley and Thos. Hartley get entered twice?"
      on any claim referencing a merged person, and disputed/rejected claims are kept, never deleted — so
      this is required, not optional cleanup: a claim left pointing at `P-old` both trips lint **E016** *and*
      (for accepted claims) silently drops out of the survivor's timeline/draft-queue views;
+   - **relink `relationships:` edges** — any *other* profile's `relationships:` entry that names `P-old`
+     (a sourced edge carrying `claim:`/`source:`) must be repointed to `P-survivor`; left stale it trips
+     lint **W115** (the entry no longer reconciles with its backing claim) and the human-facing
+     relationship section keeps naming the tombstoned record;
    - **relink** the remaining direct references you can reach (frontmatter `people:`, prose `[[P-old]]`);
      only loose *prose* mentions you don't reach may resolve *through* `merged_into` and appear on lint's
      W107 gradual-cleanup list — that (prose, never a claim) is expected, not an error.

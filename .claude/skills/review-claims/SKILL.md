@@ -4,7 +4,7 @@ description: >
   Run when the human says "review the census claims" / "review this source" / "let's go through what you
   drafted", or right after `process-source` or `mine-transcript` hands off. Walks one source's `suggested`
   claims, shows each in plain language with its evidence context, captures the human's accept/dispute/edit
-  decision, and writes it with `fha claim`. Closes with an incremental reindex, an `fha xref` pass, a
+  decision, and writes it with `fha claim`. Closes with a reindex, an `fha xref` pass, a
   timeline/draft-queue refresh for the people touched, and `fha lint`. This is the human gate: it never
   accepts a claim on the human's behalf.
 ---
@@ -88,7 +88,12 @@ source's claims are reviewed together because they share evidence.
 
 5. **Close out the batch.**
    ```
-   fha index --source <S-id>     # fold the new statuses into the query surface (sub-second)
+   fha index                      # full rebuild — if this pass minted new people/places (a
+                                  # process-source / mine-transcript hand-off usually does), `--source`
+                                  # reindexes only the source's claims, NOT new person/place records or
+                                  # their aliases (index.py upsert_source), so xref / find --related would
+                                  # run on stale person data. Reserve `fha index --source <S-id>` for a
+                                  # status-only pass that created no people or places.
    fha xref                       # surface new corroboration / contradiction across sources
    ```
    If `fha xref` proposes a link, present it plainly ("this now agrees with the 1871 marriage notice —
@@ -139,7 +144,7 @@ source's claims are reviewed together because they share evidence.
 ## Done when
 
 - Walking a source's suggested claims in a session on `example-archive` produces **one `fha claim` write
-  per decision**, an incremental `fha index --source`, an `fha xref` pass, a `fha views timeline` +
+  per decision**, a reindex (full `fha index` when the pass minted new people, else `--source`), an `fha xref` pass, a `fha views timeline` +
   `draft-queue` refresh for each curated person touched, and a final `fha lint`.
 - **No** claim reaches `accepted` without an explicit human decision in the transcript; every accepted
   claim carries a `reviewed:` date (post-run `fha lint` shows no **E006**).

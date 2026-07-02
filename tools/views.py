@@ -313,6 +313,34 @@ def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
     return [r['id'] for r in rows]
 
 
+def _view_eligible_curated_ids(
+    conn: sqlite3.Connection, archive_root: Path
+) -> list[str]:
+    """Curated person ids whose profile lives in a maintainable location.
+
+    The bulk view paths (`--all-curated`, `views refresh`) generate a companion
+    file *beside each profile* (`_out_path_for`). A curated-tier record still
+    parked under people/stubs/ would get a GENERATED file written into stubs/ -
+    the exact case `_skip_stub_person` refuses on the per-person path - so it is
+    filtered out here too (with a one-line note), keeping the tier-and-location
+    rule uniform across every generation path.
+    """
+    eligible: list[str] = []
+    for pid in _curated_person_ids(conn):
+        profile_p = _profile_path_for(conn, pid, archive_root)
+        if profile_p is not None and profile_p.parent.name.lower() == 'stubs':
+            row = conn.execute('SELECT name FROM persons WHERE id = ?', (pid,)).fetchone()
+            name = row['name'] if row else pid
+            print(
+                f"  skipped {pid} ({name}): curated record still under people/stubs/ - "
+                f"promote it into its couple folder to generate its companion views",
+                file=sys.stderr,
+            )
+            continue
+        eligible.append(pid)
+    return eligible
+
+
 def _skip_stub_person(
     conn: sqlite3.Connection, pid: str, view_name: str, archive_root: Path
 ) -> bool:
@@ -1979,7 +2007,7 @@ def run_timeline(
     changed: list[str] = []
     try:
         if all_curated:
-            person_ids = _curated_person_ids(conn)
+            person_ids = _view_eligible_curated_ids(conn, archive_root)
             if not person_ids:
                 print('No curated persons found in index.')
                 return _views_result(EXIT_CLEAN)
@@ -2052,7 +2080,7 @@ def run_sources_index(
             count = 0
             if all_curated:
                 # Per-person files for all curated persons
-                for pid in _curated_person_ids(conn):
+                for pid in _view_eligible_curated_ids(conn, archive_root):
                     out = _generate_sources_index_person(conn, pid, archive_root)
                     if out:
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
@@ -2124,7 +2152,7 @@ def run_draft_queue(
     changed: list[str] = []
     try:
         if all_curated:
-            person_ids = _curated_person_ids(conn)
+            person_ids = _view_eligible_curated_ids(conn, archive_root)
             if not person_ids:
                 print('No curated persons found in index.')
                 return _views_result(EXIT_CLEAN)
@@ -2243,7 +2271,7 @@ def run_refresh(archive_root: Path) -> Result:
 
     changed: list[str] = []
     try:
-        person_ids = _curated_person_ids(conn)
+        person_ids = _view_eligible_curated_ids(conn, archive_root)
         if not person_ids:
             print('No curated persons found in index.')
             return _views_result(EXIT_CLEAN)

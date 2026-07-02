@@ -82,6 +82,23 @@ class StubGuardTests(unittest.TestCase):
         self.assertEqual(res.data.get('count'), 1)
         self.assertTrue(res.changed)
 
+    def test_bulk_refresh_skips_curated_record_in_stubs(self) -> None:
+        # The bulk paths (refresh / --all-curated) must apply the same location
+        # filter as the per-person guard, or a curated record parked in stubs/
+        # gets a GENERATED companion written beside it.
+        res = views.run_refresh(self.root)
+        self.assertTrue(res.changed)  # CUR (in a couple folder) still generated
+        self.assertEqual(
+            self._stub_dir_names(),
+            [f'hartley__promoted_{PROMOTED}.md', f'hartley__stub_{STUB}.md'])
+
+    def test_all_curated_skips_curated_record_in_stubs(self) -> None:
+        res = views.run_timeline(self.root, all_curated=True)
+        self.assertTrue(res.changed)
+        self.assertEqual(
+            self._stub_dir_names(),
+            [f'hartley__promoted_{PROMOTED}.md', f'hartley__stub_{STUB}.md'])
+
 
 if __name__ == '__main__':
     unittest.main()

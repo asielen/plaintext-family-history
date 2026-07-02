@@ -107,8 +107,8 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 ### Stage C — hand off to the gate
 
 8. **Hand off to `review-claims`** for this source. That skill walks each drafted claim with the human,
-   captures accept/dispute/edit, and does the close-out (`fha index --source`, `fha xref`, a
-   timeline/draft-queue refresh for the people touched, `fha lint`).
+   captures accept/dispute/edit, and does the close-out (`fha index` — full, since intake usually minted
+   new person stubs — `fha xref`, a timeline/draft-queue refresh for the people touched, `fha lint`).
    Don't duplicate that work here — the reindex/xref/views/lint belong to the review close-out.
 
 ## Guardrails

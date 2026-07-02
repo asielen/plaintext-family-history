@@ -55,9 +55,11 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    fha find "Ethel"                  # resolve the name to a P-id
    fha find --related <P-id>         # disambiguate when a name is shared
    ```
-   Ambiguous name → candidate list for the human; genuinely new person → mint a stub on confirmation
-   (`fha stubs`, or `fha id mint P` when adding one by hand). Never write a silent guess as a claim's
-   `persons:`.
+   Ambiguous name → candidate list for the human; genuinely new person → create the stub *record* on
+   confirmation with `fha stubs --from-names "Name"` (dry-run, then apply) — this mints the P-id **and**
+   the `people/stubs/` record together, so a drafted claim's `persons:` never dangles. A bare
+   `fha id mint P` only returns an ID with no record, so a claim using it would trip lint **E005**. Never
+   write a silent guess as a claim's `persons:`.
 
 4. **Route narrative to `## Stories`; leave the rest in the transcript.** Story-shaped passages (an
    anecdote about the railroad job, a description of the family home) go to the source's `## Stories`
@@ -79,7 +81,9 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    it twice back-to-back is wasted work. Only when the session ends *without* an immediate review do you
    close out yourself:
    ```
-   fha index --source <S-id>
+   fha index                     # full rebuild — this pass may have minted new person stubs, and
+                                 # `fha index --source <S-id>` reindexes only the source's claims, not
+                                 # new person records or their aliases (index.py upsert_source)
    fha lint
    ```
 

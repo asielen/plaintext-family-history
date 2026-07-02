@@ -84,6 +84,12 @@ to one person.
    This turns `<!-- AI-DRAFT … -->` into `<!-- AI-ACCEPTED … (accepted 2026-07-01) -->` — the original
    date/model stay in the marker, so provenance is preserved. **You never hand-edit the marker.** If he
    wants changes first, revise the AI-DRAFT prose and re-offer; don't flip until he says yes.
+   Once accepted, reindex and regenerate this person's draft queue — the profile now cites those sources,
+   so the pre-edit draft-queue file otherwise keeps showing them as an uncited writing backlog:
+   ```
+   fha index
+   fha views draft-queue <P-id>
+   ```
 
 7. **Lint.**
    ```
