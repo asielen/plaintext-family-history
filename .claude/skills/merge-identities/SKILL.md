@@ -75,7 +75,12 @@ Thomas Hartley and Thos. Hartley get entered twice?"
      `merged_date: <today>`;
    - **rename the file** with the tombstone prefix — `MERGED-INTO-P-survivor__<original-filename>` (e.g.
      `MERGED-INTO-P-de957bcda1__hartley__thomas_P-old.md`) — the file **persists forever**, never deleted;
-   - **fold** the merged record's `name_variants:` and external IDs into the survivor's record;
+   - **fold** the merged record's `name_variants:`, external IDs, **and its own `relationships:` block**
+     into the survivor's record — repoint each folded edge to the survivor and **remove it from the
+     tombstone's** frontmatter. Lint still reconciles the tombstone (`_check_relationship_reconciliation`
+     has no `status: merged` filter), so a sourced `relationships:` entry left on it — backed by a claim you
+     just relinked to `P-survivor` — trips **W115**; and the survivor's opted-in block must *list* the
+     folded kin edges, or the reverse reconciliation check trips W115 on the survivor;
    - **relink every claim that names the merged person** — for each claim, *whatever its status*
      (`suggested`, `accepted`, `disputed`, `rejected`, `superseded`, `needs-review`), whose
      `persons:`/`roles:` includes `P-old`, change it to `P-survivor`. E016 has no status filter — it fires
@@ -105,8 +110,9 @@ Thomas Hartley and Thos. Hartley get entered twice?"
    fha index
    fha lint
    ```
-   Confirm **no new E016** (no claim references the merged person directly as a fresh write) and **no new
-   W107 regression** beyond the expected gradual-cleanup list. Report plainly ("merged the duplicate stub
+   Confirm **no new E016** (no claim references the merged person directly as a fresh write), **no new
+   W107 regression** beyond the expected gradual-cleanup list, and **no new W115** (a `relationships:`
+   entry stranded on the tombstone, or a folded kin edge missing from the survivor's block). Report plainly ("merged the duplicate stub
    into Thomas's record; his file is now the one home, the old one is kept as a tombstone, and nothing new
    points at the dead ID").
 
@@ -117,12 +123,12 @@ Thomas Hartley and Thos. Hartley get entered twice?"
 - Evidence for **and against** is laid out before any proposal.
 - The merge write follows SPEC §9 exactly (tombstone rename, four fields, fold variants) — interim
   hand-edit only, per [`GAP.md`](GAP.md); no invented mechanics.
-- Post-merge lint is clean of **new** E016/W107; merged files are renamed-and-kept, never deleted.
+- Post-merge lint is clean of **new** E016/W107/W115; merged files are renamed-and-kept, never deleted.
 
 ## Done when
 
 - A merge/split proposal in a session on `example-archive` lays out the neighborhood evidence and **waits
   for explicit human confirmation** before any write.
-- Post-merge, `fha lint --root example-archive` shows no new **E016/W107** and still exits 1 with only
+- Post-merge, `fha lint --root example-archive` shows no new **E016/W107/W115** and still exits 1 with only
   the documented baseline warnings (`_STANDARD.md` §9).
 - No `merged_into` is set without an explicit human decision in the transcript.
