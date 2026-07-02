@@ -681,7 +681,7 @@ fha id check P-de957bcda1 --root example-archive    # same output as fha find P-
 
 ---
 
-## Layer 3 - Photo catalog (Milestone 3 - ◐ in progress)
+## Layer 3 - Photo catalog (Milestone 3 - ✓ shipped)
 
 Depends on: index.
 Unlocks: `fha find --text` photo captions (D7), photo gathering in `fha packet`, triage
@@ -1615,8 +1615,10 @@ fha working-copy off --root my-copy  # WARNS + confirms (are the originals reall
 
 ## Testing invariants (all PRs)
 
-Every PR must leave `fha lint --root example-archive` exiting 1 with exactly the documented
-W101 (Thomas Hartley death record absent - intentional). No new errors or warnings may appear.
+Every PR must leave `fha lint --root example-archive` exiting 1 with only the documented
+baseline warnings (TOOLING.md §15 - currently W101, Thomas Hartley's intentionally absent death
+record, and W102, one suggested claim staged as review-demo material). No new errors or warnings
+may appear.
 Broken fixtures in `tests/fixtures/broken-{CODE}/` must continue to fire their targeted code.
 Any new lint code being implemented in that PR requires a new broken fixture for it.
 

@@ -167,7 +167,7 @@ src/
   lib/
     capture-json.js    builds capture.json (schema 2, the assets[] list) + name
     bundle.js          writes the bundle via chrome.downloads (the §5.1 path)
-    native-host.js     optional seamless path (§5.7), scaffolded, off by default
+    native-host.js     optional seamless path (§5.7), shipped, opt-in (off by default)
 test-bundle/           an example "both" bundle in the exact output shape (round-trip test)
 ```
 
@@ -183,9 +183,10 @@ An MV3 extension cannot write to an arbitrary path, its only file-writing
 affordance is `chrome.downloads.download()`, which writes under the browser's
 Downloads directory. So the default path stages to `Downloads/fha-inbox/…` and
 you run `fha capture --ingest` to do the one sanctioned *move* into the archive.
-The optional native-messaging host (§5.7) removes the Downloads detour, but it is
-v2, *designed, not built* on the Python side, so it is off by default and the
-extension falls back to the staging path.
+The optional native-messaging host (§5.7) removes the Downloads detour: the Python
+side ships (`fha capture --host` / `--install-host`), and the extension side is
+opt-in — OFF by default behind the "file straight into my archive" toggle, falling
+back to the staging path when no host answers.
 
 ---
 

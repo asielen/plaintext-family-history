@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: nothing built yet.** The `.claude/skills/` directory holds only a README placeholder. Every milestone below is **pending**. This is deliberate - the core tool suite (BUILD.md, M1-M10) and the ingestion on-ramp (BUILD_INGESTION.md) are shipped, so every `fha` command a skill needs already exists; the interface layer can now be built on a stable foundation.
+**Status: session spine + drafting/inference + one frontier skill authored (I1-I2 + place-research shipped; merge-identities shipped with an interim enactment; photo-context blocked on a core gap).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract), `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, and `merge-identities` SKILL.md files, plus a `photo-context/DESIGN.md`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps** (see MI3.1 and MI4).
 
 ---
 
@@ -21,7 +21,7 @@ This file is the build guide for the **interface layer** - the `.claude/skills/`
 
 ---
 
-## Layer I1 - The session spine (Milestone I1 - pending)
+## Layer I1 - The session spine (Milestone I1 - authored; session check pending)
 
 The three skills a genealogist touches every session: open the workbench, process new material, review what was drafted.
 
@@ -30,6 +30,8 @@ The three skills a genealogist touches every session: open the workbench, proces
 ### MI1.1 - `today` skill (`/today`)
 
 **One PR.** `.claude/skills/today/SKILL.md` + a `/today` slash wrapper.
+
+**Status: authored** (`.claude/skills/today/SKILL.md`; the folder name *is* the `/today` wrapper - the harness surfaces the skill as `/today`). Reference skill for `_STANDARD.md`. Session check pending.
 
 Run `fha report`, then narrate it **discoveries-first** (the report is a research narrative before a chore list), and offer to start the top item - most often a `review-claims` session on the oldest `suggested` backlog, or processing the inbox. The skill reads the report; it does not recompute it. It writes nothing on its own except, on the human's say-so, a `fha confirm discovery` entry for a confirmed win.
 
@@ -45,14 +47,16 @@ Run `fha report`, then narrate it **discoveries-first** (the report is a researc
 
 **One PR.** `.claude/skills/review-claims/SKILL.md`.
 
-Stage C of the pipeline. Walk one source's `suggested` backlog (guided one-by-one, or open the source file for self-serve skimming - the human's choice). For each claim, show the claim plus its `anchor:` context; capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept). Finish with incremental reindex (`fha index --source`), `fha xref` to surface new corroboration/contradiction, and `fha lint`.
+**Status: authored** (`.claude/skills/review-claims/SKILL.md`). The reused accept-gate interaction; session check pending.
 
-**Orchestrates:** `fha claim`, `fha confirm xref`, `fha index --source`, `fha xref`, `fha lint`.
+Stage C of the pipeline. Walk one source's `suggested` backlog (guided one-by-one, or open the source file for self-serve skimming - the human's choice). For each claim, show the claim plus its `anchor:` context; capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept). Finish with incremental reindex (`fha index --source`), `fha xref` to surface new corroboration/contradiction, a `fha views timeline`/`draft-queue` refresh for each curated person touched (stubs skipped; `views brackets` checked when a relationship claim was accepted), and `fha lint`.
+
+**Orchestrates:** `fha claim`, `fha confirm xref`, `fha index --source`, `fha xref`, `fha views timeline`/`draft-queue` (touched persons), `fha lint`.
 
 **Guardrails:** never moves a claim to `accepted` without the human; `accepted` always carries `reviewed:` (E006). The skill presents judgment; the human gates.
 
 **Done when:**
-- Reviewing a source's suggested claims in a session results in `fha claim` writes for each decision, a clean incremental reindex, an `fha xref` pass, and `fha lint` exiting on its real findings.
+- Reviewing a source's suggested claims in a session results in `fha claim` writes for each decision, a clean incremental reindex, an `fha xref` pass, a timeline/draft-queue refresh for each curated person touched, and `fha lint` exiting on its real findings.
 - No claim reaches `accepted` without an explicit human decision in the transcript.
 
 ---
@@ -61,9 +65,11 @@ Stage C of the pipeline. Walk one source's `suggested` backlog (guided one-by-on
 
 **One PR.** `.claude/skills/process-source/SKILL.md`. Depends on MI1.2 (hands off to it).
 
-The pipeline driver. If the inbox item is a **source stub** (`*.notes.md` sidecar or a bundle folder, SPEC §12.1), its frontmatter + notes seed Stage A (pre-filling §14 frontmatter) and its parsed-person/vital hints seed Stage B's draft; otherwise Stage A starts from the bare file. Stage A is `fha process`; Stage B is the AI draft (read the file incl. vision, resolve names/places against the index with candidate proposals, draft `suggested` claims with `anchor:`s, pull `## Stories`); then hand off to `review-claims` for Stage C; end with incremental reindex + `fha xref`. The stub is **consumed** - promoted into the source record, not left behind. Must handle loosely-written notes gracefully (AGENTS.md): extract what it can, fold the rest into `## Notes`, never stall on imperfect prose.
+**Status: authored** (`.claude/skills/process-source/SKILL.md`; hands off to the shipped `review-claims`). Session check pending.
 
-**Orchestrates:** `fha process`, `fha id mint` (via process), `fha stubs` (unresolved names), `fha index --source`, `fha xref`, then `review-claims`.
+The pipeline driver. If the inbox item is a **source stub** (`*.notes.md` sidecar or a bundle folder, SPEC §12.1), its frontmatter + notes seed Stage A (pre-filling §14 frontmatter) and its parsed-person/vital hints seed Stage B's draft; otherwise Stage A starts from the bare file. Stage A is `fha process`; Stage B is the AI draft (read the file incl. vision, resolve names/places against the index with candidate proposals, draft `suggested` claims with `anchor:`s, pull `## Stories`); then hand off to `review-claims` for Stage C, whose close-out (reindex, xref, view refresh, lint) finishes the pipeline. The stub is **consumed** - promoted into the source record, not left behind. Must handle loosely-written notes gracefully (AGENTS.md): extract what it can, fold the rest into `## Notes`, never stall on imperfect prose.
+
+**Orchestrates:** `fha process`, `fha id mint` (via process), `fha stubs` (unresolved names), then `review-claims` (whose close-out owns the reindex/xref/views/lint).
 
 **Done when:**
 - Processing an inbox stub in a session yields a real `sources/…` record with `suggested` claims + anchors, the stub consumed, the AI pass recorded in `## AI Passes`, and a hand-off into `review-claims`.
@@ -71,7 +77,7 @@ The pipeline driver. If the inbox item is a **source stub** (`*.notes.md` sideca
 
 ---
 
-## Layer I2 - Drafting & inference (Milestone I2 - pending)
+## Layer I2 - Drafting & inference (Milestone I2 - authored; session check pending)
 
 The skills invoked by name when the human wants prose written or leads found.
 
@@ -80,6 +86,8 @@ The skills invoked by name when the human wants prose written or leads found.
 ### MI2.1 - `mine-transcript` skill
 
 **One PR.** `.claude/skills/mine-transcript/SKILL.md`. **Never runs unrequested.**
+
+**Status: authored** (`.claude/skills/mine-transcript/SKILL.md`; invoked-only). Session check pending.
 
 The invoked extraction pass over a transcript: selective claim drafting (`suggested` + `anchor:` - substantive assertions only), name→P-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), narrative chunks to `## Stories`, the rest left in the transcript (it is preserved and searchable; extraction is indexing, not preservation). Record the pass in the source's `## AI Passes` block (model, date, task).
 
@@ -95,6 +103,8 @@ The invoked extraction pass over a transcript: selective claim drafting (`sugges
 
 **One PR.** `.claude/skills/write-biography/SKILL.md`.
 
+**Status: authored** (`.claude/skills/write-biography/SKILL.md`). Session check pending.
+
 Drafting rules for profiles: facts only from `accepted` claims; cite every factual sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; `[[P-…]]`/`[[S-…]]` links only from verified IDs. Consumes the `fha views draft-queue` backlog (uncited accepted claims). Draft prose is written inside `<!-- AI-DRAFT … -->` markers; on human acceptance, `fha confirm draft <P-id>` flips the marker to `<!-- AI-ACCEPTED … -->` (provenance preserved).
 
 **Orchestrates:** `fha views draft-queue`, `fha find` (verify IDs), `fha confirm draft`.
@@ -109,6 +119,8 @@ Drafting rules for profiles: facts only from `accepted` claims; cite every factu
 
 **One PR.** `.claude/skills/research-next/SKILL.md`.
 
+**Status: authored** (`.claude/skills/research-next/SKILL.md`). Session check pending.
+
 Inference and steering. **Checks the research log FIRST** - never proposes a search already logged unless the nil has aged past the re-run horizon (default 18 months). Combines open questions, vitals gaps, and open hypotheses with historical context (which record sets exist for the time/place, where they are held, what era events imply) into concrete research leads. May draft hypotheses (`origin: agent`) into research files - leads and hypotheses, never claims. Emits plan-shaped output whose executed searches are logged back to the search log.
 
 **Orchestrates:** `fha report` / index queries (gaps, questions, hypotheses), the search-log surface, `fha lint`.
@@ -119,7 +131,7 @@ Inference and steering. **Checks the research log FIRST** - never proposes a sea
 
 ---
 
-## Layer I3 - Frontier-tier skills (Milestone I3 - pending)
+## Layer I3 - Frontier-tier skills (Milestone I3 - authored; MI3.1 has an interim enactment + core gap)
 
 Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (TOOLING_INTERFACE.md §1).
 
@@ -128,6 +140,8 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 ### MI3.1 - `merge-identities` skill
 
 **One PR.** `.claude/skills/merge-identities/SKILL.md`.
+
+**Status: authored, with an interim enactment path** (`.claude/skills/merge-identities/SKILL.md`). The judgment half - pull both neighborhoods, lay out the evidence, propose, wait for human confirmation - is fully on shipped tools. **Core gap surfaced:** SPEC §9 defines the merge write but **no `fha` verb performs it** (`fha confirm` has no `merge` verb). Per the owner's decision, the skill enacts a human-confirmed merge by a careful SPEC §9 hand-edit **for now**, and `.claude/skills/merge-identities/GAP.md` tracks the wanted `fha confirm merge` verb that should replace it (a BUILD.md core PR). Session check pending.
 
 "Same person" / "two people" judgment. Read the candidate neighborhood (`fha find --related`, co-occurrence signals); propose a merge or a split with the evidence laid out; the human confirms. The mechanical write (setting `merged_into`, relinking) is the deterministic tool's job - the skill never silently merges. A merged person is never directly referenced again (lint E016/W107 enforce this).
 
@@ -142,6 +156,8 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 **One PR.** `.claude/skills/place-research/SKILL.md`.
 
+**Status: authored** (`.claude/skills/place-research/SKILL.md`; registry writes go through the shipped `fha confirm place`). Session check pending.
+
 "Fill in this place's history." Loose citations are acceptable (place context is narrative scaffolding, not vital fact). Draft dated `history:` entries and place notes, link `[[L-…]]`, and propose registry entries for `fha confirm place` to write. Never edits `places.yaml` coordinates without human confirmation (AGENTS.md).
 
 **Orchestrates:** `fha find --related <L-id>`, `fha places candidates`, `fha confirm place`.
@@ -151,13 +167,23 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 ---
 
-## Layer I4 - Skill backlog (Milestone I4 - not yet designed)
+## Layer I4 - Skill backlog (Milestone I4 - designed, BLOCKED on a core PR)
 
-Ideas carried from TOOLING_INTERFACE.md §2.3 - sketched, not specified. Do not build until designed.
+Ideas carried from TOOLING_INTERFACE.md §2.3. `photo-context` now has a settled design; it is **blocked**,
+not undesigned - it needs a core tool that does not exist yet.
 
-| Skill | Sketch |
-|---|---|
-| `photo-context` | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - captions get smarter as the archive grows. Writes marked as AI (SPEC §20); operates through `fha photoindex` and exiftool-via-tool, never bulk-reading the photos tree. |
+| Skill | Status | Sketch |
+|---|---|---|
+| `photo-context` | **designed; blocked** | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - captions get smarter as the archive grows. Writes marked as AI (SPEC §20); operates through `fha photoindex` and exiftool-via-tool, never bulk-reading the photos tree. |
+
+**Design + gap:** `.claude/skills/photo-context/DESIGN.md` settles the trigger (invoked-only, one photo or a
+small batch), inputs (`photoindex find`, `photo_people`, `fha relate`, claim/place context), and the
+provenance rule (AI-marked, human caption preserved). It **confirms a core-tool gap**: no `fha` verb writes
+a photo's `UserComment`/AI summary - `fha photoindex tag-person` writes bare `P-id`/`SOURCE:` keywords only.
+Per `_STANDARD.md` §6, the SKILL.md is **not** written; the step blocks on a BUILD.md core PR (a proposed
+`fha photoindex set-summary` verb - AI-marked write, preserves human caption, `--dry-run`, working-copy-aware).
+SPEC §20 already permits the write, so no SPEC amendment is needed - only the tool. When it ships, write
+`photo-context/SKILL.md` against the design and flip this to shipped.
 
 ---
 
@@ -169,4 +195,4 @@ There is no automated test harness for SKILL.md prose - skills are verified by s
 2. Every AI pass is recorded in the source's `## AI Passes` block.
 3. The skill degrades gracefully on messy input (loose dates, informal names) - it infers or asks one plain question, never hard-refuses (AGENTS.md "Who you serve").
 4. The skill calls deterministic `fha` tools for everything a tool already owns; it adds only judgment.
-5. `fha lint --root example-archive` still exits 1 with exactly the documented W101 after the skill runs - no new errors or warnings from anything the skill wrote.
+5. `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9, mirroring TOOLING.md §15) after the skill runs - no new errors or warnings from anything the skill wrote.

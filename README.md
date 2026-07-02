@@ -2,7 +2,7 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
-![status](https://img.shields.io/badge/status-milestones_1--9_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestones_1--10_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
@@ -14,6 +14,7 @@ Delete every layer above and the archive still works, the way the drawer still w
 | You are… | Start here |
 |---|---|
 | A genealogist who wants to use this system | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) |
+| A genealogist who wants to start by hand with plain files and no tools | [`quickstart-template/`](quickstart-template/) (blank starter kit); see [`quickstart-example/`](quickstart-example/) for a filled-in worked example |
 | A genealogist who got a zip and doesn't use git/GitHub | [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) |
 | Someone the owner sent documents to | [`docs/CONTRIBUTING_SOURCES.md`](docs/CONTRIBUTING_SOURCES.md) |
 | A developer building or extending the tools | [`BUILD.md`](BUILD.md) then [`TOOLING.md`](TOOLING.md) (core); the capture on-ramp is [`BUILD_INGESTION.md`](BUILD_INGESTION.md)/[`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); the workbench skills are [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md)/[`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) |
@@ -23,7 +24,7 @@ Delete every layer above and the archive still works, the way the drawer still w
 
 > NOTE: **This is a specification and scaffold, not finished software.** 
 
-It is the blueprint for a simple future proof system for family research. The goal of this repo is to establish simple standards that can be maintained with or without tooling. It also provides the spec to create tooling from scratch if you so wish and sample tools you can you use to get you started. 
+It is the blueprint for a simple, future-proof system for family research. The goal of this repo is to establish simple standards that can be maintained with or without tooling. It also provides the spec to recreate the tooling from scratch if you wish, plus sample tools to get you started. 
 
 ## Repo, tools, and your archive
 
@@ -84,7 +85,7 @@ The spec is written so that all of that tooling can be *regenerated* from the do
 
 ## What this is not
 
-- **Not a finished app.** Milestones 1-9 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`), the static-site generator (`fha site`), and the installer/update tooling (`fha install`, `fha update-tools`).
+- **Not a finished app.** Milestones 1-10 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`), the static-site generator (`fha site`), the installer/update tooling (`fha install`, `fha update-tools`), and working-copy mode (`fha working-copy`).
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.
@@ -127,6 +128,8 @@ plaintext-family-history/
 │   └── FAQ.md
 ├── archive-template/    ← skeleton + copy-paste record templates (+ fha.yaml) to start your own (private) archive
 ├── example-archive/     ← a small, fully fictional worked example (+ its own fha.yaml)
+├── quickstart-template/ ← blank by-hand starter kit — plain files, no tools required, open in any text editor
+├── quickstart-example/  ← filled-in fictional worked example of quickstart-template/ (the Rivera/Lee family)
 ├── tools/               ← the generic fha command suite (see tools/README.md)
 ├── tests/               ← automated tests and fixtures for the tools
 ├── PRIVACY.md           ← example-data policy
@@ -139,7 +142,7 @@ plaintext-family-history/
 
 1. **Clone this repo** and read `SPEC.md` end to end. It is the contract; everything else serves it.
 2. **Open the folder in your agent.** It will read `CLAUDE.md` → `AGENTS.md` and know the rules before you say anything.
-3. **Use or extend the tools.** Milestones 1-9 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
+3. **Use or extend the tools.** Milestones 1-10 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
 4. **Start your own archive.** Copy the structure, drop your first scan or note into `inbox/`, and ask the agent to process it.
 
 See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthrough.
@@ -167,10 +170,10 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` - milestones 1-9 complete.**
+**Current: `spec v1.2` - milestones 1-10 complete.**
 
-Everything through the intake pipeline, the static-site generator, and the
-installer/update tooling is
+Everything through the intake pipeline, the static-site generator, the
+installer/update tooling, and working-copy mode is
 implemented and runs cleanly on the example archive: the linting/indexing
 substrate, the view generators and universal locator, the photo catalog, the
 candidate-finding tools (contradiction/corroboration detection, person and
@@ -179,8 +182,8 @@ deterministic review write-backs (`fha claim` for claim status, `fha confirm`
 for the detectors' confirm/dismiss), the
 `fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export,
 the milestone 7 intake tools (`fha process`, `fha capture`, `fha convert-mining`),
-the milestone 8 static-site generator (`fha site`), and the milestone 9
-scaffolding tools (`fha install`/`fha update-tools`). See `BUILD.md` for the detailed
+the milestone 8 static-site generator (`fha site`), the milestone 9
+scaffolding tools (`fha install`/`fha update-tools`), and the milestone 10 working-copy mode (`fha working-copy`). See `BUILD.md` for the detailed
 milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)

@@ -313,6 +313,29 @@ def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
     return [r['id'] for r in rows]
 
 
+def _skip_stub_person(conn: sqlite3.Connection, pid: str, view_name: str) -> bool:
+    """True when pid resolves to a non-curated (stub) person, with a plain note.
+
+    Companion views (timeline, sources-index, draft-queue) are curated-person
+    files (SPEC §16); generating one for a stub would drop a GENERATED file into
+    people/stubs/ that `views refresh` never maintains. The per-person paths call
+    this guard so the curated-only rule is enforced here, not remembered by every
+    caller. An unknown pid returns False - the generator's own "no profile found"
+    warning covers that case.
+    """
+    row = conn.execute('SELECT tier, name FROM persons WHERE id = ?', (pid,)).fetchone()
+    if row is None or (row['tier'] or '').lower() == 'curated':
+        return False
+    print(
+        f"{pid} ({row['name']}) is a {row['tier']} person - companion views like "
+        f"the {view_name} belong to curated people (SPEC §16), so nothing was "
+        f"written. If this person is ready for one, set `tier: curated` in their "
+        f"record and re-run.",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _couple_folders(conn: sqlite3.Connection, archive_root: Path) -> list[tuple[Path, list[str]]]:
     """
     Return [(folder_path, [person_ids])] for each curated couple folder.
@@ -1963,6 +1986,8 @@ def run_timeline(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
+        if _skip_stub_person(conn, pid, 'timeline'):
+            return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_timeline(conn, pid, archive_root)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
@@ -2037,6 +2062,8 @@ def run_sources_index(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
+        if _skip_stub_person(conn, pid, 'sources-index'):
+            return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_sources_index_person(conn, pid, archive_root)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
@@ -2104,6 +2131,8 @@ def run_draft_queue(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
+        if _skip_stub_person(conn, pid, 'draft-queue'):
+            return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_draft_queue(conn, pid, archive_root)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')

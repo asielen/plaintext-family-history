@@ -74,6 +74,8 @@ Never deletes anything; photos are never renamed even here; only staged files mo
 - **spec-refinement** - edits SPEC.md/TOOLING.md (changes tracked in git history), and MUST update
 README.md whenever a change affects how a human reads the archive (the README rule).
 
+**The status-sweep rule (tool-building and spec-refinement).** Implementation status lives in more docs than the one you're editing: when a build lands, a deferred step ships, or a decision reverses, update every statement of that status in the same change - the owning BUILD doc, the sibling TOOLING doc's build-status section, SPEC.md Part IV status notes, README.md's badge and status section, TOOLING.md §16/§17, and this file - then grep the repo for the phrase being retired ("build pending", "not yet built", "when implemented", "deferred") before closing. Full sweep list and grep guidance: AGENTS_TOOLING.md.
+
 ### Session end (all modes)
 
 Summarize what changed and where; list any proposed-but-unapproved decisions; supply a one-line commit message (git is the change log - commit only when asked).
@@ -182,11 +184,11 @@ Anyone can drop files here - the owner, a family contributor following `docs/CON
 The note may be a terse scratch reminder or several paragraphs of plain prose with no schema, approximate dates, and informal spellings; process all of these the same way.
 Do not stall because a note is loosely written: extract whatever facts you can into `suggested` claims with anchors; translate informal dates and place names into stored forms; fold anything that does not map to a claim into the record's `## Notes` section.
 The fill-in template lives at `archive-template/inbox/_TEMPLATE.notes.md`.
-The process-source skill (when implemented) must handle loosely-written notes gracefully.
+The process-source skill handles loosely-written notes gracefully; the same rule binds you when working without it.
 - **Add a source:** confirm the evidence file's location → `fha process` → fill
 frontmatter (SPEC §14) → draft claims (`suggested`) with `anchor:`s → `fha lint`.
 - **Review claims with the human:** take one source's `suggested` list; for each, show
-the claim plus its anchor context; record the human's decision with `fha claim` (which moves the status and stamps `reviewed:` - directing the tool *is* the human's accept); confirm any resulting corroboration/contradiction with `fha confirm xref`; finish with `fha index` + `fha lint`.
+the claim plus its anchor context; record the human's decision with `fha claim` (which moves the status and stamps `reviewed:` - directing the tool *is* the human's accept); confirm any resulting corroboration/contradiction with `fha confirm xref`; finish with `fha index`, a `fha views timeline`/`draft-queue` refresh for the curated people touched, and `fha lint`.
 - **Write or extend a biography:** facts only from `accepted` claims; cite every factual
 sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; cross-link people with `[[P-…]]` links verified to exist.
 - **Log searches:** when you search an external collection for the human (or execute a

@@ -58,7 +58,7 @@ Each layer may only depend on the layers below it, and nothing above the first l
 This document defines layer 1 precisely and constrains how the other three are permitted to behave.
 
 1. **Durable archive layer** - files, folders, embedded metadata, markdown records, YAML blocks, stable IDs. The drawer itself. *(Parts II-III.)*
-2. **Working interface layer** - optional editors and apps over the files: Obsidian or the like for notes, Photo management softwware (like Lightroom), an AI session for research, a genealogy app fed by export. **The working or ingesting interface is never the truth.** Tooling that supports research or ingestion exists only for those purposes and is never load-bearing - it owns no data, and the archive must not notice if it disappears.
+2. **Working interface layer** - optional editors and apps over the files: Obsidian or the like for notes, photo management software (like Lightroom), an AI session for research, a genealogy app fed by export. **The working or ingesting interface is never the truth.** Tooling that supports research or ingestion exists only for those purposes and is never load-bearing - it owns no data, and the archive must not notice if it disappears.
 3. **Generated intelligence layer** - the index, full-text search, generated views (timelines, sources-indexes, family trees), AI-built caches. Fully rebuildable from layer 1, on demand, every time.
 4. **Publication/export layer** - the static HTML explorer, person packets, profile exports, share packages. Derived outputs, never stored objects.
 
@@ -69,7 +69,7 @@ Most of them stay that way forever, identified by their filename and embedded me
 
 A file earns more structure only when it earns attention:
 
-- When a file turns out to carry evidence - names on the back of a photo, a household in a census page - it **should be **processed** into a Source: it is assigned an ID, and a source record is created describing what it is, where it came from, and how to cite it (§14).
+- When a file turns out to carry evidence - names on the back of a photo, a household in a census page - it should be **processed** into a Source: it is assigned an ID, and a source record is created describing what it is, where it came from, and how to cite it (§14).
 - The next level connects the dots between the file and the research. This is done through **Claims**: a claim is a single fact supported by the source - a birth, a residence, a marriage, a relationship. Claims should be created *inside the source record*, parallel to the evidence they rest on (§8).
 - Once a fact exists as a claim, it can be **cited in research**: a person's profile states the fact in prose and cites the source, so any reader can walk from the sentence to the evidence (§18).
 
@@ -771,7 +771,7 @@ Generated output that leaves the archive falls into two categories with differen
 
 **View maintenance (`fha views clean` / `fha views refresh`):**
 - Generated `.md` views carry the `<!-- GENERATED … -->` header. This header is the sole signal for deletion by `fha views clean` - files without it are never touched, even if they match a view filename pattern.
-- `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step.
+- `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step for bulk regeneration (a fresh copy, a reset after `views clean`); a review session instead refreshes just the touched persons' views (TOOLING §17), so untouched views keep their generation dates.
 - Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
 
 ---
@@ -800,5 +800,5 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **WikiTree exporter** | Render a curated profile to WikiTree markup; `[[S-…]]` links → `<ref>` citations. |
 | **Doctor** | One health command: root + `fha.yaml` + mapped roots reachable; exiftool/Python present; index & photoindex freshness; lint summary; inbox aging; restricted/living/unknown counts; agent-instruction drift (stale command or skill names in AGENTS/skills). |
 | **Formatter** | Conservative normalization as a lint feature (`--format-check/--format-write`): key order, ID casing, blank lines, final newline - never rewrites prose. |
-| **Web capture** | Turn an open record page into an inbox source stub: scrape citation info from the HTML, accept a dropped/fetched asset (or store the page itself as an HTML asset when the page *is* the record), write a research-log entry, and stage for the processing pipeline. Site recipes for common sources; generic scrape as default. Sits on the open page - no credentialed scraping. *Engine `fha capture` (paste fallback) is built; the browser companion (extension/bookmarklet/native host/Claude-in-Chrome) is fully designed in TOOLING_INGESTION.md, build pending.* |
+| **Web capture** | Turn an open record page into an inbox source stub: scrape citation info from the HTML, accept a dropped/fetched asset (or store the page itself as an HTML asset when the page *is* the record), write a research-log entry, and stage for the processing pipeline. Site recipes for common sources; generic scrape as default. Sits on the open page - no credentialed scraping. *Engine `fha capture` (paste fallback + the `--ingest` sweep), the MV3 browser extension, and the native-messaging host are built; Claude-in-Chrome rides the same staged-bundle contract; the bookmarklet was evaluated and not pursued. Full design: TOOLING_INGESTION.md.* |
 | **Citation assistant** *(backlog)* | Suggest missing `[[S-…]]` citations by matching uncited prose against accepted claims. |
