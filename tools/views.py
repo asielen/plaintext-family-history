@@ -341,6 +341,25 @@ def _view_eligible_curated_ids(
     return eligible
 
 
+def _empty_curated_views_result(conn: sqlite3.Connection) -> Result:
+    """Result for a bulk view run that found no *eligible* curated person.
+
+    Distinguishes 'no curated persons at all' (clean, exit 0 - nothing to do) from
+    'every curated record is still parked under people/stubs/' (a warning): the
+    latter generated nothing yet leaves real work to do, so it must not read as
+    up-to-date to a caller or to automation.
+    """
+    if _curated_person_ids(conn):
+        print(
+            'All curated persons are still under people/stubs/ - nothing was generated; '
+            'promote them into their couple folders first.',
+            file=sys.stderr,
+        )
+        return _views_result(EXIT_WARNINGS, data={'count': 0})
+    print('No curated persons found in index.')
+    return _views_result(EXIT_CLEAN, data={'count': 0})
+
+
 def _skip_stub_person(
     conn: sqlite3.Connection, pid: str, view_name: str, archive_root: Path
 ) -> bool:
@@ -2009,8 +2028,7 @@ def run_timeline(
         if all_curated:
             person_ids = _view_eligible_curated_ids(conn, archive_root)
             if not person_ids:
-                print('No curated persons found in index.')
-                return _views_result(EXIT_CLEAN)
+                return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
                 out = _generate_timeline(conn, pid, archive_root)
@@ -2100,6 +2118,10 @@ def run_sources_index(
                 # post-dates .cache/index.sqlite); warn the same way `refresh` does.
                 print('Run `fha index` to update the search index with the new view file(s).')
                 return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+            if all_curated and not changed:
+                # Nothing generated because every curated record is parked in
+                # people/stubs/ (couple_folders_only with 0 folders stays clean).
+                return _empty_curated_views_result(conn)
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
         if not person_id:
@@ -2154,8 +2176,7 @@ def run_draft_queue(
         if all_curated:
             person_ids = _view_eligible_curated_ids(conn, archive_root)
             if not person_ids:
-                print('No curated persons found in index.')
-                return _views_result(EXIT_CLEAN)
+                return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
                 out = _generate_draft_queue(conn, pid, archive_root)
@@ -2273,8 +2294,7 @@ def run_refresh(archive_root: Path) -> Result:
     try:
         person_ids = _view_eligible_curated_ids(conn, archive_root)
         if not person_ids:
-            print('No curated persons found in index.')
-            return _views_result(EXIT_CLEAN)
+            return _empty_curated_views_result(conn)
 
         _per_person = [
             (_generate_timeline,             'timeline      '),

@@ -104,6 +104,13 @@ source's claims are reviewed together because they share evidence.
    ```
    A `--as contradicts` confirm automatically spawns the open question that keeps lint **E009** satisfied
    ("a `contradicts:` link with no open question") — you don't hand-write that question.
+   If you confirmed **any** xref link, **reindex again** before the view refresh below — `fha confirm xref`
+   writes the `corroborates:`/`contradicts:` links into both sources but does not reindex, so `claim_links`
+   (read by `fha find --related`, xref dedup, and the report's corroboration/discovery sections) would
+   otherwise stay stale for the rest of the session:
+   ```
+   fha index
+   ```
 
 6. **Refresh the touched people's views — quietly, without asking.** The session just changed exactly
    what the generated views show: an accepted claim leaves the timeline's "unreviewed" tail and joins the

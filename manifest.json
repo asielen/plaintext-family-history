@@ -60,7 +60,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "c954d92563903eb40c49f2651aa00acd2340e2a5c066281bafdac29812450f9e",
+      "sha256": "35c81e010eef17ba66c4c268b02c600ba2039def061309df5113747445e4fd30",
       "spec_version": "1.2"
     },
     {
@@ -72,7 +72,7 @@
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "2d54c78384fc33c5a3fc7df21a633dfa549764bdc9ad24f96e4fec55da9ff8ec",
+      "sha256": "f835634d1e21f3a7138405f0a477af2272b6cd8c5839b0b25603c3adcca490bf",
       "spec_version": "1.2"
     },
     {
@@ -109,7 +109,7 @@
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "6411c8c4061d551067e6f6e3b1528347776c5f7eeeb837ffb738f64ab26bc550",
+      "sha256": "23bae59ce2754336902da47671b41288260aa971a71d98108e55a89d550c9887",
       "spec_version": "1.2"
     },
     {
@@ -542,7 +542,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "fc081d09a3468a15c14cee82d7bf076f437333941b83b92d8013f0d8ec9c1d75",
+      "sha256": "bf90e24c13e3758009c38fe13c13ea3e1d3c023817dc03642b7271325c6e19b2",
       "spec_version": "1.2"
     },
     {

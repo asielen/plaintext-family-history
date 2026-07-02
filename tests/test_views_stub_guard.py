@@ -99,6 +99,25 @@ class StubGuardTests(unittest.TestCase):
             self._stub_dir_names(),
             [f'hartley__promoted_{PROMOTED}.md', f'hartley__stub_{STUB}.md'])
 
+    def test_bulk_warns_when_every_curated_is_in_stubs(self) -> None:
+        # A fresh archive whose only curated record is parked in people/stubs/:
+        # bulk generation must exit 1 (warning), not report a clean "nothing to
+        # do" - otherwise automation treats the views as current.
+        root = Path(tempfile.mkdtemp())
+        (root / 'people' / 'stubs').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'stubs' / f'hartley__promoted_{PROMOTED}.md').write_text(
+            _person(PROMOTED, 'Promoted Hartley', 'curated'), encoding='utf-8')
+        index_mod.build_index(root, load_fha_yaml(root))
+        for res in (views.run_refresh(root),
+                    views.run_timeline(root, all_curated=True),
+                    views.run_sources_index(root, all_curated=True),
+                    views.run_draft_queue(root, all_curated=True)):
+            self.assertEqual(res.exit_code, EXIT_WARNINGS)
+            self.assertFalse(res.changed)
+
 
 if __name__ == '__main__':
     unittest.main()

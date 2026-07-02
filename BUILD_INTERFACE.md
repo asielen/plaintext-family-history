@@ -49,9 +49,9 @@ Run `fha report`, then narrate it **discoveries-first** (the report is a researc
 
 **Status: authored** (`.claude/skills/review-claims/SKILL.md`). The reused accept-gate interaction; session check pending.
 
-Stage C of the pipeline. Walk one source's `suggested` backlog (guided one-by-one, or open the source file for self-serve skimming - the human's choice). For each claim, show the claim plus its `anchor:` context; capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept). Finish with incremental reindex (`fha index --source`), `fha xref` to surface new corroboration/contradiction, a `fha views timeline`/`draft-queue` refresh for each curated person touched (stubs skipped; `views brackets` checked when a relationship claim was accepted), and `fha lint`.
+Stage C of the pipeline. Walk one source's `suggested` backlog (guided one-by-one, or open the source file for self-serve skimming - the human's choice). For each claim, show the claim plus its `anchor:` context; capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept). Finish with a reindex (full `fha index` - the `process-source`/`mine-transcript` hand-off usually minted new person stubs, which `fha index --source` does not index; `--source` is fine only for a status-only pass), `fha xref` to surface new corroboration/contradiction, a reindex again if any `fha confirm xref` link was written, a `fha views timeline`/`draft-queue` refresh for each curated person touched (stubs skipped; `views brackets` checked when a relationship claim was accepted), and `fha lint`.
 
-**Orchestrates:** `fha claim`, `fha confirm xref`, `fha index --source`, `fha xref`, `fha views timeline`/`draft-queue` (touched persons), `fha lint`.
+**Orchestrates:** `fha claim`, `fha confirm xref`, `fha index`, `fha xref`, `fha views timeline`/`draft-queue` (touched persons), `fha lint`.
 
 **Guardrails:** never moves a claim to `accepted` without the human; `accepted` always carries `reviewed:` (E006). The skill presents judgment; the human gates.
 
