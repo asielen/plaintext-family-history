@@ -24,7 +24,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "df3f4855c4b512778871f1ddad8bb8ffb8eee21177ba539d57850d8dbf733785",
+      "sha256": "b7da451dd8b437c448ea200a304a3f813c762925c1c5ff907e9656d19543ae2a",
       "spec_version": "1.2"
     },
     {
@@ -48,19 +48,19 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "c09ef24fb379e7ffe981476e32e3ca11d13ded485db3f4eec55f562cea0a2519",
+      "sha256": "c2d38dbb1cc0a24222bc328b4ce1e71bc339796d31f512e1f133b41824f515be",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "20190c1f127eb82c95cca1dc17dce5e481ba7669dec71c9b2324dc433094d776",
+      "sha256": "32bb1e2c67c152fc24769611a10c767f5dc119b799b003aad51e8d90f44d284e",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "0761adc0c3367ce861d8aaf6ff1fd0dfcd2702080b483fd14da2632073e33dbc",
+      "sha256": "d34c9ba33071de042ecfa857f1441dec59b9a592770d9810d05de968f89fc576",
       "spec_version": "1.2"
     },
     {
@@ -542,7 +542,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "839f4c1278f558e716e88d97cfc315eced96f9d725048879b5ae58a400b96020",
+      "sha256": "75cb910ea83ac4cb982d4231418d3ac9e1188bd07c019bf3a6646769900448b6",
       "spec_version": "1.2"
     },
     {

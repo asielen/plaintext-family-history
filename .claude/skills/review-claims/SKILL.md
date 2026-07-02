@@ -70,16 +70,21 @@ source's claims are reviewed together because they share evidence.
      ```
      (stamps `reviewed:` today automatically).
    - **Edit then accept** — correct a value or date in his words, translating to stored form yourself
-     ("he says it was really June 1923" → `--date 1923-06`):
+     ("he says it was really June 1923" → `--date 1923-06`). **Preview first** — an edited value/date must
+     never land stamped `reviewed:` before the human has seen exactly what will be written:
      ```
+     fha claim <C-id> --status accepted --value "…" --date 1923-06 --dry-run
      fha claim <C-id> --status accepted --value "…" --date 1923-06
      ```
-   - **Dispute** (keep it, mark it contested): `--status disputed`.
-   - **Reject** (wrong, but preserve the trail — never delete): `--status rejected`.
-   - **Not sure yet:** `--status needs-review` leaves it for later without accepting.
-   - **A manual addition** he dictates is drafted into the source's `## Claims` as a new
-     `status: suggested` claim (mint its C-id with `fha id mint C`, add an `anchor:` to where in the
-     source it comes from) — then reviewed like the rest. It does **not** go straight to `accepted`.
+   - **Dispute** (keep it, mark it contested): `--status disputed` — same `--dry-run`, then apply.
+   - **Reject** (wrong, but preserve the trail — never delete): `--status rejected` — preview, then apply.
+   - **Not sure yet:** `--status needs-review` leaves it for later without accepting (preview first too).
+   - **A manual addition** he dictates is drafted into the source's `## Claims` as a new `status: suggested`
+     claim — write the **full claim shape** `process-source` uses, not just an id: a fresh `id:`
+     (`fha id mint C`), `type:`, `persons:`, `value:`, `confidence:`, the Mills `information:`/`evidence:`
+     fields, and an `anchor:` to where in the source it comes from. `confidence:` in particular is required
+     on every claim, so an id-only draft would fail lint. Then review it like the rest — it does **not** go
+     straight to `accepted`.
 
 5. **Close out the batch.**
    ```

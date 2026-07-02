@@ -76,9 +76,13 @@ Thomas Hartley and Thos. Hartley get entered twice?"
    - **rename the file** with the tombstone prefix — `MERGED-INTO-P-survivor__<original-filename>` (e.g.
      `MERGED-INTO-P-de957bcda1__hartley__thomas_P-old.md`) — the file **persists forever**, never deleted;
    - **fold** the merged record's `name_variants:` and external IDs into the survivor's record;
-   - **relink** direct references you can reach (frontmatter `people:`, prose `[[P-old]]`); anything you
-     don't reach resolves *through* `merged_into` and appears on lint's W107 gradual-cleanup list — that's
-     expected, not an error.
+   - **relink every claim that names the merged person** — for each `suggested`/`accepted` claim whose
+     `persons:`/`roles:` includes `P-old`, change it to `P-survivor`. This is required, not optional
+     cleanup: the index stores `claim_persons` as written, so a claim left pointing at `P-old` both trips
+     lint **E016** *and* silently drops out of the survivor's timeline/draft-queue views;
+   - **relink** the remaining direct references you can reach (frontmatter `people:`, prose `[[P-old]]`);
+     only loose *prose* mentions you don't reach may resolve *through* `merged_into` and appear on lint's
+     W107 gradual-cleanup list — that (prose, never a claim) is expected, not an error.
    Record the reasoning where the merge is enacted (the `merge_reason:` and, if useful, a note on the
    survivor). **Never create a new claim on the merged P-id** (that is exactly E016).
 

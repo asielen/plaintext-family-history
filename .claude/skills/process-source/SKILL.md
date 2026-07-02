@@ -67,10 +67,14 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    - A clean single match → link that `P-id`.
    - An ambiguous name (two candidates, or a shared name) → present the candidates plainly and let the
      human pick; pin the choice to its ID.
-   - A genuinely new person → mint a stub on his confirmation:
+   - A genuinely new person → mint the stub *record* on his confirmation, **by name and before you draft
+     any claim about him**. Use the name-based path: plain `fha stubs` only scans claims already written
+     (there are none for him yet, so it creates nothing), and a bare `fha id mint P` returns an ID with no
+     record — either way the claim you draft in step 5 would reference a P-id with no stub and trip lint
+     **E005**.
      ```
-     fha stubs                       # create stubs for unresolved person references
-     fha id mint P                   # or mint a P-id directly when adding one by hand
+     fha stubs --from-names "Margaret Cole" --dry-run   # preview the P-id + stub to be minted
+     fha stubs --from-names "Margaret Cole"             # then apply
      ```
    Resolve places the same way (`fha find <place text>`; an unlinked place is fine — leave `place_text:`
    as written and let `place-research` / `fha confirm place` elevate a recurring one later).

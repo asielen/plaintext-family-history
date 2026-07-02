@@ -313,24 +313,41 @@ def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
     return [r['id'] for r in rows]
 
 
-def _skip_stub_person(conn: sqlite3.Connection, pid: str, view_name: str) -> bool:
-    """True when pid resolves to a non-curated (stub) person, with a plain note.
+def _skip_stub_person(
+    conn: sqlite3.Connection, pid: str, view_name: str, archive_root: Path
+) -> bool:
+    """True when pid must not get a companion view - a non-curated (stub) person,
+    or any record still parked under people/stubs/ - with a plain note either way.
 
     Companion views (timeline, sources-index, draft-queue) are curated-person
-    files (SPEC §16); generating one for a stub would drop a GENERATED file into
-    people/stubs/ that `views refresh` never maintains. The per-person paths call
-    this guard so the curated-only rule is enforced here, not remembered by every
-    caller. An unknown pid returns False - the generator's own "no profile found"
-    warning covers that case.
+    files (SPEC §16); they are written *beside the profile* (`_out_path_for`), so a
+    curated person's views only stay in a maintained location when the profile
+    lives in a couple folder. Two states must be refused:
+      - a non-curated (stub/connection) person - a companion file is meaningless;
+      - a record whose frontmatter was flipped to `tier: curated` but that still
+        physically lives in people/stubs/ - writing beside it drops a GENERATED
+        file into stubs/, the wrong home for a curated person's views.
+    Guarding on tier *and* location keeps the rule enforced here, not remembered by
+    every caller. An unknown pid returns False - the generator's own "no profile
+    found" warning covers that case.
     """
     row = conn.execute('SELECT tier, name FROM persons WHERE id = ?', (pid,)).fetchone()
-    if row is None or (row['tier'] or '').lower() == 'curated':
+    if row is None:
         return False
+    profile_p = _profile_path_for(conn, pid, archive_root)
+    under_stubs = profile_p is not None and profile_p.parent.name.lower() == 'stubs'
+    is_curated = (row['tier'] or '').lower() == 'curated'
+    if is_curated and not under_stubs:
+        return False
+    reason = (
+        'is curated but still lives under people/stubs/' if is_curated
+        else f"is a {row['tier']} person"
+    )
     print(
-        f"{pid} ({row['name']}) is a {row['tier']} person - companion views like "
-        f"the {view_name} belong to curated people (SPEC §16), so nothing was "
-        f"written. If this person is ready for one, set `tier: curated` in their "
-        f"record and re-run.",
+        f"{pid} ({row['name']}) {reason} - companion views like the {view_name} "
+        f"belong to curated people in their couple folder (SPEC §16), so nothing "
+        f"was written. To generate one, promote the record: set `tier: curated` "
+        f"and move it out of people/stubs/ into its couple folder, then re-run.",
         file=sys.stderr,
     )
     return True
@@ -1986,7 +2003,7 @@ def run_timeline(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
-        if _skip_stub_person(conn, pid, 'timeline'):
+        if _skip_stub_person(conn, pid, 'timeline', archive_root):
             return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_timeline(conn, pid, archive_root)
         if out:
@@ -2062,7 +2079,7 @@ def run_sources_index(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
-        if _skip_stub_person(conn, pid, 'sources-index'):
+        if _skip_stub_person(conn, pid, 'sources-index', archive_root):
             return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_sources_index_person(conn, pid, archive_root)
         if out:
@@ -2131,7 +2148,7 @@ def run_draft_queue(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
-        if _skip_stub_person(conn, pid, 'draft-queue'):
+        if _skip_stub_person(conn, pid, 'draft-queue', archive_root):
             return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_draft_queue(conn, pid, archive_root)
         if out:

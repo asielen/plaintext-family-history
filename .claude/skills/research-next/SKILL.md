@@ -23,8 +23,11 @@ now?", "any leads on Margaret's parents?"
 ## The contract for this skill (state it before you start)
 
 - **Leads and hypotheses only — never claims.** A claim requires a source by definition; this skill has no
-  source, so it produces research *directions*, not facts. Any belief it records is a `status: hypothesis`
-  with `origin: agent`, written to a research file.
+  source, so it produces research *directions*, not facts. Any belief it records is a hypothesis record with
+  `status: open` and `origin: agent`, written to a research file. (SPEC §16 hypothesis-record statuses are
+  `open` / `verified → C-…` / `abandoned`, and `fha report` lists open hypotheses with `WHERE status='open'`,
+  so a new hypothesis must be `status: open` to surface next session — `status: hypothesis` is a different
+  value, reserved for *unsourced `relationships:` entries* per §8.6, and would never appear in the report.)
 - **Log-aware, always.** Check the research log **before** proposing anything. Never re-propose a search
   already logged unless its nil has aged past the re-run horizon (default **18 months** — collections
   grow).
@@ -78,7 +81,7 @@ now?", "any leads on Margaret's parents?"
      origin: agent
      status: open
    ```
-   A hypothesis is a lead with a shape, never a claim. It carries `status: hypothesis`/`open` and
+   A hypothesis is a lead with a shape, never a claim. It carries `status: open` and
    `origin: agent`; an `H-id` never converts to a `C-id` — verification later mints a *new* claim and links
    both ways (AGENTS.md §"Format quick reference").
 
@@ -103,7 +106,7 @@ now?", "any leads on Margaret's parents?"
 - Leads and hypotheses only — **never** a claim (no source ⇒ no claim).
 - Log-aware: no lead duplicates a recent logged nil (within the 18-month horizon); state "already searched
   (date)" before proposing.
-- Hypotheses are `origin: agent`, `status: hypothesis`/`open`, written to a research file — never mixed
+- Hypotheses are `origin: agent`, `status: open`, written to a research file — never mixed
   into a source's `## Claims`.
 - Executed searches are logged (including nils); the log is the memory, not the chat.
 
@@ -111,7 +114,7 @@ now?", "any leads on Margaret's parents?"
 
 - "Where should I look for X?" in a session on `example-archive` produces concrete, **ranked** leads with
   "already searched (date)" annotations present, and **no** lead duplicates a recent logged nil.
-- Any drafted hypothesis is `origin: agent` / `status: hypothesis`, written to a research file — never a
+- Any drafted hypothesis is `origin: agent` / `status: open`, written to a research file — never a
   claim.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

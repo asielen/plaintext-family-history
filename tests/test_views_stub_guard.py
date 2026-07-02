@@ -22,6 +22,8 @@ from _lib import load_fha_yaml, EXIT_WARNINGS
 
 CUR = 'P-aaaaaaaaaa'
 STUB = 'P-bbbbbbbbbb'
+# A record flipped to tier: curated but still physically parked in people/stubs/.
+PROMOTED = 'P-cccccccccc'
 
 
 def _person(pid: str, name: str, tier: str) -> str:
@@ -41,6 +43,10 @@ class StubGuardTests(unittest.TestCase):
             _person(CUR, 'Cur Hartley', 'curated'), encoding='utf-8')
         (self.root / 'people' / 'stubs' / f'hartley__stub_{STUB}.md').write_text(
             _person(STUB, 'Stub Hartley', 'stub'), encoding='utf-8')
+        # tier: curated but never moved out of people/stubs/ - the guard must still
+        # refuse it, or a GENERATED companion lands in stubs/ (the wrong home).
+        (self.root / 'people' / 'stubs' / f'hartley__promoted_{PROMOTED}.md').write_text(
+            _person(PROMOTED, 'Promoted Hartley', 'curated'), encoding='utf-8')
         index_mod.build_index(self.root, load_fha_yaml(self.root))
 
     def _stub_dir_names(self) -> list[str]:
@@ -53,8 +59,23 @@ class StubGuardTests(unittest.TestCase):
             self.assertEqual(res.exit_code, EXIT_WARNINGS, runner.__name__)
             self.assertEqual(res.data.get('count'), 0, runner.__name__)
             self.assertFalse(res.changed, runner.__name__)
-        # Nothing was written beside the stub - the one file is the stub itself.
-        self.assertEqual(self._stub_dir_names(), [f'hartley__stub_{STUB}.md'])
+        # Nothing was written into stubs/ - only the two source records remain.
+        self.assertEqual(
+            self._stub_dir_names(),
+            [f'hartley__promoted_{PROMOTED}.md', f'hartley__stub_{STUB}.md'])
+
+    def test_per_person_views_skip_curated_record_left_in_stubs(self) -> None:
+        # A curated-tier record still in people/stubs/ must be refused by location,
+        # so no GENERATED companion file is written beside it.
+        for runner in (views.run_timeline, views.run_sources_index,
+                       views.run_draft_queue):
+            res = runner(self.root, person_id=PROMOTED)
+            self.assertEqual(res.exit_code, EXIT_WARNINGS, runner.__name__)
+            self.assertEqual(res.data.get('count'), 0, runner.__name__)
+            self.assertFalse(res.changed, runner.__name__)
+        self.assertEqual(
+            self._stub_dir_names(),
+            [f'hartley__promoted_{PROMOTED}.md', f'hartley__stub_{STUB}.md'])
 
     def test_curated_person_still_generates(self) -> None:
         res = views.run_timeline(self.root, person_id=CUR)
