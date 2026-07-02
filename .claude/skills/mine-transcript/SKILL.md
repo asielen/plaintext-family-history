@@ -57,9 +57,10 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    ```
    Ambiguous name → candidate list for the human; genuinely new person → create the stub *record* on
    confirmation with `fha stubs --from-names "Name"` (dry-run, then apply) — this mints the P-id **and**
-   the `people/stubs/` record together, so a drafted claim's `persons:` never dangles. A bare
-   `fha id mint P` only returns an ID with no record, so a claim using it would trip lint **E005**. Never
-   write a silent guess as a claim's `persons:`.
+   the `people/stubs/` record together, so a drafted claim's `persons:` never dangles. `fha stubs` mints a
+   **fresh random** `P-…` each run, so the dry-run's ID is illustrative only — use the `P-…` the **apply**
+   command prints when you set the claim's `persons:`. A bare `fha id mint P` only returns an ID with no
+   record, so a claim using it would trip lint **E005**. Never write a silent guess as a claim's `persons:`.
 
 4. **Route narrative to `## Stories`; leave the rest in the transcript.** Story-shaped passages (an
    anecdote about the railroad job, a description of the family home) go to the source's `## Stories`

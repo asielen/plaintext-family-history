@@ -83,6 +83,9 @@ these three 'Fairview City' mentions be one place?"
    ```
    Report plainly ("added Fairview's territorial-to-statehood history and linked the three loose 'Fairview
    City' census mentions into one place — coordinates left as they were").
+   (Cosmetic: a relinked claim's place shows as a clickable `[[L-…]]` in an affected person's timeline only
+   after that person's next `fha views timeline <P-id>` — the label text is unchanged until then, so a
+   later `review-claims`/`write-biography` pass picks it up; regenerate now only if you want the link live.)
 
 ## Guardrails
 

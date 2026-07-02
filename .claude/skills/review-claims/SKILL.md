@@ -5,7 +5,7 @@ description: >
   drafted", or right after `process-source` or `mine-transcript` hands off. Walks one source's `suggested`
   claims, shows each in plain language with its evidence context, captures the human's accept/dispute/edit
   decision, and writes it with `fha claim`. Closes with a reindex, an `fha xref` pass, a
-  timeline/draft-queue refresh for the people touched, and `fha lint`. This is the human gate: it never
+  timeline/sources-index/draft-queue refresh for the people touched, and `fha lint`. This is the human gate: it never
   accepts a claim on the human's behalf.
 ---
 
@@ -153,7 +153,7 @@ source's claims are reviewed together because they share evidence.
 
 - Walking a source's suggested claims in a session on `example-archive` produces **one `fha claim` write
   per decision**, a reindex (full `fha index` when the pass minted new people, else `--source`), an `fha xref` pass, a `fha views timeline` +
-  `draft-queue` refresh for each curated person touched, and a final `fha lint`.
+  `sources-index` + `draft-queue` refresh for each curated person touched, and a final `fha lint`.
 - **No** claim reaches `accepted` without an explicit human decision in the transcript; every accepted
   claim carries a `reviewed:` date (post-run `fha lint` shows no **E006**).
 - A contradiction surfaced by xref ends in `fha confirm xref … --as contradicts`, leaving the archive

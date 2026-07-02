@@ -108,8 +108,12 @@ Thomas Hartley and Thos. Hartley get entered twice?"
 5. **Verify.**
    ```
    fha index
+   fha views timeline <P-survivor>       # the relink moved a whole life onto the survivor, so
+   fha views sources-index <P-survivor>  # regenerate its companion views - they key on person_id,
+   fha views draft-queue <P-survivor>    # so the relinked claims/sources surface only after a refresh
    fha lint
    ```
+   (Skip the view refresh if the survivor is a stub — stubs carry no companion views, SPEC §16.)
    Confirm **no new E016** (no claim references the merged person directly as a fresh write), **no new
    W107 regression** beyond the expected gradual-cleanup list, and **no new W115** (a `relationships:`
    entry stranded on the tombstone, or a folded kin edge missing from the survivor's block). Report plainly ("merged the duplicate stub

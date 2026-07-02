@@ -81,7 +81,7 @@ only the tool.
 - [x] Tool gap explicitly confirmed: **yes** — no `UserComment`-write verb exists; `photoindex tag-person`
       writes keywords only.
 - [ ] **Blocked:** `SKILL.md` is deferred until the core `fha photoindex set-summary` (or equivalent) verb
-      ships. BUILD_INTERFACE.md Layer I4 stays "not yet designed → **blocked on core PR**"; it does **not**
+      ships. BUILD_INTERFACE.md Layer I4 stays "**designed; blocked on a core PR**"; it does **not**
       flip to shipped.
 
 When the write verb lands, write `photo-context/SKILL.md` against this design, conforming to
