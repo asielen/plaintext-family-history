@@ -118,6 +118,29 @@ class StubGuardTests(unittest.TestCase):
             self.assertEqual(res.exit_code, EXIT_WARNINGS)
             self.assertFalse(res.changed)
 
+    def test_curated_record_in_connections_is_ineligible(self) -> None:
+        # connections/ is a reserved non-couple folder like stubs/; a curated
+        # record parked there must be refused by both the per-person and bulk
+        # paths (nothing GENERATED written into connections/).
+        root = Path(tempfile.mkdtemp())
+        (root / 'people' / 'connections').mkdir(parents=True)
+        (root / 'people' / '060 Real Couple').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        conn_pid, couple_pid = 'P-dddddddddd', 'P-eeeeeeeeee'
+        (root / 'people' / '060 Real Couple' / f'hartley__cur_{couple_pid}.md').write_text(
+            _person(couple_pid, 'Couple Cur', 'curated'), encoding='utf-8')
+        (root / 'people' / 'connections' / f'hartley__conn_{conn_pid}.md').write_text(
+            _person(conn_pid, 'Conn Cur', 'curated'), encoding='utf-8')
+        index_mod.build_index(root, load_fha_yaml(root))
+        res = views.run_timeline(root, person_id=conn_pid)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertFalse(res.changed)
+        views.run_refresh(root)
+        conn_dir = sorted(p.name for p in (root / 'people' / 'connections').iterdir())
+        self.assertEqual(conn_dir, [f'hartley__conn_{conn_pid}.md'])
+
 
 if __name__ == '__main__':
     unittest.main()

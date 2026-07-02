@@ -118,6 +118,7 @@ source's claims are reviewed together because they share evidence.
    (stubs carry no companion views — SPEC §16 — skip them):
    ```
    fha views timeline <P-id>
+   fha views sources-index <P-id>   # the source list gains the just-reviewed source's evidence
    fha views draft-queue <P-id>
    ```
    Refresh only the people touched — never `fha views refresh` here: it regenerates *every* curated

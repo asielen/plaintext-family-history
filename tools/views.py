@@ -313,6 +313,21 @@ def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
     return [r['id'] for r in rows]
 
 
+_RESERVED_VIEW_FOLDERS = ('stubs', 'connections')
+
+
+def _reserved_view_folder(profile_p: Path | None) -> str | None:
+    """The reserved non-couple folder a profile sits directly under, else None.
+
+    Companion views live beside curated profiles in couple folders; people/stubs/
+    and people/connections/ are the reserved non-couple folders (`_couple_folders`
+    excludes both), so a profile parked in either must not get a companion view.
+    """
+    if profile_p is not None and profile_p.parent.name.lower() in _RESERVED_VIEW_FOLDERS:
+        return profile_p.parent.name.lower()
+    return None
+
+
 def _view_eligible_curated_ids(
     conn: sqlite3.Connection, archive_root: Path
 ) -> list[str]:
@@ -328,11 +343,12 @@ def _view_eligible_curated_ids(
     eligible: list[str] = []
     for pid in _curated_person_ids(conn):
         profile_p = _profile_path_for(conn, pid, archive_root)
-        if profile_p is not None and profile_p.parent.name.lower() == 'stubs':
+        folder = _reserved_view_folder(profile_p)
+        if folder is not None:
             row = conn.execute('SELECT name FROM persons WHERE id = ?', (pid,)).fetchone()
             name = row['name'] if row else pid
             print(
-                f"  skipped {pid} ({name}): curated record still under people/stubs/ - "
+                f"  skipped {pid} ({name}): curated record still under people/{folder}/ - "
                 f"promote it into its couple folder to generate its companion views",
                 file=sys.stderr,
             )
@@ -351,8 +367,8 @@ def _empty_curated_views_result(conn: sqlite3.Connection) -> Result:
     """
     if _curated_person_ids(conn):
         print(
-            'All curated persons are still under people/stubs/ - nothing was generated; '
-            'promote them into their couple folders first.',
+            'All curated persons are still under people/stubs/ or people/connections/ - '
+            'nothing was generated; promote them into their couple folders first.',
             file=sys.stderr,
         )
         return _views_result(EXIT_WARNINGS, data={'count': 0})
@@ -382,19 +398,20 @@ def _skip_stub_person(
     if row is None:
         return False
     profile_p = _profile_path_for(conn, pid, archive_root)
-    under_stubs = profile_p is not None and profile_p.parent.name.lower() == 'stubs'
+    reserved = _reserved_view_folder(profile_p)
     is_curated = (row['tier'] or '').lower() == 'curated'
-    if is_curated and not under_stubs:
+    if is_curated and reserved is None:
         return False
     reason = (
-        'is curated but still lives under people/stubs/' if is_curated
+        f'is curated but still lives under people/{reserved}/' if is_curated
         else f"is a {row['tier']} person"
     )
     print(
         f"{pid} ({row['name']}) {reason} - companion views like the {view_name} "
         f"belong to curated people in their couple folder (SPEC §16), so nothing "
-        f"was written. To generate one, promote the record: set `tier: curated` "
-        f"and move it out of people/stubs/ into its couple folder, then re-run.",
+        f"was written. To generate one, promote the record: set `tier: curated` and "
+        f"move it into its couple folder (out of people/stubs/ or people/connections/), "
+        f"then re-run.",
         file=sys.stderr,
     )
     return True

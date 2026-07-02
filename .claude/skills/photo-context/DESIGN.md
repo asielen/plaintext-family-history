@@ -16,8 +16,8 @@ The photo pipeline's embedded captions (the `UserComment` AI summary, SPEC §20)
 and never improve. As the archive grows, it *knows* more about a photo than its caption says — who the
 tagged people are to each other, what event or claim it depicts, the history of the place it was taken.
 `photo-context` would rewrite a photo's embedded AI summary with that accumulated knowledge, so captions
-get smarter over time. It is **backlog, not yet designed** in TOOLING_INTERFACE.md §2.3 / BUILD_INTERFACE.md
-Layer I4; this note is the design pass.
+get smarter over time. It began as **backlog** in TOOLING_INTERFACE.md §2.3 and is now **designed but
+blocked** on a core-tool gap (BUILD_INTERFACE.md Layer I4); this note is that settled design.
 
 ## The design (settled)
 

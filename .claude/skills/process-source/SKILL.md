@@ -73,9 +73,11 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      record — either way the claim you draft in step 5 would reference a P-id with no stub and trip lint
      **E005**.
      ```
-     fha stubs --from-names "Margaret Cole" --dry-run   # preview the P-id + stub to be minted
-     fha stubs --from-names "Margaret Cole"             # then apply
+     fha stubs --from-names "Margaret Cole" --dry-run   # preview what will be created (does NOT reserve an ID)
+     fha stubs --from-names "Margaret Cole"             # apply
      ```
+     `fha stubs` mints a **fresh random** `P-…` on each run, so the dry-run's ID is illustrative only —
+     use the `P-…` the **apply** command prints (not the dry-run's) when you draft the claim's `persons:`.
    Resolve places the same way (`fha find <place text>`; an unlinked place is fine — leave `place_text:`
    as written and let `place-research` / `fha confirm place` elevate a recurring one later).
 

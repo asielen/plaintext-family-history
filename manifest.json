@@ -36,7 +36,7 @@
     {
       "path": ".claude/skills/photo-context/DESIGN.md",
       "category": "operating",
-      "sha256": "70facf741389fb2dd29914c07e2c3b328fa8de21f1ba020644e6802a83c73459",
+      "sha256": "309f2682e8032c9ecd91981dadfc2c11dc3ed87ee099312457407986fb1abff9",
       "spec_version": "1.2"
     },
     {
@@ -48,7 +48,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "f8898816e446976e377df37d6cc631395da474593c56ffc5727b6e75249a5848",
+      "sha256": "c456948b5695c334408b8db8e21a86c9b1e14840f3f700162c0bf8afaa0129be",
       "spec_version": "1.2"
     },
     {
@@ -60,7 +60,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "35c81e010eef17ba66c4c268b02c600ba2039def061309df5113747445e4fd30",
+      "sha256": "662571acc9174599e5059157f58fa059c026a34e1991d4b1505843f2891b2237",
       "spec_version": "1.2"
     },
     {
@@ -302,7 +302,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "a9de08bcf37080a5060b8e624374804794160f34ba3780d15664309560bf07af",
+      "sha256": "62233ee4025698377206e3b3850ff6cf310eb40e26f6806e1f2aa8a1d7c1c47b",
       "spec_version": "1.2"
     },
     {
@@ -542,7 +542,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "bf90e24c13e3758009c38fe13c13ea3e1d3c023817dc03642b7271325c6e19b2",
+      "sha256": "eae5a5fa578e32f7d4c257b806bd77c41c7750eb5c3d311db65e381d8bb982a8",
       "spec_version": "1.2"
     },
     {

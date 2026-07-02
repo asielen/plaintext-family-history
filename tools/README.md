@@ -46,7 +46,7 @@ read the same structured result (TOOLING §1).
 Views require a fresh `.cache/index.sqlite` (run `fha index` first). The per-person timeline/sources-index/draft-queue forms skip a stub person with a plain note and exit 1 - companion views are curated-person files (SPEC §16); covered by `tests/test_views_stub_guard.py`. `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches. Both `.cache/index.sqlite` and `.cache/photos.sqlite` carry a `meta.schema_version` row plus `PRAGMA user_version`; missing, old, corrupt, or unreadable caches are treated as disposable and rebuilt by `fha index` / `fha photoindex`.
 Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.
 
-## Implemented tools (milestone 3, in progress)
+## Implemented tools (milestone 3)
 
 | Tool | File | Status |
 |---|---|---|
