@@ -94,7 +94,8 @@ source's claims are reviewed together because they share evidence.
    If `fha xref` proposes a link, present it plainly ("this now agrees with the 1871 marriage notice —
    want to record that they corroborate?") and act on his pick:
    ```
-   fha confirm xref <C-a> <C-b> --as corroborates      # or: --as contradicts
+   fha confirm xref <C-a> <C-b> --as corroborates --dry-run   # preview first (writes both sources)
+   fha confirm xref <C-a> <C-b> --as corroborates             # or: --as contradicts
    ```
    A `--as contradicts` confirm automatically spawns the open question that keeps lint **E009** satisfied
    ("a `contradicts:` link with no open question") — you don't hand-write that question.

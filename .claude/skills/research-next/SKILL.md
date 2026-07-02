@@ -42,14 +42,16 @@ now?", "any leads on Margaret's parents?"
    ```
    fha report
    ```
-   The report already carries what you need: **§3** vitals gaps (W101), **§5b** open questions, **§7** open
-   hypotheses, and — critically — **§5 search-log awareness**, which annotates leads "already searched
-   (date)" and flags nils older than the horizon as worth re-running. Read §5 first: it is the log
-   guardrail surfaced for you. For a person-scoped ask, also pull their neighborhood and their research
-   file:
+   The report already carries much of what you need: **§3** vitals gaps (W101), **§7** open hypotheses,
+   and — critically — **§5 search-log awareness**, which annotates leads "already searched (date)" and
+   flags nils older than the horizon as worth re-running. Read §5 first: it is the log guardrail surfaced
+   for you. Note **§5b** is *answerable* questions — open questions that already have a closeable answer (a
+   "close this out" signal), **not** the open-research backlog; for that backlog, read `notes/questions.md`
+   (`## Q:` blocks with `status: open`) and each person's `## Open Questions` directly. For a person-scoped
+   ask, also pull their neighborhood and their research file:
    ```
    fha find --related <P-id>          # the person's world: sources, places, associated people
-   fha find <P-id>                    # locate their _research file (## Research Log, ## Hypotheses)
+   fha find <P-id>                    # locate their _research file (## Research Log, ## Open Questions, ## Hypotheses)
    ```
 
 2. **Surface "already searched" before proposing anything.** For each gap you're about to address, state

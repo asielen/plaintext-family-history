@@ -71,8 +71,13 @@ these three 'Fairview City' mentions be one place?"
    cluster stops surfacing as unlinked. Preview first, then apply. You never hand-write the registry entry
    or hand-relink the claims.
 
-4. **Lint both surfaces.**
+4. **Reindex, then lint both surfaces.** `fha confirm place` and the hand-edited `history:` change the
+   tree but not the index, so reindex first — otherwise `fha places lint` (and `fha places candidates` /
+   `fha report` §6b) read a stale index: the new `L-id`, the relinked `place:` claims, and the new
+   `history:` entries won't have entered the query surface, so the cluster still shows as unlinked and the
+   lint verifies nothing about the write.
    ```
+   fha index                          # fold the new L-id, relinked claims, and history: into the query surface
    fha lint
    fha places lint                    # registry hygiene: orphan L-ids, duplicates, dangling within: links
    ```

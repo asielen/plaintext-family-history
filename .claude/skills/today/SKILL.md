@@ -78,8 +78,9 @@ safe to run anytime — it only reads.
   `process-source`, `research-next`, …).
 - **Never** hand-edit `notes/discoveries.md`; the only write path is `fha confirm discovery`, and only on
   an explicit human decision.
-- Don't recompute what `fha report` already computed — no separate `fha index` / `fha lint` / `fha xref`
-  runs; the report ran them.
+- Don't recompute what `fha report` already computed — the report refreshes the index and runs lint, so no
+  separate `fha index` / `fha lint`; and `today` is read-only, so no `fha xref` either (that's
+  `review-claims`' job, not this briefing's).
 - Speak the report, don't dump it: a briefing with one clear next step, not a wall of sections.
 
 ## Done when
