@@ -29,7 +29,12 @@ photo; everything else is a document.
 
 Every mutating path is transactional: each filesystem effect registers an undo,
 and any failure unwinds them in reverse so an interrupted run leaves no partial
-state (AGENTS.md contract). `--dry-run` performs no effect at all.
+state (AGENTS.md contract). `--dry-run` performs no effect at all - which means
+an inbox relocation is then only *virtual* (the previewed destination does not
+exist yet), so every preview read (embedded keywords, the sidecar and its
+hints, variation grouping) is threaded back to the file's real pre-move
+location via the `real_path`/`real_paths` parameters. Without that, the
+preview would describe a different plan than the live run executes.
 
 Passing a *directory* selects one of two folder modes:
 
@@ -672,7 +677,10 @@ def _relocate_from_inbox(
     are never renamed at all. Real moves happen with `Path.rename`, which is
     atomic on the same filesystem; on `dry_run` nothing is touched and a
     not-yet-existing destination path is returned so the caller's own preview
-    can still report the post-move root.
+    can still report the post-move root. That returned path names where things
+    WOULD land, not where the bytes are: any dry-run read (embedded keywords,
+    sidecar discovery, variation grouping) must keep using the pre-move path,
+    which the caller threads through as `real_path`/`real_paths`.
 
     Returns `(file_path, sidecar, undo)`. This relocation runs *before*
     `process_document`/`process_photo`'s own validation (e.g. the `dna`
@@ -894,6 +902,15 @@ def _photo_variation_siblings(file_path: Path) -> list[Path]:
     one means "no siblings - process normally" and a length >1 means a candidate
     variation set the caller should surface with the one/separate/skip prompt.
 
+    The directory listing cannot always yield `file_path` itself, so it is
+    added back explicitly. Two real cases: a dry-run inbox relocation hands us
+    the *virtual* post-move destination (`_relocate_from_inbox` moved nothing,
+    the destination directory may not even exist yet), and an odd-extension
+    file under the photos root is a photo by location, not by extension, so
+    the `_is_photo_ext` filter skips it. Either way an empty result would send
+    `select_variation_primary` an empty set and crash; the file being
+    processed is by definition a member of its own group.
+
     Matching is purely by filename grammar (`grouping_stem`) - cheap, no
     exiftool, no disk reads beyond a directory listing - so the common
     single-photo case never pays for variation detection. Files already carrying
@@ -904,13 +921,16 @@ def _photo_variation_siblings(file_path: Path) -> list[Path]:
     """
     stem_key = grouping_stem(parse_media_filename(file_path.stem))
     siblings = []
-    for p in file_path.parent.iterdir():
-        if not p.is_file() or not _is_photo_ext(p):
-            continue
-        if _is_sidecar_path(p) or _filename_has_source_id(p):
-            continue
-        if grouping_stem(parse_media_filename(p.stem)) == stem_key:
-            siblings.append(p)
+    if file_path.parent.is_dir():
+        for p in file_path.parent.iterdir():
+            if not p.is_file() or not _is_photo_ext(p):
+                continue
+            if _is_sidecar_path(p) or _filename_has_source_id(p):
+                continue
+            if grouping_stem(parse_media_filename(p.stem)) == stem_key:
+                siblings.append(p)
+    if file_path not in siblings:
+        siblings.append(file_path)
     return sorted(siblings)
 
 
@@ -1111,12 +1131,21 @@ def process_document(
     title: str | None,
     source_date: str | None,
     dry_run: bool,
+    real_path: Path | None = None,
 ) -> int:
     """M7.1: rename a documents-root original and scaffold its source record.
 
     Transactional: the rename and the record write each register an undo, and
     any exception unwinds them in reverse, so an interrupted run leaves neither
     a renamed-but-unrecorded file nor a record pointing at a vanished asset.
+
+    `real_path` is set only on a dry-run inbox relocation, where `file_path`
+    is the virtual post-move destination (nothing was moved). The sidecar and
+    its hints still sit beside the real file, so discovery targets `real_path`;
+    otherwise the preview would miss the stub, scaffold under the wrong
+    source_type directory, and hide the stub deletion the live run performs.
+    Everything destination-shaped (rename target, alias, record path) keeps
+    using `file_path` - those name what live WOULD create.
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
@@ -1133,7 +1162,7 @@ def process_document(
         )
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
-    sidecar = _find_sidecar(file_path)
+    sidecar = _find_sidecar(real_path if real_path is not None else file_path)
     notes_body = None
     sidecar_meta: dict = {}
     if sidecar is not None:
@@ -1323,6 +1352,7 @@ def process_photo(
     source_date: str | None,
     dry_run: bool,
     people: list[str] | None = None,
+    real_path: Path | None = None,
 ) -> int:
     """M7.2: embed a SOURCE keyword in a photo and scaffold its source record.
 
@@ -1336,6 +1366,14 @@ def process_photo(
     rollback path), and also lands in the source record's `people:` field so
     `fha index` + `fha find --related P-xxx` work without any face-region
     placement (the no-photo-manager path, TOOLING §FAQ).
+
+    `real_path` is set only on a dry-run inbox relocation, where `file_path`
+    is the virtual post-move destination (nothing was moved). The photo's
+    bytes - its embedded keywords - and any sidecar still live at `real_path`,
+    so those reads target it: the preview then refuses an already-processed
+    photo and carries the stub's hints exactly as the live run would. All
+    destination-shaped output (alias, record path, the embed line) keeps using
+    `file_path` - the live run's post-move reality.
     """
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     if not _is_under(file_path, photos_root):
@@ -1344,6 +1382,7 @@ def process_photo(
             f'({_rel(photos_root, archive_root)}); file it there before processing - '
             'a record outside the asset roots cannot be expressed as a portable alias path.'
         )
+    on_disk = real_path if real_path is not None else file_path
 
     # Read all keywords at once: one exiftool call detects a pre-existing SOURCE:
     # keyword (refuses re-processing) and identifies which P-ids from --people are
@@ -1352,13 +1391,13 @@ def process_photo(
     # predated this run would delete it permanently.
     if dry_run:
         try:
-            raw_kws = _run_exiftool_read_keywords(file_path)
+            raw_kws = _run_exiftool_read_keywords(on_disk)
         except RuntimeError as e:
-            print(f'WARNING: could not read existing keywords from {file_path.name}: {e}',
+            print(f'WARNING: could not read existing keywords from {on_disk.name}: {e}',
                   file=sys.stderr)
             raw_kws = []
     else:
-        raw_kws = _run_exiftool_read_keywords(file_path)
+        raw_kws = _run_exiftool_read_keywords(on_disk)
     existing = next(
         (mo.group(1).lower() for kw in raw_kws if (mo := _SOURCE_KEYWORD_RE.match(kw.strip()))),
         None,
@@ -1372,7 +1411,7 @@ def process_photo(
     new_people = [p for p in (people or []) if p not in existing_pids]
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
-    sidecar = _find_sidecar(file_path)
+    sidecar = _find_sidecar(on_disk)
     notes_body = None
     sidecar_meta: dict = {}
     if sidecar is not None:
@@ -1480,6 +1519,7 @@ def process_photo_group(
     source_date: str | None,
     dry_run: bool,
     people: list[str] | None = None,
+    real_paths: dict[Path, Path] | None = None,
 ) -> int:
     """M7.3: process a variation set as ONE source sharing a single S-id.
 
@@ -1493,8 +1533,15 @@ def process_photo_group(
     a half-tagged set. `people` (P-ids from `--people`) are written as bare
     keywords on every member of the group and land in the source record's
     `people:` list - same atomic-write discipline as for a single photo.
+
+    `real_paths` maps a member that is a virtual dry-run inbox destination
+    (nothing was moved) to the file's real on-disk location, so keyword reads
+    and sidecar discovery run against reality - the process_photo `real_path`
+    contract, extended to a set where at most one member (the relocated file)
+    is virtual. Members not in the map are on disk where they claim to be.
     """
     members = sorted(members)
+    real_paths = real_paths or {}
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     for m in members:
         if not _is_under(m, photos_root):
@@ -1509,15 +1556,16 @@ def process_photo_group(
     # a P-id keyword that predated this run would delete it permanently.
     per_member_new_people: dict[Path, list[str]] = {}
     for m in members:
+        m_on_disk = real_paths.get(m, m)
         if dry_run:
             try:
-                raw_kws = _run_exiftool_read_keywords(m)
+                raw_kws = _run_exiftool_read_keywords(m_on_disk)
             except RuntimeError as e:
-                print(f'WARNING: could not read existing keywords from {m.name}: {e}',
+                print(f'WARNING: could not read existing keywords from {m_on_disk.name}: {e}',
                       file=sys.stderr)
                 raw_kws = []
         else:
-            raw_kws = _run_exiftool_read_keywords(m)
+            raw_kws = _run_exiftool_read_keywords(m_on_disk)
         existing_source = next(
             (mo.group(1).lower() for kw in raw_kws if (mo := _SOURCE_KEYWORD_RE.match(kw.strip()))),
             None,
@@ -1534,7 +1582,7 @@ def process_photo_group(
     ordered = [primary] + [m for m in members if m != primary]
 
     final_title = title or _slugify(primary.stem).replace('-', ' ')
-    sidecar = _find_sidecar(primary)
+    sidecar = _find_sidecar(real_paths.get(primary, primary))
     notes_body = None
     sidecar_meta: dict = {}
     if sidecar is not None:
@@ -1631,6 +1679,7 @@ def _process_variation_set(
     source_date: str | None,
     dry_run: bool,
     people: list[str] | None = None,
+    real_paths: dict[Path, Path] | None = None,
 ) -> int:
     """Surface a variation set and process it per the human's one/separate/skip choice.
 
@@ -1639,12 +1688,18 @@ def _process_variation_set(
     `one` mints a shared S-id over the whole set (process_photo_group); `separate`
     processes each member as its own source; `skip` (also blank or anything
     unrecognized - never mutate on an unclear answer) defers the set.
+
+    `real_paths` (the process_photo_group contract) maps a virtual dry-run
+    inbox destination to its real on-disk location; it is threaded into every
+    processing branch so preview reads stay against reality.
     """
     members = sorted(members)
+    real_paths = real_paths or {}
     if len(members) == 1:
         return process_photo(archive_root, fha_config, members[0],
                              slug=slug, title=title, source_date=source_date,
-                             dry_run=dry_run, people=people)
+                             dry_run=dry_run, people=people,
+                             real_path=real_paths.get(members[0]))
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     letter, desc = _batch_type(members)
@@ -1663,13 +1718,15 @@ def _process_variation_set(
     if answer.startswith('one') or answer == 'o':
         return process_photo_group(archive_root, fha_config, members,
                                    slug=slug, title=title, source_date=source_date,
-                                   dry_run=dry_run, people=people)
+                                   dry_run=dry_run, people=people,
+                                   real_paths=real_paths or None)
     if answer.startswith('sep'):
         rc = EXIT_CLEAN
         for m in members:
             rc = max(rc, process_photo(archive_root, fha_config, m,
                                        slug=None, title=None, source_date=source_date,
-                                       dry_run=dry_run, people=people))
+                                       dry_run=dry_run, people=people,
+                                       real_path=real_paths.get(m)))
         return rc
     print('Skipped - deferred to a later session.')
     return EXIT_CLEAN
@@ -1996,6 +2053,7 @@ def attach_more(
     copy: str | None,
     *,
     dry_run: bool,
+    real_path: Path | None = None,
 ) -> int:
     """M7.2 `--more`: attach an additional file to an existing source record.
 
@@ -2004,17 +2062,24 @@ def attach_more(
     (document). The attached file is identity-marked the same way its own root
     demands - keyword for a photo (no rename), `-{role}_{S-id}` rename for a
     document - and a `files:` entry is appended to the located record.
+
+    `real_path` is the primary's real on-disk location when a dry-run inbox
+    relocation made `primary_path` virtual (the process_photo contract). Only
+    the keyword read below uses it; an inbox-staged primary is unprocessed, so
+    the preview then refuses with the same "not a processed source" answer the
+    live run gives, instead of a spurious read failure.
     """
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
     # it's a photo. The documented dry-run contract is "no exiftool call" - a
     # machine without exiftool on PATH must still get a preview here, so only
     # dry-run degrades that read failure to a warning and stops the preview
     # rather than raising; the live path still needs the real read.
+    primary_on_disk = real_path if real_path is not None else primary_path
     if dry_run and classify_asset(primary_path, fha_config, archive_root) == 'photo':
         try:
-            raw_sid = _read_source_keyword(primary_path)
+            raw_sid = _read_source_keyword(primary_on_disk)
         except RuntimeError as e:
-            print(f'WARNING: could not read existing keywords from {primary_path.name}: {e}',
+            print(f'WARNING: could not read existing keywords from {primary_on_disk.name}: {e}',
                   file=sys.stderr)
             print('[dry-run] Cannot determine the existing S-id without exiftool; '
                   'nothing more to preview.')
@@ -2374,12 +2439,21 @@ def _run_process(args: argparse.Namespace) -> int:
             file_path = companion
         else:
             sidecar_path = _find_sidecar(file_path)
+        pre_move_path = file_path
         file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
             archive_root, fha_config, file_path, sidecar_path, dry_run=dry_run,
         )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_ERRORS
+
+    # A dry-run relocation is virtual: nothing moved, and file_path now names a
+    # destination that does not exist yet. Every preview read below (embedded
+    # keywords, sidecar hints, variation grouping) must therefore target the
+    # file's real pre-move location, or the preview describes a different plan
+    # than the live run executes. real_path stays None on a live relocation
+    # (the bytes really are at file_path now) and when no relocation happened.
+    real_path = pre_move_path if dry_run and file_path != pre_move_path else None
 
     # The relocation above runs before process_document/process_photo's own
     # validation (e.g. dna's documents/dna/ requirement) and transactions, so
@@ -2398,7 +2472,7 @@ def _run_process(args: argparse.Namespace) -> int:
                 role = role.strip() or 'attachment'
                 copy = copy.strip() or None
                 rc = attach_more(archive_root, fha_config, file_path, more_file,
-                                  role, copy, dry_run=dry_run)
+                                  role, copy, dry_run=dry_run, real_path=real_path)
         else:
             kind = classify_asset(file_path, fha_config, archive_root)
             if kind == 'photo':
@@ -2406,12 +2480,15 @@ def _run_process(args: argparse.Namespace) -> int:
                 # front/back/crop/copy siblings sitting beside it.
                 # _process_variation_set processes a lone photo straight
                 # through and only prompts when the directory actually holds
-                # a sibling set.
+                # a sibling set. On a dry-run relocation the scan runs over
+                # the destination directory (the same one live would scan
+                # after moving) and file_path stands in for the moved file.
                 siblings = _photo_variation_siblings(file_path)
                 rc = _process_variation_set(
                     archive_root, fha_config, siblings,
                     slug=args.slug, title=args.title, source_date=source_date,
                     dry_run=dry_run, people=people or None,
+                    real_paths={file_path: real_path} if real_path is not None else None,
                 )
             else:
                 if people:
@@ -2430,6 +2507,7 @@ def _run_process(args: argparse.Namespace) -> int:
                             archive_root, fha_config, file_path,
                             source_type=source_type, slug=args.slug, title=args.title,
                             source_date=source_date, dry_run=dry_run,
+                            real_path=real_path,
                         )
         if rc != EXIT_CLEAN and relocate_undo is not None:
             relocate_undo()

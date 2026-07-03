@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-02",
+  "generated": "2026-07-03",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -302,13 +302,13 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "62233ee4025698377206e3b3850ff6cf310eb40e26f6806e1f2aa8a1d7c1c47b",
+      "sha256": "652c92a156032bb95a027aa0e814385b3b1dbdc7c37e4f69358ad7de0330df73",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "38007a55ac25828902cb374fd43077a899f59be69de6e7011bdb80d13e8ed6fc",
+      "sha256": "e69d62f3dcd21bfe7c7d279da13f93ac694c06445f1167e6991740dd001711b0",
       "spec_version": "1.2"
     },
     {
@@ -356,13 +356,13 @@
     {
       "path": "tools/claim.py",
       "category": "operating",
-      "sha256": "7a233aa9fbda5730b2e2c9770c27d54b3dac436389217b49382da7859efba769",
+      "sha256": "e761bbe8ee5b399eb5a81995e14857e4f015d287ae5af8c863bc9290a2012c16",
       "spec_version": "1.2"
     },
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "73f73b4c13ae3d346928b04b6e077ee2610bd0e9c0c370b6d7264b5b251015a9",
+      "sha256": "f6ed4bdad040adc38090a84a0fefc1bd0f81dbf409e5a17223baa03ccbd0b790",
       "spec_version": "1.2"
     },
     {
@@ -410,13 +410,13 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "0668114865cb9d73df73b548c9621e44747915b55cd18dc67162c90de62c855a",
+      "sha256": "e41be9e7b75ec82c533a9403f56b990771b785b2c55c96bd958ba9f7ae0c774b",
       "spec_version": "1.2"
     },
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "afd7572caf9a350da800fe530d61b905f235d29fb13b2e3a1861eae373cd230d",
+      "sha256": "94c1cebecbcc9a86067e7bc6e9c9a85c590712409ccc80b02a280368e47b8d95",
       "spec_version": "1.2"
     },
     {
@@ -428,7 +428,7 @@
     {
       "path": "tools/packet.py",
       "category": "operating",
-      "sha256": "4bf2a9e0be1c993a8c7b1ff0bba90c839f0008e40ab2682ee9bca236eac014bb",
+      "sha256": "e7e0686d5d14b18598edfce7fb63834f6a60c8ce983747031731840c26586a16",
       "spec_version": "1.2"
     },
     {
@@ -446,7 +446,7 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "95291bcb413b3c8ed8defe87053c9a46ca19940be2b698d7576c601e2f68c529",
+      "sha256": "43118c14f9c86c595d5370759409113c3de4ed0d1f4a7a8aa453767d70bce19c",
       "spec_version": "1.2"
     },
     {
@@ -482,7 +482,7 @@
     {
       "path": "tools/stubs.py",
       "category": "operating",
-      "sha256": "54bb68dc6d166f75d0b5973a8815f0b75134a86987186c6983a8821d1e143abd",
+      "sha256": "11875aa2ecf1d8349e8184fd422e460e2f1b384e9b1a4f54c86734bae9095315",
       "spec_version": "1.2"
     },
     {
@@ -548,7 +548,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "c771ec8a62e3aa9a3bb52c113faacbe6f41f064cc2d853083cda799cdb881a55",
+      "sha256": "b7fba4efa8eadcd83eaac54014ffcb0495ce957edad9e5a10fa91a1443e13181",
       "spec_version": "1.2"
     },
     {

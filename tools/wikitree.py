@@ -33,9 +33,12 @@ WHAT IT EMITS
   render the configured templates near the top.
 
 Privacy: a `living: true`/`living: unknown` subject is refused, and profile
-prose that cites restricted or DNA sources is refused rather than partly
-rewritten. WikiTree output is external-facing (AGENTS.md privacy rule). Output
-goes to stdout, or `--out FILE`; it is never uploaded.
+prose that cites restricted or DNA sources, links restricted people, spells a
+restricted name (as a `[[Deadname]]` link or a `[[P-id|Deadname]]` display), or
+name-links a living/unknown person is refused rather than partly rewritten;
+only the `[[P-id]]` ID-token form of a living person is redacted in place to
+`[living person]`. WikiTree output is external-facing (AGENTS.md privacy rule).
+Output goes to stdout, or `--out FILE`; it is never uploaded.
 
 CODE MAP
 --------
@@ -45,6 +48,12 @@ CODE MAP
     _source_reference                - one source's citation text + image templates
     _person_link                     - [P-id] → wiki link or plain name
     _spacetime_index                 - (subject, source) → single dated+placed claim
+
+  Privacy scans (all fail closed; the human gets a cleanup list)
+    _restricted_source_refs          - cited restricted/DNA/no-publication sources
+    _restricted_person_refs          - linked restricted persons (ID or name link)
+    _restricted_name_refs            - deadnames as name-links or in-token displays
+    _living_person_refs              - living/unknown persons behind name-links
 
   Rendering
     _convert_heading                 - markdown ## / ### → == / ===
@@ -467,16 +476,43 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
 
 
 def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[tuple[str, str]]:
-    """Name-style wikilinks whose text is a restricted name variant (a deadname).
+    """Prose references whose visible text is a restricted name variant (a deadname).
 
     A deadname (SPEC §18) is a restricted NAME of a person who may not themselves
     be restricted, so `_restricted_person_refs` (which checks the person record's
-    own `restricted` marker) misses it. The clean value is in the alias table, so
-    `[[Deadname]]` resolves to the person; but `_render_tokens` emits a name-style
-    wikilink VERBATIM (it is not an ID token), publishing the deadname. WikiTree is
-    public with no opt-in, so a deadname in the prose must block the export.
+    own `restricted` marker) misses it. Two written forms would print the name
+    verbatim, and both are caught here:
 
+      - a name-style wikilink, `[[Deadname]]`: the alias layer resolves it, but
+        `_render_tokens` re-emits a non-ID wikilink untouched;
+      - an ID token with an in-token display, `[[P-x|Deadname]]` (or the legacy
+        `[P-x|Deadname]`): `_render_tokens` re-emits the display as link text.
+
+    WikiTree is public with no opt-in, so either form must block the export.
     Returns (person_id_display, deadname) pairs for the cleanup message."""
+    variant_cache: dict[str, set[str]] = {}
+
+    def _restricted_variants(pid: str) -> set[str]:
+        """Lowercased restricted `name_variants` values from pid's record file
+        (the index carries no name-level `restricted`), memoized per export. An
+        absent or unreadable record contributes nothing - the same posture as
+        the other per-record privacy reads in this scanner family."""
+        if pid not in variant_cache:
+            values: set[str] = set()
+            prow = conn.execute('SELECT path FROM persons WHERE id = ?', (pid,)).fetchone()
+            if prow is not None and prow['path']:
+                try:
+                    meta = read_record(archive_root / prow['path'])['meta']
+                except Exception:
+                    meta = {}
+                for v in meta.get('name_variants') or []:
+                    if isinstance(v, dict) and _is_restricted_value(v.get('restricted')):
+                        value = str(v.get('value') or '').strip().lower()
+                        if value:
+                            values.add(value)
+            variant_cache[pid] = values
+        return variant_cache[pid]
+
     flagged: list[tuple[str, str]] = []
     seen: set[str] = set()
     for m in _WIKILINK_TARGET_RE.finditer(text):
@@ -493,22 +529,48 @@ def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: st
             cid = row['canonical_id']
             if not cid or id_type_of(cid) != 'P':
                 continue
-            prow = conn.execute(
-                'SELECT id, path FROM persons WHERE id = ?', (cid,)
-            ).fetchone()
-            if prow is None or not prow['path']:
-                continue
-            try:
-                meta = read_record(archive_root / prow['path'])['meta']
-            except Exception:
-                continue
-            for v in meta.get('name_variants') or []:
-                if (isinstance(v, dict) and _is_restricted_value(v.get('restricted'))
-                        and str(v.get('value') or '').strip().lower() == key):
-                    flagged.append((fmt_id_display(cid), target))
-                    seen.add(key)
-                    break
+            if key in _restricted_variants(cid):
+                flagged.append((fmt_id_display(cid), target))
+                seen.add(key)
+                break
+    # In-token displays name their person by ID, so the variant check goes
+    # straight to that person's record - no alias lookup involved.
+    for tid, display, _fragment, _span in extract_tokens(text):
+        if not display or id_type_of(tid) != 'P':
+            continue
+        key = display.strip().lower()
+        if not key or key in seen:
+            continue
+        pid = normalize_id(tid)
+        if key in _restricted_variants(pid):
+            flagged.append((fmt_id_display(pid), display.strip()))
+            seen.add(key)
     return flagged
+
+
+def _living_person_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3.Row]:
+    """Living persons reached by a name-style wikilink in the profile body.
+
+    `living: unknown` counts as living (SPEC §19 - uncertainty is safe by
+    default). `_render_tokens` redacts a living person only behind an ID token;
+    a `[[Ken Smith]]` name-link is not an ID token, so it would pass through as
+    literal text naming a living person. Name-links already resolve through the
+    alias layer for the restricted scans above; this is the same resolution
+    pass consulting `living`. The posture is the scanner family's: fail closed
+    with a refusal naming the person and the fix, never a silent rewrite -
+    in-place redaction is the ID-token path's contract, while every name-link
+    privacy hit in this exporter is surfaced for the human to clean up (usually
+    by pinning the link to its `[[P-id]]` token). Ambiguous names resolve to
+    every candidate, so one living candidate is enough to refuse."""
+    _, extra_pids = _resolve_wikilink_ids(conn, text)
+    if not extra_pids:
+        return []
+    placeholders = ','.join('?' * len(extra_pids))
+    return conn.execute(
+        f"SELECT id, name FROM persons WHERE id IN ({placeholders}) "
+        f"AND living IN ('true', 'unknown') ORDER BY id",
+        sorted(extra_pids),
+    ).fetchall()
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────────
@@ -702,7 +764,8 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
     """
     Render the WikiTree-dialect markup for one curated person. Returns:
       {'status': 'ok'|'not-found'|'not-curated'|'living-subject'|'restricted-subject'|
-       'restricted-sources'|'restricted-people'|'restricted-names'|'no-index'|'bad-args',
+       'restricted-sources'|'restricted-people'|'restricted-names'|'living-people'|
+       'no-index'|'bad-args',
        'text': str|None, 'messages': [str, ...]}
     """
     if not is_valid_id(pid) or id_type_of(pid) != 'P':
@@ -781,6 +844,23 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                     'messages': [
                         'WikiTree output is public-facing; remove or rewrite the '
                         f'restricted (deadname) name links before export: {items}.'
+                    ]}
+
+        # A LIVING (or unknown - treated as living) person written as a
+        # name-style wikilink would render as literal text naming them; the
+        # [living person] redaction only guards ID tokens. Fail closed with
+        # the fix named, the same posture as the restricted name-link scans.
+        living_refs = _living_person_refs(conn, body)
+        if living_refs:
+            items = ', '.join(
+                f'{r["name"] or "unnamed"} ({fmt_id_display(r["id"])})' for r in living_refs
+            )
+            return {'status': 'living-people', 'text': None,
+                    'messages': [
+                        'WikiTree output is public-facing and never names living '
+                        f'(or possibly living) people; these name-links would: {items}. '
+                        'Remove each reference, or pin it to its [[P-id]] token so '
+                        'it renders as [living person].'
                     ]}
         spacetime = _spacetime_index(conn, pid)
         templates = _load_templates()
@@ -876,7 +956,7 @@ def run_wikitree(archive_root: Path, pid: str) -> Result:
     elif status in ('not-found', 'not-curated'):
         exit_code = EXIT_WARNINGS
     else:  # bad-args, no-index, merged, living-subject, restricted-subject,
-           # restricted-sources, restricted-people, restricted-names
+           # restricted-sources, restricted-people, restricted-names, living-people
         exit_code = EXIT_FAILURE
     return Result(ok=(status == 'ok'), exit_code=exit_code, data=payload)
 
@@ -913,6 +993,8 @@ def _cmd_wikitree(args: argparse.Namespace) -> int:
     if status == 'restricted-people':
         return EXIT_FAILURE
     if status == 'restricted-names':
+        return EXIT_FAILURE
+    if status == 'living-people':
         return EXIT_FAILURE
     if status == 'not-found':
         print(f'{fmt_id_display(pid)}: not found in index.', file=sys.stderr)

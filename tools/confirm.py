@@ -70,6 +70,7 @@ CODE MAP
     _find_claims_block            - locate the ## Claims ```yaml fence
     _claim_spans / _item_span_for - split the block into claim items, find one
     _parse_inline_list            - read a `key: [a, b]` inline YAML list
+    _guard_claims_rewrite         - pre-write re-parse guard (raises _EditRefused)
     _add_link_to_claim            - append a corroborates/contradicts target
     _set_scalar_on_claim          - set a single scalar key (e.g. place:)
     _append_claim_to_source       - append a whole new claim item to the block
@@ -101,6 +102,8 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    claim_item_key_indent,
+    claims_edit_problem,
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
@@ -288,6 +291,29 @@ def _parse_inline_list(raw: str) -> list[str]:
     return [raw]  # a single bare scalar (e.g. `corroborates: C-x`)
 
 
+def _guard_claims_rewrite(
+    new_text: str, claim_id: str | None, *, expect_status: str | None = None,
+) -> str:
+    """Re-parse a rewritten claims block; raise `_EditRefused` on any problem.
+
+    Every claims-block writer in this file funnels its rewrite through here
+    before returning it, because a rewrite that breaks the block's YAML hides
+    EVERY claim in that source from lint/index/report - a false success far
+    worse than a refusal. The check itself lives in `_lib.claims_edit_problem`
+    (shared with `fha claim`); this wrapper just turns a problem into the
+    refusal exception the callers already handle, keeping each writer's happy
+    path readable.
+    """
+    problem = claims_edit_problem(new_text, claim_id, expect_status=expect_status)
+    if problem is not None:
+        raise _EditRefused(
+            f'{problem}, so saving this edit would hide every claim in the file '
+            'from the tools. Open the claim under ## Claims in the source file, '
+            'make the change by hand, then run `fha lint` to check it.'
+        )
+    return new_text
+
+
 def _add_link_to_claim(
     text: str, claim_id: str, rel: str, target_id: str,
 ) -> tuple[str, bool, bool]:
@@ -297,6 +323,12 @@ def _add_link_to_claim(
     single-line inline YAML list. If the claim has no such key yet, one is
     inserted right after its `status:` line (falling back to the last line of the
     item). Other lines - sibling keys, comments, key order - are untouched.
+
+    Edits land at the item's OWN key column (`claim_item_key_indent`) - a claim
+    legally written `-   value: …` keeps its keys at column 4, and writing at the
+    conventional column 2 there would break the whole block. Every changed
+    rewrite passes through `_guard_claims_rewrite`, so this raises `_EditRefused`
+    (nothing to write) rather than ever returning corrupting text.
     """
     target = normalize_id(target_id)
     target_disp = fmt_id_display(target)
@@ -310,7 +342,8 @@ def _add_link_to_claim(
     if span is None:
         return text, False, False
     start, end = span
-    key_indent = base_indent + '  '
+    key_indent = claim_item_key_indent(lines[start:end], base_indent)
+    dash_prefix = base_indent + '-' + ' ' * max(1, len(key_indent) - len(base_indent) - 1)
 
     dash_re = re.compile(r'^' + re.escape(base_indent) + r'-\s+' + re.escape(rel) + r':\s*(.*)$')
     key_re = re.compile(r'^' + re.escape(key_indent) + re.escape(rel) + r':\s*(.*)$')
@@ -326,11 +359,11 @@ def _add_link_to_claim(
         if target in [normalize_id(x) for x in items]:
             return text, False, True
         items.append(target_disp)
-        prefix = f'{base_indent}- ' if m_dash else key_indent
+        prefix = dash_prefix if m_dash else key_indent
         suffix = f'  {comment}' if comment else ''
         lines[idx] = f'{prefix}{rel}: [{", ".join(items)}]{suffix}'
         trailing = '\n' if text.endswith('\n') else ''
-        return '\n'.join(lines) + trailing, True, False
+        return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id), True, False
 
     # No existing rel key - insert one after `status:`, else at end of item.
     status_idx = None
@@ -342,11 +375,18 @@ def _add_link_to_claim(
     insert_at = (status_idx + 1) if status_idx is not None else end
     lines.insert(insert_at, f'{key_indent}{rel}: [{target_disp}]')
     trailing = '\n' if text.endswith('\n') else ''
-    return '\n'.join(lines) + trailing, True, False
+    return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id), True, False
 
 
 def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tuple[str, bool]:
-    """Set a single scalar key (e.g. `place: L-id`) on one claim item in place."""
+    """Set a single scalar key (e.g. `place: L-id`) on one claim item in place.
+
+    The edit lands at the item's OWN key column (`claim_item_key_indent`), not
+    an assumed base+2, so a claim written `-   value: …` (keys at column 4)
+    stays valid. The rewrite passes through `_guard_claims_rewrite`, so this
+    raises `_EditRefused` rather than ever returning text that would break the
+    block's YAML.
+    """
     lines = text.splitlines()
     block = _find_claims_block(lines)
     if block is None:
@@ -356,13 +396,14 @@ def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tupl
     if span is None:
         return text, False
     start, end = span
-    key_indent = base_indent + '  '
+    key_indent = claim_item_key_indent(lines[start:end], base_indent)
+    dash_prefix = base_indent + '-' + ' ' * max(1, len(key_indent) - len(base_indent) - 1)
 
     dash_re = re.compile(r'^' + re.escape(base_indent) + r'-\s+' + re.escape(key) + r':')
     key_re = re.compile(r'^' + re.escape(key_indent) + re.escape(key) + r':')
     for idx in range(start, end):
         if dash_re.match(lines[idx]):
-            lines[idx] = f'{base_indent}- {key}: {value}'
+            lines[idx] = f'{dash_prefix}{key}: {value}'
             break
         if key_re.match(lines[idx]):
             lines[idx] = f'{key_indent}{key}: {value}'
@@ -377,11 +418,19 @@ def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tupl
         lines.insert(id_idx + 1, f'{key_indent}{key}: {value}')
 
     trailing = '\n' if text.endswith('\n') else ''
-    return '\n'.join(lines) + trailing, True
+    expect = value if key == 'status' else None
+    return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id,
+                                 expect_status=expect), True
 
 
 def _append_claim_to_source(text: str, item_lines: list[str]) -> tuple[str, bool]:
-    """Append one new claim item (its full YAML lines) to the ## Claims block."""
+    """Append one new claim item (its full YAML lines) to the ## Claims block.
+
+    The appended item is templated at column 0; against a hand-indented block
+    (items at a deeper column) that would break the block's YAML, so the result
+    passes through `_guard_claims_rewrite` (keyed on the new item's own C-id) -
+    a mismatch raises `_EditRefused` instead of writing a block no tool can read.
+    """
     lines = text.splitlines()
     block = _find_claims_block(lines)
     if block is None:
@@ -396,7 +445,14 @@ def _append_claim_to_source(text: str, item_lines: list[str]) -> tuple[str, bool
     new.extend(item_lines)
     new.extend(lines[close_fence:])
     trailing = '\n' if text.endswith('\n') else ''
-    return '\n'.join(new) + trailing, True
+
+    new_cid = None
+    for ln in item_lines:
+        m = _CLAIM_ID_KEY_RE.match(ln)
+        if m:
+            new_cid = m.group(1)
+            break
+    return _guard_claims_rewrite('\n'.join(new) + trailing, new_cid), True
 
 
 # ── Verb: confirm xref ──────────────────────────────────────────────────────────
@@ -450,24 +506,28 @@ def run_confirm_xref(
 
     previews: list[tuple[Path, str, str]] = []   # (path, before, after)
     already_all = True
-    try:
-        for path, pairs in edits.items():
+    for path, pairs in edits.items():
+        try:
+            before = path.read_text(encoding='utf-8')
+        except OSError as e:
+            return _fail(result, 'failed', f'cannot read {path}: {e}')
+        text = before
+        for owner, target in pairs:
+            # A refusal (unextendable link list, or a rewrite the pre-write
+            # guard rejects) happens here in the planning pass, before any
+            # file is written - so "nothing was written" is always true.
             try:
-                before = path.read_text(encoding='utf-8')
-            except OSError as e:
-                return _fail(result, 'failed', f'cannot read {path}: {e}')
-            text = before
-            for owner, target in pairs:
                 text, changed, already = _add_link_to_claim(text, owner, relation, target)
-                if not changed and not already:
-                    return _notfound(result,
-                                     f'Found {fmt_id_display(owner)} in {path} but could not edit '
-                                     'its claims block. Check the block by hand.')
-                already_all = already_all and (already or not changed)
-            if text != before:
-                previews.append((path, before, text))
-    except _EditRefused as e:
-        return _fail(result, 'refused', f'{fmt_id_display(ca)}/{fmt_id_display(cb)}: {e}')
+            except _EditRefused as e:
+                return _fail(result, 'refused',
+                             f'{fmt_id_display(owner)} in {path}: {e} Nothing was written.')
+            if not changed and not already:
+                return _notfound(result,
+                                 f'Found {fmt_id_display(owner)} in {path} but could not edit '
+                                 'its claims block. Check the block by hand.')
+            already_all = already_all and (already or not changed)
+        if text != before:
+            previews.append((path, before, text))
 
     if not previews:
         result.data['status'] = 'already'
@@ -642,7 +702,13 @@ def run_confirm_cooccur(
         before = source_path.read_text(encoding='utf-8')
     except OSError as e:
         return _fail(result, 'failed', f'cannot read {source_path}: {e}')
-    after, changed = _append_claim_to_source(before, item_lines)
+    try:
+        after, changed = _append_claim_to_source(before, item_lines)
+    except _EditRefused as e:
+        # The pre-write guard rejected the appended block (e.g. the existing
+        # block is hand-indented and the templated item would break its YAML).
+        return _fail(result, 'refused',
+                     f'{fmt_id_display(cid)} in {source_path}: {e} Nothing was written.')
     if not changed:
         return _notfound(result,
                          f'{source_path} has no `## Claims` block to append to. '
@@ -879,7 +945,13 @@ def run_confirm_place(
             except OSError as e:
                 return _fail(result, 'failed', f'cannot read {path}: {e}')
             file_originals[path] = before
-        after, changed = _set_scalar_on_claim(before, cid, 'place', place_disp)
+        try:
+            after, changed = _set_scalar_on_claim(before, cid, 'place', place_disp)
+        except _EditRefused as e:
+            # Raised in the planning pass, before the registry or any source
+            # file is written - refusing here leaves the archive untouched.
+            return _fail(result, 'refused',
+                         f'{fmt_id_display(cid)} in {path}: {e} Nothing was written.')
         if not changed:
             return _notfound(result,
                              f'Found {fmt_id_display(cid)} but could not edit its claims block '

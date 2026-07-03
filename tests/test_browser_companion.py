@@ -2,7 +2,7 @@
 
 The extension itself is JavaScript that only runs inside a browser, so there is
 no in-process way to exercise its DOM/fetch/download code here. What we *can*
-verify without a browser is the two things that actually keep the companion
+verify without a browser is the three things that actually keep the companion
 honest:
 
   1. The MV3 manifest is well-formed and every file it names exists - the most
@@ -16,6 +16,10 @@ honest:
      hints), the shape `fha process` later dissolves into one source whose
      `files:` inventory lists every asset. This is the seam the extension exists
      to fill (§3), tied here to the live backend.
+  3. The committed sample stays PRODUCIBLE by the shipping panel: every JSON key
+     path the test-bundle capture.json uses must still appear in the panel /
+     capture-json source (the drift guard that pins features like the
+     provisional-screenshot flag to the code that must emit them).
 
 Run: python -m unittest tests.test_browser_companion -v   (from the repo root)
 """
@@ -197,6 +201,64 @@ class ExampleBundleTestCase(unittest.TestCase):
             self.assertIn('record', roles)
             # The bundle folder dissolved (§12.1: grouping migrates to the S-id).
             self.assertFalse(bundle_dir.exists())
+
+
+class CaptureJsonProducibilityTestCase(unittest.TestCase):
+    """Drift guard: every key the committed sample uses stays panel-producible.
+
+    The test-bundle capture.json is the worked example of the companion's output
+    contract (README, TOOLING_INGESTION section 3). The round-trip tests above
+    prove the backend still READS it, but nothing proved the shipping extension
+    can still WRITE it - which is how the provisional-screenshot feature was
+    silently dropped from the panel while the sample, the docs, and the
+    capture-json pass-through all kept carrying the field. Pin each key literal
+    to the source that must produce it (plain string containment; no JS runtime
+    needed, and a vanished literal fails loudly):
+
+      - every top-level key must appear in panel.js or src/lib/capture-json*.js,
+        the code that gathers the fields and builds the file;
+      - every assets[] entry key must appear in panel.js ITSELF, because the
+        panel is the only assembler of the asset list and capture-json's build()
+        passes those keys through under the same names - a key present only in
+        the build() pass-through has no caller feeding it (exactly the
+        provisional regression);
+      - every assets[] entry key must also appear in each capture-json*.js
+        (the browser build and its kept-in-sync pure twin), or build() would
+        drop it on the way out.
+    """
+
+    def test_sample_capture_json_keys_appear_in_the_producing_source(self) -> None:
+        panel_src = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+        lib_files = sorted((COMPANION / 'src' / 'lib').glob('capture-json*.js'))
+        self.assertTrue(lib_files, 'no capture-json*.js found under src/lib')
+        lib_srcs = {p.name: p.read_text(encoding='utf-8') for p in lib_files}
+        producer_src = panel_src + ''.join(lib_srcs.values())
+
+        samples = sorted((COMPANION / 'test-bundle').glob('*/capture.json'))
+        self.assertTrue(samples, 'no committed test-bundle capture.json found')
+        for sample in samples:
+            cap = json.loads(sample.read_text(encoding='utf-8'))
+            for key in cap:
+                self.assertIn(
+                    key, producer_src,
+                    f'{sample.parent.name}: top-level key {key!r} appears in the '
+                    'committed sample but nowhere in panel.js or capture-json*.js '
+                    '- the extension can no longer produce the sample it claims '
+                    'to mirror')
+            for entry in cap.get('assets', []):
+                for key in entry:
+                    self.assertIn(
+                        key, panel_src,
+                        f'{sample.parent.name}: assets[] key {key!r} never '
+                        'appears in panel.js - the panel no longer feeds it, so '
+                        "capture-json's pass-through is dead code and the "
+                        'committed sample is not panel-producible')
+                    for name, src in lib_srcs.items():
+                        self.assertIn(
+                            key, src,
+                            f'{sample.parent.name}: assets[] key {key!r} is '
+                            f'missing from {name} - build() would drop it from '
+                            'the emitted capture.json')
 
 
 if __name__ == '__main__':

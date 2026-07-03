@@ -96,6 +96,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Record parsing
 #    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
 #    read_record               - parse frontmatter + claims + body from a .md file
+#    claim_item_key_indent     - one claim item's real mapping-key column (surgical edits)
+#    claims_edit_problem       - pre-write re-parse guard for surgical claims-block edits
 #    parse_filename            - decompose filename into {id_str, kind, is_companion}
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
@@ -1015,6 +1017,100 @@ def _read_unfenced_claims(body: str) -> list[dict] | None:
     if not all(_CLAIM_MARKER_KEYS & set(item.keys()) for item in parsed):
         return None
     return parsed
+
+
+def claim_item_key_indent(item_lines: list[str], base_indent: str) -> str:
+    """Return the indent (a whitespace string) of one claim item's mapping keys.
+
+    YAML fixes a list item's mapping column at its first key, wherever the
+    author put it: `-   value: farmer` owns column 4, so that item's `id:` and
+    `status:` lines must also sit at column 4 - and all of it is valid YAML
+    that the archive's readers parse happily. The surgical claim editors used
+    to assume the one true indent `base_indent + '  '`, so an edit against a
+    wider item landed at a column the mapping does not own and broke the whole
+    block (every claim in the source vanished from lint/index/report). This
+    derives the real column from the item's own lines instead:
+
+      1. an inline first key on the dash line pins it (the dash plus the
+         author's spacing) - preferred, because later lines may be block-scalar
+         continuations at a deeper, unrelated indent;
+      2. else the first following content line (skipping blanks and comments)
+         is the item's first key, so its indent is the column;
+      3. else fall back to the conventional two spaces past the dash.
+    """
+    first = item_lines[0] if item_lines else ''
+    m = re.match(r'^' + re.escape(base_indent) + r'(-[ ]+)[^\s#]', first)
+    if m:
+        return base_indent + ' ' * len(m.group(1))
+    for ln in item_lines[1:]:
+        stripped = ln.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = re.match(r'^(\s*)', ln).group(1)
+        if len(indent) > len(base_indent):
+            return indent
+        break  # content at or above the dash's own column belongs to no key of this item
+    return base_indent + '  '
+
+
+def claims_edit_problem(
+    text: str,
+    claim_id: str | None = None,
+    *,
+    expect_status: str | None = None,
+) -> str | None:
+    """Vet a rewritten source text's `## Claims` block BEFORE it is written.
+
+    The claim editors (`fha claim`, `fha confirm xref/place/cooccur`) rewrite
+    the block as text to preserve key order and hand comments; the price is
+    that a bad rewrite can leave YAML that no longer parses, which silently
+    hides EVERY claim in that source from lint/index/report until a human
+    repairs the file. This guard is the cheap insurance: re-parse the
+    rewritten text with the same patterns `read_record` uses and confirm
+    (a) the block still reads as a YAML list, (b) `claim_id` (when given)
+    still appears exactly once, and (c) when a status change was requested
+    via `expect_status`, it actually landed on that claim.
+
+    Returns None when the rewrite is sound, else a short plain-language
+    description of what would break - the caller folds it into a refusal and
+    writes nothing, so even a future editing bug becomes a clean refusal
+    instead of a corrupted archive record.
+    """
+    if yaml is None:
+        return format_yaml_dependency_error()
+    body = text
+    fm = FRONT_RE.match(text)
+    if fm:
+        body = text[fm.end():]
+    cm = CLAIMS_RE.search(body)
+    if cm is None:
+        return 'the ## Claims block (its ```yaml fence) would be missing'
+    try:
+        parsed = yaml.safe_load(cm.group(1))
+    except yaml.YAMLError as e:
+        return f'the ## Claims block would no longer read as YAML{_yaml_problem_location(e)}'
+    if parsed is None:
+        parsed = []
+    if not isinstance(parsed, list):
+        return 'the ## Claims block would no longer read as a list of claims'
+    if claim_id is None:
+        return None
+    target = normalize_id(claim_id)
+    matches = [
+        c for c in parsed
+        if isinstance(c, dict) and c.get('id') is not None
+        and normalize_id(str(c['id'])) == target
+    ]
+    if not matches:
+        return f'claim {fmt_id_display(target)} would no longer appear in the block'
+    if len(matches) > 1:
+        return f'claim {fmt_id_display(target)} would appear {len(matches)} times in the block'
+    if expect_status is not None:
+        actual = matches[0].get('status')
+        if str(actual) != expect_status:
+            return (f'the claim status would read {actual!r} '
+                    f'instead of {expect_status!r}')
+    return None
 
 
 def parse_filename(path: str | Path) -> dict | None:

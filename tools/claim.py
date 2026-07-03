@@ -60,6 +60,8 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    claim_item_key_indent,
+    claims_edit_problem,
     configure_utf8_stdout,
     fmt_id_display,
     format_edtf_error,
@@ -143,6 +145,13 @@ def _apply_claim_review(
     is False when the block or the claim isn't found (the caller reports a clean
     not-found rather than guessing).
 
+    Edits land at the item's OWN key column, derived from its lines
+    (`claim_item_key_indent`): a claim legally written `-   value: farmer` keeps
+    its keys at column 4, and writing at the conventional column 2 there would
+    break the whole block's YAML. The caller re-parses the result before any
+    write (`claims_edit_problem`), so a rewrite this function gets wrong is
+    refused rather than saved.
+
     Raises `_ClaimEditRefused` when an edit can't be made without risking
     corruption - currently only `--value` against a multi-line block scalar
     (`value: >` / `value: |`), which a human edits by hand.
@@ -207,8 +216,12 @@ def _apply_claim_review(
         return text, False
 
     start, end = target_span
-    key_indent = base_indent + '  '
     item = lines[start:end]
+    # The item's real key column comes from its own lines, never from a fixed
+    # base_indent+2 assumption - see claim_item_key_indent for the why. The
+    # dash prefix mirrors it so a first-key rewrite keeps the item's column.
+    key_indent = claim_item_key_indent(item, base_indent)
+    dash_prefix = base_indent + '-' + ' ' * max(1, len(key_indent) - len(base_indent) - 1)
 
     def find_key(key: str) -> tuple[int | None, str | None, str | None]:
         """Return (index, kind, raw-value) of a top-level item key, or (None, …)."""
@@ -227,7 +240,7 @@ def _apply_claim_review(
         idx, kind, _ = find_key(key)
         if idx is not None:
             if kind == 'dash':
-                item[idx] = f'{base_indent}- {key}: {value_text}'
+                item[idx] = f'{dash_prefix}{key}: {value_text}'
             else:
                 item[idx] = f'{key_indent}{key}: {value_text}'
             return idx
@@ -295,8 +308,11 @@ def run_claim(
     `data` is {'status': 'ok'|'invalid-id'|'not-found'|'refused'|'failed',
     'claim_id', 'before_status', 'after_status', 'reviewed', 'source'}. On a real
     write the source `.md` is listed in `changed`; `--dry-run` previews the YAML
-    change (a unified diff in the messages) and writes nothing. The success
-    message names the re-index next step (`fha index`).
+    change (a unified diff in the messages) and writes nothing. Before any write
+    (or preview) the rewritten block is re-parsed (`claims_edit_problem`); a
+    rewrite that would corrupt the block is a `refused` failure with nothing
+    written, never a saved corruption. The success message names the re-index
+    next step (`fha index`).
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
@@ -398,6 +414,21 @@ def run_claim(
         result.add('warning',
                    f'Found {fmt_id_display(cid)} in {record_path} but could not locate its '
                    'entry in the ## Claims block to edit. Check the block by hand.')
+        return result
+
+    # Pre-write guard: re-parse the rewritten block and refuse rather than save
+    # text that would hide every claim in this source from lint/index/report.
+    # Runs before the dry-run preview too, so preview and live run agree.
+    problem = claims_edit_problem(new_text, cid, expect_status=status)
+    if problem is not None:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = 'refused'
+        result.add('error',
+                   f'Refusing to change {fmt_id_display(cid)}: {problem}, so saving would '
+                   f'hide every claim in {record_path} from the tools. Nothing was written. '
+                   'Open that file, edit the claim under ## Claims by hand, then run '
+                   '`fha lint` to check it.')
         return result
 
     summary = f'{fmt_id_display(cid)}: {before_status or "(none)"} -> {status} (reviewed {reviewed})'

@@ -190,6 +190,23 @@ class ProcessTestCase(unittest.TestCase):
     def _run(self, argv: list[str]) -> int:
         return process._standalone_main(argv + ['--root', str(self.archive)])
 
+    def _snapshot_tree(self, root: Path) -> dict[str, tuple[int, int]]:
+        """Map every path under root to (size, mtime_ns); directories to a marker.
+
+        Comparing two snapshots proves a dry-run performed ZERO filesystem
+        mutations: nothing created, deleted, renamed, resized, or rewritten
+        (a rewrite with identical bytes still bumps mtime_ns).
+        """
+        snap: dict[str, tuple[int, int]] = {}
+        for p in sorted(root.rglob('*')):
+            rel = p.relative_to(root).as_posix()
+            if p.is_file():
+                st = p.stat()
+                snap[rel] = (st.st_size, st.st_mtime_ns)
+            else:
+                snap[rel] = (-1, -1)
+        return snap
+
     def _write_temp_record(self, text: str) -> Path:
         path = self.tmp / 'scratch_record.md'
         path.write_text(text, encoding='utf-8')
@@ -389,6 +406,141 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(asset)])
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(asset.exists())
+
+    def test_inbox_photo_dry_run_previews_single_photo_plan(self) -> None:
+        # P1 regression: the dry-run relocation returns a destination that does
+        # not exist yet; variation grouping must not come back empty and crash
+        # (min() over an empty set). The preview must state the full live plan:
+        # the move, the minted S-id, the SOURCE keyword embed, the scaffold.
+        store = self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        photo = self.archive / 'inbox' / 'scan.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+
+        before = self._snapshot_tree(self.archive)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(photo), '--dry-run'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = out.getvalue()
+        self.assertIn('[dry-run] Would move scan.jpg out of inbox/ into photos/', text)
+        self.assertIn('[dry-run] Would mint S-', text)
+        self.assertIn('Would embed SOURCE: S-', text)
+        self.assertIn('in scan.jpg (no rename)', text)
+        self.assertIn('Would scaffold sources/photos/scan_S-', text)
+        self.assertEqual(self._snapshot_tree(self.archive), before)  # zero writes
+        self.assertEqual(store.keywords, {})  # no embed attempted anywhere
+
+    def test_inbox_photo_dry_run_reads_sidecar_hints_from_inbox(self) -> None:
+        # The stub sits beside the asset in inbox/, not beside the virtual
+        # destination; the preview must still pick up its hints (title -> slug)
+        # and state the stub consumption, exactly as the live run will.
+        self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        photo = self.archive / 'inbox' / 'scan.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+        sidecar = self.archive / 'inbox' / 'scan.notes.md'
+        sidecar.write_text('---\ntitle: Reunion Portrait\n---\nBack says 1912.\n',
+                           encoding='utf-8')
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(photo), '--dry-run'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = out.getvalue()
+        self.assertIn('Would scaffold sources/photos/reunion-portrait_S-', text)
+        self.assertIn('Would delete stub scan.notes.md', text)
+        self.assertTrue(sidecar.exists())  # preview only - stub untouched
+
+    def test_inbox_photo_dry_run_refuses_already_processed(self) -> None:
+        # Keyword reads must target the real inbox file: an already-tagged
+        # photo is refused on preview exactly as live would refuse it. Before
+        # the fix the read hit the virtual destination, saw no keywords, and
+        # previewed a success the live run would never deliver.
+        store = self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        photo = self.archive / 'inbox' / 'tagged.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+        store.keywords[str(photo)] = ['SOURCE: S-aaaaaaaaaa']
+
+        rc = self._run([str(photo), '--dry-run'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(photo.exists())  # nothing moved
+
+    def test_inbox_document_dry_run_previews_sidecar_hints_and_matches_live(self) -> None:
+        # P2 regression: a typed stub (source_type: census) beside an inbox
+        # asset. The preview must name the same sources/census/ record path and
+        # slug the live run creates and state that the stub gets consumed -
+        # before the fix it previewed sources/other/ under the raw filename and
+        # hid the stub deletion.
+        (self.archive / 'inbox').mkdir()
+        asset = self.archive / 'inbox' / 'record.jpg'
+        asset.write_text('record image bytes', encoding='utf-8')
+        sidecar = self.archive / 'inbox' / 'record.notes.md'
+        sidecar.write_text(
+            '---\nsource_type: census\ntitle: Fairview Census Page\n---\nFound online.\n',
+            encoding='utf-8',
+        )
+
+        before = self._snapshot_tree(self.archive)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(asset), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        preview = out.getvalue()
+        self.assertIn('Would rename record.jpg -> fairview-census-page_S-', preview)
+        self.assertIn('Would scaffold sources/census/fairview-census-page_S-', preview)
+        self.assertIn('Would delete stub record.notes.md', preview)
+        self.assertEqual(self._snapshot_tree(self.archive), before)  # zero writes
+
+        # The live run then does exactly what the preview said (S-id aside).
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        records = list((self.archive / 'sources' / 'census').glob('fairview-census-page_S-*.md'))
+        self.assertEqual(len(records), 1)
+        renamed = list((self.archive / 'documents').glob('fairview-census-page_S-*.jpg'))
+        self.assertEqual(len(renamed), 1)
+        self.assertFalse(sidecar.exists())  # stub consumed, as previewed
+
+    def test_inbox_photo_dry_run_groups_with_photos_root_sibling(self) -> None:
+        # An inbox photo whose variation sibling already sits in the photos
+        # root: live moves the file in and then groups the pair, so the preview
+        # must describe that same 2-file group - and crash on neither the
+        # virtual member nor an empty set.
+        store = self._install_photo_store()
+        (self.archive / 'inbox').mkdir()
+        incoming = self.archive / 'inbox' / 'portrait_1880.jpg'
+        incoming.write_bytes(b'\xff\xd8\xff')
+        sibling = self.archive / 'photos' / 'portrait_1880-back.jpg'
+        sibling.write_bytes(b'\xff\xd8\xff')
+        self._install_prompt('one')
+
+        before = self._snapshot_tree(self.archive)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run([str(incoming), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = out.getvalue()
+        self.assertIn('Found 2 files that appear to be variations', text)
+        self.assertIn('for a 2-file variation set', text)
+        self.assertIn('in portrait_1880.jpg (primary, no rename)', text)
+        self.assertIn('in portrait_1880-back.jpg (back, no rename)', text)
+        self.assertEqual(self._snapshot_tree(self.archive), before)  # zero writes
+        self.assertEqual(store.keywords, {})  # no embed on preview
+
+        # The live run forms exactly the previewed group: one shared S-id over
+        # the moved-in file and the pre-existing sibling.
+        self._install_prompt('one')
+        rc = self._run([str(incoming)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        moved = self.archive / 'photos' / 'portrait_1880.jpg'
+        self.assertTrue(moved.exists())
+        self.assertEqual(store.read(moved), store.read(sibling))
+        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(read_record(records[0])['meta']['files']), 2)
 
     def test_document_rollback_on_record_write_failure(self) -> None:
         original = self.archive / 'documents' / 'census' / 'will.txt'
@@ -1104,6 +1256,40 @@ class ProcessTestCase(unittest.TestCase):
         sibs = process._photo_variation_siblings(front)
         self.assertEqual([p.name for p in sibs],
                          ['portrait_1880-back.jpg', 'portrait_1880.jpg'])
+
+    def test_photo_siblings_always_include_the_file_itself(self) -> None:
+        # The file being processed is a member of its own group even when the
+        # directory listing cannot yield it: a dry-run inbox relocation hands
+        # in a not-yet-existing destination, and an odd-extension photo (a
+        # .webp filed under the photos root) fails the extension filter. An
+        # empty result used to crash select_variation_primary downstream.
+        d = self.archive / 'photos' / '1880'
+        (d / 'portrait_1880-back.jpg').write_bytes(b'\xff\xd8\xff')
+        virtual = d / 'portrait_1880.jpg'  # never written to disk
+        self.assertEqual(
+            [p.name for p in process._photo_variation_siblings(virtual)],
+            ['portrait_1880-back.jpg', 'portrait_1880.jpg'],
+        )
+        odd = d / 'ferrotype.webp'
+        odd.write_bytes(b'RIFF')
+        self.assertEqual(process._photo_variation_siblings(odd), [odd])
+
+    def test_photo_odd_extension_under_photos_root_processes_cleanly(self) -> None:
+        # classify_asset calls a photos-root .webp a photo by location, but the
+        # variation scan's extension filter used to drop the file from its own
+        # group and the empty set crashed even on a live run. It must process
+        # as a normal single photo: keyword embedded, record scaffolded, never
+        # renamed.
+        store = self._install_photo_store()
+        photo = self.archive / 'photos' / '1880' / 'ferrotype.webp'
+        photo.write_bytes(b'RIFF')
+
+        rc = self._run([str(photo)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(photo.exists())  # NEVER renamed
+        self.assertEqual(len(store.read(photo)), 1)
+        records = list((self.archive / 'sources' / 'photos').glob('ferrotype_S-*.md'))
+        self.assertEqual(len(records), 1)
 
     def test_variation_one_makes_single_record_with_two_files(self) -> None:
         store = self._install_photo_store()

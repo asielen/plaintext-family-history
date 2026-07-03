@@ -8,6 +8,12 @@ the example archive: confirm xref → the claim_link is present after re-index;
 dismiss → the pair is excluded from the next cooccur; an accepted relationship →
 the edge is derived on re-index (a suggested one is not); discovery → the entry
 is in the file; contradiction → lint E009 stays satisfied.
+
+Also covers the P1 indent regression: claim items validly written with a wider
+dash-to-key spacing (`-   value:` with keys at column 4) must be edited at their
+own column, and the pre-write re-parse guard must turn any block-corrupting
+rewrite into a clean refusal (`_EditRefused` / status 'refused') with nothing
+written.
 """
 
 import json
@@ -162,6 +168,87 @@ def _parse(text: str) -> dict:
         tmp.unlink(missing_ok=True)
 
 
+# ── Wide-indent items (the P1 regression) and the pre-write guard ────────────────
+
+_WIDE_CLAIMS = '''## Claims
+```yaml
+-   value: "A claim"
+    id: C-aa11bb22cc
+    type: birth
+    persons: [P-aaaaaaaaaa]
+    status: accepted
+    reviewed: 2026-01-01
+
+-   value: "Another"
+    id: C-bb22cc33dd
+    type: death
+    persons: [P-aaaaaaaaaa]
+    status: suggested
+```
+'''
+
+
+class WideIndentEditTests(unittest.TestCase):
+    """Claim items validly written `-   value:` (keys at column 4) must survive
+    the surgical editors: the edit lands at the item's own column and the block
+    still parses. These writers shared claim.py's base+2 indent assumption, so
+    the same edit used to corrupt the whole block while reporting success."""
+
+    def test_add_link_lands_at_the_items_column(self) -> None:
+        new, changed, already = confirm._add_link_to_claim(
+            _WIDE_CLAIMS, 'C-aa11bb22cc', 'corroborates', 'C-bb22cc33dd')
+        self.assertTrue(changed)
+        self.assertFalse(already)
+        rec = _parse(new)
+        self.assertEqual(rec['C-aa11bb22cc']['corroborates'], ['C-bb22cc33dd'])
+        self.assertEqual(rec['C-bb22cc33dd']['status'], 'suggested')   # sibling intact
+
+    def test_add_link_extends_wide_existing_list(self) -> None:
+        text = _WIDE_CLAIMS.replace(
+            '    status: accepted',
+            '    status: accepted\n    corroborates: [C-1111111111]')
+        new, changed, already = confirm._add_link_to_claim(
+            text, 'C-aa11bb22cc', 'corroborates', 'C-bb22cc33dd')
+        self.assertTrue(changed)
+        self.assertIn('    corroborates: [C-1111111111, C-bb22cc33dd]', new)
+        rec = _parse(new)
+        self.assertEqual(rec['C-aa11bb22cc']['corroborates'],
+                         ['C-1111111111', 'C-bb22cc33dd'])
+
+    def test_set_scalar_lands_at_the_items_column(self) -> None:
+        new, changed = confirm._set_scalar_on_claim(
+            _WIDE_CLAIMS, 'C-bb22cc33dd', 'place', 'L-7c1a9f4e22')
+        self.assertTrue(changed)
+        rec = _parse(new)
+        self.assertEqual(str(rec['C-bb22cc33dd']['place']), 'L-7c1a9f4e22')
+        self.assertNotIn('place', rec['C-aa11bb22cc'])
+
+    def test_wrong_indent_rewrite_is_refused(self) -> None:
+        # Force the old buggy assumption (base indent + 2) back in, simulating a
+        # future indent regression: the pre-write guard must raise the refusal
+        # instead of returning text that would corrupt the block.
+        import unittest.mock as mock
+        with mock.patch.object(confirm, 'claim_item_key_indent',
+                               lambda item, base: base + '  '):
+            with self.assertRaises(confirm._EditRefused):
+                confirm._add_link_to_claim(
+                    _WIDE_CLAIMS, 'C-aa11bb22cc', 'corroborates', 'C-bb22cc33dd')
+            with self.assertRaises(confirm._EditRefused):
+                confirm._set_scalar_on_claim(
+                    _WIDE_CLAIMS, 'C-bb22cc33dd', 'place', 'L-7c1a9f4e22')
+
+    def test_append_to_indented_block_is_refused_not_corrupted(self) -> None:
+        # A hand-indented block (items at column 2) cannot take the column-0
+        # templated item without breaking its YAML; the guard refuses instead
+        # of writing a block no tool can read.
+        indented = ('## Claims\n```yaml\n'
+                    '  - id: C-aa11bb22cc\n    status: accepted\n```\n')
+        item = ['- value: "New"', '  id: C-cc33dd44ee', '  type: note',
+                '  persons: [P-aaaaaaaaaa]', '  status: suggested']
+        with self.assertRaises(confirm._EditRefused):
+            confirm._append_claim_to_source(indented, item)
+
+
 # ── Verb contracts against a copy of the example archive ────────────────────────
 
 class ConfirmArchiveTests(unittest.TestCase):
@@ -268,6 +355,25 @@ class ConfirmArchiveTests(unittest.TestCase):
         r = confirm.run_confirm_xref(self.root, claim_a='C-0000000000', claim_b=CLAIM_B, relation='corroborates')
         self.assertEqual(r.exit_code, EXIT_WARNINGS)
         self.assertEqual(r['status'], 'not-found')
+
+    def test_xref_guard_refusal_is_clean_and_writes_nothing(self) -> None:
+        # Simulate an indent regression (derive column 4 for the archive's
+        # column-2 items): the pre-write guard must surface as a clean refusal
+        # from the planning pass - refusal exit code, no file touched.
+        import unittest.mock as mock
+        srcs = sorted((self.root / 'sources').rglob('*.md'))
+        before = {p: p.read_text(encoding='utf-8') for p in srcs}
+        with mock.patch.object(confirm, 'claim_item_key_indent',
+                               lambda item, base: base + '    '):
+            r = confirm.run_confirm_xref(
+                self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='corroborates')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r['status'], 'refused')
+        self.assertEqual(r.changed, [])
+        text = ' '.join(m.text for m in r.messages)
+        self.assertNotIn('Traceback', text)
+        for p in srcs:
+            self.assertEqual(p.read_text(encoding='utf-8'), before[p])
 
     # cooccur ------------------------------------------------------------------
 
@@ -442,6 +548,27 @@ class ConfirmArchiveTests(unittest.TestCase):
         r = confirm.run_confirm_place(self.root, claim_ids=['C-0000000000'], name='X')
         self.assertEqual(r.exit_code, EXIT_WARNINGS)
         self.assertEqual(r['status'], 'not-found')
+
+    def test_place_guard_refusal_is_clean_and_writes_nothing(self) -> None:
+        # Same simulated indent regression as the xref twin: the refusal must
+        # land in the planning pass, before the registry write, leaving both
+        # places.yaml and every source file byte-identical.
+        import unittest.mock as mock
+        srcs = sorted((self.root / 'sources').rglob('*.md'))
+        before = {p: p.read_text(encoding='utf-8') for p in srcs}
+        places_yaml = self.root / 'places' / 'places.yaml'
+        places_before = places_yaml.read_text(encoding='utf-8')
+        with mock.patch.object(confirm, 'claim_item_key_indent',
+                               lambda item, base: base + '    '):
+            r = confirm.run_confirm_place(self.root, claim_ids=[CLAIM_B], name='Marsh Creek')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r['status'], 'refused')
+        self.assertEqual(r.changed, [])
+        text = ' '.join(m.text for m in r.messages)
+        self.assertNotIn('Traceback', text)
+        self.assertEqual(places_yaml.read_text(encoding='utf-8'), places_before)
+        for p in srcs:
+            self.assertEqual(p.read_text(encoding='utf-8'), before[p])
 
     # discovery ----------------------------------------------------------------
 

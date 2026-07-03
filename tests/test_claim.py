@@ -6,6 +6,11 @@ contract (accept/dispute/reject/needs-review round-trip, default-today on accept
 dry-run writes nothing, malformed/unknown C-id), and an end-to-end check that
 `fha index` + `fha lint` reflect a status change on a real archive (an accepted
 vital relieves the right W101).
+
+Also covers the P1 indent regression: claim items validly written with a wider
+dash-to-key spacing (`-   value:` with keys at column 4) must be edited at their
+own column, and the pre-write re-parse guard (`_lib.claims_edit_problem`) must
+turn any block-corrupting rewrite into a clean refusal with nothing written.
 """
 
 import shutil
@@ -19,7 +24,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import claim
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, load_fha_yaml, read_record
+from _lib import (
+    EXIT_CLEAN,
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    claims_edit_problem,
+    load_fha_yaml,
+    read_record,
+)
 
 EXAMPLE = ROOT / 'example-archive'
 
@@ -174,6 +186,99 @@ def read_record_from_text(text: str) -> list:
         tmp.unlink(missing_ok=True)
 
 
+# ── Indent variants (the P1 regression, unit level) ─────────────────────────────
+
+class KeyIndentVariantTests(unittest.TestCase):
+    """YAML lets an author pick any dash-to-key spacing; the item's keys then own
+    that column. The edit must follow each item's own column - assuming the
+    conventional two spaces corrupted every wider item's whole block."""
+
+    def _block(self, pad: int) -> str:
+        dash = '-' + ' ' * pad
+        ki = ' ' * (1 + pad)     # keys align under the inline first key
+        return (
+            '## Claims\n```yaml\n'
+            f'{dash}value: "Born 1880"\n'
+            f'{ki}id: C-aa11bb22cc\n'
+            f'{ki}type: birth\n'
+            f'{ki}persons: [P-aaaaaaaaaa]\n'
+            f'{ki}status: suggested\n'
+            '```\n'
+        )
+
+    def test_edits_follow_each_items_own_column(self) -> None:
+        for pad in (1, 2, 3, 5):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    self._block(pad), 'C-aa11bb22cc',
+                    status='accepted', reviewed='2026-07-03')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                self.assertEqual(claims[0]['status'], 'accepted')
+                self.assertEqual(str(claims[0]['reviewed']), '2026-07-03')
+
+    def test_dash_line_value_edit_keeps_the_items_column(self) -> None:
+        # Replacing the inline first key must keep the author's dash spacing,
+        # else the rewritten first key changes the column the other keys sit at.
+        new, changed = claim._apply_claim_review(
+            self._block(3), 'C-aa11bb22cc',
+            status='accepted', reviewed='2026-07-03', value='Born 1881')
+        self.assertTrue(changed)
+        self.assertIn('-   value: Born 1881\n', new)
+        claims = read_record_from_text(new)
+        self.assertEqual(claims[0]['value'], 'Born 1881')
+
+    def test_standard_two_space_item_stays_byte_identical_elsewhere(self) -> None:
+        # The happy path must not be reshaped by the derivation or the guard:
+        # the only change is the status line plus the inserted reviewed: line.
+        new, changed = claim._apply_claim_review(
+            _CLAIM_BLOCK, 'C-aa11bb22cc', status='accepted', reviewed='2026-06-24')
+        self.assertTrue(changed)
+        expected = _CLAIM_BLOCK.replace(
+            '  status: suggested\n',
+            '  status: accepted\n  reviewed: 2026-06-24\n', 1)
+        self.assertEqual(new, expected)
+
+
+# ── The shared pre-write guard (_lib.claims_edit_problem) ───────────────────────
+
+class ClaimsEditProblemTests(unittest.TestCase):
+    """The guard is the insurance layer: any rewrite that would corrupt the
+    block, lose the claim, duplicate it, or drop the requested status must be
+    reported as a problem so the writer refuses instead of saving it."""
+
+    GOOD = '## Claims\n```yaml\n- id: C-aa11bb22cc\n  status: accepted\n```\n'
+
+    def test_sound_rewrite_has_no_problem(self) -> None:
+        self.assertIsNone(
+            claims_edit_problem(self.GOOD, 'C-aa11bb22cc', expect_status='accepted'))
+
+    def test_structural_check_alone_without_a_claim_id(self) -> None:
+        self.assertIsNone(claims_edit_problem(self.GOOD))
+
+    def test_broken_yaml_is_a_problem(self) -> None:
+        bad = ('## Claims\n```yaml\n'
+               '-   value: farmer\n'
+               '  status: accepted\n'
+               '    id: C-aa11bb22cc\n'
+               '```\n')
+        self.assertIsNotNone(claims_edit_problem(bad, 'C-aa11bb22cc'))
+
+    def test_vanished_claim_is_a_problem(self) -> None:
+        self.assertIsNotNone(claims_edit_problem(self.GOOD, 'C-9999999999'))
+
+    def test_duplicated_claim_is_a_problem(self) -> None:
+        dup = ('## Claims\n```yaml\n'
+               '- id: C-aa11bb22cc\n  status: accepted\n'
+               '- id: C-aa11bb22cc\n  status: suggested\n```\n')
+        self.assertIsNotNone(claims_edit_problem(dup, 'C-aa11bb22cc'))
+
+    def test_status_that_did_not_land_is_a_problem(self) -> None:
+        self.assertIsNotNone(
+            claims_edit_problem(self.GOOD, 'C-aa11bb22cc', expect_status='rejected'))
+
+
 # ── run_claim contract ──────────────────────────────────────────────────────────
 
 class RunClaimTests(unittest.TestCase):
@@ -251,6 +356,91 @@ class RunClaimTests(unittest.TestCase):
                                  status='accepted', reviewed='not-a-date')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+
+# ── run_claim on a wide-indent item (the P1 regression, end to end) ─────────────
+
+_WIDE_SOURCE = '''---
+id: S-aaaaaaaaaa
+title: Wide-indent test notes
+source_type: other
+source_class: derivative
+citation: >
+  A fictional citation.
+people: [P-cccccccccc]
+created: 2026-07-01
+---
+
+## Claims
+```yaml
+-   value: farmer
+    id: C-bbbbbbbbbb
+    type: occupation
+    persons: [P-cccccccccc]
+    status: suggested
+    confidence: medium
+```
+
+## Notes
+*(none yet)*
+'''
+
+
+class WideIndentClaimTests(unittest.TestCase):
+    """The reproduced P1: a valid 4-space claim item used to get a SECOND
+    status:/reviewed: inserted at column 2, the tool printed success, and the
+    whole block stopped parsing - every claim in the source vanished from
+    lint/index/report. The fix must edit at the item's real column, and the
+    pre-write guard must turn any remaining corruption into a refusal."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = self.root / 'sources' / 'other' / 'test-notes_S-aaaaaaaaaa.md'
+        self.source.parent.mkdir(parents=True, exist_ok=True)
+        self.source.write_text(_WIDE_SOURCE, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_four_space_item_accept_round_trip(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-bbbbbbbbbb',
+                                 status='accepted', reviewed='2026-07-03')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        rec = read_record(self.source)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual(len(rec['claims']), 1)
+        c = rec['claims'][0]
+        self.assertEqual(c['status'], 'accepted')
+        self.assertEqual(str(c['reviewed']), '2026-07-03')
+        self.assertIn(str(self.source), result.changed)
+
+    def test_four_space_item_dry_run_writes_nothing(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-bbbbbbbbbb',
+                                 status='accepted', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_wrong_indent_rewrite_is_refused_file_untouched(self) -> None:
+        # Force the old buggy assumption (base indent + 2) back in, simulating
+        # a future indent regression: the guard must refuse cleanly - refusal
+        # exit code, file byte-identical, message names the file, no traceback.
+        import unittest.mock as mock
+        before = self.source.read_text(encoding='utf-8')
+        with mock.patch.object(claim, 'claim_item_key_indent',
+                               lambda item, base: base + '  '):
+            result = claim.run_claim(self.root, claim_id='C-bbbbbbbbbb',
+                                     status='accepted', reviewed='2026-07-03')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn(str(self.source), text)
+        self.assertNotIn('Traceback', text)
 
 
 # ── End-to-end: index + lint reflect the status change ──────────────────────────

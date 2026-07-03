@@ -6,6 +6,15 @@ from a person research file's markdown body (SPEC §16) and from
 notes/research-log.md (SPEC §16, multi-person/locality searches), and the
 hooks that insert those rows into the hypotheses/search_log tables consumed
 by report.py sections 5 and 7.
+
+Also covers two hand-edit hardening contracts:
+  - place `coords:` validation (a hand-edited empty/string/dict coords must
+    degrade to NULL lat/lon with a warning, never crash the build or silently
+    corrupt into lat='3'), and
+  - claim persons:/roles:/place resolution through the alias map (TOOLING §3
+    E004: `persons: ["[[Sam Rivera]]"]` joins to its person record; an
+    unresolved name is an inert note-link, not a garbage row), identical in
+    full build and incremental upsert.
 """
 
 import json
@@ -19,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import index
+from _lib import EXIT_CLEAN, EXIT_WARNINGS
 
 
 _RESEARCH_MD_WELL_FORMED = '''---
@@ -421,6 +431,220 @@ class FullRebuildClearsStaleRowsTests(unittest.TestCase):
             conn.close()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], 'Captured page')
+
+
+class PlaceCoordsTests(unittest.TestCase):
+    """Hand-edited `coords:` must never kill or corrupt the index (bug: an
+    empty `coords:` key crashed every `fha index`/`fha report` with a
+    len(None) TypeError; a string value '39.8, -95.6' silently indexed as
+    lat='3', lon='9'; a dict raised KeyError). Every bad shape stores NULLs
+    plus one warning that names the place and the expected shape, and the
+    build completes on the warnings exit path."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'places').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _build(self, places_yaml: str):
+        (self.root / 'places' / 'places.yaml').write_text(places_yaml, encoding='utf-8')
+        result = index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute('SELECT id, lat, lon FROM places ORDER BY id').fetchall()
+        finally:
+            conn.close()
+        return result, rows
+
+    def test_valid_coords_index_as_floats(self) -> None:
+        result, rows = self._build(
+            '- id: L-1111111111\n  name: Millbrook\n  coords: [41.786, -73.694]\n')
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]['lat'], 41.786)
+        self.assertAlmostEqual(rows[0]['lon'], -73.694)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.messages, [])
+
+    def test_numeric_string_coords_still_index(self) -> None:
+        _, rows = self._build(
+            '- id: L-1111111111\n  name: Millbrook\n  coords: ["41.786", "-73.694"]\n')
+        self.assertAlmostEqual(rows[0]['lat'], 41.786)
+        self.assertAlmostEqual(rows[0]['lon'], -73.694)
+
+    def test_absent_coords_is_silent_null(self) -> None:
+        result, rows = self._build('- id: L-1111111111\n  name: Millbrook\n')
+        self.assertIsNone(rows[0]['lat'])
+        self.assertIsNone(rows[0]['lon'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.messages, [])
+
+    def _assert_bad_shape(self, coords_line: str) -> None:
+        result, rows = self._build(
+            f'- id: L-1111111111\n  name: Millbrook\n{coords_line}')
+        self.assertEqual(len(rows), 1, coords_line)
+        self.assertIsNone(rows[0]['lat'], coords_line)
+        self.assertIsNone(rows[0]['lon'], coords_line)
+        # One warning naming the place and the expected shape reaches the
+        # Result, and the build lands on the documented warnings exit (1).
+        self.assertEqual(result.exit_code, EXIT_WARNINGS, coords_line)
+        warning_texts = [m.text for m in result.messages]
+        self.assertEqual(len(warning_texts), 1, coords_line)
+        self.assertIn('Millbrook', warning_texts[0])
+        self.assertIn('coords: [39.8, -95.6]', warning_texts[0])
+        self.assertIn('fha index', warning_texts[0])
+
+    def test_empty_coords_key_warns_and_stores_null(self) -> None:
+        self._assert_bad_shape('  coords:\n')
+
+    def test_string_coords_warn_never_corrupt(self) -> None:
+        self._assert_bad_shape('  coords: "39.8, -95.6"\n')
+
+    def test_dict_coords_warn(self) -> None:
+        self._assert_bad_shape('  coords: {lat: 39.8, lon: -95.6}\n')
+
+    def test_single_entry_coords_warn(self) -> None:
+        self._assert_bad_shape('  coords: [39.8]\n')
+
+    def test_non_numeric_pair_warns(self) -> None:
+        self._assert_bad_shape('  coords: [north, south]\n')
+
+
+_RESOLUTION_PERSON = '''---
+id: P-aaaaaaaaaa
+name: Samuel Rivera
+living: false
+aliases: [P-aaaaaaaaaa, Sam Rivera]
+---
+
+# Samuel Rivera
+'''
+
+_RESOLUTION_SOURCE = '''---
+id: S-1111111111
+title: Birth certificate
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-1111111111
+  value: "Sam born 1985"
+  type: birth
+  persons: ["[[P-aaaaaaaaaa|Sam]]"]
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: high
+  place: "[[L-1111111111]]"
+  corroborates: ["[[C-2222222222]]"]
+
+- id: C-3333333333
+  value: "Sam is the son of ..."
+  type: relationship
+  persons: ["[[Sam Rivera]]"]
+  roles: {child: "[[Sam Rivera]]"}
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: high
+
+- id: C-4444444444
+  value: "an ambiguous witness"
+  type: note
+  persons: ["[[Pat Smith]]"]
+  status: suggested
+  confidence: low
+
+- id: C-5555555555
+  value: "a place by name"
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+  confidence: low
+  place: Millbrook
+```
+'''
+
+_AMBIGUOUS_PERSON = '''---
+id: {pid}
+name: Pat Smith
+living: false
+---
+
+# Pat Smith
+'''
+
+
+class ClaimPersonResolutionTests(unittest.TestCase):
+    """Claim persons:/roles:/place references resolve through the alias map
+    the same way source frontmatter people: does (TOOLING §3 E004): wrapped
+    IDs unwrap, unambiguous names land on their P-id, ambiguous or unknown
+    names are inert (no row, no garbage). And CRITICALLY: the incremental
+    upsert produces the exact rows the full rebuild does."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'rivera__samuel_P-aaaaaaaaaa.md', _RESOLUTION_PERSON)
+        _write(self.root / 'people' / 'smith__pat_P-bbbbbbbbbb.md',
+               _AMBIGUOUS_PERSON.format(pid='P-bbbbbbbbbb'))
+        _write(self.root / 'people' / 'smith__pat_P-cccccccccc.md',
+               _AMBIGUOUS_PERSON.format(pid='P-cccccccccc'))
+        _write(self.root / 'sources' / 'birth_S-1111111111.md', _RESOLUTION_SOURCE)
+        _write(self.root / 'places' / 'places.yaml',
+               '- id: L-1111111111\n  name: Millbrook\n  coords: [41.786, -73.694]\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _snapshot(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            return {
+                'claim_persons': sorted(
+                    tuple(r) for r in conn.execute(
+                        'SELECT claim_id, person_id, position, role FROM claim_persons')),
+                'claim_links': sorted(
+                    tuple(r) for r in conn.execute(
+                        'SELECT claim_id, rel, target_id FROM claim_links')),
+                'places': {
+                    r['id']: (r['place_id'], r['place_text']) for r in conn.execute(
+                        'SELECT id, place_id, place_text FROM claims')},
+            }
+        finally:
+            conn.close()
+
+    def test_full_build_resolves_wrapped_ids_names_roles_places(self) -> None:
+        index.build_index(self.root, {})
+        snap = self._snapshot()
+
+        # Wrapped bare ID `[[P-…|Sam]]` → the bare id.
+        self.assertIn(('c-1111111111', 'p-aaaaaaaaaa', 0, None), snap['claim_persons'])
+        # Name link `[[Sam Rivera]]` (an unambiguous person alias) → its P-id,
+        # with the role resolved through the same map.
+        self.assertIn(('c-3333333333', 'p-aaaaaaaaaa', 0, 'child'), snap['claim_persons'])
+        # Ambiguous `[[Pat Smith]]` (two records) → inert: NO row, no garbage.
+        c4 = [t for t in snap['claim_persons'] if t[0] == 'c-4444444444']
+        self.assertEqual(c4, [])
+        # No literal bracket garbage anywhere.
+        self.assertFalse([t for t in snap['claim_persons'] if '[[' in t[1]])
+        # Wrapped `[[C-…]]` corroborates target → bare c-id.
+        self.assertIn(('c-1111111111', 'corroborates', 'c-2222222222'), snap['claim_links'])
+        # place: wrapped L-id and registered place NAME both land on the L-id.
+        self.assertEqual(snap['places']['c-1111111111'][0], 'l-1111111111')
+        self.assertEqual(snap['places']['c-5555555555'][0], 'l-1111111111')
+
+    def test_upsert_source_matches_full_build(self) -> None:
+        # The symmetry contract (TOOLING §2): any discrepancy between the
+        # incremental and full states is a bug in incremental, by definition.
+        index.build_index(self.root, {})
+        full = self._snapshot()
+        status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._snapshot(), full)
 
 
 if __name__ == '__main__':

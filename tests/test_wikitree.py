@@ -1,6 +1,8 @@
+import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +20,14 @@ def _make_index(archive_root: Path) -> sqlite3.Connection:
     conn.executescript(_DDL)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _freshen_index(archive_root: Path) -> None:
+    """Stamp the index newer than every record so the strict freshness check
+    passes after a test edits fixture files (same pattern as
+    test_privacy_restricted's _Archive.fresh())."""
+    future = time.time() + 5
+    os.utime(archive_root / '.cache' / 'index.sqlite', (future, future))
 
 
 def _add_person(conn, pid, name, tier='curated', living='false', path=None, surname=None):
@@ -215,6 +225,148 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertEqual(r['status'], 'restricted-names')
         self.assertIsNone(r['text'])
         self.assertIn('Marion Jones', r['messages'][0])
+
+    def test_restricted_name_in_token_display_refused(self):
+        # The same deadname written as an ID-token display, [[P-x|Marion
+        # Jones]], would be re-emitted verbatim as the link text - it must be
+        # refused exactly like the name-wikilink form.
+        marian = self.root / 'people' / 'p-0000000002.md'
+        marian.write_text(
+            '---\nid: P-0000000002\nname: Mary Jones\nliving: false\n'
+            'name_variants:\n  - value: Marion Jones\n    restricted: true\n---\n',
+            encoding='utf-8',
+        )
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nFormerly known as [[P-0000000002|Marion Jones]].\n',
+            encoding='utf-8',
+        )
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.execute("UPDATE persons SET path='people/p-0000000002.md' WHERE id='p-0000000002'")
+        conn.commit()
+        conn.close()
+
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'restricted-names')
+        self.assertIsNone(r['text'])
+        self.assertIn('Marion Jones', r['messages'][0])
+
+    def test_unrestricted_in_token_display_still_renders(self):
+        # An in-token display that is NOT a restricted variant keeps rendering
+        # as the link text - the deadname gate must not eat ordinary displays.
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nAlso called [[P-0000000002|Molly]] by friends.\n',
+            encoding='utf-8',
+        )
+
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('[[Jones-99|Molly]]', r['text'])
+
+    def test_living_id_token_redacted(self):
+        # Pin the ID-token redaction: a living person cited by [[P-id]] (with
+        # their name in the preceding prose) renders as [living person], and
+        # the name does not survive anywhere in the output.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _add_person(conn, 'p-0000000003', 'Ken Smith', tier='connection',
+                    living='true', surname='Smith')
+        conn.commit()
+        conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nHe worked with Ken Smith [P-0000000003] for years.\n',
+            encoding='utf-8',
+        )
+
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('[living person]', r['text'])
+        self.assertNotIn('Ken Smith', r['text'])
+
+    def test_living_name_wikilink_refused(self):
+        # A living person referenced ONLY by a name-wikilink is not an ID
+        # token, so the [living person] redaction never fires - the export
+        # must fail closed and tell the human how to fix the reference.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _add_person(conn, 'p-0000000003', 'Ken Smith', tier='connection',
+                    living='true', surname='Smith')
+        conn.execute(
+            "INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)",
+            ('ken smith', 'p-0000000003', 'name'),
+        )
+        conn.commit()
+        conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nHe knew [[Ken Smith]] around town.\n',
+            encoding='utf-8',
+        )
+
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'living-people')
+        self.assertIsNone(r['text'])
+        self.assertIn('Ken Smith', r['messages'][0])
+        self.assertIn('[living person]', r['messages'][0])   # the fix is named
+
+    def test_living_unknown_name_wikilink_refused(self):
+        # living: unknown IS living (SPEC §19) - the name-link gate must treat
+        # it the same as an explicit true.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _add_person(conn, 'p-0000000003', 'Ken Smith', tier='connection',
+                    living='unknown', surname='Smith')
+        conn.execute(
+            "INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)",
+            ('ken smith', 'p-0000000003', 'name'),
+        )
+        conn.commit()
+        conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nHe knew [[Ken Smith]] around town.\n',
+            encoding='utf-8',
+        )
+
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'living-people')
+
+    def test_deceased_name_wikilink_renders_verbatim(self):
+        # A name-link that resolves to a deceased, unrestricted person keeps
+        # today's behavior: it passes through untouched.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.execute(
+            "INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)",
+            ('mary jones', 'p-0000000002', 'name'),
+        )
+        conn.commit()
+        conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nShe wrote often to [[Mary Jones]] after the war.\n',
+            encoding='utf-8',
+        )
+
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('[[Mary Jones]]', r['text'])
 
     def test_restricted_source_citation_refused(self):
         profile = self.root / 'people' / 'subject.md'

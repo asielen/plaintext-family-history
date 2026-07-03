@@ -21,7 +21,7 @@
 //
 // Flow:
 //   init     → find the active tab, inject content.js, pull the pre-fill (P1→P2)
-//   step 2   → page-copy toggle + evidence picker (url or drop)
+//   step 2   → page-copy toggle + evidence picker (url or drop), provisional flag
 //   capture  → grab fresh page.html, build the page copy + evidence, stage bundle
 //
 // Classic script; depends on window.FHA.{captureJson,bundle,nativeHost}.
@@ -258,7 +258,8 @@
     if (pageCopyOn()) parts.push('Whole-page copy ✓');
     if (evidenceMode() === 'yes') {
       if (state.droppedAsset) {
-        parts.push('Record file: ' + state.droppedAsset.filename);
+        const note = $('f-provisional').checked ? ' (screen capture)' : '';
+        parts.push('Record file: ' + state.droppedAsset.filename + note);
       } else if (evidenceUrl()) {
         parts.push('Record file: from page address');
       } else if (state.ancestryViewer) {
@@ -347,9 +348,18 @@
 
   // ── Step 3: assemble + stage the bundle ──────────────────────────────────────
 
-  function gatherNotes() {
-    const notes = $('f-notes').value;
-    return notes.trim() ? notes : '';
+  function gatherNotes(provisional) {
+    let notes = $('f-notes').value;
+    if (!notes.trim()) notes = '';
+    // schema-2 capture.json carries the provisional flag structurally (on the
+    // record asset), but we ALSO surface it in the notes body - the one place
+    // review always reads (§5.6 "review sees every flag") - so a flagged screen
+    // capture is visible whether or not a tool honors the structured flag yet.
+    if (provisional) {
+      const flag = '[provisional image: a cleaner original may exist behind the paywall]';
+      notes = notes ? flag + '\n\n' + notes : flag;
+    }
+    return notes;
   }
 
   function blobToBase64(blob) {
@@ -475,9 +485,17 @@
         throw new Error('could not read the page, reload it and try again');
       }
 
+      // The human's screen-capture flag rides with a file they provided by
+      // hand (the drop path, mode 'manual'). The url and auto paths (fetch /
+      // ancestry-api / iiif) pull the page's own original, never a screenshot,
+      // so gating on the dropped file keeps a stray tick from mislabeling a
+      // pristine fetched record as provisional.
+      const provisional =
+        wantEvidence && !!state.droppedAsset && $('f-provisional').checked;
+
       // Compose the asset list (the "both" case): the page copy and/or the
       // record evidence. Each entry carries its role so ingest files it right.
-      const assets = []; // { filename, blob, role, mode }
+      const assets = []; // { filename, blob, role, mode, provisional }
       if (wantPageCopy) {
         const pc = await buildPageCopy();
         assets.push({
@@ -501,6 +519,7 @@
             assets.push({
               filename: ev.filename, blob: ev.blob,
               role: 'record', mode: ev.mode,
+              provisional,
             });
           } catch (e) {
             evidenceWarning = e.message;
@@ -510,6 +529,7 @@
           assets.push({
             filename: ev.filename, blob: ev.blob,
             role: 'record', mode: ev.mode || (state.droppedAsset ? 'manual' : 'fetch'),
+            provisional,
           });
         }
       }
@@ -523,10 +543,11 @@
         sourceType: $('f-type').value,
         repository: $('f-repo').value.trim(),
         people: checkedPeople(),
-        notes: gatherNotes(),
+        notes: gatherNotes(provisional),
         recipeHint: state.prefill && state.prefill.recipeHint,
         assets: assets.map((a) => ({
           file: a.filename, role: a.role, mode: a.mode,
+          provisional: !!a.provisional,
         })),
       };
       const cap = captureJson.build(fields);
@@ -618,6 +639,9 @@
       drop.classList.remove('has-file');
       drop.textContent = 'Drop a file here, or click to choose';
     }
+    // The screen-capture flag describes the file just staged, never the next
+    // one - it must not stick across records (and it is never persisted).
+    $('f-provisional').checked = false;
     updateAssetStatus();
   }
 
@@ -729,6 +753,7 @@
       })
     );
     $('f-asset-url').addEventListener('input', updateAssetStatus);
+    $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));
     $('btn-add-person').addEventListener('click', () => {

@@ -36,6 +36,7 @@ import packet
 import gedcom
 import wikitree
 import lint
+from _lib import read_record
 from index import _DDL as INDEX_DDL
 
 # site.py's module stem collides with the stdlib `site`; load it by path.
@@ -186,10 +187,13 @@ class _Base(unittest.TestCase):
 # ── packet ─────────────────────────────────────────────────────────────────────
 
 class PacketRestrictedTests(_Base):
-    def _build(self, **kw):
+    def _build(self, pid=P_SUBJECT, **kw):
         self.a.fresh()
-        return packet.run_packet(self.root, P_SUBJECT, self.root / 'out',
+        return packet.run_packet(self.root, pid, self.root / 'out',
                                  no_photos=True, **kw)
+
+    def _copied_source(self, res, sid=S_MIXED):
+        return (res['packet_dir'] / 'sources' / f'src_{sid}.md').read_text(encoding='utf-8')
 
     def test_by_request_source_never_included_even_with_all_flags(self):
         self.a.person(P_SUBJECT, 'Subject Person')
@@ -234,6 +238,138 @@ class PacketRestrictedTests(_Base):
         timeline = (res['packet_dir'] / 'timeline.md').read_text(encoding='utf-8')
         self.assertIn('lived in Kansas', timeline)
         self.assertNotIn('cause of death suicide', timeline)
+
+    def test_by_request_claim_never_ships_in_copied_source(self):
+        # The timeline filter alone is not enough: the copied source record
+        # itself must not carry the by-request claim's YAML under ANY flag
+        # combination (TOOLING §8: by-request is never included by any flag).
+        self.a.person(P_SUBJECT, 'Subject Person')
+        self.a.source(
+            S_MIXED, 'Mixed source', people=(P_SUBJECT,),
+            claims=[
+                {'id': 'c-aaaaaaaaaa', 'type': 'residence', 'value': 'lived in Kansas',
+                 'person': P_SUBJECT, 'date': '1900'},
+                {'id': 'c-bbbbbbbbbb', 'type': 'note', 'value': 'asked to be left out',
+                 'person': P_SUBJECT, 'restricted': 'by-request'},
+            ])
+        for flags in ({}, {'include_restricted': True},
+                      {'include_restricted': True, 'include_dna': True}):
+            res = self._build(overwrite=True, **flags)
+            self.assertEqual(res['status'], 'ok', flags)
+            copied = self._copied_source(res)
+            self.assertIn('lived in Kansas', copied, flags)
+            self.assertNotIn('asked to be left out', copied, flags)
+            self.assertNotIn('c-bbbbbbbbbb', copied, flags)
+
+    def test_plain_restricted_claim_ships_only_with_include_restricted(self):
+        self.a.person(P_SUBJECT, 'Subject Person')
+        self.a.source(
+            S_MIXED, 'Mixed source', people=(P_SUBJECT,),
+            claims=[
+                {'id': 'c-aaaaaaaaaa', 'type': 'residence', 'value': 'lived in Kansas',
+                 'person': P_SUBJECT},
+                {'id': 'c-bbbbbbbbbb', 'type': 'death', 'value': 'cause of death suicide',
+                 'person': P_SUBJECT, 'restricted': 'true'},
+            ])
+        withheld = self._build()
+        self.assertNotIn('cause of death suicide', self._copied_source(withheld))
+        opened = self._build(include_restricted=True, overwrite=True)
+        self.assertIn('cause of death suicide', self._copied_source(opened))
+
+    def test_redacted_source_copy_stays_a_valid_record(self):
+        # The cut must leave a parseable record: the surviving claim is still
+        # read back by the shared reader, the withheld one is gone.
+        self.a.person(P_SUBJECT, 'Subject Person')
+        self.a.source(
+            S_MIXED, 'Mixed source', people=(P_SUBJECT,),
+            claims=[
+                {'id': 'c-aaaaaaaaaa', 'type': 'residence', 'value': 'lived in Kansas',
+                 'person': P_SUBJECT},
+                {'id': 'c-bbbbbbbbbb', 'type': 'note', 'value': 'kept private',
+                 'person': P_SUBJECT, 'restricted': 'by-request'},
+            ])
+        res = self._build()
+        rec = read_record(res['packet_dir'] / 'sources' / f'src_{S_MIXED}.md')
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual([c.get('id') for c in rec['claims']], ['c-aaaaaaaaaa'])
+
+    def test_readme_counts_withheld_claims_in_plain_words(self):
+        self.a.person(P_SUBJECT, 'Subject Person')
+        self.a.source(
+            S_MIXED, 'Mixed source', people=(P_SUBJECT,),
+            claims=[
+                {'id': 'c-aaaaaaaaaa', 'type': 'residence', 'value': 'lived in Kansas',
+                 'person': P_SUBJECT},
+                {'id': 'c-bbbbbbbbbb', 'type': 'note', 'value': 'kept private',
+                 'person': P_SUBJECT, 'restricted': 'true'},
+                {'id': 'c-cccccccccc', 'type': 'note', 'value': 'also private',
+                 'person': P_SUBJECT, 'restricted': 'by-request'},
+            ])
+        res = self._build()
+        readme = (res['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn(
+            f'2 private facts were left out of src_{S_MIXED}.md; '
+            'they stay in your archive.', readme)
+
+    def test_unseparable_restricted_claim_fails_closed(self):
+        # A hand-unfenced Claims section still parses through the forgiving
+        # reader (so the restricted marker IS seen), but its lines cannot be
+        # cut safely - the record must be left out entirely, never shipped
+        # verbatim with the private claim inside.
+        self.a.person(P_SUBJECT, 'Subject Person')
+        path = self.a.source(
+            S_MIXED, 'Mixed source', people=(P_SUBJECT,),
+            claims=[
+                {'id': 'c-aaaaaaaaaa', 'type': 'residence', 'value': 'lived in Kansas',
+                 'person': P_SUBJECT},
+                {'id': 'c-bbbbbbbbbb', 'type': 'note', 'value': 'kept private',
+                 'person': P_SUBJECT, 'restricted': 'by-request'},
+            ])
+        text = path.read_text(encoding='utf-8').replace('```yaml\n', '').replace('```', '')
+        path.write_text(text, encoding='utf-8')
+        res = self._build()
+        self.assertEqual(res['status'], 'ok')
+        self.assertFalse((res['packet_dir'] / 'sources' / f'src_{S_MIXED}.md').exists())
+        self.assertTrue(any('left out of sources/' in m for m in res['messages']))
+
+    def test_restricted_name_variant_stripped_from_profile_copy(self):
+        # A deadname recorded as {value:, restricted: true} - and its mirror in
+        # aliases: - must not ship in the copied profile; the public name and
+        # unrestricted variants survive.
+        self.a.person(P_JANE, 'Jane Hartley', surname='Hartley',
+                      aliases=['John Hartley'],
+                      name_variants=[{'value': 'John Hartley', 'restricted': 'true'},
+                                     'Janie'])
+        res = self._build(pid=P_JANE)
+        self.assertEqual(res['status'], 'ok')
+        copied = next((res['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('John Hartley', copied)
+        self.assertIn('Janie', copied)
+        self.assertIn('Jane Hartley', copied)
+        readme = (res['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('2 private names were left out of', readme)
+        self.assertIn('they stay in your archive', readme)
+
+    def test_by_request_name_variant_never_ships(self):
+        self.a.person(P_JANE, 'Jane Hartley', surname='Hartley',
+                      name_variants=[{'value': 'Secret Name', 'restricted': 'by-request'}])
+        res = self._build(pid=P_JANE, include_restricted=True, include_dna=True)
+        self.assertEqual(res['status'], 'ok')
+        copied = next((res['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('Secret Name', copied)
+
+    def test_plain_restricted_name_variant_opens_with_flag(self):
+        # TOOLING §8: --include-restricted "opens plain restrictions on a
+        # source, claim, person, or name" - the plain-restricted prior name
+        # ships only under the flag.
+        self.a.person(P_JANE, 'Jane Hartley', surname='Hartley',
+                      name_variants=[{'value': 'John Hartley', 'restricted': 'true'}])
+        withheld = self._build(pid=P_JANE)
+        copied = next((withheld['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('John Hartley', copied)
+        opened = self._build(pid=P_JANE, include_restricted=True, overwrite=True)
+        copied = next((opened['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertIn('John Hartley', copied)
 
     def test_by_request_subject_refused(self):
         self.a.person(P_SUBJECT, 'Private Person', restricted='by-request')

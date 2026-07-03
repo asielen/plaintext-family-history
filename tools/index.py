@@ -51,6 +51,7 @@ from _lib import (
     INDEX_SCHEMA_VERSION,
     TOKEN_RE,
     FhaConfigError,
+    Message,
     Result,
     archive_root_missing_message,
     edtf_bounds,
@@ -83,6 +84,9 @@ import yaml
 #    _drop_tables            - wipe all tables before a full rebuild
 #
 #  Indexers (one per record type)
+#    _resolve_claim_ref      - claim-block ref (persons/roles/place) → canonical ID
+#    _coerce_coord           - one coords entry → float | None
+#    _parse_place_coords     - hand-edited coords: → (lat, lon, warning)
 #    _index_places           - places.yaml → places, place_names, place_history
 #    _index_person           - one person .md → persons + person_files
 #                              + hypotheses + search_log (research files)
@@ -421,10 +425,107 @@ def _resolve_link_field(value: object, alias_map: dict[str, str] | None) -> list
     return out
 
 
-def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
+def _resolve_claim_ref(
+    raw: object,
+    alias_map: dict[str, str] | None,
+    want: str | None = None,
+) -> str | None:
+    """Resolve one claim-block reference (a persons: entry, a roles: value, or
+    the place: field) to a canonical ID, with the same tolerance the source
+    frontmatter link fields get (TOOLING §2 step 4a / §3 E004).
+
+    The quickstart teaches claims written with name links (`persons:
+    ["[[Sam Rivera]]"]`), so a bare `normalize_id(str(...))` here stored the
+    literal `[[sam rivera]]` and broke every downstream join. Instead:
+      - the `[[ ]]` wrapper, `|display`, and `#fragment` are stripped;
+      - an ID-shaped target is kept as-is, even when dangling - integrity is
+        lint's job (E005), not the indexer's;
+      - a name resolves through the alias map, but only to the record type the
+        field means (`want`: 'P' for persons/roles, 'L' for place) so a name
+        clash across types never stores a cross-type edge;
+      - an unknown or ambiguous name returns None - per TOOLING §3, "an
+        unresolved non-ID `[[stem]]` is an inert note-link, not a finding" -
+        so nothing garbage ever lands in claim_persons/claims.place_id.
+
+    Symmetry note: names resolve only through person/place aliases, which are
+    identical in the full-rebuild map (persons/places indexed before sources)
+    and the upsert map (person/place rows survive an upsert), so build_index
+    and upsert_source stay row-for-row equivalent."""
+    ref = strip_link_wrapper(str(raw)) if raw is not None else ''
+    if not ref:
+        return None
+    if id_type_of(ref):
+        return normalize_id(ref)
+    resolved = resolve_ref(ref, alias_map) if alias_map else None
+    if resolved and (want is None or id_type_of(resolved) == want):
+        return resolved
+    return None
+
+
+def _coerce_coord(value: object) -> float | None:
+    """One coordinate value → float, or None when it isn't numeric.
+
+    Accepts int/float and numeric strings (a hand-editor may quote a number);
+    bools are excluded because YAML `true` is an int subclass and would silently
+    become latitude 1.0."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_place_coords(place: dict) -> tuple[float | None, float | None, str | None]:
+    """Validate one place's `coords:` field → (lat, lon, warning_or_None).
+
+    places.yaml is hand-edited, so every malformed shape a human can produce
+    must degrade to NULL coordinates plus one plain warning instead of killing
+    the whole index build (the old `len(None)` TypeError) or silently storing
+    corrupt values (a string `39.8, -95.6` used to index as lat='3', lon='9').
+    Valid: a list/tuple whose first two entries are numeric (int/float or a
+    numeric string). An absent `coords:` key is normal and silent; a present
+    key with anything else gets the warning naming the place and the shape."""
+    if 'coords' not in place:
+        return (None, None, None)
+    raw = place.get('coords')
+    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+        lat = _coerce_coord(raw[0])
+        lon = _coerce_coord(raw[1])
+        if lat is not None and lon is not None:
+            return (lat, lon, None)
+    # Name the place the way the human knows it (its name), with the id as
+    # the precise locator when both exist.
+    name = str(place.get('name') or '').strip()
+    pid = str(place.get('id') or '').strip()
+    if name and pid:
+        label = f'{name} ({pid})'
+    else:
+        label = name or pid or 'an unnamed place'
+    return (None, None,
+            f'places/places.yaml: {label} has coords: {raw!r}, which is not a '
+            f'coordinate pair - write it as coords: [39.8, -95.6] (latitude, '
+            f'longitude). The place was indexed without map coordinates; fix '
+            f'the line and re-run `fha index`.')
+
+
+def _index_places(conn: sqlite3.Connection, archive_root: Path) -> list[str]:
+    """Index places/places.yaml → places tables. Returns warning lines.
+
+    Warnings (bad coords shapes) are returned rather than printed so
+    build_index can carry them on its Result and the CLI can render them -
+    per the structured-result contract, run_* computes, _cmd_* prints. The
+    two pre-existing parse-level warnings below still print to stderr
+    directly so non-CLI callers (fha report's in-process rebuild) keep
+    seeing them; folding those into the Result too is a follow-up."""
+    warnings: list[str] = []
     places_path = archive_root / 'places' / 'places.yaml'
     if not places_path.exists():
-        return
+        return warnings
     try:
         with open(places_path, encoding='utf-8') as f:
             places = yaml.safe_load(f)
@@ -434,17 +535,17 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
             'place registry will be empty until this is fixed.',
             file=sys.stderr,
         )
-        return
+        return warnings
 
     if places is None:
-        return
+        return warnings
     if not isinstance(places, list):
         print(
             'WARNING: places/places.yaml is not a YAML list; '
             'place registry will be empty until this is fixed.',
             file=sys.stderr,
         )
-        return
+        return warnings
 
     for place in places:
         if not isinstance(place, dict):
@@ -452,9 +553,9 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
         pid = normalize_id(str(place.get('id', '')))
         if not pid:
             continue
-        coords = place.get('coords', [None, None])
-        lat = coords[0] if len(coords) > 0 else None
-        lon = coords[1] if len(coords) > 1 else None
+        lat, lon, coord_warning = _parse_place_coords(place)
+        if coord_warning:
+            warnings.append(coord_warning)
         conn.execute(
             'INSERT OR REPLACE INTO places(id, name, hierarchy, within, lat, lon) VALUES (?,?,?,?,?,?)',
             (pid, place.get('name'), place.get('hierarchy'), place.get('within'),
@@ -479,6 +580,8 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
                     'INSERT INTO place_history(place_id, period_edtf, date_min, date_max, hierarchy) VALUES (?,?,?,?,?)',
                     (pid, period, mn, mx, h.get('hierarchy')),
                 )
+
+    return warnings
 
 
 _MD_HEADING_RE = re.compile(r'^##\s')
@@ -893,7 +996,10 @@ def _index_source(
         claim_date = str(claim.get('date', ''))
         cmn, cmx = edtf_bounds(claim_date) if claim_date else ('', '')
         negated = 1 if claim.get('negated') in (True, 'true') else 0
-        place_id_raw = normalize_id(str(claim.get('place', ''))) or None
+        # place: gets the same tolerance as persons: - a wrapped `[[L-…]]` or an
+        # unambiguous registered place name resolves; free text stays out of
+        # place_id (it lives in place_text) instead of being stored as garbage.
+        place_id_raw = _resolve_claim_ref(claim.get('place'), alias_map, want='L')
 
         sig_override = str(claim.get('significance', '')) or None
 
@@ -927,39 +1033,43 @@ def _index_source(
             ),
         )
 
-        # claim_persons
-        persons_list = claim.get('persons') or []
-        if isinstance(persons_list, str):
-            persons_list = [persons_list]
+        # claim_persons - entries may be bare P-ids, wrapped `[[P-…|Name]]`
+        # links, or `[[Name]]` links (the quickstart's hand-authored form).
+        # Each resolves via _resolve_claim_ref; an unresolvable name is an
+        # inert note-link and draws no row (TOOLING §3 E004). link_field_refs
+        # also flattens the nested-list shape an unquoted `[[Name]]` parses to.
         roles_map = claim.get('roles') or {}
+        resolved_roles: list[tuple[str, set[str]]] = []
+        if isinstance(roles_map, dict):
+            # Pre-resolve roles values once so `roles: {child: "[[Sam Rivera]]"}`
+            # matches the same resolved P-id its persons: entry produces.
+            for role_name, role_val in roles_map.items():
+                role_pids = {
+                    rid for r in link_field_refs(role_val)
+                    for rid in [_resolve_claim_ref(r, alias_map, want='P')]
+                    if rid
+                }
+                resolved_roles.append((str(role_name), role_pids))
 
-        for pos, p_raw in enumerate(persons_list):
-            ppid = normalize_id(str(p_raw))
+        for pos, p_raw in enumerate(link_field_refs(claim.get('persons'))):
+            ppid = _resolve_claim_ref(p_raw, alias_map, want='P')
             if not ppid:
-                continue
-            # Find role for this person from roles map
-            role = None
-            if isinstance(roles_map, dict):
-                for role_name, role_val in roles_map.items():
-                    if isinstance(role_val, list):
-                        if ppid in [normalize_id(str(v)) for v in role_val]:
-                            role = role_name
-                            break
-                    elif normalize_id(str(role_val)) == ppid:
-                        role = role_name
-                        break
+                continue   # inert note-link: unknown/ambiguous name, no garbage row
+            role = next((rn for rn, pids in resolved_roles if ppid in pids), None)
             conn.execute(
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
                 (cid, ppid, pos, role),
             )
 
-        # claim_links
+        # claim_links - targets are C-ids, possibly wrapped (`[[C-…]]`).
+        # ID-shaped only, deliberately: the claim-time alias map differs
+        # between full build (snapshotted before any source/claim aliases
+        # exist) and upsert (other sources' rows survive), so resolving NAMES
+        # here would make the incremental path diverge from the full rebuild.
+        # Lint's E004 handles name targets per the inert-note-link contract.
         for link_type in ('corroborates', 'contradicts'):
-            targets = claim.get(link_type) or []
-            if isinstance(targets, str):
-                targets = [targets]
-            for t in targets:
-                tid = normalize_id(str(t))
+            for t in link_field_refs(claim.get(link_type)):
+                tid = _resolve_claim_ref(t, alias_map=None)
                 if tid:
                     conn.execute(
                         'INSERT INTO claim_links(claim_id, rel, target_id) VALUES (?,?,?)',
@@ -1323,8 +1433,9 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
 
     try:
         with conn:
-            # Places
-            _index_places(conn, archive_root)
+            # Places. Coord-shape warnings are collected (not printed) so they
+            # ride the Result to whichever front door ran the build.
+            place_warnings = _index_places(conn, archive_root)
             if verbose:
                 print('  indexed places')
 
@@ -1379,8 +1490,11 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         size_kb = db_path.stat().st_size // 1024
         print(f'Done. Index at {db_path} ({size_kb} KB)')
 
+    # Warnings (today: malformed place coords) put the build on the documented
+    # warnings exit path (§1: 1 = warnings only) without failing it - the human
+    # must SEE that a hand-edited line was skipped, but the index is complete.
     return Result(
-        exit_code=EXIT_CLEAN,
+        exit_code=EXIT_WARNINGS if place_warnings else EXIT_CLEAN,
         data={
             'mode': 'full',
             'schema_version': INDEX_SCHEMA_VERSION,
@@ -1388,6 +1502,10 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             'sources': source_count,
             'db_path': str(db_path),
         },
+        messages=[
+            Message(level='warning', text=w, path='places/places.yaml')
+            for w in place_warnings
+        ],
         changed=[str(db_path)],
     )
 
@@ -1605,9 +1723,14 @@ def _run_index(args: argparse.Namespace) -> int:
             print(
                 f'Index cache is out of date or unreadable{suffix}; rebuilding from archive files.'
             )
-        build_index(archive_root, fha_config, verbose=getattr(args, 'verbose', False))
+        result = build_index(archive_root, fha_config, verbose=getattr(args, 'verbose', False))
+        # Render the Result's warnings (the _cmd layer's job): each already
+        # names the record and the fix, per the next-step rule.
+        for m in result.messages:
+            print(f'WARNING: {m.text}', file=sys.stderr)
         if not getattr(args, 'verbose', False):
             print(f'Index rebuilt: {archive_root / ".cache" / "index.sqlite"}')
+        return result.exit_code
 
     return EXIT_CLEAN
 
