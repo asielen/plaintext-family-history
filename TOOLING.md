@@ -339,9 +339,9 @@ Never overwrites; never moves a stub out of `stubs/` (placement into couple fold
 
 **Variation detection - implicit grouping from a mixed folder.** A real photo library has variation-siblings scattered among unrelated photos: three scans of the same portrait at different resolutions, a front-and-back pair, a color original and a restored version. They don't need a bundle folder - `fha process` (and `photoindex`) detects them automatically using two tiers:
 
-*Tier 1 - deterministic (free, always on):* files sharing the same basename root with only a suffix variation (`portrait_1880.jpg`, `portrait_1880_back.jpg`, `portrait_1880b.jpg`, `portrait_1880b_back.jpg`) are flagged as a candidate group. Known role suffixes: `-b` or `-c` etc (multiple scans of the same original photo, each may have separate context though), `b` or `c` etc (photo variation letters don't always start with a dash),  `-negative` (the film negative of the photo), `-front` (occasionally fronts are tagged with backs), `-page-N` (if a multi-page photo book it could have multiple pages), `-back` (reverse side), `-bw` (greyscale version), `-crop` (cropped). Any unrecognized suffix is kept as a freeform role. The primary is the file with the shortest/root name; others list as variants.
+*Tier 1 - deterministic (free, always on):* files sharing the same basename root with only a suffix variation (`portrait_1880.jpg`, `portrait_1880_back.jpg`, `portrait_1880b.jpg`, `portrait_1880b_back.jpg`) are flagged as a candidate group. Known role suffixes: `-b` or `-c` etc. (multiple scans of the same original photo, each may have separate context though), `b` or `c` etc. (photo variation letters don't always start with a dash), `-negative` (the film negative of the photo), `-front` (occasionally fronts are tagged with backs), `-page-N` (if a multi-page photo book it could have multiple pages), `-back` (reverse side), `-bw` (greyscale version), `-crop` (cropped). Any unrecognized suffix is kept as a freeform role. The primary is the file with the shortest/root name; others list as variants.
 
-*NOTE ON page-N variations.* This is usually because for photo books both the whole photo book page is scanned along with each individual photo on the page for archiving. So variations based on page-N share less context than other variations, but it still may be relevant for original source documentation.
+*Note on `-page-N` variations:* photo books are usually scanned twice over - the whole page plus each individual photo on it - so page-level variants share less context than other variation kinds, though the whole-page scan still matters as original source documentation.
 
 *Tier 2 - model-assisted (optional, gated behind `--with-vision`):* a vision pass over candidate pairs to confirm perceptual similarity - catches variations with unrelated names (e.g. `scan001.jpg` and `scan002.jpg` that are actually front/back of one photo). Expensive; used only on ambiguous cases Tier 1 can't resolve. Backlog until the core tools exist.
 
@@ -372,8 +372,9 @@ Found 3 files that appear to be variations of the same photo:
 Process as ONE source (shared S-id) or separately?  [one / separate / skip]
 ```
 
-On one: a single S-id is minted. The photos stay exactly where they are - names and locations unchanged. The root photo is flagged as is_primary=true. The source record updates to include an inventory lists each at its existing path with a role annotation:
+On one: a single S-id is minted. The photos stay exactly where they are - names and locations unchanged. The root photo is flagged as `is_primary=true`. The source record's `files:` inventory lists each file at its existing path with a role annotation:
 
+```yaml
 files:
   - file: photos/1880/portrait_1880.jpg
     role: primary
@@ -382,12 +383,13 @@ files:
     role: back
   - file: photos/1880/portrait_1880_bw.jpg
     role: bw
+```
 
-The SOURCE: S-xxxxxxxxxx keyword is written into each file's embedded metadata via exiftool so identity travels with the file if it moves. That is the only write to the files themselves - content and filename are untouched.
+The `SOURCE: S-xxxxxxxxxx` keyword is written into each file's embedded metadata via exiftool so identity travels with the file if it moves. That is the only write to the files themselves - content and filename are untouched.
 
 On separate: each is processed as its own source. If one is clearly a derivative of another, a provenance note is suggested. On skip: deferred to the next session.
 
-The role annotations in files: are the only thing binding the variants - role lives in the record and the embedded SOURCE: keyword, not the filename. This is the opposite of documents-root files, which do carry the S-id in the filename precisely because they can be renamed; photos cannot be, so the record carries the meaning instead. The photo_groups index table caches the grouping for fast "show me all variants of this photo" queries.
+The role annotations in `files:` are the only thing binding the variants - role lives in the record and the embedded `SOURCE:` keyword, not the filename. This is the opposite of documents-root files, which do carry the S-id in the filename precisely because they can be renamed; photos cannot be, so the record carries the meaning instead. The `photo_groups` index table caches the grouping for fast "show me all variants of this photo" queries.
 
 (1) mint S-id; (2) mark identity - **documents root:** rename to `{slug}_{S-id}.{ext}` in place (record `original_filename`); **photos root: NEVER rename** (Lightroom catalog integrity) - keyword only; (3) `exiftool -keywords+="SOURCE: {S-id}" -overwrite_original_in_place` where the format supports keywords; (4) scaffold `sources/{type}/{slug}_{S-id}.md` from the §14 template, inventory pre-filled, empty `## Claims`; (5) print the path. `--more FILE role[:copy]` attaches versions.
 Refuses files already carrying an S-id (filename or keyword).
@@ -399,7 +401,7 @@ Lint E012 for photos checks keyword↔inventory agreement (no filename carrier).
 
 ## 7. View generators - `fha views`
 
-All write GENERATED-headed `.md` into the tree; all derive purely from the index.
+All write GENERATED-headed `.md` into the tree; all derive purely from the index. The per-person forms skip a stub person with a plain note (exit 1) - companion views are curated-person files (SPEC §16), and the guard lives in the tool so no caller has to remember it.
 
 - **`fha views timeline [P-id|--all-curated]`** → `…_timeline_{P-id}.md`: accepted + needs-review claims for the person, sorted by `date_min`, grouped by decade, each line `EDTF - type: value [[S-id]]`, suggested claims listed in a trailing "unreviewed" section.
 - **`fha views draft-queue [P-id|--all-curated]`** → `…_draft-queue_{P-id}.md`: accepted claims whose source is not cited in the profile body - the writing backlog. Consumed by the `write-biography` skill. See §14b for the full design.
@@ -604,7 +606,7 @@ Output is a `.ged` file; round-tripping back in is explicitly unsupported - GEDC
 
 ## 13b. `fha capture` - web record capture (the intake on-ramp)
 
-> **Full design: [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md).** The intake on-ramp - the engine, every delivery form (paste, bookmarklet, browser extension, native host, Claude-in-Chrome), the browser→inbox transport, the staged-bundle contract, and the `fha capture --ingest` sweep - is specified there in full. This section is the summary that the rest of TOOLING/SPEC cross-references.
+> **Full design: [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md).** The intake on-ramp - the engine, every delivery form (paste, browser extension, native host, Claude-in-Chrome), the browser→inbox transport, the staged-bundle contract, and the `fha capture --ingest` sweep - is specified there in full. This section is the summary that the rest of TOOLING/SPEC cross-references.
 
 The primary way starter sources enter the archive.
 Most existing research lives behind logins (Ancestry especially), so capture is designed to run **on the page the human already has open** - it never logs in, never scrapes credentialed endpoints on its own, and sees only what the browser is already showing.
@@ -616,7 +618,7 @@ The companion's output is a **source stub** in the inbox (SPEC §12.1), never a 
 
 **Boundaries:** capture reads the open DOM/HTML only - it does not paginate, query APIs, or fetch behind auth; bulk or automated retrieval against a site's terms is out of scope by design. Everything it produces enters at `suggested`/needs-review like any intake. The governing principle - **fast, forgiving capture now; structured review later** - and the four-phase companion workflow (invoke → confirm → capture the evidence → stage, don't process) are detailed in [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) §5.
 
-**`fha capture --ingest [DIR] [--dry-run]`** (built) - the local sweep that turns browser-staged bundles into inbox stubs. A delivery form (the bookmarklet, the extension, the native host, Claude-in-Chrome) drops a `<slug>-<timestamp>/` bundle (`page.html` + optional `asset.*` + `capture.json`) into a staging folder; `--ingest` feeds each bundle through the same `run_capture` engine - so the stub is byte-identical to the paste path's - and parks the swept bundle in `.ingested/` (never hard-deleted). `DIR` defaults to the `fha.yaml` `capture_staging:` key, else `~/Downloads/fha-inbox`. The sweep is idempotent (a name already parked is skipped) and resilient (a malformed bundle is reported and left in place, never aborting its siblings). It writes only to `inbox/`, so it stays available on a `WORKING_COPY` machine. Full contract: [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) §6.
+**`fha capture --ingest [DIR] [--dry-run]`** (built) - the local sweep that turns browser-staged bundles into inbox stubs. A delivery form (the extension, the native host, Claude-in-Chrome) drops a `<slug>-<timestamp>/` bundle (`page.html` + optional `asset.*` + `capture.json`) into a staging folder; `--ingest` feeds each bundle through the same `run_capture` engine - so the stub is byte-identical to the paste path's - and parks the swept bundle in `.ingested/` (never hard-deleted). `DIR` defaults to the `fha.yaml` `capture_staging:` key, else `~/Downloads/fha-inbox`. The sweep is idempotent (a name already parked is skipped) and resilient (a malformed bundle is reported and left in place, never aborting its siblings). It writes only to `inbox/`, so it stays available on a `WORKING_COPY` machine. Full contract: [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) §6.
 
 ## 13c. `fha install` / `fha update-tools` - scaffolding & updating a private archive
 
@@ -628,7 +630,7 @@ This is the single source of truth for "what gets copied" - when the package gro
 The list lives in versioned data, never hardcoded in prose or memory.
 
 The manifest covers the **operating layer** - everything a genealogist needs to operate an archive: `tools/` (and any future tool folders), the rulebooks (`SPEC.md`, `TOOLING.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`), the project `README.md`, the whole `docs/` folder, and the agent workflow procedures under `.claude/skills/` - plus the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
-It explicitly **excludes** spec-repo furniture that never enters an archive: `example-archive/`, `archive-template/` (its contents seed the skeleton; the folder itself is not copied), `tests/`, `.github/`, `.claude/settings.json` (the spec-repo's own agent config), `PRIVACY.md` (the public-repo "no real data" policy - actively contradictory inside a real archive), and `RELEASE_CHECKLIST.md`.
+It explicitly **excludes** spec-repo furniture that never enters an archive: `example-archive/`, `archive-template/` (its contents seed the skeleton; the folder itself is not copied), `tests/`, `.github/`, `.claude/settings.json` (agent permission grants are personal - never committed to the public repo and never shipped; each user approves their own), `PRIVACY.md` (the public-repo "no real data" policy - actively contradictory inside a real archive), and `RELEASE_CHECKLIST.md`.
 
 **`fha install <archive-path>`** - the first-time bootstrap, **run from a clone of the public repo** (the only place the code exists before anything is copied).
 Creates `<archive-path>` if absent (skeleton + full operating layer), or populates an existing folder that has no tools yet.
@@ -809,8 +811,10 @@ packet; the converter needs stubs + lint to validate its output.
 **Testing invariants:** the clean golden fixture is `tests/fixtures/` (must lint exit 0);
 intentionally broken fixtures live under `tests/fixtures/broken-{CODE}/`, one per lint code.
 `example-archive/` is permitted to exit 1 with documented known warnings (currently W101 -
-Thomas Hartley death record absent); those must not regress in count or code without a
-deliberate change. Every tool ships `--dry-run`. `fha lint` must run clean on the pilot before
+Thomas Hartley death record absent - and W102 - one suggested claim staged on the family-portrait
+source as review-demo material); those must not regress in count or code without a
+deliberate change. This sentence is the canonical statement of that baseline - other docs
+reference it rather than restating the codes. Every tool ships `--dry-run`. `fha lint` must run clean on the pilot before
 any tool is declared done; `tools/README.md` is the authoritative build-status record.
 
 ---
@@ -819,7 +823,7 @@ any tool is declared done; `tools/README.md` is the authoritative build-status r
 
 > **Full design: [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md).** The workbench harness configuration (vendor-lock rules, external-root access, model-tier selection, session hygiene) and every workflow skill (`review-claims`, `process-source`, `mine-transcript`, `today`, `research-next`, `write-biography`, `merge-identities`, `place-research`, and the `photo-context` skill backlog) are specified there in full, with the build sequence in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md). This section is the summary that the rest of TOOLING/SPEC cross-references.
 
-The interface layer sits on top of the deterministic `fha` tools: **deterministic work belongs in `fha` tools; AI judgment belongs in workbench skills; human review is the only gate to `accepted`.** Skills are portable `.claude/skills/{name}/SKILL.md` files - instructions plus `fha` invocations, no harness APIs - so the harness choice stays reversible. `AGENTS.md` is the canonical, harness-agnostic operating instruction; `CLAUDE.md` is a one-line deferral to it. No skill has been built yet; the tools they will orchestrate are all shipped.
+The interface layer sits on top of the deterministic `fha` tools: **deterministic work belongs in `fha` tools; AI judgment belongs in workbench skills; human review is the only gate to `accepted`.** Skills are portable `.claude/skills/{name}/SKILL.md` files - instructions plus `fha` invocations, no harness APIs - so the harness choice stays reversible. `AGENTS.md` is the canonical, harness-agnostic operating instruction; `CLAUDE.md` is a one-line deferral to it. The skills are authored (build status: [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md)); the tools they orchestrate are all shipped.
 
 ---
 
@@ -834,7 +838,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 |---|---|
 | `today` skill - `/today` | Session start. Runs and narrates the report, discoveries first; offers the top item. |
 | `process-source` skill (A) | "Process the inbox / this file." `fha process` + AI draft + hand-off to review. |
-| `review-claims` skill (A) | "Review the census claims." The gate; ends with reindex + xref + lint. |
+| `review-claims` skill (A) | "Review the census claims." The gate; ends with reindex + xref + touched-person view refresh + lint. |
 | `mine-transcript` skill (A) | "Mine grandpa's interview." Invoked, never automatic. |
 | `write-biography` skill (A) | "Draft Margaret's bio." Consumes the draft queue; AI-DRAFT markers. |
 | `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes hypotheses. |
@@ -842,8 +846,8 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
 | `fha claim <C-id> --status …` (T C) | The review gesture: move one claim's `status:` (`accepted`/`disputed`/`rejected`/`needs-review`/`superseded`), stamp `reviewed:` (§3b). Driven by `review-claims` and the report's prompts; `accepted` is the human gate. `--value`/`--date`/`--dry-run`. |
 | `fha confirm <verb> …` (T C) | Act on a detection candidate or report prompt: `xref`, `cooccur`, `dismiss`, `place`, `discovery`, `draft` (§14a3). The deterministic write floor under the read-only detectors. Every verb `--dry-run`. |
-| `fha lint` - `/lint` (T C) | After any batch of edits; the done-gate. Flags: `--with-exif`, fix modes (diff-previewed). |
-| `fha doctor` - `/doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |
+| `fha lint` (T C) | After any batch of edits; the done-gate. Flags: `--with-exif`, fix modes (diff-previewed). |
+| `fha doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |
 | `fha process <file\|folder>` (T C) | Direct intake without the skill conversation; folder mode triages first. |
 | `fha packet <P-id>` (T C) | "Make grandma's packet." `--include-research/--include-restricted/--include-dna/--no-photos/--dry-run/--overwrite`. |
 | `fha report` (T C) | The raw report, un-narrated. `--full`, `--section`. |
@@ -863,11 +867,11 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha capture` (T C, + browser companion) | Capturing a record from an open web page (Ancestry etc.): citation + asset/HTML-snapshot + research-log entry → `fha process`. The main intake on-ramp. |
 | `fha gedcom <P-id\|--all>` (T C) | Exporting relationships+vitals to GEDCOM for another genealogy app. One-way; redacts living/unknown. |
 | `fha views tree <P-id> --mode …` (T C) | Generating an ancestor/descendant/FAN tree (json/html/dot). |
-| `fha views timeline\|sources-index\|draft-queue\|brackets` (T C) | Manual view refresh (review sessions auto-trigger); `brackets --fix` after family-structure changes - also verifies and corrects Ahnentafel folder numbers and person file placement (requires `root_person` in `fha.yaml`). |
+| `fha views timeline\|sources-index\|draft-queue\|brackets` (T C) | Manual view refresh (review sessions refresh the touched persons' views); `brackets --fix` after family-structure changes - also verifies and corrects Ahnentafel folder numbers and person file placement (requires `root_person` in `fha.yaml`). |
 | `fha normalize-links [--dry-run \| --write]` (T C) | Tidy citations/cross-links to the standard form: single-bracket `[S-…]` → `[[S-…]]`; a resolved human stem → canonical `[[S-…]]` (keeping the stem in `aliases:`); a resolved frontmatter name-link `[[Ken Smith]]` → `[[P-…\|Ken Smith]]`. Flags ambiguous name-links (alias clash, W113) rather than guessing. Dry-run by default; returns a `Result`. Sits beside the formatter - deliberately not part of it (the formatter never rewrites prose). |
 | `fha places geocode` / `places lint` (T C) | Coordinate backfill (human-confirmed); registry hygiene. |
 | `fha convert-mining [--apply]` (T C) | One-time: legacy ChatGPT mining migration. |
-| `fha photoindex find / report` (T C, deferred after scan/schema phase) | Ad-hoc photo search; cross-variant date-conflict review. |
+| `fha photoindex find / report` (T C) | Ad-hoc photo search; cross-variant date-conflict review. |
 | `fha reconcile` / `photoindex reconcile` (T C) | Heal index paths after moving/renaming files; run after a photo-organizing session. |
 | `fha photoindex tag-person` (T C) | Writing bare `P-id` keywords across a face-tag match or onto specific photos (previewed). |
 
@@ -884,5 +888,5 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha photoindex triage` | The report's triage section. |
 | `fha lint --format-check/--format-write` | Cleanup sessions; always diff-previewed. |
 
-**Recommended slash wrappers** (thin files in `.claude/commands/`): `/today`, `/lint`, `/doctor`.
+**Slash surfaces:** the harness exposes each `.claude/skills/{name}/` folder as its own slash command (`/today` is the `today` skill - no separate wrapper file needed).
 Everything else is conversational; skills auto-trigger on matching requests.

@@ -313,6 +313,110 @@ def _curated_person_ids(conn: sqlite3.Connection) -> list[str]:
     return [r['id'] for r in rows]
 
 
+_RESERVED_VIEW_FOLDERS = ('stubs', 'connections')
+
+
+def _reserved_view_folder(profile_p: Path | None) -> str | None:
+    """The reserved non-couple folder a profile sits directly under, else None.
+
+    Companion views live beside curated profiles in couple folders; people/stubs/
+    and people/connections/ are the reserved non-couple folders (`_couple_folders`
+    excludes both), so a profile parked in either must not get a companion view.
+    """
+    if profile_p is not None and profile_p.parent.name.lower() in _RESERVED_VIEW_FOLDERS:
+        return profile_p.parent.name.lower()
+    return None
+
+
+def _view_eligible_curated_ids(
+    conn: sqlite3.Connection, archive_root: Path
+) -> list[str]:
+    """Curated person ids whose profile lives in a maintainable location.
+
+    The bulk view paths (`--all-curated`, `views refresh`) generate a companion
+    file *beside each profile* (`_out_path_for`). A curated-tier record still
+    parked under people/stubs/ would get a GENERATED file written into stubs/ -
+    the exact case `_skip_stub_person` refuses on the per-person path - so it is
+    filtered out here too (with a one-line note), keeping the tier-and-location
+    rule uniform across every generation path.
+    """
+    eligible: list[str] = []
+    for pid in _curated_person_ids(conn):
+        profile_p = _profile_path_for(conn, pid, archive_root)
+        folder = _reserved_view_folder(profile_p)
+        if folder is not None:
+            row = conn.execute('SELECT name FROM persons WHERE id = ?', (pid,)).fetchone()
+            name = row['name'] if row else pid
+            print(
+                f"  skipped {pid} ({name}): curated record still under people/{folder}/ - "
+                f"promote it into its couple folder to generate its companion views",
+                file=sys.stderr,
+            )
+            continue
+        eligible.append(pid)
+    return eligible
+
+
+def _empty_curated_views_result(conn: sqlite3.Connection) -> Result:
+    """Result for a bulk view run that found no *eligible* curated person.
+
+    Distinguishes 'no curated persons at all' (clean, exit 0 - nothing to do) from
+    'every curated record is still parked under people/stubs/' (a warning): the
+    latter generated nothing yet leaves real work to do, so it must not read as
+    up-to-date to a caller or to automation.
+    """
+    if _curated_person_ids(conn):
+        print(
+            'All curated persons are still under people/stubs/ or people/connections/ - '
+            'nothing was generated; promote them into their couple folders first.',
+            file=sys.stderr,
+        )
+        return _views_result(EXIT_WARNINGS, data={'count': 0})
+    print('No curated persons found in index.')
+    return _views_result(EXIT_CLEAN, data={'count': 0})
+
+
+def _skip_stub_person(
+    conn: sqlite3.Connection, pid: str, view_name: str, archive_root: Path
+) -> bool:
+    """True when pid must not get a companion view - a non-curated (stub) person,
+    or any record still parked under people/stubs/ - with a plain note either way.
+
+    Companion views (timeline, sources-index, draft-queue) are curated-person
+    files (SPEC §16); they are written *beside the profile* (`_out_path_for`), so a
+    curated person's views only stay in a maintained location when the profile
+    lives in a couple folder. Two states must be refused:
+      - a non-curated (stub/connection) person - a companion file is meaningless;
+      - a record whose frontmatter was flipped to `tier: curated` but that still
+        physically lives in people/stubs/ - writing beside it drops a GENERATED
+        file into stubs/, the wrong home for a curated person's views.
+    Guarding on tier *and* location keeps the rule enforced here, not remembered by
+    every caller. An unknown pid returns False - the generator's own "no profile
+    found" warning covers that case.
+    """
+    row = conn.execute('SELECT tier, name FROM persons WHERE id = ?', (pid,)).fetchone()
+    if row is None:
+        return False
+    profile_p = _profile_path_for(conn, pid, archive_root)
+    reserved = _reserved_view_folder(profile_p)
+    is_curated = (row['tier'] or '').lower() == 'curated'
+    if is_curated and reserved is None:
+        return False
+    reason = (
+        f'is curated but still lives under people/{reserved}/' if is_curated
+        else f"is a {row['tier']} person"
+    )
+    print(
+        f"{pid} ({row['name']}) {reason} - companion views like the {view_name} "
+        f"belong to curated people in their couple folder (SPEC §16), so nothing "
+        f"was written. To generate one, promote the record: set `tier: curated` and "
+        f"move it into its couple folder (out of people/stubs/ or people/connections/), "
+        f"then re-run.",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _couple_folders(conn: sqlite3.Connection, archive_root: Path) -> list[tuple[Path, list[str]]]:
     """
     Return [(folder_path, [person_ids])] for each curated couple folder.
@@ -1939,10 +2043,9 @@ def run_timeline(
     changed: list[str] = []
     try:
         if all_curated:
-            person_ids = _curated_person_ids(conn)
+            person_ids = _view_eligible_curated_ids(conn, archive_root)
             if not person_ids:
-                print('No curated persons found in index.')
-                return _views_result(EXIT_CLEAN)
+                return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
                 out = _generate_timeline(conn, pid, archive_root)
@@ -1963,6 +2066,8 @@ def run_timeline(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
+        if _skip_stub_person(conn, pid, 'timeline', archive_root):
+            return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_timeline(conn, pid, archive_root)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
@@ -2010,7 +2115,7 @@ def run_sources_index(
             count = 0
             if all_curated:
                 # Per-person files for all curated persons
-                for pid in _curated_person_ids(conn):
+                for pid in _view_eligible_curated_ids(conn, archive_root):
                     out = _generate_sources_index_person(conn, pid, archive_root)
                     if out:
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
@@ -2030,6 +2135,10 @@ def run_sources_index(
                 # post-dates .cache/index.sqlite); warn the same way `refresh` does.
                 print('Run `fha index` to update the search index with the new view file(s).')
                 return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+            if all_curated and not changed:
+                # Nothing generated because every curated record is parked in
+                # people/stubs/ (couple_folders_only with 0 folders stays clean).
+                return _empty_curated_views_result(conn)
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
         if not person_id:
@@ -2037,6 +2146,8 @@ def run_sources_index(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
+        if _skip_stub_person(conn, pid, 'sources-index', archive_root):
+            return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_sources_index_person(conn, pid, archive_root)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
@@ -2080,10 +2191,9 @@ def run_draft_queue(
     changed: list[str] = []
     try:
         if all_curated:
-            person_ids = _curated_person_ids(conn)
+            person_ids = _view_eligible_curated_ids(conn, archive_root)
             if not person_ids:
-                print('No curated persons found in index.')
-                return _views_result(EXIT_CLEAN)
+                return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
                 out = _generate_draft_queue(conn, pid, archive_root)
@@ -2104,6 +2214,8 @@ def run_draft_queue(
             return _views_result(EXIT_FAILURE)
 
         pid = normalize_id(person_id)
+        if _skip_stub_person(conn, pid, 'draft-queue', archive_root):
+            return _views_result(EXIT_WARNINGS, data={'count': 0})
         out = _generate_draft_queue(conn, pid, archive_root)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
@@ -2197,10 +2309,9 @@ def run_refresh(archive_root: Path) -> Result:
 
     changed: list[str] = []
     try:
-        person_ids = _curated_person_ids(conn)
+        person_ids = _view_eligible_curated_ids(conn, archive_root)
         if not person_ids:
-            print('No curated persons found in index.')
-            return _views_result(EXIT_CLEAN)
+            return _empty_curated_views_result(conn)
 
         _per_person = [
             (_generate_timeline,             'timeline      '),

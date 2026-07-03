@@ -4,7 +4,7 @@
 
 This file is the build guide for the **ingestion layer** - the capture engine and every front-end that feeds it. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) (workbench skills). Design rationale lives in [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); this file tells you the sequence and how to verify it.
 
-**Status: shipped.** Every milestone below is ✓ shipped (the native-host front-end activation in MG2.3 is the one deferred step, noted inline).
+**Status: shipped.** Every milestone below is ✓ shipped; the MG2.3 native-host path ships end to end, with the extension side opt-in and OFF by default.
 
 **Tool conventions (all PRs):** identical to BUILD.md - one Python file per tool under `tools/`; tools never import tools; shared code only in `tools/_lib.py`; engine/interface `Result` split; every mutating op ships `--dry-run`; exit codes 0/1/2/3; `tools/README.md` is the authoritative status record. The four-part **UX bar** and the **`fha doctor` / `docs/TROUBLESHOOTING.md`** rule from BUILD.md bind every phase here too.
 
@@ -17,7 +17,7 @@ Phases use the **MG** series (this doc's own numbering), grouped into two layers
 | Milestone | Layer | Phases | Status |
 |---|---|---|---|
 | G1 | Layer G1 - The capture engine | MG1.1-MG1.3 | ✓ shipped |
-| G2 | Layer G2 - Staging, delivery & the seamless path | MG2.1-MG2.3 | ✓ shipped (MG2.3 backend shipped; extension-side activation deferred) |
+| G2 | Layer G2 - Staging, delivery & the seamless path | MG2.1-MG2.3 | ✓ shipped (MG2.3 ships end to end; extension side opt-in, OFF by default) |
 
 **Dependencies.** `fha capture` depends on the index and hands off to `fha process` (BUILD.md, Layer 7). The browser companion (MG2.2) depends only on the `fha capture --ingest` backend contract (MG2.1). Build order follows the spine's own logic (TOOLING_INGESTION.md §8): the engine first, then `--ingest` (it makes any staged bundle useful and is a thin wrapper over the existing engine), then the extension (which produces those bundles), then the native host as a seamless-path upgrade.
 
@@ -135,9 +135,10 @@ Two companions land in the same PR:
   waiting (`staged captures: N … next: run \`fha capture --ingest\``), mirroring inbox aging -
   via a shared `capture.staged_bundles(fha_config)` helper, and only when the staging folder
   exists (silent on machines that never run the companion).
-- **`capture.json` schema version.** A `schema:` field (current `capture._CAPTURE_JSON_SCHEMA`
-  = 1) lets the companion and backend evolve independently; ingest is forgiving - absent = current,
-  newer = read shared fields + warn, never refused.
+- **`capture.json` schema version.** A `schema:` field (shipped at 1 in this phase; current
+  `capture._CAPTURE_JSON_SCHEMA` = 2 since the multi-asset `assets:` list landed -
+  TOOLING_INGESTION §3) lets the companion and backend evolve independently; ingest is
+  forgiving - absent = current, newer = read shared fields + warn, never refused.
 
 Add `tests/test_capture_ingest.py` (builds bundles in a temp staging dir from the existing
 `capture-samples/*.html`); cover the doctor nudge and the newer-schema warning too.
@@ -168,17 +169,21 @@ Scope is the **core** extension only:
   The authoritative per-site parsing stays in the Python recipes, which re-run on the saved
   `page.html` at ingest. The browser captures; Python extracts.
 - The §5.1 transport: assemble `page.html` + optional `asset.<ext>` + `capture.json`
-  (schema 1, §3) in memory, write them via `chrome.downloads.download()` into
-  `Downloads/fha-inbox/<slug>-<timestamp>/`. The panel reports exactly where the bundle went
-  and that `fha capture --ingest` files it - it never pretends Downloads is the archive.
+  (schema 2 today; shipped at schema 1 - §3) in memory, write them via
+  `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>/`. The panel
+  reports exactly where the bundle went and that `fha capture --ingest` files it - it never
+  pretends Downloads is the archive.
 - A minimal single-file inliner (§9): images + stylesheet text inlined, scripts dropped,
   bounded; `page.html` is always saved alongside so scraping never depends on the snapshot.
-- A provisional screenshot is surfaced as a `notes` line, since schema 1 has no field for it
-  (§5.6). `sidePanel` is added to the §5.4 least-privilege set for the panel UX.
+- A provisional screenshot was surfaced as a `notes` line under schema 1; schema 2 now
+  carries a per-asset `provisional` flag in the contract, though ingest still reads only
+  `file`/`role` - the notes line remains the operative carrier (§5.6). `sidePanel` is added
+  to the §5.4 least-privilege set for the panel UX.
 
-One piece is **explicitly out of this milestone, as a separate layer:** first-class
-`asset_provisional` metadata - a `capture.json` schema 2 field + ingest plumbing, deferred
-(§9). The seamless native-host path is its own phase (MG2.3), not part of the core extension.
+One piece was **explicitly out of this milestone, as a separate layer:** first-class
+per-asset `provisional` metadata - the schema 2 contract now carries the field (§3), but the
+ingest/stub plumbing that honors it is still open (§5.6, §9).
+The seamless native-host path is its own phase (MG2.3), not part of the core extension.
 
 Add `tests/test_browser_companion.py`: validate the MV3 manifest + that every file it names
 exists, and round-trip the committed `browser-companion/test-bundle/` (built in the exact
@@ -193,7 +198,7 @@ python -m unittest tests.test_browser_companion -v   # manifest valid; example b
 
 ---
 
-### MG2.3 - Native-messaging host - the seamless "straight into inbox/" path (✓ shipped, backend)
+### MG2.3 - Native-messaging host - the seamless "straight into inbox/" path (✓ shipped)
 
 **One PR.** Extend `tools/capture.py` with the native-messaging host backend: `fha capture
 --host` (the length-prefixed stdin/stdout JSON server Chrome speaks to) and `fha capture
@@ -211,8 +216,8 @@ mode like every other capture path.
 **Off by default, opt-in.** The extension front-end that drives the host - the `nativeMessaging`
 permission request and the `isAvailable` gate behind the "file straight into my archive"
 toggle - stays OFF until the human enables it; when no host answers, the extension silently
-falls back to the MG2.2 download path. That extension-side activation is the **one deferred
-step**; the Python backend and its manifest installer ship complete.
+falls back to the MG2.2 download path. That extension-side front-end has since shipped
+(opt-in, OFF by default); the Python backend and its manifest installer ship complete.
 
 Add `tests/test_capture_host.py`: frame a bundle through the host and assert the resulting
 stub matches the `--ingest` output; cover `suggestNames`/`checkUrl` and the `--install-host`
@@ -228,8 +233,8 @@ python -m unittest tests.test_capture_host -v   # framed bundle files into inbox
 
 ## Testing invariants (all PRs)
 
-Same as BUILD.md: every PR must leave `fha lint --root example-archive` exiting 1 with exactly
-the documented W101 - no new errors or warnings. Every mutating path ships `--dry-run`.
+Same as BUILD.md: every PR must leave `fha lint --root example-archive` exiting 1 with only the
+documented baseline warnings (TOOLING.md §15) - no new errors or warnings. Every mutating path ships `--dry-run`.
 `tools/README.md` is the authoritative implementation-status record; update the relevant rows
 before closing any PR. The four-part UX bar (no traceback reaches the user; every error names
 cause + fix; jargon ships an example; messy-but-recoverable input is inferred or asked, never
