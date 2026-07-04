@@ -3,7 +3,11 @@
 normalize_links.py - fha normalize-links: settle citations to their canonical form.
 
   fha normalize-links            Preview the rewrites (dry run - writes nothing)
+  fha normalize-links --dry-run  The same preview, named explicitly (the flag the
+                                 operating instructions tell agents to always pass)
   fha normalize-links --write    Apply them, showing the same diff
+
+`--dry-run --write` together is refused (exit 2): pick one - preview or write.
 
 This is the ONE explicit, previewed rewrite pass over a human's citation prose
 (SPEC §3 "resolve always; rewrite only on purpose"). It is deliberately separate
@@ -43,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FRONT_RE,
@@ -349,6 +354,14 @@ def _emit(result: Result, show_diff: bool) -> int:
 
 
 def _cmd_normalize_links(args: argparse.Namespace) -> int:
+    # `--dry-run` names the default preview explicitly (AGENTS.md tells agents
+    # to always pass it before any mutating operation, so it must parse here);
+    # combined with `--write` the request is contradictory - refuse plainly.
+    if getattr(args, 'dry_run', False) and getattr(args, 'write', False):
+        print('ERROR: --dry-run and --write cannot be combined - pick one: '
+              '--dry-run previews the changes (the default), --write applies them.',
+              file=sys.stderr)
+        return EXIT_ERRORS
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
@@ -371,6 +384,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--root', metavar='PATH', help='Archive root')
     p.add_argument('--write', action='store_true',
                    help='Apply the rewrites (default is a dry-run preview)')
+    p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                   help='Preview without writing (already the default; accepted '
+                        'so the always-preview habit works here too)')
     p.add_argument('--quiet', action='store_true',
                    help='Suppress the per-file diff (show only the summary)')
     p.set_defaults(func=_cmd_normalize_links)
@@ -384,6 +400,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument('--root', metavar='PATH')
     parser.add_argument('--write', action='store_true')
+    parser.add_argument('--dry-run', action='store_true', dest='dry_run')
     parser.add_argument('--quiet', action='store_true')
     args = parser.parse_args(argv)
     return _cmd_normalize_links(args)

@@ -1926,9 +1926,30 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_find(args: argparse.Namespace) -> int:
+    """argparse → run_find bridge; returns the plain int exit code.
+
+    An explicit --root must point at a real archive (fha.yaml at its top),
+    same guard as `fha index --root`: without it a typo'd --root scanned an
+    arbitrary folder and reported a false "not found in archive tree" - the
+    record exists, the folder was wrong. find is read-only so nothing was
+    fabricated, but a false not-found is the same silent-false-success class.
+    The no---root path needs no guard (find_archive_root only returns a
+    folder that already contains fha.yaml). The `fha id check` alias resolves
+    its root in fha.py, not here.
+    """
     root = getattr(args, 'root', None)
     if root:
         archive_root = Path(root).resolve()
+        if not (archive_root / 'fha.yaml').is_file():
+            print(
+                f'ERROR: {archive_root} does not look like an archive (no '
+                f'fha.yaml there) - is this the right folder? An archive has '
+                f'fha.yaml at its top folder. Run `fha find` from inside '
+                f'your archive, or point --root at the folder that contains '
+                f'fha.yaml.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
     else:
         archive_root = find_archive_root()
         if archive_root is None:

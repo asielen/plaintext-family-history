@@ -29,11 +29,12 @@ live here. Your actual family records will live in a folder *inside* it, which y
 
 ---
 
-## Step 2 - Install Python (the one thing you must install)
+## Step 2 - Install Python (the one program you must install)
 
-The tools run on Python - free, and the only required install. (`exiftool`, for photo metadata,
-is optional and can wait; the AI assistant that operates the archive is covered in
-[GETTING_STARTED](GETTING_STARTED.md#3-your-ai-assistant-required).)
+The tools run on Python - free, and the only *program* you install. (A few small helper
+packages complete it in Step 5, with a single command - no installer, no download page.
+`exiftool`, for photo metadata, is optional and can wait; the AI assistant that operates the
+archive is covered in [GETTING_STARTED](GETTING_STARTED.md#4-your-ai-assistant-required).)
 
 1. Go to **<https://www.python.org/downloads/>** and click "Download Python."
 2. Run the installer. **On Windows, tick "Add Python to PATH"** before clicking Install.
@@ -90,7 +91,7 @@ TextEdit on Mac - not Word). It tells the tools where your files live.
 
 ---
 
-## Step 5 - Run your first command
+## Step 5 - Finish the install and run your first command
 
 Time to confirm the tools work. Open a terminal **in your workshop folder**:
 
@@ -98,6 +99,17 @@ Time to confirm the tools work. Open a terminal **in your workshop folder**:
   press Enter - a terminal opens already pointed at that folder.
 - **Mac:** in Terminal, type `cd ` (with a space), drag the unzipped folder onto the window, and
   press Enter.
+
+First, the helper packages promised in Step 2 - Python's built-in installer fetches them in one
+command:
+
+```
+python -m pip install -r tools/requirements.txt
+```
+
+**Did it work?** Run `python -c "import yaml"` - printing *nothing at all* is the good sign. (If
+it says `No module named 'yaml'`, the install didn't land - run the install command again and
+read its last lines for the reason.)
 
 Now run the linter against your archive - it checks that everything is shaped correctly:
 
@@ -123,7 +135,7 @@ tells the tools which archive folder to use; `tools/fha.py` is the tool program 
   picks up exactly here - drop a scan in `inbox/`, let the assistant process it, accept the facts
   it suggests.
 - **Set up the AI assistant** that operates the archive day to day:
-  [GETTING_STARTED, Part 1 §3](GETTING_STARTED.md#3-your-ai-assistant-required).
+  [GETTING_STARTED, Part 1 §4](GETTING_STARTED.md#4-your-ai-assistant-required).
 
 ## Keeping up to date (still no git)
 

@@ -625,6 +625,43 @@ def _spawn_contradiction_question(archive_root: Path, ca: str, cb: str) -> Path:
 
 # ── Verb: confirm cooccur (mint a relationship claim) ───────────────────────────
 
+def _existing_pair_claim(source_path: Path, pa: str, pb: str, subtype: str) -> dict | None:
+    """Find a live relationship claim in this source already covering the pair.
+
+    This is what makes `confirm cooccur` idempotent: a `suggested` claim derives
+    no `relationships` edge, so `fha cooccur` keeps re-proposing the pair and the
+    same confirm is easy to run twice - each run used to mint a duplicate claim.
+    A claim blocks a re-mint when it is `type: relationship` with the same
+    `subtype`, its `persons` cover both P-ids (in either order), and its status
+    is anything except `rejected`/`superseded` - a dead claim must NOT block a
+    fresh confirm (a human who rejected one bad claim may later confirm the same
+    pair for real). Returns the blocking claim dict, or None. An unparseable
+    record yields None; the append path's pre-write guard judges it from there.
+    """
+    try:
+        claims = read_record(source_path).get('claims') or []
+    except Exception:  # noqa: BLE001 - unreadable record cannot show a duplicate
+        return None
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get('type') or '').strip().lower() != 'relationship':
+            continue
+        if str(claim.get('subtype') or '').strip().lower() != subtype:
+            continue
+        if str(claim.get('status') or '').strip().lower() in ('rejected', 'superseded'):
+            continue
+        persons = claim.get('persons')
+        if isinstance(persons, str):
+            persons = [persons]
+        if not isinstance(persons, list):
+            continue
+        norm = {normalize_id(str(p)) for p in persons if p}
+        if pa in norm and pb in norm:
+            return claim
+    return None
+
+
 def run_confirm_cooccur(
     archive_root: Path, *, person_a: str, person_b: str, source_id: str, subtype: str,
     accept: bool = False, reviewed: str | None = None, dry_run: bool = False,
@@ -637,6 +674,11 @@ def run_confirm_cooccur(
     `--accept` the claim is minted `accepted` and stamped `reviewed:` (today
     unless given), treating this confirm as the review - the only way it becomes
     a derived `relationships` edge on the next `fha index`.
+
+    Idempotent, mirroring `confirm xref`'s `already` no-op: when the source
+    already holds a live relationship claim for this pair + subtype (any status
+    except rejected/superseded), the run reports status `already` - `claim_id`/
+    `claim_status` then describe that existing claim - and writes nothing.
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'person_a': None, 'person_b': None,
@@ -679,6 +721,26 @@ def run_confirm_cooccur(
                          f'{archive_root / "sources"}.',
                          next_step='fha find ' + fmt_id_display(source_id))
     result.data['source'] = str(source_path)
+
+    # Idempotency gate: never mint a second claim for a pair + subtype this
+    # source already covers with a live claim (see _existing_pair_claim).
+    existing = _existing_pair_claim(source_path, pa, pb, subtype)
+    if existing is not None:
+        ex_id = str(existing.get('id') or '').strip()
+        ex_disp = fmt_id_display(normalize_id(ex_id)) if is_valid_id(ex_id) else None
+        ex_status = str(existing.get('status') or '').strip() or 'unknown'
+        result.data['status'] = 'already'
+        result.data['claim_id'] = ex_disp
+        result.data['claim_status'] = ex_status
+        result.add('info',
+                   f'{fmt_id_display(pa)} and {fmt_id_display(pb)} already have a '
+                   f'{subtype} relationship claim in {source_path.name} '
+                   f'({ex_disp or "no id yet"}, status {ex_status}). Nothing to do.')
+        if ex_status == 'suggested' and ex_disp:
+            result.add('info',
+                       f'To accept it, review it with `fha claim {ex_disp} --status accepted`.',
+                       next_step=f'fha claim {ex_disp} --status accepted')
+        return result
 
     claim_status = 'accepted' if accept else 'suggested'
     result.data['claim_status'] = claim_status

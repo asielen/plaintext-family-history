@@ -8,16 +8,29 @@ on:
   pull_request_review_comment:
     types: [created]
 
+# No id-token: this workflow authenticates with an API key, not OIDC.
 permissions:
   contents: write
   pull-requests: write
   issues: write
-  id-token: write
+
+# One Claude run per PR/issue at a time; a second trigger queues instead of
+# stacking a concurrent run that could push over the first one's commits.
+concurrency:
+  group: claude-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   claude:
+    # Every trigger is gated on the author's association, including PR open:
+    # an auto-run with write permissions must never fire on content authored
+    # by someone outside the repo's trusted circle.
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.user.login != 'github-actions[bot]') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.user.login != 'github-actions[bot]' &&
+       (github.event.pull_request.author_association == 'OWNER' ||
+        github.event.pull_request.author_association == 'MEMBER' ||
+        github.event.pull_request.author_association == 'COLLABORATOR')) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null &&
        contains(github.event.comment.body, '@claude') &&
        (github.event.comment.author_association == 'OWNER' ||
@@ -30,7 +43,9 @@ jobs:
         github.event.comment.author_association == 'COLLABORATOR'))
     runs-on: ubuntu-latest
     steps:
-      - uses: anthropics/claude-code-action@v1
+      # Pinned to the commit behind the v1 tag (supply-chain: a floating tag
+      # in a write-permissioned workflow can be silently repointed upstream).
+      - uses: anthropics/claude-code-action@01872ccc02bf66740207fb338a783ce028216758 # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |

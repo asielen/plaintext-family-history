@@ -84,6 +84,7 @@ configure_utf8_stdout()
 #    _photoindex_freshness     - .cache/photos.sqlite age vs photos root
 #
 #  Count helpers
+#    _is_restricted_value      - restricted marker predicate (mirrors index.py)
 #    _counts_from_index        - SQL queries against the fresh index
 #    _counts_from_scan         - quick file walk when index is absent or stale
 #
@@ -165,6 +166,20 @@ def _photoindex_freshness(archive_root: Path, fha_config: dict) -> tuple[str, st
 
 # ── Count helpers ─────────────────────────────────────────────────────────────
 
+def _is_restricted_value(value) -> bool:
+    """True when a `restricted:` value marks a source as restricted.
+
+    Mirrors the predicate the index builder uses to fill sources.restricted
+    (index.py `_is_restricted_value`; duplicated per tool because tools never
+    import tools - TOOLING §15): the boolean `true` or any free-text type
+    (`dna`, `by-request`, `deadname`, ...) all count; only an absent or
+    explicitly-false value does not. The scan path must count with exactly
+    these semantics or the two count paths would disagree on any archive
+    that uses typed markers. (`read_record` coerces YAML booleans to the
+    strings 'true'/'false'.)"""
+    return value not in (None, False, '', 'false')
+
+
 def _counts_from_index(archive_root: Path) -> dict | None:
     """
     Query restricted / living counts directly from the fresh index.
@@ -208,7 +223,10 @@ def _counts_from_scan(archive_root: Path) -> dict:
     if sources_dir.is_dir():
         for p in sources_dir.rglob('*.md'):
             rec = read_record(p)
-            if rec['meta'].get('restricted') in (True, 'true'):
+            # Same predicate the index write uses - a typed value
+            # (`restricted: by-request`) counts, matching WHERE restricted = 1
+            # on the index path.
+            if _is_restricted_value(rec['meta'].get('restricted')):
                 restricted += 1
 
     people_dir = archive_root / 'people'
@@ -686,9 +704,28 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     # The browser companion drops bundles in a Downloads-tree staging folder
     # (TOOLING_INGESTION §6); nothing sweeps them automatically. Only surface
     # this when the folder exists at all (most machines never run the companion).
-    from capture import staged_bundles
-    staging_dir, pending = staged_bundles(fha_config)
-    if staging_dir.is_dir():
+    # Guarded like the lint import above: doctor is the tool a human reaches
+    # for when something is broken, so a broken/missing capture.py (a partial
+    # tools update, say) must degrade this one check to a warning line, never
+    # kill the whole health report.
+    staging_dir = None
+    pending: list = []
+    try:
+        from capture import staged_bundles
+        staging_dir, pending = staged_bundles(fha_config)
+    except Exception as exc:
+        lines.append(
+            f'staged captures: {_WARN} check skipped ({exc})  '
+            f'next: if you use the browser companion, run '
+            f'`fha capture --ingest --root "{root_arg}"` by hand; '
+            f'otherwise no action needed'
+        )
+        lines.append('')
+        checks.append({'id': 'staged-captures', 'status': 'warn',
+                       'detail': f'check skipped: {exc}',
+                       'next_step': f'fha capture --ingest --root "{root_arg}"'})
+        worst = max(worst, EXIT_WARNINGS)
+    if staging_dir is not None and staging_dir.is_dir():
         ingest_cmd = f'fha capture --ingest --root "{root_arg}"'
         if pending:
             lines.append(

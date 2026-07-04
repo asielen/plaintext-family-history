@@ -118,7 +118,21 @@ import yaml
 
 
 def _is_restricted_value(value) -> bool:
-    """True when a `restricted:` field value withholds a record from public output."""
+    """True when a `restricted:` field value withholds a record from public output.
+
+    The marker is open (SPEC §19): the boolean `true` OR any free-text type
+    (`dna`, `by-request`, `deadname`, ...) all mean restricted - and the typed
+    values are the strongest markers (`by-request` never opens under any
+    export flag), so a narrow `in (True, 'true')` test would flatten exactly
+    the wrong ones to unrestricted. Only an absent or explicitly-false value
+    is unrestricted. `read_record` coerces YAML booleans to the strings
+    'true'/'false'; the bare True/False checks cover direct-dict callers.
+
+    Every `restricted` column write in this file must use this predicate
+    (full rebuild and incremental upsert both flow through `_index_source`,
+    so one write site keeps the two paths equivalent), and the per-tool
+    copies in doctor/lint/gedcom/wikitree/site agree with it exactly
+    (tools never import tools - TOOLING §15)."""
     return value not in (None, False, '', 'false')
 
 
@@ -909,7 +923,11 @@ def _index_source(
     source_type = str(meta.get('source_type', ''))
     date_edtf = str(meta.get('source_date', ''))
     mn, mx = edtf_bounds(date_edtf) if date_edtf else ('', '')
-    restricted = 1 if meta.get('restricted') in (True, 'true') else 0
+    # Any truthy `restricted:` - including the typed values `dna`/`by-request`,
+    # the strongest markers - stores 1, so every SQL prefilter built on this
+    # column excludes them. The narrow `in (True, 'true')` idiom used here
+    # before flattened typed values to 0 (unrestricted).
+    restricted = 1 if _is_restricted_value(meta.get('restricted')) else 0
     # Three-state on purpose: exporters distinguish "explicitly not publishable"
     # from "unset". 1 = rights.publication_ok true; 0 = explicit false; NULL =
     # absent (publishable by default). The redaction predicate consumers share
@@ -1677,9 +1695,30 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_index(args: argparse.Namespace) -> int:
+    """argparse → build_index / upsert_source bridge; returns the exit code.
+
+    An explicit --root must point at a real archive (its top folder carries
+    fha.yaml) before anything runs. Without this guard a typo'd --root used
+    to glob missing dirs, mint an empty .cache/index.sqlite inside ANY
+    folder, and print "Index rebuilt" with exit 0 - a permanently
+    "successful" empty archive. The refusal happens before any .cache
+    creation and mirrors scaffold.py's update-tools wording; the no---root
+    path needs no guard because find_archive_root only returns a folder
+    that already contains fha.yaml.
+    """
     root = getattr(args, 'root', None)
     if root:
         archive_root = Path(root).resolve()
+        if not (archive_root / 'fha.yaml').is_file():
+            print(
+                f'ERROR: {archive_root} does not look like an archive (no '
+                f'fha.yaml there) - is this the right folder? An archive has '
+                f'fha.yaml at its top folder. Run `fha index` from inside '
+                f'your archive, or point --root at the folder that contains '
+                f'fha.yaml. Nothing was indexed and nothing was created.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
     else:
         archive_root = find_archive_root()
         if archive_root is None:

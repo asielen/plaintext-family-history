@@ -452,6 +452,79 @@ class ConfirmArchiveTests(unittest.TestCase):
              / 'bradford-family-genealogy-notes_S-fc3456789d.md').read_text(encoding='utf-8'),
             src_before)
 
+    def test_cooccur_repeat_confirm_is_already_not_duplicate(self) -> None:
+        # Idempotency: `fha cooccur` keeps re-proposing a pair while its claim
+        # sits suggested, so the same confirm is easy to run twice - the second
+        # run must report `already` and write nothing, not mint a duplicate.
+        first = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        self.assertEqual(first.exit_code, EXIT_CLEAN)
+        self.assertEqual(first['status'], 'ok')
+        src = Path(first['source'])
+        after_first = src.read_text(encoding='utf-8')
+
+        again = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        self.assertEqual(again['status'], 'already')
+        self.assertEqual(again.exit_code, EXIT_CLEAN)
+        self.assertEqual(again.changed, [])
+        self.assertEqual(again['claim_id'], first['claim_id'])
+        self.assertEqual(again['claim_status'], 'suggested')
+        self.assertEqual(src.read_text(encoding='utf-8'), after_first)
+
+        # Order of the P-ids must not matter - the pair is unordered.
+        swapped = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_2, person_b=PERSON_1, source_id=SOURCE, subtype='friend')
+        self.assertEqual(swapped['status'], 'already')
+        self.assertEqual(src.read_text(encoding='utf-8'), after_first)
+
+        # Exactly one claim covers the pair + subtype in the record.
+        pair = {PERSON_1.lower(), PERSON_2.lower()}
+        matches = [
+            c for c in read_record(src)['claims']
+            if c.get('type') == 'relationship' and c.get('subtype') == 'friend'
+            and pair <= {str(p).lower() for p in (c.get('persons') or [])}
+        ]
+        self.assertEqual(len(matches), 1)
+
+    def test_cooccur_rejected_claim_does_not_block_fresh_confirm(self) -> None:
+        # A dead claim (rejected/superseded) is not a live edge; a human who
+        # rejected one bad claim may later confirm the same pair for real.
+        first = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        self.assertEqual(first['status'], 'ok')
+        src = Path(first['source'])
+        text = src.read_text(encoding='utf-8')
+        head, sep, tail = text.partition(f'id: {first["claim_id"]}')
+        self.assertTrue(sep, 'minted claim id not found in the source record')
+        tail = tail.replace('status: suggested', 'status: rejected', 1)
+        src.write_text(head + sep + tail, encoding='utf-8')
+
+        fresh = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        self.assertEqual(fresh['status'], 'ok')
+        self.assertEqual(fresh.exit_code, EXIT_CLEAN)
+        self.assertNotEqual(fresh['claim_id'], first['claim_id'])
+
+        pair = {PERSON_1.lower(), PERSON_2.lower()}
+        matches = [
+            c for c in read_record(src)['claims']
+            if c.get('type') == 'relationship' and c.get('subtype') == 'friend'
+            and pair <= {str(p).lower() for p in (c.get('persons') or [])}
+        ]
+        self.assertEqual(sorted(str(c.get('status')) for c in matches),
+                         ['rejected', 'suggested'])
+
+    def test_cooccur_different_subtype_not_blocked(self) -> None:
+        # The dedup is scoped to the SAME subtype: a friend claim must not
+        # swallow a neighbor confirm for the same pair.
+        confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        other = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='neighbor')
+        self.assertEqual(other['status'], 'ok')
+        self.assertEqual(other.exit_code, EXIT_CLEAN)
+
     def test_place_rejects_name_and_into_together(self) -> None:
         r = confirm.run_confirm_place(
             self.root, claim_ids=[CLAIM_B], name='Marsh Creek', into='L-7c1a9f4e22')

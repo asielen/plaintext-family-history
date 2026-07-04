@@ -769,6 +769,251 @@ class TreeTests(_Base):
         self.assertNotIn('fha-tree-data', self._read('index.html'))
 
 
+class DraftExclusionTests(_Base):
+    """Unaccepted `<!-- AI-DRAFT ... -->` prose (AGENTS.md: draft prose stays
+    inside its markers until the human accepts it via `fha confirm draft`)
+    must never publish, and no AI marker may surface as visible page text."""
+
+    def test_draft_block_excluded_human_prose_after_marker_kept(self):
+        body = ('# Thomas\n## Biography\n'
+                'Drafted census claim [S-1111111111].\n\n'
+                'Second drafted paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - drafted from census -->\n\n'
+                'A human-written paragraph that stays.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('A human-written paragraph that stays.', html)
+        self.assertNotIn('Drafted census claim', html)
+        self.assertNotIn('Second drafted paragraph', html)
+        self.assertNotIn('AI-DRAFT', html)
+
+    def test_accepted_prose_published_marker_invisible(self):
+        body = ('# T\n## Biography\n'
+                'An accepted paragraph of biography.\n\n'
+                '<!-- AI-ACCEPTED 2026-06-01 claude-x - drafted (accepted 2026-06-20) -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas', body=body)
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('An accepted paragraph of biography.', html)
+        self.assertNotIn('AI-ACCEPTED', html)
+
+    def test_extend_flow_accepted_kept_new_draft_excluded(self):
+        # The write-biography extend flow: an accepted block, then a fresh
+        # draft appended below it. The accepted marker bounds the new block.
+        body = ('# T\n## Biography\n'
+                'The accepted early-life paragraph.\n\n'
+                '<!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+                'A new unreviewed paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - v2 -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas', body=body)
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('The accepted early-life paragraph.', html)
+        self.assertNotIn('A new unreviewed paragraph.', html)
+        self.assertNotIn('AI-DRAFT', html)
+        self.assertNotIn('AI-ACCEPTED', html)
+
+    def test_all_draft_biography_renders_like_no_biography(self):
+        body = ('# T\n## Biography\n'
+                'Entirely drafted paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - note -->\n\n'
+                '## Stories\nA human tale.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('<h2>Biography</h2>', html)     # no stray heading
+        self.assertNotIn('Entirely drafted', html)
+        self.assertIn('<h2>Stories</h2>', html)
+        self.assertIn('A human tale.', html)
+
+    def test_unmarked_prose_directly_above_draft_withheld_failsafe(self):
+        # The block START is not syntactically encoded, so prose sitting
+        # directly above a draft run (no marker/heading between) cannot be
+        # told apart from the draft. It is withheld too - fail-closed is the
+        # only safe direction for a publication path; it returns on accept.
+        body = ('# T\n## Biography\n'
+                'Older unmarked paragraph.\n\n'
+                'Drafted paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - note -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Older unmarked paragraph.', html)
+        self.assertNotIn('Drafted paragraph.', html)
+
+    def test_stories_draft_excluded(self):
+        body = ('# T\n## Biography\nHuman bio.\n\n'
+                '## Stories\nA drafted tale.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - story -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas', body=body)
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Human bio.', html)
+        self.assertNotIn('A drafted tale.', html)
+        self.assertNotIn('<h2>Stories</h2>', html)       # emptied section skipped
+
+    def test_linked_mode_also_excludes_drafts(self):
+        # The dev preview skips privacy redaction, but a draft is not privacy
+        # material - it is not-yet-content, and the marker would render as
+        # escaped junk. Both modes exclude it.
+        body = ('# T\n## Biography\nDrafted paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - note -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas', body=body)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Drafted paragraph.', html)
+        self.assertNotIn('AI-DRAFT', html)
+
+
+class DraftStripUnitTests(unittest.TestCase):
+    """Unit checks on the marker grammar edges `_strip_unaccepted_drafts`
+    mirrors from confirm.py (`<!--` + optional whitespace + word + lazy body,
+    DOTALL) and the block-boundary rule."""
+
+    def test_nospace_multiline_marker(self):
+        out = site._strip_unaccepted_drafts(
+            'X.\n\n<!--AI-DRAFT 2026-07-01 m\n - long note -->\n\nKept.')
+        self.assertNotIn('X.', out)
+        self.assertIn('Kept.', out)
+
+    def test_subheading_inside_draft_is_excluded(self):
+        # A ###+ subheading is draft content, not a boundary - otherwise the
+        # top of an unaccepted draft would publish.
+        text = ('## Biography\n\nHuman intro.\n\n<!-- AI-ACCEPTED 1 m - n -->\n\n'
+                '### Early life\n\nDraft para.\n\n<!-- AI-DRAFT 2 m - n -->\n')
+        out = site._strip_unaccepted_drafts(text)
+        self.assertIn('Human intro.', out)
+        self.assertNotIn('Early life', out)
+        self.assertNotIn('Draft para.', out)
+        self.assertNotIn('AI-', out)
+
+    def test_text_without_markers_untouched(self):
+        text = 'Plain.\n\n\n\nText with <!-- an ordinary comment -->.\n'
+        self.assertEqual(site._strip_unaccepted_drafts(text), text)
+
+
+class LinkSchemeTests(unittest.TestCase):
+    """Markdown-link URLs allowlist http/https/mailto; a javascript:/data:
+    (or any other scheme-bearing) URL renders its label as plain text - the
+    stored-XSS guard for prose published by the site."""
+
+    def _html(self, prose):
+        return site._prose_to_html(prose, lambda t, d=None: t)
+
+    def test_javascript_uri_not_linked(self):
+        out = self._html('[click](javascript:alert%281%29)')
+        self.assertNotIn('<a ', out)
+        self.assertNotIn('javascript', out)
+        self.assertIn('click', out)
+
+    def test_uppercase_scheme_not_linked(self):
+        out = self._html('[x](JAVASCRIPT:alert%281%29)')
+        self.assertNotIn('<a ', out)
+
+    def test_data_uri_not_linked(self):
+        out = self._html('[x](data:text/html,hello)')
+        self.assertNotIn('<a ', out)
+        self.assertNotIn('data:', out)
+
+    def test_https_still_links(self):
+        out = self._html('[site](https://example.org/page)')
+        self.assertIn('<a href="https://example.org/page">site</a>', out)
+
+    def test_mailto_still_links(self):
+        out = self._html('[mail](mailto:a@b.example)')
+        self.assertIn('<a href="mailto:a@b.example">mail</a>', out)
+
+    def test_relative_url_still_links(self):
+        out = self._html('[p](sub/page.html)')
+        self.assertIn('<a href="sub/page.html">p</a>', out)
+
+    def test_colon_after_first_slash_is_relative(self):
+        out = self._html('[p](files/a:b.html)')
+        self.assertIn('<a href="files/a:b.html">p</a>', out)
+
+    def test_helper_scheme_matrix(self):
+        self.assertIsNone(site._safe_link_href('javascript:x'))
+        self.assertIsNone(site._safe_link_href('data:text/html,x'))
+        self.assertIsNone(site._safe_link_href('vbscript:x'))
+        self.assertIsNone(site._safe_link_href('file:///etc/passwd'))
+        self.assertEqual(site._safe_link_href('HTTPS://X'), 'HTTPS://X')
+        self.assertEqual(site._safe_link_href('#top'), '#top')
+
+
+class OutputGuardTests(_Base):
+    """`_reset_output` clears generically named subtrees, so a rebuild must
+    first prove the --out folder is fha site's own: the `.fha-site` marker
+    (stamped by every successful build), an empty/new folder, or the
+    pre-marker legacy shape (index.html + vendor/fha-tree.js)."""
+
+    def _run_to(self, out, *, dry_run=False):
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        return site.run_site(self.archive_root, out, linked=True, dry_run=dry_run)
+
+    def test_refuses_nonempty_unowned_out_dir(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        out = self.archive_root / 'exports'
+        (out / 'sources').mkdir(parents=True)            # shares a site subtree name
+        (out / 'sources' / 'precious.txt').write_text('mine', encoding='utf-8')
+        (out / 'notes.txt').write_text('also mine', encoding='utf-8')
+        res = self._run_to(out)
+        self.assertEqual(res['status'], 'bad-output')
+        self.assertTrue(any("wasn't created by fha site" in m for m in res['messages']))
+        # Nothing was deleted and nothing was built.
+        self.assertEqual((out / 'sources' / 'precious.txt').read_text(encoding='utf-8'), 'mine')
+        self.assertTrue((out / 'notes.txt').exists())
+        self.assertFalse((out / 'index.html').exists())
+
+    def test_empty_dir_builds_and_gains_marker(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        out = self.archive_root / 'exports'
+        out.mkdir()
+        res = self._run_to(out)
+        self.assertEqual(res['status'], 'ok')
+        self.assertTrue((out / '.fha-site').exists())
+
+    def test_marked_dir_rebuilds(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self.assertEqual(self._run_to(self.out_dir)['status'], 'ok')
+        self.assertTrue((self.out_dir / '.fha-site').exists())
+        self.assertEqual(self._run_to(self.out_dir)['status'], 'ok')
+
+    def test_legacy_prior_build_without_marker_rebuilds(self):
+        # A site built before the marker shipped has index.html +
+        # vendor/fha-tree.js but no .fha-site; it is accepted and gains the
+        # marker on the rebuild (documented back-compat).
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self.assertEqual(self._run_to(self.out_dir)['status'], 'ok')
+        (self.out_dir / '.fha-site').unlink()            # simulate the pre-marker build
+        res = self._run_to(self.out_dir)
+        self.assertEqual(res['status'], 'ok')
+        self.assertTrue((self.out_dir / '.fha-site').exists())
+
+    def test_dry_run_lists_would_remove_and_deletes_nothing(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self.assertEqual(self._run_to(self.out_dir)['status'], 'ok')
+        before = sorted(str(p) for p in self.out_dir.rglob('*'))
+        res = self._run_to(self.out_dir, dry_run=True)
+        self.assertEqual(res['status'], 'dry-run')
+        preview = res['reset_preview']
+        self.assertIn('index.html', preview)
+        self.assertIn('persons/', preview)
+        self.assertEqual(before, sorted(str(p) for p in self.out_dir.rglob('*')))
+
+    def test_dry_run_fresh_dir_has_empty_preview(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        res = self._run_to(self.out_dir, dry_run=True)
+        self.assertEqual(res['status'], 'dry-run')
+        self.assertEqual(res['reset_preview'], [])
+        self.assertFalse(self.out_dir.exists())
+
+
 class ProseConverterTests(unittest.TestCase):
     def test_headings_bold_lists_links(self):
         ident = lambda t: f'TOK({t})'  # noqa: E731

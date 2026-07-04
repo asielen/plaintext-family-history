@@ -81,6 +81,15 @@
     // (re-running prefill when the tab navigates to a new record) can tell a
     // genuine navigation from a same-page update.
     prefilledUrl: null,
+    // True when the tab navigated while a capture was mid-flight (state.busy):
+    // refreshing then would swap the form out from under the bundle being
+    // staged, so refreshOnNavigation parks the event here and capture()'s
+    // finally block replays it once. A boolean, not a URL: the live tab is
+    // queried at replay time, so a double navigation during one capture still
+    // lands on the record actually in the tab. It lives in the panel page's
+    // state (not the service worker's), so it exists exactly as long as the
+    // form it protects; if the panel closes mid-capture, both die together.
+    pendingNav: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -93,6 +102,14 @@
         resolve(tabs && tabs[0] ? tabs[0] : null)
       );
     });
+  }
+
+  // Look up one tab by id; resolves null (never rejects) for a gone tab, so
+  // callers can treat "tab vanished" the same as "nothing to compare against".
+  function getTab(tabId) {
+    return new Promise((resolve) =>
+      chrome.tabs.get(tabId, (t) => resolve(chrome.runtime.lastError ? null : t))
+    );
   }
 
   function sendToTab(tabId, msg) {
@@ -452,6 +469,29 @@
     return { blob, filename: 'record.' + (resp.ext || 'bin'), mode: 'fetch' };
   }
 
+  // Compare two page addresses ignoring any #fragment: pages move the fragment
+  // for in-page position without changing the record, and a staleness warning
+  // on a fragment-only difference would cry wolf on a form that is fine.
+  function sameRecordUrl(a, b) {
+    return String(a || '').split('#')[0] === String(b || '').split('#')[0];
+  }
+
+  // The batch-mode staleness tell: if the tab's address moved after the form
+  // was pre-filled (a navigation the refresh missed, or one still parked behind
+  // an earlier capture), the fields below may describe the previous record.
+  // Warn in the top banner - never block, and never touch the fields: the human
+  // may have edited them deliberately for exactly this page.
+  async function warnIfFormStale() {
+    if (!state.prefilledUrl) return; // no pre-fill baseline, nothing to compare
+    const tab = await getTab(state.tabId);
+    if (!tab || !tab.url || sameRecordUrl(tab.url, state.prefilledUrl)) return;
+    const banner = $('recipe-banner');
+    banner.textContent =
+      'This page changed since the form was filled - check the title and web address before saving.';
+    banner.classList.remove('recipe');
+    banner.classList.add('warn');
+  }
+
   async function capture() {
     if (state.busy) return;
 
@@ -478,6 +518,8 @@
     setStageResult('Capturing…', '');
 
     try {
+      await warnIfFormStale();
+
       // page.html is always saved - grab it fresh at capture time so any
       // late-settling content is in the raw DOM the recipe re-extracts from.
       const pageResp = await sendToTab(state.tabId, { action: 'pagehtml' });
@@ -565,6 +607,7 @@
       // honest staging-folder download (§5.1). The extension never claims it
       // reached the archive when it only reached Downloads.
       let viaHost = false;
+      let hostWarning = null;
       if (await nativeHost.isAvailable()) {
         try {
           const hostAssets = [];
@@ -583,13 +626,21 @@
           viaHost = true;
           reportStaged(resp.stub || 'your archive inbox', true, evidenceWarning);
         } catch (e) {
-          // Fall back to the download path rather than failing the capture.
+          // Fall back to the download path rather than failing the capture -
+          // but say so. The human opted into the host (isAvailable was true
+          // just above), so a silent downgrade would misreport where captures
+          // are going for the rest of the sitting.
           viaHost = false;
+          hostWarning =
+            "Your archive connection didn't answer (" + shortHostReason(e) +
+            ') - this capture was saved to Downloads instead. Run' +
+            ' `fha capture --ingest` to sweep it in, and `fha capture --install-host`' +
+            ' if this keeps happening.';
         }
       }
       if (!viaHost) {
         const result = await bundle.writeBundle(spec);
-        reportStaged(result.dir, false, evidenceWarning);
+        reportStaged(result.dir, false, evidenceWarning, hostWarning);
       }
 
       resetForNext();
@@ -598,17 +649,49 @@
     } finally {
       state.busy = false;
       $('btn-capture').disabled = false;
+      // Replay a navigation that arrived mid-capture (parked by
+      // refreshOnNavigation) so the form moves on to the record now in the
+      // tab instead of silently staying on the one just staged.
+      if (state.pendingNav) {
+        state.pendingNav = false;
+        refreshOnNavigation(state.tabId, { status: 'complete' });
+      }
     }
   }
 
-  function reportStaged(where, viaHost, evidenceWarning) {
+  // Boil a native-messaging failure down to one plain phrase for the fallback
+  // warn line. Chrome's raw errors are developer-speak ("Specified native
+  // messaging host not found.", "Error when communicating with the native
+  // messaging host."); match the known shapes conservatively and fall back to
+  // the raw text, shortened, so an unmapped reason is still visible.
+  function shortHostReason(err) {
+    const raw = err && err.message ? String(err.message) : '';
+    const m = raw.toLowerCase();
+    if (m.includes('not found') || m.includes('not registered') || m.includes('forbidden')) {
+      return 'host not found';
+    }
+    if (m.includes('communicating') || m.includes('disconnected')
+        || m.includes('exited') || m.includes('no response')) {
+      return 'no reply';
+    }
+    if (m.includes('message length') || m.includes('exceed') || m.includes('too large')) {
+      return 'bundle too large';
+    }
+    if (!raw) return 'no reply';
+    return raw.length > 80 ? raw.slice(0, 77) + '…' : raw;
+  }
+
+  function reportStaged(where, viaHost, evidenceWarning, hostWarning) {
     // When the Ancestry auto-fetch missed but the page copy still staged, append
     // the reason so the human knows to grab the file manually - the capture
     // succeeded (it is not lost), it just doesn't yet carry the record image.
-    const suffix = evidenceWarning
+    // A native-host fallback (hostWarning) rides the same slot: the capture is
+    // safe in Downloads, and the line says why it is not in the archive inbox.
+    let suffix = evidenceWarning
       ? '\nThe full record image was not saved: ' + evidenceWarning
       : '';
-    const cls = evidenceWarning ? 'warn' : 'ok';
+    if (hostWarning) suffix += '\n' + hostWarning;
+    const cls = evidenceWarning || hostWarning ? 'warn' : 'ok';
     if (viaHost) {
       setStageResult('Filed straight into your archive: ' + where + suffix, cls);
       $('handoff').classList.remove('show');
@@ -647,14 +730,28 @@
 
   // Re-pull the pre-fill when the panel's tab navigates to a NEW record, so a
   // batch session never files the next page under the previous record's
-  // title/date/people/repo. Skips same-page updates and in-progress captures;
-  // an unreadable new page is left for the human to fill, not dead-ended.
+  // title/date/people/repo. Fires on a finished load ('complete') AND on a bare
+  // URL change: single-page viewers (Ancestry's next-image arrows) navigate
+  // with history.pushState and never reach 'complete', so without the url
+  // trigger the form silently goes stale mid-batch. A url change that is part
+  // of a full page load (status 'loading') is skipped - its own 'complete'
+  // follows once the DOM has settled. A navigation during a capture is parked,
+  // not dropped: capture()'s finally block replays it, so the form catches up
+  // the moment the capture lands. Skips same-page updates; an unreadable new
+  // page is left for the human to fill, not dead-ended.
   async function refreshOnNavigation(tabId, changeInfo) {
-    if (tabId !== state.tabId || state.busy) return;
-    if (changeInfo.status !== 'complete') return;
-    const tab = await new Promise((resolve) =>
-      chrome.tabs.get(tabId, (t) => resolve(chrome.runtime.lastError ? null : t))
-    );
+    if (tabId !== state.tabId) return;
+    const navigated =
+      changeInfo.status === 'complete' ||
+      (!!changeInfo.url && changeInfo.status !== 'loading');
+    if (!navigated) return;
+    if (state.busy) {
+      // Refreshing now would swap the form out from under the bundle being
+      // staged; park the event for the replay in capture()'s finally block.
+      state.pendingNav = true;
+      return;
+    }
+    const tab = await getTab(tabId);
     if (!tab || !/^https?:/i.test(tab.url || '') || tab.url === state.prefilledUrl) return;
     try {
       await injectContent(tabId);

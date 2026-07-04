@@ -17,18 +17,20 @@ Also covers two hand-edit hardening contracts:
     full build and incremental upsert.
 """
 
+import io
 import json
 import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import index
-from _lib import EXIT_CLEAN, EXIT_WARNINGS
+from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS
 
 
 _RESEARCH_MD_WELL_FORMED = '''---
@@ -645,6 +647,116 @@ class ClaimPersonResolutionTests(unittest.TestCase):
         status = index.upsert_source(self.root, {}, 's-1111111111')
         self.assertEqual(status, 'indexed')
         self.assertEqual(self._snapshot(), full)
+
+
+class SourceRestrictedTests(unittest.TestCase):
+    """The sources.restricted column must store 1 for ANY truthy `restricted:`
+    value. The marker is open (SPEC §19): the typed values (`dna`,
+    `by-request`) are the STRONGEST privacy markers - `by-request` never opens
+    under any export flag - and the old narrow `in (True, 'true')` idiom
+    flattened exactly those to 0 (unrestricted) in every SQL prefilter built
+    on the column. Absent and explicit-false stay 0. The incremental upsert
+    must agree with the full rebuild (TOOLING §2: any discrepancy is a bug in
+    incremental, by definition)."""
+
+    # restricted-line → expected column value. Keys are also used to build
+    # distinct S-ids/paths, one source per case.
+    CASES = [
+        ('restricted: dna\n', 1),
+        ('restricted: by-request\n', 1),
+        ('restricted: true\n', 1),
+        ('', 0),                       # absent → unrestricted
+        ('restricted: false\n', 0),    # explicit false → unrestricted
+    ]
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.sids = []
+        for i, (line, _expected) in enumerate(self.CASES):
+            sid = f's-{str(i) * 10}'
+            self.sids.append(sid)
+            _write(
+                self.root / 'sources' / 'other' / f'src_{sid}.md',
+                f'---\nid: {sid.upper()}\ntitle: Test {i}\n'
+                f'source_type: other\n{line}---\n\n## Claims\n',
+            )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _restricted_column(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return dict(conn.execute('SELECT id, restricted FROM sources'))
+        finally:
+            conn.close()
+
+    def test_full_build_stores_typed_values_as_restricted(self) -> None:
+        index.build_index(self.root, {})
+        got = self._restricted_column()
+        for sid, (line, expected) in zip(self.sids, self.CASES):
+            self.assertEqual(got[sid], expected, f'{line!r} on {sid}')
+
+    def test_upsert_matches_full_build(self) -> None:
+        # Upsert every source after the full build; the column must be
+        # byte-identical to the full-rebuild state (both flow through
+        # _index_source, but prove it end-to-end).
+        index.build_index(self.root, {})
+        full = self._restricted_column()
+        for sid in self.sids:
+            self.assertEqual(index.upsert_source(self.root, {}, sid), 'indexed')
+        self.assertEqual(self._restricted_column(), full)
+
+
+class RunIndexRootGuardTests(unittest.TestCase):
+    """`fha index --root <non-archive>` must refuse (exit 3) and create
+    NOTHING. Without the guard it globbed missing dirs, minted an empty
+    .cache/index.sqlite inside ANY folder, and printed "Index rebuilt" with
+    exit 0 - a typo'd --root produced a permanently-"successful" empty
+    archive. A --root that does carry fha.yaml builds exactly as before."""
+
+    def test_non_archive_root_refused_and_creates_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = index._standalone_main(['--root', tmp])
+            self.assertEqual(rc, EXIT_FAILURE)
+            self.assertFalse((Path(tmp) / '.cache').exists())
+            # Nothing else materialized either - the folder is untouched.
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+            # The message names the cause (no fha.yaml) and the fix (--root
+            # at the folder that contains it) - the next-step rule.
+            self.assertIn('fha.yaml', err.getvalue())
+            self.assertIn('--root', err.getvalue())
+
+    def test_incremental_source_against_non_archive_also_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = index._standalone_main(
+                    ['--root', tmp, '--source', 'S-1111111111'])
+            self.assertEqual(rc, EXIT_FAILURE)
+            self.assertFalse((Path(tmp) / '.cache').exists())
+            self.assertIn('fha.yaml', err.getvalue())
+
+    def test_root_with_fha_yaml_builds_as_before(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            _write(root / 'sources' / 'other' / 'src_S-1111111111.md',
+                   '---\nid: S-1111111111\ntitle: Test\nsource_type: other\n---\n\n## Claims\n')
+            with redirect_stdout(io.StringIO()):
+                rc = index._standalone_main(['--root', tmp])
+            self.assertEqual(rc, EXIT_CLEAN)
+            db = root / '.cache' / 'index.sqlite'
+            self.assertTrue(db.is_file())
+            conn = sqlite3.connect(str(db))
+            try:
+                self.assertEqual(
+                    conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0], 1)
+            finally:
+                conn.close()
 
 
 if __name__ == '__main__':

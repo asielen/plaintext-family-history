@@ -190,6 +190,20 @@ def _intercept_id_check(argv: list[str]) -> int | None:
     root = parsed.root or id_parsed.root or global_root
     if root:
         archive_root = Path(root).resolve()
+        # Same guard as `fha index`/`fha find`: an explicit --root without
+        # fha.yaml is almost always a typo'd path, and answering "not found
+        # in archive tree" against an empty folder is a false negative the
+        # user has no way to distinguish from a real miss.
+        if not (archive_root / 'fha.yaml').exists():
+            print(
+                f'ERROR: {archive_root} does not look like an archive (no '
+                f'fha.yaml there) - is this the right folder? An archive has '
+                f'fha.yaml at its top folder. Run `fha id check` from inside '
+                f'your archive, or point --root at the folder that contains '
+                f'fha.yaml.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
     else:
         archive_root = find_archive_root()
         if archive_root is None:

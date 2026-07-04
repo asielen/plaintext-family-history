@@ -106,10 +106,12 @@ to one person.
   header; no overwrite of human text.
 - New prose stays AI-DRAFT until `fha confirm draft`; acceptance is the human's gesture, not a hand-edit.
 - Uncited prose reads as context/story, never as fact.
-- **AI-DRAFT prose is not export-safe.** `fha site` renders the whole `## Biography` section
-  (`site.py::_person_prose`) and does not exclude AI-DRAFT text, so a person whose bio still carries an
-  `<!-- AI-DRAFT … -->` marker must **not** be published/exported until the human accepts it
-  (`fha confirm draft` → AI-ACCEPTED). Don't run `fha site` for that person until the draft is accepted.
+- **AI-DRAFT prose never publishes until accepted.** `fha site` and `fha wikitree` both exclude a
+  draft block — the prose back to the previous marker or section heading, plus the marker itself —
+  until the human accepts it (`fha confirm draft` → AI-ACCEPTED, which makes the prose publishable).
+  The exclusion is fail-closed: an unmarked paragraph sitting directly above your draft is withheld
+  with it until acceptance, so keep the end-of-block marker tight against the block you wrote and
+  draft around human text, never mid-run.
 
 ## Done when
 

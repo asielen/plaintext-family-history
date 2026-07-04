@@ -25,7 +25,7 @@ You never have to type a command. The phrases above are the whole job.
 Run from your workshop folder. Replace `my-family-archive` with your archive's folder name.
 
 ```
-python tools/fha.py process  --root my-family-archive   # file & read a new inbox item
+python tools/fha.py process "inbox/the-file-you-added.jpg" --root my-family-archive   # file one new inbox item
 python tools/fha.py report   --root my-family-archive   # the review queue + research leads
 python tools/fha.py find --text "Rose Hartley" --root my-family-archive   # search everything
 python tools/fha.py doctor   --root my-family-archive   # health check - run this when stuck

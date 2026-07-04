@@ -23,7 +23,9 @@ What it produces (TOOLING §11):
      `## Stories`.
   2. **Facts → suggested claims.** Each `facts.txt` table row → a `suggested`
      claim on its source record: the Claim text → `value`; Earliest/Latest →
-     a single EDTF date or interval; Confidence H/M/L → `confidence`; the type
+     a single EDTF date or interval; Confidence H/M/L → `confidence` (a blank
+     or unrecognized cell defaults to `medium` with a summarized warning -
+     `confidence` is a required claim field, lint E010); the type
      inferred from the Claim text by keyword (defaulting to `event` with the
      legacy Section as `subtype`). `Update(T###):` lines merge into the
      preceding claim's `notes`.
@@ -383,7 +385,12 @@ def legacy_to_edtf(earliest: str, latest: str) -> str | None:
 
 
 def _confidence(cell: str) -> str | None:
-    """Map a legacy Confidence cell (High/Medium/Low, or H/M/L) to the vocabulary."""
+    """Map a legacy Confidence cell (High/Medium/Low, or H/M/L) to the vocabulary.
+
+    Returns None for a blank/unrecognized cell; build_plan defaults that to
+    `medium` (with a summarized warning) so no claim ships without the
+    required `confidence` field.
+    """
     c = (cell or '').strip().lower()
     if c.startswith('h'):
         return 'high'
@@ -546,8 +553,30 @@ class ConversionPlan:
     warnings: list[str]
 
 
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding='utf-8') if path.is_file() else ''
+def _read_text(path: Path, warnings: list[str] | None = None) -> str:
+    """Read a legacy mining file, tolerating non-UTF-8 bytes.
+
+    Old ChatGPT-era exports routinely carry cp1252 punctuation (a 0x92 smart
+    quote is the normal condition, not the exception), and a strict UTF-8 read
+    aborted the whole conversion - dry-run included - on the first stray byte.
+    The content is migration source material, so a lossy read is acceptable:
+    strict UTF-8 is tried first, then errors='replace' with one warning naming
+    the file, so the plan proceeds and the human knows characters were
+    substituted. The original file itself is copied byte-for-byte on apply
+    (shutil.copy2), so nothing lossy ever lands in `documents/`.
+    """
+    if not path.is_file():
+        return ''
+    raw = path.read_bytes()
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError:
+        if warnings is not None:
+            warnings.append(
+                f'{path.name}: not valid UTF-8 (old exports often carry cp1252 '
+                'smart quotes); read with replacement characters. The file '
+                'itself is untouched.')
+        return raw.decode('utf-8', errors='replace')
 
 
 def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> ConversionPlan:
@@ -555,15 +584,15 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
     if not mining_dir.is_dir():
         raise ConvertError(f'no mining/ folder found at {mining_dir}.')
 
-    sources_raw = parse_sources(_read_text(mining_dir / 'sources.txt'))
+    warnings: list[str] = []
+
+    sources_raw = parse_sources(_read_text(mining_dir / 'sources.txt', warnings))
     if not sources_raw:
         raise ConvertError('mining/sources.txt is missing or defines no sources.')
-    aliases = parse_aliases(_read_text(mining_dir / 'aliases.txt'))
-    facts = parse_facts(_read_text(mining_dir / 'facts.txt'))
-    stories = parse_stories(_read_text(mining_dir / 'stories.txt'))
-    questions = parse_questions(_read_text(mining_dir / 'questions.txt'))
-
-    warnings: list[str] = []
+    aliases = parse_aliases(_read_text(mining_dir / 'aliases.txt', warnings))
+    facts = parse_facts(_read_text(mining_dir / 'facts.txt', warnings))
+    stories = parse_stories(_read_text(mining_dir / 'stories.txt', warnings))
+    questions = parse_questions(_read_text(mining_dir / 'questions.txt', warnings))
 
     # Names that will need a P-id: every interviewee, every fact Person, every
     # story/question person. Count the unaliased ones to size the mint pool.
@@ -598,6 +627,7 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
     built_sources: list[_Source] = []
     mapping_rows: list[tuple[str, str, str]] = []
     attached_story_indices: set[int] = set()
+    defaulted_confidence = 0
 
     documents_root = resolve_path('documents', fha_config, archive_root)
 
@@ -625,10 +655,10 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
         doc_dest = documents_root / _INTERVIEW_DOC_SUBDIR / f'{slug}_{sid}.txt'
         doc_alias = path_to_alias(doc_dest, 'documents', fha_config, archive_root)
 
-        transcript_lines = (
-            transcript_src.read_text(encoding='utf-8').splitlines()
-            if transcript_src.is_file() else []
-        )
+        # Same tolerant read as the export files: a cp1252 byte in a transcript
+        # must not abort the plan (anchors are line numbers, so a replacement
+        # character cannot shift them; the copy on apply is byte-for-byte).
+        transcript_lines = _read_text(transcript_src, warnings).splitlines()
 
         # People named on this source: the interviewee plus every fact's Person.
         people_pids: list[str] = []
@@ -662,10 +692,19 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
                 notes_bits.append(f'Update ({tref}): {utext}' if tref else f'Update: {utext}')
             notes = ' '.join(notes_bits) or None
             anchor = find_anchor(value, transcript_lines) if value else None
+            confidence = _confidence(row.get('confidence', ''))
+            if confidence is None:
+                # `confidence` is a required claim field (lint E010), but the
+                # legacy table allowed a blank/free-form cell. Default to
+                # `medium` - the same hardcoded default `fha confirm cooccur`
+                # mints - and count it for one summarized warning below, so
+                # the converted archive keeps its lints-with-no-errors contract.
+                confidence = 'medium'
+                defaulted_confidence += 1
             source_claims.append(_Claim(
                 cid=cid, legacy_source=legacy_id, value=value, claim_type=claim_type,
                 subtype=subtype, persons=[person.pid], date=date, place_text=place_text,
-                confidence=_confidence(row.get('confidence', '')), anchor=anchor, notes=notes,
+                confidence=confidence, anchor=anchor, notes=notes,
             ))
             mapping_rows.append((f'{legacy_id}:{row.get("claim", "")[:30]}', cid, f'claim ({claim_type})'))
 
@@ -697,6 +736,12 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
             ai_pass_model=model, stories=source_stories, claims=source_claims,
         ))
         mapping_rows.append((legacy_id, sid, f'source: {title}'))
+
+    if defaulted_confidence:
+        warnings.append(
+            f'{defaulted_confidence} fact row(s) had a blank or unrecognized Confidence '
+            'cell; their claims were written with confidence: medium. Adjust any that '
+            'deserve high or low during claim review.')
 
     # Facts referencing an unknown source are reported, not silently dropped.
     for legacy_id in facts:

@@ -42,6 +42,7 @@ h1 { font-size: 19px; margin: 0 0 4px; }
 
 .banner { margin: 0; font-size: 14px; color: var(--muted); }
 .banner.recipe { color: var(--accent); font-weight: 600; }
+.banner.warn { color: var(--warn); font-weight: 600; }
 
 main { padding: 6px 18px 22px; }
 

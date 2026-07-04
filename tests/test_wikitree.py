@@ -411,5 +411,102 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertEqual(r['status'], 'restricted-sources')
 
 
+class WikitreeDraftExclusionTests(unittest.TestCase):
+    """Unaccepted `<!-- AI-DRAFT ... -->` prose is not-yet-content (AGENTS.md:
+    it stays inside its markers until `fha confirm draft` accepts it): the
+    export silently excludes it - no draft text, no marker, no ref for a
+    citation that lives only inside a draft, and no privacy refusal triggered
+    by draft-only material."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people').mkdir()
+        (self.root / 'sources').mkdir()
+        (self.root / 'sources' / 'birth.md').write_text(
+            '---\nid: S-0000000001\ntitle: Birth cert\nsource_type: vital-record\n'
+            'citation: "Birth certificate, 1875."\n---\n',
+            encoding='utf-8',
+        )
+        (self.root / 'sources' / 'marr.md').write_text(
+            '---\nid: S-0000000002\ntitle: Marriage record\nsource_type: vital-record\n'
+            'citation: "Marriage record, 1900."\n---\n',
+            encoding='utf-8',
+        )
+        conn = _make_index(self.root)
+        _add_person(conn, 'p-0000000001', 'John Smith', path='people/subject.md',
+                    surname='Smith')
+        _add_source(conn, 's-0000000001', 'Birth cert', 'sources/birth.md')
+        _add_source(conn, 's-0000000002', 'Marriage record', 'sources/marr.md')
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_profile(self, body):
+        (self.root / 'people' / 'subject.md').write_text(
+            '---\nid: P-0000000001\nname: John Smith\ntier: curated\nliving: false\n---\n\n'
+            '# John Smith\n\n' + body,
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+
+    def test_draft_excluded_accepted_and_human_kept(self):
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+            'A drafted marriage paragraph [S-0000000002].\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v2 -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        text = r['text']
+        self.assertIn('He was born in 1875', text)
+        self.assertIn('<ref name="S-0000000001"/>', text)
+        self.assertNotIn('drafted marriage', text)
+        self.assertNotIn('S-0000000002', text)    # draft-only citation: no use, no definition
+        self.assertNotIn('AI-DRAFT', text)
+        self.assertNotIn('AI-ACCEPTED', text)
+
+    def test_draft_citing_restricted_source_does_not_refuse(self):
+        # The restricted-source gate fails closed on CONTENT; a draft is not
+        # yet content, so a restricted citation living only inside the draft
+        # must neither refuse the export nor leak into it.
+        (self.root / 'sources' / 'private.md').write_text(
+            '---\nid: S-0000000003\ntitle: Private\nrestricted: true\n---\n',
+            encoding='utf-8',
+        )
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        _add_source(conn, 's-0000000003', 'Private', 'sources/private.md', restricted=1)
+        conn.commit()
+        conn.close()
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+            'A drafted private fact [S-0000000003].\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v2 -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('S-0000000003', r['text'])
+
+    def test_all_draft_biography_no_stray_heading(self):
+        self._write_profile(
+            '## Biography\n'
+            'Entirely drafted paragraph [S-0000000001].\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n\n'
+            '## Stories\n'
+            'A human-written tale.\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        text = r['text']
+        self.assertNotIn('Entirely drafted', text)
+        self.assertNotIn('== Biography ==', text)   # emptied section: heading dropped
+        self.assertIn('== Stories ==', text)
+        self.assertIn('A human-written tale.', text)
+
+
 if __name__ == '__main__':
     unittest.main()

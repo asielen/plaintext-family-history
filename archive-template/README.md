@@ -1,7 +1,7 @@
 # Archive Template
 
 Copy this folder's contents to start your own family archive.
-This is the skeleton a real archive grows from - `inbox/` for new material, `sources/` for evidence records, `people/` for person records, `places/places.yaml`, `notes/`.
+This is the skeleton a real archive grows from - `inbox/` for new material, `sources/` for evidence records, `people/` for person records, `places/places.yaml`, `notes/`, plus empty `photos/` and `documents/` folders the default settings already point at.
 
 ## Record templates (copy, fill in, done)
 

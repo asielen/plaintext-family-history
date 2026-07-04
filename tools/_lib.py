@@ -405,7 +405,12 @@ COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-in
 # silently fail to resolve until a rebuild; bumping forces `fha index` to run.
 # v4: adds the provisional `birth`/`death` person columns (unsourced estimates
 # the needs-sourcing backlog reads) - a v3 index lacks them, so bump to rebuild.
-INDEX_SCHEMA_VERSION = 4
+# v5: typed `restricted:` values (`dna`, `by-request`, `deadname`, ...) now
+# index as restricted = 1. A v4 index stores 0 for them - the strongest
+# privacy markers reading as unrestricted in every SQL prefilter and count
+# built on the column - so bump to force `fha index` to rebuild before
+# doctor/find/exporter queries trust it (same rationale as v2).
+INDEX_SCHEMA_VERSION = 5
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 

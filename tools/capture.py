@@ -62,7 +62,8 @@ library (the project adds no dependency before Jinja2 in M8).
 #  Top-level + CLI
 #    run_capture               - read HTML, choose recipe, write stub + asset + log
 #    run_ingest                - sweep staged bundles (§6) → run_capture per bundle
-#    _resolve_staging_dir / _iter_bundles / _read_bundle / _park_ingested
+#    _resolve_staging_dir / _iter_bundles / _read_bundle / _read_scrape_source
+#    _park_ingested
 #    register / _run_capture / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1208,8 +1209,10 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
     for the bundles that ship it.
 
     Raises BundleError (left-in-place, reported) when the bundle is malformed:
-    no parseable HTML scrape source at all, or a missing/unreadable/invalid
-    `capture.json`.
+    no parseable HTML scrape source at all, a missing/unreadable/invalid
+    `capture.json`, or an unreadable page/snapshot file - a browser still
+    holding `page.html` open (common on Windows) must skip THIS bundle with a
+    close-the-program next step, never abort the sibling bundles' sweep.
     """
     cap_path = bundle / 'capture.json'
     if not cap_path.is_file():
@@ -1263,16 +1266,37 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
     # Scrape source: the raw page.html when shipped, else the webpage-role HTML
     # snapshot (single-file snapshots preserve JSON-LD/meta, so they parse), else
     # the first .html/.htm asset. A bundle with neither has no scrape source.
+    # These reads get the same OSError -> BundleError treatment as capture.json:
+    # a permission-denied/locked file (the browser still writing or holding it,
+    # the common Windows case) is this one bundle's problem, not the sweep's.
     page = bundle / 'page.html'
     if page.is_file():
-        html = page.read_text(encoding='utf-8', errors='replace')
+        html = _read_scrape_source(page)
     else:
         scrape = _scrape_source_from_assets(assets)
         if scrape is None:
             raise BundleError(
                 "no scrape source: bundle has neither page.html nor an HTML asset")
-        html = scrape.read_text(encoding='utf-8', errors='replace')
+        html = _read_scrape_source(scrape)
     return cap, html, assets
+
+
+def _read_scrape_source(path: Path) -> str:
+    """Read a bundle's HTML scrape source, turning an OSError into BundleError.
+
+    The bytes decode with errors='replace' (a stray byte must not kill a
+    capture), but the read itself can fail outright - a locked or permission-
+    denied `page.html` while the browser still holds it is the normal Windows
+    failure. That must surface as a reported, left-in-place bundle with a plain
+    next step, not an OSError traceback that aborts every sibling bundle.
+    """
+    try:
+        return path.read_text(encoding='utf-8', errors='replace')
+    except OSError as e:
+        raise BundleError(
+            f"could not read {path.name} ({e}) - close the program that is "
+            "using it (or recapture the page), then re-run `fha capture "
+            "--ingest`") from e
 
 
 def _scrape_source_from_assets(assets: list[tuple[Path, str]]) -> Path | None:

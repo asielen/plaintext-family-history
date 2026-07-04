@@ -483,5 +483,347 @@ class ClaimIdMintingTests(unittest.TestCase):
         self.assertEqual(self.src.read_bytes(), before)
 
 
+def _person_md(pid: str, name: str, extra: str = '') -> str:
+    return (
+        f'---\nid: {pid}\nname: {name}\nliving: false\n{extra}---\n\n# {name}\n'
+    )
+
+
+class HyphenatedNameFilenameTests(unittest.TestCase):
+    """Fix for E002 on hyphenated names: SPEC §13 never forbids hyphens, and
+    `hartley__mary-jane` / `smith-jones__anne` are ordinary names. They must
+    lint clean (no E002, no W117), companion filenames included, and the
+    companion-kind classification must be untouched by hyphens in name slots."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _lint(self):
+        return lint._run_lint_core(self.root, {})
+
+    def test_hyphenated_given_name_profile_lints_clean(self) -> None:
+        (self.root / 'people' / 'hartley__mary-jane_P-1111111111.md').write_text(
+            _person_md('P-1111111111', 'Mary-Jane Hartley'), encoding='utf-8')
+        findings, _ = self._lint()
+        self.assertEqual([f for f in findings if f.code in ('E002', 'W117')], [])
+
+    def test_hyphenated_surname_profile_lints_clean(self) -> None:
+        (self.root / 'people' / 'smith-jones__anne_P-2222222222.md').write_text(
+            _person_md('P-2222222222', 'Anne Smith-Jones'), encoding='utf-8')
+        findings, _ = self._lint()
+        self.assertEqual([f for f in findings if f.code in ('E002', 'W117')], [])
+
+    def test_hyphenated_companion_filenames_lint_clean_and_classify(self) -> None:
+        (self.root / 'people' / 'smith-jones__anne_P-2222222222.md').write_text(
+            _person_md('P-2222222222', 'Anne Smith-Jones'), encoding='utf-8')
+        (self.root / 'people' / 'smith-jones__anne_research_P-2222222222.md').write_text(
+            '---\nid: P-2222222222\n---\n\n## Research Notes\n*(none yet)*\n',
+            encoding='utf-8')
+        (self.root / 'people' / 'hartley__mary-jane_P-1111111111.md').write_text(
+            _person_md('P-1111111111', 'Mary-Jane Hartley'), encoding='utf-8')
+        (self.root / 'people' / 'hartley__mary-jane_timeline_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\n---\n\n# Timeline\n', encoding='utf-8')
+        findings, reg = self._lint()
+        self.assertEqual([f for f in findings if f.code in ('E002', 'W117')], [])
+        # Companion kind classification survives hyphenated name slots: the
+        # files register as companions of their person, not as new profiles.
+        self.assertIn('p-2222222222', reg.person_companion_paths)
+        self.assertIn('p-1111111111', reg.person_companion_paths)
+        self.assertEqual([f for f in findings if f.code == 'E001'], [])
+
+    def test_surname_less_hyphenated_given_lints_clean(self) -> None:
+        (self.root / 'people' / '__mary-jane_P-3333333333.md').write_text(
+            _person_md('P-3333333333', 'Mary-Jane'), encoding='utf-8')
+        findings, _ = self._lint()
+        self.assertEqual([f for f in findings if f.code in ('E002', 'W117')], [])
+
+    def test_missing_separator_is_still_w117_never_e002(self) -> None:
+        # A single-underscore name still gets the gentle W117 nudge, not an error.
+        (self.root / 'people' / 'smith-jones_anne_P-4444444444.md').write_text(
+            _person_md('P-4444444444', 'Anne Smith-Jones'), encoding='utf-8')
+        findings, _ = self._lint()
+        self.assertEqual([f for f in findings if f.code == 'E002'], [])
+        self.assertTrue([f for f in findings if f.code == 'W117'])
+
+    def test_kind_suffix_files_still_classify_as_companions(self) -> None:
+        # The hyphen-bearing kind (`sources-index`) keeps working, and a given
+        # name may not swallow it: classification is parse_filename's endswith.
+        (self.root / 'people' / 'cole__margaret_P-5555555555.md').write_text(
+            _person_md('P-5555555555', 'Margaret Cole'), encoding='utf-8')
+        (self.root / 'people' / 'cole__margaret_sources-index_P-5555555555.md').write_text(
+            '---\nid: P-5555555555\n---\n\n# Sources\n', encoding='utf-8')
+        findings, reg = self._lint()
+        self.assertEqual([f for f in findings if f.code in ('E002', 'W117', 'E001')], [])
+        companion_names = [p.name for p in reg.person_companion_paths.get('p-5555555555', [])]
+        self.assertEqual(companion_names, ['cole__margaret_sources-index_P-5555555555.md'])
+
+
+class ResearchHypothesisE004Tests(unittest.TestCase):
+    """Fix for the E004 false positive on research-file hypotheses: SPEC §16
+    homes `## Hypotheses` in `…_research_P-….md`, and index.py indexes them
+    from there - so a `[[H-…]]` cite of one must resolve. A genuinely dangling
+    H-id, or a mere citation with no definition, stays E004."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_profile(self, body_line: str) -> None:
+        (self.root / 'people' / 'hartley__thomas_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Thomas Hartley\nliving: false\n---\n\n'
+            f'# Thomas Hartley\n\n## Biography\n{body_line}\n', encoding='utf-8')
+
+    def _write_research(self, body: str) -> None:
+        (self.root / 'people' / 'hartley__thomas_research_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\n---\n\n' + body, encoding='utf-8')
+
+    def test_research_defined_hypothesis_cited_from_profile_is_not_e004(self) -> None:
+        self._write_profile('Working theory: [[H-abcabcabca]] covers the arrival.')
+        self._write_research(
+            '## Research Notes\n*(none yet)*\n\n'
+            '## Hypotheses\n\n'
+            '- id: H-abcabcabca\n'
+            '  hypothesis: "arrived by ~1869"\n'
+            '  basis: "railroad boom"\n'
+            '  origin: agent\n'
+            '  status: open\n')
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual([f for f in findings if f.code == 'E004'], [])
+
+    def test_genuinely_dangling_hypothesis_is_still_e004(self) -> None:
+        self._write_profile('Working theory: [[H-9999999999]] covers the arrival.')
+        self._write_research('## Hypotheses\n\n*(none yet)*\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
+        self.assertTrue(e004)
+
+    def test_citation_in_research_body_is_not_a_definition(self) -> None:
+        # A [[H-…]] reference OUTSIDE the ## Hypotheses entries (a research-log
+        # question, prose) is a cite, not a record - it must not self-resolve.
+        self._write_profile('Nothing hypothetical here.')
+        self._write_research(
+            '## Research Log\n\n'
+            '- date: 2026-06-12\n'
+            '  question: "[[H-7777777777]] arrival window"\n'
+            '  result: nil\n')
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('h-7777777777', reg.hypothesis_ids)
+        self.assertTrue([f for f in findings
+                         if f.code == 'E004' and 'h-7777777777' in f.message])
+
+
+_PLACEHOLDER_PERSON = '''---
+id: P-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING
+aliases:           # OPTIONAL - the code, repeated
+  - P-__________   # paste the same code here too
+name: Thomas Hartley
+living: false
+created: 2026-01-01
+tier: stub
+---
+
+# Thomas Hartley
+'''
+
+_PLACEHOLDER_SOURCE = '''---
+id: S-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING
+aliases:
+  - S-__________   # paste the same code here too
+title: 1880 census
+source_type: census
+created: 2026-01-01
+---
+
+## Claims
+```yaml
+- value: "Thomas Hartley, living in Fairview"
+  type: residence
+  persons: ["[[Thomas Hartley]]"]
+  id: C-__________         # this claim's own 10-character code
+  status: suggested
+  confidence: medium
+```
+'''
+
+
+class PlaceholderIdTests(unittest.TestCase):
+    """The shipped templates' placeholder ids (`P-__________`, `S-__________`,
+    `C-__________`) promise "LINT WILL CREATE FOR YOU LATER IF MISSING", so a
+    template copy still carrying one is auto-mintable, never E002: --fix-ids
+    replaces the placeholder in place (id line, aliases entry, claim id) and
+    the file lints clean afterwards."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        self.person = self.root / 'people' / 'thomas hartley.md'
+        self.source = self.root / 'sources' / '1880 census.md'
+        self.person.write_text(_PLACEHOLDER_PERSON, encoding='utf-8')
+        self.source.write_text(_PLACEHOLDER_SOURCE, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_placeholder_ids_classify_as_idless_never_e002(self) -> None:
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.severity == 'E'], [])
+        kinds = {p.name: k for p, k in reg.idless_records}
+        self.assertEqual(kinds, {'thomas hartley.md': 'P', '1880 census.md': 'S'})
+        self.assertEqual({p.name for p in reg.placeholder_id_paths},
+                         {'thomas hartley.md', '1880 census.md'})
+
+    def test_mintable_listing_says_placeholder_will_be_replaced(self) -> None:
+        result = lint.run_lint(self.root, {})
+        self.assertEqual(len(result.data['mintable']), 2)
+        for line in result.data['mintable']:
+            self.assertIn('template placeholder', line)
+            self.assertIn('--fix-ids', line)
+
+    def test_dry_run_previews_replacement_and_writes_nothing(self) -> None:
+        before = {p: p.read_bytes() for p in (self.person, self.source)}
+        result = lint.run_lint(self.root, {}, fix_ids=True, dry_run=True)
+        for p, content in before.items():
+            self.assertEqual(p.read_bytes(), content)
+        self.assertEqual(result.changed, [])
+        previews = [l for l in result.data['progress']
+                    if 'replacing the template placeholder id' in l]
+        self.assertEqual(len(previews), 2)
+
+    def test_fix_ids_replaces_placeholders_and_file_lints_clean(self) -> None:
+        lint.run_lint(self.root, {}, fix_ids=True)
+
+        minted_people = list((self.root / 'people').glob('hartley__thomas_P-*.md'))
+        minted_sources = list((self.root / 'sources').glob('1880-census_S-*.md'))
+        self.assertEqual(len(minted_people), 1)
+        self.assertEqual(len(minted_sources), 1)
+
+        person_text = minted_people[0].read_text(encoding='utf-8')
+        self.assertNotIn('P-__________', person_text)
+        # Surgical: the id value changed on its own line; the teaching comment
+        # and the aliases entry survive, now carrying the real code.
+        pid = read_record(minted_people[0])['meta']['id']
+        self.assertIn(f'id: {pid}   # OPTIONAL', person_text)
+        self.assertIn(f'- {pid}   # paste the same code here too', person_text)
+
+        source_text = minted_sources[0].read_text(encoding='utf-8')
+        self.assertNotIn('S-__________', source_text)
+        self.assertNotIn('C-__________', source_text)
+        claim = read_record(minted_sources[0])['claims'][0]
+        self.assertTrue(str(claim['id']).lower().startswith('c-'))
+        self.assertIn("# this claim's own 10-character code", source_text)
+
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.severity == 'E'], [])
+
+    def test_malformed_but_not_placeholder_id_stays_e002(self) -> None:
+        self.person.write_text(_PLACEHOLDER_PERSON.replace(
+            'P-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING',
+            'P-123'), encoding='utf-8')
+        findings, reg = lint._run_lint_core(self.root, {})
+        e002 = [f for f in findings if f.code == 'E002' and 'P-123' in f.message]
+        self.assertTrue(e002)
+        self.assertNotIn('thomas hartley.md', {p.name for p, _ in reg.idless_records})
+
+    def test_placeholder_with_real_filename_id_is_e003_paste_nudge(self) -> None:
+        # The filename already carries the code; the fix is a paste, not a mint.
+        target = self.root / 'people' / 'hartley__thomas_P-5555555555.md'
+        self.person.rename(target)
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings
+                          if f.code == 'E002' and 'hartley__thomas' in f.path], [])
+        e003 = [f for f in findings if f.code == 'E003' and 'placeholder' in f.message]
+        self.assertEqual(len(e003), 1)
+        self.assertIn('P-5555555555', e003[0].message)
+        self.assertNotIn(target.name, {p.name for p, _ in reg.idless_records})
+
+    def test_placeholder_claim_id_in_real_source_is_e010_not_e002(self) -> None:
+        real = self.root / 'sources' / 'census_S-1111111111.md'
+        real.write_text(_PLACEHOLDER_SOURCE.replace(
+            'S-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING',
+            'S-1111111111').replace('  - S-__________', '  - S-1111111111'),
+            encoding='utf-8')
+        self.source.unlink()
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'E002'], [])
+        e010 = [f for f in findings if f.code == 'E010' and 'placeholder' in f.message]
+        self.assertEqual(len(e010), 1)
+        self.assertIn('--fix-ids', e010[0].message)
+
+        lint.run_lint(self.root, {}, fix_ids=True)
+        text = real.read_text(encoding='utf-8')
+        self.assertNotIn('C-__________', text)
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code in ('E002', 'E010')], [])
+
+
+class NeedsSourcingBacklogTests(unittest.TestCase):
+    """The needs-sourcing backlog lists RECORDED provisional dates only
+    (TOOLING §3): a present-but-empty `death:` key records nothing, and death
+    is inapplicable while a person is living or unknown-living (SPEC §8.2)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _backlog(self, fields: str) -> list:
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            f'---\nid: P-1111111111\nname: Sam Rivera\n{fields}---\n\n# Sam Rivera\n',
+            encoding='utf-8')
+        return lint.run_lint(self.root, {}).data['backlog']
+
+    def test_empty_death_key_is_not_listed(self) -> None:
+        backlog = self._backlog('living: false\nbirth: 1985-04-12\ndeath:\n')
+        self.assertFalse([l for l in backlog if 'death' in l], backlog)
+        self.assertFalse([l for l in backlog if "'None'" in l], backlog)
+        # The recorded birth is still nudged toward a source.
+        self.assertTrue([l for l in backlog if 'provisional birth' in l])
+
+    def test_living_person_with_empty_death_gets_nothing(self) -> None:
+        backlog = self._backlog('living: true\ndeath:\n')
+        self.assertEqual(backlog, [])
+
+    def test_living_person_death_value_is_skipped(self) -> None:
+        # Even a filled-in death is not worklisted while living: true - death
+        # is inapplicable while living (SPEC §8.2).
+        backlog = self._backlog('living: true\ndeath: 1941~\n')
+        self.assertFalse([l for l in backlog if 'death' in l], backlog)
+
+    def test_unknown_living_death_value_is_skipped(self) -> None:
+        backlog = self._backlog('living: unknown\ndeath: 1941~\n')
+        self.assertFalse([l for l in backlog if 'death' in l], backlog)
+
+    def test_deceased_provisional_death_is_still_listed(self) -> None:
+        backlog = self._backlog('living: false\ndeath: 1941~\n')
+        listed = [l for l in backlog if "provisional death: '1941~'" in l]
+        self.assertEqual(len(listed), 1, backlog)
+
+    def test_living_person_provisional_birth_is_still_listed(self) -> None:
+        backlog = self._backlog('living: true\nbirth: 1985~\n')
+        self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,126 @@
+"""Tests for `fha normalize-links` - the `--dry-run` flag contract.
+
+Dry-run is this tool's DEFAULT, but the operating instructions (AGENTS.md,
+TOOLING §17) tell agents to always pass `--dry-run` before any mutating
+operation - so the flag must parse as an explicit no-op instead of dying with
+an argparse usage error, and the contradictory `--dry-run --write` pair must
+be refused with a plain message (exit 2), not silently resolved either way.
+
+Run: python -m unittest tests.test_normalize_links -v   (from the repo root)
+"""
+
+import argparse
+import io
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+
+import normalize_links
+from _lib import EXIT_CLEAN, EXIT_ERRORS
+
+SOURCE_ID = 'S-fa00000001'
+
+
+def _make_archive(tmp: Path) -> Path:
+    """A minimal archive with one source record whose body carries a legacy
+    single-bracket cite - the smallest input normalize-links would rewrite."""
+    archive = tmp / 'archive'
+    (archive / 'sources' / 'other').mkdir(parents=True)
+    (archive / 'fha.yaml').write_text(
+        'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+    (archive / 'sources' / 'other' / f'family-album_{SOURCE_ID}.md').write_text(
+        '---\n'
+        f'id: {SOURCE_ID}\n'
+        'title: Family album\n'
+        '---\n'
+        '\n'
+        f'The portrait is discussed in [{SOURCE_ID}] alongside the letters.\n',
+        encoding='utf-8')
+    return archive
+
+
+class NormalizeLinksDryRunTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _make_archive(Path(self._tmp.name))
+        self.record = self.archive / 'sources' / 'other' / f'family-album_{SOURCE_ID}.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _args(self, **kw) -> argparse.Namespace:
+        base = {'root': str(self.archive), 'write': False, 'dry_run': False, 'quiet': True}
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    # ── the flag parses, on both parsers ─────────────────────────────────────
+
+    def test_dry_run_flag_parses_on_registered_subparser(self) -> None:
+        # The original bug: register() never defined --dry-run, so the flag
+        # AGENTS.md tells agents to always pass died with a usage error.
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers()
+        normalize_links.register(subs)
+        args = parser.parse_args(['normalize-links', '--dry-run', '--root', str(self.archive)])
+        self.assertTrue(args.dry_run)
+        self.assertFalse(args.write)
+
+    def test_dry_run_flag_parses_on_standalone_parser(self) -> None:
+        before = self.record.read_text(encoding='utf-8')
+        rc = normalize_links._standalone_main(['--dry-run', '--root', str(self.archive)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+
+    # ── behavior ─────────────────────────────────────────────────────────────
+
+    def test_dry_run_writes_nothing(self) -> None:
+        before = self.record.read_text(encoding='utf-8')
+        rc = normalize_links._cmd_normalize_links(self._args(dry_run=True))
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+
+    def test_dry_run_with_write_refused_plainly(self) -> None:
+        before = self.record.read_text(encoding='utf-8')
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            rc = normalize_links._cmd_normalize_links(self._args(dry_run=True, write=True))
+        self.assertEqual(rc, EXIT_ERRORS)   # exit 2
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        message = err.getvalue()
+        self.assertIn('--dry-run', message)
+        self.assertIn('--write', message)
+        self.assertIn('pick one', message)          # names the fix
+        self.assertNotIn('Traceback', message)
+
+    def test_write_still_applies(self) -> None:
+        rc = normalize_links._cmd_normalize_links(self._args(write=True))
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = self.record.read_text(encoding='utf-8')
+        self.assertIn(f'[[{SOURCE_ID}]]', text)     # legacy cite upgraded
+        self.assertNotIn(f' [{SOURCE_ID}] ', text)
+
+    # ── end to end through the real fha dispatcher ───────────────────────────
+
+    def test_fha_cli_accepts_dry_run_and_refuses_the_pair(self) -> None:
+        fha = str(ROOT / 'tools' / 'fha.py')
+        ok = subprocess.run(
+            [sys.executable, fha, 'normalize-links', '--dry-run', '--root', str(self.archive)],
+            text=True, capture_output=True, check=False)
+        self.assertEqual(ok.returncode, 0, ok.stderr + ok.stdout)
+
+        both = subprocess.run(
+            [sys.executable, fha, 'normalize-links', '--dry-run', '--write',
+             '--root', str(self.archive)],
+            text=True, capture_output=True, check=False)
+        self.assertEqual(both.returncode, 2, both.stderr + both.stdout)
+        self.assertIn('pick one', both.stderr)
+
+
+if __name__ == '__main__':
+    unittest.main()
