@@ -85,7 +85,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "f2e95c2faff4ab8b63dbdd6e343306f496f8732cd63450e9ef2f5527cbd15d02",
+      "sha256": "267cb75f982bfaa8f2e913b5d4d8d652c388873de54c7fa9fa1eca741050bf72",
       "spec_version": "1.2"
     },
     {
@@ -127,13 +127,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "2c95ea154ce7e5d3a0b25aff64c07d75831f78aaad0a687a0be234bcaff98a3d",
+      "sha256": "37b95a7ca7f39ef8eedfe952e6cbafd62a97e963bdf3220fb0699f66cbda9192",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "8e6d8174195f8d8f2e6829602f90bb0bd0c5a893866fbfb28f1243132f74a7ce",
+      "sha256": "d888670c1280d8363d7c30eb327e206de393af9463a3e02a746251bef3e4dbf7",
       "spec_version": "1.2"
     },
     {

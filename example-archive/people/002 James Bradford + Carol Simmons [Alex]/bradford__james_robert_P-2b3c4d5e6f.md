@@ -23,7 +23,7 @@ James was appointed principal of Fairview Consolidated High School in 1998, a po
 
 He died on 3 November 2015 in Topeka, Kansas [[S-fe5678901f]].
 
-<!-- AI-DRAFT 2026-06-14 claude-sonnet-4-6 - biography drafted from fictional source material; all biographical details are inventions for the example archive -->
+<!-- AI-ACCEPTED 2026-06-14 claude-sonnet-4-6 - biography drafted from fictional source material; all biographical details are inventions for the example archive (accepted 2026-07-03) -->
 
 ## Stories
 

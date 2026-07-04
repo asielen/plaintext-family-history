@@ -687,7 +687,31 @@ class ConfirmArchiveTests(unittest.TestCase):
 
     # draft --------------------------------------------------------------------
 
+    def _seed_draft_marker(self) -> None:
+        """Append a fresh AI-DRAFT block to the DRAFT_PERSON profile copy.
+
+        The example archive's demo draft was accepted by the owner
+        (`fha confirm draft P-2b3c4d5e6f`, 2026-07-03), so the fixture now
+        carries an AI-ACCEPTED marker. These tests seed their own draft so
+        coverage never depends on the fixture holding an unaccepted draft -
+        and the pre-existing AI-ACCEPTED marker doubles as proof the flip
+        ignores already-accepted blocks (count stays 1).
+        """
+        kinds = ('_research_', '_timeline_', '_sources-index_', '_draft-queue_')
+        profile = next(
+            p for p in (self.root / 'people').rglob(f'*_{DRAFT_PERSON}.md')
+            if not any(k in p.name for k in kinds)
+        )
+        text = profile.read_text(encoding='utf-8')
+        profile.write_text(
+            text
+            + '\nSeeded draft paragraph for this test.\n\n'
+            + '<!-- AI-DRAFT 2026-07-04 test-model - seeded by test_confirm -->\n',
+            encoding='utf-8',
+        )
+
     def test_draft_accept_flips_marker(self) -> None:
+        self._seed_draft_marker()
         result = confirm.run_accept_draft(self.root, person_id=DRAFT_PERSON)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['count'], 1)
@@ -696,6 +720,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertNotIn('AI-DRAFT', profile)
 
     def test_draft_dry_run_writes_nothing(self) -> None:
+        self._seed_draft_marker()
         result = confirm.run_accept_draft(self.root, person_id=DRAFT_PERSON, dry_run=True)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         profile = Path(result['profile']).read_text(encoding='utf-8')
