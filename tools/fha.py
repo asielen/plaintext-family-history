@@ -161,10 +161,9 @@ def _intercept_id_check(argv: list[str]) -> int | None:
     from _lib import (
         EXIT_FAILURE,
         FhaConfigError,
-        archive_root_missing_message,
-        find_archive_root,
         load_fha_yaml,
         normalize_id,
+        resolve_root_arg,
     )
     from find import find_by_id as _find_by_id
 
@@ -187,28 +186,18 @@ def _intercept_id_check(argv: list[str]) -> int | None:
     alias_parser.add_argument('--spec-root', metavar='PATH')
     parsed, _ = alias_parser.parse_known_args(tail)
 
+    # Root resolution and the archive guard (an explicit --root without
+    # fha.yaml is almost always a typo'd path, and answering "not found in
+    # archive tree" against an empty folder is a false negative the user
+    # can't distinguish from a real miss) live in `_lib.resolve_root_arg`,
+    # the shared chokepoint. The alias gathers --root from three positions,
+    # so hand it over on a minimal namespace.
     root = parsed.root or id_parsed.root or global_root
-    if root:
-        archive_root = Path(root).resolve()
-        # Same guard as `fha index`/`fha find`: an explicit --root without
-        # fha.yaml is almost always a typo'd path, and answering "not found
-        # in archive tree" against an empty folder is a false negative the
-        # user has no way to distinguish from a real miss.
-        if not (archive_root / 'fha.yaml').exists():
-            print(
-                f'ERROR: {archive_root} does not look like an archive (no '
-                f'fha.yaml there) - is this the right folder? An archive has '
-                f'fha.yaml at its top folder. Run `fha id check` from inside '
-                f'your archive, or point --root at the folder that contains '
-                f'fha.yaml.',
-                file=sys.stderr,
-            )
-            return EXIT_FAILURE
-    else:
-        archive_root = find_archive_root()
-        if archive_root is None:
-            print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
-            return EXIT_FAILURE
+    archive_root = resolve_root_arg(
+        argparse.Namespace(root=root), command='fha id check',
+    )
+    if archive_root is None:
+        return EXIT_FAILURE
 
     try:
         fha_config = load_fha_yaml(archive_root, strict=True)

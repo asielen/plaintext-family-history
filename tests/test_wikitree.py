@@ -410,6 +410,46 @@ class WikitreeRenderTests(unittest.TestCase):
 
         self.assertEqual(r['status'], 'restricted-sources')
 
+    def test_ambiguous_deadname_alias_names_every_restricting_person(self):
+        # X4 regression (round-2 finding 19): an ambiguous alias resolves to
+        # every candidate, and when several persons all restrict the variant
+        # the refusal must name EACH of them - a break after the first match
+        # silently dropped the rest of the cleanup list.
+        for pid in ('P-0000000002', 'P-0000000003'):
+            (self.root / 'people' / f'{pid.lower()}.md').write_text(
+                f'---\nid: {pid}\nname: Someone Jones\nliving: false\n'
+                'name_variants:\n  - value: Marion Jones\n    restricted: true\n---\n',
+                encoding='utf-8',
+            )
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nFormerly known as [[Marion Jones]].\n',
+            encoding='utf-8',
+        )
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        # p-0000000002 exists from setUp; point it at the record written
+        # above, and add a second person sharing the ambiguous alias.
+        conn.execute(
+            "UPDATE persons SET path='people/p-0000000002.md' WHERE id='p-0000000002'")
+        _add_person(conn, 'p-0000000003', 'Other Jones', tier='stub',
+                    path='people/p-0000000003.md', surname='Jones')
+        for pid in ('p-0000000002', 'p-0000000003'):
+            conn.execute(
+                'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+                ('marion jones', pid, 'variant'),
+            )
+        conn.commit()
+        conn.close()
+
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'restricted-names')
+        msg = r['messages'][0]
+        self.assertIn('P-0000000002', msg)
+        self.assertIn('P-0000000003', msg)   # the person the old break dropped
+
 
 class WikitreeDraftExclusionTests(unittest.TestCase):
     """Unaccepted `<!-- AI-DRAFT ... -->` prose is not-yet-content (AGENTS.md:
@@ -506,6 +546,39 @@ class WikitreeDraftExclusionTests(unittest.TestCase):
         self.assertNotIn('== Biography ==', text)   # emptied section: heading dropped
         self.assertIn('== Stories ==', text)
         self.assertIn('A human-written tale.', text)
+
+    def test_damaged_draft_marker_refuses_export(self):
+        # X1 fail-closed (round-2 finding 18): a marker missing its `-->`
+        # used to publish the whole draft plus the dangling marker into the
+        # export - and `fha confirm draft` cannot flip a broken marker, so
+        # the state was sticky. The export now refuses, naming the file and
+        # the fix, exit/refusal family same as the privacy scans.
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            'A drafted paragraph.\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v2 missing its arrow\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'broken-draft-marker')
+        self.assertIsNone(r['text'])
+        self.assertEqual(r.exit_code, wikitree.EXIT_FAILURE)
+        msg = r['messages'][0]
+        self.assertIn('people/subject.md', msg)      # names the file
+        self.assertIn('-->', msg)                    # names the fix
+        self.assertNotIn('Traceback', msg)
+
+    def test_wrap_style_marker_refuses_not_leaks(self):
+        # Wrap-style authoring (marker above + /AI-DRAFT below) used to cut
+        # the HUMAN text above and export the draft below it. Fail closed.
+        self._write_profile(
+            '## Biography\n'
+            'Human paragraph above.\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - wrap -->\n'
+            'A wrapped draft paragraph [S-0000000001].\n'
+            '<!-- /AI-DRAFT -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'broken-draft-marker')
+        self.assertIsNone(r['text'])
 
 
 if __name__ == '__main__':

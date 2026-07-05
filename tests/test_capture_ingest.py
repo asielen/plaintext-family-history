@@ -499,6 +499,27 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(capture._run_capture(args), EXIT_CLEAN)
         self.assertEqual(len(self._stubs()), 1)
 
+    def test_cli_ingest_into_non_archive_root_refused(self) -> None:
+        # Round-2 finding 10, the --ingest face: a typo'd --root used to file
+        # every staged bundle into `<typo>/inbox` with exit 0. The shared
+        # resolve_root_arg guard refuses before the sweep reads anything -
+        # bundles stay staged, the typo folder stays empty.
+        from contextlib import redirect_stderr
+        from _lib import EXIT_FAILURE
+        _make_bundle(self.staging, 'b', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'asset_mode': 'none'})
+        typo = self.tmp / 'typo-root'
+        typo.mkdir()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = capture._run_capture(SimpleNamespace(
+                root=str(typo), ingest=str(self.staging), dry_run=False))
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertEqual(list(typo.iterdir()), [])
+        self.assertIn('does not look like an archive', err.getvalue())
+        # The bundle was not consumed or parked.
+        self.assertTrue((self.staging / 'b' / 'page.html').exists())
+
     def test_capture_staging_config_key(self) -> None:
         d = capture._resolve_staging_dir(None, {'capture_staging': str(self.staging)})
         self.assertEqual(d, self.staging.resolve())

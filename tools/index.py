@@ -53,10 +53,8 @@ from _lib import (
     FhaConfigError,
     Message,
     Result,
-    archive_root_missing_message,
     edtf_bounds,
     extract_wikilinks,
-    find_archive_root,
     id_type_of,
     is_template_file,
     is_valid_id,
@@ -68,6 +66,8 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_ref,
+    resolve_root_arg,
+    resolve_typed_ref,
     sqlite_cache_schema_status,
     strip_link_wrapper,
 )
@@ -84,7 +84,7 @@ import yaml
 #    _drop_tables            - wipe all tables before a full rebuild
 #
 #  Indexers (one per record type)
-#    _resolve_claim_ref      - claim-block ref (persons/roles/place) → canonical ID
+#    (claim-block refs resolve via _lib.resolve_typed_ref - K4 shared home)
 #    _coerce_coord           - one coords entry → float | None
 #    _parse_place_coords     - hand-edited coords: → (lat, lon, warning)
 #    _index_places           - places.yaml → places, place_names, place_history
@@ -412,12 +412,30 @@ def _insert_record_aliases(
         add(v, 'variant')
 
 
-def _resolve_map_from_aliases(conn: sqlite3.Connection) -> dict[str, str]:
+def _resolve_map_from_aliases(
+    conn: sqlite3.Connection,
+    record_types: tuple[str, ...] | None = None,
+) -> dict[str, str]:
     """Build the read-time resolve map `alias → canonical_id` from the aliases
     table. Clash-aware: an alias naming ≥2 distinct records is omitted, so a bare
-    ambiguous name never silently resolves (SPEC §7) - the linter flags it."""
+    ambiguous name never silently resolves (SPEC §7) - the linter flags it.
+
+    `record_types` filters by the canonical TARGET's type prefix ('P', 'L', ...)
+    BEFORE clash detection - this is the full-build/upsert equivalence contract
+    (round-2 finding 8). The full rebuild snapshots its claim/frontmatter-link
+    map at a moment when only persons and places are in the table; the upsert
+    reads a table where every other record's aliases survive, so without the
+    filter a source alias (say a source hand-aliased 'Ken Smith') clashed the
+    person 'Ken Smith' out of the upsert's map and silently dropped the
+    claim_persons/source_people rows the full build keeps. Filtering to
+    ('P', 'L') makes both maps identical by construction, and the filter runs
+    before clash detection so an out-of-scope alias can never veto an
+    in-scope name. The citation scans pass None on purpose - they resolve
+    source stems and on-demand C-ids too."""
     idx: dict[str, set[str]] = {}
     for alias, cid in conn.execute('SELECT alias, canonical_id FROM aliases'):
+        if record_types is not None and id_type_of(cid) not in record_types:
+            continue
         idx.setdefault(alias, set()).add(cid)
     return {a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1}
 
@@ -437,43 +455,6 @@ def _resolve_link_field(value: object, alias_map: dict[str, str] | None) -> list
         elif id_type_of(ref):
             out.append(normalize_id(ref))
     return out
-
-
-def _resolve_claim_ref(
-    raw: object,
-    alias_map: dict[str, str] | None,
-    want: str | None = None,
-) -> str | None:
-    """Resolve one claim-block reference (a persons: entry, a roles: value, or
-    the place: field) to a canonical ID, with the same tolerance the source
-    frontmatter link fields get (TOOLING §2 step 4a / §3 E004).
-
-    The quickstart teaches claims written with name links (`persons:
-    ["[[Sam Rivera]]"]`), so a bare `normalize_id(str(...))` here stored the
-    literal `[[sam rivera]]` and broke every downstream join. Instead:
-      - the `[[ ]]` wrapper, `|display`, and `#fragment` are stripped;
-      - an ID-shaped target is kept as-is, even when dangling - integrity is
-        lint's job (E005), not the indexer's;
-      - a name resolves through the alias map, but only to the record type the
-        field means (`want`: 'P' for persons/roles, 'L' for place) so a name
-        clash across types never stores a cross-type edge;
-      - an unknown or ambiguous name returns None - per TOOLING §3, "an
-        unresolved non-ID `[[stem]]` is an inert note-link, not a finding" -
-        so nothing garbage ever lands in claim_persons/claims.place_id.
-
-    Symmetry note: names resolve only through person/place aliases, which are
-    identical in the full-rebuild map (persons/places indexed before sources)
-    and the upsert map (person/place rows survive an upsert), so build_index
-    and upsert_source stay row-for-row equivalent."""
-    ref = strip_link_wrapper(str(raw)) if raw is not None else ''
-    if not ref:
-        return None
-    if id_type_of(ref):
-        return normalize_id(ref)
-    resolved = resolve_ref(ref, alias_map) if alias_map else None
-    if resolved and (want is None or id_type_of(resolved) == want):
-        return resolved
-    return None
 
 
 def _coerce_coord(value: object) -> float | None:
@@ -1017,7 +998,7 @@ def _index_source(
         # place: gets the same tolerance as persons: - a wrapped `[[L-…]]` or an
         # unambiguous registered place name resolves; free text stays out of
         # place_id (it lives in place_text) instead of being stored as garbage.
-        place_id_raw = _resolve_claim_ref(claim.get('place'), alias_map, want='L')
+        place_id_raw = resolve_typed_ref(claim.get('place'), alias_map, want='L')
 
         sig_override = str(claim.get('significance', '')) or None
 
@@ -1053,7 +1034,7 @@ def _index_source(
 
         # claim_persons - entries may be bare P-ids, wrapped `[[P-…|Name]]`
         # links, or `[[Name]]` links (the quickstart's hand-authored form).
-        # Each resolves via _resolve_claim_ref; an unresolvable name is an
+        # Each resolves via _lib.resolve_typed_ref; an unresolvable name is an
         # inert note-link and draws no row (TOOLING §3 E004). link_field_refs
         # also flattens the nested-list shape an unquoted `[[Name]]` parses to.
         roles_map = claim.get('roles') or {}
@@ -1064,13 +1045,13 @@ def _index_source(
             for role_name, role_val in roles_map.items():
                 role_pids = {
                     rid for r in link_field_refs(role_val)
-                    for rid in [_resolve_claim_ref(r, alias_map, want='P')]
+                    for rid in [resolve_typed_ref(r, alias_map, want='P')]
                     if rid
                 }
                 resolved_roles.append((str(role_name), role_pids))
 
         for pos, p_raw in enumerate(link_field_refs(claim.get('persons'))):
-            ppid = _resolve_claim_ref(p_raw, alias_map, want='P')
+            ppid = resolve_typed_ref(p_raw, alias_map, want='P')
             if not ppid:
                 continue   # inert note-link: unknown/ambiguous name, no garbage row
             role = next((rn for rn, pids in resolved_roles if ppid in pids), None)
@@ -1080,14 +1061,14 @@ def _index_source(
             )
 
         # claim_links - targets are C-ids, possibly wrapped (`[[C-…]]`).
-        # ID-shaped only, deliberately: the claim-time alias map differs
-        # between full build (snapshotted before any source/claim aliases
-        # exist) and upsert (other sources' rows survive), so resolving NAMES
-        # here would make the incremental path diverge from the full rebuild.
+        # ID-shaped only, deliberately: the claim-time alias map carries only
+        # person/place targets (the _resolve_map_from_aliases equivalence
+        # contract), so it could never resolve a name to a C-id anyway - a
+        # name here would land on a person and store a cross-type edge.
         # Lint's E004 handles name targets per the inert-note-link contract.
         for link_type in ('corroborates', 'contradicts'):
             for t in link_field_refs(claim.get(link_type)):
-                tid = _resolve_claim_ref(t, alias_map=None)
+                tid = resolve_typed_ref(t, alias_map=None)
                 if tid:
                     conn.execute(
                         'INSERT INTO claim_links(claim_id, rel, target_id) VALUES (?,?,?)',
@@ -1469,8 +1450,12 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
 
             # Resolve map for name-first frontmatter links - persons and places
             # are fully indexed (their names registered as aliases) before any
-            # source's `people:`/`places:` is read.
-            link_alias_map = _resolve_map_from_aliases(conn)
+            # source's `people:`/`places:` is read. The explicit ('P', 'L')
+            # filter is a no-op at this moment (nothing else is in the table
+            # yet) but states the equivalence contract with upsert_source's
+            # map, which reads a fully-populated table and NEEDS the filter to
+            # build this same map (see _resolve_map_from_aliases).
+            link_alias_map = _resolve_map_from_aliases(conn, record_types=('P', 'L'))
 
             # Sources
             sources_root = archive_root / 'sources'
@@ -1645,10 +1630,16 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
             # transcript-indexing pass cannot leave stale FTS content behind.
             conn.execute('DELETE FROM transcripts_fts WHERE source_id=?', (sid,))
 
-            # Resolve map for this source's name-first frontmatter links and its
-            # prose stem citations. Persons/places are unchanged on an upsert, so
-            # the surviving alias rows already carry their names.
-            link_alias_map = _resolve_map_from_aliases(conn)
+            # Resolve map for this source's name-first frontmatter links and
+            # claims. Persons/places are unchanged on an upsert, so the
+            # surviving alias rows already carry their names - but OTHER
+            # sources' aliases survive here too, which the full build's map
+            # never saw (it snapshots before any source is indexed). The
+            # ('P', 'L') filter reduces this table to that same snapshot, so
+            # a clashing alias on another record can't drop the
+            # claim_persons/source_people rows the full build keeps (the
+            # row-for-row equivalence contract, round-2 finding 8).
+            link_alias_map = _resolve_map_from_aliases(conn, record_types=('P', 'L'))
             _index_source(conn, found, archive_root, fha_config, link_alias_map)
             # Re-scan citations for the re-indexed source file (resolving stems),
             # with the map refreshed to include this source's reinserted stems.
@@ -1697,33 +1688,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 def _run_index(args: argparse.Namespace) -> int:
     """argparse → build_index / upsert_source bridge; returns the exit code.
 
-    An explicit --root must point at a real archive (its top folder carries
-    fha.yaml) before anything runs. Without this guard a typo'd --root used
-    to glob missing dirs, mint an empty .cache/index.sqlite inside ANY
-    folder, and print "Index rebuilt" with exit 0 - a permanently
-    "successful" empty archive. The refusal happens before any .cache
-    creation and mirrors scaffold.py's update-tools wording; the no---root
-    path needs no guard because find_archive_root only returns a folder
-    that already contains fha.yaml.
+    Root resolution (including the refusal of a typo'd --root that doesn't
+    carry fha.yaml - which once minted an empty .cache/index.sqlite inside
+    ANY folder and printed "Index rebuilt" with exit 0) lives in
+    `_lib.resolve_root_arg`, the shared chokepoint every tool resolves
+    through. The refusal happens before any .cache creation.
     """
-    root = getattr(args, 'root', None)
-    if root:
-        archive_root = Path(root).resolve()
-        if not (archive_root / 'fha.yaml').is_file():
-            print(
-                f'ERROR: {archive_root} does not look like an archive (no '
-                f'fha.yaml there) - is this the right folder? An archive has '
-                f'fha.yaml at its top folder. Run `fha index` from inside '
-                f'your archive, or point --root at the folder that contains '
-                f'fha.yaml. Nothing was indexed and nothing was created.',
-                file=sys.stderr,
-            )
-            return EXIT_FAILURE
-    else:
-        archive_root = find_archive_root()
-        if archive_root is None:
-            print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
-            return EXIT_FAILURE
+    archive_root = resolve_root_arg(args, command='fha index')
+    if archive_root is None:
+        return EXIT_FAILURE
 
     try:
         fha_config = load_fha_yaml(archive_root, strict=True)

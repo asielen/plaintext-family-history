@@ -58,6 +58,10 @@ class PlacesLintTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.archive_root = Path(self._tmp.name)
+        # The shared resolve_root_arg guard refuses an explicit --root without
+        # fha.yaml, so the CLI-path tests need the synthetic root to look like
+        # a real archive.
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
         self.conn = _make_index(self.archive_root)
 
     def tearDown(self) -> None:

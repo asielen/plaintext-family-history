@@ -868,32 +868,51 @@ class DraftExclusionTests(_Base):
         self.assertNotIn('Drafted paragraph.', html)
         self.assertNotIn('AI-DRAFT', html)
 
+    # The marker-grammar unit tests moved to tests/test_lib_text.py with the
+    # function itself (site consumes _lib.strip_unaccepted_drafts now); the
+    # tests below cover site's own half of the contract - what a damaged
+    # marker does to the built page.
 
-class DraftStripUnitTests(unittest.TestCase):
-    """Unit checks on the marker grammar edges `_strip_unaccepted_drafts`
-    mirrors from confirm.py (`<!--` + optional whitespace + word + lazy body,
-    DOTALL) and the block-boundary rule."""
+    def test_damaged_marker_withholds_prose_and_warns(self):
+        # X1 fail-closed: an unterminated marker means draft and accepted
+        # prose can no longer be told apart. The page still builds, but its
+        # whole prose surface is withheld, and one warning names the file
+        # and the fix. The old behavior published the draft + the dangling
+        # marker into the standalone site.
+        body = ('# T\n## Biography\n'
+                'Human paragraph.\n\n'
+                'Drafted paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - note missing its arrow\n\n'
+                '## Stories\nA human tale.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')            # build completes
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Drafted paragraph.', html)     # the leak, closed
+        self.assertNotIn('AI-DRAFT', html)
+        self.assertNotIn('Human paragraph.', html)       # withheld entirely
+        self.assertNotIn('A human tale.', html)          # both sections
+        warnings = [m for m in res['messages'] if 'damaged' in m]
+        self.assertEqual(len(warnings), 1)               # one warning, not two
+        self.assertIn('draft marker', warnings[0])
+        self.assertIn('people/', warnings[0])            # names the file
+        self.assertIn('rebuild', warnings[0])            # names the fix
 
-    def test_nospace_multiline_marker(self):
-        out = site._strip_unaccepted_drafts(
-            'X.\n\n<!--AI-DRAFT 2026-07-01 m\n - long note -->\n\nKept.')
-        self.assertNotIn('X.', out)
-        self.assertIn('Kept.', out)
-
-    def test_subheading_inside_draft_is_excluded(self):
-        # A ###+ subheading is draft content, not a boundary - otherwise the
-        # top of an unaccepted draft would publish.
-        text = ('## Biography\n\nHuman intro.\n\n<!-- AI-ACCEPTED 1 m - n -->\n\n'
-                '### Early life\n\nDraft para.\n\n<!-- AI-DRAFT 2 m - n -->\n')
-        out = site._strip_unaccepted_drafts(text)
-        self.assertIn('Human intro.', out)
-        self.assertNotIn('Early life', out)
-        self.assertNotIn('Draft para.', out)
-        self.assertNotIn('AI-', out)
-
-    def test_text_without_markers_untouched(self):
-        text = 'Plain.\n\n\n\nText with <!-- an ordinary comment -->.\n'
-        self.assertEqual(site._strip_unaccepted_drafts(text), text)
+    def test_wrap_style_marker_withholds_not_leaks(self):
+        # Wrap-style authoring (marker above + /AI-DRAFT below) used to cut
+        # the HUMAN text above and publish the draft below it. Fail closed.
+        body = ('# T\n## Biography\n'
+                'Human paragraph above.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - wrap -->\n'
+                'Wrapped draft paragraph.\n'
+                '<!-- /AI-DRAFT -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Thomas', body=body)
+        res = self._run(linked=False)
+        self.assertEqual(res['status'], 'ok')
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Wrapped draft paragraph.', html)
+        self.assertNotIn('AI-DRAFT', html)
+        self.assertTrue(any('damaged' in m for m in res['messages']))
 
 
 class LinkSchemeTests(unittest.TestCase):
@@ -994,6 +1013,35 @@ class OutputGuardTests(_Base):
         res = self._run_to(self.out_dir)
         self.assertEqual(res['status'], 'ok')
         self.assertTrue((self.out_dir / '.fha-site').exists())
+
+    def test_interrupted_first_build_does_not_lock_output_dir(self):
+        # X3 (round-2 finding 13): a crash/Ctrl-C after the reset but before
+        # index.html used to leave a non-empty folder with no marker and no
+        # index.html - the next run refused it as "wasn't created by fha
+        # site" with no way out. The marker is now stamped the moment
+        # _reset_output succeeds (the tool owns the dir it just cleared), so
+        # the rerun simply rebuilds.
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        out = self.archive_root / 'exports'
+        original = site._SiteBuilder.build_index_page
+
+        def _boom(builder_self):
+            raise RuntimeError('simulated mid-build crash')
+
+        site._SiteBuilder.build_index_page = _boom
+        try:
+            with self.assertRaises(RuntimeError):
+                self._run_to(out)
+        finally:
+            site._SiteBuilder.build_index_page = original
+        # The interrupted build left the poison shape: files present (vendor
+        # was copied), but no index.html - and, now, the ownership marker.
+        self.assertTrue((out / 'vendor' / 'fha-tree.js').exists())
+        self.assertFalse((out / 'index.html').exists())
+        self.assertTrue((out / '.fha-site').exists())
+        res = self._run_to(out)
+        self.assertEqual(res['status'], 'ok')            # rebuilt, not refused
+        self.assertTrue((out / 'index.html').exists())
 
     def test_dry_run_lists_would_remove_and_deletes_nothing(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane')

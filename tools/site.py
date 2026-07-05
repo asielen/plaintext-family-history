@@ -15,7 +15,10 @@ framework. It is a *snapshot*, not a live view: structured data is read from
 (the index does not carry it), and the photo strip is read from
 `.cache/photos.sqlite` when present. Prose still inside `<!-- AI-DRAFT … -->`
 markers is not yet content (AGENTS.md: it stays there "until the human
-accepts it" via `fha confirm draft`), so both build modes exclude it.
+accepts it" via `fha confirm draft`), so both build modes exclude it - and a
+DAMAGED marker (e.g. a missing `-->`) withholds that person's Biography and
+Stories entirely, with a warning naming the file: when draft can no longer be
+told from accepted prose, publishing nothing is the only safe rendering.
 
 Two build modes, one generator:
   - `--standalone` (default): the safe-to-share snapshot. Living/unknown
@@ -58,7 +61,8 @@ CODE MAP
 --------
   Prose / HTML
     _escape                    - html.escape shorthand
-    _strip_unaccepted_drafts   - drop `<!-- AI-DRAFT … -->` prose + AI markers
+    (strip_unaccepted_drafts   - drop `<!-- AI-DRAFT … -->` prose + AI markers,
+                                 fail-closed on damaged markers - lives in _lib)
     _safe_link_href            - markdown-link scheme allowlist (stored-XSS guard)
     _prose_to_html             - minimal stdlib markdown→HTML (no md library)
     _inline_html               - inline pass: links, [ID] tokens, **bold**
@@ -129,6 +133,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     strip_link_wrapper,
+    strip_unaccepted_drafts,
     open_index_db,
     photoindex_status,
     read_record,
@@ -225,112 +230,9 @@ def _escape(text: str) -> str:
     return html.escape(text, quote=False)
 
 
-# ── AI-DRAFT prose exclusion (the AGENTS.md AI-pass contract) ─────────────────
-# The marker grammar mirrors confirm.py's _AI_DRAFT_RE exactly: the span
-# `fha confirm draft` flips is `<!--` + optional whitespace + the word +
-# anything up to the first `-->` (DOTALL - a marker comment may span lines).
-# Duplicated per export tool because tools never import tools (TOOLING §15).
-_AI_DRAFT_MARK_RE = re.compile(r'<!--\s*AI-DRAFT\b.*?-->', re.S)
-_AI_ACCEPTED_MARK_RE = re.compile(r'<!--\s*AI-ACCEPTED\b.*?-->', re.S)
-# A draft block's upper boundary: the end of the previous AI marker (either
-# state - an accepted block ends where its own marker sits) or a section
-# heading (`#`/`##`; profile sections are `##`, and a draft never crosses
-# one). Deeper headings (###+) are prose the drafter may itself have written,
-# so they stay INSIDE the block - treating them as boundaries could publish
-# the top of an unaccepted draft.
-_AI_BLOCK_BOUNDARY_RE = re.compile(
-    r'<!--\s*AI-(?:DRAFT|ACCEPTED)\b.*?-->|^#{1,2}\s[^\n]*$', re.S | re.M)
-_SECTION_HEADING_RE = re.compile(r'^#{1,2}\s[^\n]*$', re.M)
-_BLANK_RUN_RE = re.compile(r'\n{3,}')
-
-
-def _strip_unaccepted_drafts(text: str) -> str:
-    """Remove unaccepted AI draft prose - and every AI provenance marker -
-    from prose that is about to be published.
-
-    The contract (AGENTS.md): prose an AI drafts into a profile "goes inside
-    `<!-- AI-DRAFT ... -->` markers until the human accepts it"; acceptance is
-    `fha confirm draft`, which flips the marker to AI-ACCEPTED in place (the
-    prose itself never moves). The write-biography skill places the marker at
-    the END of the block it drafted, so the drafted span is everything between
-    the previous boundary (an earlier AI marker of either state, or a `#`/`##`
-    section heading) and the marker itself. That span, marker included, is
-    dropped here; AI-ACCEPTED prose is published with its marker removed (the
-    marker is a provenance comment, and this pipeline would otherwise render
-    it as visible escaped text).
-
-    The block START is not syntactically encoded, so prose sitting directly
-    above a draft run with no marker or heading between is withheld too -
-    deliberately fail-closed: over-excluding until `fha confirm draft` runs
-    can never leak an unaccepted draft, and the withheld prose comes back the
-    moment the draft is accepted.
-
-    A `#`/`##` heading whose section the cut leaves empty is dropped with it,
-    so an all-draft section renders like a section that was never written
-    (no stray heading).
-    """
-    if 'AI-DRAFT' not in text:
-        if 'AI-ACCEPTED' in text:
-            return _BLANK_RUN_RE.sub('\n\n', _AI_ACCEPTED_MARK_RE.sub('', text))
-        return text
-
-    boundaries = list(_AI_BLOCK_BOUNDARY_RE.finditer(text))
-    headings = list(_SECTION_HEADING_RE.finditer(text))
-
-    # One cut per draft marker: [end of the nearest boundary above it, end of
-    # the marker). Cuts come out in ascending, non-overlapping order because a
-    # draft marker is itself a boundary for the next one.
-    cuts: list[tuple[int, int]] = []
-    for marker in _AI_DRAFT_MARK_RE.finditer(text):
-        start = 0
-        for b in boundaries:
-            if b.end() <= marker.start():
-                start = b.end()
-            else:
-                break
-        cuts.append((start, marker.end()))
-
-    def _surviving(lo: int, hi: int) -> str:
-        """Text of [lo, hi) that no cut removes - the empty-section probe."""
-        kept: list[str] = []
-        pos = lo
-        for cs, ce in cuts:
-            if ce <= lo or cs >= hi:
-                continue
-            kept.append(text[pos:max(lo, cs)])
-            pos = min(hi, ce)
-        kept.append(text[pos:hi])
-        return ''.join(kept)
-
-    # Drop the heading of any section the cuts emptied. Accepted markers do
-    # not count as surviving content (they are removed below regardless).
-    heading_cuts: list[tuple[int, int]] = []
-    for cs, _ce in cuts:
-        h_prev = None
-        h_next_start = len(text)
-        for h in headings:
-            if h.end() <= cs:
-                h_prev = h
-            elif h.start() > cs:
-                h_next_start = h.start()
-                break
-        if h_prev is None:
-            continue
-        remainder = _AI_ACCEPTED_MARK_RE.sub('', _surviving(h_prev.end(), h_next_start))
-        if not remainder.strip():
-            heading_cuts.append((h_prev.start(), h_prev.end()))
-
-    out: list[str] = []
-    pos = 0
-    for cs, ce in sorted(set(cuts + heading_cuts)):
-        if cs > pos:
-            out.append(text[pos:cs])
-        pos = max(pos, ce)
-    out.append(text[pos:])
-    cleaned = _AI_ACCEPTED_MARK_RE.sub('', ''.join(out))
-    # Cutting a block leaves the blank lines that framed it; collapse the
-    # leftovers so paragraph spacing stays normal.
-    return _BLANK_RUN_RE.sub('\n\n', cleaned)
+# The AI-DRAFT prose exclusion (strip_unaccepted_drafts) lives in _lib - one
+# implementation shared with fha wikitree, fail-closed on damaged markers.
+# Consumed in _person_prose below.
 
 
 # Schemes a markdown link in prose may carry. Anything else scheme-bearing
@@ -1179,7 +1081,15 @@ class _SiteBuilder:
         in the linked preview): a draft is not yet content until `fha confirm
         draft` accepts it. A section that empties after the exclusion renders
         exactly like a person with no such section (the template's
-        `{% if %}` guard skips the heading)."""
+        `{% if %}` guard skips the heading).
+
+        A DAMAGED marker (usually a missing `-->`) means draft can no longer
+        be told from accepted prose, so BOTH prose sections are withheld -
+        the page renders as if no biography was written - and one warning
+        names the file and the fix. The old behavior published the whole
+        draft plus the dangling marker; withholding is the only safe
+        rendering on a publication path, and the prose returns the moment
+        the marker is repaired (or the draft accepted) and the site rebuilt."""
         try:
             rec = read_record(self.archive_root / row['path'])
         except Exception as e:
@@ -1187,11 +1097,21 @@ class _SiteBuilder:
             return '', ''
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         bio = _extract_section(rec['body'], 'Biography')
-        if bio:
-            bio = _strip_unaccepted_drafts(bio).strip()
         stories = rec['stories']
-        if stories:
-            stories = _strip_unaccepted_drafts(stories).strip()
+        problem: str | None = None
+        if bio:
+            bio, problem = strip_unaccepted_drafts(bio)
+            bio = bio.strip()
+        if stories and problem is None:
+            stories, problem = strip_unaccepted_drafts(stories)
+            stories = stories.strip()
+        if problem is not None:
+            self.messages.append(
+                f'WARNING: a draft marker in {row["path"]} is damaged ({problem}) - '
+                'fix the marker or remove the draft, then rebuild. Until then this '
+                "person's Biography and Stories are withheld from the site."
+            )
+            return '', ''
         biography_html = _prose_to_html(bio, render) if bio else ''
         stories_html = _prose_to_html(stories, render) if stories else ''
         return biography_html, stories_html
@@ -1810,6 +1730,13 @@ class _SiteBuilder:
     def run(self) -> int:
         """Generate the whole site. Returns the number of pages written."""
         self._reset_output()
+        # Stamp ownership the moment _reset_output succeeds: the tool owns the
+        # dir it just cleared/created, and an interrupted FIRST build must not
+        # lock its own output (a crash mid-build used to leave a non-empty,
+        # unmarked folder that the next run refused as not-ours). The marker
+        # is written again on completion so its Last-build date is the
+        # finished build's, not the aborted attempt's.
+        self._write_marker()
         self._copy_vendor()
         for sid in sorted(self.source_pages):
             self.build_source_page(sid)
@@ -1845,6 +1772,10 @@ class _SiteBuilder:
     def _write_marker(self) -> None:
         """Stamp the output dir as fha-site-owned, so the next rebuild knows it
         may clear this folder (`_unowned_output_reason` checks for it).
+
+        Called twice per build: right after `_reset_output` (so a crash or
+        Ctrl-C mid-build cannot leave a partial site the next run refuses to
+        rebuild) and again at completion (refreshing the Last-build date).
 
         A write failure is a warning, not a failed build: the finished site is
         valid either way, and the pre-marker back-compat rule (index.html +

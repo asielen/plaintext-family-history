@@ -11,6 +11,12 @@ Also covers the P1 indent regression: claim items validly written with a wider
 dash-to-key spacing (`-   value:` with keys at column 4) must be edited at their
 own column, and the pre-write re-parse guard (`_lib.claims_edit_problem`) must
 turn any block-corrupting rewrite into a clean refusal with nothing written.
+
+Round-2 regressions covered here too: an `id: C-...` line quoted inside a block
+scalar must never draw the review edit onto the quoting claim (finding 2 - the
+old shape-only span match made `fha claim` refuse a perfectly reviewable
+claim), and a pre-existing duplicate claim id refuses with the E001 repair
+path, not the "would hide every claim" corruption wording (finding 15).
 """
 
 import shutil
@@ -441,6 +447,178 @@ class WideIndentClaimTests(unittest.TestCase):
         text = ' '.join(m.text for m in result.messages)
         self.assertIn(str(self.source), text)
         self.assertNotIn('Traceback', text)
+
+    def test_corruption_refusal_keeps_hide_wording(self) -> None:
+        # The corruption case (the edit itself would break the block) keeps
+        # the "hide every claim" warning - that wording is TRUE here, and it
+        # must not be rerouted to the duplicate-id (E001) branch.
+        import unittest.mock as mock
+        with mock.patch.object(claim, 'claim_item_key_indent',
+                               lambda item, base: base + '  '):
+            result = claim.run_claim(self.root, claim_id='C-bbbbbbbbbb',
+                                     status='accepted', reviewed='2026-07-03')
+        self.assertEqual(result['status'], 'refused')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('hide every claim', text)
+        self.assertNotIn('E001', text)
+
+
+# ── Quoted id lines inside block scalars (round-2 finding 2) ────────────────────
+
+_QUOTED_SOURCE = '''---
+id: S-3333333333
+title: Quoted-id notes
+source_type: other
+source_class: derivative
+citation: >
+  A fictional citation.
+people: [P-aaaaaaaaaa]
+created: 2026-07-01
+---
+
+## Claims
+```yaml
+- value: "Claim A - the decoy"
+  id: C-aa00000001
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  status: accepted
+  reviewed: 2026-01-01
+  notes: |
+    Compare with the other claim:
+    id: C-bb00000002
+    which covers the same event.
+
+- value: "Claim B - the real target"
+  id: C-bb00000002
+  type: occupation
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+```
+'''
+
+
+class QuotedIdClaimTests(unittest.TestCase):
+    """The round-2 M4 shape: claim A's `notes: |` quotes claim B's id line.
+    The shape-only span match located A, edited A, and the status guard then
+    refused - a wrong refusal on a perfectly reviewable claim. Ownership
+    matching (the item's own `id:` key line) must make the review land on B."""
+
+    DECOY, TARGET = 'C-aa00000001', 'C-bb00000002'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = self.root / 'sources' / 'other' / 'quoted-notes_S-3333333333.md'
+        self.source.parent.mkdir(parents=True, exist_ok=True)
+        self.source.write_text(_QUOTED_SOURCE, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_review_lands_on_the_owning_claim(self) -> None:
+        result = claim.run_claim(self.root, claim_id=self.TARGET,
+                                 status='accepted', reviewed='2026-07-05')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        rec = {c['id']: c for c in read_record(self.source)['claims']}
+        self.assertEqual(rec[self.TARGET]['status'], 'accepted')
+        self.assertEqual(str(rec[self.TARGET]['reviewed']), '2026-07-05')
+        # the decoy is untouched, its quoted evidence intact
+        self.assertEqual(rec[self.DECOY]['status'], 'accepted')
+        self.assertEqual(str(rec[self.DECOY]['reviewed']), '2026-01-01')
+        self.assertIn(f'id: {self.TARGET}', rec[self.DECOY]['notes'])
+
+    def test_unit_edit_targets_the_owner(self) -> None:
+        new, changed = claim._apply_claim_review(
+            _QUOTED_SOURCE, self.TARGET, status='needs-review', reviewed='2026-07-05')
+        self.assertTrue(changed)
+        rec = {c['id']: c for c in read_record_from_text(new)}
+        self.assertEqual(rec[self.TARGET]['status'], 'needs-review')
+        self.assertEqual(rec[self.DECOY]['status'], 'accepted')
+
+    def test_quoted_only_id_is_clean_not_found(self) -> None:
+        # The quoted id names a claim that exists nowhere - a clean not-found,
+        # never an edit onto the quoting claim.
+        ghost = 'C-cc00000003'
+        self.source.write_text(
+            _QUOTED_SOURCE.replace(f'id: {self.TARGET}\n    which covers',
+                                   f'id: {ghost}\n    which covers'),
+            encoding='utf-8')
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id=ghost, status='accepted')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_belt_refuses_when_ownership_and_parse_disagree(self) -> None:
+        # Belt and braces: if line-level ownership ever picks a span whose
+        # PARSED claim is not the target, the edit must refuse, not land.
+        import unittest.mock as mock
+        with mock.patch.object(claim, '_own_id_key_line',
+                               lambda lines, start, end, base: (start, self.TARGET)):
+            with self.assertRaises(claim._ClaimEditRefused):
+                claim._apply_claim_review(
+                    _QUOTED_SOURCE, self.TARGET, status='accepted', reviewed='2026-07-05')
+
+
+# ── Duplicate claim ids refuse with the E001 repair path (round-2 finding 15) ───
+
+_DUP_SOURCE = '''---
+id: S-4444444444
+title: Duplicate-id notes
+source_type: other
+source_class: derivative
+citation: >
+  A fictional citation.
+people: [P-aaaaaaaaaa]
+created: 2026-07-01
+---
+
+## Claims
+```yaml
+- value: "First twin"
+  id: C-aa00000001
+  type: occupation
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+
+- value: "Second twin"
+  id: C-aa00000001
+  type: occupation
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+```
+'''
+
+
+class DuplicateIdClaimRefusalTests(unittest.TestCase):
+    """A pre-existing duplicate C-id must refuse with the repair that helps -
+    E001 plus `fha id mint C` - not the corruption wording, which is false
+    for this case and closed the repair path with wrong advice."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = self.root / 'sources' / 'other' / 'dup-notes_S-4444444444.md'
+        self.source.parent.mkdir(parents=True, exist_ok=True)
+        self.source.write_text(_DUP_SOURCE, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_duplicate_refusal_names_e001_and_mint(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa00000001', status='accepted')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result.changed, [])
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('E001', text)
+        self.assertIn('fha id mint C', text)
+        self.assertNotIn('hide every claim', text)
+        self.assertIn(str(self.source), text)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
 
 
 # ── End-to-end: index + lint reflect the status change ──────────────────────────

@@ -335,6 +335,8 @@ Never overwrites; never moves a stub out of `stubs/` (placement into couple fold
 
 **Folder mode:** runs the triage scorer (§15b) over the folder, prints ranked candidates with signals, and processes only the ones the human selects.
 
+**Path resolution (forgiving):** `FILE` is taken as typed first (relative to where the command runs); a relative path that misses is retried under the resolved archive root, so the cheat-sheet spelling (`inbox/scan.jpg` typed from the workshop folder beside the archive) works. A double miss names both searched locations. The same doctrine covers `--more FILE`.
+
 **Input** is a bare file, a **source-stub sidecar** (one asset + `*.notes.md`), a **source-stub bundle folder** (multiple files + a `notes.md` - e.g. recording + transcript; each file becomes a role-tagged version sharing the minted S-id, the folder dissolves, SPEC §12.1), a **variation group** (see below), or a folder to triage. **File mode**, transactional (any failure → roll back):
 
 **Variation detection - implicit grouping from a mixed folder.** A real photo library has variation-siblings scattered among unrelated photos: three scans of the same portrait at different resolutions, a front-and-back pair, a color original and a restored version. They don't need a bundle folder - `fha process` (and `photoindex`) detects them automatically using two tiers:

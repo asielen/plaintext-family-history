@@ -55,6 +55,10 @@ class PacketTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.archive_root = Path(self._tmp.name)
+        # The resolve_root_arg chokepoint refuses a --root that carries no
+        # fha.yaml (round-2 finding 10), so the CLI-path test needs the
+        # fixture to look like a real archive, not just a dir with a .cache.
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
         self.conn = _make_index(self.archive_root)
         self.out_dir = self.archive_root / 'out'
 
@@ -634,6 +638,119 @@ class PacketTests(unittest.TestCase):
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
         self.assertEqual(result['status'], 'no-photoindex')
         self.assertFalse(self.out_dir.exists())
+
+    # ── AI-draft prose in the profile copy (round-2 S1) ───────────────────────
+
+    def _seed_research(self, text):
+        research_path = self.archive_root / 'people' / 'research_p-aaaaaaaaaa.md'
+        research_path.parent.mkdir(parents=True, exist_ok=True)
+        research_path.write_text(text, encoding='utf-8')
+        self.conn.execute(
+            "INSERT INTO person_files(person_id, kind, path, generated) VALUES "
+            "('p-aaaaaaaaaa', 'research', ?, 0)",
+            (research_path.relative_to(self.archive_root).as_posix(),),
+        )
+        return research_path
+
+    def test_unaccepted_draft_prose_withheld_from_profile_copy(self):
+        # The AI-pass contract is unqualified: prose still inside
+        # <!-- AI-DRAFT --> markers never ships on any export path, and no
+        # packet flag opens it (acceptance is `fha confirm draft`, a human
+        # gate, not an export switch). Accepted prose ships with its
+        # provenance marker removed.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\n'
+            'Accepted paragraph about the farm.\n<!-- AI-ACCEPTED 2026-05-01 -->\n\n'
+            'Unreviewed draft paragraph.\n<!-- AI-DRAFT 2026-06-30 claims: [] -->\n\n'
+            '## Notes\n\nHuman-written note.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('Unreviewed draft paragraph', copied)
+        self.assertNotIn('AI-DRAFT', copied)
+        self.assertIn('Accepted paragraph about the farm.', copied)
+        self.assertNotIn('AI-ACCEPTED', copied)
+        self.assertIn('Human-written note.', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn(
+            '1 draft paragraph awaiting your review was left out of '
+            f'{profile_path.name}; it stays in your archive.', readme)
+
+    def test_accepted_marker_removed_without_readme_note(self):
+        # An AI-ACCEPTED marker is provenance, not withheld content: the
+        # prose ships, the comment goes, and the README counts nothing.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\n'
+            'Accepted paragraph.\n<!-- AI-ACCEPTED 2026-05-01 -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertIn('Accepted paragraph.', copied)
+        self.assertNotIn('AI-ACCEPTED', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Left out for privacy', readme)
+
+    def test_damaged_draft_marker_fails_packet_build(self):
+        # A marker missing its "-->" means draft can no longer be told from
+        # accepted prose. The profile is the packet's required centerpiece,
+        # so the build fails structurally (write-failed), the same posture as
+        # a private name that could not be separated out - never a verbatim
+        # profile copy.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nDraft text.\n<!-- AI-DRAFT 2026-06-30\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'write-failed')
+        self.assertTrue(any('draft marker' in m and profile_path.name in m
+                            for m in result['messages']))
+        self.assertTrue(any('-->' in m for m in result['messages']))
+        self.assertFalse(any(self.out_dir.glob('packet_*')))
+
+    def test_research_copy_with_draft_marker_gets_readme_caution(self):
+        # Research files ship as byte copies (documented round-2 scope
+        # decision: working notes, not publication prose) - the draft text
+        # travels with them, so the README must say so in one plain line.
+        self._seed_person()
+        self._seed_research(
+            '# Research\n\nA half-drafted lead.\n<!-- AI-DRAFT 2026-06-30 -->\n')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True, include_research=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = (result['packet_dir'] / 'profile' / 'research_p-aaaaaaaaaa.md').read_text(
+            encoding='utf-8')
+        self.assertIn('AI-DRAFT', copied)   # byte copy, by scope decision
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('unreviewed draft text', readme)
+
+    def test_research_copy_without_draft_marker_no_caution(self):
+        self._seed_person()
+        self._seed_research('# Research\n\nClean notes.\n')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True, include_research=True)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('unreviewed draft text', readme)
 
 
 if __name__ == '__main__':

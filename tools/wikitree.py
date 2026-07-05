@@ -45,7 +45,11 @@ stays there "until the human accepts it" via `fha confirm draft`) is silently
 EXCLUDED from the exported body. Unlike restricted material it earns no
 refusal: a draft is simply not-yet-content - a normal in-progress state, not
 something the human must clean up - and refusing would block exporting the
-accepted remainder of the profile.
+accepted remainder of the profile. The one exception is a DAMAGED marker
+(usually a missing `-->`): then draft can no longer be told from accepted
+prose, so the export refuses (status `broken-draft-marker`, same refusal
+family as the privacy scans) with the file and the fix named, rather than
+risk shipping unaccepted text.
 
 CODE MAP
 --------
@@ -63,7 +67,8 @@ CODE MAP
     _living_person_refs              - living/unknown persons behind name-links
 
   Rendering
-    _strip_unaccepted_drafts         - drop `<!-- AI-DRAFT … -->` prose + AI markers
+    (strip_unaccepted_drafts         - drop `<!-- AI-DRAFT … -->` prose + AI markers,
+                                       fail-closed on damaged markers - lives in _lib)
     _convert_heading                 - markdown ## / ### → == / ===
     _render_token, _transform_line, _split_sentences
     _render_templates                - infobox templates from the hooks file
@@ -101,6 +106,7 @@ from _lib import (
     open_index_db,
     read_record,
     resolve_root_arg,
+    strip_unaccepted_drafts,
 )
 
 configure_utf8_stdout()
@@ -530,17 +536,23 @@ def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: st
         key = target.lower()
         if key in seen:
             continue
+        # An ambiguous alias resolves to EVERY candidate, so collect every
+        # person whose restricted variants match - the cleanup message must
+        # name each of them. (A `break` after the first match here once
+        # silently dropped the rest of the list - round-2 finding 19/X4.)
+        matched_ids: set[str] = set()
         for row in conn.execute(
             'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE',
             (target,),
         ).fetchall():
             cid = row['canonical_id']
-            if not cid or id_type_of(cid) != 'P':
+            if not cid or id_type_of(cid) != 'P' or cid in matched_ids:
                 continue
             if key in _restricted_variants(cid):
                 flagged.append((fmt_id_display(cid), target))
-                seen.add(key)
-                break
+                matched_ids.add(cid)
+        if matched_ids:
+            seen.add(key)
     # In-token displays name their person by ID, so the variant check goes
     # straight to that person's record - no alias lookup involved.
     for tid, display, _fragment, _span in extract_tokens(text):
@@ -583,112 +595,9 @@ def _living_person_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3.Row
 
 # ── Rendering ────────────────────────────────────────────────────────────────────
 
-# ── AI-DRAFT prose exclusion (the AGENTS.md AI-pass contract) ─────────────────
-# The marker grammar mirrors confirm.py's _AI_DRAFT_RE exactly: the span
-# `fha confirm draft` flips is `<!--` + optional whitespace + the word +
-# anything up to the first `-->` (DOTALL - a marker comment may span lines).
-# Duplicated per export tool because tools never import tools (TOOLING §15).
-_AI_DRAFT_MARK_RE = re.compile(r'<!--\s*AI-DRAFT\b.*?-->', re.S)
-_AI_ACCEPTED_MARK_RE = re.compile(r'<!--\s*AI-ACCEPTED\b.*?-->', re.S)
-# A draft block's upper boundary: the end of the previous AI marker (either
-# state - an accepted block ends where its own marker sits) or a section
-# heading (`#`/`##`; profile sections are `##`, and a draft never crosses
-# one). Deeper headings (###+) are prose the drafter may itself have written,
-# so they stay INSIDE the block - treating them as boundaries could publish
-# the top of an unaccepted draft.
-_AI_BLOCK_BOUNDARY_RE = re.compile(
-    r'<!--\s*AI-(?:DRAFT|ACCEPTED)\b.*?-->|^#{1,2}\s[^\n]*$', re.S | re.M)
-_SECTION_HEADING_RE = re.compile(r'^#{1,2}\s[^\n]*$', re.M)
-_BLANK_RUN_RE = re.compile(r'\n{3,}')
-
-
-def _strip_unaccepted_drafts(text: str) -> str:
-    """Remove unaccepted AI draft prose - and every AI provenance marker -
-    from the profile body before anything else sees it.
-
-    The contract (AGENTS.md): prose an AI drafts into a profile "goes inside
-    `<!-- AI-DRAFT ... -->` markers until the human accepts it"; acceptance is
-    `fha confirm draft`, which flips the marker to AI-ACCEPTED in place (the
-    prose itself never moves). The write-biography skill places the marker at
-    the END of the block it drafted, so the drafted span is everything between
-    the previous boundary (an earlier AI marker of either state, or a `#`/`##`
-    section heading) and the marker itself. That span, marker included, is
-    dropped here; AI-ACCEPTED prose is exported with its marker removed (the
-    marker is a provenance comment, not display text - left in, it would ship
-    as a literal line of the wiki markup).
-
-    The block START is not syntactically encoded, so prose sitting directly
-    above a draft run with no marker or heading between is withheld too -
-    deliberately fail-closed: over-excluding until `fha confirm draft` runs
-    can never leak an unaccepted draft, and the withheld prose comes back the
-    moment the draft is accepted.
-
-    A `#`/`##` heading whose section the cut leaves empty is dropped with it,
-    so an all-draft section exports like a section that was never written
-    (no stray heading).
-    """
-    if 'AI-DRAFT' not in text:
-        if 'AI-ACCEPTED' in text:
-            return _BLANK_RUN_RE.sub('\n\n', _AI_ACCEPTED_MARK_RE.sub('', text))
-        return text
-
-    boundaries = list(_AI_BLOCK_BOUNDARY_RE.finditer(text))
-    headings = list(_SECTION_HEADING_RE.finditer(text))
-
-    # One cut per draft marker: [end of the nearest boundary above it, end of
-    # the marker). Cuts come out in ascending, non-overlapping order because a
-    # draft marker is itself a boundary for the next one.
-    cuts: list[tuple[int, int]] = []
-    for marker in _AI_DRAFT_MARK_RE.finditer(text):
-        start = 0
-        for b in boundaries:
-            if b.end() <= marker.start():
-                start = b.end()
-            else:
-                break
-        cuts.append((start, marker.end()))
-
-    def _surviving(lo: int, hi: int) -> str:
-        """Text of [lo, hi) that no cut removes - the empty-section probe."""
-        kept: list[str] = []
-        pos = lo
-        for cs, ce in cuts:
-            if ce <= lo or cs >= hi:
-                continue
-            kept.append(text[pos:max(lo, cs)])
-            pos = min(hi, ce)
-        kept.append(text[pos:hi])
-        return ''.join(kept)
-
-    # Drop the heading of any section the cuts emptied. Accepted markers do
-    # not count as surviving content (they are removed below regardless).
-    heading_cuts: list[tuple[int, int]] = []
-    for cs, _ce in cuts:
-        h_prev = None
-        h_next_start = len(text)
-        for h in headings:
-            if h.end() <= cs:
-                h_prev = h
-            elif h.start() > cs:
-                h_next_start = h.start()
-                break
-        if h_prev is None:
-            continue
-        remainder = _AI_ACCEPTED_MARK_RE.sub('', _surviving(h_prev.end(), h_next_start))
-        if not remainder.strip():
-            heading_cuts.append((h_prev.start(), h_prev.end()))
-
-    out: list[str] = []
-    pos = 0
-    for cs, ce in sorted(set(cuts + heading_cuts)):
-        if cs > pos:
-            out.append(text[pos:cs])
-        pos = max(pos, ce)
-    out.append(text[pos:])
-    cleaned = _AI_ACCEPTED_MARK_RE.sub('', ''.join(out))
-    # Cutting a block leaves the blank lines that framed it; collapse the
-    # leftovers so paragraph spacing stays normal.
-    return _BLANK_RUN_RE.sub('\n\n', cleaned)
+# The AI-DRAFT prose exclusion (strip_unaccepted_drafts) lives in _lib - one
+# implementation shared with fha site, fail-closed on damaged markers.
+# Consumed in _wikitree_payload below.
 
 
 def _convert_heading(line: str) -> str | None:
@@ -881,7 +790,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
     Render the WikiTree-dialect markup for one curated person. Returns:
       {'status': 'ok'|'not-found'|'not-curated'|'living-subject'|'restricted-subject'|
        'restricted-sources'|'restricted-people'|'restricted-names'|'living-people'|
-       'no-index'|'bad-args',
+       'broken-draft-marker'|'no-index'|'bad-args',
        'text': str|None, 'messages': [str, ...]}
     """
     if not is_valid_id(pid) or id_type_of(pid) != 'P':
@@ -917,8 +826,19 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         # cannot refuse the export of the accepted remainder, and no draft
         # text or marker ever reaches the wiki markup. This is a silent
         # exclusion, not a refusal - a draft is a normal in-progress state,
-        # not a privacy defect the human must clean up first.
-        body = _strip_unaccepted_drafts(rec['body'])
+        # not a privacy defect the human must clean up first. A DAMAGED
+        # marker is the one exception: the stripper can no longer tell draft
+        # from accepted prose, so the export refuses (fail closed) rather
+        # than risk shipping unaccepted text - same refusal family as the
+        # privacy scans below.
+        body, draft_problem = strip_unaccepted_drafts(rec['body'])
+        if draft_problem:
+            return {'status': 'broken-draft-marker', 'text': None,
+                    'messages': [
+                        f'A draft marker in {person["path"]} is damaged ({draft_problem}). '
+                        'Fix the marker - usually by adding the missing "-->" - or remove '
+                        'the draft text, then run the export again.'
+                    ]}
 
         # A restricted subject (any value, including by-request) is refused
         # outright - WikiTree is public-facing, no opt-in (SPEC §21).
@@ -1078,7 +998,8 @@ def run_wikitree(archive_root: Path, pid: str) -> Result:
     elif status in ('not-found', 'not-curated'):
         exit_code = EXIT_WARNINGS
     else:  # bad-args, no-index, merged, living-subject, restricted-subject,
-           # restricted-sources, restricted-people, restricted-names, living-people
+           # restricted-sources, restricted-people, restricted-names,
+           # living-people, broken-draft-marker
         exit_code = EXIT_FAILURE
     return Result(ok=(status == 'ok'), exit_code=exit_code, data=payload)
 
@@ -1117,6 +1038,8 @@ def _cmd_wikitree(args: argparse.Namespace) -> int:
     if status == 'restricted-names':
         return EXIT_FAILURE
     if status == 'living-people':
+        return EXIT_FAILURE
+    if status == 'broken-draft-marker':
         return EXIT_FAILURE
     if status == 'not-found':
         print(f'{fmt_id_display(pid)}: not found in index.', file=sys.stderr)

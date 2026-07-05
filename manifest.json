@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-03",
+  "generated": "2026-07-05",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -133,7 +133,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "d888670c1280d8363d7c30eb327e206de393af9463a3e02a746251bef3e4dbf7",
+      "sha256": "b25d6beae6caf88d255c48eed1974d74d571ec572f770af32f2d237d4ce4b3d6",
       "spec_version": "1.2"
     },
     {
@@ -316,19 +316,19 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "0ab0c3105527b2467499c2b713fe770d6fd66b65c7034d60b544bdd1bc8f73ea",
+      "sha256": "03065a11c6943885c18482ec4a038076e0606d1ab4761a28fc5176cda8dca6eb",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "856fe396fcd8fccf345e382546c8280afb4095deeed451f03f884782602e488d",
+      "sha256": "5ae054431f1f87a1d6e3749e301ec0396f8458fe1cad2f2dc4b2e69ed3d23aa5",
       "spec_version": "1.2"
     },
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "4a8babe7d204216659ee2185f8afcb365e6e5206132001abc69f9010b5e33e38",
+      "sha256": "fd092780bf636b266d45839c3fa30996747d6fa4e4349e4f5b691f6b145e8f9c",
       "spec_version": "1.2"
     },
     {
@@ -370,13 +370,13 @@
     {
       "path": "tools/claim.py",
       "category": "operating",
-      "sha256": "e761bbe8ee5b399eb5a81995e14857e4f015d287ae5af8c863bc9290a2012c16",
+      "sha256": "b449e6228d2882f20372d0906b1b03720fe7431a4890fa2c91bf7b5ae29d3b78",
       "spec_version": "1.2"
     },
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "400c3ec424846c92e454efec26eb02ad3ea684ff99c0d4f8f29a57f3ae80d79f",
+      "sha256": "4f0c2adb3fe48c5d7dfd1506b3c97d1ce8b3e8a71e9f2d835523a26938f4cbf4",
       "spec_version": "1.2"
     },
     {
@@ -400,13 +400,13 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "046e919e6abbaf69a0387f6d0be5def2df1a45111c9d7052ca6454389679bdae",
+      "sha256": "3a32c3c9c7ebaccbfbae212ddb9ff9f274c56f00cbe4e8b05f29837293a8e01a",
       "spec_version": "1.2"
     },
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "2d69973a155bff966fbbc6a3aa7ab845ae59eb60ae4dbed5d0903ed5501992bf",
+      "sha256": "a3856516726d888ad440b4933b3374a6304b18dbcbd9c26c35107d60da21777a",
       "spec_version": "1.2"
     },
     {
@@ -424,25 +424,25 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "4a933595099c09fd5265f169a774ee422cd80fcfe676814a8af17d1cb5442ded",
+      "sha256": "9bc3c4e7915ebf93fdfe669e3f59695b639bb88b141e0a584ad04ee0cfb1c385",
       "spec_version": "1.2"
     },
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "dabed60fb9eec268098dffb366bf8fe4b89dba028be68551e280e771e6f3e7b4",
+      "sha256": "b21aade8424dbaeb832833cfb15513aa155a81dd94ae4f2c200f43b719e01320",
       "spec_version": "1.2"
     },
     {
       "path": "tools/normalize_links.py",
       "category": "operating",
-      "sha256": "d5ce5339f8cdf67c817172401628ed0735b78c2c3b0e05489c104b7690d0dc4b",
+      "sha256": "3c9f4a819ab55fbcf3e513ef094a77448676cc3b4495f30e515cee1f309a50a9",
       "spec_version": "1.2"
     },
     {
       "path": "tools/packet.py",
       "category": "operating",
-      "sha256": "e7e0686d5d14b18598edfce7fb63834f6a60c8ce983747031731840c26586a16",
+      "sha256": "b8a966e550b56a09ca4721ca884ef5436fdd99c10b0c981ccfc2028696c8c69c",
       "spec_version": "1.2"
     },
     {
@@ -460,7 +460,7 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "43118c14f9c86c595d5370759409113c3de4ed0d1f4a7a8aa453767d70bce19c",
+      "sha256": "e05208a2d1eb1fd08b1b655f73f8ea6102b784a949dd19605a43f63c36bc2fde",
       "spec_version": "1.2"
     },
     {
@@ -472,7 +472,7 @@
     {
       "path": "tools/report.py",
       "category": "operating",
-      "sha256": "a59811a57569882558b0ea3dea398f9916d2bd11941ce55721e4a031cada7c30",
+      "sha256": "0d99e123c25d89d061364e7c1d1c596f9741bd1dcee040ac78109bcb9956c7ea",
       "spec_version": "1.2"
     },
     {
@@ -490,7 +490,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "d04dd169fe89aa9e59f753d29f5bf4ef044dbce25244da5718e13243fc6ad312",
+      "sha256": "28da8e88941d38c20366b8377ee2886b7b1e945824c53a79fac3c1d3b3deae06",
       "spec_version": "1.2"
     },
     {
@@ -556,13 +556,13 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "eae5a5fa578e32f7d4c257b806bd77c41c7750eb5c3d311db65e381d8bb982a8",
+      "sha256": "d6c700fe29b0b616d8dadbd11b6e0485317e555eb7e7d5514e2383882f4268ec",
       "spec_version": "1.2"
     },
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "2a234b237f1a031574b804014bbe21fecae60e81c5e940915652e21470c89794",
+      "sha256": "7b7f0354a752b3bfa1c3e7999d08788eb1de465ff89a85717192797586dc20b4",
       "spec_version": "1.2"
     },
     {

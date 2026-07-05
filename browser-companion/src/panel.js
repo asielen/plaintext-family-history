@@ -173,6 +173,14 @@
   }
 
   function applyPrefill(prefill) {
+    // A prefill for a DIFFERENT record invalidates the previous record's
+    // evidence picks: without this, a file dropped for record A (and its
+    // screen-capture tick) would survive the navigation and stage as record
+    // B's evidence. Compare before prefilledUrl is overwritten below.
+    // Fragment-only moves never reach here (refreshOnNavigation skips them),
+    // so this fires only on a genuine new record - and on the first prefill,
+    // where it is a harmless no-op on the fresh form.
+    if (!sameRecordUrl(prefill.url, state.prefilledUrl)) clearEvidenceSelection();
     state.prefill = prefill;
     state.iiif = !!prefill.iiif;
     state.prefilledUrl = prefill.url || null;
@@ -710,21 +718,31 @@
     el.className = 'stage-result' + (cls ? ' ' + cls : '');
   }
 
-  function resetForNext() {
-    // Batch capture is the natural mode (§5.3): a research sitting yields a dozen
-    // bundles. Clear the evidence so the next page starts fresh, but leave the
-    // panel open and the settings intact. The form metadata (title/date/people/
-    // repo) is refreshed when the human navigates to the next record - see
-    // refreshOnNavigation - so it never carries one record's details onto the next.
+  // Clear the evidence picks that belong to ONE record: the dropped file, the
+  // dropzone's visual, and the screen-capture flag riding on that file. Runs
+  // when a bundle stages (resetForNext) AND when the form re-prefills for a
+  // different record (applyPrefill), so record A's dropped file - or its
+  // provisional tick - can never carry over and stage as record B's evidence.
+  function clearEvidenceSelection() {
     state.droppedAsset = null;
     const drop = $('dropzone');
     if (drop) {
       drop.classList.remove('has-file');
       drop.textContent = 'Drop a file here, or click to choose';
     }
-    // The screen-capture flag describes the file just staged, never the next
-    // one - it must not stick across records (and it is never persisted).
+    // The screen-capture flag describes the current record's dropped file
+    // only, never any other record's - it must not stick across records (and
+    // it is never persisted).
     $('f-provisional').checked = false;
+  }
+
+  function resetForNext() {
+    // Batch capture is the natural mode (§5.3): a research sitting yields a dozen
+    // bundles. Clear the evidence so the next page starts fresh, but leave the
+    // panel open and the settings intact. The form metadata (title/date/people/
+    // repo) is refreshed when the human navigates to the next record - see
+    // refreshOnNavigation - so it never carries one record's details onto the next.
+    clearEvidenceSelection();
     updateAssetStatus();
   }
 
@@ -737,8 +755,9 @@
   // of a full page load (status 'loading') is skipped - its own 'complete'
   // follows once the DOM has settled. A navigation during a capture is parked,
   // not dropped: capture()'s finally block replays it, so the form catches up
-  // the moment the capture lands. Skips same-page updates; an unreadable new
-  // page is left for the human to fill, not dead-ended.
+  // the moment the capture lands. Skips same-record updates - including
+  // fragment-only moves, which change the #position, not the record; an
+  // unreadable new page is left for the human to fill, not dead-ended.
   async function refreshOnNavigation(tabId, changeInfo) {
     if (tabId !== state.tabId) return;
     const navigated =
@@ -752,7 +771,12 @@
       return;
     }
     const tab = await getTab(tabId);
-    if (!tab || !/^https?:/i.test(tab.url || '') || tab.url === state.prefilledUrl) return;
+    if (!tab || !/^https?:/i.test(tab.url || '')) return;
+    // Same-record compare, not exact compare: in-page viewers (BookReader's
+    // #page arrows) move only the #fragment without changing the record, and
+    // a re-prefill on that wipes the human's typed notes/people for nothing.
+    // The staleness banner (warnIfFormStale) already compares this way.
+    if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
     try {
       await injectContent(tabId);
       const resp = await sendToTab(tabId, { action: 'prefill' });

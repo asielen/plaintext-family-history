@@ -1636,5 +1636,142 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
 
 
+class InputPathResolutionTestCase(unittest.TestCase):
+    """The forgiving FILE/--more lookup: as typed first, then under --root.
+
+    The cheat sheet tells the user to run commands from the workshop folder
+    (the PARENT of the archive) and to name the file as it reads inside the
+    archive ("inbox/scan.jpg") - a path that misses relative to the CWD. These
+    tests pin the contract of `_resolve_input_file`: a CWD hit always wins
+    unchanged, a relative CWD miss retries under the resolved archive root, a
+    double miss names both searched locations plus the next step, and the
+    retry does not weaken dry-run's zero-mutation promise.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)  # stands in for the workshop folder
+        self.archive = _make_archive(self.tmp)
+        (self.archive / 'inbox').mkdir()
+        self._old_cwd = os.getcwd()
+        os.chdir(self.tmp)
+
+    def tearDown(self) -> None:
+        # chdir back BEFORE cleanup: Windows cannot delete the current directory.
+        os.chdir(self._old_cwd)
+        self._tmp.cleanup()
+
+    def _run(self, argv: list[str]) -> int:
+        return process._standalone_main(argv + ['--root', str(self.archive)])
+
+    def test_cwd_miss_retries_under_archive_root(self) -> None:
+        # The cheat-sheet invocation itself: run from the workshop folder and
+        # name the file the way it reads inside the archive.
+        asset = self.archive / 'inbox' / 'scan-note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = self._run(['inbox/scan-note.txt'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())  # relocated out of inbox and renamed
+        renamed = list((self.archive / 'documents').glob('scan-note_S-*.txt'))
+        self.assertEqual(len(renamed), 1)
+
+    def test_cwd_hit_wins_over_archive_root_candidate(self) -> None:
+        # The same relative path exists BOTH at the CWD and inside the archive;
+        # the path as typed (CWD) must win. The workshop copy sits outside the
+        # archive's asset roots, so process refuses it - and that distinctive
+        # refusal is the proof of precedence: had the retry hijacked the
+        # lookup, the archive copy would have processed cleanly instead.
+        (self.tmp / 'inbox').mkdir()
+        cwd_copy = self.tmp / 'inbox' / 'note.txt'
+        cwd_copy.write_text('workshop copy', encoding='utf-8')
+        root_copy = self.archive / 'inbox' / 'note.txt'
+        root_copy.write_text('archive copy', encoding='utf-8')
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = self._run(['inbox/note.txt'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('not under the configured documents root', err.getvalue())
+        # Neither copy consumed: the CWD file refused in place, the archive
+        # copy never relocated or renamed.
+        self.assertTrue(cwd_copy.exists())
+        self.assertTrue(root_copy.exists())
+        self.assertEqual(list((self.archive / 'documents').glob('note*')), [])
+
+    def test_relative_path_from_inside_the_archive_unchanged(self) -> None:
+        # Running from inside the archive itself: the typed path hits at the
+        # CWD and processes exactly as it did before the retry existed.
+        os.chdir(self.archive)
+        asset = self.archive / 'inbox' / 'photo-note.txt'
+        asset.write_text('body', encoding='utf-8')
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = self._run(['inbox/photo-note.txt'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        renamed = list((self.archive / 'documents').glob('photo-note_S-*.txt'))
+        self.assertEqual(len(renamed), 1)
+
+    def test_both_miss_error_names_both_searched_locations(self) -> None:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run(['inbox/ghost.txt'])
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        text = err.getvalue()
+        self.assertIn('file not found: inbox/ghost.txt', text)
+        # Both looks are named with their full resolved paths...
+        self.assertIn(str(Path('inbox/ghost.txt').resolve()), text)
+        self.assertIn(str((self.archive / 'inbox' / 'ghost.txt').resolve()), text)
+        # ...and the message carries a plain next step, not a dead end.
+        self.assertIn('inside your archive folder', text)
+        self.assertNotIn('Traceback', text)
+
+    def test_root_retry_dry_run_writes_nothing(self) -> None:
+        asset = self.archive / 'inbox' / 'scan-note.txt'
+        asset.write_text('inbox body', encoding='utf-8')
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._run(['inbox/scan-note.txt', '--dry-run'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        # The retry fed the preview (the plan names the inbox move), and the
+        # preview stayed a preview: nothing moved, renamed, or scaffolded.
+        self.assertIn('Would move scan-note.txt out of inbox/', out.getvalue())
+        self.assertTrue(asset.exists())
+        self.assertEqual(list((self.archive / 'documents').glob('*.txt')), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*_S-*.md')), [])
+
+    def test_more_file_shares_the_forgiving_lookup(self) -> None:
+        # --more's file argument resolves through the same door: a both-ways
+        # miss names the flag and both locations; a root-relative spelling
+        # attaches cleanly from the workshop folder.
+        page1 = self.archive / 'documents' / 'census' / 'page1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = self._run([str(renamed), '--more', 'documents/census/ghost.txt', 'page-2'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--more file not found: documents/census/ghost.txt', err.getvalue())
+        self.assertIn('inside your archive folder', err.getvalue())
+
+        page2 = self.archive / 'documents' / 'census' / 'page2.txt'
+        page2.write_text('p2', encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = self._run([str(renamed), '--more', 'documents/census/page2.txt', 'page-2'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(len(read_record(record)['meta']['files']), 2)
+
+
 if __name__ == '__main__':
     unittest.main()

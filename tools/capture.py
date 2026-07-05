@@ -1912,7 +1912,10 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def _run_capture(args: argparse.Namespace) -> int:
-    archive_root = resolve_root_arg(args)
+    # resolve_root_arg carries the archive guard: a typo'd --root used to
+    # stage stubs into `<typo>/inbox` with exit 0 (round-2 finding 10). The
+    # command name keeps the refusal exact on the standalone-main path too.
+    archive_root = resolve_root_arg(args, command='fha capture')
     if archive_root is None:
         return EXIT_FAILURE
     try:

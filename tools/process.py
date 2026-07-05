@@ -102,6 +102,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #
 #  CLI
 #    _prompt                   - interactive input seam (monkeypatched in tests)
+#    _resolve_input_file       - forgiving FILE/--more lookup: as typed, then under the archive root
 #    register / _run_process / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2267,6 +2268,58 @@ def _prompt(message: str) -> str:
     return input(message)
 
 
+def _resolve_input_file(
+    raw: str,
+    archive_root: Path,
+    *,
+    require_file: bool = False,
+    what: str = 'file',
+) -> tuple[Path | None, str | None]:
+    """Resolve a user-typed asset path: as typed first, then under the archive root.
+
+    The docs tell the user to run commands from the workshop folder (the
+    PARENT of the archive), so the path they naturally type is the one they
+    see inside the archive - "inbox/scan.jpg" - which misses relative to where
+    the command actually runs. Forgiving-input doctrine (AGENTS.md): the path as
+    typed always wins when it exists; a relative path that misses is retried
+    under the resolved archive root before erroring, so the natural spelling
+    works from the workshop folder, from inside the archive, and from anywhere
+    --root points home. An absolute path is never retried - it can only mean
+    one place.
+
+    `require_file` is for --more, which attaches one regular file, so only a
+    file satisfies its lookup; the FILE positional also accepts folders
+    (triage and bundle modes) and checks plain existence. `what` names the
+    argument in the error ('file' or '--more file').
+
+    Returns (resolved_path, None) on a hit, or (None, message) on a miss; the
+    message names every location searched plus the next step, because a bare
+    "file not found" leaves a non-technical user nowhere to go.
+    """
+    def found(p: Path) -> bool:
+        return p.is_file() if require_file else p.exists()
+
+    raw_path = Path(raw)
+    primary = raw_path.resolve()
+    if found(primary):
+        return primary, None
+    if not raw_path.is_absolute():
+        retry = (archive_root / raw_path).resolve()
+        # retry == primary when the command already runs from the archive root
+        # itself; a second look at the same spot would name one place twice.
+        if retry != primary:
+            if found(retry):
+                return retry, None
+            return None, (
+                f'{what} not found: {raw}\n'
+                f'  Looked here: {primary}\n'
+                f'  and inside your archive: {retry}\n'
+                '  Try the path as you see it inside your archive folder, '
+                'e.g. inbox/scan.jpg.'
+            )
+    return None, f'{what} not found: {raw}'
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'process',
@@ -2352,10 +2405,13 @@ def _run_process(args: argparse.Namespace) -> int:
     # run from inside an asset subdirectory (`cd documents/census && fha
     # process deed.pdf`) can't otherwise be related back to the resolved
     # documents/photos roots, and path_to_alias() would fall back to storing
-    # the bare relative name instead of the real alias-form path.
-    file_path = Path(args.file).resolve()
-    if not file_path.exists():
-        print(f'ERROR: file not found: {args.file}', file=sys.stderr)
+    # the bare relative name instead of the real alias-form path. The lookup
+    # is forgiving: a relative path that misses from here is retried under the
+    # archive root, so the cheat-sheet spelling ("inbox/scan.jpg" typed from
+    # the workshop folder) just works.
+    file_path, path_error = _resolve_input_file(args.file, archive_root)
+    if file_path is None:
+        print(f'ERROR: {path_error}', file=sys.stderr)
         return EXIT_ERRORS
 
     dry_run = bool(getattr(args, 'dry_run', False))
@@ -2462,10 +2518,13 @@ def _run_process(args: argparse.Namespace) -> int:
     # the inbox.
     try:
         if args.more:
-            more_file = Path(args.more[0]).resolve()
+            # Same forgiving lookup as the FILE positional, narrowed to regular
+            # files - --more attaches exactly one file to an existing source.
+            more_file, more_error = _resolve_input_file(
+                args.more[0], archive_root, require_file=True, what='--more file')
             role_spec = args.more[1]
-            if not more_file.is_file():
-                print(f'ERROR: --more file not found: {args.more[0]}', file=sys.stderr)
+            if more_file is None:
+                print(f'ERROR: {more_error}', file=sys.stderr)
                 rc = EXIT_ERRORS
             else:
                 role, _, copy = role_spec.partition(':')

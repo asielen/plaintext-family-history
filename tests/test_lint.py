@@ -7,15 +7,24 @@ a place name into the `place:` field should be understood, not hard-rejected.
 Only a genuinely unreadable date is a hard E014 error, and even then with a
 plain, example-bearing message.
 
-Also covers three graduation-path contracts:
+Also covers the graduation-path contracts:
   - GENERATED views and README.md files are never classified as id-less
     hand-authored records (so `--fix-ids` can never convert a couple folder's
     sources-index.md into a phantom person record);
   - claim `persons:` references resolve through the alias map before E005
     judges them (TOOLING §3: an unresolved non-ID name is an inert note-link,
-    not a finding);
+    not a finding) - but a NEAR-MISS code (`P-de957bcda`, nine characters) is
+    a typo to report, never silence;
   - `--fix-ids` also mints ids into id-less claims (and stamps `reviewed:` on
-    the hand-accepted ones), surgically, preserving formatting.
+    the hand-accepted ones), surgically, preserving formatting - guarded so a
+    bad rewrite is a refusal, never a corrupted source (blank `id:` completed
+    in place, lookalikes inside block scalars never touched, anchor items
+    refused, LF files stay LF, and the whole result re-parsed before writing);
+  - `--fix-claims-fence` wraps only what re-reads to the same claims, and
+    refuses (rather than deletes) fence-lookalike ``` lines in evidence;
+  - `--fix-ids` merges the old-name aliases into an EXISTING aliases: block
+    (template copies ship one), and says "(old name kept as an alias)" only
+    when that actually happened.
 
 Like test_report.py, this builds a tiny real archive tree and calls lint's tool
 logic directly (`_run_lint_core` / `run_lint`) rather than going through the
@@ -23,6 +32,7 @@ CLI, so the checks run over a fresh in-memory registry with no prior `fha index`
 """
 
 import datetime
+import re
 import sys
 import tempfile
 import unittest
@@ -32,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
-from _lib import normalize_date, read_record
+from _lib import CLAIMS_RE, normalize_date, read_record
 
 
 _PERSON_MD = '''---
@@ -823,6 +833,407 @@ class NeedsSourcingBacklogTests(unittest.TestCase):
     def test_living_person_provisional_birth_is_still_listed(self) -> None:
         backlog = self._backlog('living: true\nbirth: 1985~\n')
         self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l])
+
+
+class _SurgeryBase(unittest.TestCase):
+    """Shared scaffolding for the fix-mode surgery tests: one named person and
+    one source file whose bytes the test controls exactly (write_bytes, so
+    line endings are what the fixture says, not what the platform prefers)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            _NAMED_PERSON, encoding='utf-8')
+        self.src = self.root / 'sources' / 'test_S-1111111111.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_src(self, text: str) -> None:
+        self.src.write_bytes(text.encode('utf-8'))
+
+    def _progress(self, result) -> str:
+        return '\n'.join(result.data['progress'])
+
+
+class ClaimMintSurgeryGuardTests(_SurgeryBase):
+    """--fix-ids claim surgery is GUARDED: the four failure modes that used to
+    corrupt files (second blank id: key, reviewed: stamped into a value: |
+    scalar, wholesale newline rewrite, anchor-led item broken) now either fix
+    correctly or refuse plainly, and the whole rewrite is re-parsed before any
+    write so the success message can never lie."""
+
+    def _fenced(self, claims_yaml: str) -> str:
+        return ('---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
+                '## Claims\n\n```yaml\n' + claims_yaml + '```\n')
+
+    def test_blank_id_line_is_completed_in_place(self) -> None:
+        # Mode (a): `id:` with no value used to get a SECOND id: key inserted;
+        # YAML keeps the last (blank) one, so the mint was void, "Minted 1
+        # claim id(s)" lied, and every rerun burned another id.
+        self._write_src(self._fenced(
+            '- id:\n  value: born 1985\n  type: birth\n'
+            '  persons: [P-1111111111]\n  status: suggested\n  confidence: low\n'))
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        self.assertIn('Minted 1 claim id(s)', self._progress(result))
+        text = self.src.read_text(encoding='utf-8')
+        block = CLAIMS_RE.search(text).group(1)
+        id_lines = [l for l in block.splitlines() if re.match(r'\s*(?:-\s+)?id:', l)]
+        self.assertEqual(len(id_lines), 1, block)   # completed IN PLACE, no second key
+        claim = read_record(self.src)['claims'][0]
+        self.assertTrue(str(claim.get('id', '')).lower().startswith('c-'), claim)
+        # Idempotent: a second run finds nothing left to mint.
+        before = self.src.read_bytes()
+        lint.run_lint(self.root, {}, fix_ids=True)
+        self.assertEqual(self.src.read_bytes(), before)
+
+    def test_blank_id_line_keeps_its_comment(self) -> None:
+        self._write_src(self._fenced(
+            '- id:   # a tool can fill this\n  value: born 1985\n  type: birth\n'
+            '  persons: [P-1111111111]\n  status: suggested\n  confidence: low\n'))
+        lint.run_lint(self.root, {}, fix_ids=True)
+        text = self.src.read_text(encoding='utf-8')
+        claim = read_record(self.src)['claims'][0]
+        cid = str(claim['id'])
+        self.assertTrue(cid.lower().startswith('c-'))
+        self.assertRegex(text, rf'id: {cid}\s+# a tool can fill this')
+
+    def test_reviewed_stamp_skips_scalar_lookalike(self) -> None:
+        # Mode (b): a `status: accepted` line QUOTED inside value: | used to
+        # receive the reviewed: stamp (mutating the human's evidence) while
+        # the real claim stayed unstamped and E006 persisted.
+        evidence = 'the letter says:\nstatus: accepted\n'
+        self._write_src(self._fenced(
+            '- value: |\n    the letter says:\n    status: accepted\n'
+            '  type: note\n  persons: [P-1111111111]\n'
+            '  status: accepted\n  confidence: low\n'))
+        lint.run_lint(self.root, {}, fix_ids=True)
+        claim = read_record(self.src)['claims'][0]
+        self.assertEqual(claim['value'], evidence)   # evidence byte-identical
+        self.assertEqual(str(claim.get('reviewed', '')),
+                         datetime.date.today().isoformat())
+        text = self.src.read_text(encoding='utf-8')
+        # Exactly one reviewed: line, at the claim's own key column (2 spaces).
+        self.assertEqual(len(re.findall(r'^  reviewed:', text, re.M)), 1, text)
+        self.assertNotRegex(text, r'(?m)^    reviewed:')
+
+    def test_lf_file_stays_lf_outside_the_edits(self) -> None:
+        # Mode (c): Path.write_text turned a whole LF archive CRLF on Windows;
+        # the surgery contract is byte-preserving outside the edited spans.
+        src_text = self._fenced(
+            '- value: born 1985\n  type: birth\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n')
+        self._write_src(src_text)
+        self.assertNotIn(b'\r', self.src.read_bytes())
+        lint.run_lint(self.root, {}, fix_ids=True)
+        after = self.src.read_bytes()
+        self.assertNotIn(b'\r', after)
+        # Every original line survives byte-for-byte except the dash line,
+        # whose first field moved down one line with its bytes untouched.
+        after_lines = after.decode('utf-8').splitlines()
+        for line in src_text.splitlines():
+            if line.startswith('- '):
+                self.assertIn('  ' + line[2:], after_lines, line)
+            else:
+                self.assertIn(line, after_lines, line)
+
+    def test_anchor_led_item_is_refused_not_broken(self) -> None:
+        # Mode (d): inserting id: above a `- &c1` anchor detached the anchor
+        # and the WHOLE block stopped parsing - every claim in the source
+        # vanished under a success message.
+        self._write_src(self._fenced(
+            '- &c1\n  value: born 1985\n  type: birth\n'
+            '  persons: [P-1111111111]\n  status: suggested\n  confidence: low\n'))
+        before = self.src.read_bytes()
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        self.assertEqual(self.src.read_bytes(), before)
+        progress = self._progress(result)
+        self.assertIn('anchor', progress)
+        self.assertIn('fha id mint C', progress)
+        self.assertNotIn('Minted', progress)
+        rec = read_record(self.src)
+        self.assertEqual(rec['parse_errors'], [])   # block still parses
+        self.assertEqual(len(rec['claims']), 1)
+
+    def test_bad_rewrite_is_refused_and_file_untouched(self) -> None:
+        # The write guard end to end: force the rewrite to be garbage (a
+        # minted "id" that breaks YAML) and prove refusal, not corruption.
+        self._write_src(self._fenced(
+            '- value: born 1985\n  type: birth\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n'))
+        before = self.src.read_bytes()
+        real_mint = lint.mint_ids
+        lint.mint_ids = lambda kind, count, root: ['C-1111111111\nGARBAGE: ['] * count
+        try:
+            result = lint.run_lint(self.root, {}, fix_ids=True)
+        finally:
+            lint.mint_ids = real_mint
+        self.assertEqual(self.src.read_bytes(), before)
+        progress = self._progress(result)
+        self.assertIn('stopped before writing', progress)
+        self.assertIn('fha id mint C', progress)
+
+    def test_duplicate_blank_id_keys_are_refused(self) -> None:
+        # Two blank id: keys in one item: completing the first still leaves
+        # YAML keeping the last (blank) one - the parse-back count catches it.
+        self._write_src(self._fenced(
+            '- id:\n  value: born 1985\n  id:\n  type: birth\n'
+            '  persons: [P-1111111111]\n  status: suggested\n  confidence: low\n'))
+        before = self.src.read_bytes()
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        self.assertEqual(self.src.read_bytes(), before)
+        self.assertIn('stopped before writing', self._progress(result))
+
+    def test_unfenced_claims_are_sequenced_to_the_fence_fixer(self) -> None:
+        # --fix-ids alone no longer operates on the W114 unfenced form (the
+        # write guard vets the fenced form); it names the sequence instead,
+        # and a combined run still completes the graduation in one pass.
+        self._write_src(
+            '---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
+            '## Claims\n- value: born 1985\n  type: birth\n'
+            '  persons: [P-1111111111]\n  status: suggested\n  confidence: low\n')
+        before = self.src.read_bytes()
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        self.assertEqual(self.src.read_bytes(), before)
+        self.assertIn('--fix-claims-fence', self._progress(result))
+        combined = lint.run_lint(self.root, {}, fix_claims_fence=True, fix_ids=True)
+        self.assertIn('Minted 1 claim id(s)', self._progress(combined))
+        claim = read_record(self.src)['claims'][0]
+        self.assertTrue(str(claim.get('id', '')).lower().startswith('c-'), claim)
+
+
+class ClaimsFenceFixTests(_SurgeryBase):
+    """--fix-claims-fence must produce a fence that re-reads to the SAME
+    claims the unfenced reader parsed, and must never delete fence-lookalike
+    ``` lines from a claim's quoted evidence - it refuses instead."""
+
+    def _unfenced(self, claims_section: str) -> str:
+        return ('---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
+                '## Claims\n' + claims_section)
+
+    def test_indented_first_item_round_trips(self) -> None:
+        # A tab-indented item: the unfenced reader dedents (join + strip) and
+        # parses one claim; the old fixer fenced the RAW text, whose tab is
+        # invalid YAML - n_claims went 1 -> 0 right after the W114 message
+        # told the human to run exactly this fix.
+        self._write_src(self._unfenced(
+            '\t- {value: farmer, type: note, persons: [P-1111111111], '
+            'status: suggested, confidence: low}\n'))
+        self.assertEqual(len(read_record(self.src)['claims']), 1)
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True)
+        self.assertIn(str(self.src), result.changed)
+        rec = read_record(self.src)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual(len(rec['claims']), 1)
+        self.assertEqual(rec['claims'][0]['value'], 'farmer')
+        self.assertFalse(rec['unfenced_claims'])
+
+    def test_lookalike_fence_line_is_refused_evidence_intact(self) -> None:
+        # ``` lines inside a value: | scalar are the human's quoted evidence.
+        # The old fixer silently DELETED them from disk; now the file is
+        # refused with the line number and left byte-identical.
+        self._write_src(self._unfenced(
+            '- value: |\n    he wrote:\n    ```\n    code sample\n    ```\n'
+            '  status: suggested\n- value: plain\n  status: suggested\n'))
+        before = self.src.read_bytes()
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True)
+        self.assertEqual(self.src.read_bytes(), before)
+        self.assertEqual(result.changed, [])
+        refusals = [l for l in result.data['progress'] if '```' in l]
+        self.assertTrue(refusals, result.data['progress'])
+        self.assertIn(self.src.name, refusals[0])
+        self.assertIn('line 10', refusals[0])   # the first ``` line of the file
+        self.assertIn('by hand', refusals[0])
+        self.assertEqual(len(read_record(self.src)['claims']), 2)
+
+    def test_fence_dry_run_previews_and_writes_nothing(self) -> None:
+        self._write_src(self._unfenced(
+            '- value: farmer\n  type: note\n  persons: [P-1111111111]\n'
+            '  status: suggested\n  confidence: low\n'))
+        before = self.src.read_bytes()
+        result = lint.run_lint(self.root, {}, fix_claims_fence=True, dry_run=True)
+        self.assertEqual(self.src.read_bytes(), before)
+        self.assertEqual(result.changed, [])
+        self.assertIn('would wrap', self._progress(result))
+
+
+class NearMissIdTests(_SurgeryBase):
+    """A claim reference that LOOKS like a mistyped record code must produce a
+    finding again (E005 for persons, E004 for corroborates/contradicts) - the
+    alias-resolution tolerance had made typo'd codes silently inert, so the
+    claim detached from its person with no message anywhere. Genuine names
+    keep the TOOLING contract: resolvable is fine, unresolvable stays an
+    inert note-link."""
+
+    def _lint_claims(self, claims_yaml: str) -> list:
+        self._write_src(
+            '---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
+            '## Claims\n\n```yaml\n' + claims_yaml + '```\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        return findings
+
+    def test_nine_char_person_code_is_e005(self) -> None:
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-de957bcda]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        hits = [f for f in findings if f.code == 'E005' and 'P-de957bcda' in f.message]
+        self.assertEqual(len(hits), 1, [f.message for f in findings])
+        msg = hits[0].message
+        self.assertIn('looks like a person code', msg)
+        self.assertIn('9 character(s)', msg)
+        self.assertIn('i l o u', msg)          # the alphabet gloss, in plain words
+        self.assertIn("person's name", msg)    # the recovery path
+
+    def test_bad_letter_person_code_is_e005(self) -> None:
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-de957bcdal]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        hits = [f for f in findings if f.code == 'E005' and 'P-de957bcdal' in f.message]
+        self.assertEqual(len(hits), 1)
+        self.assertIn("'l'", hits[0].message)  # names the offending letter
+        self.assertIn('i l o u', hits[0].message)
+
+    def test_truncated_corroborates_target_is_e004(self) -> None:
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n'
+            '- id: C-2222222222\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: y\n  status: suggested\n  confidence: low\n'
+            '  corroborates: [C-de957bcda]\n')
+        hits = [f for f in findings if f.code == 'E004' and 'C-de957bcda' in f.message]
+        self.assertEqual(len(hits), 1, [f.message for f in findings])
+        self.assertIn('looks like a claim code', hits[0].message)
+        self.assertIn('exactly 10', hits[0].message)
+
+    def test_resolvable_name_stays_silent(self) -> None:
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: ["[[Sam Rivera]]"]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        self.assertEqual([f for f in findings if f.code in ('E004', 'E005')], [])
+
+    def test_unresolvable_plain_name_stays_inert(self) -> None:
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: ["Ghost Writer"]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        self.assertEqual([f for f in findings if f.code in ('E004', 'E005')], [])
+
+    def test_prefixless_bare_code_is_flagged(self) -> None:
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [de957bcda1]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        hits = [f for f in findings if f.code == 'E005' and 'de957bcda1' in f.message]
+        self.assertEqual(len(hits), 1)
+        self.assertIn('missing its type prefix', hits[0].message)
+
+    def test_template_placeholder_target_stays_out_of_the_net(self) -> None:
+        # `C-__________` is the template's teaching form - its story belongs
+        # to E010/--fix-ids, never the typo net.
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n'
+            '  corroborates: [C-__________]\n')
+        self.assertEqual([f for f in findings if f.code == 'E004'], [])
+
+
+_TEMPLATE_COPY_PERSON = '''---
+id: P-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING
+aliases:           # OPTIONAL - the code, repeated
+  - P-__________   # paste the same code here too
+name: Grandpa Bob
+living: false
+---
+
+# Grandpa Bob
+'''
+
+
+class AliasMergeTests(unittest.TestCase):
+    """--fix-ids on a template copy: templates SHIP an aliases: block, so the
+    old `if not has_aliases: skip` dropped the slug and verbatim-stem aliases
+    on exactly the files the templates produce - every [[old name]] link died
+    on the rename while "(old name kept as an alias)" printed anyway."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_template_copy_merges_slug_and_verbatim_stem(self) -> None:
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            _TEMPLATE_COPY_PERSON, encoding='utf-8')
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        self.assertEqual(len(minted), 1)
+        aliases = read_record(minted[0])['meta'].get('aliases') or []
+        self.assertIn('grandpa-bob', aliases)
+        self.assertIn('Grandpa Bob', aliases)          # the verbatim stem
+        text = minted[0].read_text(encoding='utf-8')
+        self.assertIn('# paste the same code here too', text)   # block formatting kept
+        minted_line = [l for l in result.data['progress'] if l.startswith('Minted')][0]
+        self.assertIn('(old name kept as an alias)', minted_line)   # and it is TRUE
+
+    def test_aliases_already_present_means_no_alias_claim_in_message(self) -> None:
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            _TEMPLATE_COPY_PERSON.replace(
+                '  - P-__________   # paste the same code here too',
+                '  - P-__________   # paste the same code here too\n'
+                '  - grandpa-bob\n'
+                '  - "Grandpa Bob"'), encoding='utf-8')
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        self.assertEqual(len(minted), 1)
+        aliases = read_record(minted[0])['meta'].get('aliases') or []
+        self.assertEqual(aliases.count('grandpa-bob'), 1)   # no duplicates minted
+        self.assertEqual(aliases.count('Grandpa Bob'), 1)
+        minted_line = [l for l in result.data['progress'] if l.startswith('Minted')][0]
+        self.assertNotIn('old name kept as an alias', minted_line)  # nothing was added
+
+    def test_no_aliases_block_control_unchanged(self) -> None:
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            '---\nname: Grandpa Bob\nliving: false\n---\n\n# Grandpa Bob\n',
+            encoding='utf-8')
+        result = lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        self.assertEqual(len(minted), 1)
+        aliases = read_record(minted[0])['meta'].get('aliases') or []
+        self.assertIn('grandpa-bob', aliases)
+        self.assertIn('Grandpa Bob', aliases)
+        minted_line = [l for l in result.data['progress'] if l.startswith('Minted')][0]
+        self.assertIn('(old name kept as an alias)', minted_line)
+
+    def test_flow_form_aliases_block_is_merged(self) -> None:
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            '---\nid: P-__________\naliases: [P-__________]\n'
+            'name: Grandpa Bob\nliving: false\n---\n\n# Grandpa Bob\n',
+            encoding='utf-8')
+        lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        self.assertEqual(len(minted), 1)
+        aliases = read_record(minted[0])['meta'].get('aliases') or []
+        self.assertIn('grandpa-bob', aliases)
+        self.assertIn('Grandpa Bob', aliases)
+
+    def test_multi_item_block_appends_after_the_last_item(self) -> None:
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            _TEMPLATE_COPY_PERSON.replace(
+                '  - P-__________   # paste the same code here too',
+                '  - P-__________   # paste the same code here too\n  - Bobby'),
+            encoding='utf-8')
+        lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        self.assertEqual(len(minted), 1)
+        aliases = read_record(minted[0])['meta'].get('aliases') or []
+        # New entries land AFTER the existing hand entries, keeping their order.
+        self.assertEqual(aliases[1:], ['Bobby', 'grandpa-bob', 'Grandpa Bob'])
 
 
 if __name__ == '__main__':

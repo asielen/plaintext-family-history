@@ -8,6 +8,7 @@ with the stdlib. The CLI's stdin path is exercised by monkeypatching
 Run: python -m unittest tests.test_capture -v   (from the repo root)
 """
 
+import contextlib
 import io
 import shutil
 import sqlite3
@@ -466,6 +467,46 @@ class CaptureTestCase(unittest.TestCase):
     def test_domain_strips_www(self) -> None:
         self.assertEqual(capture.domain_of('https://www.Example.com/x'), 'example.com')
         self.assertEqual(capture.domain_of(None), '')
+
+
+class CaptureRootGuardTestCase(unittest.TestCase):
+    """`fha capture --root <non-archive>` must refuse (exit 3) and create
+    NOTHING (round-2 finding 10). Empirically, before the shared
+    resolve_root_arg guard: exit 0 and a stub staged into `<typo>/inbox` -
+    real capture evidence filed into a folder that is not the archive."""
+
+    def test_non_archive_root_refused_and_stages_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            typo = Path(tmp) / 'typo-root'
+            typo.mkdir()
+            err = io.StringIO()
+            with (
+                mock.patch('capture._read_html',
+                           return_value='<html><title>T</title></html>'),
+                contextlib.redirect_stderr(err),
+            ):
+                rc = capture._run_capture(SimpleNamespace(
+                    root=str(typo), url='https://x.test/p', title=None,
+                    source_type=None, source_date=None, asset=None, dry_run=False,
+                ))
+            self.assertEqual(rc, EXIT_FAILURE)
+            # The empirical heart of the finding: no inbox, no .cache, nothing.
+            self.assertEqual(list(typo.iterdir()), [])
+            self.assertIn('does not look like an archive', err.getvalue())
+            self.assertIn('fha capture', err.getvalue())
+
+    def test_root_with_fha_yaml_still_captures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            with mock.patch('capture._read_html',
+                            return_value='<html><title>Kept Page</title></html>'):
+                rc = capture._run_capture(SimpleNamespace(
+                    root=str(root), url='https://x.test/p', title=None,
+                    source_type=None, source_date=None, asset=None, dry_run=False,
+                ))
+            self.assertEqual(rc, EXIT_CLEAN)
+            self.assertTrue(list((root / 'inbox').glob('*.notes.md')))
 
 
 class LabelGuardTestCase(unittest.TestCase):

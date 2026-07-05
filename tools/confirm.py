@@ -68,7 +68,9 @@ CODE MAP
     _find_source_path_by_id       - scan sources/ for one S-id's record
     _find_profile_path            - scan people/ for one P-id's curated profile
     _find_claims_block            - locate the ## Claims ```yaml fence
-    _claim_spans / _item_span_for - split the block into claim items, find one
+    _claim_spans                  - split the block into claim items
+    _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
+    _item_span_for                - find the item that owns one C-id (verified)
     _parse_inline_list            - read a `key: [a, b]` inline YAML list
     _guard_claims_rewrite         - pre-write re-parse guard (raises _EditRefused)
     _add_link_to_claim            - append a corroborates/contradicts target
@@ -108,11 +110,13 @@ from _lib import (
     fmt_id_display,
     id_type_of,
     is_valid_id,
+    link_field_refs,
     mint_ids,
     normalize_id,
     parse_filename,
     read_record,
     resolve_root_arg,
+    resolve_typed_ref,
     scan_ids_in_tree,
     scan_person_record_ids,
 )
@@ -122,9 +126,10 @@ configure_utf8_stdout()
 SOCIAL_SUBTYPES = ('friend', 'associate', 'neighbor')
 XREF_RELATIONS = ('corroborates', 'contradicts')
 
-# The `id:` key of a claim, anchored as the first key on its line (optionally
-# after the list dash). Mirrors claim.py so a C-id mentioned mid-value is never
-# mistaken for the claim's own identity.
+# The SHAPE of a claim's `id:` key line (optionally after the list dash).
+# Shape alone is not ownership: a block scalar (`notes: |`) can quote an
+# `id: C-...` line verbatim, so every consumer must also check the line sits at
+# the item's own key column (`_own_id_key_line`). Mirrors claim.py - KEEP IN SYNC.
 _CLAIM_ID_KEY_RE = re.compile(r'^\s*(?:-\s+)?id:\s*(C-[0-9a-hjkmnp-tv-z]{10})\b', re.I)
 
 
@@ -230,13 +235,103 @@ def _claim_spans(lines: list[str], open_fence: int, close_fence: int) -> tuple[s
     return base_indent, [(s, bounds[k + 1]) for k, s in enumerate(item_starts)]
 
 
-def _item_span_for(lines: list[str], spans: list[tuple[int, int]], claim_id: str) -> tuple[int, int] | None:
+def _own_key_indent(item_lines: list[str], base_indent: str) -> str | None:
+    """The exact column of one claim item's OWN mapping keys, or None.
+
+    Sibling of `_lib.claim_item_key_indent`, with one deliberate difference:
+    no conventional fallback. The write path wants a best-effort column to
+    place a new key at (a wrong guess there is caught by the pre-write
+    guard), but *ownership* testing wants certainty - a guessed column could
+    bless a look-alike line inside quoted scalar content, which is exactly
+    the wrong-claim write this check exists to prevent. So: an inline first
+    key on the dash line pins the column; else the first content line after
+    the dash does; else the column is unknowable and the item owns nothing.
+    Mirrors claim.py - KEEP IN SYNC.
+    """
+    first = item_lines[0] if item_lines else ''
+    m = re.match(r'^' + re.escape(base_indent) + r'(-[ ]+)[^\s#]', first)
+    if m:
+        return base_indent + ' ' * len(m.group(1))
+    for ln in item_lines[1:]:
+        stripped = ln.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = re.match(r'^(\s*)', ln).group(1)
+        if len(indent) > len(base_indent):
+            return indent
+        break  # content at or above the dash's own column belongs to no key of this item
+    return None
+
+
+def _own_id_key_line(
+    lines: list[str], start: int, end: int, base_indent: str,
+) -> tuple[int, str] | None:
+    """Find one item's OWN `id:` mapping key; return (line_index, C-id) or None.
+
+    `_CLAIM_ID_KEY_RE` describes the shape of an id key line, but a block
+    scalar (`notes: |`) may quote such a line verbatim, and quoted lines sit
+    DEEPER than the item's real key column (YAML requires it). Only two
+    placements are the item's own key: the inline first key on the dash line
+    (`- id: C-...` at the item's dash) and a line at exactly the item's key
+    column (`_own_key_indent`). Matching on shape alone sent edits to the
+    first item whose quoted evidence mentioned the target id.
+    Mirrors claim.py - KEEP IN SYNC.
+    """
+    key_indent = _own_key_indent(lines[start:end], base_indent)
+    dash_id_re = re.compile(r'^' + re.escape(base_indent) + r'-\s+id:', re.I)
+    key_id_re = None
+    if key_indent is not None:
+        key_id_re = re.compile(r'^' + re.escape(key_indent) + r'id:', re.I)
+    for j in range(start, end):
+        m = _CLAIM_ID_KEY_RE.match(lines[j])
+        if not m:
+            continue
+        if j == start:
+            if dash_id_re.match(lines[j]):
+                return j, m.group(1)
+        elif key_id_re is not None and key_id_re.match(lines[j]):
+            return j, m.group(1)
+    return None
+
+
+def _item_span_for(
+    lines: list[str], block: tuple[int, int], spans: list[tuple[int, int]],
+    base_indent: str, claim_id: str,
+) -> tuple[int, int] | None:
+    """Locate the claim item that OWNS `claim_id`; return its span or None.
+
+    Ownership means the id sits on the item's own `id:` key line
+    (`_own_id_key_line`), never merely somewhere in its text. Belt and
+    braces: the chosen span is then cross-checked against the parsed block -
+    the k-th top-level dash is the k-th parsed list item, so the parsed
+    item's `id` must equal the target. A mismatch means the line-level read
+    and YAML disagree about which claim this is, so the edit has no safe
+    landing place and this raises `_EditRefused` (the callers turn that into
+    a refusal with nothing written) rather than risk the wrong claim.
+    """
     target = normalize_id(claim_id)
-    for start, end in spans:
-        for j in range(start, end):
-            m = _CLAIM_ID_KEY_RE.match(lines[j])
-            if m and normalize_id(m.group(1)) == target:
-                return start, end
+    for k, (start, end) in enumerate(spans):
+        own = _own_id_key_line(lines, start, end, base_indent)
+        if own is None or normalize_id(own[1]) != target:
+            continue
+        open_fence, close_fence = block
+        try:
+            parsed = yaml.safe_load('\n'.join(lines[open_fence + 1:close_fence]))
+        except yaml.YAMLError:
+            parsed = None
+        aligned = (
+            isinstance(parsed, list) and len(parsed) == len(spans)
+            and isinstance(parsed[k], dict)
+            and normalize_id(str(parsed[k].get('id') or '')) == target
+        )
+        if not aligned:
+            raise _EditRefused(
+                f'the entry carrying the id line for {fmt_id_display(target)} does not '
+                'read back as that claim when the block is parsed, so the edit has no '
+                'safe landing place. Open the file, make the change by hand under '
+                '## Claims, then run `fha lint` to check it.'
+            )
+        return start, end
     return None
 
 
@@ -293,6 +388,7 @@ def _parse_inline_list(raw: str) -> list[str]:
 
 def _guard_claims_rewrite(
     new_text: str, claim_id: str | None, *, expect_status: str | None = None,
+    before_text: str | None = None,
 ) -> str:
     """Re-parse a rewritten claims block; raise `_EditRefused` on any problem.
 
@@ -303,15 +399,34 @@ def _guard_claims_rewrite(
     (shared with `fha claim`); this wrapper just turns a problem into the
     refusal exception the callers already handle, keeping each writer's happy
     path readable.
+
+    `before_text` (the text the writer started from) keeps the refusal honest
+    about whose fault the problem is. When the same check already fails on
+    that starting text, this edit did not cause the problem - and the only
+    pre-existing state that can reach this guard is a duplicate of `claim_id`
+    (locating the claim required the block to parse and the id to be present,
+    so parse failures and absences are ruled out). That case is the human's
+    duplicate-id repair (lint E001), so the refusal says so instead of
+    accusing this edit of hiding claims. Writers that mint a brand-new id
+    (`_append_claim_to_source`) must NOT pass `before_text`: the new id is
+    legitimately absent from the starting text, which would trip this probe.
     """
     problem = claims_edit_problem(new_text, claim_id, expect_status=expect_status)
-    if problem is not None:
+    if problem is None:
+        return new_text
+    if (before_text is not None and claim_id is not None
+            and claims_edit_problem(before_text, claim_id) is not None):
         raise _EditRefused(
-            f'{problem}, so saving this edit would hide every claim in the file '
-            'from the tools. Open the claim under ## Claims in the source file, '
-            'make the change by hand, then run `fha lint` to check it.'
+            f'claim id {fmt_id_display(normalize_id(claim_id))} appears more than once '
+            'in this file - a duplicate-id problem (lint E001) that predates this edit. '
+            'Fix the duplicate first: open the file, give one of those claims a fresh '
+            'id (mint one with `fha id mint C`), then retry.'
         )
-    return new_text
+    raise _EditRefused(
+        f'{problem}, so saving this edit would hide every claim in the file '
+        'from the tools. Open the claim under ## Claims in the source file, '
+        'make the change by hand, then run `fha lint` to check it.'
+    )
 
 
 def _add_link_to_claim(
@@ -338,7 +453,7 @@ def _add_link_to_claim(
     if block is None:
         return text, False, False
     base_indent, spans = _claim_spans(lines, *block)
-    span = _item_span_for(lines, spans, claim_id)
+    span = _item_span_for(lines, block, spans, base_indent, claim_id)
     if span is None:
         return text, False, False
     start, end = span
@@ -363,7 +478,8 @@ def _add_link_to_claim(
         suffix = f'  {comment}' if comment else ''
         lines[idx] = f'{prefix}{rel}: [{", ".join(items)}]{suffix}'
         trailing = '\n' if text.endswith('\n') else ''
-        return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id), True, False
+        return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id,
+                                     before_text=text), True, False
 
     # No existing rel key - insert one after `status:`, else at end of item.
     status_idx = None
@@ -375,7 +491,8 @@ def _add_link_to_claim(
     insert_at = (status_idx + 1) if status_idx is not None else end
     lines.insert(insert_at, f'{key_indent}{rel}: [{target_disp}]')
     trailing = '\n' if text.endswith('\n') else ''
-    return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id), True, False
+    return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id,
+                                 before_text=text), True, False
 
 
 def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tuple[str, bool]:
@@ -392,7 +509,7 @@ def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tupl
     if block is None:
         return text, False
     base_indent, spans = _claim_spans(lines, *block)
-    span = _item_span_for(lines, spans, claim_id)
+    span = _item_span_for(lines, block, spans, base_indent, claim_id)
     if span is None:
         return text, False
     start, end = span
@@ -409,18 +526,17 @@ def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tupl
             lines[idx] = f'{key_indent}{key}: {value}'
             break
     else:
-        # Insert after id: (falls back to first line of the item).
-        id_idx = start
-        for idx in range(start, end):
-            if _CLAIM_ID_KEY_RE.match(lines[idx]):
-                id_idx = idx
-                break
+        # Insert after the item's OWN id: line (never a shape-alike inside a
+        # block scalar - landing there would split the human's quoted
+        # evidence). The span was found via that same line, so it exists.
+        own = _own_id_key_line(lines, start, end, base_indent)
+        id_idx = own[0] if own is not None else start
         lines.insert(id_idx + 1, f'{key_indent}{key}: {value}')
 
     trailing = '\n' if text.endswith('\n') else ''
     expect = value if key == 'status' else None
     return _guard_claims_rewrite('\n'.join(lines) + trailing, claim_id,
-                                 expect_status=expect), True
+                                 expect_status=expect, before_text=text), True
 
 
 def _append_claim_to_source(text: str, item_lines: list[str]) -> tuple[str, bool]:
@@ -637,6 +753,15 @@ def _existing_pair_claim(source_path: Path, pa: str, pb: str, subtype: str) -> d
     fresh confirm (a human who rejected one bad claim may later confirm the same
     pair for real). Returns the blocking claim dict, or None. An unparseable
     record yields None; the append path's pre-write guard judges it from there.
+
+    `persons:` entries are read the way every other tool reads link fields
+    (`link_field_refs` + `resolve_typed_ref`), because hand-written claims
+    carry every taught form: bare `P-x`, quoted `"[[P-x]]"` / `"[[P-x|Sam]]"`,
+    and the unquoted `[[P-x]]` that YAML parses into a nested list. Comparing
+    `normalize_id(str(p))` raw made every wikilink-form claim invisible to
+    this gate, so a re-confirm minted a duplicate. A plain-name entry
+    (`"[[Sam Rivera]]"`) still cannot block without an alias map; that fails
+    toward a duplicate the human can see, never a silently skipped mint.
     """
     try:
         claims = read_record(source_path).get('claims') or []
@@ -651,12 +776,11 @@ def _existing_pair_claim(source_path: Path, pa: str, pb: str, subtype: str) -> d
             continue
         if str(claim.get('status') or '').strip().lower() in ('rejected', 'superseded'):
             continue
-        persons = claim.get('persons')
-        if isinstance(persons, str):
-            persons = [persons]
-        if not isinstance(persons, list):
-            continue
-        norm = {normalize_id(str(p)) for p in persons if p}
+        norm: set[str] = set()
+        for ref in link_field_refs(claim.get('persons')):
+            rid = resolve_typed_ref(ref, None, want='P')
+            if rid:
+                norm.add(rid)
         if pa in norm and pb in norm:
             return claim
     return None

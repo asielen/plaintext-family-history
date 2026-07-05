@@ -68,6 +68,7 @@ from _lib import (
     SOCIAL_PARENT_SUBTYPES,   # parent natures shown but NOT numbered (SPEC §12.2)
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
     format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103
+    is_generated_text,    # GENERATED-header ownership test (first non-blank line)
     is_genetic_parent_subtype,
     load_fha_yaml,
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child
@@ -192,14 +193,6 @@ def _gen_header(subcommand: str) -> str:
     )
 
 
-def first_nonblank_line(text: str) -> str:
-    """Return the first line with non-whitespace content, or '' if none."""
-    for line in text.splitlines():
-        if line.strip():
-            return line
-    return ''
-
-
 class _ManualFileRefused(Exception):
     """Raised when a view writer would overwrite a hand-written (non-generated) file.
 
@@ -221,7 +214,12 @@ def _write_view_file(out_path: Path, content: str) -> Path:
             existing = out_path.read_text(encoding='utf-8', errors='ignore')
         except OSError:
             existing = ''
-        if not first_nonblank_line(existing).startswith(_GEN_MARKER):
+        # Ownership = the views marker on the first non-blank line, via the
+        # shared _lib predicate (which also tolerates a UTF-8 BOM: an editor
+        # re-save must not turn a generated file into a "hand-written" one
+        # this refuses to refresh). The narrower views prefix keeps another
+        # tool's GENERATED file protected from a views overwrite.
+        if not is_generated_text(existing, prefix=_GEN_MARKER):
             raise _ManualFileRefused(out_path)
     out_path.write_text(content, encoding='utf-8')
     return out_path
@@ -2263,8 +2261,10 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
         except OSError:
             continue
         # Owned by views only when the marker is the FIRST non-blank line - a
-        # hand-written file that merely mentions the marker later is never deleted.
-        if first_nonblank_line(text).startswith(_GEN_MARKER):
+        # hand-written file that merely mentions the marker later is never
+        # deleted. Shared _lib predicate; the views-specific prefix keeps
+        # other tools' GENERATED files out of this clean.
+        if is_generated_text(text, prefix=_GEN_MARKER):
             found.append(p)
 
     if not found:

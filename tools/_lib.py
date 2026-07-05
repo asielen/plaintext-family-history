@@ -78,8 +78,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
 #    archive_root_missing_message - one plain recovery message for missing roots
-#    resolve_root_arg          - CLI --root flag, else find_archive_root(), with the
-#                                 shared "cannot find archive root" error message
+#    resolve_root_arg          - CLI --root flag (validated: must carry fha.yaml),
+#                                 else find_archive_root(); one shared refusal message
 #    load_fha_yaml             - parse fha.yaml into a dict
 #    format_*_error            - shared teaching messages for CLI refusals
 #    get_roots                 - extract roots mapping from config
@@ -94,6 +94,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
 #  Record parsing
+#    read_text_exact / write_text_exact - newline-exact record IO (no CRLF/LF translation)
 #    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
 #    read_record               - parse frontmatter + claims + body from a .md file
 #    claim_item_key_indent     - one claim item's real mapping-key column (surgical edits)
@@ -124,6 +125,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    extract_bare_ids          - all bare IDs from a text block
 #    normalize_place_text      - lowercase/collapse-whitespace key for comparing
 #                                 free-text place names without a shared place_id
+#
+#  Alias resolution / publication guards
+#    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
+#    strip_unaccepted_drafts   - drop AI-DRAFT prose + AI markers pre-publication (fail-closed)
+#    GENERATED_PREFIX, is_generated_text, is_generated_file - GENERATED-header ownership test
 #
 #  Archive freshness
 #    newest_record_mtime       - max mtime of sources/people/notes .md + places.yaml
@@ -428,7 +434,7 @@ def find_archive_root(start: str | Path | None = None) -> Path | None:
         p = parent
 
 
-def resolve_root_arg(args: Any) -> Path | None:
+def resolve_root_arg(args: Any, command: str | None = None) -> Path | None:
     """
     Resolve the archive root from a parsed CLI namespace: its own `--root`
     flag if given, else walk up from CWD via `find_archive_root()`.
@@ -438,12 +444,54 @@ def resolve_root_arg(args: Any) -> Path | None:
     re-implement this same five-line lookup. Centralized here so there's one
     error message and one behavior to keep correct.
 
-    Prints an ERROR to stderr and returns None when neither source finds a
-    root; the caller decides the exit code (most tools return EXIT_FAILURE).
+    An explicit `--root` must point at a real archive: the folder must carry
+    an `fha.yaml` FILE at its top. This validation lives here, at the one
+    chokepoint every tool resolves through, because a typo'd --root used to
+    make mutating tools fabricate an archive skeleton anywhere on disk -
+    `fha report` minted a .cache and printed a healthy-empty report with
+    exit 0, `fha capture` staged stubs into `<typo>/inbox` - and the three
+    guards hand-copied into index/find/id-check had already diverged
+    (`.is_file()` vs `.exists()`). The refusal fires before the caller does
+    any work, so nothing is ever created in the wrong folder. The no---root
+    path needs no such check: `find_archive_root()` only returns a folder
+    that already contains fha.yaml.
+
+    `command` names the command in the refusal ('fha index'); when omitted,
+    the phrase is derived from `args.command` (set by fha.py's dispatcher
+    for every subcommand), and a namespace with neither - a tool's
+    standalone `python tools/x.py` parser - gets generic wording.
+
+    `fha install` and `fha update-tools` legitimately target folders that
+    are not archives yet; they do not call this helper (scaffold.py owns
+    its own root handling, with update-tools carrying its own equivalent
+    guard), so no opt-out parameter is needed here.
+
+    Prints an ERROR to stderr and returns None when the root is missing or
+    fails validation; the caller decides the exit code (the tools return
+    EXIT_FAILURE).
     """
     root = getattr(args, 'root', None)
     if root:
-        return Path(root).resolve()
+        archive_root = Path(root).resolve()
+        if not (archive_root / 'fha.yaml').is_file():
+            phrase = command
+            if not phrase:
+                sub = getattr(args, 'command', None)
+                phrase = f'fha {sub}' if sub else None
+            run_hint = (
+                f'Run `{phrase}` from inside your archive'
+                if phrase else 'Run the command from inside your archive'
+            )
+            print(
+                f'ERROR: {archive_root} does not look like an archive (no '
+                f'fha.yaml there) - is this the right folder? An archive has '
+                f'fha.yaml at its top folder. {run_hint}, or point --root at '
+                f'the folder that contains fha.yaml. Nothing was changed or '
+                f'created.',
+                file=sys.stderr,
+            )
+            return None
+        return archive_root
     detected = find_archive_root()
     if detected is None:
         print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
@@ -879,6 +927,32 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
 
 # ── Record parsing ────────────────────────────────────────────────────────────
 
+def read_text_exact(path: str | Path) -> str:
+    """Read a record keeping its line endings exactly as authored.
+
+    Why this exists: `Path.read_text()` opens in universal-newline mode, which
+    translates every CRLF to LF on read, and the default write mode translates
+    LF back to `os.linesep`. Any read/modify/write round-trip through those
+    defaults therefore rewrites EVERY line ending of a record whose endings
+    differ from the current platform's (an LF archive edited on Windows, a
+    CRLF-authored record on Linux) - churn that buries the one intended edit
+    and breaks the surgical editors' byte-faithful contract (packet redaction,
+    claims surgery). `newline=''` disables translation in both directions, so
+    the only differences after a round-trip are the edits the caller made.
+    Mirror: `write_text_exact`."""
+    with Path(path).open('r', encoding='utf-8', newline='') as f:
+        return f.read()
+
+
+def write_text_exact(path: str | Path, text: str) -> None:
+    """Write text with no newline translation (the mirror of read_text_exact).
+
+    Without `newline=''`, Windows would CRLF-ify an LF-authored record on the
+    write half of a round-trip even when the read half preserved it."""
+    with Path(path).open('w', encoding='utf-8', newline='') as f:
+        f.write(text)
+
+
 def _coerce_yaml(obj: Any) -> Any:
     """Recursively coerce YAML scalars to types the index expects."""
     if isinstance(obj, dict):
@@ -997,31 +1071,51 @@ def _read_unfenced_claims(body: str) -> list[dict] | None:
 
     Conservative on purpose (the section is the structured-data layer): the
     content must parse as a non-empty YAML list whose every item is a mapping
-    carrying at least one claim key (id/type/value/persons/status). Stray fence
-    lines from a half-typed ```block are tolerated; anything else returns None so
-    plain prose under the heading is never mistaken for claims."""
+    carrying at least one claim key (id/type/value/persons/status).
+
+    Strict first, forgiving second. The section is parsed exactly as typed;
+    only when that fails is it re-tried with ```-lookalike lines removed.
+    The old always-drop order silently deleted evidence AS READ: a claim
+    quoting ``` inside a `value: |` scalar lost those lines from every
+    in-memory consumer (index, report, packet) even though the text on disk
+    was fine - and lint's --fix-claims-fence had already been taught to
+    REFUSE such files rather than drop the lines on disk, so the reader was
+    quietly doing what the fixer refuses to. Strict-first preserves the
+    author's bytes whenever they parse; the retry keeps the original
+    forgiveness for a genuinely half-typed fence (an opening ``` with no
+    close breaks the strict parse, so only then are fence lines dropped).
+    When the retry is what succeeds there is no per-record warning channel
+    to note it on (read_record's `parse_errors` is the E010 error channel,
+    which lint renders as errors) - accepted as silent here because lint
+    already surfaces the situation: the file draws W114 (unfenced claims)
+    and --fix-claims-fence names the stray ``` line when asked to wrap it."""
     if yaml is None:
         return None
     m = _CLAIMS_SECTION_RE.search(body)
     if not m:
         return None
-    # Drop any stray fence lines (e.g. an opening ``` with no close) so the
-    # remaining content is the bare YAML a human typed.
-    lines = [ln for ln in m.group(1).splitlines() if not _FENCE_LINE_RE.match(ln)]
-    text = '\n'.join(lines).strip()
-    if not text:
-        return None
-    try:
-        parsed = yaml.safe_load(text)
-    except yaml.YAMLError:
-        return None
-    if not isinstance(parsed, list) or not parsed:
-        return None
-    if not all(isinstance(item, dict) for item in parsed):
-        return None
-    if not all(_CLAIM_MARKER_KEYS & set(item.keys()) for item in parsed):
-        return None
-    return parsed
+    raw_lines = m.group(1).splitlines()
+
+    def _parse(lines: list[str]) -> list[dict] | None:
+        text = '\n'.join(lines).strip()
+        if not text:
+            return None
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+        if not isinstance(parsed, list) or not parsed:
+            return None
+        if not all(isinstance(item, dict) for item in parsed):
+            return None
+        if not all(_CLAIM_MARKER_KEYS & set(item.keys()) for item in parsed):
+            return None
+        return parsed
+
+    strict = _parse(raw_lines)
+    if strict is not None:
+        return strict
+    return _parse([ln for ln in raw_lines if not _FENCE_LINE_RE.match(ln)])
 
 
 def claim_item_key_indent(item_lines: list[str], base_indent: str) -> str:
@@ -1963,6 +2057,46 @@ def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
     return alias_map.get(key)
 
 
+def resolve_typed_ref(
+    raw: object,
+    alias_map: dict[str, str] | None,
+    want: str | None = None,
+) -> str | None:
+    """Resolve one structured-field reference (a claim's `persons:`/`roles:`
+    entry, its `place:` field, a cooccur pair member) to a canonical ID, with
+    the same tolerance the source frontmatter link fields get (TOOLING §2
+    step 4a / §3 E004).
+
+    The quickstart teaches claims written with name links (`persons:
+    ["[[Sam Rivera]]"]`), so a bare `normalize_id(str(...))` would store the
+    literal `[[sam rivera]]` and break every downstream join. Instead:
+      - the `[[ ]]` wrapper, `|display`, and `#fragment` are stripped;
+      - an ID-shaped target is kept as-is, even when dangling - integrity is
+        lint's job (E005), not the resolver's;
+      - a name resolves through the alias map, but only to the record type the
+        field means (`want`: 'P' for persons/roles, 'L' for place), so a name
+        clash across types never yields a cross-type edge;
+      - an unknown or ambiguous name returns None - per TOOLING §3, "an
+        unresolved non-ID `[[stem]]` is an inert note-link, not a finding" -
+        so nothing garbage ever lands in an index row or an idempotency key.
+
+    Shared home for the identical per-tool resolvers (round-2 cleanup K4).
+    Live consumers: confirm.py's cooccur idempotency gate (round-2 finding 6)
+    and index.py's claim persons/roles/place resolution (its local
+    `_resolve_claim_ref` copy was retired in the round-2 finding-8 wave).
+    # TODO(K4): lint.py's `_resolve_person_ref` (plus its inline place
+    # variant) still holds a local copy - re-point it here in the cleanup wave."""
+    ref = strip_link_wrapper(str(raw)) if raw is not None else ''
+    if not ref:
+        return None
+    if id_type_of(ref):
+        return normalize_id(ref)
+    resolved = resolve_ref(ref, alias_map) if alias_map else None
+    if resolved and (want is None or id_type_of(resolved) == want):
+        return resolved
+    return None
+
+
 def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int]]]:
     """Return one (target, display, fragment, span) tuple per `[[ ]]` wikilink.
 
@@ -1982,6 +2116,197 @@ def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tupl
         if target:
             out.append((target, disp, frag, m.span()))
     return out
+
+
+# ── AI-draft prose exclusion (the AGENTS.md AI-pass contract) ─────────────────
+# THE one implementation for every publication path (fha site, fha wikitree;
+# fha packet is a planned consumer - round-2 finding S1). The marker grammar
+# mirrors confirm.py's `_AI_DRAFT_RE` exactly: `<!--` + optional whitespace +
+# the word + anything up to the first `-->` (DOTALL - a marker comment may
+# span lines). KEEP IN SYNC with confirm.py: that regex is the flip grammar
+# `fha confirm draft` uses to accept a draft in place, and the two must agree
+# on what a complete marker is - a marker this stripper reports as damaged is
+# also one confirm cannot flip, so the human hears the same "repair the
+# marker" story from both ends.
+
+_AI_DRAFT_MARK_RE = re.compile(r'<!--\s*AI-DRAFT\b.*?-->', re.S)
+_AI_ACCEPTED_MARK_RE = re.compile(r'<!--\s*AI-ACCEPTED\b.*?-->', re.S)
+# A draft block's upper boundary: the end of the previous AI marker (either
+# state - an accepted block ends where its own marker sits) or a section
+# heading (`#`/`##`; profile sections are `##`, and a draft never crosses
+# one). Deeper headings (###+) are prose the drafter may itself have written,
+# so they stay INSIDE the block - treating them as boundaries could publish
+# the top of an unaccepted draft. The heading arms use `[ \t]`, never `\s`:
+# `\s` also matches the newline, which let a bare `##` line swallow the whole
+# next line into the "heading" and publish one line of unaccepted draft
+# (round-2 finding 17/X2).
+_AI_BLOCK_BOUNDARY_RE = re.compile(
+    r'<!--\s*AI-(?:DRAFT|ACCEPTED)\b.*?-->|^#{1,2}[ \t][^\n]*$', re.S | re.M)
+_SECTION_HEADING_RE = re.compile(r'^#{1,2}[ \t][^\n]*$', re.M)
+_BLANK_RUN_RE = re.compile(r'\n{3,}')
+
+
+def strip_unaccepted_drafts(text: str) -> tuple[str, str | None]:
+    """Remove unaccepted AI draft prose - and every AI provenance marker -
+    from prose that is about to be published. Returns `(text, problem)`.
+
+    The contract (AGENTS.md): prose an AI drafts into a profile "goes inside
+    `<!-- AI-DRAFT ... -->` markers until the human accepts it"; acceptance is
+    `fha confirm draft`, which flips the marker to AI-ACCEPTED in place (the
+    prose itself never moves). The write-biography skill places the marker at
+    the END of the block it drafted, so the drafted span is everything between
+    the previous boundary (an earlier AI marker of either state, or a `#`/`##`
+    section heading) and the marker itself. That span, marker included, is
+    dropped here; AI-ACCEPTED prose is published with its marker removed (the
+    marker is a provenance comment - left in, the export pipelines would
+    render it as visible text).
+
+    The block START is not syntactically encoded, so prose sitting directly
+    above a draft run with no marker or heading between is withheld too -
+    deliberately fail-closed: over-excluding until `fha confirm draft` runs
+    can never leak an unaccepted draft, and the withheld prose comes back the
+    moment the draft is accepted. A `#`/`##` heading whose section the cut
+    leaves empty is dropped with it, so an all-draft section publishes like a
+    section that was never written (no stray heading).
+
+    FAIL-CLOSED SIGNALING (round-2 finding 18/X1). A DAMAGED marker - an
+    unterminated `<!-- AI-DRAFT` with no `-->`, an orphan wrap-style
+    `<!-- /AI-DRAFT -->` closer, or any stray `AI-DRAFT`/`AI-ACCEPTED` text
+    the complete-marker grammar cannot account for (a bare prose mention
+    included: cheaper to over-withhold than to guess) - means draft can no
+    longer be told from accepted prose. The old behavior published the draft.
+    Now the function returns `('', problem)`: `problem` is a plain sentence
+    naming the damage, and the returned text is EMPTY, so even a consumer
+    that ignores `problem` publishes nothing rather than the draft. A tuple
+    was chosen over a dedicated exception because a damaged marker is an
+    expected authoring state on a publication path, not exceptional control
+    flow: site keeps building the other pages, wikitree renders a refusal
+    Result - neither wants an unwind - and returning the safe empty string in
+    the problem arm makes the API impossible to fail open with. On success
+    the function returns `(cleaned_text, None)`."""
+    if 'AI-DRAFT' not in text and 'AI-ACCEPTED' not in text:
+        return text, None
+
+    if 'AI-DRAFT' not in text:
+        cleaned = _AI_ACCEPTED_MARK_RE.sub('', text)
+    else:
+        boundaries = list(_AI_BLOCK_BOUNDARY_RE.finditer(text))
+        headings = list(_SECTION_HEADING_RE.finditer(text))
+
+        # One cut per draft marker: [end of the nearest boundary above it, end
+        # of the marker). Cuts come out in ascending, non-overlapping order
+        # because a draft marker is itself a boundary for the next one.
+        cuts: list[tuple[int, int]] = []
+        for marker in _AI_DRAFT_MARK_RE.finditer(text):
+            start = 0
+            for b in boundaries:
+                if b.end() <= marker.start():
+                    start = b.end()
+                else:
+                    break
+            cuts.append((start, marker.end()))
+
+        def _surviving(lo: int, hi: int) -> str:
+            """Text of [lo, hi) that no cut removes - the empty-section probe."""
+            kept: list[str] = []
+            pos = lo
+            for cs, ce in cuts:
+                if ce <= lo or cs >= hi:
+                    continue
+                kept.append(text[pos:max(lo, cs)])
+                pos = min(hi, ce)
+            kept.append(text[pos:hi])
+            return ''.join(kept)
+
+        # Drop the heading of any section the cuts emptied. Accepted markers
+        # do not count as surviving content (they are removed below anyway).
+        heading_cuts: list[tuple[int, int]] = []
+        for cs, _ce in cuts:
+            h_prev = None
+            h_next_start = len(text)
+            for h in headings:
+                if h.end() <= cs:
+                    h_prev = h
+                elif h.start() > cs:
+                    h_next_start = h.start()
+                    break
+            if h_prev is None:
+                continue
+            remainder = _AI_ACCEPTED_MARK_RE.sub('', _surviving(h_prev.end(), h_next_start))
+            if not remainder.strip():
+                heading_cuts.append((h_prev.start(), h_prev.end()))
+
+        out: list[str] = []
+        pos = 0
+        for cs, ce in sorted(set(cuts + heading_cuts)):
+            if cs > pos:
+                out.append(text[pos:cs])
+            pos = max(pos, ce)
+        out.append(text[pos:])
+        cleaned = _AI_ACCEPTED_MARK_RE.sub('', ''.join(out))
+
+    # The fail-closed accounting: every marker word must be gone once all
+    # complete markers were cut/removed. Anything left is a damaged marker
+    # (or an unmarked mention the grammar cannot distinguish from one).
+    for word in ('AI-DRAFT', 'AI-ACCEPTED'):
+        if word in cleaned:
+            return '', (
+                f'"{word}" text remains after every complete '
+                f'"<!-- {word} ... -->" marker was handled - '
+                'usually a marker missing its closing "-->"'
+            )
+
+    # Cutting a block leaves the blank lines that framed it; collapse the
+    # leftovers so paragraph spacing stays normal.
+    return _BLANK_RUN_RE.sub('\n\n', cleaned), None
+
+
+# ── GENERATED-file ownership ──────────────────────────────────────────────────
+# The header contract between the generators (views, lint --fix reports, site
+# never - it owns a whole directory instead) and every tool that must not
+# rewrite, must overwrite, or may delete a generated file.
+
+# Tool-agnostic header prefix. Generators append their own name after it
+# ('<!-- GENERATED by fha views timeline ...'); pass that longer string as
+# `prefix` to test ownership by one specific tool.
+GENERATED_PREFIX = '<!-- GENERATED'
+
+# The UTF-8 byte-order mark an editor re-save may prepend; named because an
+# invisible literal in source is unreadable and easy to break in edits.
+_BOM = chr(0xfeff)
+
+
+def is_generated_text(text: str, prefix: str = GENERATED_PREFIX) -> bool:
+    """True when `text` is a tool-generated file body: its first NON-BLANK
+    line starts with `prefix`.
+
+    Why first-non-blank rather than byte 0: a leading blank line or a UTF-8
+    BOM (an editor re-save) must not flip a file's ownership. lint and views
+    already judged by the first non-blank line while normalize-links checked
+    byte 0, and that split let normalize-links rewrite prose inside a
+    generated file that merely began with a blank line (round-2 finding 12).
+    The BOM is stripped both at text start and at line start because
+    `str.strip()` does not treat U+FEFF as whitespace."""
+    for line in text.lstrip(_BOM).splitlines():
+        if line.strip():
+            return line.lstrip(_BOM).startswith(prefix)
+    return False
+
+
+def is_generated_file(path: str | Path, prefix: str = GENERATED_PREFIX) -> bool:
+    """True when the file at `path` carries the GENERATED header
+    (`is_generated_text` over its content, BOM tolerated via utf-8-sig).
+
+    An unreadable file returns False - i.e. "not generated". Every caller is
+    deciding whether it may skip, overwrite, or delete a tool-owned file, and
+    a file that cannot be read must be treated as human-owned (never touched);
+    the read failure resurfaces with its own message wherever the caller next
+    reads the file for real."""
+    try:
+        text = Path(path).read_text(encoding='utf-8-sig', errors='ignore')
+    except OSError:
+        return False
+    return is_generated_text(text, prefix)
 
 
 # ── Archive freshness ─────────────────────────────────────────────────────────

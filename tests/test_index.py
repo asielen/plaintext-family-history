@@ -649,6 +649,126 @@ class ClaimPersonResolutionTests(unittest.TestCase):
         self.assertEqual(self._snapshot(), full)
 
 
+_ALIAS_CLASH_PERSON = '''---
+id: P-aaaaaaaaaa
+name: Ken Smith
+living: false
+---
+
+# Ken Smith
+'''
+
+_ALIAS_CLASH_SOURCE_A = '''---
+id: S-1111111111
+title: Census page
+source_type: census
+people: ["[[Ken Smith]]"]
+---
+
+## Claims
+```yaml
+- id: C-1111111111
+  value: "Ken Smith, farmer"
+  type: occupation
+  persons: ["[[Ken Smith]]"]
+  status: accepted
+  reviewed: 2026-01-01
+```
+'''
+
+# The clashing record: a DIFFERENT source hand-aliased with the person's name.
+_ALIAS_CLASH_SOURCE_B = '''---
+id: S-2222222222
+title: Folder of Ken Smith papers
+source_type: other
+aliases: [Ken Smith]
+---
+
+## Claims
+'''
+
+
+class UpsertAliasUniverseParityTests(unittest.TestCase):
+    """Round-2 finding 8 (the r3a repro): full build and upsert must resolve
+    claim/frontmatter names through the SAME alias universe (persons+places).
+
+    The full build snapshots its map before any source is indexed; the upsert
+    used to read the whole aliases table, where another source's hand alias
+    'Ken Smith' clashed the person 'Ken Smith' out of the clash-aware map -
+    so `fha index --source S-A` silently dropped the claim_persons and
+    source_people rows the full build keeps, breaking the row-for-row
+    equivalence contract. The ('P','L') filter in _resolve_map_from_aliases
+    makes both maps identical by construction."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'smith__ken_P-aaaaaaaaaa.md', _ALIAS_CLASH_PERSON)
+        _write(self.root / 'sources' / 'census_S-1111111111.md', _ALIAS_CLASH_SOURCE_A)
+        _write(self.root / 'sources' / 'papers_S-2222222222.md', _ALIAS_CLASH_SOURCE_B)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _rows(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return {
+                'claim_persons': sorted(tuple(r) for r in conn.execute(
+                    'SELECT claim_id, person_id, position, role FROM claim_persons')),
+                'source_people': sorted(tuple(r) for r in conn.execute(
+                    'SELECT source_id, person_id FROM source_people')),
+            }
+        finally:
+            conn.close()
+
+    def test_other_sources_alias_cannot_drop_rows_on_upsert(self) -> None:
+        index.build_index(self.root, {})
+        full = self._rows()
+        # The full build resolves the name; prove the fixture actually
+        # exercises the clash (a person row exists to lose).
+        self.assertIn(('c-1111111111', 'p-aaaaaaaaaa', 0, None), full['claim_persons'])
+        self.assertIn(('s-1111111111', 'p-aaaaaaaaaa'), full['source_people'])
+
+        status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._rows(), full)
+
+    def test_same_source_own_alias_boundary_still_works(self) -> None:
+        # Boundary case: the upserted source ITSELF is aliased with the
+        # person's name. Its own alias rows are deleted before the map is
+        # built (full build never saw them either), so the name still
+        # resolves to the person in both paths.
+        _write(self.root / 'sources' / 'census_S-1111111111.md',
+               _ALIAS_CLASH_SOURCE_A.replace(
+                   'source_type: census\n',
+                   'source_type: census\naliases: [Ken Smith]\n'))
+        index.build_index(self.root, {})
+        full = self._rows()
+        self.assertIn(('c-1111111111', 'p-aaaaaaaaaa', 0, None), full['claim_persons'])
+        status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._rows(), full)
+
+    def test_citation_map_still_resolves_source_stems(self) -> None:
+        # The scope guard's counterpart: the CITATION scan keeps the full
+        # alias universe on purpose - a prose `[[Ken Smith]]` note-link to
+        # the aliased source... is a clash here (person + source share the
+        # string), but an unambiguous source stem must keep resolving.
+        _write(self.root / 'sources' / 'papers_S-2222222222.md',
+               _ALIAS_CLASH_SOURCE_B.replace('aliases: [Ken Smith]',
+                                             'aliases: [ken-papers]')
+               + '\nSee also [[ken-papers]].\n')
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            cites = list(conn.execute(
+                "SELECT token FROM citations WHERE token='s-2222222222'"))
+        finally:
+            conn.close()
+        self.assertTrue(cites, 'source stem citation should resolve via the full map')
+
+
 class SourceRestrictedTests(unittest.TestCase):
     """The sources.restricted column must store 1 for ANY truthy `restricted:`
     value. The marker is open (SPEC §19): the typed values (`dna`,
