@@ -1867,6 +1867,29 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         f'Claim {claim.get("id","?")} persons: {_near_miss_text(raw_ref, near)}; '
                         f"fix the typo or use the person's name as written."))
 
+            # W118: a claim whose persons: names people but resolves to NONE of
+            # them detaches silently - it joins no one's timeline, vitals, or
+            # merge checks, and (unlike a dead P-id or a near-miss code, which
+            # are E005) leaves no other signal. This is the exact gap the
+            # forgiving name-link contract opens: an unresolved plain NAME stays
+            # an inert note-link (never an error), but a claim that names ONLY
+            # unresolved people is very likely a typo/rename, so warn - never
+            # block. Suppressed when a ref is already a near-miss E005 above, to
+            # avoid double-reporting the same broken reference.
+            person_refs = link_field_refs(claim.get('persons'))
+            if person_refs and not _claim_person_ids(claim, alias_map):
+                already_flagged = any(
+                    _id_near_miss(r) for r in person_refs
+                    if not id_type_of(r) and not (alias_map and resolve_ref(r, alias_map)))
+                if not already_flagged:
+                    listed = ', '.join(repr(str(r)) for r in person_refs)
+                    findings.append(Finding('W', 'W118', src_path,
+                        f'Claim {claim.get("id","?")} persons: {listed} resolves to no '
+                        'person record, so the claim attaches to no one (it will be '
+                        "missing from every timeline, vitals tally, and merge check). "
+                        'Check the spelling, add the name as an alias on the right '
+                        'person, or create the person - or leave it if it is only a note.'))
+
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't
             # resolve is a broken link (E004, an integrity problem).  A NAME that

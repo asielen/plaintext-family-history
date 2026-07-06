@@ -1162,6 +1162,44 @@ class NearMissIdTests(_SurgeryBase):
             '  corroborates: [C-__________]\n')
         self.assertEqual([f for f in findings if f.code == 'E004'], [])
 
+    def test_persons_resolving_to_nobody_warns_w118(self) -> None:
+        # A claim whose persons: names only unresolved people attaches to no
+        # one - the exact silent-detach gap. Warn (never block), so the likely
+        # typo/rename is visible instead of the claim vanishing from timelines.
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: ["[[Jon Smith]]"]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        w = [f for f in findings if f.code == 'W118']
+        self.assertEqual(len(w), 1, [f.message for f in findings])
+        self.assertIn('attaches to no one', w[0].message)
+        self.assertEqual([f for f in findings if f.code in ('E004', 'E005')], [])
+
+    def test_persons_that_resolve_do_not_warn_w118(self) -> None:
+        # The seeded person P-1111111111 exists, so a claim naming them
+        # attaches - no detachment warning.
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        self.assertEqual([f for f in findings if f.code == 'W118'], [])
+
+    def test_near_miss_code_is_e005_not_also_w118(self) -> None:
+        # A near-miss code is already an E005; W118 must not double-report the
+        # same broken reference.
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [de957bcda1]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        self.assertTrue([f for f in findings if f.code == 'E005'])
+        self.assertEqual([f for f in findings if f.code == 'W118'], [])
+
+    def test_partial_resolution_does_not_warn_w118(self) -> None:
+        # One resolvable + one unresolved: the claim still attaches (to the
+        # seeded person), so the unresolved name stays an inert note-link with
+        # no warning - W118 fires only when the WHOLE list detaches.
+        findings = self._lint_claims(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111, "Ghosty"]\n'
+            '  value: x\n  status: suggested\n  confidence: low\n')
+        self.assertEqual([f for f in findings if f.code == 'W118'], [])
+
 
 _TEMPLATE_COPY_PERSON = '''---
 id: P-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING
