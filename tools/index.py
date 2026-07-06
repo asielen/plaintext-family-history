@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sqlite3
@@ -488,11 +489,6 @@ def _parse_place_coords(place: dict) -> tuple[float | None, float | None, str | 
     if 'coords' not in place:
         return (None, None, None)
     raw = place.get('coords')
-    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
-        lat = _coerce_coord(raw[0])
-        lon = _coerce_coord(raw[1])
-        if lat is not None and lon is not None:
-            return (lat, lon, None)
     # Name the place the way the human knows it (its name), with the id as
     # the precise locator when both exist.
     name = str(place.get('name') or '').strip()
@@ -501,6 +497,23 @@ def _parse_place_coords(place: dict) -> tuple[float | None, float | None, str | 
         label = f'{name} ({pid})'
     else:
         label = name or pid or 'an unnamed place'
+    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+        lat = _coerce_coord(raw[0])
+        lon = _coerce_coord(raw[1])
+        if lat is not None and lon is not None:
+            # Numeric, but is it a real point on Earth? A missing decimal
+            # (`398` for `39.8`), a transposed lat/lon, or a nan/inf all parse
+            # to a float yet index a pin off the globe. Range-check so those
+            # degrade to a warning + NULL coords, not a silent bad coordinate.
+            if (math.isfinite(lat) and math.isfinite(lon)
+                    and -90 <= lat <= 90 and -180 <= lon <= 180):
+                return (lat, lon, None)
+            return (None, None,
+                    f'places/places.yaml: {label} has coords: {raw!r}, which is '
+                    f'out of range - latitude must be -90..90 and longitude '
+                    f'-180..180 (a missing decimal or swapped pair is the usual '
+                    f'cause). The place was indexed without map coordinates; fix '
+                    f'the line and re-run `fha index`.')
     return (None, None,
             f'places/places.yaml: {label} has coords: {raw!r}, which is not a '
             f'coordinate pair - write it as coords: [39.8, -95.6] (latitude, '

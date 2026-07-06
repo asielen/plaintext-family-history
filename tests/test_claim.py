@@ -318,6 +318,22 @@ class RunClaimTests(unittest.TestCase):
         rec = {c['id']: c for c in read_record(self.source)['claims']}
         self.assertEqual(str(rec['C-aa11bb22cc']['reviewed']), claim._today())
 
+    def test_crlf_record_keeps_crlf_no_whole_file_churn(self) -> None:
+        # A CRLF-authored record edited on an LF platform (or vice-versa) must
+        # not have every line ending flipped by a one-line status edit - the
+        # byte-faithful claims-surgery contract (read/write_text_exact).
+        crlf = _CLAIM_BLOCK.replace('\n', '\r\n')
+        self.source.write_bytes(crlf.encode('utf-8'))
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 status='accepted', reviewed='2026-06-24')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        after = self.source.read_bytes()
+        self.assertNotIn(b'\r\r\n', after)         # not double-CR'd
+        # Endings stayed CRLF, and the ONLY changed lines are the edited ones:
+        # the count of LF-without-CR must remain zero (no line was churned LF).
+        self.assertEqual(after.count(b'\n'), after.count(b'\r\n'))
+        self.assertEqual(self._status_of('C-aa11bb22cc'), 'accepted')
+
     def test_reject_round_trip(self) -> None:
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='rejected')
         self.assertEqual(result.exit_code, EXIT_CLEAN)

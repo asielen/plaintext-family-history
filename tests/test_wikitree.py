@@ -254,6 +254,37 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertIsNone(r['text'])
         self.assertIn('Marion Jones', r['messages'][0])
 
+    def test_restricted_display_on_name_target_wikilink_refused(self):
+        # The gap the ID-token test above doesn't cover: a NAME-target wikilink
+        # whose display half is the deadname, [[Mary Jones|Marion Jones]]. The
+        # target "Mary Jones" is a public name, so it passes the target scan -
+        # but the display "Marion Jones" is a restricted variant and would
+        # publish verbatim. Both halves must be checked.
+        marian = self.root / 'people' / 'p-0000000002.md'
+        marian.write_text(
+            '---\nid: P-0000000002\nname: Mary Jones\nliving: false\n'
+            'name_variants:\n  - value: Marion Jones\n    restricted: true\n---\n',
+            encoding='utf-8',
+        )
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nFormerly [[Mary Jones|Marion Jones]].\n',
+            encoding='utf-8',
+        )
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.execute("UPDATE persons SET path='people/p-0000000002.md' WHERE id='p-0000000002'")
+        conn.execute("INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)",
+                     ('mary jones', 'p-0000000002', 'name'))
+        conn.commit()
+        conn.close()
+
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'restricted-names')
+        self.assertIsNone(r['text'])
+        self.assertIn('Marion Jones', r['messages'][0])
+
     def test_unrestricted_in_token_display_still_renders(self):
         # An in-token display that is NOT a restricted variant keeps rendering
         # as the link text - the deadname gate must not eat ordinary displays.

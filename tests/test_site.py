@@ -584,6 +584,47 @@ class DiscoveriesTests(_Base):
         self.assertIn('No discoveries', self._read('discoveries.html'))
         self.assertNotIn('Recent discoveries', self._read('index.html'))
 
+    def test_ambiguous_name_link_to_living_is_redacted(self):
+        # Two people share a name; one is living. The clash drops the name from
+        # the single-id alias_map, so `[[John Smith]]` fails to resolve - it must
+        # fail closed (redact), not publish the living person's name verbatim.
+        self._seed_person('p-aaaaaaaaaa', 'John Smith', living='false', surname='Smith')
+        self._seed_person('p-bbbbbbbbbb', 'John Smith', living='true', surname='Smith')
+        for pid in ('p-aaaaaaaaaa', 'p-bbbbbbbbbb'):
+            self.conn.execute("INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)",
+                              ('john smith', pid, 'name'))
+        self._write_discoveries('# Discoveries Log\n\n## 2026-06-01\nA lead on [[John Smith]].\n')
+        self._run(linked=False)
+        html = self._read('discoveries.html')
+        self.assertIn(site._LIVING_LABEL, html)          # redacted, not leaked
+        self.assertNotIn('John Smith', html)             # the name never appears
+
+    def test_unaccepted_draft_excluded_from_discoveries(self):
+        # The standalone site is external output, so an AI-DRAFT block in
+        # discoveries.md must be stripped just like person prose is.
+        self._seed_person('p-aaaaaaaaaa', 'Dan')
+        self._write_discoveries(
+            '# Discoveries Log\n\n'
+            '## 2026-06-01\nA published finding.\n\n'
+            '## 2026-06-02\nAn unreviewed draft lead.\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - drafted -->\n')
+        self._run(linked=False)
+        html = self._read('discoveries.html')
+        self.assertIn('A published finding.', html)
+        self.assertNotIn('An unreviewed draft lead.', html)
+        self.assertNotIn('AI-DRAFT', html)
+
+    def test_damaged_draft_marker_withholds_discoveries(self):
+        # Fail closed: an unterminated marker withholds the whole page rather
+        # than leaking half-parsed draft text or a raw marker.
+        self._seed_person('p-aaaaaaaaaa', 'Dan')
+        self._write_discoveries(
+            '# Discoveries Log\n\n## 2026-06-01\nA finding.\n\n<!-- AI-DRAFT missing its close\n')
+        self._run(linked=False)
+        html = self._read('discoveries.html')
+        self.assertNotIn('A finding.', html)
+        self.assertNotIn('AI-DRAFT', html)
+
 
 class HomePageTests(_Base):
     def test_surname_az_index(self):

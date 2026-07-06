@@ -514,6 +514,30 @@ class PlaceCoordsTests(unittest.TestCase):
     def test_non_numeric_pair_warns(self) -> None:
         self._assert_bad_shape('  coords: [north, south]\n')
 
+    def _assert_out_of_range(self, coords_line: str) -> None:
+        # Numeric but off the globe (a missing decimal, a swapped pair, or a
+        # non-finite value): degrade to NULL coords + one range warning, never a
+        # silently-stored bad pin.
+        result, rows = self._build(
+            f'- id: L-1111111111\n  name: Millbrook\n{coords_line}')
+        self.assertEqual(len(rows), 1, coords_line)
+        self.assertIsNone(rows[0]['lat'], coords_line)
+        self.assertIsNone(rows[0]['lon'], coords_line)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS, coords_line)
+        warning_texts = [m.text for m in result.messages]
+        self.assertEqual(len(warning_texts), 1, coords_line)
+        self.assertIn('Millbrook', warning_texts[0])
+        self.assertIn('out of range', warning_texts[0])
+
+    def test_missing_decimal_latitude_warns(self) -> None:
+        self._assert_out_of_range('  coords: [398, -95.6]\n')   # 39.8 minus its dot
+
+    def test_swapped_out_of_range_longitude_warns(self) -> None:
+        self._assert_out_of_range('  coords: [0, 200]\n')
+
+    def test_non_finite_coords_warn(self) -> None:
+        self._assert_out_of_range('  coords: ["nan", "1000"]\n')
+
 
 _RESOLUTION_PERSON = '''---
 id: P-aaaaaaaaaa

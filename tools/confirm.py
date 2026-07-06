@@ -115,8 +115,11 @@ from _lib import (
     normalize_id,
     parse_filename,
     read_record,
+    read_text_exact,
+    reapply_newline,
     resolve_root_arg,
     resolve_typed_ref,
+    write_text_exact,
     scan_ids_in_tree,
     scan_person_record_ids,
 )
@@ -624,7 +627,7 @@ def run_confirm_xref(
     already_all = True
     for path, pairs in edits.items():
         try:
-            before = path.read_text(encoding='utf-8')
+            before = read_text_exact(path)
         except OSError as e:
             return _fail(result, 'failed', f'cannot read {path}: {e}')
         text = before
@@ -675,7 +678,7 @@ def run_confirm_xref(
         # part-way through the reciprocal pair never leaves a one-sided link.
         for p, original in reversed(written):
             try:
-                p.write_text(original, encoding='utf-8')
+                write_text_exact(p, original)
             except OSError:
                 pass
         result.changed.clear()
@@ -683,7 +686,7 @@ def run_confirm_xref(
 
     for path, before, after in previews:
         try:
-            path.write_text(after, encoding='utf-8')
+            write_text_exact(path, reapply_newline(after, before))
         except OSError as e:
             _rollback_xref()
             return _fail(result, 'failed',
@@ -853,6 +856,51 @@ def run_confirm_cooccur(
         ex_id = str(existing.get('id') or '').strip()
         ex_disp = fmt_id_display(normalize_id(ex_id)) if is_valid_id(ex_id) else None
         ex_status = str(existing.get('status') or '').strip() or 'unknown'
+        # --accept on a pair this source already covers with a still-suggested
+        # (or needs-review) claim PROMOTES that claim rather than silently
+        # dropping the request: the human directed the accept (TOOLING §3b), and
+        # minting a second claim would duplicate. A claim already accepted (or
+        # disputed/rejected) is left alone - only forward moves out of suggested.
+        if accept and ex_disp and ex_status in ('suggested', 'needs-review'):
+            if reviewed is not None:
+                try:
+                    datetime.date.fromisoformat(reviewed)
+                except ValueError:
+                    return _fail(result, 'failed',
+                                 f'--reviewed {reviewed!r} is not a calendar date. Use '
+                                 f'YYYY-MM-DD, e.g. {_today()}.')
+            stamp = reviewed or _today()
+            try:
+                before = read_text_exact(source_path)
+                after, _ok = _set_scalar_on_claim(before, ex_id, 'status', 'accepted')
+                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed', stamp)
+            except _EditRefused as e:
+                return _fail(result, 'refused',
+                             f'{ex_disp} in {source_path}: {e} Nothing was written.')
+            result.data['claim_id'] = ex_disp
+            result.data['claim_status'] = 'accepted'
+            if dry_run:
+                result.data['status'] = 'accepted'
+                result.add('info',
+                           f'[dry-run] Would accept the existing {subtype} claim '
+                           f'{ex_disp} in {source_path.name} (reviewed {stamp}).')
+                for dline in difflib.unified_diff(
+                    before.splitlines(), after.splitlines(),
+                    fromfile=f'{source_path} (before)', tofile=f'{source_path} (after)',
+                    lineterm=''):
+                    result.add('info', dline)
+                result.add('info', '[dry-run] No file written.')
+                return result
+            try:
+                write_text_exact(source_path, reapply_newline(after, before))
+            except OSError as e:
+                return _fail(result, 'failed', f'cannot write {source_path}: {e}')
+            result.note_changed(source_path)
+            result.data['status'] = 'accepted'
+            result.add('info',
+                       f'Accepted the existing {subtype} relationship claim {ex_disp} '
+                       f'in {source_path.name} (reviewed {stamp}).', path=source_path)
+            return result
         result.data['status'] = 'already'
         result.data['claim_id'] = ex_disp
         result.data['claim_status'] = ex_status
@@ -885,7 +933,7 @@ def run_confirm_cooccur(
     )
 
     try:
-        before = source_path.read_text(encoding='utf-8')
+        before = read_text_exact(source_path)
     except OSError as e:
         return _fail(result, 'failed', f'cannot read {source_path}: {e}')
     try:
@@ -915,7 +963,7 @@ def run_confirm_cooccur(
         return result
 
     try:
-        source_path.write_text(after, encoding='utf-8')
+        write_text_exact(source_path, reapply_newline(after, before))
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {source_path}: {e}')
 
@@ -1345,7 +1393,7 @@ def run_accept_draft(
     result.data['profile'] = str(profile)
 
     try:
-        before = profile.read_text(encoding='utf-8')
+        before = read_text_exact(profile)
     except OSError as e:
         return _fail(result, 'failed', f'cannot read {profile}: {e}')
 
@@ -1379,7 +1427,7 @@ def run_accept_draft(
         return result
 
     try:
-        profile.write_text(after, encoding='utf-8')
+        write_text_exact(profile, reapply_newline(after, before))
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {profile}: {e}')
 

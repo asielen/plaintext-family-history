@@ -564,6 +564,12 @@ class _SiteBuilder:
         self.alias_map: dict[str, str] = {
             a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1
         }
+        # The full name→candidates multimap (before the single-id filter above).
+        # A name that clashes across ≥2 records is dropped from alias_map, so a
+        # `[[Ambiguous Name]]` link fails to resolve - and if any candidate is a
+        # living/restricted person, rendering the literal name would leak it.
+        # Kept so render_token can fail closed on that case (SPEC §21).
+        self._alias_candidates: dict[str, set[str]] = idx
         # A restricted name variant (deadname) is stored mangled in the index
         # alias table (as the stringified mapping), so `[[prior name]]` would not
         # resolve there. Register its value here so the link still resolves to
@@ -720,6 +726,18 @@ class _SiteBuilder:
             return True
         return (row['living'] or '') in ('true', 'unknown')
 
+    def _name_is_sensitive(self, key: str) -> bool:
+        """True when a lowercased, wrapper-stripped name-link key must not be
+        rendered verbatim on the standalone site: it resolves (ambiguously) to a
+        living/restricted person, or it is a restricted variant (deadname) of
+        some person. The clash-aware alias_map drops such names, so without this
+        check render_token would fall through and publish the literal name."""
+        for cid in self._alias_candidates.get(key, ()):  # type: ignore[union-attr]
+            meta = self.person_meta.get(cid)
+            if meta is not None and self._person_is_redacted(meta):
+                return True
+        return any(key in values for values in self.restricted_names.values())
+
     # - token rendering -
 
     def render_token(self, token: str, page_dir: Path, in_display: str | None = None) -> str:
@@ -748,10 +766,17 @@ class _SiteBuilder:
                 pid, kind = resolved, id_type_of(resolved)
             else:
                 # Inert Obsidian link, not a broken citation → plain text.
-                # Exception: when the aliases table is absent (stale index) we
-                # can't distinguish a non-record link from an unresolved living
-                # person - redact in standalone mode rather than leak a name.
-                if not self.linked and not self._alias_table_ok:
+                # Exception: in standalone mode fail closed rather than leak a
+                # name when we can't be sure it's inert - the aliases table is
+                # absent (stale index), OR the target/display is an ambiguous
+                # name that clashes onto a living/restricted person or is a
+                # restricted variant (deadname). Those are dropped from
+                # alias_map, so they land here unresolved (SPEC §21).
+                if not self.linked and (
+                        not self._alias_table_ok
+                        or self._name_is_sensitive(strip_link_wrapper(token).lower())
+                        or (in_display
+                            and self._name_is_sensitive(in_display.strip().lower()))):
                     return f'<span class="redacted">{_LIVING_LABEL}</span>'
                 return _escape(in_display or token)
 
@@ -1458,6 +1483,17 @@ class _SiteBuilder:
         try:
             text = path.read_text(encoding='utf-8')
         except OSError:
+            self._discoveries = ('', [])
+            return self._discoveries
+        # Exclude unaccepted AI-DRAFT prose before publishing, same as person
+        # prose (_person_prose): the standalone site is external output, so a
+        # draft must never leak here. Fail closed on a damaged marker - withhold
+        # the whole page rather than emit half-parsed draft text or a raw marker.
+        text, problem = strip_unaccepted_drafts(text)
+        if problem is not None:
+            self.messages.append(
+                'WARNING: a draft marker in notes/discoveries.md is damaged '
+                f'({problem}) - the discoveries page is withheld from the site.')
             self._discoveries = ('', [])
             return self._discoveries
         lines = text.replace('\r\n', '\n').split('\n')

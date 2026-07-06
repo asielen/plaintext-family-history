@@ -36,7 +36,9 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import confirm
 import cooccur
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, Result, load_fha_yaml, read_record
+from _lib import (
+    EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, Result, load_fha_yaml, normalize_id, read_record,
+)
 
 EXAMPLE = ROOT / 'example-archive'
 
@@ -417,16 +419,18 @@ class ConfirmArchiveTests(unittest.TestCase):
         import unittest.mock as mock
         srcs = sorted((self.root / 'sources').rglob('*.md'))
         before = {p: p.read_text(encoding='utf-8') for p in srcs}
-        real_write = Path.write_text
+        # The surgical editors write byte-faithfully via write_text_exact, so the
+        # failure is injected there (not Path.write_text).
+        real_write = confirm.write_text_exact
         state = {'n': 0}
 
-        def flaky(self_path, *args, **kwargs):
+        def flaky(path, text):
             state['n'] += 1
             if state['n'] == 2:
                 raise OSError('simulated disk full')
-            return real_write(self_path, *args, **kwargs)
+            return real_write(path, text)
 
-        with mock.patch.object(Path, 'write_text', flaky):
+        with mock.patch.object(confirm, 'write_text_exact', flaky):
             r = confirm.run_confirm_xref(
                 self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='corroborates')
         self.assertEqual(r.exit_code, EXIT_FAILURE)
@@ -597,6 +601,50 @@ class ConfirmArchiveTests(unittest.TestCase):
             and pair <= {str(p).lower() for p in (c.get('persons') or [])}
         ]
         self.assertEqual(len(matches), 1)
+
+    def test_cooccur_accept_promotes_existing_suggested(self) -> None:
+        # A first confirm without --accept mints a `suggested` claim; a second
+        # run WITH --accept must promote that same claim to `accepted` (honoring
+        # the flag), not report `already` and drop the accept nor mint a second.
+        first = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        self.assertEqual(first['claim_status'], 'suggested')
+        src = Path(first['source'])
+
+        promoted = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
+            subtype='friend', accept=True)
+        self.assertEqual(promoted.exit_code, EXIT_CLEAN)
+        self.assertEqual(promoted['status'], 'accepted')
+        self.assertEqual(promoted['claim_id'], first['claim_id'])
+        self.assertEqual(promoted['claim_status'], 'accepted')
+
+        # The same claim is now accepted (no duplicate), so the edge derives.
+        target = normalize_id(first['claim_id'])
+        matches = [c for c in read_record(src)['claims'] if normalize_id(str(c.get('id'))) == target]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].get('status'), 'accepted')
+        conn = self._reindex()
+        try:
+            edges = {
+                frozenset((r['person_id'], r['other_id']))
+                for r in conn.execute("SELECT person_id, other_id FROM relationships WHERE rel='friend'")
+            }
+        finally:
+            conn.close()
+        self.assertIn(frozenset((PERSON_1.lower(), PERSON_2.lower())), edges)
+
+    def test_cooccur_accept_promote_dry_run_writes_nothing(self) -> None:
+        first = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        src = Path(first['source'])
+        before = src.read_text(encoding='utf-8')
+        preview = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
+            subtype='friend', accept=True, dry_run=True)
+        self.assertEqual(preview['status'], 'accepted')
+        self.assertEqual(preview.changed, [])
+        self.assertEqual(src.read_text(encoding='utf-8'), before)
 
     def test_cooccur_rejected_claim_does_not_block_fresh_confirm(self) -> None:
         # A dead claim (rejected/superseded) is not a live edge; a human who

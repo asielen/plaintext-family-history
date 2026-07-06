@@ -1158,15 +1158,24 @@ def _write_readme(
             'and have not been visually confirmed - treat as unverified.\n'
         )
 
-    if research_draft_caution:
-        # Research files ship as byte copies (round-2 scope decision), so a
-        # draft marker inside one travels with it - one plain caution keeps
-        # the packet honest without a second redaction pipeline.
+    if research_included:
+        # Research files ship as byte copies (round-2 scope decision: working
+        # notes, not publication prose), so - unlike the profile and source
+        # records - they are NOT run through the restricted-claim splice,
+        # deadname strip, or draft withhold. Always say so, so a recipient
+        # knows the research copy is raw notes that may name living or
+        # restricted people; the second line pins the specific draft case when
+        # a marker is actually present.
         lines.append(
-            '\nNOTE: the research copy may contain unreviewed draft text\n'
-            '(AI-DRAFT sections awaiting review) - treat those as suggestions,\n'
-            'not accepted facts.\n'
+            '\nNOTE: profile/ includes the raw research notes as working material\n'
+            '(not publication-cleaned) - they may reference living or restricted\n'
+            'people and are not redacted the way the profile and sources are.\n'
         )
+        if research_draft_caution:
+            lines.append(
+                'They may also contain unreviewed draft text (AI-DRAFT sections\n'
+                'awaiting review) - treat those as suggestions, not accepted facts.\n'
+            )
 
     if included_sources:
         lines.append(f'\nIncluded sources ({len(included_sources)}):\n')

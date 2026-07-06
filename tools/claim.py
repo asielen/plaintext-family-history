@@ -71,7 +71,10 @@ from _lib import (
     normalize_date,
     normalize_id,
     read_record,
+    read_text_exact,
+    reapply_newline,
     resolve_root_arg,
+    write_text_exact,
 )
 
 configure_utf8_stdout()
@@ -475,7 +478,10 @@ def run_claim(
     result.data['source'] = str(record_path)
 
     try:
-        text = record_path.read_text(encoding='utf-8')
+        # Exact read/write so a one-line status edit doesn't churn every line
+        # ending of a CRLF-authored record on Linux (or an LF one on Windows) -
+        # the claims-surgery byte-faithful contract (read_text_exact docstring).
+        text = read_text_exact(record_path)
     except OSError as e:
         result.ok = False
         result.exit_code = EXIT_FAILURE
@@ -551,7 +557,7 @@ def run_claim(
         return result
 
     try:
-        record_path.write_text(new_text, encoding='utf-8')
+        write_text_exact(record_path, reapply_newline(new_text, text))
     except OSError as e:
         result.ok = False
         result.exit_code = EXIT_FAILURE

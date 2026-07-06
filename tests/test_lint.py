@@ -1121,6 +1121,30 @@ class NearMissIdTests(_SurgeryBase):
             '  value: x\n  status: suggested\n  confidence: low\n')
         self.assertEqual([f for f in findings if f.code in ('E004', 'E005')], [])
 
+    def test_name_plus_year_token_is_not_a_near_miss(self) -> None:
+        # `Anna1850` (a name+year, only 8 chars) once tripped the bare-code net
+        # because every letter happens to be Crockford; a real bare code is
+        # exactly 10 chars, so a shorter alnum name must stay an inert note-link.
+        for name in ('Anna1850', 'John1042'):
+            with self.subTest(name=name):
+                findings = self._lint_claims(
+                    '- id: C-1111111111\n  type: birth\n  persons: ["' + name + '"]\n'
+                    '  value: x\n  status: suggested\n  confidence: low\n')
+                self.assertEqual([f for f in findings if f.code in ('E004', 'E005')], [],
+                                 [f.message for f in findings])
+
+    def test_letter_hyphen_name_is_not_a_near_miss(self) -> None:
+        # A plain note-link that merely starts with a type letter + hyphen
+        # (`L-something`, `C-note`) is not a mistyped code - a code body is
+        # code-length, all-alnum, and carries a digit; these don't.
+        for name in ('L-something', 'C-note'):
+            with self.subTest(name=name):
+                findings = self._lint_claims(
+                    '- id: C-1111111111\n  type: birth\n  persons: ["' + name + '"]\n'
+                    '  value: x\n  status: suggested\n  confidence: low\n')
+                self.assertEqual([f for f in findings if f.code in ('E004', 'E005')], [],
+                                 [f.message for f in findings])
+
     def test_prefixless_bare_code_is_flagged(self) -> None:
         findings = self._lint_claims(
             '- id: C-1111111111\n  type: birth\n  persons: [de957bcda1]\n'
@@ -1234,6 +1258,55 @@ class AliasMergeTests(unittest.TestCase):
         aliases = read_record(minted[0])['meta'].get('aliases') or []
         # New entries land AFTER the existing hand entries, keeping their order.
         self.assertEqual(aliases[1:], ['Bobby', 'grandpa-bob', 'Grandpa Bob'])
+
+    def test_zero_indent_block_list_stays_valid_yaml(self) -> None:
+        # A hand-authored zero-indent block list (`aliases:\n- old`) once got a
+        # two-space item inserted ahead of the zero-indent ones - mixed-indent
+        # YAML that no longer parses. The result must still be a valid mapping.
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            '---\nname: Grandpa Bob\nliving: false\naliases:\n- old bob\n---\n\n# Grandpa Bob\n',
+            encoding='utf-8')
+        lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        self.assertEqual(len(minted), 1)
+        meta = read_record(minted[0])['meta']   # read_record parses the YAML - a
+        aliases = meta.get('aliases') or []      # corrupt block would raise/empty
+        self.assertIn('old bob', aliases)
+        self.assertIn('grandpa-bob', aliases)
+
+    def test_flow_list_with_embedded_wikilink_is_preserved(self) -> None:
+        # `aliases: [P-x, "[[Old Name]]"]` - the splice must land before the
+        # list's real closing bracket, not the `]` inside `]]`, so the existing
+        # wikilink alias survives and the new entry is a distinct element.
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            '---\nid: P-__________\naliases: [P-__________, "[[Old Name]]"]\n'
+            'name: Grandpa Bob\nliving: false\n---\n\n# Grandpa Bob\n',
+            encoding='utf-8')
+        lint.run_lint(self.root, {}, fix_ids=True)
+        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        self.assertEqual(len(minted), 1)
+        aliases = read_record(minted[0])['meta'].get('aliases') or []
+        self.assertIn('[[Old Name]]', aliases)   # the embedded wikilink intact
+        self.assertIn('grandpa-bob', aliases)
+
+    def test_mint_write_guard_refuses_rather_than_corrupt(self) -> None:
+        # The re-parse guard is a backstop: if a rewrite ever produced a
+        # frontmatter that no longer parses as a mapping, --fix-ids must REFUSE
+        # (leave the file, name it in progress), never write the corrupt text.
+        import unittest.mock as mock
+        (self.root / 'people' / 'Grandpa Bob.md').write_text(
+            '---\nname: Grandpa Bob\nliving: false\n---\n\n# Grandpa Bob\n',
+            encoding='utf-8')
+        before = (self.root / 'people' / 'Grandpa Bob.md').read_text(encoding='utf-8')
+        with mock.patch.object(
+                lint, '_insert_id_and_aliases',
+                lambda *a, **k: ('---\n: : broken\n- x\n bad:\n---\n\nbody\n', True)):
+            result = lint.run_lint(self.root, {}, fix_ids=True)
+        # Nothing minted, original untouched, and the refusal names the file.
+        self.assertEqual(list((self.root / 'people').glob('bob__grandpa_P-*.md')), [])
+        self.assertEqual((self.root / 'people' / 'Grandpa Bob.md').read_text(encoding='utf-8'), before)
+        self.assertTrue(any('refused to mint' in l for l in result.data['progress']),
+                        result.data['progress'])
 
 
 if __name__ == '__main__':

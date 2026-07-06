@@ -44,6 +44,7 @@ from _lib import (
     is_generated_text,
     read_record,
     read_text_exact,
+    reapply_newline,
     resolve_root_arg,
     resolve_typed_ref,
     strip_unaccepted_drafts,
@@ -74,6 +75,20 @@ class ExactNewlineIOTests(unittest.TestCase):
         p = self.dir / 'lf.md'
         write_text_exact(p, 'a\nb\n')
         self.assertEqual(p.read_bytes(), b'a\nb\n')
+
+    def test_reapply_newline_restores_crlf(self):
+        # The surgical editors splitlines()+'\n'.join() to LF; reapply_newline
+        # restores the record's own convention so a one-line edit doesn't churn
+        # every ending.
+        self.assertEqual(reapply_newline('a\nb\n', 'x\r\ny\r\n'), 'a\r\nb\r\n')
+
+    def test_reapply_newline_lf_is_noop(self):
+        self.assertEqual(reapply_newline('a\nb\n', 'x\ny\n'), 'a\nb\n')
+
+    def test_reapply_newline_does_not_double_crlf(self):
+        # An edit path that already preserved CRLF (a regex sub over exact text)
+        # must not be turned into \r\r\n.
+        self.assertEqual(reapply_newline('a\r\nb\r\n', 'x\r\ny'), 'a\r\nb\r\n')
 
 
 class StripUnacceptedDraftsTests(unittest.TestCase):

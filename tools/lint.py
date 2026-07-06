@@ -493,18 +493,30 @@ def _id_near_miss(ref: str) -> tuple[str | None, str] | None:
     pm = re.match(r'^([PSCLH])-(.*)$', s, re.I)
     if pm:
         letter, body = pm.group(1).upper(), pm.group(2)
-        if len(body) != 10:
-            return letter, (
-                f'is {len(body)} character(s) after the {letter}- instead of 10 - '
-                f'codes are exactly 10 characters from the alphabet 0-9 a-z '
-                f'minus i l o u')
-        bad = sorted({ch for ch in body if ch.lower() not in CROCKFORD_ALPHA})
-        if not bad:
-            return None   # a 10-char clean body IS a valid id; unreachable belt
-        listed = ', '.join(repr(ch) for ch in bad)
-        return letter, (
-            f'contains {listed} - the code alphabet is 0-9 a-z minus i l o u')
-    if (re.fullmatch(r'[0-9A-Za-z]{8,12}', s) and any(ch.isdigit() for ch in s)
+        # Only a body that actually looks like a (mistyped) code is a near-miss:
+        # code-length-ish, purely alphanumeric, and carrying a digit the way a
+        # random Base32 id does. A plain note-link that merely starts with a
+        # type letter and a hyphen (`L-something`, `C-note`, `C-Grandpa's`) is
+        # left as the inert note-link the TOOLING contract promises, not a
+        # blocking error - words don't combine near-code-length, all-alnum, AND
+        # a digit.
+        if re.fullmatch(r'[0-9A-Za-z]{8,12}', body) and any(ch.isdigit() for ch in body):
+            if len(body) != 10:
+                return letter, (
+                    f'is {len(body)} character(s) after the {letter}- instead of 10 - '
+                    f'codes are exactly 10 characters from the alphabet 0-9 a-z '
+                    f'minus i l o u')
+            bad = sorted({ch for ch in body if ch.lower() not in CROCKFORD_ALPHA})
+            if bad:
+                listed = ', '.join(repr(ch) for ch in bad)
+                return letter, (
+                    f'contains {listed} - the code alphabet is 0-9 a-z minus i l o u')
+        return None
+    # A bare code pasted without its prefix is EXACTLY 10 characters. Requiring
+    # that (not the old 8-12 window) keeps a name+year token like `Anna1850` or
+    # `John1042` - shorter, and a perfectly ordinary free-text name - out of the
+    # blocking-error net (SPEC/TOOLING: unresolved names stay inert note-links).
+    if (re.fullmatch(r'[0-9A-Za-z]{10}', s) and any(ch.isdigit() for ch in s)
             and not s.isdigit()):
         crockford = sum(1 for ch in s if ch.lower() in CROCKFORD_ALPHA)
         if crockford / len(s) >= 0.8:
@@ -2894,13 +2906,21 @@ def _merge_aliases_into_frontmatter(
     if not m:
         return fm_text, 0
     head_line = m.group(0)
-    flow = re.match(r'^(aliases:[ \t]*\[)([^\]]*)(\].*)$', head_line, re.S)
-    if flow:
-        joined = ', '.join(entries)
-        body = flow.group(2)
-        new_body = f'{body}, {joined}' if body.strip() else joined
-        new_line = flow.group(1) + new_body + flow.group(3)
-        return fm_text[:m.start()] + new_line + fm_text[m.end():], len(to_add)
+    flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
+    if flow_open:
+        # Splice before the list's CLOSING bracket, located as the LAST `]` on
+        # the line - not the first. A first-`]` split (an earlier `[^\]]*` group)
+        # stopped inside an embedded `[[wikilink]]` alias, mangling both the old
+        # entry and the new one. rfind finds the real close even past `]]`.
+        close = head_line.rfind(']')
+        if close >= flow_open.end():
+            open_part = head_line[:flow_open.end()]     # 'aliases: ['
+            body = head_line[flow_open.end():close]      # existing entries verbatim
+            suffix = head_line[close:]                   # '] ...trailing'
+            joined = ', '.join(entries)
+            new_body = f'{body}, {joined}' if body.strip() else joined
+            new_line = open_part + new_body + suffix
+            return fm_text[:m.start()] + new_line + fm_text[m.end():], len(to_add)
     if '[' in head_line:
         # A flow list whose `]` sits on a later line - a shape this surgery
         # does not edit. Leave the hand form alone rather than risk splicing
@@ -2915,7 +2935,12 @@ def _merge_aliases_into_frontmatter(
     if pos < len(fm_text) and fm_text[pos] == '\n':
         pos += 1
     body = fm_text[pos:]
-    item_re = re.compile(r'[ \t]+-[ \t]+[^\r\n]*\r?\n?')
+    # `[ \t]*` (not `[ \t]+`): a valid block list may sit at zero indent under
+    # the key (`aliases:\n- old`). Requiring leading whitespace missed those,
+    # then defaulted item_prefix to two spaces and inserted an indent-2 item
+    # ahead of the indent-0 ones - mixed-indent frontmatter YAML rejects. Now we
+    # copy whatever dash indent the existing items use (including none).
+    item_re = re.compile(r'[ \t]*-[ \t]+[^\r\n]*\r?\n?')
     consumed = 0
     item_prefix = None
     while True:
@@ -2923,7 +2948,7 @@ def _merge_aliases_into_frontmatter(
         if not im:
             break
         if item_prefix is None:
-            item_prefix = re.match(r'[ \t]+-[ \t]+', im.group(0)).group(0)
+            item_prefix = re.match(r'[ \t]*-[ \t]+', im.group(0)).group(0)
         consumed = im.end()
     insert_at = pos + consumed
     if item_prefix is None:
@@ -3005,6 +3030,31 @@ def _insert_id_and_aliases(
     return f'---{nl}id: {new_id}{nl}{alias_line}{nl}---{nl}{nl}{text}', True
 
 
+def _mint_write_problem(new_text: str, new_id: str) -> str | None:
+    """Re-parse the frontmatter this surgery just built and confirm it is still
+    a sound record before `--fix-ids` writes it. Mirrors the claims-edit re-parse
+    guard: a corrupting rewrite must be a refusal that names the file, never a
+    silent success. Returns a one-line problem description, or None when the
+    result is safe to write. Checks that the frontmatter (a) parses as a YAML
+    mapping, (b) carries the minted `id:`, and (c) if `aliases:` is present, that
+    it parses as a plain list (an indent slip or a bracket splice inside an
+    embedded `[[wikilink]]` turns the block into a scalar/None or raises)."""
+    fm = FRONT_RE.match(new_text)
+    if not fm:
+        return 'the record lost its frontmatter block'
+    try:
+        parsed = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError as exc:
+        return f'the rewritten frontmatter no longer parses ({exc.__class__.__name__})'
+    if not isinstance(parsed, dict):
+        return 'the rewritten frontmatter no longer reads as a mapping'
+    if normalize_id(str(parsed.get('id') or '')) != normalize_id(new_id):
+        return f'the minted id {new_id} did not land in the frontmatter'
+    if 'aliases' in parsed and not isinstance(parsed.get('aliases'), (list, type(None))):
+        return 'the aliases block was corrupted into a non-list value'
+    return None
+
+
 def _fix_mint_ids(
     registry: Registry,
     archive_root: Path,
@@ -3065,6 +3115,17 @@ def _fix_mint_ids(
                 minted_sources.append(path)
             continue
         new_text, kept_alias = _insert_id_and_aliases(text, new_id, aliases, nl)
+        problem = _mint_write_problem(new_text, new_id)
+        if problem is not None:
+            # Refuse rather than write a corrupt record. Name the file and the
+            # reason; the human can add the id by hand. The unusable id we minted
+            # is simply not used (mint_ids only advances a counter file).
+            progress.append(
+                f'--fix-ids: refused to mint {new_id} for '
+                f'{path.relative_to(archive_root)} - {problem}; '
+                'add the id by hand')
+            remaining.append((path, kind))
+            continue
         _write_text_exact(path, new_text)
         if new_path != path and not new_path.exists():
             path.rename(new_path)

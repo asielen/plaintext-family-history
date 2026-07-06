@@ -953,6 +953,21 @@ def write_text_exact(path: str | Path, text: str) -> None:
         f.write(text)
 
 
+def reapply_newline(text: str, like: str) -> str:
+    """Give `text` the newline convention of `like` before a byte-faithful write.
+
+    The claim/profile surgical editors rebuild their output by `str.splitlines()`
+    + `'\n'.join(...)`, which normalizes to LF regardless of the record's own
+    endings. Paired with `read_text_exact`/`write_text_exact`, this restores a
+    CRLF record's endings so the write churns only the line the edit touched, not
+    every line. A no-op when `like` is LF, or when `text` already carries CRLF
+    (an edit path that operated on the untranslated text directly - e.g. a regex
+    substitution - so its endings are already faithful)."""
+    if '\r\n' in like and '\r\n' not in text:
+        return text.replace('\n', '\r\n')
+    return text
+
+
 def _coerce_yaml(obj: Any) -> Any:
     """Recursively coerce YAML scalars to types the index expects."""
     if isinstance(obj, dict):

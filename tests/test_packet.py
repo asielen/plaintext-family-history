@@ -740,17 +740,26 @@ class PacketTests(unittest.TestCase):
         self.assertIn('AI-DRAFT', copied)   # byte copy, by scope decision
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertIn('unreviewed draft text', readme)
+        # ...and the always-on privacy caution names the unredacted risk too.
+        self.assertIn('not redacted', readme)
 
-    def test_research_copy_without_draft_marker_no_caution(self):
+    def test_research_copy_always_warns_it_is_unredacted(self):
+        # Research ships byte-for-byte (not run through the restricted/deadname
+        # redaction the profile and sources get), so ANY --include-research must
+        # warn the recipient - even with no AI-DRAFT marker - that the notes may
+        # name living/restricted people. The draft-specific line only appears
+        # when a marker is actually present.
         self._seed_person()
-        self._seed_research('# Research\n\nClean notes.\n')
+        self._seed_research('# Research\n\nClean notes naming a cousin.\n')
         self._commit_fresh()
 
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
                                    no_photos=True, include_research=True)
         self.assertEqual(result['status'], 'ok')
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('unreviewed draft text', readme)
+        self.assertIn('not redacted', readme)             # the privacy caution
+        self.assertIn('living or restricted', readme)
+        self.assertNotIn('unreviewed draft text', readme)  # no draft marker present
 
 
 if __name__ == '__main__':

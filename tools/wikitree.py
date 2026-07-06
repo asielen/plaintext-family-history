@@ -351,7 +351,7 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
     return out
 
 
-_WIKILINK_TARGET_RE = re.compile(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]')
+_WIKILINK_TARGET_RE = re.compile(r'\[\[([^\]|]+)(?:\|([^\]]*))?\]\]')
 
 
 def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str], set[str]]:
@@ -370,24 +370,32 @@ def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str]
     source_ids: set[str] = set()
     person_ids: set[str] = set()
     for m in _WIKILINK_TARGET_RE.finditer(text):
-        # Drop an Obsidian #heading / #^block fragment before lookup: the alias
-        # table stores names without it, so `[[Restricted Person#bio]]` would
-        # otherwise miss the lookup and slip past the privacy scan.
-        target = m.group(1).split('#', 1)[0].strip()
-        if not target or is_valid_id(target):
-            continue  # blank, or an ID already handled by extract_token_ids
-        for row in conn.execute(
-            'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE',
-            (target,),
-        ).fetchall():
-            cid = row['canonical_id']
-            if not cid:
+        # Both halves of a name-style wikilink can name a record: the display
+        # half `[[Some Target|Ken Smith]]` publishes "Ken Smith", so a living or
+        # restricted person written there must resolve and be caught too - not
+        # just the target half. (extract_token_ids handles ID *tokens*; a name
+        # display on an ID target is checked by the variant scan.)
+        for raw in (m.group(1), m.group(2)):
+            if not raw:
                 continue
-            kind = id_type_of(cid)
-            if kind == 'S':
-                source_ids.add(cid)
-            elif kind == 'P':
-                person_ids.add(cid)
+            # Drop an Obsidian #heading / #^block fragment before lookup: the
+            # alias table stores names without it, so `[[Restricted Person#bio]]`
+            # would otherwise miss the lookup and slip past the privacy scan.
+            target = raw.split('#', 1)[0].strip()
+            if not target or is_valid_id(target):
+                continue  # blank, or an ID already handled by extract_token_ids
+            for row in conn.execute(
+                'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE',
+                (target,),
+            ).fetchall():
+                cid = row['canonical_id']
+                if not cid:
+                    continue
+                kind = id_type_of(cid)
+                if kind == 'S':
+                    source_ids.add(cid)
+                elif kind == 'P':
+                    person_ids.add(cid)
     return source_ids, person_ids
 
 
@@ -533,8 +541,14 @@ def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: st
         target = m.group(1).split('#', 1)[0].strip()
         if not target or is_valid_id(target):
             continue
+        # The display half `[[Public Name|Deadname]]` publishes "Deadname". A
+        # name-target wikilink whose display is a restricted variant of the
+        # resolved person leaks the deadname even though the target itself is a
+        # public name - so check both halves against the person's variants.
+        display = (m.group(2) or '').split('#', 1)[0].strip()
         key = target.lower()
-        if key in seen:
+        disp_key = display.lower()
+        if key in seen and (not disp_key or disp_key in seen):
             continue
         # An ambiguous alias resolves to EVERY candidate, so collect every
         # person whose restricted variants match - the cleanup message must
@@ -548,11 +562,17 @@ def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: st
             cid = row['canonical_id']
             if not cid or id_type_of(cid) != 'P' or cid in matched_ids:
                 continue
-            if key in _restricted_variants(cid):
+            variants = _restricted_variants(cid)
+            if key in variants:
                 flagged.append((fmt_id_display(cid), target))
+                matched_ids.add(cid)
+            elif disp_key and disp_key in variants:
+                flagged.append((fmt_id_display(cid), display))
                 matched_ids.add(cid)
         if matched_ids:
             seen.add(key)
+            if disp_key:
+                seen.add(disp_key)
     # In-token displays name their person by ID, so the variant check goes
     # straight to that person's record - no alias lookup involved.
     for tid, display, _fragment, _span in extract_tokens(text):
