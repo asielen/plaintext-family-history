@@ -447,17 +447,21 @@ Reorganizing or rescanning assets must never orphan a source or claim; the recor
 
 ### 12.3 Connections (everyone beyond)
 
-Ancestor siblings' lines, in-laws, and non-family - friends, associates, neighbors (the genealogical "FAN club"; researching the people *around* a family is how brick walls fall) - live flat in `people/connections/`, named:
+Ancestor siblings' lines, in-laws, and non-family - friends, associates, neighbors (the genealogical "FAN club"; researching the people *around* a family is how brick walls fall) - live flat in `people/connections/`, as ordinary **§13 person files**:
 
 ```
-{anchor} {Surname}, {Given}        e.g.  080 Hartley, Elvira (Haight)
-                                          040 Layng, Charley
+cole__susan_P-s5a8g87at3.md          Margaret's sister - anchors through couple 040
+layng__charley_P-ajnng40q36.md       Thomas's lodge brother - anchors through couple 040
 ```
 
-The **anchor** is the nearest direct-line couple number - every non-direct person anchors to the *family member they connect through*.
-A friend of Thomas Hartley carries Thomas's couple number; Margaret's sister's husband anchors to Margaret's couple.
-Sorting then clusters everyone around their anchor ("all of Caleb's children" = everything under 080; "Thomas's friends and associates" sort beside Thomas).
-Flat by design; the anchor is the one organizing handle.
+The **anchor** is the nearest direct-line couple - every non-direct person anchors to the *family member they connect through*.
+A friend of Thomas Hartley anchors through Thomas's couple; Margaret's sister's husband anchors through Margaret's.
+The anchor is **derived, never encoded in the filename**: it follows from the person's relationship claims, and tooling answers "everyone around couple 040" as a query (`fha find --related`), not a filename prefix.
+A file may carry the anchor as a plain comment for the browsing human, the way the example archive's connections do.
+One filename grammar everywhere means connections sort by surname beside every other person file, survive the same renames, and need no second dialect for tools or search to learn.
+Flat by design; the claims are where the anchor lives.
+
+*Decision log:* an earlier revision of this section prescribed a distinct `{anchor} {Surname}, {Given}` filename style (browse-clustering by anchor prefix). Retired 2026-07 - it traded a second, tool-unknown naming dialect for a sort order the index answers better, and no tooling or fixture ever adopted it.
 
 ### 12.4 Asset roots (the records/assets split)
 

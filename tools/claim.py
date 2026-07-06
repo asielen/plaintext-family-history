@@ -37,6 +37,7 @@ CODE MAP
   _today                    - review-stamp default (overridable in tests)
   _ClaimEditRefused         - surgical edit declined (e.g. block-scalar value)
   _find_claim_record        - scan sources/ for the .md holding one C-id
+  _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
   _apply_claim_review       - surgical `## Claims` block edit (status/reviewed/…)
   run_claim                 - validate, locate, edit, return a Result
   _cmd_claim / register / _standalone_main
@@ -60,6 +61,8 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    claim_item_key_indent,
+    claims_edit_problem,
     configure_utf8_stdout,
     fmt_id_display,
     format_edtf_error,
@@ -68,7 +71,10 @@ from _lib import (
     normalize_date,
     normalize_id,
     read_record,
+    read_text_exact,
+    reapply_newline,
     resolve_root_arg,
+    write_text_exact,
 )
 
 configure_utf8_stdout()
@@ -79,9 +85,10 @@ configure_utf8_stdout()
 # review only ever moves *out* of it, never back to it through this tool.
 REVIEW_STATUSES = ('accepted', 'disputed', 'rejected', 'needs-review', 'superseded')
 
-# The `id:` key of a claim, as the first key on its line (optionally after the
-# list dash). Anchored so a C-id mentioned mid-value (e.g. a `notes:` cross-ref)
-# is never mistaken for the claim's own identity.
+# The SHAPE of a claim's `id:` key line (optionally after the list dash).
+# Shape alone is not ownership: a block scalar (`notes: |`) can quote an
+# `id: C-...` line verbatim, so every consumer must also check the line sits at
+# the item's own key column (`_own_id_key_line`). Mirrors confirm.py - KEEP IN SYNC.
 _CLAIM_ID_KEY_RE = re.compile(
     r'^\s*(?:-\s+)?id:\s*(C-[0-9a-hjkmnp-tv-z]{10})\b', re.I
 )
@@ -126,6 +133,66 @@ def _find_claim_record(archive_root: Path, claim_id: str) -> tuple[Path, dict] |
 
 # ── Surgical edit of the one claim's YAML entry ───────────────────────────────
 
+def _own_key_indent(item_lines: list[str], base_indent: str) -> str | None:
+    """The exact column of one claim item's OWN mapping keys, or None.
+
+    Sibling of `_lib.claim_item_key_indent`, with one deliberate difference:
+    no conventional fallback. The write path wants a best-effort column to
+    place a new key at (a wrong guess there is caught by the pre-write
+    guard), but *ownership* testing wants certainty - a guessed column could
+    bless a look-alike line inside quoted scalar content, which is exactly
+    the wrong-claim edit this check exists to prevent. So: an inline first
+    key on the dash line pins the column; else the first content line after
+    the dash does; else the column is unknowable and the item owns nothing.
+    Mirrors confirm.py - KEEP IN SYNC.
+    """
+    first = item_lines[0] if item_lines else ''
+    m = re.match(r'^' + re.escape(base_indent) + r'(-[ ]+)[^\s#]', first)
+    if m:
+        return base_indent + ' ' * len(m.group(1))
+    for ln in item_lines[1:]:
+        stripped = ln.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = re.match(r'^(\s*)', ln).group(1)
+        if len(indent) > len(base_indent):
+            return indent
+        break  # content at or above the dash's own column belongs to no key of this item
+    return None
+
+
+def _own_id_key_line(
+    lines: list[str], start: int, end: int, base_indent: str,
+) -> tuple[int, str] | None:
+    """Find one item's OWN `id:` mapping key; return (line_index, C-id) or None.
+
+    `_CLAIM_ID_KEY_RE` describes the shape of an id key line, but a block
+    scalar (`notes: |`) may quote such a line verbatim, and quoted lines sit
+    DEEPER than the item's real key column (YAML requires it). Only two
+    placements are the item's own key: the inline first key on the dash line
+    (`- id: C-...` at the item's dash) and a line at exactly the item's key
+    column (`_own_key_indent`). Matching on shape alone edited the first item
+    whose quoted evidence mentioned the target id - a wrong refusal here (the
+    status guard caught it), a wrong WRITE in confirm.py's twin.
+    Mirrors confirm.py - KEEP IN SYNC.
+    """
+    key_indent = _own_key_indent(lines[start:end], base_indent)
+    dash_id_re = re.compile(r'^' + re.escape(base_indent) + r'-\s+id:', re.I)
+    key_id_re = None
+    if key_indent is not None:
+        key_id_re = re.compile(r'^' + re.escape(key_indent) + r'id:', re.I)
+    for j in range(start, end):
+        m = _CLAIM_ID_KEY_RE.match(lines[j])
+        if not m:
+            continue
+        if j == start:
+            if dash_id_re.match(lines[j]):
+                return j, m.group(1)
+        elif key_id_re is not None and key_id_re.match(lines[j]):
+            return j, m.group(1)
+    return None
+
+
 def _apply_claim_review(
     text: str,
     claim_id: str,
@@ -143,9 +210,22 @@ def _apply_claim_review(
     is False when the block or the claim isn't found (the caller reports a clean
     not-found rather than guessing).
 
+    Edits land at the item's OWN key column, derived from its lines
+    (`claim_item_key_indent`): a claim legally written `-   value: farmer` keeps
+    its keys at column 4, and writing at the conventional column 2 there would
+    break the whole block's YAML. The caller re-parses the result before any
+    write (`claims_edit_problem`), so a rewrite this function gets wrong is
+    refused rather than saved.
+
+    The claim is located by its OWN `id:` key line (`_own_id_key_line`), never
+    by an id merely mentioned in its text - a block scalar quoting an
+    `id: C-...` line used to draw the edit onto the quoting claim instead.
+
     Raises `_ClaimEditRefused` when an edit can't be made without risking
-    corruption - currently only `--value` against a multi-line block scalar
-    (`value: >` / `value: |`), which a human edits by hand.
+    corruption: `--value` against a multi-line block scalar (`value: >` /
+    `value: |`), which a human edits by hand, and the belt-and-braces case
+    where the located entry does not read back as the target claim when the
+    block is parsed.
     """
     target = normalize_id(claim_id)
     lines = text.splitlines()
@@ -194,21 +274,45 @@ def _apply_claim_review(
     bounds = item_starts + [content_end]
 
     target_span = None
+    span_index = None
     for k, start in enumerate(item_starts):
         end = bounds[k + 1]
-        for j in range(start, end):
-            m = _CLAIM_ID_KEY_RE.match(lines[j])
-            if m and normalize_id(m.group(1)) == target:
-                target_span = (start, end)
-                break
-        if target_span is not None:
+        own = _own_id_key_line(lines, start, end, base_indent)
+        if own is not None and normalize_id(own[1]) == target:
+            target_span = (start, end)
+            span_index = k
             break
     if target_span is None:
         return text, False
 
+    # Belt and braces: the k-th top-level dash is the k-th parsed list item,
+    # so the parsed item's `id` must equal the target. A mismatch means the
+    # line-level read and YAML disagree about which claim this is - the edit
+    # has no safe landing place, so refuse rather than touch the wrong claim.
+    try:
+        parsed_items = yaml.safe_load('\n'.join(lines[content_start:content_end]))
+    except yaml.YAMLError:
+        parsed_items = None
+    aligned = (
+        isinstance(parsed_items, list) and len(parsed_items) == len(item_starts)
+        and isinstance(parsed_items[span_index], dict)
+        and normalize_id(str(parsed_items[span_index].get('id') or '')) == target
+    )
+    if not aligned:
+        raise _ClaimEditRefused(
+            f'the entry carrying the id line for {fmt_id_display(target)} does not '
+            'read back as that claim when the block is parsed, so the edit has no '
+            'safe landing place. Open the file, make the change by hand under '
+            '## Claims, then run `fha lint` to check it.'
+        )
+
     start, end = target_span
-    key_indent = base_indent + '  '
     item = lines[start:end]
+    # The item's real key column comes from its own lines, never from a fixed
+    # base_indent+2 assumption - see claim_item_key_indent for the why. The
+    # dash prefix mirrors it so a first-key rewrite keeps the item's column.
+    key_indent = claim_item_key_indent(item, base_indent)
+    dash_prefix = base_indent + '-' + ' ' * max(1, len(key_indent) - len(base_indent) - 1)
 
     def find_key(key: str) -> tuple[int | None, str | None, str | None]:
         """Return (index, kind, raw-value) of a top-level item key, or (None, …)."""
@@ -227,7 +331,7 @@ def _apply_claim_review(
         idx, kind, _ = find_key(key)
         if idx is not None:
             if kind == 'dash':
-                item[idx] = f'{base_indent}- {key}: {value_text}'
+                item[idx] = f'{dash_prefix}{key}: {value_text}'
             else:
                 item[idx] = f'{key_indent}{key}: {value_text}'
             return idx
@@ -295,8 +399,13 @@ def run_claim(
     `data` is {'status': 'ok'|'invalid-id'|'not-found'|'refused'|'failed',
     'claim_id', 'before_status', 'after_status', 'reviewed', 'source'}. On a real
     write the source `.md` is listed in `changed`; `--dry-run` previews the YAML
-    change (a unified diff in the messages) and writes nothing. The success
-    message names the re-index next step (`fha index`).
+    change (a unified diff in the messages) and writes nothing. Before any write
+    (or preview) the rewritten block is re-parsed (`claims_edit_problem`); a
+    rewrite that would corrupt the block is a `refused` failure with nothing
+    written, never a saved corruption - and when the problem predates the edit
+    (the claim id already appears twice in the file, lint E001) the refusal
+    names that repair instead of blaming the edit. The success message names
+    the re-index next step (`fha index`).
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
@@ -369,7 +478,10 @@ def run_claim(
     result.data['source'] = str(record_path)
 
     try:
-        text = record_path.read_text(encoding='utf-8')
+        # Exact read/write so a one-line status edit doesn't churn every line
+        # ending of a CRLF-authored record on Linux (or an LF one on Windows) -
+        # the claims-surgery byte-faithful contract (read_text_exact docstring).
+        text = read_text_exact(record_path)
     except OSError as e:
         result.ok = False
         result.exit_code = EXIT_FAILURE
@@ -400,6 +512,35 @@ def run_claim(
                    'entry in the ## Claims block to edit. Check the block by hand.')
         return result
 
+    # Pre-write guard: re-parse the rewritten block and refuse rather than save
+    # text that would hide every claim in this source from lint/index/report.
+    # Runs before the dry-run preview too, so preview and live run agree.
+    problem = claims_edit_problem(new_text, cid, expect_status=status)
+    if problem is not None:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = 'refused'
+        if claims_edit_problem(text, cid) is not None:
+            # The same check already fails on the UNEDITED text, so this edit
+            # did not cause the problem. The only pre-existing state that can
+            # reach this point is a duplicate of this claim id (finding the
+            # claim required the block to parse and the id to be present), so
+            # the honest advice is the duplicate-id repair, not a warning that
+            # this edit would hide claims.
+            result.add('error',
+                       f'Refusing to change {fmt_id_display(cid)}: this claim id appears '
+                       f'more than once in {record_path} - a duplicate-id problem (lint '
+                       'E001) that predates this edit. Fix the duplicate first: open the '
+                       'file, give one of those claims a fresh id (mint one with '
+                       '`fha id mint C`), then retry. Nothing was written.')
+        else:
+            result.add('error',
+                       f'Refusing to change {fmt_id_display(cid)}: {problem}, so saving would '
+                       f'hide every claim in {record_path} from the tools. Nothing was written. '
+                       'Open that file, edit the claim under ## Claims by hand, then run '
+                       '`fha lint` to check it.')
+        return result
+
     summary = f'{fmt_id_display(cid)}: {before_status or "(none)"} -> {status} (reviewed {reviewed})'
 
     if dry_run:
@@ -416,7 +557,7 @@ def run_claim(
         return result
 
     try:
-        record_path.write_text(new_text, encoding='utf-8')
+        write_text_exact(record_path, reapply_newline(new_text, text))
     except OSError as e:
         result.ok = False
         result.exit_code = EXIT_FAILURE

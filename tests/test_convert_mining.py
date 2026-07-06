@@ -114,6 +114,67 @@ class ConvertMiningTestCase(unittest.TestCase):
         mary_source = next(s for s in plan.sources if s.legacy_id == 'S001')
         self.assertTrue(all(c.value for c in mary_source.claims))
 
+    def test_blank_confidence_defaults_to_medium_with_warning(self) -> None:
+        # `confidence` is a required claim field (lint E010); the legacy table
+        # allowed a blank cell. The row must import with confidence: medium
+        # (the fha confirm precedent) and a warning naming the count - never a
+        # claim that breaks the lints-with-no-errors contract.
+        facts = self.archive / 'mining' / 'facts.txt'
+        facts.write_text(
+            facts.read_text(encoding='utf-8')
+            + '\n| Mary Hartley | Won the county pie contest | 1905 | 1905 |  | Anecdotes | |\n',
+            encoding='utf-8')
+
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        all_claims = [c for s in plan.sources for c in s.claims]
+        pie = next(c for c in all_claims if 'pie contest' in c.value)
+        self.assertEqual(pie.confidence, 'medium')
+        self.assertTrue(any('Confidence' in w and 'medium' in w and '1 fact row' in w
+                            for w in plan.warnings))
+        # Every claim carries a vocabulary confidence, and a row with a real
+        # legacy cell keeps its own value (High -> high), not the default.
+        self.assertTrue(all(c.confidence in ('high', 'medium', 'low') for c in all_claims))
+        birth = next(c for c in all_claims if c.claim_type == 'birth')
+        self.assertEqual(birth.confidence, 'high')
+
+        # And the applied archive still lints with no E-level findings (the
+        # blank cell used to render a claim with no confidence key -> E010).
+        rc = self._apply()
+        self.assertEqual(rc, EXIT_WARNINGS)   # the confidence warning, not an error
+        n_errors, _n_warnings, _e018 = lint.run_lint_silent(self.archive, self.config)
+        self.assertEqual(n_errors, 0, 'blank-confidence import must not lint E010')
+
+    def test_cp1252_bytes_survive_plan_and_apply(self) -> None:
+        # Old ChatGPT-era exports carry cp1252 punctuation (the 0x92 smart
+        # quote); a strict UTF-8 read used to raise UnicodeDecodeError out of
+        # even the dry-run. The plan must build with a warning naming each
+        # affected file, dry-run and apply must both survive, and the filed
+        # transcript copy stays byte-for-byte identical (originals are never
+        # modified - the lossy decode is only for planning/anchors).
+        t001 = self.archive / 'mining' / 'transcripts' / 'T001.txt'
+        raw = t001.read_text(encoding='utf-8').replace(
+            'Mary was born', 'Mary’s birth was').encode('cp1252')
+        self.assertIn(b'\x92', raw)
+        t001.write_bytes(raw)
+        stories = self.archive / 'mining' / 'stories.txt'
+        stories.write_bytes(stories.read_bytes()
+                            + b'\n## Mary Hartley (S001)\nShe called it \x92the long road\x92.\n')
+
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        self.assertTrue(any('T001.txt' in w and 'UTF-8' in w for w in plan.warnings))
+        self.assertTrue(any('stories.txt' in w and 'UTF-8' in w for w in plan.warnings))
+
+        rc = convert_mining.run_convert(self.archive, self.config, apply=False)
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertFalse((self.archive / 'sources').exists())   # dry-run wrote nothing
+
+        rc = convert_mining.run_convert(self.archive, self.config, apply=True)
+        self.assertEqual(rc, EXIT_WARNINGS)
+        mary_copy = next(p for p in sorted(
+            (self.archive / 'documents' / 'interviews').glob('*_S-*.txt'))
+            if 'mary' in p.name)
+        self.assertEqual(mary_copy.read_bytes(), raw)            # byte-identical copy
+
     def test_unattached_story_warns(self) -> None:
         stories = self.archive / 'mining' / 'stories.txt'
         text = stories.read_text(encoding='utf-8')

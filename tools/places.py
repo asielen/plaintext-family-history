@@ -235,6 +235,11 @@ def run_lint(archive_root: Path) -> Result:
     `data` is {'status': 'ok'|'failed', 'findings': [Finding, ...]}.  Result
     exposes dict-style access (_lib.py), so callers keep reading
     `result['findings']` unchanged.
+
+    `exit_code` is derived from the findings' severities right here (any E ->
+    EXIT_ERRORS, else any finding -> EXIT_WARNINGS, else EXIT_CLEAN) so a
+    headless caller reading Result.exit_code sees the same verdict the CLI
+    exits with - the CLI renders findings and returns this code unchanged.
     """
     conn = open_index_db(archive_root, _LINT_REQUIRED_TABLES)
     if conn is None:
@@ -261,7 +266,12 @@ def run_lint(archive_root: Path) -> Result:
     finally:
         conn.close()
 
-    exit_code = EXIT_WARNINGS if findings else EXIT_CLEAN
+    if any(f.severity == 'E' for f in findings):
+        exit_code = EXIT_ERRORS
+    elif findings:
+        exit_code = EXIT_WARNINGS
+    else:
+        exit_code = EXIT_CLEAN
     return Result(exit_code=exit_code, data={'status': 'ok', 'findings': findings})
 
 
@@ -664,7 +674,15 @@ def _apply_geocode_to_yaml(
 
     Only the block whose `- id:` matches `place_id` (case-insensitive) is touched.
     An existing `coords:` line in that block is replaced; `alt_names:` is added
-    only when the block has none (a human-curated list is never clobbered)."""
+    only when the block has none (a human-curated list is never clobbered).
+
+    The registry list may be written flush-left or uniformly indented (both are
+    valid YAML), so the block ends at the next list item at the SAME or a
+    shallower indent than the matched `- id:` line - not only at column 0.
+    Matching only column-0 items here made an indented registry's block run to
+    EOF, so the coords rewrite could land on a LATER place's coords line and
+    alt_names could append to the file tail. A deeper-indented dash (a nested
+    alt_names/history list item inside the block) never ends the block."""
     lines = text.splitlines()
     pid = normalize_id(place_id)
 
@@ -678,11 +696,13 @@ def _apply_geocode_to_yaml(
     if start is None:
         return text, False
 
-    # Block runs until the next top-level list item (a line starting at column 0
-    # with `- `) or EOF.
+    # Block runs until the next sibling list item (list-marker indent <= the
+    # matched `- id:` line's indent) or EOF.
+    start_indent = len(re.match(r'^(\s*)', lines[start]).group(1))
     end = len(lines)
     for j in range(start + 1, len(lines)):
-        if re.match(r'^-\s', lines[j]):
+        m = re.match(r'^(\s*)-\s', lines[j])
+        if m and len(m.group(1)) <= start_indent:
             end = j
             break
 
@@ -903,7 +923,8 @@ def _cmd_places_lint(args: argparse.Namespace) -> int:
 
     result = run_lint(archive_root)
     if result['status'] == 'failed':
-        return EXIT_FAILURE
+        # The engine already printed the cause; its exit_code is EXIT_FAILURE.
+        return result.exit_code
 
     findings = result['findings']
     for f in findings:
@@ -911,11 +932,9 @@ def _cmd_places_lint(args: argparse.Namespace) -> int:
     if not findings:
         print('No place lint findings.')
 
-    if any(f.severity == 'E' for f in findings):
-        return EXIT_ERRORS
-    if any(f.severity == 'W' for f in findings):
-        return EXIT_WARNINGS
-    return EXIT_CLEAN
+    # The severity -> exit-code mapping lives in run_lint (one source of truth),
+    # so a headless caller and this CLI can never disagree about the verdict.
+    return result.exit_code
 
 
 def _cmd_places_candidates(args: argparse.Namespace) -> int:

@@ -142,9 +142,15 @@ no-op, the bundles land in `inbox/` directly.
 
 ## What it never does (privacy & safety, §7)
 
-- Reads only the **open page, in your own session**. No login, no API calls, no
-  pagination, no fetching behind auth on its own initiative. A fetched asset is
-  only one you can already see.
+- Reads only the **open page, in your own session**. No login, no pagination, no
+  fetching behind auth on its own initiative. A fetched asset is only one you can
+  already see. One scoped exception to "no API calls": on an Ancestry image-viewer
+  page, Capture calls Ancestry's own image-download endpoint in your session - the
+  same single request its Download button makes; never bulk, never uninvited,
+  never on any other site (the hand-test plan is
+  [`ANCESTRY-AUTOFETCH-TEST.md`](ANCESTRY-AUTOFETCH-TEST.md)). A page whose image
+  is served over the open IIIF standard gets the same one-image treatment,
+  fetched without credentials.
 - No local machine paths leak, `capture.json` carries the page URL, never a disk
   path.
 - Everything enters review as **pre-source**. The S-id, the claims, the person

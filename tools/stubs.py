@@ -25,6 +25,9 @@ from _lib import (
     EXIT_FAILURE,
     archive_root_missing_message,
     find_archive_root,
+    id_type_of,
+    is_template_file,
+    link_field_refs,
     load_fha_yaml,
     mint_ids,
     normalize_id,
@@ -106,28 +109,36 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
     people_root = archive_root / 'people'
     if people_root.exists():
         for path in people_root.rglob('*.md'):
+            if is_template_file(path):
+                continue   # `_TEMPLATE.*` placeholder ids are not real records
             rec = read_record(path)
             pid = normalize_id(str(rec['meta'].get('id', '')))
             if pid and pid.startswith('p-'):
                 known_pids.add(pid)
 
-    # Scan source claims for P-ids not in known_pids
+    # Scan source claims for P-ids not in known_pids. Entries go through
+    # link_field_refs so a wrapped `[[P-…]]` / `[[P-…|Name]]` reference is seen
+    # as its bare P-id - previously `str(p_raw)` kept the brackets, the
+    # startswith('p-') test failed, and the exact refs lint E005 points at
+    # ("create a stub with `fha stubs`") were silently skipped. Non-ID names
+    # are still skipped here: a stub is only mintable for an ID that exists in
+    # a claim; names are minted deliberately via --from-names (TOOLING §5).
     unresolved: dict[str, str | None] = {}
     sources_root = archive_root / 'sources'
     if sources_root.exists():
         for path in sources_root.rglob('*.md'):
+            if is_template_file(path):
+                continue   # template claims carry teaching placeholders only
             rec = read_record(path)
             for claim in rec['claims']:
                 if not isinstance(claim, dict):
                     continue
-                persons = claim.get('persons') or []
-                if isinstance(persons, str):
-                    persons = [persons]
-                for p_raw in persons:
-                    ppid = normalize_id(str(p_raw))
-                    if ppid and ppid.startswith('p-') and ppid not in known_pids:
-                        if ppid not in unresolved:
-                            unresolved[ppid] = None   # name extracted by TODO above
+                for ref in link_field_refs(claim.get('persons')):
+                    if id_type_of(ref) != 'P':
+                        continue
+                    ppid = normalize_id(ref)
+                    if ppid not in known_pids and ppid not in unresolved:
+                        unresolved[ppid] = None   # name extracted by TODO above
 
     return unresolved
 

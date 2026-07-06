@@ -13,7 +13,12 @@ framework. It is a *snapshot*, not a live view: structured data is read from
 `fha index`), prose (biography, Stories) is read from the curated person
 `.md` file, the citation text is read from the source `.md` frontmatter
 (the index does not carry it), and the photo strip is read from
-`.cache/photos.sqlite` when present.
+`.cache/photos.sqlite` when present. Prose still inside `<!-- AI-DRAFT … -->`
+markers is not yet content (AGENTS.md: it stays there "until the human
+accepts it" via `fha confirm draft`), so both build modes exclude it - and a
+DAMAGED marker (e.g. a missing `-->`) withholds that person's Biography and
+Stories entirely, with a warning naming the file: when draft can no longer be
+told from accepted prose, publishing nothing is the only safe rendering.
 
 Two build modes, one generator:
   - `--standalone` (default): the safe-to-share snapshot. Living/unknown
@@ -56,6 +61,9 @@ CODE MAP
 --------
   Prose / HTML
     _escape                    - html.escape shorthand
+    (strip_unaccepted_drafts   - drop `<!-- AI-DRAFT … -->` prose + AI markers,
+                                 fail-closed on damaged markers - lives in _lib)
+    _safe_link_href            - markdown-link scheme allowlist (stored-XSS guard)
     _prose_to_html             - minimal stdlib markdown→HTML (no md library)
     _inline_html               - inline pass: links, [ID] tokens, **bold**
     _extract_section           - pull one `## Heading` section body from a record
@@ -90,6 +98,7 @@ CODE MAP
 
   Core / CLI
     run_site                   - library entry point
+    _unowned_output_reason     - refuse a non-empty --out fha site didn't create
     _cmd_site, register, _standalone_main
 """
 
@@ -124,6 +133,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     strip_link_wrapper,
+    strip_unaccepted_drafts,
     open_index_db,
     photoindex_status,
     read_record,
@@ -166,6 +176,11 @@ _PEDIGREE_GENERATIONS = 3
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
 _RESTRICTED_LABEL = 'Restricted - not included in this publication'
+
+# Ownership stamp written into the output dir after every successful build.
+# `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
+# rebuild must first prove the target dir is ours - see _unowned_output_reason.
+_SITE_MARKER_NAME = '.fha-site'
 
 # Summary-block label per vital claim type (M8.2 "summary block (accepted vitals)").
 _VITAL_LABELS = {
@@ -215,6 +230,34 @@ def _escape(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+# The AI-DRAFT prose exclusion (strip_unaccepted_drafts) lives in _lib - one
+# implementation shared with fha wikitree, fail-closed on damaged markers.
+# Consumed in _person_prose below.
+
+
+# Schemes a markdown link in prose may carry. Anything else scheme-bearing
+# (javascript:, data:, vbscript:, file:, ...) renders as plain text.
+_ALLOWED_LINK_SCHEMES = ('http', 'https', 'mailto')
+
+
+def _safe_link_href(raw_url: str) -> str | None:
+    """Escaped href for a markdown link, or None when its scheme is not allowed.
+
+    Why: `[x](javascript:alert%281%29)` or a `data:` URI in a biography would
+    otherwise emit a live href - stored XSS in a site that gets handed to
+    relatives. Per the URL grammar (RFC 3986) a URL carries a scheme exactly
+    when its first `:` comes before the first `/`, `?`, or `#`; such URLs may
+    link only with an http/https/mailto scheme (case-insensitive). Scheme-less
+    relative URLs (`sub/page.html`, `#top`, `./a:b`) keep linking.
+    """
+    head = re.split(r'[/?#]', raw_url, maxsplit=1)[0]
+    if ':' in head:
+        scheme = head.split(':', 1)[0].lower()
+        if scheme not in _ALLOWED_LINK_SCHEMES:
+            return None
+    return html.escape(raw_url, quote=True)
+
+
 # Inline constructs, tried left to right. A markdown link `[text](url)` is
 # matched before a token so a token never half-matches a link; the `[[ ]]`
 # wikilink is matched before the legacy single-bracket `[ID]`; bold is last.
@@ -231,12 +274,13 @@ _INLINE_RE = re.compile(
 def _inline_html(text: str, render_token) -> str:
     """Render one block of inline prose to HTML.
 
-    Handles markdown links, archive citation tokens (`[[ID|display]]` /
-    `[[name]]` / legacy `[ID]`, delegated to `render_token`, which already
-    returns safe HTML), and `**bold**`. Every run of literal text between
-    constructs is HTML-escaped, so a stray `<` in a biography can never inject
-    markup. `render_token` is the only source of un-escaped HTML and it is fully
-    under our control (it emits anchors and spans we build).
+    Handles markdown links (scheme-checked by `_safe_link_href`; a disallowed
+    scheme renders the label as plain text), archive citation tokens
+    (`[[ID|display]]` / `[[name]]` / legacy `[ID]`, delegated to `render_token`,
+    which already returns safe HTML), and `**bold**`. Every run of literal text
+    between constructs is HTML-escaped, so a stray `<` in a biography can never
+    inject markup. `render_token` is the only source of un-escaped HTML and it
+    is fully under our control (it emits anchors and spans we build).
 
     `render_token(target, display=None)` accepts an ID *or* a human name/stem
     (resolved through the alias map) plus the optional in-token display text.
@@ -251,10 +295,8 @@ def _inline_html(text: str, render_token) -> str:
         elif m.group('token'):
             out.append(render_token(m.group('token')))
         elif m.group('ltext') is not None:
-            raw_url = m.group('lurl')
-            safe_scheme = raw_url.startswith(('http://', 'https://', 'mailto:')) or '://' not in raw_url
-            if safe_scheme:
-                href = html.escape(raw_url, quote=True)
+            href = _safe_link_href(m.group('lurl'))
+            if href is not None:
                 out.append(f'<a href="{href}">{_escape(m.group("ltext"))}</a>')
             else:
                 out.append(_escape(m.group('ltext')))
@@ -522,6 +564,12 @@ class _SiteBuilder:
         self.alias_map: dict[str, str] = {
             a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1
         }
+        # The full name→candidates multimap (before the single-id filter above).
+        # A name that clashes across ≥2 records is dropped from alias_map, so a
+        # `[[Ambiguous Name]]` link fails to resolve - and if any candidate is a
+        # living/restricted person, rendering the literal name would leak it.
+        # Kept so render_token can fail closed on that case (SPEC §21).
+        self._alias_candidates: dict[str, set[str]] = idx
         # A restricted name variant (deadname) is stored mangled in the index
         # alias table (as the stringified mapping), so `[[prior name]]` would not
         # resolve there. Register its value here so the link still resolves to
@@ -678,6 +726,18 @@ class _SiteBuilder:
             return True
         return (row['living'] or '') in ('true', 'unknown')
 
+    def _name_is_sensitive(self, key: str) -> bool:
+        """True when a lowercased, wrapper-stripped name-link key must not be
+        rendered verbatim on the standalone site: it resolves (ambiguously) to a
+        living/restricted person, or it is a restricted variant (deadname) of
+        some person. The clash-aware alias_map drops such names, so without this
+        check render_token would fall through and publish the literal name."""
+        for cid in self._alias_candidates.get(key, ()):  # type: ignore[union-attr]
+            meta = self.person_meta.get(cid)
+            if meta is not None and self._person_is_redacted(meta):
+                return True
+        return any(key in values for values in self.restricted_names.values())
+
     # - token rendering -
 
     def render_token(self, token: str, page_dir: Path, in_display: str | None = None) -> str:
@@ -706,10 +766,17 @@ class _SiteBuilder:
                 pid, kind = resolved, id_type_of(resolved)
             else:
                 # Inert Obsidian link, not a broken citation → plain text.
-                # Exception: when the aliases table is absent (stale index) we
-                # can't distinguish a non-record link from an unresolved living
-                # person - redact in standalone mode rather than leak a name.
-                if not self.linked and not self._alias_table_ok:
+                # Exception: in standalone mode fail closed rather than leak a
+                # name when we can't be sure it's inert - the aliases table is
+                # absent (stale index), OR the target/display is an ambiguous
+                # name that clashes onto a living/restricted person or is a
+                # restricted variant (deadname). Those are dropped from
+                # alias_map, so they land here unresolved (SPEC §21).
+                if not self.linked and (
+                        not self._alias_table_ok
+                        or self._name_is_sensitive(strip_link_wrapper(token).lower())
+                        or (in_display
+                            and self._name_is_sensitive(in_display.strip().lower()))):
                     return f'<span class="redacted">{_LIVING_LABEL}</span>'
                 return _escape(in_display or token)
 
@@ -1032,7 +1099,22 @@ class _SiteBuilder:
         return summary
 
     def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str]:
-        """Biography and Stories HTML, read from the person `.md` body."""
+        """Biography and Stories HTML, read from the person `.md` body.
+
+        Unaccepted `<!-- AI-DRAFT ... -->` prose is excluded before rendering
+        (in both modes - the marker would render as escaped visible junk even
+        in the linked preview): a draft is not yet content until `fha confirm
+        draft` accepts it. A section that empties after the exclusion renders
+        exactly like a person with no such section (the template's
+        `{% if %}` guard skips the heading).
+
+        A DAMAGED marker (usually a missing `-->`) means draft can no longer
+        be told from accepted prose, so BOTH prose sections are withheld -
+        the page renders as if no biography was written - and one warning
+        names the file and the fix. The old behavior published the whole
+        draft plus the dangling marker; withholding is the only safe
+        rendering on a publication path, and the prose returns the moment
+        the marker is repaired (or the draft accepted) and the site rebuilt."""
         try:
             rec = read_record(self.archive_root / row['path'])
         except Exception as e:
@@ -1040,8 +1122,23 @@ class _SiteBuilder:
             return '', ''
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         bio = _extract_section(rec['body'], 'Biography')
+        stories = rec['stories']
+        problem: str | None = None
+        if bio:
+            bio, problem = strip_unaccepted_drafts(bio)
+            bio = bio.strip()
+        if stories and problem is None:
+            stories, problem = strip_unaccepted_drafts(stories)
+            stories = stories.strip()
+        if problem is not None:
+            self.messages.append(
+                f'WARNING: a draft marker in {row["path"]} is damaged ({problem}) - '
+                'fix the marker or remove the draft, then rebuild. Until then this '
+                "person's Biography and Stories are withheld from the site."
+            )
+            return '', ''
         biography_html = _prose_to_html(bio, render) if bio else ''
-        stories_html = _prose_to_html(rec['stories'], render) if rec['stories'] else ''
+        stories_html = _prose_to_html(stories, render) if stories else ''
         return biography_html, stories_html
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
@@ -1388,6 +1485,17 @@ class _SiteBuilder:
         except OSError:
             self._discoveries = ('', [])
             return self._discoveries
+        # Exclude unaccepted AI-DRAFT prose before publishing, same as person
+        # prose (_person_prose): the standalone site is external output, so a
+        # draft must never leak here. Fail closed on a damaged marker - withhold
+        # the whole page rather than emit half-parsed draft text or a raw marker.
+        text, problem = strip_unaccepted_drafts(text)
+        if problem is not None:
+            self.messages.append(
+                'WARNING: a draft marker in notes/discoveries.md is damaged '
+                f'({problem}) - the discoveries page is withheld from the site.')
+            self._discoveries = ('', [])
+            return self._discoveries
         lines = text.replace('\r\n', '\n').split('\n')
         # Drop a single leading H1 (the page supplies its own title).
         if lines and lines[0].startswith('# '):
@@ -1658,6 +1766,13 @@ class _SiteBuilder:
     def run(self) -> int:
         """Generate the whole site. Returns the number of pages written."""
         self._reset_output()
+        # Stamp ownership the moment _reset_output succeeds: the tool owns the
+        # dir it just cleared/created, and an interrupted FIRST build must not
+        # lock its own output (a crash mid-build used to leave a non-empty,
+        # unmarked folder that the next run refused as not-ours). The marker
+        # is written again on completion so its Last-build date is the
+        # finished build's, not the aborted attempt's.
+        self._write_marker()
         self._copy_vendor()
         for sid in sorted(self.source_pages):
             self.build_source_page(sid)
@@ -1667,25 +1782,73 @@ class _SiteBuilder:
             self.build_place_page(lid)
         self.build_discoveries_page()
         self.build_index_page()
+        self._write_marker()
         # source + person + place pages, plus discoveries.html and index.html
         return len(self.source_pages) + len(self.person_pages) + len(self.place_pages) + 2
+
+    def _reset_targets(self) -> list[Path]:
+        """The output paths a rebuild clears - the one list `_reset_output`
+        deletes from and `reset_preview` reports, so preview and deletion can
+        never drift apart."""
+        return [self.persons_dir, self.sources_dir, self.places_dir,
+                self.media_dir, self.data_dir, self.vendor_dir,
+                self.out_dir / 'index.html', self.out_dir / 'discoveries.html']
+
+    def reset_preview(self) -> list[str]:
+        """Names of the existing files/subtrees a rebuild would first remove,
+        relative to the output dir - the `--dry-run` would-remove report."""
+        names: list[str] = []
+        for t in self._reset_targets():
+            if t.is_dir():
+                names.append(t.name + '/')
+            elif t.exists():
+                names.append(t.name)
+        return names
+
+    def _write_marker(self) -> None:
+        """Stamp the output dir as fha-site-owned, so the next rebuild knows it
+        may clear this folder (`_unowned_output_reason` checks for it).
+
+        Called twice per build: right after `_reset_output` (so a crash or
+        Ctrl-C mid-build cannot leave a partial site the next run refuses to
+        rebuild) and again at completion (refreshing the Last-build date).
+
+        A write failure is a warning, not a failed build: the finished site is
+        valid either way, and the pre-marker back-compat rule (index.html +
+        vendor/fha-tree.js) will still recognize the folder next time."""
+        marker = self.out_dir / _SITE_MARKER_NAME
+        try:
+            marker.write_text(
+                'This folder was generated by `fha site`.\n'
+                'A rebuild clears and rewrites the site files in here - '
+                'keep your own files somewhere else.\n'
+                f'Last build: {_today()}\n',
+                encoding='utf-8',
+            )
+        except OSError as e:
+            self.messages.append(
+                f'WARNING: could not write the {_SITE_MARKER_NAME} marker file ({e}); '
+                'the next rebuild may ask you to point --out at a new or empty folder.'
+            )
 
     def _reset_output(self) -> None:
         """Clear only the subtrees this tool owns, so a rebuild drops pages for
         records that became redacted (idempotent regeneration - TOOLING §12)
         without disturbing anything else a human keeps in the output directory.
 
+        Ownership of the output dir itself was already verified upstream
+        (`_unowned_output_reason` in `_site_payload`) before any build reaches
+        this point, so a non-empty folder that was never an fha-site build is
+        refused rather than cleared.
+
         Standalone builds raise OSError if a subtree cannot be removed - leaving a
         previously generated page for a now-redacted person would be a privacy leak.
         Linked (dev preview) mode silently ignores removal failures."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        for d in (self.persons_dir, self.sources_dir, self.places_dir, self.media_dir,
-                  self.data_dir, self.vendor_dir):
-            if d.exists():
-                shutil.rmtree(d, ignore_errors=self.linked)
-        for f in ('index.html', 'discoveries.html'):
-            target = self.out_dir / f
-            if target.exists():
+        for target in self._reset_targets():
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=self.linked)
+            elif target.exists():
                 target.unlink()
 
 
@@ -1705,8 +1868,12 @@ def _site_payload(
       'no-index'    - index absent/unreadable/stale (open_index_db already explained;
                       standalone builds refuse a stale index - run `fha index` first)
       'bad-config'  - fha.yaml is malformed (message carries the detail)
-      'bad-output'  - output dir would clobber archive content (CLI explains)
-      'dry-run'     - would build N pages; nothing written
+      'bad-output'  - output dir would clobber archive content, or is a non-empty
+                      folder fha site never built into (no .fha-site marker) -
+                      the message names the fix in both cases
+      'dry-run'     - would build N pages; nothing written. Carries an extra
+                      'reset_preview' key: the existing files/subtrees a real
+                      rebuild would first remove from the output dir
       'ok'          - built; 'messages' non-empty means finished with warnings
     """
     if jinja2 is None:
@@ -1732,6 +1899,13 @@ def _site_payload(
     if unsafe:
         return {'status': 'bad-output', 'messages': [unsafe], 'out_dir': out_dir, 'pages': 0}
 
+    # Archive protection first (the message above is more specific), then
+    # ownership: a non-empty folder fha site never built into is refused
+    # BEFORE anything opens or writes, so its contents stay intact.
+    unowned = _unowned_output_reason(out_dir)
+    if unowned:
+        return {'status': 'bad-output', 'messages': [unowned], 'out_dir': out_dir, 'pages': 0}
+
     # Standalone builds refuse a stale index to avoid publishing redacted persons whose
     # living flag was changed since the last `fha index` run.  Linked (dev preview)
     # mode only warns - a slightly stale preview beats no preview.
@@ -1747,6 +1921,10 @@ def _site_payload(
                 'status': 'dry-run', 'messages': builder.messages, 'out_dir': out_dir,
                 'pages': (len(builder.source_pages) + len(builder.person_pages)
                           + len(builder.place_pages) + 2),
+                # What a real rebuild would first clear from the output dir -
+                # the preview half of _reset_output's delete (never a warning,
+                # so it lives beside 'messages', not in it).
+                'reset_preview': builder.reset_preview(),
             }
         try:
             pages = builder.run()
@@ -1853,6 +2031,52 @@ def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -
     return None
 
 
+def _unowned_output_reason(out_dir: Path) -> str | None:
+    """Refuse a non-empty output dir that fha site did not create, else None.
+
+    Why: `_reset_output` clears generically named subtrees (sources/, media/,
+    data/, ...) plus index.html/discoveries.html inside the output dir. Pointed
+    at a folder that merely happens to contain such names (say `--out
+    ~/Documents`), that clearing would delete files that were never the
+    site's. So every successful build stamps the dir with a `.fha-site`
+    marker file, and a rebuild proceeds only when the target is brand new,
+    empty, or marked.
+
+    Back-compat: a site built before the marker existed carries no
+    `.fha-site`, but is recognizable by its own output shape - an index.html
+    plus the vendored `vendor/fha-tree.js` renderer. Such a folder is
+    accepted, and gains the marker when this rebuild finishes.
+    """
+    if not out_dir.exists():
+        return None
+    if not out_dir.is_dir():
+        return (
+            f'Refusing to build the site at {out_dir}: that is a file, not a folder. '
+            'Point --out at a new or empty folder.'
+        )
+    if (out_dir / _SITE_MARKER_NAME).exists():
+        return None
+    try:
+        has_entries = any(out_dir.iterdir())
+    except OSError as e:
+        # Fail closed: if the folder cannot even be listed, it cannot be
+        # safely cleared either.
+        return (
+            f'Could not check the site output folder {out_dir} ({e}). '
+            'Fix the folder permissions, or point --out at a new folder.'
+        )
+    if not has_entries:
+        return None
+    if (out_dir / 'index.html').is_file() and (out_dir / 'vendor' / 'fha-tree.js').is_file():
+        return None   # a pre-marker fha site build (see docstring)
+    return (
+        f"Refusing to build the site into {out_dir}: that folder has files in it and "
+        "wasn't created by fha site (no .fha-site marker), so rebuilding could delete "
+        "files that are not the site's. Point --out at a new or empty folder, or "
+        'delete that folder yourself first if you no longer need its contents.'
+    )
+
+
 def _display_path(p: Path, archive_root: Path) -> str:
     try:
         return str(p.relative_to(archive_root))
@@ -1899,6 +2123,11 @@ def _cmd_site(args: argparse.Namespace) -> int:
     where = _display_path(result['out_dir'], archive_root)
     if status == 'dry-run':
         print(f'(dry run - no files written) Would build {result["pages"]} pages ({mode}) in {where}')
+        preview = result.get('reset_preview') or []
+        if preview:
+            print(f'A real build would first remove these from {where}: ' + ', '.join(preview))
+        else:
+            print('Nothing from a previous build to remove there.')
         return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN
 
     print(f'Site built: {result["pages"]} pages ({mode}) in {where}')
@@ -1918,7 +2147,8 @@ def _add_site_args(p: argparse.ArgumentParser) -> None:
                       help='Local developer preview: real paths, no copies, no redaction.')
     p.set_defaults(linked=False)
     p.add_argument('--dry-run', action='store_true', dest='dry_run',
-                   help='Report how many pages would be built without writing anything.')
+                   help='Report how many pages would be built and what a rebuild would '
+                        'first remove from the output folder, without writing anything.')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
 

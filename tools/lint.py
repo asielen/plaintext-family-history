@@ -9,6 +9,10 @@ lint.py - fha lint: verify the archive against the spec.
   fha lint --format-write            Planned formatter write mode (not yet implemented)
   fha lint --mint-stubs              Create missing person stubs (E005 set)
   fha lint --spawn-questions         Append questions for E009 contradictions
+  fha lint --fix-ids                 Complete hand-authored id-less records AND
+                                     id-less claims (mint, rename, alias, stamp);
+                                     template placeholder ids (P-__________)
+                                     count as missing and are replaced in place
   fha lint --fix-reciprocal          Add the missing mirror edge for each W116
   fha lint --fix-inventory           Planned inventory fixer (not yet implemented)
 
@@ -53,6 +57,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    CLAIMS_RE,
     CLAIM_TYPES,
     COMPANION_KINDS,
     CROCKFORD_ALPHA,
@@ -73,6 +78,8 @@ from _lib import (
     Result,
     alias_clashes,
     build_alias_map,
+    claim_item_key_indent,
+    claims_edit_problem,
     edtf_bounds,
     finding_to_message,
     format_bracket_child,
@@ -113,14 +120,19 @@ import yaml
 #  Constants / small helpers
 #    _SOURCE_FILENAME_RE         - grammar check for source filenames (SPEC §13)
 #    _PERSON_FILENAME_RE         - grammar check for person filenames (SPEC §13)
+#    _is_placeholder_id          - template placeholder id (P-__________) = MISSING
 #    REQUIRED_*_FIELDS           - required frontmatter keys per record type
 #    _normalize_alias_path       - backslash→slash normalisation for path comparison
 #    _mapped_root, _path_to_alias - resolve fha.yaml alias roots to absolute paths
-#    _claim_person_ids           - extract normalised P-ids from a claim's persons: field
+#    _is_generated_file / _never_mintable - GENERATED views + READMEs are never records
+#    _resolve_person_ref         - one persons:/roles: ref → P-id (alias map first)
+#    _claim_person_ids           - resolved P-ids from a claim's persons: field
+#    _id_near_miss               - a ref that LOOKS like a mistyped record code
 #    _parse_summary_block        - parse **Born/Died/…:** lines from a profile body
 #    _edtf_gloss                 - plain-language gloss for a canonical EDTF value
 #    _check_date_value           - forgiving date check: valid/loose-W109/broken-E014
 #    _collect_token_refs         - scan a text block for [ID] tokens → registry
+#    _research_hypothesis_ids    - H-ids defined in a research file's ## Hypotheses
 #    _question_blocks            - split a questions.md into per-heading blocks
 #    _metadata_values            - normalise scalar/list exiftool field values
 #
@@ -156,6 +168,13 @@ import yaml
 #  Format checks / fix modes
 #    _check_format               - W109: final newline, CRLF line endings
 #    _fix_format                 - apply conservative format fixes
+#    _read_text_exact / _write_text_exact / _file_newline - byte-preserving IO
+#    _wrap_unfenced_claims / _fix_claims_fence - verified ```yaml wrap for W114
+#    _merge_aliases_into_frontmatter - add slug/stem aliases to an existing block
+#    _fix_mint_ids               - complete id-less records: mint + rename + alias
+#    _claim_id_missing           - absent/blank/placeholder claim id = mintable
+#    _fix_mint_claim_ids         - complete id-less claims: mint id, stamp reviewed
+#    _claim_item_spans           - split the claims YAML into per-item spans
 #    _fix_mint_stubs             - create stubs for the E005 set (--mint-stubs)
 #    _fix_spawn_questions        - append question entries for E009 set (--spawn-questions)
 #    _fix_reciprocal             - append missing mirror edges for the W116 set (--fix-reciprocal)
@@ -222,6 +241,13 @@ class Registry:
         # error: [(path, 'P'|'S')]. `fha lint --fix-ids` mints + renames + aliases.
         self.idless_records: list[tuple[Path, str]] = []
 
+        # Records whose id: is still a template placeholder (`P-__________`) -
+        # a subset marker for idless_records so the auto-mintable listing and
+        # `--fix-ids` can say "the placeholder will be replaced" instead of
+        # "no ID yet", and so the fixer knows to rewrite the existing id: line
+        # rather than insert a second one.
+        self.placeholder_id_paths: set[Path] = set()
+
         # Source meta: {S-id: meta_dict}
         self.source_meta: dict[str, dict] = {}
 
@@ -252,6 +278,13 @@ class Registry:
         # Each: {other_pid, owner_pid, mirror_role, subtype, claim_id}
         self.missing_mirrors: list[dict] = []
 
+        # The alias resolve map (alias_lower → canonical id), built once at the
+        # start of Pass 2 from everything Pass 1 collected. Claim persons:/roles:
+        # references resolve through it (TOOLING §3 E004: "resolved through the
+        # alias map first"), so the fix modes and the backlog that run after
+        # Pass 2 see the same resolution the checks did. Empty during Pass 1.
+        self.alias_map: dict[str, str] = {}
+
     def all_known_ids(self) -> set[str]:
         """All IDs that have a defining record in the archive."""
         ids: set[str] = set()
@@ -280,9 +313,33 @@ _PERSON_FILENAME_RE = re.compile(
     # The primary-sort-name slot before `__` is OPTIONAL (SPEC §13): a surname-less
     # person (a mononym, an enslaved ancestor by given name, a patronymic, a
     # foundling) leads with the double underscore, e.g. `__caesar_P-…`.
+    # Both name slots admit interior hyphens (`smith-jones__anne`,
+    # `hartley__mary-jane`) - SPEC §13 never forbids them, and hyphenated
+    # surnames/given names are ordinary names, not grammar errors ("forgiving,
+    # not fussy"). A hyphen cannot lead a slot (the first char stays a letter),
+    # and the companion-kind suffix is untouched: kind classification lives in
+    # _lib.parse_filename (an endswith test on `_research`/`_timeline`/
+    # `_sources-index`/`_draft-queue`), which a hyphen inside a NAME slot can
+    # never satisfy - the kind needs its own leading underscore.
     r'^(MERGED-INTO-P-[0-9a-hjkmnp-tv-z]{10}__)?'
-    r'([a-z][a-z_]*)?__[a-z][a-z_]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
+    r'([a-z][a-z_-]*)?__[a-z][a-z_-]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
+
+# A copy-paste template's placeholder id value, e.g. `P-__________` (the shipped
+# archive-template forms are exactly TYPE dash + ten underscores; >=4 tolerates a
+# hand-shortened run). Underscores are not in the Crockford Base32 alphabet, so
+# this can never collide with a real id. A record carrying one is treated as
+# having NO id (auto-mintable, `--fix-ids` replaces the placeholder) - the
+# template's own comment promises "LINT WILL CREATE FOR YOU LATER IF MISSING",
+# so a hard E002 here would break the template's contract with the human.
+_PLACEHOLDER_ID_RE = re.compile(r'^[PSCLH]-_{4,}$', re.I)
+
+
+def _is_placeholder_id(value: str) -> bool:
+    """True when an id: value is a template placeholder (`P-__________`), which
+    lint treats as MISSING rather than malformed - see _PLACEHOLDER_ID_RE."""
+    return bool(_PLACEHOLDER_ID_RE.fullmatch(str(value).strip()))
+
 
 # ── Required-field sets ───────────────────────────────────────────────────────
 
@@ -326,12 +383,157 @@ def _path_to_alias(path: Path, alias: str, registry: Registry) -> str | None:
     return f'{alias}/{rel.as_posix()}'
 
 
-def _claim_person_ids(claim: dict) -> list[str]:
-    """Return normalized P-ids from a claim's persons: field."""
-    persons = claim.get('persons') or []
-    if isinstance(persons, str):
-        persons = [persons]
-    return [normalize_id(str(p)) for p in persons if p]
+# The generated-file ownership marker (TOOLING §1): a file is tool-owned when
+# this is the prefix of its FIRST NON-BLANK line - never merely present in the
+# body. Mirrors views.py's `first_nonblank_line(...).startswith(_GEN_MARKER)`
+# ownership test (its marker adds "by fha views"; this one is tool-agnostic so
+# any generator's output is recognized). Local copy on purpose - consolidating
+# the check into _lib.py is noted follow-up work, not done here.
+_GENERATED_MARKER = '<!-- GENERATED'
+
+
+def _is_generated_file(path: Path) -> bool:
+    """True when path's first non-blank line starts the GENERATED header.
+
+    Generated views (couple-folder sources-index.md and friends) carry no `id:`
+    BY DESIGN - they are rebuilt by `fha views`, never hand-completed. Without
+    this check the id-less classifier proposed them as "hand-authored, no ID
+    yet" and `--fix-ids` injected frontmatter ABOVE the header and renamed them
+    into phantom person/source records with permanent garbage IDs."""
+    try:
+        text = path.read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if line.strip():
+            return line.startswith(_GENERATED_MARKER)
+    return False
+
+
+def _never_mintable(path: Path) -> bool:
+    """True for files the id-less/auto-mintable classifier must never claim:
+    generated views (tool-owned, id-less by design) and README.md files (the
+    quickstart kit ships READMEs inside people/, which are documentation, not
+    person records)."""
+    return path.name.lower() == 'readme.md' or _is_generated_file(path)
+
+
+def _resolve_person_ref(ref: str, alias_map: dict[str, str] | None) -> str | None:
+    """One persons:/roles: reference → a normalized P-id, or None when inert.
+
+    The same tolerance source frontmatter `people:` already gets (TOOLING §3
+    E004: targets are "resolved through the alias map first"): an ID-shaped
+    target is kept even when dangling (E005 owns integrity); a name resolves
+    only when the alias map knows it unambiguously AND it names a person; an
+    unknown or ambiguous name is "an inert note-link, not a finding" and
+    contributes nothing. Mirrors _lib.resolve_typed_ref(want='P') - the shared
+    helper index.py now consumes - so lint and the index agree on which persons
+    a claim names (lint keeps this local copy until the K4 consolidation wave)."""
+    if id_type_of(ref):
+        return normalize_id(ref)
+    resolved = resolve_ref(ref, alias_map) if alias_map else None
+    if resolved and id_type_of(resolved) == 'P':
+        return resolved
+    return None
+
+
+def _claim_person_ids(claim: dict, alias_map: dict[str, str] | None = None) -> list[str]:
+    """Return normalized P-ids from a claim's persons: field.
+
+    Entries pass through link_field_refs (bare IDs, quoted or unquoted
+    wikilinks all reduce to their target) and then _resolve_person_ref, so
+    `persons: ["[[Sam Rivera]]"]` - the form the quickstart teaches - joins to
+    its person record instead of producing a literal `[[sam rivera]]` string.
+    Callers without an alias map (there are none in the lint passes, but the
+    default keeps the helper safe standalone) still get wrapped bare-ID
+    tolerance."""
+    if not isinstance(claim, dict):
+        return []   # a malformed claims entry (a bare string) is lint fodder, not a crash
+    out: list[str] = []
+    for ref in link_field_refs(claim.get('persons')):
+        pid = _resolve_person_ref(ref, alias_map)
+        if pid:
+            out.append(pid)
+    return out
+
+
+# Plain nouns for the record-type prefixes, used when a near-miss code is
+# described to the human ("looks like a person code but ...").
+_TYPE_WORD = {'P': 'person', 'S': 'source', 'C': 'claim', 'L': 'place',
+              'H': 'hypothesis'}
+
+
+def _id_near_miss(ref: str) -> tuple[str | None, str] | None:
+    """(type letter or None, plain description) when `ref` looks like a
+    MISTYPED record code; None when it reads as an ordinary name.
+
+    A reference that almost parses as an ID must produce a finding, never
+    silence: `P-de957bcda` (nine characters) or `P-de957bcdal` (an `l`, a
+    letter Crockford Base32 leaves out) is a typo'd code, and treating it as
+    an inert name-link silently detaches the claim from its person - the
+    index drops the row and `fha stubs` skips it, so nothing anywhere would
+    ever mention the typo. Two shapes qualify:
+
+      - a type prefix (`P-`/`S-`/`C-`/`L-`/`H-`) whose body fails the ID
+        grammar (wrong length, or letters outside 0-9 a-z minus i l o u) -
+        the type letter is returned so the message can name the record kind;
+      - a bare 8-12 character token that is mostly Crockford characters AND
+        carries a digit (a code pasted without its prefix) - type None.
+
+    The TOOLING contract that an unresolved NAME stays an inert note-link is
+    preserved: names have no type prefix, and the bare shape demands a digit
+    plus >=80% Crockford characters, which words never combine. Template
+    placeholders (`C-__________`) are excluded - their story belongs to the
+    E010/`--fix-ids` path, not the typo net. Callers check the alias map
+    FIRST, so a string that genuinely resolves is never flagged.
+    """
+    s = ref.strip()
+    if not s or is_valid_id(s) or _is_placeholder_id(s):
+        return None
+    pm = re.match(r'^([PSCLH])-(.*)$', s, re.I)
+    if pm:
+        letter, body = pm.group(1).upper(), pm.group(2)
+        # Only a body that actually looks like a (mistyped) code is a near-miss:
+        # code-length-ish, purely alphanumeric, and carrying a digit the way a
+        # random Base32 id does. A plain note-link that merely starts with a
+        # type letter and a hyphen (`L-something`, `C-note`, `C-Grandpa's`) is
+        # left as the inert note-link the TOOLING contract promises, not a
+        # blocking error - words don't combine near-code-length, all-alnum, AND
+        # a digit.
+        if re.fullmatch(r'[0-9A-Za-z]{8,12}', body) and any(ch.isdigit() for ch in body):
+            if len(body) != 10:
+                return letter, (
+                    f'is {len(body)} character(s) after the {letter}- instead of 10 - '
+                    f'codes are exactly 10 characters from the alphabet 0-9 a-z '
+                    f'minus i l o u')
+            bad = sorted({ch for ch in body if ch.lower() not in CROCKFORD_ALPHA})
+            if bad:
+                listed = ', '.join(repr(ch) for ch in bad)
+                return letter, (
+                    f'contains {listed} - the code alphabet is 0-9 a-z minus i l o u')
+        return None
+    # A bare code pasted without its prefix is EXACTLY 10 characters. Requiring
+    # that (not the old 8-12 window) keeps a name+year token like `Anna1850` or
+    # `John1042` - shorter, and a perfectly ordinary free-text name - out of the
+    # blocking-error net (SPEC/TOOLING: unresolved names stay inert note-links).
+    if (re.fullmatch(r'[0-9A-Za-z]{10}', s) and any(ch.isdigit() for ch in s)
+            and not s.isdigit()):
+        crockford = sum(1 for ch in s if ch.lower() in CROCKFORD_ALPHA)
+        if crockford / len(s) >= 0.8:
+            return None, (
+                'reads like a bare record code missing its type prefix - codes '
+                'are written like P-de957bcda1 (type letter, hyphen, then 10 '
+                'characters)')
+    return None
+
+
+def _near_miss_text(ref: str, near: tuple[str | None, str]) -> str:
+    """One phrase describing a near-miss ref, e.g.
+    `'P-de957bcda' looks like a person code but is 9 character(s)...`."""
+    letter, detail = near
+    if letter:
+        return f'{ref!r} looks like a {_TYPE_WORD[letter]} code but {detail}'
+    return f'{ref!r} {detail}'
 
 
 def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]]]:
@@ -447,6 +649,39 @@ def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
             registry.name_link_refs.setdefault(target.lower(), []).append((path, lineno))
 
 
+# Where hypothesis records LIVE (SPEC §16): the `## Hypotheses` section of a
+# person research file, one `- id: H-… / hypothesis: … / …` entry per belief.
+# These two patterns mirror index.py's discovery (_extract_section_body +
+# _parse_md_list_blocks feeding _index_hypotheses_block) without importing it
+# (tools never import tools): the section is the text between the heading and
+# the next `##`, and an id field sits either on the entry's `- id:` line or on
+# an indented continuation line. Only the H-id is needed here, so the entry
+# parse reduces to the id-line shapes.
+_HYPOTHESES_SECTION_RE = re.compile(
+    r'^##\s*Hypotheses\s*$(.*?)(?=^##\s|\Z)', re.M | re.S,
+)
+_HYPOTHESIS_ID_LINE_RE = re.compile(
+    r'^[ \t]*(?:-[ \t]+)?id:[ \t]*["\']?(H-[0-9a-hjkmnp-tv-z]{10})\b', re.M | re.I,
+)
+
+
+def _research_hypothesis_ids(body: str) -> set[str]:
+    """H-ids DEFINED in a research file's `## Hypotheses` section.
+
+    SPEC §16 homes hypothesis records there, and index.py already indexes them
+    from there - so lint must count them as existing records too, or every
+    `[[H-…]]` cite of a research-file hypothesis is a false E004 "create the
+    missing record". Scope mirrors the index: only `id:` entry lines inside the
+    Hypotheses section define an H-id; a mere `[[H-…]]` citation elsewhere in
+    the file is a reference, never a definition, so a genuinely dangling H-id
+    still fails E004."""
+    ids: set[str] = set()
+    for section in _HYPOTHESES_SECTION_RE.finditer(body):
+        for m in _HYPOTHESIS_ID_LINE_RE.finditer(section.group(1)):
+            ids.add(normalize_id(m.group(1)))
+    return ids
+
+
 def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding]) -> None:
     """
     Pass 1: walk the archive tree and populate the registry.
@@ -528,9 +763,12 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
 
     pid_raw = str(meta.get('id', ''))
     pid = normalize_id(pid_raw)
+    id_placeholder = _is_placeholder_id(pid_raw)
 
-    # E002: ID format check
-    if pid_raw and not is_valid_id(pid_raw):
+    # E002: ID format check. A template placeholder (`P-__________`) is not
+    # malformed - it is the shipped "fill me in later" value, handled as a
+    # MISSING id below so the record stays auto-mintable, never a hard error.
+    if pid_raw and not id_placeholder and not is_valid_id(pid_raw):
         findings.append(Finding('E', 'E002', path, f'Malformed ID: {pid_raw!r}'))
 
     # Determine kind from filename
@@ -538,6 +776,28 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
     parsed = parse_filename(path)
     is_companion = parsed and parsed.get('is_companion', False)
     kind = (parsed or {}).get('kind', 'profile')
+
+    # H-ids defined in this file's ## Hypotheses section (SPEC §16 homes them in
+    # `…_research_P-….md`). Same stem test index.py uses to pick research files,
+    # applied before any id checks so a mid-graduation (id-less) research file's
+    # hypotheses still count as existing records for E004.
+    if '_research_' in stem or stem.endswith('_research'):
+        registry.hypothesis_ids.update(_research_hypothesis_ids(rec['body']))
+
+    if id_placeholder:
+        registry.placeholder_id_paths.add(path)
+        if parsed:
+            # The filename already carries the real code; the frontmatter just
+            # wasn't updated. That is the E003 filename-vs-record mismatch, with
+            # the fix being a paste, not a mint.
+            findings.append(Finding('E', 'E003', path,
+                f'id: is still the template placeholder {pid_raw!r}, but the filename '
+                f'already carries {fmt_id_display(parsed["id_str"])} - paste that code '
+                f'into the id: line.'))
+        # From here the record is treated as having no id at all: no E002, and
+        # (when the filename has no id either) it lands on the auto-mintable
+        # list, where --fix-ids replaces the placeholder with a fresh id.
+        pid_raw, pid = '', ''
 
     # E002: Filename grammar check
     if pid and not is_companion:
@@ -581,11 +841,13 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
         if is_companion and parsed:
             pid = normalize_id(parsed['id_str'])
             registry.person_companion_paths.setdefault(pid, []).append(path)
-        elif not pid_raw and parsed is None:
+        elif not pid_raw and parsed is None and not _never_mintable(path):
             # A hand-authored, id-less record (no `id:`, no `_{P-id}` in the
             # filename). Not an error - auto-mintable on the next `fha lint
             # --fix-ids`. Surfaced (not silently dropped, which was the data-loss
-            # trap) so the human sees it.
+            # trap) so the human sees it. GENERATED views (a couple folder's
+            # sources-index.md) and README.md files are id-less BY DESIGN, never
+            # mintable - see _never_mintable.
             registry.idless_records.append((path, 'P'))
         return   # can't do further cross-reference checks without record metadata
 
@@ -630,19 +892,35 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 
     sid_raw = str(meta.get('id', ''))
     sid = normalize_id(sid_raw)
+    id_placeholder = _is_placeholder_id(sid_raw)
 
-    # E002: ID format
-    if sid_raw and not is_valid_id(sid_raw):
+    # E002: ID format. A template placeholder (`S-__________`) is handled as a
+    # MISSING id below (auto-mintable), never as malformed - same doctrine as
+    # the person walk.
+    if sid_raw and not id_placeholder and not is_valid_id(sid_raw):
         findings.append(Finding('E', 'E002', path, f'Malformed ID: {sid_raw!r}'))
         return
 
     # E002 / filename grammar: {slug}_{S-id}.md
     stem = path.stem
     parsed = parse_filename(path)
+
+    if id_placeholder:
+        registry.placeholder_id_paths.add(path)
+        if parsed:
+            findings.append(Finding('E', 'E003', path,
+                f'id: is still the template placeholder {sid_raw!r}, but the filename '
+                f'already carries {fmt_id_display(parsed["id_str"])} - paste that code '
+                f'into the id: line.'))
+        sid_raw, sid = '', ''
+
     # A hand-authored, id-less record (no `id:`, no `_{S-id}` in the filename) is
     # a valid pre-machine state - auto-mintable, not an E002 grammar error.
+    # GENERATED views and README.md files are id-less by design and are neither
+    # mintable nor grammar-checked (same guard as the person walk).
     if not sid_raw and parsed is None:
-        registry.idless_records.append((path, 'S'))
+        if not _never_mintable(path):
+            registry.idless_records.append((path, 'S'))
         return
     if not _SOURCE_FILENAME_RE.fullmatch(stem):
         findings.append(Finding('E', 'E002', path,
@@ -735,6 +1013,11 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 
         cid_raw = str(claim.get('id', ''))
         cid = normalize_id(cid_raw)
+        cid_placeholder = _is_placeholder_id(cid_raw)
+        if cid_placeholder:
+            # A template placeholder (`C-__________`) counts as no id at all -
+            # never E002 - and --fix-ids replaces it in place.
+            cid_raw, cid = '', ''
 
         # E002: Claim ID format
         if cid_raw and not is_valid_id(cid_raw):
@@ -743,8 +1026,15 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             continue
 
         if not cid:
-            findings.append(Finding('E', 'E010', path,
-                f'Claim missing required field: id (value={claim.get("value", "?")!r})'))
+            if cid_placeholder:
+                findings.append(Finding('E', 'E010', path,
+                    f'Claim id is still the template placeholder '
+                    f'(value={claim.get("value", "?")!r}) - run `fha lint --fix-ids` '
+                    f'to replace it with a real code, or fill one in by hand '
+                    f'(`fha id mint C`).'))
+            else:
+                findings.append(Finding('E', 'E010', path,
+                    f'Claim missing required field: id (value={claim.get("value", "?")!r})'))
             continue
 
         # E001: duplicate claim IDs
@@ -874,18 +1164,17 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
                     or str(claim.get('status', '')) != 'accepted'
                     or claim.get('type') != 'relationship'):
                 continue
-            roles = claim.get('roles') or {}
-            child_val = roles.get('child')
-            parent_val = roles.get('parent')
-            if not child_val or not parent_val:
+            # Role values resolve like persons: entries (wrapped IDs and
+            # unambiguous names both land on their P-id; registry.alias_map is
+            # populated before any Pass 2 caller runs), so brackets/Ahnentafel
+            # derive the same edges the index's relationships table does.
+            child_ids = _role_pids(claim, 'child', registry.alias_map)
+            parent_ids = _role_pids(claim, 'parent', registry.alias_map)
+            if not child_ids or not parent_ids:
                 continue
             subtype = str(claim.get('subtype', '')).strip().lower()
-            child_ids = [child_val] if isinstance(child_val, str) else list(child_val)
-            parent_ids = [parent_val] if isinstance(parent_val, str) else list(parent_val)
-            for cpid in child_ids:
-                cpid = normalize_id(str(cpid))
-                for ppid in parent_ids:
-                    ppid = normalize_id(str(ppid))
+            for cpid in sorted(child_ids):
+                for ppid in sorted(parent_ids):
                     edges.setdefault(ppid, {}).setdefault(cpid, set()).add(subtype)
     return edges
 
@@ -1284,14 +1573,18 @@ def _claim_by_id(registry: Registry, cid: str) -> dict | None:
     return None
 
 
-def _role_pids(claim: dict, role: str) -> set[str]:
-    """Normalised P-ids filling one `roles:` key (scalar or list both accepted)."""
+def _role_pids(claim: dict, role: str, alias_map: dict[str, str] | None = None) -> set[str]:
+    """Normalised P-ids filling one `roles:` key (scalar or list both accepted).
+
+    Values resolve like persons: entries (`roles: {child: "[[Sam Rivera]]"}` is
+    the quickstart's form), so role matching agrees with _claim_person_ids."""
     val = (claim.get('roles') or {}).get(role)
-    if not val:
-        return set()
-    if isinstance(val, str):
-        val = [val]
-    return {normalize_id(str(v)) for v in val if v}
+    out: set[str] = set()
+    for ref in link_field_refs(val):
+        pid = _resolve_person_ref(ref, alias_map)
+        if pid:
+            out.add(pid)
+    return out
 
 
 def _entry_subtype(entry: dict) -> str:
@@ -1316,42 +1609,48 @@ def _claim_subtype_norm(claim: dict) -> str:
     return ''
 
 
-def _claim_backs_edge(claim: dict, owner_pid: str, other_pid: str | None, role: str) -> bool:
+def _claim_backs_edge(
+    claim: dict, owner_pid: str, other_pid: str | None, role: str,
+    alias_map: dict[str, str] | None = None,
+) -> bool:
     """True if `claim` is an accepted relationship/marriage claim that records the
     edge a person-doc entry asserts. When `other_pid` is None (the `to:` name has
     no minted record yet) only the owner's side is checked, so a forgiving name
-    never produces a false reconciliation failure."""
+    never produces a false reconciliation failure. `alias_map` lets name-linked
+    persons:/roles: entries back an edge the same as bare P-ids."""
     if str(claim.get('status', '')) != 'accepted':
         return False
     ctype = str(claim.get('type', ''))
     if role == 'spouse' and ctype == 'marriage':
-        persons = set(_claim_person_ids(claim))
+        persons = set(_claim_person_ids(claim, alias_map))
         return owner_pid in persons and (other_pid is None or other_pid in persons)
     pair = _EDGE_ROLE_MAP.get(role)
     if ctype != 'relationship' or not pair:
         return False
     owner_role, other_role = pair
-    if owner_pid not in _role_pids(claim, owner_role):
+    if owner_pid not in _role_pids(claim, owner_role, alias_map):
         return False
-    if other_pid is not None and other_pid not in _role_pids(claim, other_role):
+    if other_pid is not None and other_pid not in _role_pids(claim, other_role, alias_map):
         return False
     return True
 
 
-def _person_reconcilable_role_label(claim: dict, pid: str) -> str | None:
+def _person_reconcilable_role_label(
+    claim: dict, pid: str, alias_map: dict[str, str] | None = None,
+) -> str | None:
     """For the reverse check: the entry `type` this person's block would use to
     apply `claim`, or None if the claim isn't a kin edge naming them. Limited to
     parent/child/spouse so social and power ties never over-flag."""
     ctype = str(claim.get('type', ''))
     if ctype == 'marriage':
-        return 'spouse' if pid in _claim_person_ids(claim) else None
+        return 'spouse' if pid in _claim_person_ids(claim, alias_map) else None
     if ctype != 'relationship':
         return None
-    if pid in _role_pids(claim, 'child'):
+    if pid in _role_pids(claim, 'child', alias_map):
         return 'parent'     # the person is a child → their entry names a parent
-    if pid in _role_pids(claim, 'parent'):
+    if pid in _role_pids(claim, 'parent', alias_map):
         return 'child'
-    if pid in _role_pids(claim, 'spouse'):
+    if pid in _role_pids(claim, 'spouse', alias_map):
         return 'spouse'
     return None
 
@@ -1439,7 +1738,7 @@ def _check_relationships_reconciliation(
                         f"relationships: {role or 'edge'} entry links claim {fmt_id_display(cid)}, "
                         f"but no such claim exists - fix the link, or add the claim to its source."))
                     continue
-                if not _claim_backs_edge(claim, pid, other_pid, role):
+                if not _claim_backs_edge(claim, pid, other_pid, role, alias_map):
                     findings.append(Finding('W', 'W115', profile_path,
                         f"relationships: entry links claim {fmt_id_display(cid)}, but that claim does "
                         f"not record this {role or 'relationship'} edge - check its persons and roles."))
@@ -1448,7 +1747,7 @@ def _check_relationships_reconciliation(
             else:
                 sid = normalize_id(strip_link_wrapper(str(entry.get('source'))))
                 cands = [c for c in registry.source_claims.get(sid, [])
-                         if isinstance(c, dict) and _claim_backs_edge(c, pid, other_pid, role)]
+                         if isinstance(c, dict) and _claim_backs_edge(c, pid, other_pid, role, alias_map)]
                 if not cands:
                     findings.append(Finding('W', 'W115', profile_path,
                         f"relationships: {role or 'edge'} entry cites source {fmt_id_display(sid)}, but it "
@@ -1478,7 +1777,7 @@ def _check_relationships_reconciliation(
                 cid = normalize_id(str(claim.get('id', '')))
                 if not cid or cid in referenced_cids:
                     continue
-                label = _person_reconcilable_role_label(claim, pid)
+                label = _person_reconcilable_role_label(claim, pid, alias_map)
                 if label is None:
                     continue
                 findings.append(Finding('W', 'W115', profile_path,
@@ -1499,13 +1798,19 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     known_ids = registry.all_known_ids()
 
+    # The resolve map, built once and stashed on the registry: every claim
+    # persons:/roles: reference below resolves through it, and the fix modes
+    # + needs-sourcing backlog (which run after this pass) reuse it so their
+    # view of "which persons does this claim name" matches the checks'.
+    alias_map = build_alias_map(_alias_records(registry))
+    registry.alias_map = alias_map
+
     # Alias-layer maintenance + integrity (self-alias, name/stem clashes).
     _alias_checks(registry, findings)
 
     # W115/W116: reconcile each person-doc relationships: block against claims,
     # and check reciprocity. The alias map resolves a forgiving `to:` to a P-id.
-    _check_relationships_reconciliation(
-        registry, findings, build_alias_map(_alias_records(registry)))
+    _check_relationships_reconciliation(registry, findings, alias_map)
 
     # E001: duplicate person profiles
     for pid, paths in registry.person_profile_paths.items():
@@ -1531,21 +1836,67 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     f'P-id {token_id} referenced at line {ref_line} but no person record exists - '
                     'create a stub with `fha stubs`, or fix the ID.'))
 
-    # E004: check persons referenced in claim `persons:` fields
+    # E005: persons referenced in claim `persons:` fields must have a record.
+    # References resolve through the alias map first (TOOLING §3 E004): a
+    # wrapped or bare P-id that names no record is the integrity error; a name
+    # that resolves is fine; an unresolved/ambiguous NAME is an inert
+    # note-link, never an E005 dead end (_claim_person_ids drops it).
     for sid, claims in registry.source_claims.items():
         src_path = registry.source_paths.get(sid, Path(sid))
         for claim in claims:
-            for ppid in _claim_person_ids(claim):
+            if not isinstance(claim, dict):
+                continue
+            for ppid in _claim_person_ids(claim, alias_map):
                 if not registry.has_person(ppid):
                     findings.append(Finding('E', 'E005', src_path,
-                        f'Claim {claim.get("id","?")} references person {ppid} but no person record exists - '
-                        'create a stub with `fha stubs`, or fix the P-id.'))
+                        f'Claim {claim.get("id","?")} references person {fmt_id_display(ppid)} but no '
+                        'person record exists - create a stub with `fha stubs`, or fix the P-id.'))
+
+            # E005, near-miss net: a persons: entry that LOOKS like a mistyped
+            # code (P-de957bcda, nine characters) must be said out loud - left
+            # inert it silently detaches the claim from its person everywhere
+            # (index drops the row, stubs skips it). A name that resolves is
+            # fine; an unresolvable plain NAME stays the inert note-link the
+            # TOOLING contract promises.
+            for raw_ref in link_field_refs(claim.get('persons')):
+                if id_type_of(raw_ref) or (alias_map and resolve_ref(raw_ref, alias_map)):
+                    continue
+                near = _id_near_miss(raw_ref)
+                if near:
+                    findings.append(Finding('E', 'E005', src_path,
+                        f'Claim {claim.get("id","?")} persons: {_near_miss_text(raw_ref, near)}; '
+                        f"fix the typo or use the person's name as written."))
+
+            # W118: a claim whose persons: names people but resolves to NONE of
+            # them detaches silently - it joins no one's timeline, vitals, or
+            # merge checks, and (unlike a dead P-id or a near-miss code, which
+            # are E005) leaves no other signal. This is the exact gap the
+            # forgiving name-link contract opens: an unresolved plain NAME stays
+            # an inert note-link (never an error), but a claim that names ONLY
+            # unresolved people is very likely a typo/rename, so warn - never
+            # block. Suppressed when a ref is already a near-miss E005 above, to
+            # avoid double-reporting the same broken reference.
+            person_refs = link_field_refs(claim.get('persons'))
+            if person_refs and not _claim_person_ids(claim, alias_map):
+                already_flagged = any(
+                    _id_near_miss(r) for r in person_refs
+                    if not id_type_of(r) and not (alias_map and resolve_ref(r, alias_map)))
+                if not already_flagged:
+                    listed = ', '.join(repr(str(r)) for r in person_refs)
+                    findings.append(Finding('W', 'W118', src_path,
+                        f'Claim {claim.get("id","?")} persons: {listed} resolves to no '
+                        'person record, so the claim attaches to no one (it will be '
+                        "missing from every timeline, vitals tally, and merge check). "
+                        'Check the spelling, add the name as an alias on the right '
+                        'person, or create the person - or leave it if it is only a note.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
-            # typed.  A well-formed L-id that doesn't resolve is a broken link
-            # (E004, an integrity problem).  Free text in place: is just the place
-            # as-written in the wrong field - point to place_text:, don't error.
-            place_raw = str(claim.get('place', '')).strip()
+            # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't
+            # resolve is a broken link (E004, an integrity problem).  A NAME that
+            # resolves via the alias map to a registered place is fine.  Anything
+            # else is just the place as-written in the wrong field - point to
+            # place_text:, don't error.
+            place_raw = strip_link_wrapper(str(claim.get('place', ''))).strip()
             if place_raw:
                 if id_type_of(place_raw) == 'L':
                     place_ref = normalize_id(place_raw)
@@ -1554,31 +1905,44 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {claim.get("id","?")} place {fmt_id_display(place_ref)} '
                             f'is not a registered place - register it with `fha places` '
                             f'or fix the L-id'))
+                elif id_type_of(resolve_ref(place_raw, alias_map) or '') == 'L':
+                    pass   # a place name that resolves unambiguously - nothing to say
                 else:
                     findings.append(Finding('W', 'W109', src_path,
                         f'Claim {claim.get("id","?")} place: {place_raw!r} is not a place '
                         f'L-id - put the place as written in place_text: instead, or run '
                         f'`fha places` to register it and get an L-id'))
 
-            # E004: corroborates/contradicts targets
+            # E004: corroborates/contradicts targets, resolved through the alias
+            # map first. An ID-shaped target (bare or [[wrapped]]) that names no
+            # record stays the error it always was; a name target that resolves
+            # is fine; an unresolved name is an inert note-link, not a finding -
+            # unless it is a NEAR-MISS code (C-de957bcda, nine characters), which
+            # is a typo to fix, not a note-link to ignore.
             for link_type in ('corroborates', 'contradicts'):
-                targets = claim.get(link_type) or []
-                if isinstance(targets, str):
-                    targets = [targets]
-                for t in targets:
-                    tid = normalize_id(str(t))
-                    if tid and tid not in registry.claim_ids and tid not in known_ids:
-                        findings.append(Finding('E', 'E004', src_path,
-                            f'Claim {claim.get("id","?")} {link_type}: {tid} not found'))
+                for t in link_field_refs(claim.get(link_type)):
+                    if id_type_of(t):
+                        tid = normalize_id(t)
+                        if tid not in registry.claim_ids and tid not in known_ids:
+                            findings.append(Finding('E', 'E004', src_path,
+                                f'Claim {claim.get("id","?")} {link_type}: {tid} not found - '
+                                f'fix the ID, or point it at an existing claim.'))
+                    elif not (alias_map and resolve_ref(t, alias_map)):
+                        near = _id_near_miss(t)
+                        if near:
+                            findings.append(Finding('E', 'E004', src_path,
+                                f'Claim {claim.get("id","?")} {link_type}: {_near_miss_text(t, near)}; '
+                                f'fix the typo, or point it at an existing claim by its full C-id.'))
 
-            # E009: contradicts without an open question referencing both claims
+            # E009: contradicts without an open question referencing both claims.
+            # Targets go through link_field_refs so a wrapped `[[C-…]]` is
+            # checked as its bare C-id (the form questions cite).
             if claim.get('contradicts'):
                 cid = normalize_id(str(claim.get('id', '')))
-                targets = claim.get('contradicts')
-                if isinstance(targets, str):
-                    targets = [targets]
-                for t in targets:
-                    tid = normalize_id(str(t))
+                for t in link_field_refs(claim.get('contradicts')):
+                    if not id_type_of(t):
+                        continue   # a name target has no C-id for a question to cite
+                    tid = normalize_id(t)
                     # Check if an open question references both C-ids
                     if not _has_question_for(cid, tid, registry):
                         findings.append(Finding('E', 'E009', src_path,
@@ -1658,7 +2022,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             for sid, claims in registry.source_claims.items():
                 src_path = registry.source_paths.get(sid, Path(sid))
                 for claim in claims:
-                    if pid in _claim_person_ids(claim):
+                    if pid in _claim_person_ids(claim, alias_map):
                         findings.append(Finding('E', 'E016', src_path,
                             f'Claim {claim.get("id","?")} references merged person {pid} '
                             f'(merged into {meta.get("merged_into","?")})'))
@@ -1839,13 +2203,15 @@ def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:
     (E013 summary checks, W101 vitals checks) can identify which source a claim
     came from without a second lookup.  Claims don't carry source_id in their
     own YAML dict - it lives on the source record that contains them.
+    Persons resolve via registry.alias_map, so a claim naming this person by
+    `[[Name]]` counts toward their vitals/summary exactly like a bare P-id.
     """
     result = []
     for sid, claims in registry.source_claims.items():
         for claim in claims:
-            if str(claim.get('status', '')) != 'accepted':
+            if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
                 continue
-            if pid in _claim_person_ids(claim):
+            if pid in _claim_person_ids(claim, registry.alias_map):
                 result.append({**claim, '_source_id': sid})
     return result
 
@@ -2125,7 +2491,12 @@ def run_lint(
     if fix_claims_fence:
         _fix_claims_fence(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_ids:
-        _fix_mint_ids(registry, archive_root, progress, changed, dry_run=dry_run)
+        # Records first, then their claims: an id-less source's claims never
+        # reached the registry (Pass 1 stops before parsing them without an
+        # S-id), so the claim half re-reads the just-completed files.
+        minted_sources = _fix_mint_ids(registry, archive_root, progress, changed, dry_run=dry_run)
+        _fix_mint_claim_ids(registry, archive_root, progress, changed, dry_run=dry_run,
+                            extra_source_paths=minted_sources)
     if fix_reciprocal:
         _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
 
@@ -2148,12 +2519,21 @@ def run_lint(
 
     # Hand-authored id-less records: reported as auto-mintable (not E002/E010), so
     # a human's pre-machine record is surfaced and completable, never silently lost.
-    mintable = [
-        f'{path.relative_to(archive_root)}: no ID yet (hand-authored) - run '
-        '`fha lint --fix-ids` to add one (the filename slug is kept as an alias, '
-        'so existing [[links]] keep working).'
-        for path, _kind in registry.idless_records
-    ]
+    # A record still carrying the template's placeholder id gets its own wording -
+    # "no ID yet" would read as a lie next to a visible `id: P-__________` line.
+    mintable = []
+    for path, _kind in registry.idless_records:
+        rel = path.relative_to(archive_root)
+        if path in registry.placeholder_id_paths:
+            mintable.append(
+                f'{rel}: id is still the template placeholder - run '
+                '`fha lint --fix-ids` to replace it with a real code (the old '
+                'filename is kept as an alias, so existing [[links]] keep working).')
+        else:
+            mintable.append(
+                f'{rel}: no ID yet (hand-authored) - run '
+                '`fha lint --fix-ids` to add one (the old filename is kept as an alias, '
+                'so existing [[links]] keep working).')
 
     return Result(
         ok=(n_errors == 0),
@@ -2271,7 +2651,7 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
                 continue
             ctype = str(claim.get('type', ''))
             if ctype in PROVISIONAL_VITAL_FIELDS and str(claim.get('status', '')) == 'accepted':
-                for ppid in _claim_person_ids(claim):
+                for ppid in _claim_person_ids(claim, registry.alias_map):
                     out.add((ppid, ctype))
     return out
 
@@ -2281,16 +2661,30 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
     provisional `birth:`/`death:` not yet backed by an accepted claim, and prose
     marked `(TODO: import source)`. The inverse of the W101 vitals-gap check - it
     flags a present-but-unsourced vital, not a missing one. A provisional date is
-    a legitimate starting state, so this nudges toward a source, never blocks."""
+    a legitimate starting state, so this nudges toward a source, never blocks.
+
+    Two things are deliberately NOT listed (TOOLING §3: the backlog is for
+    RECORDED provisional dates): a present-but-empty key (`death:` alone, the
+    shipped template shape) records nothing, and a death entry for a person
+    whose `living:` is true or unknown - death is inapplicable while living
+    (SPEC §8.2), so nudging for a death source there would be noise."""
     accepted = _accepted_vital_pids(registry)
     lines: list[str] = []
     for pid in sorted(registry.person_meta):
         meta = registry.person_meta[pid]
         name = str(meta.get('name') or fmt_id_display(pid))
+        living = str(meta.get('living', '')).strip().lower()
         for field in sorted(PROVISIONAL_VITAL_FIELDS):
-            value = str(meta.get(field, '')).strip()
+            raw = meta.get(field)
+            # A present-but-empty key (`death:` with nothing after it, as the
+            # quickstart people ship) parses to None - nothing is RECORDED, so
+            # there is nothing to source. Only a real value belongs here.
+            value = '' if raw is None else str(raw).strip()
             if not value or (pid, field) in accepted:
-                continue   # absent, or already superseded by an accepted claim
+                continue   # absent/empty, or already superseded by an accepted claim
+            if field == 'death' and living in ('true', 'unknown'):
+                continue   # death is inapplicable while living (SPEC §8.2;
+                           # unknown counts as living, same as the privacy rules)
             lines.append(
                 f'{name} ({fmt_id_display(pid)}): provisional {field}: {value!r} - '
                 f'recorded but not yet backed by a source. Add one when you can '
@@ -2323,28 +2717,111 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
     return lines
 
 
-def _wrap_unfenced_claims(path: Path) -> str | None:
-    """Return `path`'s text with the unfenced `## Claims` content wrapped in a
-    ```yaml fence, or None if there is nothing to wrap. Text surgery only - the
-    YAML the human typed is preserved verbatim, just fenced."""
+# TODO: swap to _lib exact-IO helpers once the pre-wave lands (a shared
+# _read_text_exact/_write_text_exact pair is being added to _lib.py by the
+# packet/lib consolidation work; these local copies exist so lint's surgery
+# does not depend on that landing first).
+def _read_text_exact(path: Path) -> str:
+    """Read a file preserving its own newlines (no universal-newline mangling).
+
+    The fix modes' contract is byte-preserving surgery outside the edited
+    spans. `Path.read_text`/`write_text` silently translate line endings
+    (an LF archive rewritten wholesale to CRLF on Windows, and vice versa),
+    which turns a one-line fix into a full-file rewrite of someone's
+    version-controlled evidence."""
+    return path.read_bytes().decode('utf-8')
+
+
+def _write_text_exact(path: Path, text: str) -> None:
+    """Write text with newline='' so the newlines in `text` land verbatim."""
+    with path.open('w', encoding='utf-8', newline='') as fh:
+        fh.write(text)
+
+
+def _file_newline(text: str) -> str:
+    """The newline convention of an exactly-read text: CRLF when any CRLF
+    appears, else LF. Inserted lines copy the file's own style so surgery
+    never leaves a file with mixed endings."""
+    return '\r\n' if '\r\n' in text else '\n'
+
+
+# A line that would read as a Markdown code fence (``` at any indent). Inside
+# an unfenced claims section such a line either is a half-typed fence or is
+# quoted evidence inside a claim value - both make the auto-wrap unsafe.
+_FENCE_LOOKALIKE_RE = re.compile(r'^\s*```')
+
+
+def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
+    """Compute the ```yaml wrap for `path`'s unfenced `## Claims` content.
+
+    Returns (new_text, None) when the wrap is verified sound, (None, reason)
+    for a plain-language refusal, and (None, None) when there is nothing to
+    wrap. Two guarantees the first version broke:
+
+      - The fenced block must RE-READ to exactly the claims the unfenced
+        reader parsed. That reader joins the section's lines and .strip()s
+        the result - dedenting the FIRST line - before parsing, so the fence
+        must carry that same dedented text: a tab-indented first item fenced
+        verbatim was invalid YAML, and the W114 message had told the human
+        to run exactly this fix. The wrap is also re-parsed end to end and
+        refused on any mismatch, so a bad wrap can never reach disk.
+      - No content line is ever deleted. A ``` line anywhere in the section
+        (a claim value quoting a code block, or a half-typed fence) would
+        terminate the new fence early, so those files are refused with the
+        line number instead of the old behavior of silently dropping the
+        lines from the human's evidence.
+    """
     try:
-        text = path.read_text(encoding='utf-8')
+        text = _read_text_exact(path)
     except OSError:
-        return None
+        return None, None
+    nl = _file_newline(text)
     m = re.search(r'(^##\s+Claims\s*\r?\n)(.*?)(?=^##\s|\Z)', text, re.S | re.M)
     if not m:
-        return None
-    content = m.group(2)
-    fence_line = re.compile(r'^\s*```[a-zA-Z]*\s*$')
-    yaml_text = '\n'.join(
-        ln for ln in content.splitlines() if not fence_line.match(ln)
-    ).strip('\n')
-    if not yaml_text.strip():
-        return None
+        return None, None
+    content_lines = m.group(2).splitlines()
+    for offset, ln in enumerate(content_lines):
+        if _FENCE_LOOKALIKE_RE.match(ln):
+            line_no = text[:m.start(2)].count('\n') + offset + 1
+            return None, (
+                f'line {line_no} of {path.name} has a ``` line inside the claims '
+                f'section (a half-typed fence, or ``` quoted inside a claim '
+                f'value). Wrapping automatically would cut the block short there, '
+                f'so nothing was changed - add the ```yaml fence by hand: put '
+                f'```yaml on the line above the first claim and ``` on the line '
+                f'after the last one.')
+    # Dedent exactly the way the unfenced reader does (join + strip), so the
+    # fenced interior is the very text whose parse produced the W114 claims.
+    yaml_text = '\n'.join(content_lines).strip()
+    if not yaml_text:
+        return None, None
+    try:
+        expected = yaml.safe_load(yaml_text)
+    except yaml.YAMLError:
+        expected = None
     tail = text[m.end():]
-    sep = '\n' if tail.startswith('##') else ''
-    new_section = m.group(1) + f'```yaml\n{yaml_text}\n```\n' + sep
-    return text[:m.start()] + new_section + tail
+    sep = nl if tail.startswith('##') else ''
+    fenced_body = yaml_text.replace('\n', nl)
+    new_text = (text[:m.start()] + m.group(1)
+                + f'```yaml{nl}{fenced_body}{nl}```{nl}' + sep + tail)
+    # Verify before anyone writes: parse the new text the way read_record
+    # will, and demand the identical claim list back.
+    fm = FRONT_RE.match(new_text)
+    cm = CLAIMS_RE.search(new_text[fm.end():] if fm else new_text)
+    reread = None
+    if cm is not None:
+        try:
+            reread = yaml.safe_load(cm.group(1))
+        except yaml.YAMLError:
+            reread = None
+    if not isinstance(reread, list) or not isinstance(expected, list) \
+            or reread != expected:
+        return None, (
+            f'wrapping the claims in {path.name} in a ```yaml fence did not '
+            f'read back to the same claims, so nothing was changed - add the '
+            f'fence by hand: put ```yaml on the line above the first claim '
+            f'and ``` on the line after the last one.')
+    return new_text, None
 
 
 def _fix_claims_fence(
@@ -2355,16 +2832,21 @@ def _fix_claims_fence(
     dry_run: bool = False,
 ) -> None:
     """Wrap every source whose `## Claims` content was read unfenced in a proper
-    ```yaml fence. Previewed under --dry-run; never silently rewrites."""
+    ```yaml fence. Previewed under --dry-run; never silently rewrites, and a
+    file the wrap cannot make round-trip-safe is refused with the by-hand fix
+    (in preview and live mode alike - a dry run must predict the refusal too)."""
     for sid, path in sorted(registry.unfenced_claim_sources.items()):
-        wrapped = _wrap_unfenced_claims(path)
+        wrapped, refusal = _wrap_unfenced_claims(path)
+        if refusal:
+            progress.append(f'--fix-claims-fence: {refusal}')
+            continue
         if wrapped is None:
             continue
         rel = path.relative_to(archive_root)
         if dry_run:
             progress.append(f'--fix-claims-fence dry-run: would wrap the claims in {rel} in a ```yaml fence')
         else:
-            path.write_text(wrapped, encoding='utf-8')
+            _write_text_exact(path, wrapped)
             progress.append(f'Wrapped claims fence: {rel}')
             changed.append(str(path))
 
@@ -2394,29 +2876,206 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     return (seg or 'unknown'), 'unknown'
 
 
-def _insert_id_and_aliases(text: str, new_id: str, slug: str) -> str:
-    """Add `id:` and `aliases:` at the top of a record's frontmatter (creating the
-    frontmatter if the hand-author wrote none). The filename slug is preserved as
-    an alias so existing `[[slug]]` links keep resolving; the new ID self-aliases."""
+def _yaml_alias_entry(value: str) -> str:
+    """One alias, quoted for a YAML flow list when it isn't a plain-safe token.
+
+    A verbatim filename stem ("Sam Rivera", "1950 census - Brooks household",
+    or one containing a comma) would split or misparse unquoted inside
+    `aliases: [...]`; JSON string quoting is valid YAML and escapes everything."""
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_\-]*', value):
+        return value
+    return json.dumps(value)
+
+
+def _merge_aliases_into_frontmatter(
+    fm_text: str, new_id: str, aliases: list[str], nl: str,
+) -> tuple[str, int]:
+    """Append missing alias entries to an EXISTING `aliases:` block, in place.
+
+    Shipped templates SHIP an `aliases:` block (the placeholder-id teaching
+    form), and hand authors write their own - so "a block already exists" must
+    mean MERGE, never skip: skipping loses the old-filename aliases and every
+    `[[old name]]` link dies on the §13 rename. Handles the two shapes a hand
+    file uses: a block list (`- entry` item lines; new entries are appended
+    after the last item at the same dash indent) and a flow list
+    (`aliases: [a, b]`; new entries are spliced in before the `]`). Entries
+    already present are not duplicated (compared lowercased, the way the
+    resolve map compares). Any shape it does not recognize is left untouched.
+
+    Returns (new_fm_text, n_entries_added) - the caller's "(old name kept as
+    an alias)" note prints only when n > 0, so the message can never lie.
+    """
+    try:
+        parsed = yaml.safe_load(fm_text)
+    except yaml.YAMLError:
+        return fm_text, 0
+    if not isinstance(parsed, dict):
+        return fm_text, 0
+    raw = parsed.get('aliases')
+    if isinstance(raw, list):
+        existing = [str(a) for a in raw if a is not None]
+    elif raw is None:
+        existing = []
+    else:
+        return fm_text, 0   # a scalar aliases: value - a hand form; leave it alone
+    have = {a.strip().lower() for a in existing}
+    have.add(normalize_id(new_id))
+    to_add = [a for a in aliases if a.strip().lower() not in have]
+    if not to_add:
+        return fm_text, 0
+    entries = [_yaml_alias_entry(a) for a in to_add]
+
+    m = re.search(r'^aliases:[^\n]*$', fm_text, re.M)
+    if not m:
+        return fm_text, 0
+    head_line = m.group(0)
+    flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
+    if flow_open:
+        # Splice before the list's CLOSING bracket, located as the LAST `]` on
+        # the line - not the first. A first-`]` split (an earlier `[^\]]*` group)
+        # stopped inside an embedded `[[wikilink]]` alias, mangling both the old
+        # entry and the new one. rfind finds the real close even past `]]`.
+        close = head_line.rfind(']')
+        if close >= flow_open.end():
+            open_part = head_line[:flow_open.end()]     # 'aliases: ['
+            body = head_line[flow_open.end():close]      # existing entries verbatim
+            suffix = head_line[close:]                   # '] ...trailing'
+            joined = ', '.join(entries)
+            new_body = f'{body}, {joined}' if body.strip() else joined
+            new_line = open_part + new_body + suffix
+            return fm_text[:m.start()] + new_line + fm_text[m.end():], len(to_add)
+    if '[' in head_line:
+        # A flow list whose `]` sits on a later line - a shape this surgery
+        # does not edit. Leave the hand form alone rather than risk splicing
+        # a block item into the middle of a flow list.
+        return fm_text, 0
+
+    # Block-list form: consume the contiguous `- item` lines after the head
+    # and insert the new entries after the last one, copying its dash indent.
+    # (match(pos) anchors at pos by itself - a leading ^ would only match at
+    # position 0 without re.M and stop the walk after the first item.)
+    pos = m.end()
+    if pos < len(fm_text) and fm_text[pos] == '\n':
+        pos += 1
+    body = fm_text[pos:]
+    # `[ \t]*` (not `[ \t]+`): a valid block list may sit at zero indent under
+    # the key (`aliases:\n- old`). Requiring leading whitespace missed those,
+    # then defaulted item_prefix to two spaces and inserted an indent-2 item
+    # ahead of the indent-0 ones - mixed-indent frontmatter YAML rejects. Now we
+    # copy whatever dash indent the existing items use (including none).
+    item_re = re.compile(r'[ \t]*-[ \t]+[^\r\n]*\r?\n?')
+    consumed = 0
+    item_prefix = None
+    while True:
+        im = item_re.match(body, consumed)
+        if not im:
+            break
+        if item_prefix is None:
+            item_prefix = re.match(r'[ \t]*-[ \t]+', im.group(0)).group(0)
+        consumed = im.end()
+    insert_at = pos + consumed
+    if item_prefix is None:
+        item_prefix = '  - '
+    if insert_at == len(fm_text) and not fm_text.endswith('\n'):
+        # The block is the last thing in the frontmatter and its final line has
+        # no newline (FRONT_RE's group excludes the one before ---): open one.
+        return fm_text + ''.join(f'{nl}{item_prefix}{e}' for e in entries), len(to_add)
+    new_lines = ''.join(f'{item_prefix}{e}{nl}' for e in entries)
+    return fm_text[:insert_at] + new_lines + fm_text[insert_at:], len(to_add)
+
+
+def _insert_id_and_aliases(
+    text: str, new_id: str, aliases: list[str], nl: str = '\n',
+) -> tuple[str, bool]:
+    """Add `id:` and alias entries to a record's frontmatter (creating the
+    frontmatter if the hand-author wrote none). Returns (new_text, kept_alias):
+    kept_alias is True only when alias entries were actually written, so the
+    caller's "(old name kept as an alias)" note can never lie.
+
+    `aliases` carries every string the file used to be known by - the slugified
+    stem and, when different, the stem as written - so an existing
+    `[[Sam Rivera]]` link keeps resolving after the §13 rename; the new ID
+    self-aliases (through the alias line here, or through the record's own
+    `id:` field when a block already exists).
+
+    A record copied from a shipped template arrives with the id already PRESENT
+    as a placeholder (`id: P-__________`, plus the same token in `aliases:` -
+    "paste the same code here too"). For those, the surgery is a same-type token
+    rewrite across the frontmatter: the id: value and the placeholder alias both
+    become the minted id, everything else on their lines (spacing, the teaching
+    comments) survives byte-for-byte. Same-type only, so the person template's
+    commented `[[S-…]]` examples are left for their own record's mint; and since
+    underscores are not Crockford Base32 characters, no real id can ever match
+    the placeholder pattern. Because templates also ship the `aliases:` block,
+    an existing block is MERGED into (slug + verbatim stem appended, deduped),
+    never skipped - the old skip silently dropped every old-name alias.
+
+    `nl` is the file's own newline convention (from _file_newline): every line
+    this surgery writes copies it, so an LF archive edited on Windows stays LF.
+    """
+    entries = ', '.join([new_id] + [_yaml_alias_entry(a) for a in aliases])
+    alias_line = f'aliases: [{entries}]'
     fm = FRONT_RE.match(text)
     has_aliases = bool(fm) and re.search(r'^aliases:', fm.group(1), re.M)
     has_id = bool(fm) and re.search(r'^id:', fm.group(1), re.M)
     if fm and has_id:
-        # Replace the existing blank `id:` line in-place rather than prepending a
-        # duplicate key (last-key-wins in YAML would silently discard the new value).
-        # FRONT_RE group(1) excludes the final \n before ---, so reassemble fully.
-        fm_replaced = re.sub(r'^id:[ \t]*$', f'id: {new_id}', fm.group(1), flags=re.M)
-        if not has_aliases:
-            fm_replaced = f'aliases: [{new_id}, {slug}]\n' + fm_replaced
-        return f'---\n{fm_replaced}\n---\n' + text[fm.end():]
-    lines = [f'id: {new_id}']
-    if not has_aliases:
-        lines.append(f'aliases: [{new_id}, {slug}]')
-    insert = '\n'.join(lines) + '\n'
+        # Replace the existing blank `id:` line in-place rather than prepending
+        # a duplicate key (last-key-wins in YAML would silently discard the new
+        # value). A trailing comment on the blank line survives; so does a CR.
+        # FRONT_RE group(1) excludes the final newline before ---, so reassemble.
+        inner = re.sub(
+            r'^id:[ \t]*((?:#[^\r\n]*)?\r?)$',
+            lambda mm: f'id: {new_id}' + ('   ' if mm.group(1).startswith('#') else '') + mm.group(1),
+            fm.group(1), flags=re.M)
+        placeholder_re = re.compile(
+            rf'(?<![A-Za-z0-9_]){re.escape(new_id[0])}-_{{4,}}(?![A-Za-z0-9_])', re.I)
+        inner = placeholder_re.sub(new_id, inner)
+        if has_aliases:
+            inner, n_added = _merge_aliases_into_frontmatter(inner, new_id, aliases, nl)
+            kept = n_added > 0
+        else:
+            inner = f'{alias_line}{nl}' + inner
+            kept = True
+        return f'---{nl}{inner}{nl}---{nl}' + text[fm.end():], kept
     if fm:
-        open_end = text.index('\n', text.index('---')) + 1
-        return text[:open_end] + insert + text[open_end:]
-    return f'---\n{insert}---\n\n{text}'
+        # Frontmatter with no id: key. Insert the id first; aliases merge into
+        # an existing block (a hand-author may keep one without any id) or a
+        # fresh alias line is added right under the id.
+        inner = fm.group(1)
+        if has_aliases:
+            inner, n_added = _merge_aliases_into_frontmatter(inner, new_id, aliases, nl)
+            kept = n_added > 0
+            inner = f'id: {new_id}{nl}' + inner
+        else:
+            inner = f'id: {new_id}{nl}{alias_line}{nl}' + inner
+            kept = True
+        return f'---{nl}{inner}{nl}---{nl}' + text[fm.end():], kept
+    return f'---{nl}id: {new_id}{nl}{alias_line}{nl}---{nl}{nl}{text}', True
+
+
+def _mint_write_problem(new_text: str, new_id: str) -> str | None:
+    """Re-parse the frontmatter this surgery just built and confirm it is still
+    a sound record before `--fix-ids` writes it. Mirrors the claims-edit re-parse
+    guard: a corrupting rewrite must be a refusal that names the file, never a
+    silent success. Returns a one-line problem description, or None when the
+    result is safe to write. Checks that the frontmatter (a) parses as a YAML
+    mapping, (b) carries the minted `id:`, and (c) if `aliases:` is present, that
+    it parses as a plain list (an indent slip or a bracket splice inside an
+    embedded `[[wikilink]]` turns the block into a scalar/None or raises)."""
+    fm = FRONT_RE.match(new_text)
+    if not fm:
+        return 'the record lost its frontmatter block'
+    try:
+        parsed = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError as exc:
+        return f'the rewritten frontmatter no longer parses ({exc.__class__.__name__})'
+    if not isinstance(parsed, dict):
+        return 'the rewritten frontmatter no longer reads as a mapping'
+    if normalize_id(str(parsed.get('id') or '')) != normalize_id(new_id):
+        return f'the minted id {new_id} did not land in the frontmatter'
+    if 'aliases' in parsed and not isinstance(parsed.get('aliases'), (list, type(None))):
+        return 'the aliases block was corrupted into a non-list value'
+    return None
 
 
 def _fix_mint_ids(
@@ -2425,22 +3084,38 @@ def _fix_mint_ids(
     progress: list[str],
     changed: list[str],
     dry_run: bool = False,
-) -> None:
+) -> list[Path]:
     """Mint an ID for each hand-authored, id-less record, write it into the
-    frontmatter, rename the file to the §13 grammar, and KEEP the filename slug as
-    an alias (so a human's `[[slug]]` links keep resolving). Previewed under
-    --dry-run; never an error, always an explicit, opt-in completion."""
+    frontmatter, rename the file to the §13 grammar, and KEEP the old filename as
+    an alias - both the slugified form and, when different, the stem exactly as
+    written, so a human's existing `[[Sam Rivera]]` links keep resolving after the
+    rename. Previewed under --dry-run; never an error, always an explicit, opt-in
+    completion.
+
+    Returns the source-record paths it minted (post-rename; the original path
+    under --dry-run) so the claim-id half of --fix-ids can revisit them: an
+    id-less source's claims never reached the registry (Pass 1 stops before
+    claims parsing when there is no S-id), so the claim pass must re-read the
+    completed files."""
     remaining: list[tuple[Path, str]] = []
+    minted_sources: list[Path] = []
     for path, kind in registry.idless_records:
-        if not path.exists():
+        # _never_mintable is re-checked here as defense in depth: a GENERATED
+        # view or README must never gain frontmatter/a rename even if a stale
+        # or hand-built registry entry claims otherwise.
+        if not path.exists() or _never_mintable(path):
             continue
         new_id = mint_ids(kind, 1, archive_root)[0]
         slug = _slugify_segment(path.stem)
+        aliases = [slug]
+        if path.stem.lower() != slug:
+            aliases.append(path.stem)
         try:
-            text = path.read_text(encoding='utf-8')
+            text = _read_text_exact(path)
         except OSError:
             remaining.append((path, kind))
             continue
+        nl = _file_newline(text)
         if kind == 'P':
             name = str(read_record(path)['meta'].get('name', ''))
             surname, given = _person_filename_parts(name, path.stem)
@@ -2450,21 +3125,389 @@ def _fix_mint_ids(
         new_path = path.with_name(new_name)
         rel = path.relative_to(archive_root)
         new_rel = new_path.relative_to(archive_root)
+        # A template copy still carries `id: {TYPE}-__________`; say so - "mint"
+        # alone would not explain that the visible placeholder line gets rewritten.
+        ph_note = (' (replacing the template placeholder id)'
+                   if path in registry.placeholder_id_paths else '')
         if dry_run:
             progress.append(
-                f'--fix-ids dry-run: would mint {new_id} for {rel}, rename → {new_rel}, '
-                f'and keep slug {slug!r} as an alias')
+                f'--fix-ids dry-run: would mint {new_id} for {rel}{ph_note}, '
+                f'rename → {new_rel}, and keep the old name as an alias')
+            remaining.append((path, kind))
+            if kind == 'S':
+                minted_sources.append(path)
+            continue
+        new_text, kept_alias = _insert_id_and_aliases(text, new_id, aliases, nl)
+        problem = _mint_write_problem(new_text, new_id)
+        if problem is not None:
+            # Refuse rather than write a corrupt record. Name the file and the
+            # reason; the human can add the id by hand. The unusable id we minted
+            # is simply not used (mint_ids only advances a counter file).
+            progress.append(
+                f'--fix-ids: refused to mint {new_id} for '
+                f'{path.relative_to(archive_root)} - {problem}; '
+                'add the id by hand')
             remaining.append((path, kind))
             continue
-        path.write_text(_insert_id_and_aliases(text, new_id, slug), encoding='utf-8')
+        _write_text_exact(path, new_text)
         if new_path != path and not new_path.exists():
             path.rename(new_path)
             changed.append(str(new_path))
+            final_path = new_path
         else:
             new_rel = rel
             changed.append(str(path))
-        progress.append(f'Minted {new_id} for {new_rel} (slug {slug!r} kept as an alias)')
+            final_path = path
+        # "(old name kept as an alias)" prints only when alias entries were
+        # actually written - an existing block that already carried them (or a
+        # merge that had nothing to add) must not be reported as new work.
+        alias_note = ' (old name kept as an alias)' if kept_alias else ''
+        progress.append(f'Minted {new_id} for {new_rel}{ph_note}{alias_note}')
+        if kind == 'S':
+            minted_sources.append(final_path)
     registry.idless_records = remaining
+    return minted_sources
+
+
+def _claim_item_spans(text: str, start: int, end: int) -> list[tuple[int, int]] | None:
+    """Split the claims region into one (start, end) span per top-level `- ` item.
+
+    Item lines are recognized by the exact indent of the FIRST `- ` line, which
+    cannot collide with anything nested: YAML puts a nested sequence at or below
+    its key's indent, and keys sit deeper than the item dash, so every deeper
+    `- ` (a roles list, a block-scalar line) is skipped. Returns None when the
+    region has no items."""
+    seg = text[start:end]
+    indent: str | None = None
+    starts: list[int] = []
+    offset = 0
+    for line in seg.splitlines(keepends=True):
+        m = re.match(r'^([ \t]*)-([ \t]|\r?\n|$)', line)
+        if m:
+            if indent is None:
+                indent = m.group(1)
+            if m.group(1) == indent:
+                starts.append(start + offset)
+        offset += len(line)
+    if not starts:
+        return None
+    spans = []
+    for i, s in enumerate(starts):
+        spans.append((s, starts[i + 1] if i + 1 < len(starts) else end))
+    return spans
+
+
+def _claim_id_missing(claim: dict) -> bool:
+    """True when a claim has no usable id - absent, blank, or still the template
+    placeholder (`C-__________`). The one definition of "mintable claim" shared by
+    the E010 path implicitly (via _is_placeholder_id) and both --fix-ids halves,
+    so the checks and the fixer can never disagree about which claims need ids."""
+    raw = str(claim.get('id') or '').strip()
+    return not raw or _is_placeholder_id(raw)
+
+
+def _fix_mint_claim_ids(
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+    extra_source_paths: list[Path] | None = None,
+) -> None:
+    """The claim half of --fix-ids: mint `id:` into claims that have none, and
+    stamp `reviewed:` on the hand-accepted ones among them.
+
+    WHY IT EXISTS: the quickstart kit teaches id-less claims - a legitimate
+    by-hand starting state - but each was E010 with nothing minting it, so the
+    by-hand → tools graduation dead-ended. This applies the AGENTS.md "linter
+    mints on contact" doctrine (a record a human created with no ID yet is
+    valid; the linter completes it) to claims. A claim still carrying the
+    template's placeholder id (`C-__________`) counts as id-less too - the
+    archive-template teaches that exact shape with a "a tool can fill it"
+    comment - and its placeholder token is rewritten in place rather than a
+    second id: line being inserted.
+
+    WHY THE reviewed: STAMP: an accepted claim must carry a reviewed: date
+    (E006), and a hand-written `status: accepted` is a decision the human has
+    already made - TOOLING §3b: "the editing method does not matter, only that
+    the decision is theirs", and directing the tool "is the human's accept",
+    stamped today exactly as `fha claim --status accepted` stamps it. Scoped
+    narrowly on purpose: only claims THIS run mints an id into; an accepted
+    claim that already has an id keeps its E006 and the `fha claim` workflow.
+
+    SURGERY, NEVER REGENERATION: edits are pure text insertions - `id:` right
+    after the item's `- ` marker (the first field moves down one line, its
+    bytes untouched), `reviewed:` right after the `status: accepted` line -
+    so sibling claims, key order, quoting, and hand comments all survive.
+    Anything the text scan cannot line up with the parsed claims (an item
+    count mismatch, a one-line `- {...}` flow claim, a bare `-` item, an
+    anchor-led `- &c1` item) is refused with a message naming the by-hand
+    fix, never guessed at - and the whole rewritten file is re-parsed before
+    the write (claims_edit_problem + a minted-ids-landed count), so a bad
+    rewrite becomes a refusal instead of a corrupted source.
+    """
+    candidates: dict[Path, bool] = {}
+    for sid in sorted(registry.source_claims):
+        claims = registry.source_claims[sid]
+        if any(isinstance(c, dict) and _claim_id_missing(c) for c in claims):
+            p = registry.source_paths.get(sid)
+            if p:
+                candidates[p] = True
+    for p in (extra_source_paths or []):
+        candidates.setdefault(p, True)
+
+    for path in candidates:
+        if not path.exists() or _never_mintable(path):
+            continue
+        _mint_claim_ids_in_file(path, archive_root, progress, changed, dry_run)
+
+
+def _mint_claim_ids_in_file(
+    path: Path,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool,
+) -> None:
+    """Mint ids (and reviewed: stamps) into one source file's id-less claims.
+
+    Re-reads the file fresh rather than trusting the registry: --fix-ids may
+    have just completed and renamed this very file (an id-less source's claims
+    never reached the registry at all). See _fix_mint_claim_ids for the
+    contract; this function is the per-file surgery.
+
+    GUARDED SURGERY - the rules that keep a text edit off the human's evidence:
+      - every scan is anchored to the item's OWN key lines (the mapping column
+        claim_item_key_indent derives, or the dash line itself), so a
+        `status: accepted` or `id:` LOOKALIKE inside a `value: |` scalar can
+        never be stamped or rewritten;
+      - a blank `id:` line (the key present, the value empty) is completed IN
+        PLACE - inserting a second id: key would make YAML keep the last,
+        blank, one: the mint would be silently void, E002 would persist, and
+        every rerun would burn another id into the same claim;
+      - an anchor-led item (`- &c1`) is refused: a field inserted above the
+        anchor detaches it and the whole block stops parsing;
+      - reads and writes are exact-newline, so an LF archive edited on Windows
+        stays LF outside the edited spans, and inserted lines copy the file's
+        own newline style;
+      - before anything is written, the FULL rewritten text goes back through
+        claims_edit_problem plus a parse-back check that every minted id
+        actually landed on a claim. Any doubt is a per-file refusal that names
+        the by-hand fix - so the success message can never lie.
+    """
+    try:
+        rel = path.relative_to(archive_root)
+    except ValueError:
+        rel = path
+    rec = read_record(path)
+    claims = rec['claims']
+    if not any(isinstance(c, dict) and _claim_id_missing(c) for c in claims):
+        return
+    try:
+        text = _read_text_exact(path)
+    except OSError:
+        progress.append(f'--fix-ids: could not read {rel}; its claims were left alone.')
+        return
+    nl = _file_newline(text)
+
+    # Fenced blocks only: the write guard (claims_edit_problem) vets the
+    # ```yaml form, and the unfenced W114 state has its own dedicated fixer.
+    # Run in the same command, the fence fix lands first (run_lint order), so
+    # a combined `--fix-claims-fence --fix-ids` still completes in one pass.
+    fm = FRONT_RE.match(text)
+    body_start = fm.end() if fm else 0
+    cm = CLAIMS_RE.search(text[body_start:])
+    if not cm:
+        progress.append(
+            f'--fix-ids: the claims in {rel} are not inside a ```yaml fence, so '
+            f'no ids were minted there - run `fha lint --fix-claims-fence` '
+            f'first, then run `fha lint --fix-ids` again.')
+        return
+    region = (body_start + cm.start(1), body_start + cm.end(1))
+    spans = _claim_item_spans(text, *region)
+    if not spans or len(spans) != len(claims):
+        # The text scan and the parser disagree about the claim entries (an
+        # entry that parses to nothing, prose bullets in the section, ...).
+        # Refuse the whole file rather than risk inserting into the wrong claim.
+        progress.append(
+            f"--fix-ids: the claims block in {rel} doesn't line up with what the "
+            f'parser reads, so nothing was changed there - add the missing id: '
+            f'lines by hand (mint values with `fha id mint C`).')
+        return
+
+    # Plan first, mint second: refusals must not consume minted ids. Each plan
+    # is an INSERT (`id:` added after the `- ` marker), a PLACEHOLDER rewrite
+    # (`id: C-__________` token replaced on its line), or a BLANK completion
+    # (`id:` with no value, completed on its existing line).
+    base_indent = re.match(r'^[ \t]*', text[spans[0][0]:spans[0][1]]).group(0)
+    plans: list[dict] = []
+    deferred_notes: list[str] = []   # emitted only after a real, successful write
+    today = _today()
+    for i, ((span_start, span_end), claim) in enumerate(zip(spans, claims)):
+        if not isinstance(claim, dict) or not _claim_id_missing(claim):
+            continue
+        span_text = text[span_start:span_end]
+        key_indent = claim_item_key_indent(span_text.splitlines(), base_indent)
+        # The item's OWN key lines: its dash line, or a line at exactly the
+        # mapping's key column. Anything deeper is scalar content.
+        dash_prefix = rf'{re.escape(base_indent)}-[ \t]+'
+        key_prefix = rf'(?:{dash_prefix}|{re.escape(key_indent)})'
+        label = str(claim.get('value', ''))[:40] or f'entry {i + 1}'
+        plan = {'kind': None, 'insert_at': None, 'continuation': '',
+                'replace_span': None, 'snippet_suffix': '',
+                'stamp_at': None, 'stamp_text': ''}
+
+        if str(claim.get('id') or '').strip():
+            # A template placeholder id (the only non-blank mintable form):
+            # rewrite just the token so spacing and teaching comment survive.
+            pm = re.compile(
+                rf'^{key_prefix}id:[ \t]*(C-_{{4,}})(?![A-Za-z0-9_])',
+                re.I | re.M).search(span_text)
+            if not pm:
+                progress.append(
+                    f'--fix-ids: could not find the placeholder id: line for claim '
+                    f'"{label}" in {rel} - replace it by hand (`fha id mint C`).')
+                continue
+            plan['kind'] = 'placeholder'
+            plan['replace_span'] = (span_start + pm.start(1), span_start + pm.end(1))
+        elif 'id' in claim:
+            # The id: key EXISTS but parses blank (`id:` alone, '', ~, null) -
+            # the same blank _claim_id_missing sees. Complete that line in place.
+            bm = re.compile(
+                rf"^{key_prefix}id:(?P<val>[ \t]*(?:''|\"\"|~|[Nn]ull|NULL)?[ \t]*)"
+                rf'(?P<tail>(?:#[^\r\n]*)?\r?)$',
+                re.M).search(span_text)
+            if not bm:
+                progress.append(
+                    f'--fix-ids: claim "{label}" in {rel} has an id: line written in '
+                    f'a form this fix cannot complete safely - paste a code onto it '
+                    f'by hand (mint one with `fha id mint C`).')
+                continue
+            plan['kind'] = 'blank'
+            plan['replace_span'] = (span_start + bm.start('val'), span_start + bm.end('val'))
+            plan['snippet_suffix'] = ' ' if bm.group('tail').startswith('#') else ''
+        else:
+            nl_at = span_text.find('\n')
+            first_line = span_text[:nl_at if nl_at != -1 else len(span_text)].rstrip('\r')
+            dm = re.match(rf'^{re.escape(base_indent)}-[ \t]+', first_line)
+            rest = first_line[dm.end():] if dm else ''
+            lead = rest.lstrip()[:1]
+            if lead in ('&', '*', '!'):
+                # A YAML anchor (&c1), alias (*c1) or tag on the dash line: an
+                # id: inserted above it detaches the marker from its node and
+                # the WHOLE block stops parsing - every claim in the source
+                # would vanish. Refuse the item and name the by-hand fix.
+                progress.append(
+                    f'--fix-ids: claim "{label}" in {rel} starts with a YAML '
+                    f'anchor/alias marker ({rest.strip().split()[0]}), which this '
+                    f'fix cannot edit safely - mint a code with `fha id mint C` and '
+                    f'paste it onto an `id:` line inside that claim by hand.')
+                continue
+            if not dm or not rest.strip() or rest.lstrip().startswith('{'):
+                # A bare `-` item or a one-line `- {...}` flow claim: inserting a
+                # block field would corrupt it. Name the claim and the by-hand fix.
+                progress.append(
+                    f'--fix-ids: claim "{label}" in {rel} is written in a one-line form '
+                    f'this fix cannot edit safely - add its id: by hand (`fha id mint C`).')
+                continue
+            plan['kind'] = 'insert'
+            plan['insert_at'] = span_start + dm.end()
+            plan['continuation'] = base_indent + ' ' * (dm.end() - len(base_indent))
+
+        if str(claim.get('status', '')) == 'accepted' and not str(claim.get('reviewed') or '').strip():
+            sm = re.compile(
+                rf'^{key_prefix}status:[ \t]*([\'"]?)accepted\1[ \t]*(#.*)?\r?$',
+                re.M).search(span_text)
+            if sm:
+                stamp_nl = span_text.find('\n', sm.end())
+                if stamp_nl != -1:
+                    plan['stamp_at'] = span_start + stamp_nl + 1
+                    plan['stamp_text'] = f'{key_indent}reviewed: {today}{nl}'
+                else:
+                    # status: is the last line of the region with no newline of
+                    # its own - open a fresh line before stamping.
+                    plan['stamp_at'] = span_end
+                    plan['stamp_text'] = f'{nl}{key_indent}reviewed: {today}{nl}'
+            else:
+                deferred_notes.append(
+                    f'--fix-ids: could not find the status: accepted line for claim '
+                    f'"{label}" in {rel} - its id was minted, but add reviewed: {today} '
+                    f'by hand (or run `fha claim <C-id> --status accepted`).')
+        plans.append(plan)
+
+    if not plans:
+        return
+    n_stamped = sum(1 for p in plans if p['stamp_at'] is not None)
+    n_placeholder = sum(1 for p in plans if p['kind'] == 'placeholder')
+    ph_note = (f' ({n_placeholder} of them replacing template placeholder ids)'
+               if n_placeholder else '')
+    if dry_run:
+        line = f'--fix-ids dry-run: would mint {len(plans)} claim id(s) in {rel}{ph_note}'
+        if n_stamped:
+            line += (f' and stamp reviewed: {today} on {n_stamped} hand-accepted '
+                     f'claim(s) (the accepted status is already your decision on record)')
+        progress.append(line)
+        return
+
+    new_ids = mint_ids('C', len(plans), archive_root)
+    # Edits are (start, end, snippet): an insertion is a zero-width span, a
+    # placeholder/blank rewrite replaces exactly its value span. Applied
+    # bottom-up so earlier offsets stay valid; spans never overlap (each lives
+    # in its own claim item, and a stamp inserts at a line boundary).
+    edits: list[tuple[int, int, str]] = []
+    for plan, cid in zip(plans, new_ids):
+        if plan['kind'] == 'placeholder':
+            start, end = plan['replace_span']
+            edits.append((start, end, cid))
+        elif plan['kind'] == 'blank':
+            start, end = plan['replace_span']
+            edits.append((start, end, f' {cid}' + plan['snippet_suffix']))
+        else:
+            edits.append((plan['insert_at'], plan['insert_at'],
+                          f'id: {cid}{nl}{plan["continuation"]}'))
+        if plan['stamp_at'] is not None:
+            edits.append((plan['stamp_at'], plan['stamp_at'], plan['stamp_text']))
+    new_text = text
+    for start, end, snippet in sorted(edits, key=lambda t: t[0], reverse=True):
+        new_text = new_text[:start] + snippet + new_text[end:]
+
+    # The write guard: any doubt about the rewrite = a refusal, never a write.
+    # claims_edit_problem re-parses the block the way read_record will; the
+    # parse-back count proves each minted id actually sits on a claim, so the
+    # "Minted N claim id(s)" line below can never overstate what happened.
+    problem = claims_edit_problem(new_text)
+    if problem is None:
+        fm2 = FRONT_RE.match(new_text)
+        cm2 = CLAIMS_RE.search(new_text[fm2.end():] if fm2 else new_text)
+        parsed = None
+        if cm2 is not None:
+            try:
+                parsed = yaml.safe_load(cm2.group(1))
+            except yaml.YAMLError:
+                parsed = None
+        landed = {normalize_id(str(c.get('id') or ''))
+                  for c in (parsed if isinstance(parsed, list) else [])
+                  if isinstance(c, dict)}
+        n_landed = sum(1 for cid in new_ids if normalize_id(cid) in landed)
+        if n_landed != len(new_ids):
+            problem = (f'only {n_landed} of the {len(new_ids)} minted id(s) '
+                       f'read back on a claim afterwards')
+    if problem is not None:
+        progress.append(
+            f'--fix-ids: minting claim ids into {rel} was stopped before writing '
+            f'anything - {problem}. The file is unchanged; add the id: lines by '
+            f'hand instead (mint codes with `fha id mint C`).')
+        return
+
+    _write_text_exact(path, new_text)
+    changed.append(str(path))
+    progress.append(f'Minted {len(plans)} claim id(s) in {rel}{ph_note}')
+    if n_stamped:
+        progress.append(
+            f'Stamped reviewed: {today} on {n_stamped} hand-accepted claim(s) in {rel} '
+            f"(a hand-written 'accepted' is your decision; the stamp records when the "
+            f'tools met it)')
+    progress.extend(deferred_notes)
 
 
 def _fix_mint_stubs(
@@ -2482,11 +3525,14 @@ def _fix_mint_stubs(
     """
     stubs_dir = archive_root / 'people' / 'stubs'
 
-    # Collect pids that appear in claims but have no record
+    # Collect pids that appear in claims but have no record. Resolution via
+    # registry.alias_map keeps this the exact E005 set: wrapped bare IDs
+    # unwrap, and an unresolvable NAME is inert (a stub can't be minted for a
+    # name here - that is `fha stubs --from-names`, a deliberate human step).
     missing: set[str] = set()
     for sid, claims in registry.source_claims.items():
         for claim in claims:
-            for ppid in _claim_person_ids(claim):
+            for ppid in _claim_person_ids(claim, registry.alias_map):
                 if not registry.has_person(ppid):
                     missing.add(ppid)
 
@@ -2705,7 +3751,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--fix-claims-fence', action='store_true',
                    help='Wrap hand-written claims that forgot the ```yaml fence (with --dry-run to preview)')
     p.add_argument('--fix-ids', action='store_true',
-                   help='Mint IDs for hand-authored id-less records, renaming and keeping the slug as an alias (with --dry-run to preview)')
+                   help='Mint IDs for hand-authored id-less records (rename, keep the old name '
+                        'as an alias) and for id-less claims inside sources (with --dry-run to preview)')
     p.add_argument('--fix-reciprocal', action='store_true',
                    help='Add the missing mirror edge for each W116 (with --dry-run to preview)')
     p.add_argument('--fix-inventory', action='store_true',

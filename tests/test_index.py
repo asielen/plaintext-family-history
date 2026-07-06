@@ -6,19 +6,31 @@ from a person research file's markdown body (SPEC §16) and from
 notes/research-log.md (SPEC §16, multi-person/locality searches), and the
 hooks that insert those rows into the hypotheses/search_log tables consumed
 by report.py sections 5 and 7.
+
+Also covers two hand-edit hardening contracts:
+  - place `coords:` validation (a hand-edited empty/string/dict coords must
+    degrade to NULL lat/lon with a warning, never crash the build or silently
+    corrupt into lat='3'), and
+  - claim persons:/roles:/place resolution through the alias map (TOOLING §3
+    E004: `persons: ["[[Sam Rivera]]"]` joins to its person record; an
+    unresolved name is an inert note-link, not a garbage row), identical in
+    full build and incremental upsert.
 """
 
+import io
 import json
 import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import index
+from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS
 
 
 _RESEARCH_MD_WELL_FORMED = '''---
@@ -421,6 +433,474 @@ class FullRebuildClearsStaleRowsTests(unittest.TestCase):
             conn.close()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], 'Captured page')
+
+
+class PlaceCoordsTests(unittest.TestCase):
+    """Hand-edited `coords:` must never kill or corrupt the index (bug: an
+    empty `coords:` key crashed every `fha index`/`fha report` with a
+    len(None) TypeError; a string value '39.8, -95.6' silently indexed as
+    lat='3', lon='9'; a dict raised KeyError). Every bad shape stores NULLs
+    plus one warning that names the place and the expected shape, and the
+    build completes on the warnings exit path."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'places').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _build(self, places_yaml: str):
+        (self.root / 'places' / 'places.yaml').write_text(places_yaml, encoding='utf-8')
+        result = index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute('SELECT id, lat, lon FROM places ORDER BY id').fetchall()
+        finally:
+            conn.close()
+        return result, rows
+
+    def test_valid_coords_index_as_floats(self) -> None:
+        result, rows = self._build(
+            '- id: L-1111111111\n  name: Millbrook\n  coords: [41.786, -73.694]\n')
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]['lat'], 41.786)
+        self.assertAlmostEqual(rows[0]['lon'], -73.694)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.messages, [])
+
+    def test_numeric_string_coords_still_index(self) -> None:
+        _, rows = self._build(
+            '- id: L-1111111111\n  name: Millbrook\n  coords: ["41.786", "-73.694"]\n')
+        self.assertAlmostEqual(rows[0]['lat'], 41.786)
+        self.assertAlmostEqual(rows[0]['lon'], -73.694)
+
+    def test_absent_coords_is_silent_null(self) -> None:
+        result, rows = self._build('- id: L-1111111111\n  name: Millbrook\n')
+        self.assertIsNone(rows[0]['lat'])
+        self.assertIsNone(rows[0]['lon'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.messages, [])
+
+    def _assert_bad_shape(self, coords_line: str) -> None:
+        result, rows = self._build(
+            f'- id: L-1111111111\n  name: Millbrook\n{coords_line}')
+        self.assertEqual(len(rows), 1, coords_line)
+        self.assertIsNone(rows[0]['lat'], coords_line)
+        self.assertIsNone(rows[0]['lon'], coords_line)
+        # One warning naming the place and the expected shape reaches the
+        # Result, and the build lands on the documented warnings exit (1).
+        self.assertEqual(result.exit_code, EXIT_WARNINGS, coords_line)
+        warning_texts = [m.text for m in result.messages]
+        self.assertEqual(len(warning_texts), 1, coords_line)
+        self.assertIn('Millbrook', warning_texts[0])
+        self.assertIn('coords: [39.8, -95.6]', warning_texts[0])
+        self.assertIn('fha index', warning_texts[0])
+
+    def test_empty_coords_key_warns_and_stores_null(self) -> None:
+        self._assert_bad_shape('  coords:\n')
+
+    def test_string_coords_warn_never_corrupt(self) -> None:
+        self._assert_bad_shape('  coords: "39.8, -95.6"\n')
+
+    def test_dict_coords_warn(self) -> None:
+        self._assert_bad_shape('  coords: {lat: 39.8, lon: -95.6}\n')
+
+    def test_single_entry_coords_warn(self) -> None:
+        self._assert_bad_shape('  coords: [39.8]\n')
+
+    def test_non_numeric_pair_warns(self) -> None:
+        self._assert_bad_shape('  coords: [north, south]\n')
+
+    def _assert_out_of_range(self, coords_line: str) -> None:
+        # Numeric but off the globe (a missing decimal, a swapped pair, or a
+        # non-finite value): degrade to NULL coords + one range warning, never a
+        # silently-stored bad pin.
+        result, rows = self._build(
+            f'- id: L-1111111111\n  name: Millbrook\n{coords_line}')
+        self.assertEqual(len(rows), 1, coords_line)
+        self.assertIsNone(rows[0]['lat'], coords_line)
+        self.assertIsNone(rows[0]['lon'], coords_line)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS, coords_line)
+        warning_texts = [m.text for m in result.messages]
+        self.assertEqual(len(warning_texts), 1, coords_line)
+        self.assertIn('Millbrook', warning_texts[0])
+        self.assertIn('out of range', warning_texts[0])
+
+    def test_missing_decimal_latitude_warns(self) -> None:
+        self._assert_out_of_range('  coords: [398, -95.6]\n')   # 39.8 minus its dot
+
+    def test_swapped_out_of_range_longitude_warns(self) -> None:
+        self._assert_out_of_range('  coords: [0, 200]\n')
+
+    def test_non_finite_coords_warn(self) -> None:
+        self._assert_out_of_range('  coords: ["nan", "1000"]\n')
+
+
+_RESOLUTION_PERSON = '''---
+id: P-aaaaaaaaaa
+name: Samuel Rivera
+living: false
+aliases: [P-aaaaaaaaaa, Sam Rivera]
+---
+
+# Samuel Rivera
+'''
+
+_RESOLUTION_SOURCE = '''---
+id: S-1111111111
+title: Birth certificate
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-1111111111
+  value: "Sam born 1985"
+  type: birth
+  persons: ["[[P-aaaaaaaaaa|Sam]]"]
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: high
+  place: "[[L-1111111111]]"
+  corroborates: ["[[C-2222222222]]"]
+
+- id: C-3333333333
+  value: "Sam is the son of ..."
+  type: relationship
+  persons: ["[[Sam Rivera]]"]
+  roles: {child: "[[Sam Rivera]]"}
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: high
+
+- id: C-4444444444
+  value: "an ambiguous witness"
+  type: note
+  persons: ["[[Pat Smith]]"]
+  status: suggested
+  confidence: low
+
+- id: C-5555555555
+  value: "a place by name"
+  type: residence
+  persons: [P-aaaaaaaaaa]
+  status: suggested
+  confidence: low
+  place: Millbrook
+```
+'''
+
+_AMBIGUOUS_PERSON = '''---
+id: {pid}
+name: Pat Smith
+living: false
+---
+
+# Pat Smith
+'''
+
+
+class ClaimPersonResolutionTests(unittest.TestCase):
+    """Claim persons:/roles:/place references resolve through the alias map
+    the same way source frontmatter people: does (TOOLING §3 E004): wrapped
+    IDs unwrap, unambiguous names land on their P-id, ambiguous or unknown
+    names are inert (no row, no garbage). And CRITICALLY: the incremental
+    upsert produces the exact rows the full rebuild does."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'rivera__samuel_P-aaaaaaaaaa.md', _RESOLUTION_PERSON)
+        _write(self.root / 'people' / 'smith__pat_P-bbbbbbbbbb.md',
+               _AMBIGUOUS_PERSON.format(pid='P-bbbbbbbbbb'))
+        _write(self.root / 'people' / 'smith__pat_P-cccccccccc.md',
+               _AMBIGUOUS_PERSON.format(pid='P-cccccccccc'))
+        _write(self.root / 'sources' / 'birth_S-1111111111.md', _RESOLUTION_SOURCE)
+        _write(self.root / 'places' / 'places.yaml',
+               '- id: L-1111111111\n  name: Millbrook\n  coords: [41.786, -73.694]\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _snapshot(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            return {
+                'claim_persons': sorted(
+                    tuple(r) for r in conn.execute(
+                        'SELECT claim_id, person_id, position, role FROM claim_persons')),
+                'claim_links': sorted(
+                    tuple(r) for r in conn.execute(
+                        'SELECT claim_id, rel, target_id FROM claim_links')),
+                'places': {
+                    r['id']: (r['place_id'], r['place_text']) for r in conn.execute(
+                        'SELECT id, place_id, place_text FROM claims')},
+            }
+        finally:
+            conn.close()
+
+    def test_full_build_resolves_wrapped_ids_names_roles_places(self) -> None:
+        index.build_index(self.root, {})
+        snap = self._snapshot()
+
+        # Wrapped bare ID `[[P-…|Sam]]` → the bare id.
+        self.assertIn(('c-1111111111', 'p-aaaaaaaaaa', 0, None), snap['claim_persons'])
+        # Name link `[[Sam Rivera]]` (an unambiguous person alias) → its P-id,
+        # with the role resolved through the same map.
+        self.assertIn(('c-3333333333', 'p-aaaaaaaaaa', 0, 'child'), snap['claim_persons'])
+        # Ambiguous `[[Pat Smith]]` (two records) → inert: NO row, no garbage.
+        c4 = [t for t in snap['claim_persons'] if t[0] == 'c-4444444444']
+        self.assertEqual(c4, [])
+        # No literal bracket garbage anywhere.
+        self.assertFalse([t for t in snap['claim_persons'] if '[[' in t[1]])
+        # Wrapped `[[C-…]]` corroborates target → bare c-id.
+        self.assertIn(('c-1111111111', 'corroborates', 'c-2222222222'), snap['claim_links'])
+        # place: wrapped L-id and registered place NAME both land on the L-id.
+        self.assertEqual(snap['places']['c-1111111111'][0], 'l-1111111111')
+        self.assertEqual(snap['places']['c-5555555555'][0], 'l-1111111111')
+
+    def test_upsert_source_matches_full_build(self) -> None:
+        # The symmetry contract (TOOLING §2): any discrepancy between the
+        # incremental and full states is a bug in incremental, by definition.
+        index.build_index(self.root, {})
+        full = self._snapshot()
+        status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._snapshot(), full)
+
+
+_ALIAS_CLASH_PERSON = '''---
+id: P-aaaaaaaaaa
+name: Ken Smith
+living: false
+---
+
+# Ken Smith
+'''
+
+_ALIAS_CLASH_SOURCE_A = '''---
+id: S-1111111111
+title: Census page
+source_type: census
+people: ["[[Ken Smith]]"]
+---
+
+## Claims
+```yaml
+- id: C-1111111111
+  value: "Ken Smith, farmer"
+  type: occupation
+  persons: ["[[Ken Smith]]"]
+  status: accepted
+  reviewed: 2026-01-01
+```
+'''
+
+# The clashing record: a DIFFERENT source hand-aliased with the person's name.
+_ALIAS_CLASH_SOURCE_B = '''---
+id: S-2222222222
+title: Folder of Ken Smith papers
+source_type: other
+aliases: [Ken Smith]
+---
+
+## Claims
+'''
+
+
+class UpsertAliasUniverseParityTests(unittest.TestCase):
+    """Round-2 finding 8 (the r3a repro): full build and upsert must resolve
+    claim/frontmatter names through the SAME alias universe (persons+places).
+
+    The full build snapshots its map before any source is indexed; the upsert
+    used to read the whole aliases table, where another source's hand alias
+    'Ken Smith' clashed the person 'Ken Smith' out of the clash-aware map -
+    so `fha index --source S-A` silently dropped the claim_persons and
+    source_people rows the full build keeps, breaking the row-for-row
+    equivalence contract. The ('P','L') filter in _resolve_map_from_aliases
+    makes both maps identical by construction."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'smith__ken_P-aaaaaaaaaa.md', _ALIAS_CLASH_PERSON)
+        _write(self.root / 'sources' / 'census_S-1111111111.md', _ALIAS_CLASH_SOURCE_A)
+        _write(self.root / 'sources' / 'papers_S-2222222222.md', _ALIAS_CLASH_SOURCE_B)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _rows(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return {
+                'claim_persons': sorted(tuple(r) for r in conn.execute(
+                    'SELECT claim_id, person_id, position, role FROM claim_persons')),
+                'source_people': sorted(tuple(r) for r in conn.execute(
+                    'SELECT source_id, person_id FROM source_people')),
+            }
+        finally:
+            conn.close()
+
+    def test_other_sources_alias_cannot_drop_rows_on_upsert(self) -> None:
+        index.build_index(self.root, {})
+        full = self._rows()
+        # The full build resolves the name; prove the fixture actually
+        # exercises the clash (a person row exists to lose).
+        self.assertIn(('c-1111111111', 'p-aaaaaaaaaa', 0, None), full['claim_persons'])
+        self.assertIn(('s-1111111111', 'p-aaaaaaaaaa'), full['source_people'])
+
+        status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._rows(), full)
+
+    def test_same_source_own_alias_boundary_still_works(self) -> None:
+        # Boundary case: the upserted source ITSELF is aliased with the
+        # person's name. Its own alias rows are deleted before the map is
+        # built (full build never saw them either), so the name still
+        # resolves to the person in both paths.
+        _write(self.root / 'sources' / 'census_S-1111111111.md',
+               _ALIAS_CLASH_SOURCE_A.replace(
+                   'source_type: census\n',
+                   'source_type: census\naliases: [Ken Smith]\n'))
+        index.build_index(self.root, {})
+        full = self._rows()
+        self.assertIn(('c-1111111111', 'p-aaaaaaaaaa', 0, None), full['claim_persons'])
+        status = index.upsert_source(self.root, {}, 's-1111111111')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._rows(), full)
+
+    def test_citation_map_still_resolves_source_stems(self) -> None:
+        # The scope guard's counterpart: the CITATION scan keeps the full
+        # alias universe on purpose - a prose `[[Ken Smith]]` note-link to
+        # the aliased source... is a clash here (person + source share the
+        # string), but an unambiguous source stem must keep resolving.
+        _write(self.root / 'sources' / 'papers_S-2222222222.md',
+               _ALIAS_CLASH_SOURCE_B.replace('aliases: [Ken Smith]',
+                                             'aliases: [ken-papers]')
+               + '\nSee also [[ken-papers]].\n')
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            cites = list(conn.execute(
+                "SELECT token FROM citations WHERE token='s-2222222222'"))
+        finally:
+            conn.close()
+        self.assertTrue(cites, 'source stem citation should resolve via the full map')
+
+
+class SourceRestrictedTests(unittest.TestCase):
+    """The sources.restricted column must store 1 for ANY truthy `restricted:`
+    value. The marker is open (SPEC §19): the typed values (`dna`,
+    `by-request`) are the STRONGEST privacy markers - `by-request` never opens
+    under any export flag - and the old narrow `in (True, 'true')` idiom
+    flattened exactly those to 0 (unrestricted) in every SQL prefilter built
+    on the column. Absent and explicit-false stay 0. The incremental upsert
+    must agree with the full rebuild (TOOLING §2: any discrepancy is a bug in
+    incremental, by definition)."""
+
+    # restricted-line → expected column value. Keys are also used to build
+    # distinct S-ids/paths, one source per case.
+    CASES = [
+        ('restricted: dna\n', 1),
+        ('restricted: by-request\n', 1),
+        ('restricted: true\n', 1),
+        ('', 0),                       # absent → unrestricted
+        ('restricted: false\n', 0),    # explicit false → unrestricted
+    ]
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.sids = []
+        for i, (line, _expected) in enumerate(self.CASES):
+            sid = f's-{str(i) * 10}'
+            self.sids.append(sid)
+            _write(
+                self.root / 'sources' / 'other' / f'src_{sid}.md',
+                f'---\nid: {sid.upper()}\ntitle: Test {i}\n'
+                f'source_type: other\n{line}---\n\n## Claims\n',
+            )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _restricted_column(self) -> dict:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return dict(conn.execute('SELECT id, restricted FROM sources'))
+        finally:
+            conn.close()
+
+    def test_full_build_stores_typed_values_as_restricted(self) -> None:
+        index.build_index(self.root, {})
+        got = self._restricted_column()
+        for sid, (line, expected) in zip(self.sids, self.CASES):
+            self.assertEqual(got[sid], expected, f'{line!r} on {sid}')
+
+    def test_upsert_matches_full_build(self) -> None:
+        # Upsert every source after the full build; the column must be
+        # byte-identical to the full-rebuild state (both flow through
+        # _index_source, but prove it end-to-end).
+        index.build_index(self.root, {})
+        full = self._restricted_column()
+        for sid in self.sids:
+            self.assertEqual(index.upsert_source(self.root, {}, sid), 'indexed')
+        self.assertEqual(self._restricted_column(), full)
+
+
+class RunIndexRootGuardTests(unittest.TestCase):
+    """`fha index --root <non-archive>` must refuse (exit 3) and create
+    NOTHING. Without the guard it globbed missing dirs, minted an empty
+    .cache/index.sqlite inside ANY folder, and printed "Index rebuilt" with
+    exit 0 - a typo'd --root produced a permanently-"successful" empty
+    archive. A --root that does carry fha.yaml builds exactly as before."""
+
+    def test_non_archive_root_refused_and_creates_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = index._standalone_main(['--root', tmp])
+            self.assertEqual(rc, EXIT_FAILURE)
+            self.assertFalse((Path(tmp) / '.cache').exists())
+            # Nothing else materialized either - the folder is untouched.
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+            # The message names the cause (no fha.yaml) and the fix (--root
+            # at the folder that contains it) - the next-step rule.
+            self.assertIn('fha.yaml', err.getvalue())
+            self.assertIn('--root', err.getvalue())
+
+    def test_incremental_source_against_non_archive_also_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = index._standalone_main(
+                    ['--root', tmp, '--source', 'S-1111111111'])
+            self.assertEqual(rc, EXIT_FAILURE)
+            self.assertFalse((Path(tmp) / '.cache').exists())
+            self.assertIn('fha.yaml', err.getvalue())
+
+    def test_root_with_fha_yaml_builds_as_before(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            _write(root / 'sources' / 'other' / 'src_S-1111111111.md',
+                   '---\nid: S-1111111111\ntitle: Test\nsource_type: other\n---\n\n## Claims\n')
+            with redirect_stdout(io.StringIO()):
+                rc = index._standalone_main(['--root', tmp])
+            self.assertEqual(rc, EXIT_CLEAN)
+            db = root / '.cache' / 'index.sqlite'
+            self.assertTrue(db.is_file())
+            conn = sqlite3.connect(str(db))
+            try:
+                self.assertEqual(
+                    conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0], 1)
+            finally:
+                conn.close()
 
 
 if __name__ == '__main__':

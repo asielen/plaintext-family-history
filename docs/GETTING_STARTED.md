@@ -11,7 +11,7 @@ document. No programming required - you'll work with an AI assistant that runs t
   [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md), then come back here for the walkthrough.
 
 This page takes you from a blank machine to your first filed record. Two parts: a one-time
-**setup** (install three things), then a **five-minute walkthrough** (drop a scan in, get a
+**setup** (install four things), then a **five-minute walkthrough** (drop a scan in, get a
 suggested fact back, accept it). Take the setup slowly; do the walkthrough once and the daily
 rhythm is yours.
 
@@ -19,7 +19,7 @@ rhythm is yours.
 
 ## Part 1 - Set up your machine (one time)
 
-You install three things. After each one there's a "did it work?" check - a single command to
+You install four things. After each one there's a "did it work?" check - a single command to
 run so you're never guessing. You run these checks in a **terminal**: the Command Prompt on
 Windows, or the Terminal app on Mac. Type the command, press Enter, and compare what you see to
 what's described.
@@ -45,7 +45,32 @@ installer and tick that box; on Mac, try `python3 --version` instead (Macs often
 > Throughout this guide, where you see `python`, use `python3` if that's the one your Mac
 > answers to. Everything else is identical.
 
-### 2. exiftool (optional - only for photo features)
+### 2. The Python helpers (required)
+
+The tools lean on a few small, free helper packages. Python's built-in installer (`pip`)
+fetches them all with one command. In a terminal, from the project folder (the one with
+`tools/` inside), run:
+
+```
+python -m pip install -r tools/requirements.txt
+```
+
+You'll see a few lines of progress and a "Successfully installed" at the end. (Don't have the
+project folder in front of you yet? `python -m pip install pyyaml` installs the essential one
+from anywhere; run the full command later.) That one command also covers the extras needed much
+later for the family website - nothing more to install when you get there.
+
+**Did it work?** Run:
+
+```
+python -c "import yaml"
+```
+
+Printing *nothing at all* is the good sign - the helper answered quietly. If you see
+`No module named 'yaml'` instead, the install didn't land - re-run the install command and read
+its last lines for the reason.
+
+### 3. exiftool (optional - only for photo features)
 
 `exiftool` lets the archive read and write the hidden metadata inside photos (so a scan can
 carry its own ID and keywords). **If you're starting with documents and notes, skip this for
@@ -63,7 +88,7 @@ exiftool -ver
 A version number like `12.76` means you're set. An error just means it isn't installed yet -
 no harm, the rest still works.
 
-### 3. Your AI assistant (required)
+### 4. Your AI assistant (required)
 
 Plaintext is *operated* through an AI coding assistant - it reads the project's rules, runs the
 `fha` commands, and drafts sourced facts for you to approve. You never have to memorize a

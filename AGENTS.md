@@ -93,7 +93,8 @@ photos/{year}/          originals - read-only to you (except spec'd keyword writ
 documents/{type}/       originals - read-only to you (same exception)
 sources/{type}/         one .md per source: frontmatter + ## Claims (yaml) + ## Notes
 people/NNN .../         Ahnentafel couple folders; person + research files
-people/connections/     non-direct people, "{anchor} {Surname}, {Given}"
+people/connections/     non-direct people (FAN club), ordinary §13 person files;
+                        the anchor couple is derived from claims, not the filename
 people/stubs/           unplaced person stubs
 places/places.yaml      place registry
 notes/                  general research; notes/questions.md = question log

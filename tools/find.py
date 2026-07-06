@@ -45,10 +45,8 @@ from _lib import (
     EXIT_WARNINGS,
     FhaConfigError,
     Result,
-    archive_root_missing_message,
     configure_utf8_stdout,
     edtf_bounds,
-    find_archive_root,
     format_edtf_error,
     id_type_of,
     is_valid_edtf,
@@ -63,6 +61,7 @@ from _lib import (
     photoindex_status,
     read_record,
     resolve_path,
+    resolve_root_arg,
 )
 
 configure_utf8_stdout()
@@ -1926,14 +1925,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_find(args: argparse.Namespace) -> int:
-    root = getattr(args, 'root', None)
-    if root:
-        archive_root = Path(root).resolve()
-    else:
-        archive_root = find_archive_root()
-        if archive_root is None:
-            print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
-            return EXIT_FAILURE
+    """argparse → run_find bridge; returns the plain int exit code.
+
+    Root resolution (including the refusal of a typo'd --root without
+    fha.yaml, which once made find scan an arbitrary folder and report a
+    false "not found in archive tree") lives in `_lib.resolve_root_arg`,
+    the shared chokepoint. The `fha id check` alias resolves its root in
+    fha.py through the same helper, not here.
+    """
+    archive_root = resolve_root_arg(args, command='fha find')
+    if archive_root is None:
+        return EXIT_FAILURE
 
     try:
         fha_config = load_fha_yaml(archive_root, strict=True)

@@ -403,5 +403,105 @@ class ReportTests(unittest.TestCase):
         self.assertFalse(any('County land records' in line for line in lines))
 
 
+class ReportRootGuardTests(unittest.TestCase):
+    """`fha report --root <non-archive>` must refuse (exit 3) and create
+    NOTHING (round-2 finding 10). Empirically, before the shared
+    resolve_root_arg guard: exit 0, a healthy-empty report printed, and a
+    .cache minted inside whatever folder the typo named - a permanently
+    "successful" empty archive anywhere on disk."""
+
+    def test_non_archive_root_refused_and_creates_nothing(self) -> None:
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from _lib import EXIT_FAILURE
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = report._standalone_main(['--root', tmp])
+            self.assertEqual(rc, EXIT_FAILURE)
+            # The empirical heart of the finding: zero files created.
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+            self.assertIn('does not look like an archive', err.getvalue())
+            self.assertIn('fha report', err.getvalue())
+
+    def test_root_with_fha_yaml_still_reports(self) -> None:
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                rc = report._standalone_main(['--root', tmp, '--full'])
+            self.assertIn(rc, (0, 1, 2))     # lint-driven, never the refusal 3
+            self.assertIn('# fha report', out.getvalue())
+
+
+_PLACES_GOOD_COORDS = (
+    '- id: L-1111111111\n  name: Millbrook\n  coords: [41.786, -73.694]\n'
+)
+_PLACES_BAD_COORDS = (
+    '- id: L-1111111111\n  name: Millbrook\n  coords: "41.786, -73.694"\n'
+)
+
+
+class ReportArchiveNotesTests(unittest.TestCase):
+    """Round-2 finding 16: report used to discard build_index's Result, so
+    the coord warnings that ride ONLY on that Result (build collects them
+    for the front door to render) were invisible on the session-start path.
+    run_report now surfaces them as an archive-notes block near the top of
+    the markdown and as result.messages - and, per report's documented
+    exit-code contract, they stay lint-driven (printed, not exit-changing)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'people').mkdir()
+        (self.archive_root / 'places').mkdir()
+        (self.archive_root / 'people' / 'test__person_P-aaaaaaaaaa.md').write_text(
+            _PERSON_MD, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run(self, places_yaml: str):
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            places_yaml, encoding='utf-8')
+        return report.run_report(self.archive_root, {}, full=True)
+
+    def test_coord_warning_lands_in_markdown_and_messages(self) -> None:
+        result = self._run(_PLACES_BAD_COORDS)
+        md = result['markdown']
+        self.assertIn('**Archive notes from this refresh:**', md)
+        self.assertIn('Millbrook', md)
+        self.assertIn('coordinate pair', md)
+        # Near the top: before the first section heading, where the human
+        # actually looks at session start.
+        self.assertLess(md.index('Archive notes'), md.index('## 0.'))
+        # Structured mirror for headless consumers.
+        self.assertTrue(result.messages)
+        self.assertIn('Millbrook', result.messages[0].text)
+
+    def test_clean_coords_render_no_notes_block(self) -> None:
+        result = self._run(_PLACES_GOOD_COORDS)
+        self.assertNotIn('Archive notes', result['markdown'])
+        self.assertEqual(result.messages, [])
+
+    def test_warnings_do_not_change_the_lint_driven_exit_code(self) -> None:
+        # Same archive, only the coords line differs: the exit code must not
+        # move (report's contract is the lint verdict; the note is printed).
+        clean_rc = self._run(_PLACES_GOOD_COORDS).exit_code
+        noted_rc = self._run(_PLACES_BAD_COORDS).exit_code
+        self.assertEqual(noted_rc, clean_rc)
+
+    def test_section_filtered_run_still_shows_notes(self) -> None:
+        # Narrowing the view must never hide that a line was skipped.
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            _PLACES_BAD_COORDS, encoding='utf-8')
+        result = report.run_report(
+            self.archive_root, {}, full=True, section='review-queue')
+        self.assertIn('Archive notes', result['markdown'])
+
+
 if __name__ == '__main__':
     unittest.main()

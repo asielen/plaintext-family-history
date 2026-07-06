@@ -21,7 +21,7 @@
 //
 // Flow:
 //   init     → find the active tab, inject content.js, pull the pre-fill (P1→P2)
-//   step 2   → page-copy toggle + evidence picker (url or drop)
+//   step 2   → page-copy toggle + evidence picker (url or drop), provisional flag
 //   capture  → grab fresh page.html, build the page copy + evidence, stage bundle
 //
 // Classic script; depends on window.FHA.{captureJson,bundle,nativeHost}.
@@ -81,6 +81,15 @@
     // (re-running prefill when the tab navigates to a new record) can tell a
     // genuine navigation from a same-page update.
     prefilledUrl: null,
+    // True when the tab navigated while a capture was mid-flight (state.busy):
+    // refreshing then would swap the form out from under the bundle being
+    // staged, so refreshOnNavigation parks the event here and capture()'s
+    // finally block replays it once. A boolean, not a URL: the live tab is
+    // queried at replay time, so a double navigation during one capture still
+    // lands on the record actually in the tab. It lives in the panel page's
+    // state (not the service worker's), so it exists exactly as long as the
+    // form it protects; if the panel closes mid-capture, both die together.
+    pendingNav: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -93,6 +102,14 @@
         resolve(tabs && tabs[0] ? tabs[0] : null)
       );
     });
+  }
+
+  // Look up one tab by id; resolves null (never rejects) for a gone tab, so
+  // callers can treat "tab vanished" the same as "nothing to compare against".
+  function getTab(tabId) {
+    return new Promise((resolve) =>
+      chrome.tabs.get(tabId, (t) => resolve(chrome.runtime.lastError ? null : t))
+    );
   }
 
   function sendToTab(tabId, msg) {
@@ -156,6 +173,14 @@
   }
 
   function applyPrefill(prefill) {
+    // A prefill for a DIFFERENT record invalidates the previous record's
+    // evidence picks: without this, a file dropped for record A (and its
+    // screen-capture tick) would survive the navigation and stage as record
+    // B's evidence. Compare before prefilledUrl is overwritten below.
+    // Fragment-only moves never reach here (refreshOnNavigation skips them),
+    // so this fires only on a genuine new record - and on the first prefill,
+    // where it is a harmless no-op on the fresh form.
+    if (!sameRecordUrl(prefill.url, state.prefilledUrl)) clearEvidenceSelection();
     state.prefill = prefill;
     state.iiif = !!prefill.iiif;
     state.prefilledUrl = prefill.url || null;
@@ -258,7 +283,8 @@
     if (pageCopyOn()) parts.push('Whole-page copy ✓');
     if (evidenceMode() === 'yes') {
       if (state.droppedAsset) {
-        parts.push('Record file: ' + state.droppedAsset.filename);
+        const note = $('f-provisional').checked ? ' (screen capture)' : '';
+        parts.push('Record file: ' + state.droppedAsset.filename + note);
       } else if (evidenceUrl()) {
         parts.push('Record file: from page address');
       } else if (state.ancestryViewer) {
@@ -347,9 +373,18 @@
 
   // ── Step 3: assemble + stage the bundle ──────────────────────────────────────
 
-  function gatherNotes() {
-    const notes = $('f-notes').value;
-    return notes.trim() ? notes : '';
+  function gatherNotes(provisional) {
+    let notes = $('f-notes').value;
+    if (!notes.trim()) notes = '';
+    // schema-2 capture.json carries the provisional flag structurally (on the
+    // record asset), but we ALSO surface it in the notes body - the one place
+    // review always reads (§5.6 "review sees every flag") - so a flagged screen
+    // capture is visible whether or not a tool honors the structured flag yet.
+    if (provisional) {
+      const flag = '[provisional image: a cleaner original may exist behind the paywall]';
+      notes = notes ? flag + '\n\n' + notes : flag;
+    }
+    return notes;
   }
 
   function blobToBase64(blob) {
@@ -442,6 +477,29 @@
     return { blob, filename: 'record.' + (resp.ext || 'bin'), mode: 'fetch' };
   }
 
+  // Compare two page addresses ignoring any #fragment: pages move the fragment
+  // for in-page position without changing the record, and a staleness warning
+  // on a fragment-only difference would cry wolf on a form that is fine.
+  function sameRecordUrl(a, b) {
+    return String(a || '').split('#')[0] === String(b || '').split('#')[0];
+  }
+
+  // The batch-mode staleness tell: if the tab's address moved after the form
+  // was pre-filled (a navigation the refresh missed, or one still parked behind
+  // an earlier capture), the fields below may describe the previous record.
+  // Warn in the top banner - never block, and never touch the fields: the human
+  // may have edited them deliberately for exactly this page.
+  async function warnIfFormStale() {
+    if (!state.prefilledUrl) return; // no pre-fill baseline, nothing to compare
+    const tab = await getTab(state.tabId);
+    if (!tab || !tab.url || sameRecordUrl(tab.url, state.prefilledUrl)) return;
+    const banner = $('recipe-banner');
+    banner.textContent =
+      'This page changed since the form was filled - check the title and web address before saving.';
+    banner.classList.remove('recipe');
+    banner.classList.add('warn');
+  }
+
   async function capture() {
     if (state.busy) return;
 
@@ -468,6 +526,8 @@
     setStageResult('Capturing…', '');
 
     try {
+      await warnIfFormStale();
+
       // page.html is always saved - grab it fresh at capture time so any
       // late-settling content is in the raw DOM the recipe re-extracts from.
       const pageResp = await sendToTab(state.tabId, { action: 'pagehtml' });
@@ -475,9 +535,17 @@
         throw new Error('could not read the page, reload it and try again');
       }
 
+      // The human's screen-capture flag rides with a file they provided by
+      // hand (the drop path, mode 'manual'). The url and auto paths (fetch /
+      // ancestry-api / iiif) pull the page's own original, never a screenshot,
+      // so gating on the dropped file keeps a stray tick from mislabeling a
+      // pristine fetched record as provisional.
+      const provisional =
+        wantEvidence && !!state.droppedAsset && $('f-provisional').checked;
+
       // Compose the asset list (the "both" case): the page copy and/or the
       // record evidence. Each entry carries its role so ingest files it right.
-      const assets = []; // { filename, blob, role, mode }
+      const assets = []; // { filename, blob, role, mode, provisional }
       if (wantPageCopy) {
         const pc = await buildPageCopy();
         assets.push({
@@ -501,6 +569,7 @@
             assets.push({
               filename: ev.filename, blob: ev.blob,
               role: 'record', mode: ev.mode,
+              provisional,
             });
           } catch (e) {
             evidenceWarning = e.message;
@@ -510,6 +579,7 @@
           assets.push({
             filename: ev.filename, blob: ev.blob,
             role: 'record', mode: ev.mode || (state.droppedAsset ? 'manual' : 'fetch'),
+            provisional,
           });
         }
       }
@@ -523,10 +593,11 @@
         sourceType: $('f-type').value,
         repository: $('f-repo').value.trim(),
         people: checkedPeople(),
-        notes: gatherNotes(),
+        notes: gatherNotes(provisional),
         recipeHint: state.prefill && state.prefill.recipeHint,
         assets: assets.map((a) => ({
           file: a.filename, role: a.role, mode: a.mode,
+          provisional: !!a.provisional,
         })),
       };
       const cap = captureJson.build(fields);
@@ -544,6 +615,7 @@
       // honest staging-folder download (§5.1). The extension never claims it
       // reached the archive when it only reached Downloads.
       let viaHost = false;
+      let hostWarning = null;
       if (await nativeHost.isAvailable()) {
         try {
           const hostAssets = [];
@@ -562,13 +634,21 @@
           viaHost = true;
           reportStaged(resp.stub || 'your archive inbox', true, evidenceWarning);
         } catch (e) {
-          // Fall back to the download path rather than failing the capture.
+          // Fall back to the download path rather than failing the capture -
+          // but say so. The human opted into the host (isAvailable was true
+          // just above), so a silent downgrade would misreport where captures
+          // are going for the rest of the sitting.
           viaHost = false;
+          hostWarning =
+            "Your archive connection didn't answer (" + shortHostReason(e) +
+            ') - this capture was saved to Downloads instead. Run' +
+            ' `fha capture --ingest` to sweep it in, and `fha capture --install-host`' +
+            ' if this keeps happening.';
         }
       }
       if (!viaHost) {
         const result = await bundle.writeBundle(spec);
-        reportStaged(result.dir, false, evidenceWarning);
+        reportStaged(result.dir, false, evidenceWarning, hostWarning);
       }
 
       resetForNext();
@@ -577,17 +657,49 @@
     } finally {
       state.busy = false;
       $('btn-capture').disabled = false;
+      // Replay a navigation that arrived mid-capture (parked by
+      // refreshOnNavigation) so the form moves on to the record now in the
+      // tab instead of silently staying on the one just staged.
+      if (state.pendingNav) {
+        state.pendingNav = false;
+        refreshOnNavigation(state.tabId, { status: 'complete' });
+      }
     }
   }
 
-  function reportStaged(where, viaHost, evidenceWarning) {
+  // Boil a native-messaging failure down to one plain phrase for the fallback
+  // warn line. Chrome's raw errors are developer-speak ("Specified native
+  // messaging host not found.", "Error when communicating with the native
+  // messaging host."); match the known shapes conservatively and fall back to
+  // the raw text, shortened, so an unmapped reason is still visible.
+  function shortHostReason(err) {
+    const raw = err && err.message ? String(err.message) : '';
+    const m = raw.toLowerCase();
+    if (m.includes('not found') || m.includes('not registered') || m.includes('forbidden')) {
+      return 'host not found';
+    }
+    if (m.includes('communicating') || m.includes('disconnected')
+        || m.includes('exited') || m.includes('no response')) {
+      return 'no reply';
+    }
+    if (m.includes('message length') || m.includes('exceed') || m.includes('too large')) {
+      return 'bundle too large';
+    }
+    if (!raw) return 'no reply';
+    return raw.length > 80 ? raw.slice(0, 77) + '…' : raw;
+  }
+
+  function reportStaged(where, viaHost, evidenceWarning, hostWarning) {
     // When the Ancestry auto-fetch missed but the page copy still staged, append
     // the reason so the human knows to grab the file manually - the capture
     // succeeded (it is not lost), it just doesn't yet carry the record image.
-    const suffix = evidenceWarning
+    // A native-host fallback (hostWarning) rides the same slot: the capture is
+    // safe in Downloads, and the line says why it is not in the archive inbox.
+    let suffix = evidenceWarning
       ? '\nThe full record image was not saved: ' + evidenceWarning
       : '';
-    const cls = evidenceWarning ? 'warn' : 'ok';
+    if (hostWarning) suffix += '\n' + hostWarning;
+    const cls = evidenceWarning || hostWarning ? 'warn' : 'ok';
     if (viaHost) {
       setStageResult('Filed straight into your archive: ' + where + suffix, cls);
       $('handoff').classList.remove('show');
@@ -606,32 +718,65 @@
     el.className = 'stage-result' + (cls ? ' ' + cls : '');
   }
 
-  function resetForNext() {
-    // Batch capture is the natural mode (§5.3): a research sitting yields a dozen
-    // bundles. Clear the evidence so the next page starts fresh, but leave the
-    // panel open and the settings intact. The form metadata (title/date/people/
-    // repo) is refreshed when the human navigates to the next record - see
-    // refreshOnNavigation - so it never carries one record's details onto the next.
+  // Clear the evidence picks that belong to ONE record: the dropped file, the
+  // dropzone's visual, and the screen-capture flag riding on that file. Runs
+  // when a bundle stages (resetForNext) AND when the form re-prefills for a
+  // different record (applyPrefill), so record A's dropped file - or its
+  // provisional tick - can never carry over and stage as record B's evidence.
+  function clearEvidenceSelection() {
     state.droppedAsset = null;
     const drop = $('dropzone');
     if (drop) {
       drop.classList.remove('has-file');
       drop.textContent = 'Drop a file here, or click to choose';
     }
+    // The screen-capture flag describes the current record's dropped file
+    // only, never any other record's - it must not stick across records (and
+    // it is never persisted).
+    $('f-provisional').checked = false;
+  }
+
+  function resetForNext() {
+    // Batch capture is the natural mode (§5.3): a research sitting yields a dozen
+    // bundles. Clear the evidence so the next page starts fresh, but leave the
+    // panel open and the settings intact. The form metadata (title/date/people/
+    // repo) is refreshed when the human navigates to the next record - see
+    // refreshOnNavigation - so it never carries one record's details onto the next.
+    clearEvidenceSelection();
     updateAssetStatus();
   }
 
   // Re-pull the pre-fill when the panel's tab navigates to a NEW record, so a
   // batch session never files the next page under the previous record's
-  // title/date/people/repo. Skips same-page updates and in-progress captures;
-  // an unreadable new page is left for the human to fill, not dead-ended.
+  // title/date/people/repo. Fires on a finished load ('complete') AND on a bare
+  // URL change: single-page viewers (Ancestry's next-image arrows) navigate
+  // with history.pushState and never reach 'complete', so without the url
+  // trigger the form silently goes stale mid-batch. A url change that is part
+  // of a full page load (status 'loading') is skipped - its own 'complete'
+  // follows once the DOM has settled. A navigation during a capture is parked,
+  // not dropped: capture()'s finally block replays it, so the form catches up
+  // the moment the capture lands. Skips same-record updates - including
+  // fragment-only moves, which change the #position, not the record; an
+  // unreadable new page is left for the human to fill, not dead-ended.
   async function refreshOnNavigation(tabId, changeInfo) {
-    if (tabId !== state.tabId || state.busy) return;
-    if (changeInfo.status !== 'complete') return;
-    const tab = await new Promise((resolve) =>
-      chrome.tabs.get(tabId, (t) => resolve(chrome.runtime.lastError ? null : t))
-    );
-    if (!tab || !/^https?:/i.test(tab.url || '') || tab.url === state.prefilledUrl) return;
+    if (tabId !== state.tabId) return;
+    const navigated =
+      changeInfo.status === 'complete' ||
+      (!!changeInfo.url && changeInfo.status !== 'loading');
+    if (!navigated) return;
+    if (state.busy) {
+      // Refreshing now would swap the form out from under the bundle being
+      // staged; park the event for the replay in capture()'s finally block.
+      state.pendingNav = true;
+      return;
+    }
+    const tab = await getTab(tabId);
+    if (!tab || !/^https?:/i.test(tab.url || '')) return;
+    // Same-record compare, not exact compare: in-page viewers (BookReader's
+    // #page arrows) move only the #fragment without changing the record, and
+    // a re-prefill on that wipes the human's typed notes/people for nothing.
+    // The staleness banner (warnIfFormStale) already compares this way.
+    if (sameRecordUrl(tab.url, state.prefilledUrl)) return;
     try {
       await injectContent(tabId);
       const resp = await sendToTab(tabId, { action: 'prefill' });
@@ -729,6 +874,7 @@
       })
     );
     $('f-asset-url').addEventListener('input', updateAssetStatus);
+    $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));
     $('btn-add-person').addEventListener('click', () => {

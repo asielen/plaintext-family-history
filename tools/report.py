@@ -894,8 +894,26 @@ def _section_possible_connections(archive_root: Path) -> list[str]:
 
 # ── Rendering / orchestration ──────────────────────────────────────────────────
 
-def _render_report(generated: str, bodies: dict[str, list[str]], section_filter: str | None) -> str:
+def _render_report(
+    generated: str,
+    bodies: dict[str, list[str]],
+    section_filter: str | None,
+    archive_notes: list[str] | None = None,
+) -> str:
+    """Assemble the report markdown: title, archive notes (when any), sections.
+
+    `archive_notes` are the refresh's own warnings (today: build_index's
+    malformed-coords messages) - lines a hand-edit produced that the refresh
+    skipped over. They render right under the title, before any section,
+    because the report IS the session-start path: a warning that only exists
+    on the discarded Result is invisible exactly where the human looks first
+    (round-2 finding 16). They print on section-filtered runs too - narrowing
+    the view should never hide that a line of the archive was skipped."""
     lines = [f'# fha report - {generated}', '']
+    if archive_notes:
+        lines.append('**Archive notes from this refresh:**')
+        lines.extend(f'- {note}' for note in archive_notes)
+        lines.append('')
     for key, number, title in SECTIONS:
         if section_filter and key != section_filter:
             continue
@@ -925,7 +943,9 @@ def run_report(
     The persisted snapshot and `.cache/report_{date}.md` always hold the complete
     report - `--section` narrows what's printed this run, not what's recorded -
     and both written files are listed in `result.changed`.  `result.exit_code`
-    follows the refresh lint pass (0/1/2).  `result['markdown']` etc. work because
+    follows the refresh lint pass (0/1/2); the index rebuild's own warnings
+    surface as the markdown's archive-notes block and as `result.messages`,
+    never in the exit code.  `result['markdown']` etc. work because
     Result exposes dict-style read access into `data` (_lib.py).
 
     Raises ValueError for an unknown `section` name.
@@ -948,7 +968,14 @@ def run_report(
     # already tolerates an index that lags behind - it just preserves
     # existing weak matches rather than failing - so this ordering is safe
     # either way; it's strictly an improvement.
-    index.build_index(archive_root, fha_config)
+    #
+    # The build's Result is kept, not discarded: its messages (malformed
+    # place coords a hand-edit produced) would otherwise be invisible on
+    # this session-start path - `fha report` is the one place the human
+    # reliably looks (round-2 finding 16). Each message text already names
+    # the file, the bad line, and the fix.
+    index_result = index.build_index(archive_root, fha_config)
+    archive_notes = [m.text for m in index_result.messages]
     photo_scan_error: str | None = None
     try:
         photoindex.run_scan(archive_root, fha_config, full=False)
@@ -989,8 +1016,10 @@ def run_report(
         }
 
         generated = datetime.date.today().isoformat()
-        full_md = _render_report(generated, bodies, section_filter=None)
-        printed_md = full_md if not section else _render_report(generated, bodies, section_filter=section)
+        full_md = _render_report(generated, bodies, section_filter=None,
+                                 archive_notes=archive_notes)
+        printed_md = full_md if not section else _render_report(
+            generated, bodies, section_filter=section, archive_notes=archive_notes)
 
         cache_dir = archive_root / '.cache'
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1005,6 +1034,11 @@ def run_report(
     # contract (TOOLING §1) instead of always reporting clean - an E-level
     # finding (duplicate IDs, malformed records, etc.) must surface as exit 2,
     # a W-level-only run as exit 1, same as `fha lint` itself would report.
+    # The index rebuild's warnings (the archive-notes block) deliberately do
+    # NOT move this code: report's documented exit contract is the lint
+    # verdict, and its consumers (the `today` skill) read it as such - the
+    # notes are printed, not exit-changing. Running `fha index` directly
+    # still exits 1 on them, per §1's warnings contract.
     if any(f.severity == 'E' for f in findings):
         exit_code = EXIT_ERRORS
     elif any(f.severity == 'W' for f in findings):
@@ -1021,6 +1055,10 @@ def run_report(
             'full_markdown': full_md,
             'sections': bodies,
         },
+        # The index warnings also ride as structured messages for headless
+        # consumers; the markdown embeds the same texts as the archive-notes
+        # block, so a front door should render one surface or the other.
+        messages=list(index_result.messages),
         changed=[str(report_path), str(snapshot_path)],
     )
 
@@ -1045,7 +1083,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    archive_root = resolve_root_arg(args)
+    # resolve_root_arg carries the archive guard: a typo'd --root used to
+    # mint a .cache and print a healthy-empty report with exit 0 (round-2
+    # finding 10). Refusal fires before the refresh writes anything.
+    archive_root = resolve_root_arg(args, command='fha report')
     if archive_root is None:
         return EXIT_FAILURE
 

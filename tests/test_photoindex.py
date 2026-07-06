@@ -13,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+from _lib import INDEX_SCHEMA_VERSION  # the synthetic index stamps must track the real schema
+
 import index
 import photoindex
 from _lib import (
@@ -476,10 +478,10 @@ class PhotoindexTests(unittest.TestCase):
             conn = sqlite3.connect(index_db)
             try:
                 conn.executescript(
-                    """
-                    PRAGMA user_version=4;
+                    f"""
+                    PRAGMA user_version={INDEX_SCHEMA_VERSION};
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '{INDEX_SCHEMA_VERSION}');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -551,10 +553,10 @@ class PhotoindexTests(unittest.TestCase):
             conn = sqlite3.connect(index_db)
             try:
                 conn.executescript(
-                    """
-                    PRAGMA user_version=4;
+                    f"""
+                    PRAGMA user_version={INDEX_SCHEMA_VERSION};
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '{INDEX_SCHEMA_VERSION}');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -614,10 +616,10 @@ class PhotoindexTests(unittest.TestCase):
             conn = sqlite3.connect(index_db)
             try:
                 conn.executescript(
-                    """
-                    PRAGMA user_version=4;
+                    f"""
+                    PRAGMA user_version={INDEX_SCHEMA_VERSION};
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '{INDEX_SCHEMA_VERSION}');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);
@@ -705,10 +707,10 @@ class PhotoindexTests(unittest.TestCase):
             conn = sqlite3.connect(index_db)
             try:
                 conn.executescript(
-                    """
-                    PRAGMA user_version=4;
+                    f"""
+                    PRAGMA user_version={INDEX_SCHEMA_VERSION};
                     CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                    INSERT INTO meta(key, value) VALUES ('schema_version', '4');
+                    INSERT INTO meta(key, value) VALUES ('schema_version', '{INDEX_SCHEMA_VERSION}');
                     CREATE TABLE persons(id TEXT, name TEXT);
                     CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
                     CREATE TABLE person_variants(person_id TEXT, variant TEXT);

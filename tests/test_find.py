@@ -397,6 +397,9 @@ class RunFindDispatchTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.archive_root = Path(self._tmp.name)
+        # _run_find (the CLI bridge these tests drive via --root) refuses a
+        # root without fha.yaml, so the synthetic archive must carry one.
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
         self.conn = _make_index(self.archive_root)
         _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
         _add_source(self.conn, 's-1111111111', 'Census')
@@ -835,6 +838,78 @@ class OpenIndexDbFailureTests(unittest.TestCase):
             root = Path(tmp)
             (root / '.cache' / 'index.sqlite').mkdir(parents=True)
             self.assertIsNone(find._open_index(root))
+
+
+class FindSourceRestrictedLabelTests(unittest.TestCase):
+    """`fha find <S-id>` must show the [restricted] label for a TYPED
+    `restricted:` value (`dna`, `by-request`) - the strongest markers. The
+    label reads the index's restricted column, which the old narrow idiom in
+    index.py stored as 0 for typed values, so the label silently vanished for
+    exactly the sources it mattered most for. End-to-end: real record files,
+    real build_index, real find output."""
+
+    _SOURCE = ('---\nid: {sid}\ntitle: {title}\nsource_type: other\n'
+               '{line}---\n\n## Claims\n')
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        for sid, title, line in (
+            ('S-1111111111', 'DNA match list', 'restricted: dna\n'),
+            ('S-2222222222', 'Private letter', 'restricted: by-request\n'),
+            ('S-3333333333', 'Plain census', ''),
+        ):
+            path = self.root / 'sources' / 'other' / f'src_{sid}.md'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                self._SOURCE.format(sid=sid, title=title, line=line),
+                encoding='utf-8',
+            )
+        import index
+        index.build_index(self.root, {})
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_typed_restricted_values_show_label(self) -> None:
+        for sid in ('s-1111111111', 's-2222222222'):
+            rc, out = _run(find.run_find, sid, self.root, {})
+            self.assertEqual(rc, EXIT_CLEAN, sid)
+            self.assertIn('[restricted]', out, sid)
+
+    def test_unrestricted_source_has_no_label(self) -> None:
+        rc, out = _run(find.run_find, 's-3333333333', self.root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('[restricted]', out)
+
+
+class RunFindRootGuardTests(unittest.TestCase):
+    """`fha find --root <non-archive>` must refuse (exit 3) with a message
+    naming the fix, mirroring `fha index --root`. Without the guard a typo'd
+    --root scanned an arbitrary folder and reported a false "not found in
+    archive tree" - a dead end that reads as "the record doesn't exist"."""
+
+    def test_non_archive_root_refused(self) -> None:
+        from contextlib import redirect_stderr
+        with tempfile.TemporaryDirectory() as tmp:
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = find._standalone_main(['p-aaaaaaaaaa', '--root', tmp])
+            self.assertEqual(rc, EXIT_FAILURE)
+            self.assertIn('fha.yaml', err.getvalue())
+            self.assertIn('--root', err.getvalue())
+
+    def test_root_with_fha_yaml_still_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            conn = _make_index(root)
+            _add_person(conn, 'p-aaaaaaaaaa', 'Alice')
+            conn.commit()
+            conn.close()
+            rc, out = _run(find._standalone_main, ['p-aaaaaaaaaa', '--root', tmp])
+            self.assertEqual(rc, EXIT_CLEAN)
+            self.assertIn('p-aaaaaaaaaa  [Alice]', out)
 
 
 if __name__ == '__main__':

@@ -36,7 +36,24 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     restrictions open with --include-restricted; `restricted: dna` needs
     --include-dna (DNA is always restricted, lint E017); `restricted: by-request`
     never opens under any flag. A restricted claim inside an otherwise-included
-    source is dropped from the timeline.
+    source is withheld from the timeline AND cut from the copied source record
+    itself (the README counts what was left out, in plain words) - the withhold
+    never requires the claim to carry an `id:`, because id-less claims are a
+    valid hand-authored state. The profile copy likewise drops withheld
+    `name_variants` entries and their `aliases:` mirrors, matching mirrors
+    through wikilink wrappers and the nested list an unquoted `[[name]]`
+    YAML-parses to, the same forgiving forms every alias consumer resolves.
+    A record that cannot be redacted safely - or whose claims cannot even be
+    read - is never shipped verbatim: a source is left out of the packet with
+    a warning (and its indexed claims are kept off the timeline), and a
+    profile (which the packet cannot ship without) fails the build.
+  - Unaccepted AI-draft prose (`<!-- AI-DRAFT ... -->`, the AGENTS.md AI-pass
+    contract) is withheld from the profile copy. No packet flag opens it -
+    the flags govern `restricted`, a different promise; acceptance is
+    `fha confirm draft`. A damaged marker fails the build (draft can no
+    longer be told from accepted prose, and the centerpiece cannot ship
+    verbatim). Research copies stay byte copies by the documented round-2
+    scope decision; one carrying a draft marker gets a README caution line.
   - Excluded sources are still named (ID + title only) in the README so the
     human knows material exists but was withheld, not silently dropped.
   - Any *other* person named in the packet's included claims/sources who is
@@ -72,6 +89,19 @@ CODE MAP
     _resolve_source_files         - source_files rows → resolved paths + missing/unresolvable notes
     _is_image_path                - extension sniff for photo-type asset files
 
+  Privacy redaction of copied records
+    (read_text_exact / write_text_exact - the newline-preserving IO that keeps a
+                                     redacted copy byte-faithful outside the cuts -
+                                     now live in _lib, shared with claims surgery)
+    _yaml_list_item_spans         - map a YAML list's entries to their line spans
+    _redact_source_record_text    - cut the flag-withheld claims from a source record copy
+                                     (decided per parsed entry, never by claim id)
+    _strip_frontmatter_list_entries - surgical removal from a top-level frontmatter list
+    _flatten_alias_strings        - strings inside a nested-list alias entry
+    _redact_profile_text          - drop withheld name variants + their alias mirrors
+    _strip_profile_drafts         - withhold unaccepted AI-draft prose from the profile copy
+    _source_copy_plan             - per-source copy mode (byte/redact/unsafe) + timeline excludes
+
   Photo gathering
     _photo_people_paths           - photo_people rows for this pid (a/b/c union, already resolved)
     _expand_photo_groups          - path set → full variation-group path set
@@ -85,6 +115,9 @@ CODE MAP
   Packaging
     _unique_dest_path             - collision-safe copy destination inside a packet subdirectory
     _copy_into                    - copy one file, returning the dest path or None on a missing src
+    _plural_note                  - one plain "left out for privacy" README line
+    _draft_note                   - one plain "draft awaiting your review left out" README line
+    _copy_redacted_source         - like _copy_into, but with the withheld claims cut out
     _write_readme                 - manifest + disclaimer + privacy captions
     _zip_directory                - zip the finished packet directory
 
@@ -98,6 +131,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import re
 import shutil
 import sqlite3
 import sys
@@ -106,10 +140,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import yaml
+
 from _lib import (
+    # _AI_DRAFT_MARK_RE is _lib-private on purpose (the marker grammar has ONE
+    # home, kept in sync with confirm.py's flip grammar); packet imports it for
+    # the README draft count only, so the count can never drift from what
+    # strip_unaccepted_drafts actually cut. The strip itself is the public API.
+    _AI_DRAFT_MARK_RE,
+    CLAIMS_RE,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    FRONT_RE,
     FhaConfigError,
     Result,
     configure_utf8_stdout,
@@ -121,8 +164,12 @@ from _lib import (
     path_to_alias,
     photoindex_status,
     read_record,
+    read_text_exact,
     resolve_path,
     resolve_root_arg,
+    strip_link_wrapper,
+    strip_unaccepted_drafts,
+    write_text_exact,
 )
 
 configure_utf8_stdout()
@@ -163,6 +210,334 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
     if rtype == 'by-request':
         return False
     return include_restricted
+
+
+# ── Privacy redaction of copied records ────────────────────────────────────────
+# A packet ships COPIES of record files, and a copy can leak what the gather
+# filters withheld: a restricted claim's YAML inside an otherwise-included
+# source, or a restricted `name_variants` entry (a private prior name) in the
+# profile's frontmatter. These helpers cut exactly those entries out of the
+# copy - a surgical line-span removal, so the rest of the file stays
+# byte-faithful - and every doubt fails CLOSED: a copy that cannot be redacted
+# is not written at all.
+# The newline-preserving IO pair these cuts depend on (read_text_exact /
+# write_text_exact) moved to _lib so the claims-surgery tools share the cure.
+
+def _yaml_list_item_spans(block: str) -> list[tuple[int, int]] | None:
+    """Offsets of each top-level `- ` entry in a YAML list block.
+
+    Line surgery has to know exactly which characters belong to which entry.
+    An entry starts at a bullet line at the list's own indent (the first
+    bullet's indent) and owns every following line - continuations, nested
+    lists, blanks, comments - until the next such bullet. Returns None when
+    non-comment content precedes the first bullet: the block is then not a
+    plain list, and cutting lines out of it would not be safe."""
+    spans: list[list[int]] = []
+    bullet_indent: int | None = None
+    pos = 0
+    for line in block.splitlines(keepends=True):
+        end = pos + len(line)
+        stripped = line.lstrip(' ')
+        indent = len(line) - len(stripped)
+        content = stripped.rstrip('\r\n')
+        is_bullet = content == '-' or content.startswith('- ')
+        if is_bullet and (bullet_indent is None or indent == bullet_indent):
+            bullet_indent = indent
+            spans.append([pos, end])
+        elif spans:
+            spans[-1][1] = end
+        elif content and not content.startswith('#'):
+            return None
+        pos = end
+    return [(s, e) for s, e in spans]
+
+
+def _redact_source_record_text(
+    text: str, *, include_restricted: bool, include_dna: bool,
+) -> tuple[str, int] | None:
+    """Cut every claim entry the flags withhold out of a source record's fenced
+    `## Claims` block, leaving every other character untouched.
+
+    Surgery instead of re-serializing because the copy should stay recognizably
+    the human's own file. Withheld-ness is decided HERE, per parsed entry, on
+    the very parse that maps entries to their line spans - claim ids play no
+    part. Round-2 finding 1: the previous design collected withheld C-ids up
+    front and cut by id, so a restricted claim with no `id:` (a lint-blessed
+    state - the quickstart teaches id-less claims) never entered the set and
+    shipped verbatim. One parse for both decision and cut also removes the old
+    two-read race where the id set and the splice could disagree.
+
+    Any doubt returns None so the caller fails CLOSED - the record is left out
+    of the packet, never shipped verbatim: no fenced block (an unfenced Claims
+    section still parses through read_record, but line surgery on it is not
+    safe), unparseable YAML, a non-list block, bullet spans that do not align
+    with the parsed entries, or an entry that is not a mapping (a stray prose
+    bullet cannot even be checked for a `restricted:` marker). An empty `- `
+    bullet parses to None and is kept: it has no content to withhold.
+
+    Returns (new_text, claims_removed). An emptied block stays a valid record:
+    a bare ```` ```yaml ``` ```` fence parses as an empty claims list."""
+    fm = FRONT_RE.match(text)
+    body_start = fm.end() if fm else 0
+    m = CLAIMS_RE.search(text[body_start:])
+    if not m:
+        return None
+    start = body_start + m.start(1)
+    end = body_start + m.end(1)
+    block = text[start:end]
+    try:
+        parsed = yaml.safe_load(block)
+    except yaml.YAMLError:
+        return None
+    if parsed is None:
+        parsed = []
+    if not isinstance(parsed, list):
+        return None
+    spans = _yaml_list_item_spans(block)
+    if spans is None or len(spans) != len(parsed):
+        return None
+    remove: list[tuple[int, int]] = []
+    for item, span in zip(parsed, spans):
+        if item is None:
+            continue
+        if not isinstance(item, dict):
+            return None
+        if not _restricted_included(
+            item.get('restricted'),
+            include_restricted=include_restricted, include_dna=include_dna,
+        ):
+            remove.append(span)
+    if not remove:
+        return text, 0
+    for s, e in reversed(remove):
+        block = block[:s] + block[e:]
+    return text[:start] + block + text[end:], len(remove)
+
+
+def _strip_frontmatter_list_entries(
+    fm_text: str, key: str, should_strip,
+) -> tuple[str, int, list] | None:
+    """Remove the entries `should_strip` matches from a top-level frontmatter list.
+
+    Handles the two shapes hand-written frontmatter uses: a block list under
+    `key:` (each entry a `- …` bullet, possibly spanning lines) and an inline
+    flow list (`key: [a, b]`) on the key line itself. Only the removed entries'
+    own lines are touched; when every entry goes, the then-empty `key:` line
+    goes too (block form) so the copy doesn't carry a dangling key.
+
+    Returns (new_fm_text, removed_count, removed_items); (fm_text, 0, []) when
+    the key is absent, holds no list, or nothing matches; None when a list is
+    present but its entries cannot be safely matched to their lines - the
+    caller must fail closed."""
+    lines = fm_text.splitlines(keepends=True)
+    key_re = re.compile(rf'^{re.escape(key)}\s*:\s*(.*)$')
+    key_idx = None
+    key_start = 0
+    inline_rest = ''
+    offset = 0
+    for i, line in enumerate(lines):
+        if not line.startswith((' ', '\t')):
+            m = key_re.match(line.rstrip('\r\n'))
+            if m:
+                key_idx = i
+                key_start = offset
+                inline_rest = m.group(1).strip()
+                break
+        offset += len(line)
+    if key_idx is None:
+        return fm_text, 0, []
+    key_line = lines[key_idx]
+    key_end = key_start + len(key_line)
+
+    if inline_rest and not inline_rest.startswith('#'):
+        # Inline flow form: the whole list lives on the key line, so the
+        # "surgery" is rewriting that one line (or dropping it entirely).
+        try:
+            doc = yaml.safe_load(key_line)
+        except yaml.YAMLError:
+            return None
+        value = doc.get(key) if isinstance(doc, dict) else None
+        if not isinstance(value, list):
+            return fm_text, 0, []
+        kept: list = []
+        removed_items: list = []
+        for item in value:
+            (removed_items if should_strip(item) else kept).append(item)
+        if not removed_items:
+            return fm_text, 0, []
+        eol = '\r\n' if key_line.endswith('\r\n') else ('\n' if key_line.endswith('\n') else '')
+        if kept:
+            dumped = yaml.safe_dump(
+                kept, default_flow_style=True, sort_keys=False, width=10 ** 6,
+            ).strip()
+            new_line = f'{key}: {dumped}{eol}'
+        else:
+            new_line = ''
+        return (
+            fm_text[:key_start] + new_line + fm_text[key_end:],
+            len(removed_items),
+            removed_items,
+        )
+
+    # Block form: the list is the indented (or bulleted) lines that follow.
+    block_end = key_end
+    for line in lines[key_idx + 1:]:
+        content = line.strip()
+        if (line.startswith((' ', '\t')) or not content
+                or content == '-' or content.startswith('- ') or content.startswith('#')):
+            block_end += len(line)
+            continue
+        break
+    block = fm_text[key_end:block_end]
+    try:
+        doc = yaml.safe_load(fm_text[key_start:block_end])
+    except yaml.YAMLError:
+        return None
+    value = doc.get(key) if isinstance(doc, dict) else None
+    if value is None or not isinstance(value, list):
+        # A bare `key:` or a non-list value carries no list entries to strip
+        # (consumers iterate these fields as lists; anything else reads as
+        # nothing, so nothing can leak from it either).
+        return fm_text, 0, []
+    spans = _yaml_list_item_spans(block)
+    if spans is None or len(spans) != len(value):
+        return None
+    remove: list[tuple[int, int]] = []
+    removed_items = []
+    for item, span in zip(value, spans):
+        if should_strip(item):
+            removed_items.append(item)
+            remove.append(span)
+    if not remove:
+        return fm_text, 0, []
+    for s, e in reversed(remove):
+        block = block[:s] + block[e:]
+    if len(remove) == len(value):
+        return fm_text[:key_start] + block + fm_text[block_end:], len(removed_items), removed_items
+    return fm_text[:key_end] + block + fm_text[block_end:], len(removed_items), removed_items
+
+
+def _flatten_alias_strings(value) -> list[str]:
+    """Depth-first strings inside a nested-list alias entry.
+
+    An unquoted `[[Old Name]]` YAML-parses to nested lists, and the nesting
+    depth differs between a block-form bullet (`- [[Old Name]]` gives a list
+    in a list) and a flow-form list (`aliases: [[Old Name]]` gives one level
+    less), so flatten all the way down rather than guess the depth."""
+    if isinstance(value, list):
+        out: list[str] = []
+        for v in value:
+            out.extend(_flatten_alias_strings(v))
+        return out
+    if value is None or isinstance(value, dict):
+        return []
+    return [str(value)]
+
+
+def _redact_profile_text(
+    text: str, *, include_restricted: bool, include_dna: bool,
+) -> tuple[str, int] | None:
+    """Strip withheld `name_variants` entries (and their `aliases:` mirrors)
+    from a profile copy's frontmatter.
+
+    A `{value:, restricted: …}` name variant is a private prior name (SPEC
+    §19); TOOLING §8 applies the shared flag logic to a NAME like anything
+    else, so a plain restriction opens with --include-restricted, dna with
+    --include-dna, and by-request never ships. The alias mirror matters
+    because owners copy variant values into `aliases:` for link resolution -
+    stripping one carrier but not the other would still print the name. A
+    mirror may be authored in any of the forgiving forms the alias consumers
+    resolve (_lib.link_field_refs' catalogue): a plain string, a quoted
+    wikilink (`"[[Old Name]]"`), or an unquoted `[[Old Name]]` that
+    YAML-parses to a nested list - all three are matched through
+    strip_link_wrapper (round-2 finding 5: matching only the plain form left
+    the wrapped mirrors printing the very name the README said was removed).
+    Body prose is untouched: the packet is a private export, and the
+    structured entries are the only spec'd carriers of a withheld name.
+
+    Returns (new_text, names_removed) - (text, 0) when there is nothing to
+    strip - or None when a variants list exists but cannot be safely edited;
+    the profile is the packet's required centerpiece, so the caller treats
+    None as a structural build failure rather than shipping it unredacted."""
+    fm = FRONT_RE.match(text)
+    if not fm:
+        return text, 0
+    fm_start, fm_end = fm.start(1), fm.end(1)
+    fm_text = text[fm_start:fm_end]
+
+    def _strip_variant(item) -> bool:
+        return isinstance(item, dict) and not _restricted_included(
+            item.get('restricted'),
+            include_restricted=include_restricted, include_dna=include_dna,
+        )
+
+    result = _strip_frontmatter_list_entries(fm_text, 'name_variants', _strip_variant)
+    if result is None:
+        return None
+    fm_text, removed, removed_items = result
+    if not removed:
+        return text, 0
+
+    hidden_values = {
+        str(item.get('value') or '').strip().lower()
+        for item in removed_items if isinstance(item, dict)
+    }
+    hidden_values.discard('')
+    if hidden_values:
+        def _strip_alias(item) -> bool:
+            if isinstance(item, dict):
+                return False
+            if isinstance(item, list):
+                parts = _flatten_alias_strings(item)
+                target = strip_link_wrapper(f'[[{" ".join(parts)}]]') if parts else ''
+            else:
+                target = strip_link_wrapper(str(item))
+            return target.strip().lower() in hidden_values
+
+        alias_result = _strip_frontmatter_list_entries(fm_text, 'aliases', _strip_alias)
+        if alias_result is None:
+            return None
+        fm_text, alias_removed, _ = alias_result
+        removed += alias_removed
+
+    return text[:fm_start] + fm_text + text[fm_end:], removed
+
+
+def _strip_profile_drafts(text: str) -> tuple[str, int, str | None]:
+    """Withhold unaccepted AI-draft prose from the profile copy (round-2 S1).
+
+    The AI-pass contract (AGENTS.md) is unqualified: prose an AI drafted stays
+    inside `<!-- AI-DRAFT ... -->` markers until `fha confirm draft` accepts
+    it - no export ships it, and no packet flag opens it (the include flags
+    govern the `restricted` marker, a different promise with a different
+    gate). The packet is a private family export, so the posture mirrors
+    `fha site`: WITHHOLD the draft blocks and keep building rather than
+    refuse the packet - a draft is a normal in-progress state, not a defect -
+    and say plainly in the README how much was held back. Accepted blocks
+    ship with their AI-ACCEPTED provenance markers removed, like every other
+    publication path.
+
+    Only the body is stripped: the shared stripper cuts each draft back to
+    the previous heading/marker boundary, so run over the whole file a draft
+    at the top of the body would cut from offset 0 - straight through the
+    frontmatter. Splitting first mirrors wikitree, which strips rec['body'].
+
+    Returns (new_text, draft_blocks_withheld, problem). A non-None problem
+    means a damaged marker (an unterminated `<!-- AI-DRAFT`, a stray marker
+    word the grammar cannot account for): draft can no longer be told from
+    accepted prose, no usable text is returned, and the caller must treat
+    the profile as un-shippable - the same structural posture as a private
+    name that could not be separated out. The block count comes from _lib's
+    own marker regex, not a local copy, so the README's "N draft paragraphs
+    were left out" can never drift from what the stripper actually cut."""
+    fm = FRONT_RE.match(text)
+    body_start = fm.end() if fm else 0
+    body = text[body_start:]
+    stripped, problem = strip_unaccepted_drafts(body)
+    if problem is not None:
+        return '', 0, problem
+    return text[:body_start] + stripped, len(_AI_DRAFT_MARK_RE.findall(body)), None
+
 
 _REQUIRED_TABLES = (
     'persons', 'claims', 'sources', 'claim_persons', 'source_files',
@@ -488,25 +863,48 @@ def _source_image_paths(
 
 # ── Claim-level restriction ────────────────────────────────────────────────────
 
-def _restricted_claim_ids(
+def _source_copy_plan(
     conn: sqlite3.Connection,
     archive_root: Path,
     included_source_ids: list[str],
     *,
     include_restricted: bool,
     include_dna: bool,
-) -> set[str]:
-    """Claim IDs (within otherwise-included sources) that must NOT leak.
+) -> tuple[dict[str, str], set[str]]:
+    """Decide how each included source's record file may be copied, and which
+    claim ids the flags withhold from the generated timeline.
 
-    A single sensitive `restricted:` claim can sit inside an unrestricted source
-    (SPEC §8.4) - "cause of death: suicide", say. The index carries no
-    claim-level `restricted` column, so the marker is read from each included
-    source's `## Claims` block. Returns the normalized C-ids to exclude under the
-    active flags (a `by-request` claim is excluded even with --include-restricted).
-    """
-    excluded: set[str] = set()
+    A single sensitive `restricted:` claim can sit inside an unrestricted
+    source (SPEC §8.4) - "cause of death: suicide", say - and the index
+    carries no claim-level `restricted` column, so the marker is read from
+    each included source's record file. Returns (copy_plan, timeline_excluded):
+    copy_plan maps source_id to 'redact' (at least one claim is withheld under
+    the active flags - copy through the line-span redactor) or 'unsafe' (the
+    claims cannot be trusted at all - do not copy the record); a source absent
+    from the plan is safe to byte-copy. `by-request` claims are withheld even
+    with --include-restricted, like everywhere else.
+
+    Withheld-ness never requires a claim id (round-2 finding 1: `id:` is
+    optional on hand-written claims, and keying the withheld set by C-id let
+    an id-less restricted claim ship verbatim). Ids matter only for the
+    timeline exclusion set, and an id-less claim needs no entry there BY
+    CONSTRUCTION: the timeline reads the index, and `fha index` drops any
+    claim without a valid C-id, so the copied record file is the only surface
+    an id-less claim can leak through - the copy is the leak surface, the
+    timeline never sees them.
+
+    Every parse doubt fails CLOSED as 'unsafe': read_record reporting
+    parse_errors (its claims then read as [] - any number of restricted
+    claims could be hiding in the text that would not parse), or a claims
+    entry that is not a mapping (its `restricted:` flag cannot even be
+    checked). The caller also keeps an 'unsafe' source's indexed claims out
+    of the timeline: a fresh real index drops a malformed record's claims on
+    its own, but the packet must not depend on that staying true of every
+    index it is ever handed."""
+    plan: dict[str, str] = {}
+    timeline_excluded: set[str] = set()
     if not included_source_ids:
-        return excluded
+        return plan, timeline_excluded
     placeholders = ','.join('?' * len(included_source_ids))
     rows = conn.execute(
         f'SELECT id, path FROM sources WHERE id IN ({placeholders})', list(included_source_ids)
@@ -515,19 +913,24 @@ def _restricted_claim_ids(
         try:
             rec = read_record(archive_root / row['path'])
         except Exception:
+            plan[row['id']] = 'unsafe'
+            continue
+        if rec['parse_errors']:
+            plan[row['id']] = 'unsafe'
             continue
         for claim in rec['claims']:
             if not isinstance(claim, dict):
-                continue
-            cid = normalize_id(str(claim.get('id', '')))
-            if not cid:
-                continue
+                plan[row['id']] = 'unsafe'
+                break
             if not _restricted_included(
                 claim.get('restricted'),
                 include_restricted=include_restricted, include_dna=include_dna,
             ):
-                excluded.add(cid)
-    return excluded
+                plan[row['id']] = 'redact'
+                cid = normalize_id(str(claim.get('id', '')))
+                if cid:
+                    timeline_excluded.add(cid)
+    return plan, timeline_excluded
 
 
 # ── Timeline ──────────────────────────────────────────────────────────────────
@@ -632,6 +1035,87 @@ def _copy_into(src: Path, dest_dir: Path, *, messages: list[str] | None = None) 
     return dest
 
 
+def _plural_note(count: int, noun: str, filename: str) -> str:
+    """One plain README line for withheld material, in the owner's language.
+
+    "2 private facts were left out of x.md; they stay in your archive." - the
+    non-technical reader must learn three things from one line: something was
+    held back, how much, and that nothing was deleted from the archive itself."""
+    if count == 1:
+        return f'1 private {noun} was left out of {filename}; it stays in your archive.'
+    return f'{count} private {noun}s were left out of {filename}; they stay in your archive.'
+
+
+def _draft_note(count: int, filename: str) -> str:
+    """One plain README line for withheld draft prose (round-2 S1).
+
+    Same three lessons as _plural_note - something was held back, how much,
+    nothing was deleted - plus the why in the owner's own terms: the
+    paragraphs are waiting on his review (`fha confirm draft`), they are not
+    private facts."""
+    if count == 1:
+        return (f'1 draft paragraph awaiting your review was left out of '
+                f'{filename}; it stays in your archive.')
+    return (f'{count} draft paragraphs awaiting your review were left out of '
+            f'{filename}; they stay in your archive.')
+
+
+def _copy_redacted_source(
+    src: Path,
+    dest_dir: Path,
+    *,
+    include_restricted: bool,
+    include_dna: bool,
+    messages: list[str],
+    redaction_notes: list[str],
+) -> Path | None:
+    """Copy a source record into the packet minus the claims the flags withhold.
+
+    The unredacted record must never reach the packet, so unlike _copy_into
+    every failure here fails CLOSED: an unreadable file or a Claims block whose
+    entries cannot be matched to their lines (say, a hand-removed ```yaml
+    fence - the forgiving reader still parses those claims, but line surgery
+    on them is not safe) SKIPS the copy with a warning naming the record and
+    the fix. A missing record in a packet is recoverable; a leaked private
+    fact is not. The withhold decision itself lives in
+    _redact_source_record_text, on the same parse that cuts, never keyed by
+    claim id (round-2 finding 1). Successful redaction is quiet on stderr -
+    it is the normal working of the privacy rules, not a problem - and speaks
+    in the README."""
+    try:
+        text = read_text_exact(src)
+    except (OSError, UnicodeError) as e:
+        messages.append(
+            f'WARNING: could not read {src}: {e} - the record was left out of sources/.'
+        )
+        return None
+    redacted = _redact_source_record_text(
+        text, include_restricted=include_restricted, include_dna=include_dna,
+    )
+    if redacted is None:
+        messages.append(
+            f'WARNING: {src.name} holds private claims that could not be cleanly '
+            'separated out, so the record was left out of sources/ to be safe. '
+            'It stays in your archive; run `fha lint` on it, then rebuild the packet.'
+        )
+        redaction_notes.append(
+            f'{src.name} was left out of sources/: it holds private facts that '
+            'could not be separated out safely. The record stays in your archive.'
+        )
+        return None
+    new_text, removed = redacted
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = _unique_dest_path(dest_dir, src.name)
+    try:
+        write_text_exact(dest, new_text)
+    except OSError as e:
+        messages.append(f'WARNING: could not copy {src}: {e}')
+        return None
+    if removed:
+        redaction_notes.append(_plural_note(removed, 'fact', dest.name))
+    return dest
+
+
 def _write_readme(
     readme_path: Path,
     *,
@@ -643,8 +1127,10 @@ def _write_readme(
     photo_count: int,
     unverified_photo_count: int,
     research_included: bool,
+    research_draft_caution: bool,
     has_asset_files: bool,
     missing_assets: list[str],
+    redaction_notes: list[str],
 ) -> None:
     lines = [
         f'fha packet - {person_name} ({fmt_id_display(pid)})\n',
@@ -672,6 +1158,25 @@ def _write_readme(
             'and have not been visually confirmed - treat as unverified.\n'
         )
 
+    if research_included:
+        # Research files ship as byte copies (round-2 scope decision: working
+        # notes, not publication prose), so - unlike the profile and source
+        # records - they are NOT run through the restricted-claim splice,
+        # deadname strip, or draft withhold. Always say so, so a recipient
+        # knows the research copy is raw notes that may name living or
+        # restricted people; the second line pins the specific draft case when
+        # a marker is actually present.
+        lines.append(
+            '\nNOTE: profile/ includes the raw research notes as working material\n'
+            '(not publication-cleaned) - they may reference living or restricted\n'
+            'people and are not redacted the way the profile and sources are.\n'
+        )
+        if research_draft_caution:
+            lines.append(
+                'They may also contain unreviewed draft text (AI-DRAFT sections\n'
+                'awaiting review) - treat those as suggestions, not accepted facts.\n'
+            )
+
     if included_sources:
         lines.append(f'\nIncluded sources ({len(included_sources)}):\n')
         for row in included_sources:
@@ -685,6 +1190,11 @@ def _write_readme(
         for row in excluded_sources:
             reason = 'DNA' if row['source_type'] == 'dna' else 'restricted'
             lines.append(f'  [{fmt_id_display(row["id"])}] ({reason})\n')
+
+    if redaction_notes:
+        lines.append('\nLeft out for privacy:\n')
+        for note in redaction_notes:
+            lines.append(f'  - {note}\n')
 
     if missing_assets:
         lines.append('\nMissing files (not copied):\n')
@@ -877,13 +1387,16 @@ def _packet_payload(
             messages.append(f'WARNING: {item}')
 
         # A single restricted claim inside an otherwise-included source is
-        # withheld from the timeline (SPEC §8.4); the source record itself is
-        # still copied (its other claims are fine), but the sensitive fact does
-        # not surface in the generated chronology.
-        excluded_claim_ids = _restricted_claim_ids(
+        # withheld from BOTH the generated timeline and the copied source
+        # record itself (SPEC §8.4, TOOLING §8): the record is still shipped
+        # (its other claims are fine), minus the withheld entries' YAML. A
+        # record whose claims cannot be read safely is not shipped at all,
+        # and none of its indexed claims reach the timeline - fail closed.
+        copy_plan, excluded_claim_ids = _source_copy_plan(
             conn, archive_root, list(included_ids),
             include_restricted=include_restricted, include_dna=include_dna,
         )
+        unsafe_source_ids = {sid for sid, mode in copy_plan.items() if mode == 'unsafe'}
 
         surname = person['surname'] or person_name.split()[-1]
         slug_surname = ''.join(c for c in surname.lower() if c.isalnum()) or 'person'
@@ -914,6 +1427,7 @@ def _packet_payload(
                 'messages': messages,
             }
 
+        redaction_notes: list[str] = []
         try:
             if packet_dir.exists():
                 shutil.rmtree(packet_dir)
@@ -925,18 +1439,70 @@ def _packet_payload(
             # record; a missing/failed copy is a structural failure (not the
             # per-file warning path used for optional assets), so it raises
             # into the cleanup handler below rather than shipping a packet
-            # without it.
+            # without it. The copy is checked for withheld name_variants
+            # entries (private prior names) first, then for unaccepted
+            # AI-draft prose; a profile that cannot be redacted - or whose
+            # draft markers are too damaged to tell draft from accepted
+            # prose - fails the build the same structural way, because the
+            # packet can neither ship without a profile nor ship it verbatim.
             profile_dir = packet_dir / 'profile'
             profile_dir.mkdir()
             if not profile_path.exists():
                 raise OSError(f'required profile file not found on disk: {profile_path}')
-            if _copy_into(profile_path, profile_dir, messages=messages) is None:
+            try:
+                profile_text = read_text_exact(profile_path)
+            except (OSError, UnicodeError) as e:
+                raise OSError(f'could not read required profile file: {e}')
+            profile_redaction = _redact_profile_text(
+                profile_text,
+                include_restricted=include_restricted, include_dna=include_dna,
+            )
+            if profile_redaction is None:
+                raise OSError(
+                    f'private names in {profile_path.name} could not be separated '
+                    'out of the copy - fix that file\'s frontmatter (`fha lint` '
+                    'will point at the problem), then rebuild the packet.'
+                )
+            redacted_profile_text, hidden_name_count = profile_redaction
+            profile_out_text, draft_count, draft_problem = _strip_profile_drafts(
+                redacted_profile_text
+            )
+            if draft_problem is not None:
+                raise OSError(
+                    f'a draft marker in {profile_path.name} is damaged ({draft_problem}) - '
+                    'unreviewed draft text cannot be told apart from accepted prose. '
+                    'Repair the marker (usually: add the missing "-->"), or remove '
+                    'the draft text, then rebuild the packet.'
+                )
+            if profile_out_text != profile_text:
+                write_text_exact(
+                    _unique_dest_path(profile_dir, profile_path.name), profile_out_text,
+                )
+                if hidden_name_count:
+                    redaction_notes.append(
+                        _plural_note(hidden_name_count, 'name', profile_path.name)
+                    )
+                if draft_count:
+                    redaction_notes.append(_draft_note(draft_count, profile_path.name))
+            elif _copy_into(profile_path, profile_dir, messages=messages) is None:
                 raise OSError(f'could not copy required profile file: {profile_path}')
             research_included = False
+            research_draft_caution = False
             if include_research:
                 research_path = archive_root / research_row['path'] if research_row else None
                 if research_path is not None and research_path.exists():
                     research_included = _copy_into(research_path, profile_dir, messages=messages) is not None
+                    if research_included:
+                        # Research stays a byte copy (round-2 scope decision:
+                        # working notes, not publication prose), so a draft
+                        # marker inside travels with it - detect it for the
+                        # README caution. A byte sniff, not a parse:
+                        # 'AI-DRAFT' is ASCII, and an unreadable file just
+                        # forgoes the caution it could not verify.
+                        try:
+                            research_draft_caution = b'AI-DRAFT' in research_path.read_bytes()
+                        except OSError:
+                            research_draft_caution = False
                 elif research_path is not None:
                     messages.append(f'WARNING: research file not found on disk: {research_path}')
                 else:
@@ -944,22 +1510,52 @@ def _packet_payload(
                         f'WARNING: --include-research requested but no research file is recorded for {fmt_id_display(pid)}.'
                     )
 
-            # timeline.md
+            # timeline.md - 'unsafe' sources are subtracted here as well as
+            # skipped in the copy loop below: their privacy markers could not
+            # be read, so none of their claims ship on ANY surface.
             (packet_dir / 'timeline.md').write_text(
                 _build_timeline_text(
-                    conn, alias_pids, person_name, included_ids, excluded_claim_ids,
+                    conn, alias_pids, person_name,
+                    included_ids - unsafe_source_ids, excluded_claim_ids,
                 ),
                 encoding='utf-8',
             )
 
-            # sources/ + files/
+            # sources/ + files/ - a source whose Claims block holds withheld
+            # claims gets a redacted copy; one whose claims could not be read
+            # safely is left out entirely (fail closed); everything else is a
+            # byte copy. An 'unsafe' source's asset files still ship: they
+            # carry no claim YAML, and the source itself passed the
+            # source-level privacy gate.
             sources_dir = packet_dir / 'sources'
             files_dir = packet_dir / 'files'
             for row in included_rows:
                 src_record = archive_root / row['path']
                 if src_record.exists():
                     sources_dir.mkdir(exist_ok=True)
-                    _copy_into(src_record, sources_dir, messages=messages)
+                    mode = copy_plan.get(row['id'])
+                    if mode == 'unsafe':
+                        messages.append(
+                            f'WARNING: the claims in {src_record.name} could not be read, '
+                            'so the record was left out of sources/ to be safe - a '
+                            'private fact could be hiding in the part that would not '
+                            'read. It stays in your archive; run `fha lint` on it, '
+                            'then rebuild the packet.'
+                        )
+                        redaction_notes.append(
+                            f'{src_record.name} was left out of sources/: its claims '
+                            'could not be read, so private facts could not be ruled '
+                            'out. The record stays in your archive.'
+                        )
+                    elif mode == 'redact':
+                        _copy_redacted_source(
+                            src_record, sources_dir,
+                            include_restricted=include_restricted,
+                            include_dna=include_dna,
+                            messages=messages, redaction_notes=redaction_notes,
+                        )
+                    else:
+                        _copy_into(src_record, sources_dir, messages=messages)
                 else:
                     messages.append(f'WARNING: source record not found on disk: {src_record}')
                 for asset_path in files_by_source.get(row['id'], []):
@@ -1066,7 +1662,9 @@ def _packet_payload(
                 included_sources=included_rows, excluded_sources=excluded_rows,
                 other_named=other_named, photo_count=photo_count,
                 unverified_photo_count=unverified_count, research_included=research_included,
+                research_draft_caution=research_draft_caution,
                 has_asset_files=any(files_by_source.values()), missing_assets=missing_assets,
+                redaction_notes=redaction_notes,
             )
 
             _zip_directory(packet_dir, zip_path)

@@ -68,7 +68,7 @@ A fourth, practical sub-case of (a) lives in the companion: **on-screen but not 
 
 ### 2.4 Boundaries (non-negotiable)
 
-Capture reads the **open DOM/HTML only**. It does not log in, paginate, query APIs, or fetch behind auth on its own; it sees only what the browser is already showing the human in their own session. Bulk or automated retrieval against a site's terms is out of scope **by design** - this is a tool for filing the record you are already looking at, not a scraper. Everything it produces enters at `suggested` / needs-review like any intake; no claim is accepted without a human `reviewed:` date.
+Capture reads the **open DOM/HTML only**. It does not log in, paginate, query APIs, or fetch behind auth on its own; it sees only what the browser is already showing the human in their own session. Two scoped exceptions ride the human's own Capture click on the page in front of them: on an Ancestry image-viewer page the companion calls Ancestry's own image-download endpoint in the human's session - the same single request Ancestry's Download button makes; never bulk, never uninvited, never on any other site - and a page whose image is served over the open IIIF standard has that one full-size image fetched without credentials. Bulk or automated retrieval against a site's terms is out of scope **by design** - this is a tool for filing the record you are already looking at, not a scraper. Everything it produces enters at `suggested` / needs-review like any intake; no claim is accepted without a human `reviewed:` date.
 
 ### 2.5 Flags & exit codes
 
@@ -200,6 +200,8 @@ A fourth choice, **none** (case (c) pointer-only), writes citation + `external_l
 
 **Phase 4 - Stage, don't process (hand-off).** Clicking *Capture* writes the staged bundle (§5.2) and the panel reports where it went. **No source record is minted, no claims drafted, no S-id assigned** - the bundle is pre-source. The human goes back to researching and captures five more the same way; a research sitting yields a dozen bundles, and one later `fha capture --ingest` + `process-source` session works them all. Batch capture is the natural mode.
 
+Batch mode keeps the form honest across navigations: a navigation that lands *during* a capture is not lost - the panel replays the pre-fill refresh the moment the capture finishes; a viewer that changes only the address (no page load, e.g. next-image arrows) refreshes the form the same way; and if the page still moved between pre-fill and *Capture*, the panel warns ("This page changed since the form was filled") but never blocks - the human may have edited the fields deliberately.
+
 ### 5.4 MV3 manifest & permissions (least privilege)
 
 ```jsonc
@@ -250,7 +252,7 @@ The companion never silently produces a worse asset than it claims: a screenshot
 
 ### 5.7 Native-messaging host (the seamless upgrade)
 
-An optional Python host (`fha capture --host`, registered as a native-messaging manifest the extension can find) that receives a bundle over stdin/stdout framing and writes it **straight into the archive's `inbox/`** - resolving `inbox` through `fha.yaml` (SPEC §12.4), so it works for an external inbox root the Downloads path can't reach. With the host installed, Phase 4 files directly; without it, the extension falls back to §5.1's staging folder. The host runs only when the browser invokes it (no resident daemon), preserving the no-watcher rule. Installation is a one-time `fha capture --install-host` that writes the per-browser native-messaging manifest pointing at the local `fha`.
+An optional Python host (`fha capture --host`, registered as a native-messaging manifest the extension can find) that receives a bundle over stdin/stdout framing and writes it **straight into the archive's `inbox/`** - resolving `inbox` through `fha.yaml` (SPEC §12.4), so it works for an external inbox root the Downloads path can't reach. With the host installed, Phase 4 files directly; without it, the extension falls back to §5.1's staging folder. If the opted-in host answers the availability ping but then fails to file a bundle, the capture falls back to Downloads *and says so* - the panel names the reason and points at `fha capture --ingest` (recover this one) and `fha capture --install-host` (fix the recurrence); the seamless path never degrades silently. The host runs only when the browser invokes it (no resident daemon), preserving the no-watcher rule. Installation is a one-time `fha capture --install-host` that writes the per-browser native-messaging manifest pointing at the local `fha`.
 
 ---
 
@@ -281,7 +283,7 @@ Because nothing sweeps automatically (the no-watcher rule), the human has to *re
 
 These bind every delivery form and the engine alike:
 
-- **Reads only the open page, in the human's own session.** No login, no API calls, no pagination, no fetching behind auth on the tool's own initiative (§2.4). The case-(a) asset fetch retrieves only an asset the human can already see.
+- **Reads only the open page, in the human's own session.** No login, no pagination, no fetching behind auth on the tool's own initiative (§2.4). The case-(a) asset fetch retrieves only an asset the human can already see, with §2.4's two scoped exceptions - the Ancestry image-download endpoint called in the human's own session (the same single request as Ancestry's Download button; never bulk, never on any other site) and a IIIF full-size image fetched without credentials - both firing only on the human's Capture click, one image at a time.
 - **No local absolute paths leak.** Stubs store alias-form paths; `capture.json` carries the page URL, not a machine path.
 - **Everything enters `suggested`.** Capture drafts nothing as accepted; the S-id, the claims, and the person resolution are all the processing pass's job, gated by human review.
 - **Living/restricted handling is deferred to processing.** A stub is pre-source and carries no `living`/`restricted` decision; those are set when the source record is minted. The companion never publishes anything outward - it only stages into the local inbox.

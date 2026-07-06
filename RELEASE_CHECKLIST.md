@@ -6,7 +6,9 @@ Before tagging a spec release or pushing a significant change:
 - [ ] TOOLING version matches the SPEC version.
 - [ ] Local Markdown links resolve.
 - [ ] No real personal data in examples, docs, issues, or fixtures (see PRIVACY.md).
-- [ ] `example-archive/` is lint-clean under the current rules.
+- [ ] `example-archive/` lints with no errors under the current rules (warnings W101/W102 are intentional teaching states).
+- [ ] `example-archive/` generated views are fresh (`fha views refresh --root example-archive`, or the per-person view command) so the committed views match the current records.
+- [ ] Sample zips in `downloads/` rebuilt (`python build_sample_zips.py`) after any SPEC/TOOLING/docs/template change.
 - [ ] AGENTS.md / CLAUDE.md reference current command and skill names (no stale `promote`, `PERSON:`, `add-source`).
 - [ ] Significant design decisions are noted in the PR description or commit message.
 - [ ] Repo/tools/template/fixture distinction stays clear (no doc treats the repo root as a real archive).

@@ -58,6 +58,10 @@ class PlacesLintTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.archive_root = Path(self._tmp.name)
+        # The shared resolve_root_arg guard refuses an explicit --root without
+        # fha.yaml, so the CLI-path tests need the synthetic root to look like
+        # a real archive.
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
         self.conn = _make_index(self.archive_root)
 
     def tearDown(self) -> None:
@@ -166,6 +170,36 @@ class PlacesLintTests(unittest.TestCase):
             self.assertEqual(result['status'], 'failed')
         finally:
             shutil.rmtree(empty_root, ignore_errors=True)
+
+    # Result.exit_code must carry the severity verdict itself (E -> 2, W -> 1,
+    # clean -> 0), and the CLI must return exactly that code - a headless caller
+    # reading run_lint(...).exit_code used to see 1 even for E-level findings.
+
+    def test_error_findings_exit_code_errors_in_result_and_cli(self) -> None:
+        _add_place(self.conn, 'l-aaaaaaaaaa', 'Fairview')
+        _add_claim(self.conn, 'c-1111111111', place_id='l-bbbbbbbbbb')   # PL001 (E)
+        self.conn.commit()
+        result = places.run_lint(self.archive_root)
+        self.assertEqual(result.exit_code, places.EXIT_ERRORS)
+        args = argparse.Namespace(root=str(self.archive_root))
+        self.assertEqual(places._cmd_places_lint(args), places.EXIT_ERRORS)
+
+    def test_warning_only_findings_exit_code_warnings_in_result_and_cli(self) -> None:
+        _add_place(self.conn, 'l-aaaaaaaaaa', 'Fairview')
+        _add_place(self.conn, 'l-bbbbbbbbbb', 'FAIRVIEW')                # PL002 (W)
+        self.conn.commit()
+        result = places.run_lint(self.archive_root)
+        self.assertEqual(result.exit_code, places.EXIT_WARNINGS)
+        args = argparse.Namespace(root=str(self.archive_root))
+        self.assertEqual(places._cmd_places_lint(args), places.EXIT_WARNINGS)
+
+    def test_clean_registry_exit_code_clean_in_result_and_cli(self) -> None:
+        _add_place(self.conn, 'l-aaaaaaaaaa', 'Fairview')
+        self.conn.commit()
+        result = places.run_lint(self.archive_root)
+        self.assertEqual(result.exit_code, places.EXIT_CLEAN)
+        args = argparse.Namespace(root=str(self.archive_root))
+        self.assertEqual(places._cmd_places_lint(args), places.EXIT_CLEAN)
 
     def test_broken_places_fixture_fires_documented_cli_findings(self) -> None:
         fixture = ROOT / 'tests' / 'fixtures' / 'broken-places'
@@ -399,6 +433,71 @@ class GeocodeYamlEditTests(unittest.TestCase):
         fv = lines.index('- id: L-7c1a9f4e22')
         self.assertTrue(lines[fv + 1].strip().startswith('coords:'))
         self.assertNotIn('coords:', '\n'.join(lines[:fv]))
+
+    # A uniformly indented registry is valid YAML; the block-end scan used to
+    # match only column-0 items, run the block to EOF, and let entry 1's coords
+    # rewrite hit a LATER entry's coords line (alt_names appended to the tail).
+
+    def test_indented_registry_edits_only_target_block(self):
+        text = (
+            '  - id: L-7c1a9f4e22\n'
+            '    name: Fairview\n'
+            '  - id: L-aaaaaaaaaa\n'
+            '    name: Other\n'
+            '    coords: [1.0, 2.0]\n'
+        )
+        new, changed = places._apply_geocode_to_yaml(
+            text, 'L-7c1a9f4e22', 39.8, -95.6, ['Fairview City'])
+        self.assertTrue(changed)
+        lines = new.splitlines()
+        fv = lines.index('  - id: L-7c1a9f4e22')
+        other = lines.index('  - id: L-aaaaaaaaaa')
+        # Entry 1 got the coords and the alt_names, inside its own block.
+        self.assertIn('    coords: [39.8, -95.6]', lines[fv:other])
+        self.assertIn('    alt_names: [Fairview City]', lines[fv:other])
+        # Entry 2 is byte-identical - its coords line survives untouched.
+        self.assertEqual(lines[other:], ['  - id: L-aaaaaaaaaa',
+                                         '    name: Other',
+                                         '    coords: [1.0, 2.0]'])
+
+    def test_indented_registry_nested_list_stays_in_block(self):
+        # A deeper-indented dash (a history/alt_names item) must NOT end the
+        # block early; the next sibling `- id:` at the same indent does.
+        import yaml
+        text = (
+            '  - id: L-7c1a9f4e22\n'
+            '    name: Fairview\n'
+            '    history:\n'
+            '      - "1867: founded"\n'
+            '  - id: L-aaaaaaaaaa\n'
+            '    name: Other\n'
+        )
+        new, changed = places._apply_geocode_to_yaml(
+            text, 'L-7c1a9f4e22', 39.8, -95.6, ['Fairview City'])
+        self.assertTrue(changed)
+        data = yaml.safe_load(new)
+        self.assertEqual(len(data), 2)
+        self.assertEqual(data[0]['coords'], [39.8, -95.6])
+        self.assertEqual(data[0]['alt_names'], ['Fairview City'])
+        self.assertEqual(data[0]['history'], ['1867: founded'])
+        self.assertEqual(data[1], {'id': 'L-aaaaaaaaaa', 'name': 'Other'})
+
+    def test_indented_registry_last_entry(self):
+        text = (
+            '  - id: L-aaaaaaaaaa\n'
+            '    name: Other\n'
+            '  - id: L-7c1a9f4e22\n'
+            '    name: Fairview\n'
+        )
+        new, changed = places._apply_geocode_to_yaml(
+            text, 'L-7c1a9f4e22', 39.8, -95.6, ['Fairview City'])
+        self.assertTrue(changed)
+        lines = new.splitlines()
+        other = lines.index('  - id: L-aaaaaaaaaa')
+        fv = lines.index('  - id: L-7c1a9f4e22')
+        self.assertEqual(lines[other:fv], ['  - id: L-aaaaaaaaaa', '    name: Other'])
+        self.assertIn('    coords: [39.8, -95.6]', lines[fv:])
+        self.assertIn('    alt_names: [Fairview City]', lines[fv:])
 
     def test_comments_preserved(self):
         text = (

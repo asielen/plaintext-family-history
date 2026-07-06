@@ -2,7 +2,7 @@
 # Fill in the blanks. Delete any line you don't need. You can't break anything.
 name: Name Here
 sex:               # M, F, or other (only used for grammar in any generated text)
-living: false        # true, false, or unknown
+living: unknown        # true, false, or unknown
 birth:             # put the date of their birth here - preferred format is Day Month Year
                    # (e.g. 14 June 1950). Don't know the exact date? Partial dates work too:
                    # 1950, "about 1950", or 195X for "the 1950s".
