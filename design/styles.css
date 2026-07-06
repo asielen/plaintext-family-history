@@ -256,6 +256,18 @@ mark      { background: color-mix(in srgb, var(--ochre) 32%, transparent); color
 
 .timeline ul { margin: var(--space-1) 0 var(--space-4); }
 
+/* A person named but without a page of their own - dotted underline, no link
+   (mirrors the tree's stub-node convention). */
+.stub-ref { border-bottom: 1px dotted var(--rule-strong); }
+
+/* Source citations: a small superscript number inline, jumping to the numbered
+   Sources list at the foot of the page. IDs never appear in the reading view. */
+.fn-ref { font-weight: 600; }
+.fn-ref a { text-decoration: none; }
+ol.footnotes { font-size: var(--text-sm); color: var(--ink-soft); padding-left: 1.6em; }
+ol.footnotes li { margin: 0.25em 0; }
+ol.footnotes li:target { background: color-mix(in srgb, var(--ochre) 26%, transparent); }
+
 
 /* 6. LEDGER TABLE & TYPOGRAPHIC STATUSES */
 
@@ -281,12 +293,29 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 
 .fha-tree { overflow: auto; border: none; background: none; border-radius: 0; padding: 0; }
 .fha-tree-svg { display: block; }
-.fha-tree-edge { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; }
-.fha-tree-edge-social { stroke: var(--accent); stroke-dasharray: 5 3; }  /* adoptive/step/foster/guardian (SPEC 12.2) */
+/* Edge kinds are told apart by dash pattern (reads in print and for colorblind
+   viewers), not color alone:
+     genetic — solid    · parent–child by blood
+     legal   — long dash · adoptive / step / foster / guardian / in-law  (SPEC 12.2)
+     other   — dotted    · friend / coworker / associate  (from affiliations)      */
+.fha-tree-edge        { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; }
+.fha-tree-edge-legal  { stroke: var(--accent); stroke-dasharray: 6 3; }
+.fha-tree-edge-other  { stroke: var(--muted);  stroke-dasharray: 1 3; stroke-linecap: round; }
+.fha-tree-edge-social { stroke: var(--accent); stroke-dasharray: 6 3; }  /* back-compat alias → legal */
 
-.fha-node { box-sizing: border-box; width: 168px; min-height: 50px; border: none; border-bottom: 1px solid var(--rule);
-            border-radius: 0; background: none; padding: var(--space-1) var(--space-3) var(--space-1) 0;
+.fha-node { box-sizing: border-box; width: 200px; min-height: 64px;
+            display: flex; align-items: center; gap: var(--space-2);
+            border: none; border-bottom: 1px solid var(--rule); border-radius: 0; background: none;
+            padding: var(--space-1) var(--space-3) var(--space-1) 0;
             position: relative; font-size: var(--text-xs); line-height: 1.25; }
+.fha-node-text { min-width: 0; }   /* let the name wrap/clamp instead of overflowing */
+
+/* Fixed-size portrait square (or a monogram placeholder). Size is locked so it
+   never disturbs the node's card geometry. */
+.fha-portrait { flex: none; width: 38px; height: 38px; object-fit: cover;
+                border: 1px solid var(--rule-strong); background: var(--surface-sunken); }
+.fha-portrait-empty { display: inline-flex; align-items: center; justify-content: center;
+                      font-family: var(--font-display); font-size: 1.05rem; color: var(--muted); }
 .fha-node[data-branch="1"] { --node-accent: var(--branch-1); }
 .fha-node[data-branch="2"] { --node-accent: var(--branch-2); }
 .fha-node[data-branch="3"] { --node-accent: var(--branch-3); }
@@ -295,8 +324,9 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 .fha-node[data-branch="6"] { --node-accent: var(--branch-6); }
 .fha-node[data-branch="7"] { --node-accent: var(--branch-7); }
 
-.fha-name { display: inline-block; font-family: var(--font-display); font-weight: 600; font-size: var(--text-sm);
-            max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.fha-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-clamp: 2;
+            font-family: var(--font-display); font-weight: 600; font-size: var(--text-sm); line-height: 1.15;
+            max-width: 100%; overflow: hidden;
             border-bottom: 2px solid var(--node-accent, var(--rule-strong)); padding-bottom: 1px; }
 a.fha-name { color: var(--ink); text-decoration: none; }
 a.fha-name:hover { color: var(--accent); }
@@ -315,6 +345,12 @@ a.fha-name:hover { color: var(--accent); }
 .gen-num { font-family: var(--font-display); font-weight: 400; font-size: 2.4rem; line-height: 0.85;
            color: var(--accent); font-variant-numeric: oldstyle-nums; }
 
+/* Profile portrait — a photographic plate at the head of a person record. */
+.person-portrait { float: right; width: 9rem; height: 11rem; object-fit: cover;
+                   border: 1px solid var(--rule-strong); background: var(--surface-sunken);
+                   margin: 0 0 var(--space-4) var(--space-5); }
+@media (max-width: 32rem) { .person-portrait { width: 7rem; height: 8.5rem; } }
+
 /* Index with dotted leaders — surname & place indexes, finding-aid style */
 ul.leaders, .index-list.leaders { list-style: none; padding: 0; max-width: var(--measure); }
 ul.leaders li { display: flex; align-items: baseline; gap: 0.4rem; margin: 0.2em 0; }
@@ -323,6 +359,20 @@ ul.leaders .dots { flex: 1 1 auto; border-bottom: 1px dotted var(--rule-strong);
 ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--muted); white-space: nowrap; }
 
 .index-list { columns: 2; column-gap: var(--space-6); }
+
+/* Ancestor fan chart (static, print-friendly). Each segment's fill is a branch
+   colour lightened by generation - both set inline as --seg-color / --gen-fade,
+   composed here, so custom.css can retint the whole chart by changing tokens. */
+.fan-chart { display: block; max-width: 100%; height: auto; margin: var(--space-5) auto; }
+.fan-seg { fill: color-mix(in srgb, var(--seg-color, var(--surface-sunken))
+                 calc(100% - var(--gen-fade, 0%)), var(--paper));
+           stroke: var(--paper); stroke-width: 1; }
+.fan-seg-subject { fill: var(--surface-sunken); stroke: var(--rule-strong); }
+.fan-label { font-family: var(--font-serif); font-size: 11px; fill: var(--ink);
+             text-anchor: middle; dominant-baseline: middle; }
+.fan-label-subject { font-family: var(--font-display); font-weight: 600; font-size: 15px;
+             fill: var(--ink); text-anchor: middle; dominant-baseline: middle; }
+a.fan-link, a.fan-link:hover { text-decoration: none; }
 
 
 /* 9. UTILITIES */

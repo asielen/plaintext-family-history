@@ -127,7 +127,7 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "37b95a7ca7f39ef8eedfe952e6cbafd62a97e963bdf3220fb0699f66cbda9192",
+      "sha256": "771dc8b23fcf701e903b88287adb062a1d80e45691030baf10ee23a40347c6eb",
       "spec_version": "1.2"
     },
     {
@@ -158,6 +158,12 @@
       "path": "docs/CONTRIBUTING_SOURCES.md",
       "category": "operating",
       "sha256": "d06a812c6a3ac3dfabd6499300fac934313685303ca5a8bff6313646e6b16926",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "docs/DESIGN.md",
+      "category": "operating",
+      "sha256": "d96362bc18710da7613954256b4b94f5f5aff0873960619c16432c8131b086c6",
       "spec_version": "1.2"
     },
     {
@@ -490,7 +496,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "4feb1db5f05404ee457b26a1b6e5678f1c53b67cacd562eeab302d4572e75165",
+      "sha256": "f4640a10c9e2899ad84208b846ad0c2440ae10fd719c9d64160dd499d7561b7e",
       "spec_version": "1.2"
     },
     {
@@ -508,7 +514,7 @@
     {
       "path": "tools/templates/base.html",
       "category": "operating",
-      "sha256": "f282c116cabcd652c8eac9358a65f3c740cd94895573b4b7ecfc019ca7fc2893",
+      "sha256": "e9e97f9fe8e18d5ad9459052f95031882c7150502e29c4bd33e6e12205a9dee4",
       "spec_version": "1.2"
     },
     {
@@ -526,31 +532,31 @@
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "9357b119732c04063820915e38dfd5e0f620f4250b03a624cfae89c4bd000faa",
+      "sha256": "efa648a5038b77c01a4352325d8734be1271aca6c5f3d43fb8b10da991eee7e6",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/place.html",
       "category": "operating",
-      "sha256": "c35885901114d7211091c779eea89d0adf26b46cfc25c2e2d7e3cb1547209a47",
+      "sha256": "b9a337015031ed5480c0b770729e41a7b4b42ba03db1fd1ed15ea55e7c00cd95",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/source.html",
       "category": "operating",
-      "sha256": "0399979f165005ce4c0ae913aae294af45f0eaee78bcf14326cb6afa14d6ae8d",
+      "sha256": "83ea9fcfdf2a703723f59868b02664b758a308336eaa41baae2ae6be666776e8",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "54e0c2b23b9c90545312e8bfab49842abd5b31d6ec0e45681a73006e150f51d0",
+      "sha256": "ce9d8d16cbb23e50b3d18f2fbb975d38fa08cf20838691c61a1a7430b4385589",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/vendor/tree-adapter.js",
       "category": "operating",
-      "sha256": "3d0a3e8146fc9283ff3f5abf31ccc284c355c7f1c7d2adf702be5b8da6f71510",
+      "sha256": "80c6dd3c2dafdb4e48d7160b154266e1a5e1a355b3e1ea81d75e427cde84f5b1",
       "spec_version": "1.2"
     },
     {

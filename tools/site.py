@@ -109,6 +109,7 @@ import datetime
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import shutil
@@ -167,6 +168,13 @@ _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.
 
 # The largest edge (px) a standalone derivative is resized to (TOOLING §12).
 _DERIVATIVE_MAX_PX = 1200
+# Profile photos are shown small (a person-page plate, a tree square), so their
+# derivative is kept light - crisp at portrait size, tiny for the tree thumbnail.
+_PROFILE_MAX_PX = 512
+
+# Ancestor generations drawn in the static fan chart (rings beyond the subject).
+# 4 = up to great-great-grandparents: a readable page-sized pedigree fan.
+_FAN_GENERATIONS = 4
 
 # Ancestor pedigree depth on person pages (M8.5: "3 generations default" =
 # subject + 2 parent hops). The home descendant explorer is uncapped (the
@@ -176,6 +184,10 @@ _PEDIGREE_GENERATIONS = 3
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
 _RESTRICTED_LABEL = 'Restricted - not included in this publication'
+# Registry key for the single shared "restricted source" footnote: every withheld
+# source citation on a page collapses to one entry, so the count/identity of the
+# restricted sources is never revealed and the label never repeats inline.
+_RESTRICTED_FN = '\x00restricted'
 
 # Ownership stamp written into the output dir after every successful build.
 # `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
@@ -398,13 +410,14 @@ def _decade_header(date_edtf: str | None) -> str | None:
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
 
-def _make_derivative(src: Path, dest: Path) -> bool:
+def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) -> bool:
     """Write a resized, EXIF-stripped copy of `src` to `dest`. True on success.
 
     Standalone snapshots must carry their own image derivatives so no full-res
     original - and none of its EXIF (camera, GPS, timestamps that could leak a
     living person's location) - ever leaves the archive (TOOLING §12). PIL drops
-    metadata on a plain save; we additionally cap the longest edge at 1200px.
+    metadata on a plain save; we additionally cap the longest edge (`max_px`,
+    1200px by default; smaller for profile thumbnails).
 
     Failure (a corrupt image, an unsupported format, a locked file) returns
     False so the caller can warn-and-continue per the M8 UX bar (c) rather than
@@ -413,13 +426,110 @@ def _make_derivative(src: Path, dest: Path) -> bool:
     try:
         with Image.open(src) as im:
             im = im.convert('RGB') if im.mode not in ('RGB', 'L') else im
-            im.thumbnail((_DERIVATIVE_MAX_PX, _DERIVATIVE_MAX_PX))
+            im.thumbnail((max_px, max_px))
             dest.parent.mkdir(parents=True, exist_ok=True)
             # Re-save without the original info dict, so no EXIF/GPS survives.
             im.save(dest)
         return True
     except Exception:
         return False
+
+
+# ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
+
+def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60) -> str:
+    """Render an ancestor fan as a self-contained, print-friendly SVG string.
+
+    `labels` is an Ahnentafel map {number: {'name', 'url', 'redacted'}} - number 1
+    is the subject, 2/3 the parents, 4-7 the grandparents, and so on. The fan is a
+    180° semicircle with the subject at the hub; each segment's fill is a branch
+    colour lightened by generation (set inline as CSS vars, composed by the
+    stylesheet, so custom.css can retint the whole chart). Labels ride an SVG
+    <textPath> - curved along the ring on the roomy inner generations, radial
+    (reading outward) on the narrow outer ones - and are truncated to fit.
+    Colour/type come from the design tokens; this function only lays out geometry."""
+    n = max_gen
+    r_max = r0 + n * ring
+    pad = 14
+    cx = r_max + pad
+    cy = r_max + pad
+    w = 2 * r_max + 2 * pad
+    h = r_max + pad + 40
+
+    def polar(r: float, a: float) -> str:
+        return f"{cx + r * math.cos(a):.1f},{cy - r * math.sin(a):.1f}"
+
+    defs: list[str] = []      # one <path> per label; text rides it via <textPath>
+    body: list[str] = []
+    lid = 0
+
+    for num in sorted(labels):
+        g = num.bit_length() - 1
+        if g < 1 or g > n:
+            continue
+        info = labels[num]
+        slot = num - (1 << g)
+        seg = math.pi / (1 << g)
+        a2 = math.pi - slot * seg
+        a1 = math.pi - (slot + 1) * seg
+        r_in = r0 + (g - 1) * ring
+        r_out = r0 + g * ring
+        # In this coord system (y flipped) increasing angle is counter-clockwise,
+        # so the outer arc (a1→a2) sweeps 0 and the inner arc (a2→a1) sweeps 1;
+        # this makes adjacent segments tile with no gaps.
+        d = (f"M{polar(r_out, a1)} A{r_out:.1f},{r_out:.1f} 0 0 0 {polar(r_out, a2)} "
+             f"L{polar(r_in, a2)} A{r_in:.1f},{r_in:.1f} 0 0 1 {polar(r_in, a1)} Z")
+        if g >= 2:
+            gp = num >> (g - 2)                       # gen-2 ancestor → grandparent line
+            style = f'--seg-color:var(--branch-{(gp - 4) % 7 + 1}); --gen-fade:{min((g - 2) * 15, 55)}%'
+        else:
+            style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
+        body.append(f'<path class="fan-seg" style="{style}" d="{d}"/>')
+
+        if info.get('redacted') or not info.get('name'):
+            continue
+        # Labels ride an invisible path (SVG textPath), so they curve along the ring
+        # on the roomy inner generations and read radially (outward) on the narrow
+        # outer ones - and never clip at a wedge edge. The path is drawn in the
+        # direction that keeps text upright on this (upper) half of the circle.
+        lid += 1
+        pid = f'fan{lid}'
+        mid = (a1 + a2) / 2
+        rm = (r_in + r_out) / 2
+        fs = (14, 12, 11, 10, 9)[min(g, 4)]
+        if g < 4:                                     # inner: curved along the ring
+            path_d = f"M{polar(rm, a2)} A{rm:.1f},{rm:.1f} 0 0 1 {polar(rm, a1)}"
+            avail = rm * seg
+        else:                                         # outer: radial line, outward-upright
+            path_d = (f"M{polar(r_out, mid)} L{polar(r_in, mid)}" if mid > math.pi / 2
+                      else f"M{polar(r_in, mid)} L{polar(r_out, mid)}")
+            avail = r_out - r_in
+        defs.append(f'<path id="{pid}" d="{path_d}"/>')
+        budget = max(3, int(avail / (fs * 0.62)))     # textPath clips overflow, so keep it snug
+        name = info['name']
+        if len(name) > budget:
+            name = name[:budget - 1].rstrip() + '…'
+        label = (f'<text class="fan-label" font-size="{fs}"><textPath href="#{pid}" '
+                 f'startOffset="50%">{html.escape(name)}</textPath></text>')
+        url = info.get('url')
+        body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{label}</a>' if url else label)
+
+    # subject: filled upper half-disk at the hub (left→right, sweep 1 arcs over
+    # the top, so the hub fills the inner fan rather than hanging below) + name
+    body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
+                f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
+    subj = labels.get(1, {}).get('name', '')
+    if subj:
+        body.append(f'<text class="fan-label-subject" x="{cx:.1f}" y="{cy - r0 * 0.42:.1f}">'
+                    f'{html.escape(subj)}</text>')
+
+    out = [f'<svg class="fan-chart" viewBox="0 0 {w:.0f} {h:.0f}" '
+           f'preserveAspectRatio="xMidYMid meet" role="img" aria-label="Ancestor fan chart">']
+    if defs:
+        out.append('<defs>' + ''.join(defs) + '</defs>')
+    out += body
+    out.append('</svg>')
+    return '\n'.join(out)
 
 
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
@@ -494,6 +604,7 @@ class _SiteBuilder:
         self.media_dir = out_dir / 'media'
         self.data_dir = out_dir / 'data'       # neutral tree JSON artifacts (M8.5)
         self.vendor_dir = out_dir / 'vendor'    # vendored tree renderer + adapter (M8.5)
+        self.assets_dir = out_dir / 'assets'    # design system: stylesheet, override, fonts
 
         self.person_meta: dict[str, sqlite3.Row] = {}
         self.source_meta: dict[str, sqlite3.Row] = {}
@@ -517,6 +628,16 @@ class _SiteBuilder:
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
+        # A person's profile photo is resolved once (front-matter read + photo
+        # lookup + derivative) and reused across their page and every tree node
+        # they appear in. Value: the publishable image file, or None.
+        self._profile_photo_cache: dict[str, Path | None] = {}
+        # Per-person-page footnote registry: cited sources become numbered
+        # footnotes (superscripts inline, names listed at the bottom) instead of
+        # raw [S-id] chips. None outside a person page (e.g. place pages), where
+        # a source instead renders as a plain named link. Reset per person page.
+        self._footnotes: dict[str, int] | None = None
+        self._footnote_seq: list[str] = []
 
         if jinja2 is not None:
             self.env = jinja2.Environment(
@@ -798,24 +919,26 @@ class _SiteBuilder:
             if pid in self.person_pages:
                 href = html.escape(_rel_href(self.persons_dir / _page_filename(pid), page_dir), quote=True)
                 return f'<a href="{href}">{name}</a>'
-            return name
+            # A person without a page (a stub): show the name but mark it a stub
+            # with a dotted underline, mirroring the tree's stub-node convention.
+            return f'<span class="stub-ref">{name}</span>'
         if kind == 'S' and pid in self.source_meta:
-            row = self.source_meta[pid]
-            # Any source absent from source_pages (restricted, DNA, publication_ok=false,
-            # or linked to a living person) renders as the redacted label in standalone.
-            if not self.linked and pid not in self.source_pages:
-                return f'<span class="redacted">{_RESTRICTED_LABEL}</span>'
-            title = _escape(in_display or row['title'] or display)
-            if pid in self.source_pages:
-                href = html.escape(_rel_href(self.sources_dir / _page_filename(pid), page_dir), quote=True)
-                return f'<a href="{href}">{title}</a>'
-            return title
+            return self._cite_source(pid, page_dir, in_display)
+        if kind == 'C':
+            # A claim reference cites its backing source (never a raw claim id in
+            # the reading view). An unresolvable claim simply drops out.
+            sid = self._claim_source(pid)
+            return self._cite_source(sid, page_dir) if sid else ''
         if kind == 'L' and pid in self.place_meta:
             name = _escape(in_display or self.place_names.get(pid) or display)
             if pid in self.place_pages:
                 href = html.escape(_rel_href(self.places_dir / _page_filename(pid), page_dir), quote=True)
                 return f'<a href="{href}">{name}</a>'
             return name
+        # A dangling source id is a citation with nothing to point at: hide it
+        # rather than print a backend id into the reading view (lint flags it).
+        if kind == 'S':
+            return ''
         # Unresolved ID token - surfaced as the literal [X-xxxx] form, not hidden
         # (TOOLING §12 / BUILD M8.1; these are already lint errors).
         return f'<mark>[{_escape(display)}]</mark>'
@@ -824,25 +947,61 @@ class _SiteBuilder:
         """A bare person reference (not from prose) → link / redaction / name."""
         return self.render_token(fmt_id_display(pid), page_dir)
 
-    def _source_link(self, sid: str, page_dir: Path) -> str:
-        """A compact `[S-id]` citation chip for timelines and summary rows.
-
-        Distinct from `render_token`'s prose handling, which renders an S-id as
-        the source *title* so a sentence reads naturally. In a dense timeline or
-        summary a short bracketed id is clearer, so this builds the chip
-        directly - while honoring the same redaction and page-existence rules.
-        """
+    def _footnote_number(self, sid: str) -> int:
+        """The stable footnote number for a source on the current person page,
+        assigning the next one on first citation (repeated cites reuse it)."""
         sid = normalize_id(sid)
-        chip = f'[{_escape(fmt_id_display(sid))}]'
+        assert self._footnotes is not None
+        if sid not in self._footnotes:
+            self._footnote_seq.append(sid)
+            self._footnotes[sid] = len(self._footnote_seq)
+        return self._footnotes[sid]
+
+    def _claim_source(self, cid: str) -> str | None:
+        """The source id backing a claim, or None (used to cite a `[C-id]` token
+        by its source rather than printing the raw claim id)."""
+        try:
+            row = self.conn.execute(
+                'SELECT source_id FROM claims WHERE id = ?', (normalize_id(cid),)).fetchone()
+        except sqlite3.DatabaseError:
+            return None
+        return row['source_id'] if row and row['source_id'] else None
+
+    def _cite_source(self, sid: str | None, page_dir: Path, in_display: str | None = None) -> str:
+        """One source citation, used everywhere a source is referenced.
+
+        On a person page (a footnote registry is active): a small superscript
+        number into the numbered Sources list - so dense facts stay legible and
+        repeated sources collapse to one number - or, for a withheld source, the
+        single shared 'Restricted' footnote (its identity/count never leaks, and
+        the label never repeats inline). A source the author *named* in prose
+        (`[[S-id|text]]`) stays a plain link. Off a person page (place pages), a
+        named link or the redacted label. Dangling → nothing."""
+        if not sid:
+            return ''
+        sid = normalize_id(sid)
         row = self.source_meta.get(sid)
         if row is None:
-            return f'<mark>{chip}</mark>'
-        if not self.linked and self._source_is_redacted(row):
+            return ''
+        restricted = not self.linked and sid not in self.source_pages
+        if self._footnotes is not None:
+            key = _RESTRICTED_FN if restricted else sid
+            n = self._footnote_number(key)
+            if restricted or not in_display:
+                return f'<sup class="fn-ref"><a href="#fn-{n}">{n}</a></sup>'
+            href = html.escape(_rel_href(self.sources_dir / _page_filename(sid), page_dir), quote=True)
+            return f'<a href="{href}">{_escape(in_display)}</a>'   # author named it in prose
+        if restricted:
             return f'<span class="redacted">{_RESTRICTED_LABEL}</span>'
+        title = _escape(in_display or row['title'] or fmt_id_display(sid))
         if sid in self.source_pages:
             href = html.escape(_rel_href(self.sources_dir / _page_filename(sid), page_dir), quote=True)
-            return f'<a href="{href}">{chip}</a>'
-        return chip
+            return f'<a href="{href}">{title}</a>'
+        return title
+
+    def _source_link(self, sid: str, page_dir: Path) -> str:
+        """Compact source citation for summary/timeline rows (see `_cite_source`)."""
+        return self._cite_source(sid, page_dir)
 
     def _place_label(self, place_text: str | None, place_id: str | None) -> str:
         """Place display string: the as-written text, else the registry name."""
@@ -1038,6 +1197,8 @@ class _SiteBuilder:
         """Render one curated person page (TOOLING §12 / M8.2)."""
         row = self.person_meta[pid]
         page_dir = self.persons_dir
+        self._footnotes = {}          # start this page's source-footnote numbering
+        self._footnote_seq = []
 
         summary = self._person_summary(pid, page_dir)
         biography_html, stories_html = self._person_prose(row, page_dir)
@@ -1048,9 +1209,13 @@ class _SiteBuilder:
         name = row['name'] or fmt_id_display(pid)
         tree = self._make_tree_ctx(pid, 'ancestors', _PEDIGREE_GENERATIONS - 1, page_dir,
                                    f'Ancestor pedigree of {name}')
+        ahnen = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
+        fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
+            'portrait': self._profile_photo_href(pid, page_dir),
+            'fan': fan,
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
             'stories_html': self._markup(stories_html) if stories_html else None,
@@ -1058,6 +1223,7 @@ class _SiteBuilder:
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'tree': tree, 'root_prefix': '..'})
+        self._footnotes = None        # footnotes are strictly person-page-scoped
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…)."""
@@ -1185,8 +1351,13 @@ class _SiteBuilder:
         return groups
 
     def _person_sources(self, pid: str, page_dir: Path) -> list[dict]:
-        """Sources citing the person, grouped by source_type (TOOLING §12 - the
-        same two-table UNION as `fha views sources-index`)."""
+        """The person's Sources as a numbered footnote list - each source's human
+        name linked to its page, keyed to the superscript numbers used inline.
+
+        Called after the summary/timeline (which already numbered the sources they
+        cite, in reading order); any remaining sources that cite the person but are
+        not referenced inline are appended so the list stays complete. The same
+        two-table UNION as `fha views sources-index`."""
         status_filter = '' if self.linked else "AND c.status IN ('accepted','needs-review')"
         rows = self.conn.execute(
             f'SELECT DISTINCT c.source_id FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
@@ -1194,20 +1365,28 @@ class _SiteBuilder:
             'UNION SELECT DISTINCT source_id FROM source_people WHERE person_id = ?',
             (pid, pid),
         ).fetchall()
-        by_type: dict[str, list[str]] = {}
         for r in rows:
-            sid = r[0]
-            if sid not in self.source_meta:
+            sid = normalize_id(str(r[0])) if r[0] else None
+            if not sid or sid not in self.source_meta:
                 continue
-            # Standalone: only list sources that actually have a public page.
             if not self.linked and sid not in self.source_pages:
                 continue
-            st = self.source_meta[sid]['source_type'] or 'other'
-            by_type.setdefault(st, []).append(self._source_link(sid, page_dir))
-        return [
-            {'source_type': st, 'sources': [self._markup(s) for s in sorted(by_type[st])]}
-            for st in sorted(by_type)
-        ]
+            self._footnote_number(sid)          # ensure every person-source is numbered
+        out: list[dict] = []
+        for sid in (self._footnote_seq or []):
+            if sid == _RESTRICTED_FN:      # the single shared "restricted source" entry
+                out.append({'num': self._footnotes[sid],
+                            'html': self._markup(f'<span class="redacted">{_RESTRICTED_LABEL}</span>')})
+                continue
+            row = self.source_meta.get(sid)
+            if row is None:
+                continue
+            title = _escape(row['title'] or fmt_id_display(sid))
+            if sid in self.source_pages:
+                href = html.escape(_rel_href(self.sources_dir / _page_filename(sid), page_dir), quote=True)
+                title = f'<a href="{href}">{title}</a>'
+            out.append({'num': self._footnotes[sid], 'html': self._markup(title)})
+        return out
 
     def _has_public_claim(self, pid1: str, pid2: str) -> bool:
         """Return True if the two persons share at least one accepted/needs-review claim
@@ -1363,6 +1542,130 @@ class _SiteBuilder:
         href = _rel_href(dest, page_dir)
         return {'href': href, 'full_href': href, 'caption': caption}
 
+    # - profile photo (a person's chosen main portrait) -
+
+    def _profile_photo_file(self, pid: str) -> Path | None:
+        """The publishable image file for a person's `profile_photo:` field - a
+        fresh EXIF-stripped derivative in standalone, the original in linked - or
+        None when unset, unresolvable, or withheld. Resolved once per person and
+        reused across their page and every tree node they appear in."""
+        if pid not in self._profile_photo_cache:
+            self._profile_photo_cache[pid] = self._resolve_profile_photo(pid)
+        return self._profile_photo_cache[pid]
+
+    def _profile_photo_href(self, pid: str, page_dir: Path) -> str | None:
+        f = self._profile_photo_file(pid)
+        return _rel_href(f, page_dir) if f else None
+
+    def _resolve_profile_photo(self, pid: str) -> Path | None:
+        """Read the person's `profile_photo:` front-matter field, resolve it to an
+        indexed photo (lenient: S-id, exact path, or basename - so it survives
+        Lightroom moves), apply the same privacy gate as the strip, and produce a
+        small derivative. Any miss is a warn-and-skip, never a build failure."""
+        meta = self.person_meta.get(pid)
+        if meta is None:
+            return None
+        # A living/redacted person gets no portrait in the shared snapshot.
+        if not self.linked and self._person_is_redacted(meta):
+            return None
+        try:
+            rec = read_record(self.archive_root / meta['path'])
+        except Exception:  # noqa: BLE001 - an unreadable record just yields no portrait
+            return None
+        ref = str((rec.get('meta') or {}).get('profile_photo') or '').strip()
+        if not ref:
+            return None
+        if self.photos_conn is None:
+            return None
+        path = self._resolve_photo_ref(ref)
+        if not path:
+            self.messages.append(
+                f'WARNING: profile_photo for {fmt_id_display(pid)} ("{ref}") matched no '
+                'indexed photo; skipped (run `fha photoindex`?).')
+            return None
+        if not self.linked and not self._photo_is_public(path):
+            return None
+        try:
+            resolved = resolve_path(path, self.fha_config, self.archive_root)
+        except Exception:  # noqa: BLE001
+            return None
+        if not resolved.exists():
+            return None
+        if self.linked:
+            return resolved
+        if not _PIL_AVAILABLE:
+            return None
+        dest = self._media_dest(path, 'profiles')
+        if _make_derivative(resolved, dest, max_px=_PROFILE_MAX_PX):
+            return dest
+        self.messages.append(
+            f'WARNING: could not build a web image for profile_photo {path} '
+            f'({fmt_id_display(pid)}); skipped.')
+        return None
+
+    def _resolve_photo_ref(self, ref: str) -> str | None:
+        """Map a `profile_photo:` value to a stored photo path via the catalog.
+        Tries, in order: an S-id (the source's primary photo), the exact stored
+        path, then a basename match (so a moved file still resolves). Prefers the
+        group's primary variant on ties."""
+        if self.photos_conn is None:
+            return None
+        r = ref.strip().replace('\\', '/')
+
+        def pick(sql: str, params: tuple) -> str | None:
+            try:
+                rows = self.photos_conn.execute(sql, params).fetchall()
+            except sqlite3.DatabaseError:
+                return None
+            if not rows:
+                return None
+            rows = sorted(rows, key=lambda x: 0 if x['is_primary'] else 1)
+            return rows[0]['path']
+
+        if re.match(r'(?i)^s-[0-9a-z]+$', r):
+            hit = pick('SELECT path, is_primary FROM photos WHERE lower(source_id) = lower(?)', (r,))
+            if hit:
+                return hit
+        hit = pick('SELECT path, is_primary FROM photos WHERE path = ?', (r,))
+        if hit:
+            return hit
+        base = r.rsplit('/', 1)[-1]
+        return pick('SELECT path, is_primary FROM photos WHERE path = ? OR path LIKE ?',
+                    (base, '%/' + base))
+
+    def _photo_is_public(self, path: str) -> bool:
+        """Standalone gate for a single photo: its source (if any) must be
+        published, and it must not co-depict a living/redacted person. Mirrors
+        the photo-strip rules so a profile portrait can never leak either."""
+        if self.photos_conn is None:
+            return False
+        try:
+            row = self.photos_conn.execute(
+                'SELECT source_id, group_id FROM photos WHERE path = ?', (path,)).fetchone()
+        except sqlite3.DatabaseError:
+            return False
+        if row is None:
+            return False
+        src = (row['source_id'] or '').lower()
+        if src and src not in {s.lower() for s in self.source_pages}:
+            return False
+        try:
+            if row['group_id']:
+                refs = self.photos_conn.execute(
+                    'SELECT DISTINCT pp.person_ref FROM photo_people pp '
+                    'JOIN photos ph ON pp.path = ph.path WHERE ph.group_id = ?',
+                    (row['group_id'],)).fetchall()
+            else:
+                refs = self.photos_conn.execute(
+                    'SELECT DISTINCT person_ref FROM photo_people WHERE path = ?', (path,)).fetchall()
+        except sqlite3.DatabaseError:
+            return False
+        for ref in refs:
+            m = self.person_meta.get(ref['person_ref'])
+            if m is not None and self._person_is_redacted(m):
+                return False
+        return True
+
     # - place page (M8.3) -
 
     def build_place_page(self, lid: str) -> None:
@@ -1374,6 +1677,7 @@ class _SiteBuilder:
         place page never links to - or even names - a living person."""
         row = self.place_meta[lid]
         page_dir = self.places_dir
+        self._footnotes = None        # place-page sources render as named links, not footnotes
 
         lat, lon = row['lat'], row['lon']
         map_url = None
@@ -1584,7 +1888,8 @@ class _SiteBuilder:
         if pid in self.person_pages:
             url = _rel_href(self.persons_dir / _page_filename(pid), page_dir)
         return {'p_id': display, 'name': meta['name'] or display, 'sex': meta['sex'],
-                'vitals': self._person_vitals(pid), 'url': url}
+                'vitals': self._person_vitals(pid), 'url': url,
+                'photo': self._profile_photo_href(pid, page_dir)}
 
     def _build_tree_data(self, seed: str, mode: str, max_hops: int | None, page_dir: Path) -> dict:
         """BFS the `relationships` graph from `seed` and emit the neutral tree
@@ -1616,11 +1921,18 @@ class _SiteBuilder:
                 # (adoptive, step, foster, guardian, …) draws distinctly from the
                 # genetic line. Unset/legacy subtypes default to genetic.
                 subtype = (r['subtype'] or '').strip().lower() or None
+                genetic = is_genetic_parent_subtype(subtype)
                 edges.append({
                     'type': rel, 'from': fmt_id_display(cur), 'to': fmt_id_display(other),
                     'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
                     'subtype': subtype,
-                    'genetic': is_genetic_parent_subtype(subtype),
+                    'genetic': genetic,
+                    # Edge kind for the renderer (SPEC §12.2): 'genetic', or 'legal'
+                    # for a non-genetic parent/child bond (adoptive/step/foster/
+                    # guardian). Lateral 'other' ties (friend/associate/neighbor)
+                    # are not parent/child edges and never enter the tree. `genetic`
+                    # is kept for back-compat with the neutral-JSON contract.
+                    'kind': 'genetic' if genetic else 'legal',
                     'dates': {'start': None, 'end': None},
                 })
                 if other not in seen:
@@ -1632,6 +1944,55 @@ class _SiteBuilder:
             'nodes': [self._tree_node(pid, page_dir) for pid in order],
             'edges': edges,
         }
+
+    def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> dict:
+        """Ahnentafel map {number: {'name','url','redacted'}} for the fan chart,
+        walking `parent` edges from the seed. Father (a parent recorded M) takes the
+        even slot, mother (F) the odd one; unknown-sex parents fill whatever slot is
+        free. Redaction is applied per person - a withheld ancestor becomes a blank
+        segment, never a leaked name (mirrors `_tree_node`)."""
+        def entry(pid: str) -> dict:
+            meta = self.person_meta.get(pid)
+            if meta is None:
+                return {'name': fmt_id_display(pid), 'url': None, 'redacted': False}
+            if not self.linked and self._person_is_redacted(meta):
+                return {'name': '', 'url': None, 'redacted': True}
+            url = (_rel_href(self.persons_dir / _page_filename(pid), page_dir)
+                   if pid in self.person_pages else None)
+            return {'name': meta['name'] or fmt_id_display(pid), 'url': url, 'redacted': False}
+
+        labels: dict[int, dict] = {1: entry(seed)}
+        queue: deque[tuple[int, str]] = deque([(1, seed)])
+        seen = {seed}
+        while queue:
+            num, pid = queue.popleft()
+            if num.bit_length() - 1 >= max_gen:
+                continue
+            parents: list[tuple[str, str]] = []
+            for r in self.conn.execute(
+                '''SELECT DISTINCT r.other_id, p.sex
+                   FROM relationships r JOIN persons p ON r.other_id = p.id
+                   WHERE r.person_id = ? AND r.rel = 'parent' ''', (pid,)):
+                other = r['other_id']
+                if not self.linked and (other not in self.person_pages
+                                        or not self._has_public_claim(pid, other)):
+                    continue
+                parents.append((other, (r['sex'] or '').upper()))
+            father = next((p for p, s in parents if s == 'M'), None)
+            mother = next((p for p, s in parents if s == 'F' and p != father), None)
+            rest = [p for p, s in parents if p not in (father, mother)]
+            if father is None and rest:
+                father = rest.pop(0)
+            if mother is None and rest:
+                mother = rest.pop(0)
+            for slot_num, ppid in ((2 * num, father), (2 * num + 1, mother)):
+                if not ppid:
+                    continue
+                labels[slot_num] = entry(ppid)
+                if ppid not in seen:          # pedigree collapse: show, don't re-walk
+                    seen.add(ppid)
+                    queue.append((slot_num, ppid))
+        return labels
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
                        page_dir: Path, caption: str, *, initial_depth: int | None = None) -> dict | None:
@@ -1665,6 +2026,34 @@ class _SiteBuilder:
             shutil.copytree(src, self.vendor_dir, dirs_exist_ok=True)
         except OSError as e:
             self.messages.append(f'WARNING: could not copy the tree library into the site ({e}).')
+
+    def _copy_assets(self) -> None:
+        """Copy the design system - stylesheet, user override, self-hosted fonts -
+        into the site so it is self-contained and offline (no CDN). The canonical
+        source is the repo-root `design/` package (see docs/DESIGN.md); a missing
+        package is a packaging error, surfaced plainly rather than silently
+        leaving every page unstyled."""
+        src = Path(__file__).resolve().parent.parent / 'design'
+        if not src.is_dir():
+            self.messages.append('WARNING: design/ package is missing; generated pages will be unstyled.')
+            return
+        try:
+            self.assets_dir.mkdir(parents=True, exist_ok=True)
+            for name in ('styles.css', 'custom.css'):
+                f = src / name
+                if f.is_file():
+                    shutil.copy2(f, self.assets_dir / name)
+            # Pages always link custom.css; write an empty stub if the source has
+            # none so the link never 404s.
+            if not (self.assets_dir / 'custom.css').is_file():
+                (self.assets_dir / 'custom.css').write_text(
+                    '/* Local overrides - linked after styles.css. See docs/DESIGN.md. */\n',
+                    encoding='utf-8')
+            fonts = src / 'fonts'
+            if fonts.is_dir():
+                shutil.copytree(fonts, self.assets_dir / 'fonts', dirs_exist_ok=True)
+        except OSError as e:
+            self.messages.append(f'WARNING: could not copy the design assets into the site ({e}).')
 
     # - index / home page (M8.4) -
 
@@ -1750,7 +2139,9 @@ class _SiteBuilder:
         try:
             tmpl = self.env.get_template(template)
             full = {
-                'site_title': 'Family History Archive',
+                # Customizable in fha.yaml (`archive_name:`); falls back to the default.
+                'site_title': (str(self.fha_config.get('archive_name', '')).strip()
+                               or 'Family History Archive'),
                 'footer_note': (
                     'Generated by fha site. Living people and restricted material are excluded from this snapshot.'
                     if not self.linked else
@@ -1774,6 +2165,7 @@ class _SiteBuilder:
         # finished build's, not the aborted attempt's.
         self._write_marker()
         self._copy_vendor()
+        self._copy_assets()
         for sid in sorted(self.source_pages):
             self.build_source_page(sid)
         for pid in sorted(self.person_pages):
@@ -1791,7 +2183,7 @@ class _SiteBuilder:
         deletes from and `reset_preview` reports, so preview and deletion can
         never drift apart."""
         return [self.persons_dir, self.sources_dir, self.places_dir,
-                self.media_dir, self.data_dir, self.vendor_dir,
+                self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html']
 
     def reset_preview(self) -> list[str]:

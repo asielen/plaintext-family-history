@@ -3,7 +3,6 @@
 {% block content %}
 <article class="place">
   <h1>{{ place.name }}</h1>
-  <p class="ids">Place {{ place.display_id }}</p>
 
   <dl class="meta">
     {% if place.hierarchy %}<dt>Location</dt><dd>{{ place.hierarchy }}</dd>{% endif %}
