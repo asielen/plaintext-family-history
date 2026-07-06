@@ -1,0 +1,17 @@
+/* ============================================================================
+   custom.css — your overrides
+   ----------------------------------------------------------------------------
+   This file is linked *after* styles.css on every generated page, so anything
+   here wins. It ships empty on purpose. To restyle the whole archive, override
+   a few tokens — see the "How to customize" section of design-system.html.
+
+   Example (delete the surrounding comment to try it):
+
+     :root {
+       --paper:  #f4f1ea;                        // cooler paper
+       --accent: #3e4a3a;                        // bottle-green links & emphasis
+       --font-serif: "Iowan Old Style", Georgia, serif;  // your own text face
+     }
+
+     h2 { border-bottom-width: 3px; }            // reach past tokens if needed
+   ============================================================================ */

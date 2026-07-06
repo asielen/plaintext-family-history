@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stylesheet — Family History Archive</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="custom.css">
+<style>
+  /* DEMO SCAFFOLDING ONLY — arranges the specimens; not part of the system. */
+  .ds-section { margin-top: var(--space-8); }
+  .ds-section > h2 { margin-top: 0; }
+  .ds-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: var(--space-3); margin: var(--space-3) 0 var(--space-4); }
+  .swatch { border: 1px solid var(--rule); }
+  .swatch .chip { height: 52px; border-bottom: 1px solid var(--rule); }
+  .swatch .m { padding: var(--space-2); font-size: var(--text-xs); line-height: 1.45; }
+  .swatch .name { font-weight: 600; display: block; }
+  .swatch .hex { color: var(--muted); font-family: var(--font-mono); text-transform: uppercase; }
+  .swatch .role { color: var(--muted); display: block; font-style: italic; }
+  .ds-row { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; margin: var(--space-3) 0; }
+  .ds-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: var(--space-6); align-items: start; }
+  .ds-scale { border-top: 1px solid var(--rule); }
+  .ds-scale-item { display: flex; align-items: baseline; gap: var(--space-4); border-bottom: 1px solid var(--rule); padding: var(--space-2) 0; }
+  .ds-scale-item .lbl { width: 6rem; flex: none; font: 400 var(--text-xs)/1.4 var(--font-mono); color: var(--muted); }
+  .ds-thumb { width: 9rem; height: 6.5rem; border: 1px solid var(--rule); }
+  .ds-toc { columns: 2; column-gap: var(--space-6); font-size: var(--text-sm); margin: var(--space-4) 0; max-width: 32rem; }
+  .ds-toc a { display: block; padding: 0.1rem 0; }
+  .person-demo { display: grid; grid-template-columns: 3.2rem 1fr; gap: var(--space-3) var(--space-4); align-items: start; }
+  .person-demo .gen-num { grid-row: span 2; text-align: right; }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <a class="home-link" href="#top">Family History Archive · Stylesheet</a>
+</header>
+
+<main id="top">
+
+  <p>Reference styles for the HTML the archive generates — person and source
+     records, reports, indexes, and the family tree. This page renders the
+     shipping <code>styles.css</code>. Project-specific changes belong in
+     <code>custom.css</code>; see <a href="#overrides">Local overrides</a>.</p>
+
+  <nav class="ds-toc" aria-label="Contents">
+    <a href="#type">Type</a>
+    <a href="#color">Color</a>
+    <a href="#statuses">Statuses &amp; subjects</a>
+    <a href="#tables">Tables</a>
+    <a href="#person">Person record</a>
+    <a href="#tree">Family tree</a>
+    <a href="#indexes">Indexes</a>
+    <a href="#overrides">Local overrides</a>
+  </nav>
+
+
+  <!-- ===================== TYPE ===================== -->
+  <section class="ds-section" id="type">
+    <h2>Type</h2>
+    <p>Body and headings are set in <strong>Literata</strong>, a text serif.
+       <strong>Fraunces</strong> is reserved for the masthead and person names.
+       Dates use oldstyle figures in running prose and tabular figures in tables.
+       Both faces are self-hosted; pages work offline.</p>
+
+    <div class="ds-scale">
+      <div class="ds-scale-item"><span class="lbl">3xl / h1</span><span style="font-family:var(--font-display); font-size:var(--text-3xl); font-weight:600; line-height:1.05">Warren Hartley</span></div>
+      <div class="ds-scale-item"><span class="lbl">2xl / h2</span><span style="font-size:var(--text-2xl); font-weight:600">Vital records</span></div>
+      <div class="ds-scale-item"><span class="lbl">xl / h3</span><span style="font-size:var(--text-xl); font-weight:600">Census, 1900</span></div>
+      <div class="ds-scale-item"><span class="lbl">base</span><span style="font-size:var(--text-base)">Body text — born 14 March 1857, died 1921.</span></div>
+      <div class="ds-scale-item"><span class="lbl">sm</span><span style="font-size:var(--text-sm)">Secondary and table text</span></div>
+      <div class="ds-scale-item"><span class="lbl">xs</span><span style="font-size:var(--text-xs)">Captions and meta</span></div>
+    </div>
+
+    <div class="ds-two" style="margin-top:var(--space-5)">
+      <div>
+        <p>Warren Hartley was born in Suwałki in 1857 and emigrated in 1889. Every
+           assertion stays tied to a source, so prose reads plainly while each fact
+           remains checkable. Diacritics render from the latin-ext subset —
+           <em>Zofia Wróblewska, Şerban Popescu, Ólafur Þórðarson</em>.</p>
+      </div>
+      <div>
+        <blockquote class="citation">
+          Warren Hartley, aged 32, farmer, born Russia-Poland, immigrated 1889,
+          naturalized.
+          <cite>1900 U.S. Census, Cuyahoga Co., Ohio — S-fb2345</cite>
+        </blockquote>
+        <p>Inline <code>fha report</code> and <kbd>Ctrl</kbd>+<kbd>K</kbd>.</p>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ===================== COLOR ===================== -->
+  <section class="ds-section" id="color">
+    <h2>Color</h2>
+    <p>Mostly paper and ink, with one warm accent for links and emphasis. The seven
+       earth tones are reserved for the tree's branch categories, not spread across
+       the interface.</p>
+
+    <p class="u-label">Paper &amp; ink</p>
+    <div class="ds-swatches">
+      <div class="swatch"><div class="chip" style="background:var(--paper)"></div><div class="m"><span class="name">Paper</span><span class="hex">#F2EDE2</span><span class="role">ground</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--surface)"></div><div class="m"><span class="name">Surface</span><span class="hex">#F8F5EE</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--surface-sunken)"></div><div class="m"><span class="name">Sunken</span><span class="hex">#E8E0D0</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--ink)"></div><div class="m"><span class="name">Ink</span><span class="hex">#2A2420</span><span class="role">text</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--ink-soft)"></div><div class="m"><span class="name">Ink soft</span><span class="hex">#574E42</span><span class="role">rules</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--muted)"></div><div class="m"><span class="name">Muted</span><span class="hex">#6E6656</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--rule)"></div><div class="m"><span class="name">Rule</span><span class="hex">#D8D0BF</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--accent)"></div><div class="m"><span class="name">Accent</span><span class="hex">#6E3A26</span><span class="role">links</span></div></div>
+    </div>
+
+    <p class="u-label">Branch categories (tree only)</p>
+    <div class="ds-swatches">
+      <div class="swatch"><div class="chip" style="background:var(--clay)"></div><div class="m"><span class="name">Clay</span><span class="hex">#B0603B</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--sage)"></div><div class="m"><span class="name">Sage</span><span class="hex">#6F7B58</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--ochre)"></div><div class="m"><span class="name">Ochre</span><span class="hex">#B98A34</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--rose)"></div><div class="m"><span class="name">Rose</span><span class="hex">#B57A6E</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--navy)"></div><div class="m"><span class="name">Navy</span><span class="hex">#33475B</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--crimson)"></div><div class="m"><span class="name">Crimson</span><span class="hex">#8F3A3F</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--warm-grey)"></div><div class="m"><span class="name">Warm grey</span><span class="hex">#9C9284</span></div></div>
+    </div>
+    <p class="note">Ink, Muted, and Accent all clear WCAG AA contrast on paper.</p>
+  </section>
+
+
+  <!-- ===================== STATUSES ===================== -->
+  <section class="ds-section" id="statuses">
+    <h2>Statuses &amp; subjects</h2>
+    <p>Claim states are set as words in the state's ink — no colored pills.</p>
+    <div class="ds-row">
+      <span class="status status-accepted">accepted</span>
+      <span class="status status-needs-review">needs review</span>
+      <span class="status status-suggested">suggested</span>
+      <span class="status status-rejected">rejected</span>
+      <span class="status status-superseded">superseded</span>
+    </div>
+    <p style="margin-top:var(--space-4)"><span class="u-label">Subjects</span><br>
+      <span class="tag">census</span><span class="tag">Ohio</span><span class="tag">Hartley line</span><span class="tag">immigration</span>
+    </p>
+  </section>
+
+
+  <!-- ===================== TABLES ===================== -->
+  <section class="ds-section" id="tables">
+    <h2>Tables</h2>
+    <p>Claims are ruled horizontally like a ledger — no vertical borders, no zebra
+       fill, figures set tabular so dates align.</p>
+    <table class="claims">
+      <thead>
+        <tr><th>Claim</th><th>Value</th><th>Source</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Birth date</td><td>14 Mar 1857</td><td>S-fa1234 · baptism</td><td><span class="status status-accepted">accepted</span></td></tr>
+        <tr><td>Birthplace</td><td>Suwałki, Poland</td><td>S-fb2345 · census</td><td><span class="status status-needs-review">needs review</span></td></tr>
+        <tr><td>Occupation</td><td>Farmer</td><td>S-fd4567 · census</td><td><span class="status status-suggested">suggested</span></td></tr>
+        <tr><td>Middle name</td><td>Aleksander</td><td>—</td><td><span class="status status-rejected">rejected</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+
+  <!-- ===================== PERSON RECORD ===================== -->
+  <section class="ds-section" id="person">
+    <h2>Person record</h2>
+    <p>A generation numeral sits in the margin, register-style. The name is the one
+       place Fraunces appears in the body; the summary is ruled, not boxed.</p>
+
+    <div class="person-demo">
+      <div class="gen-num">4</div>
+      <div>
+        <h1 style="margin:0">Warren Hartley</h1>
+        <p class="ids">P-de957bcda1 · Hartley line · 1857–1921</p>
+      </div>
+      <div style="grid-column:2">
+        <dl class="meta">
+          <dt>Born</dt><dd>14 March 1857 · Suwałki</dd>
+          <dt>Died</dt><dd>2 November 1921 · Cleveland, Ohio</dd>
+          <dt>Spouse</dt><dd>Clara Frost</dd>
+          <dt>Sources</dt><dd>7</dd>
+        </dl>
+        <dl class="summary">
+          <dt>Confidence</dt>
+          <dd>High — vitals corroborated by three independent sources.</dd>
+        </dl>
+        <div class="callout">
+          <div class="callout-title">Research note</div>
+          Check the 1890 veterans schedule for a service record.
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ===================== TREE ===================== -->
+  <section class="ds-section" id="tree">
+    <h2>Family tree</h2>
+    <p>Nodes read like index entries. Branch category shows as a colored underline
+       under the name — the only place the earth tones appear.</p>
+
+    <div class="fha-tree">
+      <div style="display:flex; gap:var(--space-5); flex-wrap:wrap">
+        <div class="fha-node" data-branch="1"><a class="fha-name" href="#tree">Warren Hartley</a><span class="fha-dates">1857–1921</span><button class="fha-toggle" title="collapse">–</button></div>
+        <div class="fha-node" data-branch="2"><a class="fha-name" href="#tree">Clara Frost</a><span class="fha-dates">1861–1934</span><button class="fha-toggle" title="collapse">–</button></div>
+        <div class="fha-node" data-branch="3"><a class="fha-name" href="#tree">Calvin Hartley</a><span class="fha-dates">1831–1899</span><button class="fha-toggle" title="expand">+</button></div>
+        <div class="fha-node" data-branch="4"><a class="fha-name" href="#tree">Harriet Webb</a><span class="fha-dates">1835–1912</span><button class="fha-toggle" title="expand">+</button></div>
+        <div class="fha-node" data-branch="5"><a class="fha-name" href="#tree">Edith Hartley</a><span class="fha-dates">1888–1970</span></div>
+        <div class="fha-node fha-node-nolink" data-branch="7"><span class="fha-name">Unknown Frost</span><span class="fha-dates">stub</span></div>
+      </div>
+    </div>
+
+    <p class="u-label" style="margin-top:var(--space-5)">Edges</p>
+    <div class="ds-row">
+      <svg width="88" height="14" aria-hidden="true"><line class="fha-tree-edge" x1="4" y1="7" x2="84" y2="7"/></svg>
+      <span>Genetic parent–child</span>
+      <svg width="88" height="14" aria-hidden="true" style="margin-left:var(--space-4)"><line class="fha-tree-edge fha-tree-edge-social" x1="4" y1="7" x2="84" y2="7"/></svg>
+      <span>Social bond — adoptive / step / foster / guardian</span>
+    </div>
+  </section>
+
+
+  <!-- ===================== INDEXES ===================== -->
+  <section class="ds-section" id="indexes">
+    <h2>Indexes</h2>
+    <p>Surname and place indexes use dotted leaders and tabular counts, like the
+       back of a printed register.</p>
+    <ul class="leaders">
+      <li><span class="nm">Cole</span><span class="dots"></span><span class="ct">6</span></li>
+      <li><span class="nm">Frost</span><span class="dots"></span><span class="ct">14</span></li>
+      <li><span class="nm">Hartley</span><span class="dots"></span><span class="ct">38</span></li>
+      <li><span class="nm">Webb</span><span class="dots"></span><span class="ct">9</span></li>
+      <li><span class="nm">Wróblewski</span><span class="dots"></span><span class="ct">3</span></li>
+    </ul>
+  </section>
+
+
+  <!-- ===================== OVERRIDES ===================== -->
+  <section class="ds-section" id="overrides">
+    <h2>Local overrides</h2>
+    <p>Project-specific changes belong in <code>custom.css</code>, which every page
+       links after <code>styles.css</code>. Change a few tokens to restyle every
+       generated page, the tree, and exports at once.</p>
+    <pre><code>:root {
+  --paper:  #f4f1ea;               /* cooler paper            */
+  --accent: #3e4a3a;               /* bottle-green links       */
+  --font-serif: "Iowan Old Style", Georgia, serif;
+}
+
+/* Reach past tokens for finer control: */
+h2 { border-bottom-width: 3px; }</code></pre>
+    <p>The tokens are defined and commented at the top of <code>styles.css</code>:
+       the paper/ink neutrals, the single accent, the earth branch set
+       (<code>--branch-1..7</code>), the status inks, and the type
+       (<code>--font-serif</code>, <code>--font-display</code>, the
+       <code>--text-*</code> scale). Dark mode and an optional paper grain are
+       marked in place, both off by default.</p>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <p>Family History Archive — stylesheet reference. Rendered with the shipping
+     <code>styles.css</code> and <code>custom.css</code>.</p>
+</footer>
+
+</body>
+</html>
