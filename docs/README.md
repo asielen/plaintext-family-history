@@ -13,6 +13,7 @@
 | [CHEATSHEET.md](CHEATSHEET.md) | One printable page: the daily loop, the few commands, how to write an uncertain date, where things live |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Something went wrong - symptom → cause → exact fix for the edge cases |
 | [FILING_CABINET.md](FILING_CABINET.md) | The system explained as the paper filing cabinet you already know |
+| [CUSTOMIZING_SITE.md](CUSTOMIZING_SITE.md) | Making the generated site your own - name, homepage welcome, hero, styling - by editing source, not the HTML |
 | [CONTRIBUTING_SOURCES.md](CONTRIBUTING_SOURCES.md) | Someone the owner sent documents to - how to hand them over |
 | [GLOSSARY.md](GLOSSARY.md) | Every term, ID type, and record type defined |
 | [FAQ.md](FAQ.md) | Why files? Why not a database? Why AI? How durable is this really? |
@@ -27,6 +28,8 @@ Design is split by concern; each design doc has a matching build doc.
 | [../TOOLING.md](../TOOLING.md) | Deep implementation design for the core tools - enough to rebuild from scratch |
 | [../BUILD_INGESTION.md](../BUILD_INGESTION.md) / [../TOOLING_INGESTION.md](../TOOLING_INGESTION.md) | The capture / inbox / web on-ramp: build sequence + design |
 | [../BUILD_INTERFACE.md](../BUILD_INTERFACE.md) / [../TOOLING_INTERFACE.md](../TOOLING_INTERFACE.md) | The workbench harness + workflow skills (the AI interface): build sequence + design |
+| [DESIGN.md](DESIGN.md) | The visual language for everything the archive renders as HTML - tokens, typography, components |
+| [SITE_PLAN.md](SITE_PLAN.md) | Roadmap for homepage / navigation / customization: the source-first model, the customization layers, and the build phases |
 | [../tools/README.md](../tools/README.md) | Per-tool implementation status tables (flags, error codes, test coverage) |
 
 ## Spec and governance
