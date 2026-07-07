@@ -1,6 +1,7 @@
 ---
 id: P-de957bcda1
 name: Thomas Edward Hartley
+profile_photo: thomas-hartley-portrait.jpg
 name_variants: [T. E. Hartley]
 aliases: [P-de957bcda1, Thomas Edward Hartley, T. E. Hartley]
 sex: M
@@ -15,6 +16,8 @@ tier: curated
 
 ## Biography
 Thomas Hartley spent most of his adult life in [[L-7c1a9f4e22|Fairview]], Kansas, where the 1880 census records him as a bookkeeper for the Plains Junction Railroad [[C-d22ce0ac77]], living with his wife Margaret and their children [[S-4f5f215e60]].
+
+![[caleb-chastina-hartley.jpg|Caleb and Chastina Hartley, Thomas's parents, late in life]]
 
 ## Stories
 *(none yet)*

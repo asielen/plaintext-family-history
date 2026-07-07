@@ -184,10 +184,17 @@ img { max-width: 100%; height: auto; }
       straight off a record-book title page. Every generated page carries it. */
 
 .site-header { position: relative; background: var(--paper);
+               display: flex; align-items: baseline; justify-content: space-between;
+               flex-wrap: wrap; gap: var(--space-2) var(--space-5);
                padding: var(--space-5) var(--page-pad) calc(var(--space-4) + 8px); }
 .site-header .home-link { font-family: var(--font-display); font-size: var(--text-xl); font-weight: 600;
                           color: var(--ink); text-decoration: none; letter-spacing: 0.01em; }
 .site-header .home-link:hover { color: var(--accent); }
+/* Persistent primary navigation - present on every page so "home" is always one click. */
+.site-nav { display: flex; flex-wrap: wrap; gap: var(--space-4);
+            font-family: var(--font-sans); font-size: var(--text-sm); }
+.site-nav a { color: var(--ink-soft); text-decoration: none; }
+.site-nav a:hover { color: var(--accent); }
 .site-header::after {                       /* the double rule */
   content: ""; position: absolute; left: var(--page-pad); right: var(--page-pad); bottom: var(--space-4);
   height: 8px; border-top: 3px solid var(--ink); border-bottom: 1px solid var(--ink);
@@ -200,6 +207,44 @@ main { max-width: var(--content-max); margin: 0 auto; padding: var(--space-6) va
                color: var(--muted); font-size: var(--text-sm); }
 
 .ids { color: var(--muted); font-size: var(--text-sm); margin: 0 0 var(--space-5); }
+
+/* Homepage hero. A configured image (site.hero) fills the band; with none, a
+   default earth-toned band over faint ledger rules gives a fresh archive a
+   designed masthead without needing an asset. */
+.site-hero { margin: 0 0 var(--space-6); }
+.site-hero img { display: block; width: 100%; height: 240px; object-fit: cover;
+                 border: 1px solid var(--rule); }
+.site-hero-default { height: 200px; border: 1px solid var(--rule);
+  background:
+    repeating-linear-gradient(90deg, transparent 0 21px,
+      color-mix(in srgb, var(--ink) 4%, transparent) 21px 22px),
+    linear-gradient(115deg,
+      color-mix(in srgb, var(--sage) 24%, var(--paper)),
+      color-mix(in srgb, var(--clay) 22%, var(--paper)) 48%,
+      color-mix(in srgb, var(--navy) 20%, var(--paper))); }
+
+/* Homepage intro (notes/home.md). First paragraph reads as a lead. */
+.home-intro { max-width: var(--measure); }
+.home-intro > p:first-child { font-size: var(--text-lg); color: var(--ink-soft); }
+
+/* Photo embed in prose: `![[S-id|Caption]]`. Height-capped so a big scan never
+   blows up the page; caption in the register italic. */
+figure.embed { margin: var(--space-5) 0; }
+figure.embed .embed-img { display: block; max-width: 100%; max-height: 30rem; height: auto;
+                          border: 1px solid var(--rule); background: var(--surface-sunken); }
+figure.embed figcaption { font-family: var(--font-serif); font-style: italic;
+                          font-size: var(--text-sm); color: var(--muted); margin-top: var(--space-2); }
+
+/* Mini family map at the head of a person page: parents / siblings / children. */
+.family-strip { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-6);
+                border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+                padding: var(--space-3) 0; margin: var(--space-4) 0 var(--space-5); }
+.family-strip .fs-group { min-width: 8rem; }
+.family-strip .fs-label { display: block; font-family: var(--font-sans); font-size: var(--text-xs);
+                          font-weight: 600; text-transform: uppercase; letter-spacing: var(--tracking-caps);
+                          color: var(--muted); margin-bottom: var(--space-1); }
+.family-strip ul { list-style: none; padding: 0; margin: 0; }
+.family-strip li { margin: 0.1em 0; }
 
 
 /* 5. COMPONENTS  (flat, document-like — no cards, no shadows, no pills) */

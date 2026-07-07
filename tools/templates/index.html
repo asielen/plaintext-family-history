@@ -2,8 +2,14 @@
 {% block title %}{{ site_title }}{% endblock %}
 {% block content %}
 <article class="home">
+  {% if hero %}
+  <div class="site-hero"><img src="{{ hero }}" alt=""></div>
+  {% else %}
+  <div class="site-hero site-hero-default" aria-hidden="true"></div>
+  {% endif %}
+
   <h1>{{ site_title }}</h1>
-  <p>{{ intro }}</p>
+  <div class="home-intro">{{ intro }}</div>
 
   {% if tree %}
   <h2>Family tree</h2>
@@ -18,7 +24,7 @@
   <p><a href="discoveries.html">All discoveries →</a></p>
   {% endif %}
 
-  <h2>People</h2>
+  <h2 id="people">People</h2>
   {% if surnames %}
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>
@@ -31,13 +37,13 @@
   {% endif %}
 
   {% if places %}
-  <h2>Places</h2>
+  <h2 id="places">Places</h2>
   <ul class="index-list">
     {% for pl in places %}<li><a href="{{ pl.href }}">{{ pl.name }}</a></li>{% endfor %}
   </ul>
   {% endif %}
 
-  <h2>Sources</h2>
+  <h2 id="sources">Sources</h2>
   {% if sources %}
   <ul class="index-list">
     {% for s in sources %}<li><a href="{{ s.href }}">{{ s.title }}</a></li>{% endfor %}

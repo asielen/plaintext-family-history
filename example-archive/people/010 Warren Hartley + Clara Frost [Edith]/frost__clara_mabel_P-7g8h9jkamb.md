@@ -1,6 +1,7 @@
 ---
 id: P-7g8h9jkamb
 name: Clara Mabel Frost
+profile_photo: clara-frost-portrait.jpg
 aliases: [P-7g8h9jkamb, Clara Mabel Frost, Clara Hartley]
 sex: F
 living: false

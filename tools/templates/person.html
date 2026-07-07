@@ -14,6 +14,23 @@
   </dl>
   {% endif %}
 
+  {% if person.family_strip %}
+  <nav class="family-strip" aria-label="Immediate family">
+    {% if person.family_strip.parents %}
+    <div class="fs-group"><span class="fs-label">Parents</span>
+      <ul>{% for m in person.family_strip.parents %}<li>{{ m }}</li>{% endfor %}</ul></div>
+    {% endif %}
+    {% if person.family_strip.siblings %}
+    <div class="fs-group"><span class="fs-label">Siblings</span>
+      <ul>{% for m in person.family_strip.siblings %}<li>{{ m }}</li>{% endfor %}</ul></div>
+    {% endif %}
+    {% if person.family_strip.children %}
+    <div class="fs-group"><span class="fs-label">Children</span>
+      <ul>{% for m in person.family_strip.children %}<li>{{ m }}</li>{% endfor %}</ul></div>
+    {% endif %}
+  </nav>
+  {% endif %}
+
   {% if tree %}
   <h2>Ancestors</h2>
   {% include "_tree.html" %}

@@ -1,9 +1,11 @@
 # Example-archive config - fictional fixture. Asset roots are internal (and absent;
 # the example uses missing-fixture placeholders, see SPEC file-inventory status).
 
-# Title shown across the generated site (masthead, page titles). Optional;
-# defaults to "Family History Archive".
-archive_name: The Hartley Family Archive
+# Site-generation settings (fha site).
+site:
+  archive_name: The Hartley Family Archive
+  hero: coronado-tent-city-postcard.jpg   # banner: a photo path/filename or S-id; a default band shows if unset
+  home_person: P-de957bcda1               # the tree "Home" button centers here (defaults to root_person)
 
 roots:
   photos: photos

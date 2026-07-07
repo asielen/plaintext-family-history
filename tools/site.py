@@ -320,9 +320,12 @@ def _inline_html(text: str, render_token) -> str:
 
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)$')
 _LIST_RE = re.compile(r'^\s*[-*]\s+(.*)$')
+# A photo embed on its own line: `![[S-id|Caption]]` (Obsidian embed syntax).
+# Renders as a figure; the id resolves to a photo through the index. Caption optional.
+_EMBED_RE = re.compile(r'^!\[\[\s*([^\]|]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]\s*$')
 
 
-def _prose_to_html(text: str, render_token) -> str:
+def _prose_to_html(text: str, render_token, render_embed=None) -> str:
     """Convert a simple markdown block to HTML using only the stdlib.
 
     The profile prose format is deliberately simple (TOOLING §12: "headings,
@@ -344,6 +347,14 @@ def _prose_to_html(text: str, render_token) -> str:
         if not line.strip():
             i += 1
             continue
+        if render_embed is not None:
+            emb = _EMBED_RE.match(line)
+            if emb:
+                fig = render_embed(emb.group(1).strip(), (emb.group(2) or '').strip())
+                if fig:
+                    blocks.append(fig)
+                i += 1
+                continue
         heading = _HEADING_RE.match(line)
         if heading:
             blocks.append(f'<h3>{_inline_html(heading.group(2).strip(), render_token)}</h3>')
@@ -1208,13 +1219,14 @@ class _SiteBuilder:
         photos = self._person_photos(pid, page_dir)
         name = row['name'] or fmt_id_display(pid)
         tree = self._make_tree_ctx(pid, 'ancestors', _PEDIGREE_GENERATIONS - 1, page_dir,
-                                   f'Ancestor pedigree of {name}')
+                                   f'Ancestor pedigree of {name}', home_id=pid)
         ahnen = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
         fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
             'portrait': self._profile_photo_href(pid, page_dir),
+            'family_strip': self._person_family_strip(pid, page_dir),
             'fan': fan,
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
@@ -1287,6 +1299,7 @@ class _SiteBuilder:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); skipping its prose.')
             return '', ''
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
         bio = _extract_section(rec['body'], 'Biography')
         stories = rec['stories']
         problem: str | None = None
@@ -1303,8 +1316,8 @@ class _SiteBuilder:
                 "person's Biography and Stories are withheld from the site."
             )
             return '', ''
-        biography_html = _prose_to_html(bio, render) if bio else ''
-        stories_html = _prose_to_html(stories, render) if stories else ''
+        biography_html = _prose_to_html(bio, render, embed) if bio else ''
+        stories_html = _prose_to_html(stories, render, embed) if stories else ''
         return biography_html, stories_html
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
@@ -1457,6 +1470,51 @@ class _SiteBuilder:
                 groups.append({'label': label, 'members': [self._markup(m) for m in sorted(by_rel[rel])]})
         return groups
 
+    def _person_family_strip(self, pid: str, page_dir: Path) -> dict | None:
+        """A compact parents / siblings / children map for the head of a person
+        page - one hop up and down, plus siblings, and nothing deeper. Redaction +
+        public-claim gates match Friends & Family; siblings are reached only
+        through a public, non-redacted parent."""
+        def edge(person: str, rel: str) -> list[str]:
+            return [r['other_id'] for r in self.conn.execute(
+                'SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = ?',
+                (person, rel))]
+
+        def links(ids, evidence_with):
+            out, seen = [], set()
+            for oid, ev in ids:
+                if oid == pid or oid in seen:
+                    continue
+                seen.add(oid)
+                meta = self.person_meta.get(oid)
+                if not self.linked:
+                    if meta and self._person_is_redacted(meta):
+                        continue
+                    if not self._has_public_claim(ev, oid):
+                        continue
+                out.append(self._markup(self._person_link(oid, page_dir)))
+            return out
+
+        parent_ids = edge(pid, 'parent')
+        parents = links([(p, pid) for p in parent_ids], None)
+        children = links([(c, pid) for c in edge(pid, 'child')], None)
+
+        sib_pairs, sib_seen = [], set()
+        for par in parent_ids:
+            pm = self.person_meta.get(par)
+            if not self.linked and ((pm and self._person_is_redacted(pm))
+                                    or not self._has_public_claim(pid, par)):
+                continue
+            for k in edge(par, 'child'):
+                if k != pid and k not in sib_seen:
+                    sib_seen.add(k)
+                    sib_pairs.append((k, par))     # evidence is the shared parent
+        siblings = links(sib_pairs, None)
+
+        if not (parents or siblings or children):
+            return None
+        return {'parents': parents, 'siblings': siblings, 'children': children}
+
     def _person_photos(self, pid: str, page_dir: Path) -> list[dict]:
         """Photo strip from `.cache/photos.sqlite` (`photo_people`), one entry
         per variation group. Omitted silently when the photo index is absent or
@@ -1557,11 +1615,55 @@ class _SiteBuilder:
         f = self._profile_photo_file(pid)
         return _rel_href(f, page_dir) if f else None
 
+    def _resolve_asset_path(self, ref: str) -> Path | None:
+        """Best-effort resolve a human-written photo reference to a file on disk:
+        a path under a configured root, an archive-relative path, or a bare
+        filename found under the photos root. Lets hero / embeds / profile_photo
+        work without the (exiftool-based) photo catalog."""
+        ref = str(ref).strip().replace('\\', '/')
+        if not ref:
+            return None
+        cands: list[Path] = []
+        try:
+            cands.append(resolve_path(ref, self.fha_config, self.archive_root))
+        except Exception:  # noqa: BLE001
+            pass
+        cands.append(self.archive_root / ref)
+        roots = self.fha_config.get('roots')
+        photos_root = roots.get('photos') if isinstance(roots, dict) else None
+        if photos_root:
+            pr = Path(photos_root)
+            if not pr.is_absolute():
+                pr = self.archive_root / pr
+            cands.append(pr / ref)
+            cands.append(pr / ref.rsplit('/', 1)[-1])
+        for c in cands:
+            try:
+                if c and Path(c).is_file():
+                    return Path(c)
+            except OSError:
+                continue
+        return None
+
+    def _resolve_image_source(self, ref: str) -> Path | None:
+        """The on-disk source file for a photo reference. Prefers a catalogued
+        photo (S-id or indexed path), applying the strip's privacy gate; else a
+        hand-written path/filename on disk - a deliberate publish choice, so not
+        co-living gated. None if nothing resolves."""
+        cat = self._resolve_photo_ref(ref)
+        if cat and (self.linked or self._photo_is_public(cat)):
+            try:
+                r = resolve_path(cat, self.fha_config, self.archive_root)
+                if r and r.exists():
+                    return r
+            except Exception:  # noqa: BLE001
+                pass
+        return self._resolve_asset_path(ref)
+
     def _resolve_profile_photo(self, pid: str) -> Path | None:
-        """Read the person's `profile_photo:` front-matter field, resolve it to an
-        indexed photo (lenient: S-id, exact path, or basename - so it survives
-        Lightroom moves), apply the same privacy gate as the strip, and produce a
-        small derivative. Any miss is a warn-and-skip, never a build failure."""
+        """Read the person's `profile_photo:` field, resolve it (a catalogued
+        photo or a path/filename on disk), and produce a small derivative. Any
+        miss is a warn-and-skip, never a build failure."""
         meta = self.person_meta.get(pid)
         if meta is None:
             return None
@@ -1575,32 +1677,20 @@ class _SiteBuilder:
         ref = str((rec.get('meta') or {}).get('profile_photo') or '').strip()
         if not ref:
             return None
-        if self.photos_conn is None:
-            return None
-        path = self._resolve_photo_ref(ref)
-        if not path:
+        resolved = self._resolve_image_source(ref)
+        if resolved is None:
             self.messages.append(
-                f'WARNING: profile_photo for {fmt_id_display(pid)} ("{ref}") matched no '
-                'indexed photo; skipped (run `fha photoindex`?).')
-            return None
-        if not self.linked and not self._photo_is_public(path):
-            return None
-        try:
-            resolved = resolve_path(path, self.fha_config, self.archive_root)
-        except Exception:  # noqa: BLE001
-            return None
-        if not resolved.exists():
+                f'WARNING: profile_photo for {fmt_id_display(pid)} ("{ref}") matched no photo; skipped.')
             return None
         if self.linked:
             return resolved
         if not _PIL_AVAILABLE:
             return None
-        dest = self._media_dest(path, 'profiles')
+        dest = self._media_dest(ref, 'profiles')
         if _make_derivative(resolved, dest, max_px=_PROFILE_MAX_PX):
             return dest
         self.messages.append(
-            f'WARNING: could not build a web image for profile_photo {path} '
-            f'({fmt_id_display(pid)}); skipped.')
+            f'WARNING: could not build a web image for profile_photo {ref} ({fmt_id_display(pid)}); skipped.')
         return None
 
     def _resolve_photo_ref(self, ref: str) -> str | None:
@@ -1665,6 +1755,35 @@ class _SiteBuilder:
             if m is not None and self._person_is_redacted(m):
                 return False
         return True
+
+    def _image_href(self, ref: str, page_dir: Path, subdir: str) -> str | None:
+        """Resolve a photo reference (S-id, path, or filename) to a publishable
+        image href, or None. Shared by prose embeds and the homepage hero: a
+        catalogued photo goes through the strip's privacy gate; a hand-written
+        path/filename resolves directly on disk (no catalog / exiftool needed).
+        Standalone emits an EXIF-stripped derivative; linked points at the file."""
+        resolved = self._resolve_image_source(ref)
+        if resolved is None:
+            return None
+        if self.linked:
+            return _rel_href(resolved, page_dir)
+        if not _PIL_AVAILABLE:
+            return None
+        dest = self._media_dest(ref, subdir)
+        return _rel_href(dest, page_dir) if _make_derivative(dest=dest, src=resolved) else None
+
+    def _render_embed(self, target: str, caption: str, page_dir: Path) -> str:
+        """A `![[S-id|Caption]]` prose embed → a responsive <figure>. The image is
+        capped in height by CSS so a large scan never blows up the page. An
+        unresolvable or withheld reference renders nothing (never a raw id)."""
+        href = self._image_href(target, page_dir, 'embeds')
+        if not href:
+            self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
+            return ''
+        cap = _escape(caption) if caption else ''
+        figcap = f'<figcaption>{cap}</figcaption>' if cap else ''
+        return (f'<figure class="embed"><img class="embed-img" src="{html.escape(href, quote=True)}" '
+                f'alt="{cap}" loading="lazy">{figcap}</figure>')
 
     # - place page (M8.3) -
 
@@ -1995,7 +2114,8 @@ class _SiteBuilder:
         return labels
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
-                       page_dir: Path, caption: str, *, initial_depth: int | None = None) -> dict | None:
+                       page_dir: Path, caption: str, *, initial_depth: int | None = None,
+                       home_id: str | None = None) -> dict | None:
         """Build a tree, write its `data/tree_{seed}_{mode}.json` artifact, and
         return the template context (inline-embeddable JSON + caption). Returns
         None when the tree has no edges (a lone node is not worth rendering), so
@@ -2012,7 +2132,8 @@ class _SiteBuilder:
         except OSError as e:
             self.messages.append(f'WARNING: could not write tree data for {fmt_id_display(seed)} ({e}).')
         return {'data_json': self._markup(_json_for_script(tree)), 'caption': caption,
-                'initial_depth': initial_depth}
+                'initial_depth': initial_depth,
+                'home_id': fmt_id_display(home_id) if home_id else None}
 
     def _copy_vendor(self) -> None:
         """Copy the vendored tree renderer + adapter into the site so it stays
@@ -2065,6 +2186,7 @@ class _SiteBuilder:
         standalone - so the home page never lists or links a living person."""
         page_dir = self.out_dir
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
 
         # Surname A-Z: group curated (non-redacted) people by surname initial.
         by_letter: dict[str, list[dict]] = {}
@@ -2081,7 +2203,7 @@ class _SiteBuilder:
         ]
 
         _body, entries = self._read_discoveries()
-        discoveries = [self._markup(_prose_to_html(chunk, render)) for chunk in entries]
+        discoveries = [self._markup(_prose_to_html(chunk, render, embed)) for chunk in entries]
 
         sources = sorted(
             ({'title': self.source_meta[sid]['title'] or fmt_id_display(sid),
@@ -2091,10 +2213,31 @@ class _SiteBuilder:
             ({'name': self.place_meta[lid]['name'] or fmt_id_display(lid),
               'href': f'places/{_page_filename(lid)}'} for lid in self.place_pages),
             key=lambda p: p['name'].lower())
-        intro = (
-            'A safe-to-share snapshot of this family archive.' if not self.linked
-            else 'Local developer preview (linked mode - not redacted, do not share).'
-        )
+        # Homepage intro: notes/home.md (markdown, human + AI curated) when present,
+        # else a default line. Its [[links]] and ![[S-id|caption]] embeds resolve
+        # exactly as in any prose (and redact under standalone).
+        default_intro = ('A safe-to-share snapshot of this family archive.' if not self.linked
+                         else 'Local developer preview (linked mode - not redacted, do not share).')
+        intro = self._markup(f'<p>{_escape(default_intro)}</p>')
+        home_md = self.archive_root / 'notes' / 'home.md'
+        if home_md.is_file():
+            try:
+                body = (read_record(home_md).get('body') or '').strip()
+                if body:
+                    intro = self._markup(_prose_to_html(body, render, embed))
+            except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
+                self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
+
+        # Optional hero banner (fha.yaml `site: hero:` = an S-id or photo path).
+        # Missing/unresolved → the template shows a default patterned band.
+        site_cfg = self.fha_config.get('site') if isinstance(self.fha_config.get('site'), dict) else {}
+        hero = None
+        hero_ref = str(site_cfg.get('hero') or '').strip()
+        if hero_ref:
+            hero = self._image_href(hero_ref, page_dir, 'hero')
+            if not hero:
+                self.messages.append(
+                    f'WARNING: site.hero {hero_ref!r} matched no publishable photo; using the default banner.')
 
         # Descendant explorer (M8.5): seed from the apex of the configured
         # root_person's line so the tree fans forward across the whole family.
@@ -2117,12 +2260,16 @@ class _SiteBuilder:
             # Descendant explorer: keep the full lineage but render the first few
             # generations up front so a large family doesn't paint thousands of
             # nodes at once (the reader expands forward).
+            # The tree "Home" button centers on the configured home person, or
+            # the Ahnentafel root by default.
+            home_person = normalize_id(str(site_cfg.get('home_person') or '')) or root_person
             tree = self._make_tree_ctx(apex, 'descendants', None, page_dir,
-                                       f'Descendants of {apex_name}', initial_depth=4)
+                                       f'Descendants of {apex_name}', initial_depth=4,
+                                       home_id=home_person)
 
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'sources': sources,
-            'places': places, 'intro': intro, 'tree': tree, 'root_prefix': '.',
+            'places': places, 'intro': intro, 'tree': tree, 'hero': hero, 'root_prefix': '.',
         })
 
     # - rendering plumbing -
@@ -2138,9 +2285,12 @@ class _SiteBuilder:
         are caught and reported so one bad page never aborts the whole build."""
         try:
             tmpl = self.env.get_template(template)
+            site_cfg = self.fha_config.get('site') if isinstance(self.fha_config.get('site'), dict) else {}
             full = {
-                # Customizable in fha.yaml (`archive_name:`); falls back to the default.
-                'site_title': (str(self.fha_config.get('archive_name', '')).strip()
+                # Customizable in fha.yaml under `site: archive_name:` (with a legacy
+                # top-level `archive_name:` fallback); else the default.
+                'site_title': (str(site_cfg.get('archive_name')
+                                   or self.fha_config.get('archive_name') or '').strip()
                                or 'Family History Archive'),
                 'footer_note': (
                     'Generated by fha site. Living people and restricted material are excluded from this snapshot.'
