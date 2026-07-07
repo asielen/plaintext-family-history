@@ -273,8 +273,9 @@
       startX = e.clientX; startY = e.clientY;
       startVx = vx; startVy = vy;
       activeId = e.pointerId;
-      try { s.setPointerCapture(e.pointerId); } catch (_) {}
-      s.style.cursor = 'grabbing';
+      // Do NOT capture the pointer here: capturing on pointerdown steals the
+      // click from the name link / collapse toggle underneath, so a plain tap
+      // never navigates or toggles. Capture only once a real drag begins.
     });
 
     s.addEventListener('pointermove', function (e) {
@@ -282,6 +283,8 @@
       var dx = e.clientX - startX, dy = e.clientY - startY;
       if (!dragMoved && (Math.abs(dx) > DRAG_SLOP || Math.abs(dy) > DRAG_SLOP)) {
         dragMoved = true; userInteracted = true;
+        try { s.setPointerCapture(activeId); } catch (_) {}   // capture only while panning
+        s.style.cursor = 'grabbing';
       }
       if (!dragMoved) return;
       var rect = s.getBoundingClientRect();

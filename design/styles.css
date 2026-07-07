@@ -111,6 +111,9 @@
   --radius-sm: 2px;
   --radius-md: 2px;
   --border:    1px solid var(--rule);
+  /* Photographs lift slightly off the paper (the one place a shadow is used);
+     not the hero band or the flat tree squares. */
+  --shadow-photo: 0 1px 2px rgba(42, 37, 33, 0.13), 0 6px 16px -8px rgba(42, 37, 33, 0.22);
 
   /* — Layout — */
   --measure:     68ch;
@@ -229,9 +232,10 @@ main { max-width: var(--content-max); margin: 0 auto; padding: var(--space-6) va
 
 /* Photo embed in prose: `![[S-id|Caption]]`. Height-capped so a big scan never
    blows up the page; caption in the register italic. */
-figure.embed { margin: var(--space-5) 0; }
+figure.embed { margin: var(--space-5) auto; text-align: center; }
 figure.embed .embed-img { display: block; max-width: 100%; max-height: 30rem; height: auto;
-                          border: 1px solid var(--rule); background: var(--surface-sunken); }
+                          margin-inline: auto; border: 1px solid var(--rule);
+                          background: var(--surface-sunken); box-shadow: var(--shadow-photo); }
 figure.embed figcaption { font-family: var(--font-serif); font-style: italic;
                           font-size: var(--text-sm); color: var(--muted); margin-top: var(--space-2); }
 
@@ -288,7 +292,8 @@ blockquote.citation cite { display: block; font-style: normal; font-size: var(--
 /* Files & photos */
 ul.files { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-4); }
 ul.files li { width: 10rem; }
-img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); border-radius: 0; background: var(--surface); }
+img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); border-radius: 0;
+            background: var(--surface); box-shadow: var(--shadow-photo); }
 .photo-strip { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .photo-strip figure { margin: 0; width: 9rem; }
 .photo-strip figcaption { font-size: var(--text-xs); color: var(--muted); font-style: italic; margin-top: var(--space-1); }
@@ -336,8 +341,15 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 
 /* 7. FAMILY TREE — index-entry nodes; branch color as a name underline (not a card) */
 
-.fha-tree { overflow: auto; border: none; background: none; border-radius: 0; padding: 0; }
-.fha-tree-svg { display: block; }
+.fha-tree { overflow: hidden; border: none; background: none; border-radius: 0; padding: 0; }
+/* Pan/zoom viewport (large trees). The renderer draws into a fixed-height window
+   you drag and zoom; controls sit top-right. */
+.fha-tree-viewport { position: relative; overflow: hidden; width: 100%; }
+.fha-tree-controls { position: absolute; top: var(--space-2); right: var(--space-2);
+                     display: flex; gap: var(--space-2); z-index: 2; }
+.fha-tree-btn { padding: 2px 8px; line-height: 1.4; background: var(--surface); }
+.fha-tree-svg { display: block; cursor: grab; touch-action: none; user-select: none; }
+.fha-tree-svg:active { cursor: grabbing; }
 /* Edge kinds are told apart by dash pattern (reads in print and for colorblind
    viewers), not color alone:
      genetic — solid    · parent–child by blood
@@ -393,7 +405,7 @@ a.fha-name:hover { color: var(--accent); }
 /* Profile portrait — a photographic plate at the head of a person record. */
 .person-portrait { float: right; width: 9rem; height: 11rem; object-fit: cover;
                    border: 1px solid var(--rule-strong); background: var(--surface-sunken);
-                   margin: 0 0 var(--space-4) var(--space-5); }
+                   box-shadow: var(--shadow-photo); margin: 0 0 var(--space-4) var(--space-5); }
 @media (max-width: 32rem) { .person-portrait { width: 7rem; height: 8.5rem; } }
 
 /* Index with dotted leaders — surname & place indexes, finding-aid style */

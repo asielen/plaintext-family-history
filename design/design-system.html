@@ -43,6 +43,7 @@
      <code>custom.css</code>; see <a href="#overrides">Local overrides</a>.</p>
 
   <nav class="ds-toc" aria-label="Contents">
+    <a href="#homepage">Homepage</a>
     <a href="#type">Type</a>
     <a href="#color">Color</a>
     <a href="#statuses">Statuses &amp; subjects</a>
@@ -54,6 +55,22 @@
     <a href="#indexes">Indexes</a>
     <a href="#overrides">Local overrides</a>
   </nav>
+
+
+  <!-- ===================== HOMEPAGE ===================== -->
+  <section class="ds-section" id="homepage">
+    <h2>Homepage</h2>
+    <p>The generated home page carries a persistent nav (present on every page, so
+       "home" is always one click), an optional <strong>hero banner</strong> — a
+       configured image, or this default earth-toned band when none is set — and an
+       intro compiled from <code>notes/home.md</code>.</p>
+    <div class="site-hero site-hero-default"></div>
+    <p class="u-label" style="margin-top:var(--space-4)">Primary navigation</p>
+    <nav class="site-nav" style="justify-content:flex-start">
+      <a href="#homepage">Home</a><a href="#homepage">People</a>
+      <a href="#homepage">Places</a><a href="#homepage">Sources</a>
+    </nav>
+  </section>
 
 
   <!-- ===================== TYPE ===================== -->
@@ -223,6 +240,9 @@
        under the name — the only place the earth tones appear. Each person's profile
        photo appears as a small fixed-size square; those without one get a monogram
        placeholder, and neither changes the node's size.</p>
+    <p class="note"><em>These nodes are a static styling specimen. On generated
+       pages the tree is live — the −/+ collapse toggles, drag-to-pan, wheel-zoom,
+       and the Fit / Home controls all work there.</em></p>
 
     <div class="fha-tree">
       <div style="display:flex; gap:var(--space-5); flex-wrap:wrap">

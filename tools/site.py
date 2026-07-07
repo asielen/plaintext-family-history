@@ -849,6 +849,17 @@ class _SiteBuilder:
         pub = row['publication_ok']
         return pub is not None and int(pub) == 0
 
+    def _source_hard_restricted(self, sid: str | None) -> bool:
+        """A source that is *intentionally* private - restricted / DNA / by-request
+        / publication_ok:false - as opposed to one merely withheld from the
+        snapshot because it names a living person. Hard-restricted material stays
+        hidden; a merely-withheld source's facts about the deceased may still show,
+        with the citation redacted (only living people are redacted outright)."""
+        if not sid:
+            return False
+        row = self.source_meta.get(sid)
+        return row is not None and self._source_is_redacted(row)
+
     def _person_is_redacted(self, row: sqlite3.Row) -> bool:
         """A person is redacted from standalone output when living/unknown
         (AGENTS.md; `unknown` is treated as living) or `restricted` (any value,
@@ -1258,9 +1269,13 @@ class _SiteBuilder:
         # not appear as a public datum with the citation silently redacted. A
         # restricted CLAIM is withheld too, regardless of its source.
         if not self.linked:
+            # Show the vital even when its source is withheld (the citation is
+            # redacted); withhold only a restricted claim or a hard-restricted
+            # source (DNA / by-request / publication_ok:false). A vital tagging a
+            # living person is already excluded by `living_filter` above.
             rows = [r for r in rows
-                    if (r['source_id'] is None or r['source_id'] in self.source_pages)
-                    and normalize_id(str(r['id'])) not in self.restricted_claims]
+                    if normalize_id(str(r['id'])) not in self.restricted_claims
+                    and not self._source_hard_restricted(r['source_id'])]
         by_type: dict[str, sqlite3.Row] = {}
         for r in rows:
             by_type.setdefault(r['type'], r)   # first accepted of each type
@@ -1338,12 +1353,14 @@ class _SiteBuilder:
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (pid,),
         ).fetchall()
-        # Standalone: omit events backed only by withheld sources (same rule as
-        # summary vitals), and omit a restricted claim regardless of its source.
+        # Standalone: show the event with its citation redacted when the source is
+        # merely withheld (names a living person); omit only a restricted claim or a
+        # hard-restricted source. Events tagging a living person are already excluded
+        # by `living_filter`.
         if not self.linked:
             rows = [r for r in rows
-                    if (r['source_id'] is None or r['source_id'] in self.source_pages)
-                    and normalize_id(str(r['id'])) not in self.restricted_claims]
+                    if normalize_id(str(r['id'])) not in self.restricted_claims
+                    and not self._source_hard_restricted(r['source_id'])]
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
@@ -1402,11 +1419,14 @@ class _SiteBuilder:
         return out
 
     def _has_public_claim(self, pid1: str, pid2: str) -> bool:
-        """Return True if the two persons share at least one accepted/needs-review claim
-        backed by a public (non-withheld) source or no source at all.
+        """Return True if the relationship between two persons may be shown.
 
-        Used in standalone mode to suppress relationship edges whose only evidence comes
-        from restricted, DNA, or living-linked sources."""
+        A relationship is suppressed only when its every backing claim is a
+        restricted claim or is sourced *exclusively* from a hard-restricted source
+        (restricted / DNA / by-request / publication_ok:false). A relationship
+        evidenced only by a source withheld because it names a living person is
+        still shown - the living person is redacted elsewhere, but the deceased
+        pair's relationship is not (only living people are redacted outright)."""
         rows = self.conn.execute(
             "SELECT c.id, c.source_id FROM claims c "
             "JOIN claim_persons cp1 ON c.id = cp1.claim_id AND cp1.person_id = ? "
@@ -1417,7 +1437,7 @@ class _SiteBuilder:
         for r in rows:
             if normalize_id(str(r['id'])) in self.restricted_claims:
                 continue
-            if r['source_id'] is None or r['source_id'] in self.source_pages:
+            if not self._source_hard_restricted(r['source_id']):
                 return True
         return not rows  # no claims at all → relationship came from YAML directly, show it
 
