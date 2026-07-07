@@ -41,10 +41,13 @@
     var childrenOf = {};
     (data.edges || []).forEach(function (e) {
       if (e.type === rel) {
-        // Carry the edge nature (SPEC §12.2): `genetic === false` means an
-        // adoptive/step/foster/guardian bond, drawn distinctly. Absent = genetic.
+        // Carry the edge kind (SPEC §12.2). Prefer the explicit `kind`
+        // ('genetic' | 'legal' | 'other'); fall back to the older `genetic`
+        // boolean (false ⇒ a legal parent/child bond) for back-compat.
+        var genetic = e.genetic !== false;
+        var kind = e.kind || (genetic ? 'genetic' : 'legal');
         (childrenOf[e.from] = childrenOf[e.from] || []).push(
-          { to: e.to, genetic: e.genetic !== false });
+          { to: e.to, genetic: genetic, kind: kind });
       }
     });
 
@@ -52,12 +55,13 @@
     function build(id) {
       var n = byId[id] || { p_id: id, name: id, vitals: {} };
       var node = { id: n.p_id, name: n.name || n.p_id, url: n.url || null,
-                   dates: fmtDates(n.vitals), children: [] };
+                   dates: fmtDates(n.vitals), photo: n.photo || null, children: [] };
       if (!seen[id]) {
         seen[id] = true;
         (childrenOf[id] || []).forEach(function (c) {
           var childNode = build(c.to);
-          childNode.edgeGenetic = c.genetic;   // nature of the edge into this child
+          childNode.edgeGenetic = c.genetic;   // back-compat: genetic bond?
+          childNode.edgeKind = c.kind;         // 'genetic' | 'legal' | 'other'
           node.children.push(childNode);
         });
       }

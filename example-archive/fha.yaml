@@ -1,5 +1,10 @@
 # Example-archive config - fictional fixture. Asset roots are internal (and absent;
 # the example uses missing-fixture placeholders, see SPEC file-inventory status).
+
+# Title shown across the generated site (masthead, page titles). Optional;
+# defaults to "Family History Archive".
+archive_name: The Hartley Family Archive
+
 roots:
   photos: photos
   documents: documents

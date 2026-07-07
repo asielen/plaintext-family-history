@@ -3,7 +3,7 @@
 {% block content %}
 <article class="source">
   <h1>{{ source.title }}</h1>
-  <p class="ids">Source {{ source.display_id }}{% if source.source_type %} · {{ source.source_type }}{% endif %}</p>
+  {% if source.source_type %}<p class="ids">{{ source.source_type }}</p>{% endif %}
 
   {% if source.citation %}<blockquote class="citation">{{ source.citation }}</blockquote>{% endif %}
 

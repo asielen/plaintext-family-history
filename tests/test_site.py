@@ -232,9 +232,10 @@ class PersonPageTests(_Base):
         self._setup_thomas()
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('../sources/s-1111111111.html', html)      # [S-id] in prose -> source link
+        self.assertIn('../sources/s-1111111111.html', html)      # cited source appears (footnote list)
+        self.assertIn('class="fn-ref"', html)                    # [S-id] in prose -> superscript footnote
         self.assertIn('Margaret Cole', html)                     # [P-id] -> name (stub, no link)
-        self.assertIn('<mark>[S-9999999999]</mark>', html)       # unresolved token -> mark
+        self.assertNotIn('9999999999', html)                     # unresolved source id hidden, never shown raw
 
     def test_timeline_excludes_suggested_includes_needs_review(self):
         self._setup_thomas()
@@ -245,14 +246,21 @@ class PersonPageTests(_Base):
         self.assertIn('1840s', html)                             # decade grouping
         self.assertIn('1880s', html)
 
-    def test_family_and_sources_grouped(self):
+    def test_family_and_source_footnotes(self):
         self._setup_thomas()
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('Spouses', html)
         self.assertIn('Margaret Cole', html)
-        self.assertIn('<h3>census</h3>', html)                   # sources grouped by type
-        self.assertIn('<h3>vital-record</h3>', html)
+        # Sources are a numbered footnote list of human names, not raw [S-id] chips,
+        # and inline citations are superscript refs into it.
+        self.assertIn('<ol class="footnotes">', html)
+        self.assertIn('id="fn-1"', html)
+        self.assertIn('>Census</a>', html)                       # source shown by name
+        self.assertIn('class="fn-ref"', html)                    # inline superscript ref
+        self.assertNotIn('[S-1111111111]', html)                 # backend id never shown inline
+        self.assertNotIn('<h3>census</h3>', html)                # no longer grouped by type
+        self.assertNotIn('class="ids"', html)                    # person id line removed
 
 
 class PersonRedactionTests(_Base):

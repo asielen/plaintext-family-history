@@ -2,8 +2,8 @@
 {% block title %}{{ person.name }} - {{ site_title }}{% endblock %}
 {% block content %}
 <article class="person">
+  {% if person.portrait %}<img class="person-portrait" src="{{ person.portrait }}" alt="Portrait of {{ person.name }}">{% endif %}
   <h1>{{ person.name }}</h1>
-  <p class="ids">Person {{ person.display_id }}</p>
 
   {% if person.summary %}
   <dl class="summary">
@@ -17,6 +17,11 @@
   {% if tree %}
   <h2>Ancestors</h2>
   {% include "_tree.html" %}
+  {% endif %}
+
+  {% if person.fan %}
+  <h2>Ancestor fan</h2>
+  {{ person.fan }}
   {% endif %}
 
   {% if person.biography_html %}
@@ -69,12 +74,9 @@
 
   <h2>Sources</h2>
   {% if person.sources %}
-  {% for group in person.sources %}
-  <h3>{{ group.source_type }}</h3>
-  <ul>
-    {% for s in group.sources %}<li>{{ s }}</li>{% endfor %}
-  </ul>
-  {% endfor %}
+  <ol class="footnotes">
+    {% for s in person.sources %}<li id="fn-{{ s.num }}">{{ s.html }}</li>{% endfor %}
+  </ol>
   {% else %}
   <p class="empty">No sources cite this person yet.</p>
   {% endif %}

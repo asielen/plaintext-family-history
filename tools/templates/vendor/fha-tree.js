@@ -19,10 +19,10 @@
   'use strict';
 
   var SVGNS = 'http://www.w3.org/2000/svg';
-  var COL_W = 200;   // horizontal spacing per leaf
-  var ROW_H = 92;    // vertical spacing per generation
-  var NODE_W = 168;
-  var NODE_H = 56;
+  var COL_W = 228;   // horizontal spacing per leaf
+  var ROW_H = 112;   // vertical spacing per generation
+  var NODE_W = 200;  // wider card: room for a portrait + a two-line name
+  var NODE_H = 68;
 
   function svg(tag, attrs) {
     var e = document.createElementNS(SVGNS, tag);
@@ -56,9 +56,27 @@
     return m;
   }
 
+  // Colour each major line distinctly: every child-subtree of the root gets a
+  // branch number (1..7, cycling), inherited by its descendants. The renderer
+  // surfaces it as data-branch and the stylesheet underlines the name in the
+  // matching --branch-N colour. The root itself is left uncoloured - it is the
+  // shared subject/ancestor the branches fan out from.
+  function assignBranches(root) {
+    var branchOf = {};
+    (root.children || []).forEach(function (child, i) {
+      var b = (i % 7) + 1;
+      (function mark(n) {
+        branchOf[n.id] = b;
+        (n.children || []).forEach(mark);
+      })(child);
+    });
+    return branchOf;
+  }
+
   function render(container, root, options) {
     options = options || {};
     var collapsed = {};   // node id -> true when the user has collapsed it
+    var branchOf = assignBranches(root);
 
     // Bound the initial paint: nodes at or beyond options.initialDepth start
     // collapsed, so a large descendant explorer renders a few generations up
@@ -89,9 +107,13 @@
       (function edges(node) {
         if (collapsed[node.id]) return;
         (node.children || []).forEach(function (c) {
-          // A non-genetic bond (adoptive/step/…) gets an extra class so the page
-          // CSS can draw it distinctly (dashed); genetic edges are the default.
-          var edgeClass = 'fha-tree-edge' + (c.edgeGenetic === false ? ' fha-tree-edge-social' : '');
+          // Edge kind decides the dash pattern the page CSS draws (genetic solid,
+          // legal long-dash, other dotted). Fall back to the older genetic
+          // boolean (false ⇒ legal) when no explicit kind is present.
+          var kind = c.edgeKind || (c.edgeGenetic === false ? 'legal' : 'genetic');
+          var edgeClass = 'fha-tree-edge'
+            + (kind === 'legal' ? ' fha-tree-edge-legal'
+               : kind === 'other' ? ' fha-tree-edge-other' : '');
           var p = svg('path', {
             'class': edgeClass,
             d: 'M' + px(node) + ',' + (py(node) + NODE_H / 2) +
@@ -111,6 +133,7 @@
         });
         var box = document.createElement('div');
         box.className = 'fha-node' + (node.url ? '' : ' fha-node-nolink');
+        if (branchOf[node.id]) box.setAttribute('data-branch', branchOf[node.id]);
         var kids = node.children || [];
 
         if (kids.length) {
@@ -127,18 +150,40 @@
           box.appendChild(toggle);
         }
 
+        // A small fixed-size portrait square, or a monogram placeholder when the
+        // person has no profile photo. Size is locked in CSS so it never changes
+        // the node's card geometry.
+        var portrait;
+        if (node.photo) {
+          portrait = document.createElement('img');
+          portrait.className = 'fha-portrait';
+          portrait.src = node.photo;
+          portrait.alt = '';
+          portrait.loading = 'lazy';
+        } else {
+          portrait = document.createElement('span');
+          portrait.className = 'fha-portrait fha-portrait-empty';
+          portrait.setAttribute('aria-hidden', 'true');
+          portrait.textContent = ((node.name || node.id || '?').charAt(0) || '?').toUpperCase();
+        }
+        box.appendChild(portrait);
+
+        var text = document.createElement('div');
+        text.className = 'fha-node-text';
+
         var name = document.createElement(node.url ? 'a' : 'span');
         name.className = 'fha-name';
         name.textContent = node.name || node.id;
         if (node.url) name.setAttribute('href', node.url);
-        box.appendChild(name);
+        text.appendChild(name);
 
         if (node.dates) {
           var d = document.createElement('small');
           d.className = 'fha-dates';
           d.textContent = node.dates;
-          box.appendChild(d);
+          text.appendChild(d);
         }
+        box.appendChild(text);
         fo.appendChild(box);
         s.appendChild(fo);
 

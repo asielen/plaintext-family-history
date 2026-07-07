@@ -302,6 +302,12 @@ death: 1941                      #   birth/death claim. Linter tracks these towa
 face_tags: ["Thomas Edward Hartley"]   # optional: EXACT face/people-tag strings meaning
                                  # this person in the photo library (§20) - the durable
                                  # name→P-id resolution; one line here vs retagging photos
+profile_photo: hartley-portrait-1895.jpg   # optional; the person's main portrait - shown on their
+                                 # profile page and as a small square in the family tree. A filename,
+                                 # path, or the photo's S-id, resolved leniently through the photo
+                                 # index (§20) so it survives Lightroom moves. Same export privacy
+                                 # gate as the photo strip: a portrait that co-depicts a living person,
+                                 # or whose source is withheld, is dropped from public output (§19).
 sex: M                           # optional; birth-assigned where a record states it; M | F | intersex | unknown
 gender: man                      # optional; identity, free text with suggested values; omit unless there is something to record
 living: false                    # required; true | false | unknown - drives export redaction (§19)
