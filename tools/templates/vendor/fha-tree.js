@@ -38,6 +38,7 @@
   var FIT_PAD = 48;      // content-space breathing room around the tree on Fit
   var DRAG_SLOP = 4;     // px of travel before a press becomes a pan (vs a click)
   var ZOOM_STEP = 1.25;  // per +/- button press
+  var HOME_SCALE = 1;    // px-per-unit when the Home button frames the home person
 
   function svg(tag, attrs) {
     var e = document.createElementNS(SVGNS, tag);
@@ -164,6 +165,11 @@
       b.style.background = 'var(--surface, #f8f5ee)';
       return b;
     }
+    // Home first: jump to the designated home person. Only offered when a
+    // homeId was supplied - otherwise it would just duplicate Fit.
+    if (options.homeId != null) {
+      controls.appendChild(mkBtn('⌂ Home', 'Center on the home person', function () { home(); }));
+    }
     controls.appendChild(mkBtn('−', 'Zoom out', function () { zoomBy(1 / ZOOM_STEP); }));
     controls.appendChild(mkBtn('Fit', 'Fit tree to view', function () { fit(); }));
     controls.appendChild(mkBtn('+', 'Zoom in', function () { zoomBy(ZOOM_STEP); }));
@@ -215,6 +221,38 @@
     function zoomBy(factor) {
       var rect = s.getBoundingClientRect();
       zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
+    }
+
+    // Find a node by id among the CURRENTLY VISIBLE set only: a node inside a
+    // collapsed subtree is skipped (its _x/_y would be stale), so the caller can
+    // treat "not found" as "not reachable right now". The node's own collapsed
+    // flag hides its children, not itself, so it still matches.
+    function visibleNodeById(id) {
+      var found = null;
+      (function walk(node) {
+        if (found) return;
+        if (node.id === id) { found = node; return; }
+        if (collapsed[node.id]) return;   // don't descend into a collapsed subtree
+        (node.children || []).forEach(walk);
+      })(root);
+      return found;
+    }
+
+    // Home: centre + zoom on the designated home person at a comfortable scale
+    // (node + immediate neighbours in frame). Falls back to Fit when no homeId
+    // was given, or the person isn't present / is collapsed out of view.
+    function home() {
+      var n = options.homeId != null ? visibleNodeById(options.homeId) : null;
+      if (!n) { fit(); return; }
+      userInteracted = true;
+      var sc = clampScale(HOME_SCALE);
+      var vpW = viewportW();
+      vw = vpW / sc; vh = VH / sc;
+      var nx = n._x * COL_W + COL_W / 2;   // same node-centre math as draw()'s px/py
+      var ny = n._y * ROW_H + NODE_H / 2;
+      vx = nx - vw / 2;
+      vy = ny - vh / 2;
+      applyView();
     }
 
     // ---- wheel / pinch zoom --------------------------------------------------
