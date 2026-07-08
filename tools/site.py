@@ -173,8 +173,11 @@ _DERIVATIVE_MAX_PX = 1200
 _PROFILE_MAX_PX = 512
 
 # Ancestor generations drawn in the static fan chart (rings beyond the subject).
-# 4 = up to great-great-grandparents: a readable page-sized pedigree fan.
-_FAN_GENERATIONS = 4
+# 3 = up to great-grandparents. Every ring then keeps its labels on a roomy
+# *curved* arc (the 4th ring would need cramped radial spokes that clip long
+# names); the fan auto-shrinks to the actual depth present, so a shallow tree
+# still renders small. One generation deeper than the person-page pedigree.
+_FAN_GENERATIONS = 3
 
 # Ancestor pedigree depth on person pages (M8.5: "3 generations default" =
 # subject + 2 parent hops). The home descendant explorer is uncapped (the
@@ -459,7 +462,9 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     <textPath> - curved along the ring on the roomy inner generations, radial
     (reading outward) on the narrow outer ones - and are truncated to fit.
     Colour/type come from the design tokens; this function only lays out geometry."""
-    n = max_gen
+    # Size to the actual depth present, not the configured maximum, so a shallow
+    # tree renders as a small tidy fan rather than a huge mostly-empty canvas.
+    n = min(max_gen, max((num.bit_length() - 1 for num in labels), default=1)) or 1
     r_max = r0 + n * ring
     pad = 14
     cx = r_max + pad
@@ -507,7 +512,7 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
         pid = f'fan{lid}'
         mid = (a1 + a2) / 2
         rm = (r_in + r_out) / 2
-        fs = (14, 12, 11, 10, 9)[min(g, 4)]
+        fs_max = (14, 13, 12, 11, 10)[min(g, 4)]
         if g < 4:                                     # inner: curved along the ring
             path_d = f"M{polar(rm, a2)} A{rm:.1f},{rm:.1f} 0 0 1 {polar(rm, a1)}"
             avail = rm * seg
@@ -516,23 +521,38 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
                       else f"M{polar(r_in, mid)} L{polar(r_out, mid)}")
             avail = r_out - r_in
         defs.append(f'<path id="{pid}" d="{path_d}"/>')
-        budget = max(3, int(avail / (fs * 0.62)))     # textPath clips overflow, so keep it snug
-        name = info['name']
-        if len(name) > budget:
-            name = name[:budget - 1].rstrip() + '…'
-        label = (f'<text class="fan-label" font-size="{fs}"><textPath href="#{pid}" '
+        full = info['name']
+        # Shrink the label to fit the whole name on the arc, down to a readable
+        # floor; only below the floor do we truncate (the roomy inner rings then
+        # show full names, the tight outer rings shorten but keep it in the tooltip).
+        _CW = 0.66                                    # approx glyph width in em for the serif
+        fs = max(8.0, min(fs_max, avail / (max(1, len(full)) * _CW)))
+        budget = max(3, int(avail / (fs * _CW)))
+        name = full if len(full) <= budget else full[:budget - 1].rstrip() + '…'
+        # The full name rides a <title> so a truncated arc label is never lossy:
+        # hovering (or a screen reader) gives the whole name.
+        title = f'<title>{html.escape(full)}</title>'
+        label = (f'<text class="fan-label" font-size="{fs:.1f}"><textPath href="#{pid}" '
                  f'startOffset="50%">{html.escape(name)}</textPath></text>')
         url = info.get('url')
-        body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{label}</a>' if url else label)
+        body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{label}</a>'
+                    if url else f'<g>{title}{label}</g>')
 
     # subject: filled upper half-disk at the hub (left→right, sweep 1 arcs over
     # the top, so the hub fills the inner fan rather than hanging below) + name
     body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
                 f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
-    subj = labels.get(1, {}).get('name', '')
-    if subj:
-        body.append(f'<text class="fan-label-subject" x="{cx:.1f}" y="{cy - r0 * 0.42:.1f}">'
-                    f'{html.escape(subj)}</text>')
+    subj_full = labels.get(1, {}).get('name', '')
+    if subj_full:
+        # The hub is small and the page is already titled with the full name, so the
+        # centre shows just the given name (full name in the tooltip) - no overflow.
+        parts = subj_full.split()
+        given = parts[0] if parts else subj_full
+        if len(given) > 12:
+            given = given[:11] + '…'
+        body.append(f'<g><title>{html.escape(subj_full)}</title>'
+                    f'<text class="fan-label-subject" x="{cx:.1f}" y="{cy - r0 * 0.42:.1f}">'
+                    f'{html.escape(given)}</text></g>')
 
     out = [f'<svg class="fan-chart" viewBox="0 0 {w:.0f} {h:.0f}" '
            f'preserveAspectRatio="xMidYMid meet" role="img" aria-label="Ancestor fan chart">']
