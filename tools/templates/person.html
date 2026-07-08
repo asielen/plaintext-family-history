@@ -4,6 +4,12 @@
 <article class="person">
   {% if person.portrait %}<img class="person-portrait" src="{{ person.portrait }}" alt="Portrait of {{ person.name }}">{% endif %}
   <h1>{{ person.name }}</h1>
+  {% if person.alt_names %}
+  <p class="alt-names">{% for a in person.alt_names %}{{ a }}{% if not loop.last %} <span class="alt-sep">·</span> {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if person.tags %}
+  <ul class="tag-pills" aria-label="Tags">{% for t in person.tags %}<li class="tag-pill">{{ t }}</li>{% endfor %}</ul>
+  {% endif %}
 
   {% if person.summary %}
   <dl class="summary">

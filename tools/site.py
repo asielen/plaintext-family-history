@@ -1331,6 +1331,7 @@ class _SiteBuilder:
         family = self._person_family(pid, page_dir)
         photos = self._person_photos(pid, page_dir)
         name = row['name'] or fmt_id_display(pid)
+        alt_names, tags = self._person_header_meta(pid, name)
         # One Ahnentafel walk feeds both charts: the horizontal pedigree (subject +
         # parents + grandparents, slots 1-7) and the deeper radial fan.
         ahnen = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
@@ -1340,6 +1341,7 @@ class _SiteBuilder:
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
+            'alt_names': alt_names, 'tags': tags,
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
             'pedigree': pedigree,
@@ -1353,6 +1355,54 @@ class _SiteBuilder:
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
         self._footnotes = None        # footnotes are strictly person-page-scoped
+
+    def _person_header_meta(self, pid: str, display_name: str) -> tuple[list[str], list[str]]:
+        """Alternate-name lines and editorial tag pills for the page header, read
+        from the person `.md` front-matter (the index carries neither). Names come
+        from `name_at_birth` (né/née), `married_name` (later), and the
+        `also_known_as` / `name_variants` lists; tags from `tags`. Only non-redacted
+        curated people get a page, so no living person's aliases surface; a
+        `restricted` name variant (e.g. a deadname) is still dropped in standalone."""
+        row = self.person_meta.get(pid)
+        if not row:
+            return [], []
+        try:
+            meta = read_record(self.archive_root / row['path'])['meta']
+        except Exception:
+            return [], []
+        restricted = set() if self.linked else self.restricted_names.get(pid, set())
+        seen = {display_name.strip().lower()}
+        alts: list[str] = []
+
+        def norm(x) -> tuple[str, bool]:
+            """(name, is_restricted). A variant may be a plain string or a
+            `{value, restricted}` mapping - e.g. a deadname carrying `restricted`."""
+            if isinstance(x, dict):
+                v = x.get('value')
+                r = str(x.get('restricted', '')).strip().lower() not in ('', 'false', 'none', '0')
+                return (str(v).strip() if v else ''), r
+            return (str(x).strip() if x else ''), False
+
+        def add(label: str, value) -> None:
+            v, item_restricted = norm(value)
+            k = v.lower()
+            if not v or k in seen:
+                return
+            if k in restricted or (item_restricted and not self.linked):
+                return          # a restricted variant (deadname) never leaves a standalone build
+            seen.add(k)
+            alts.append(f'{label} {v}'.strip())
+
+        add('né' if (row['sex'] or '').strip().lower() == 'm' else 'née', meta.get('name_at_birth'))
+        add('later', meta.get('married_name'))
+        for key in ('also_known_as', 'name_variants'):
+            val = meta.get(key)
+            for a in (val if isinstance(val, list) else ([val] if val else [])):
+                add('', a)
+        raw = meta.get('tags')
+        tags = ([str(t).strip() for t in raw if str(t).strip()] if isinstance(raw, list)
+                else [raw.strip()] if isinstance(raw, str) and raw.strip() else [])
+        return alts, tags
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…)."""

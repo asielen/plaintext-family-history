@@ -521,7 +521,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "cf146aa4dbdd24ebbe7e431ea1af158522c4483447b2436c5b72fb3e4623ac70",
+      "sha256": "936973a0b40e4c377a1ea2fd22c19b6161f18f197c71f48df5dc07bd3854f51e",
       "spec_version": "1.2"
     },
     {
@@ -557,7 +557,7 @@
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "f6bb20976bf37c0f9fabe43d02a51da34544dbc1a7ae24b1f165c7a3559ebb60",
+      "sha256": "d5872cfba3ef96d83b1884007c5df7f8a028b87f4231be9783e72ad36e5b4b01",
       "spec_version": "1.2"
     },
     {

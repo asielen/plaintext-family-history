@@ -6,6 +6,7 @@ name_variants: [T. E. Hartley]
 aliases: [P-de957bcda1, Thomas Edward Hartley, T. E. Hartley]
 sex: M
 living: false
+tags: [brick-wall, railroad]
 created: 2026-06-12
 tier: curated
 ---
