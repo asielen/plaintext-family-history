@@ -2276,6 +2276,32 @@ def strip_unaccepted_drafts(text: str) -> tuple[str, str | None]:
     return _BLANK_RUN_RE.sub('\n\n', cleaned), None
 
 
+# ── Private-content fence (publication guard) ─────────────────────────────────
+# A general `<!-- private -->…<!-- /private -->` fence hides author-marked prose
+# (research hunches, notes touching living kin) from any shared/standalone output
+# while keeping it in the `--linked` working preview. Companion to
+# strip_unaccepted_drafts; usable on every publication path.
+_PRIVATE_MARK_RE = re.compile(r'<!--\s*/?\s*private\s*-->', re.I)
+_PRIVATE_BLOCK_RE = re.compile(
+    r'<!--\s*private\s*-->.*?(?:<!--\s*/\s*private\s*-->|\Z)', re.S | re.I)
+
+
+def apply_private_fence(text: str, *, drop: bool) -> str:
+    """Resolve `<!-- private -->…<!-- /private -->` fences in prose.
+
+    `drop=True` (a public/standalone build) removes the fenced content entirely;
+    `drop=False` (the linked working preview) keeps the content but strips the
+    marker comments so they never render as stray blank lines. FAIL-CLOSED: an
+    unterminated `<!-- private -->` (no closing marker) drops to the end of the
+    text rather than risk publishing what was meant to stay hidden."""
+    if '<!--' not in text:
+        return text
+    if drop:
+        text = _PRIVATE_BLOCK_RE.sub('', text)
+    text = _PRIVATE_MARK_RE.sub('', text)
+    return _BLANK_RUN_RE.sub('\n\n', text) if drop else text
+
+
 # ── GENERATED-file ownership ──────────────────────────────────────────────────
 # The header contract between the generators (views, lint --fix reports, site
 # never - it owns a whole directory instead) and every tool that must not

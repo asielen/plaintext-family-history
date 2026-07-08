@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 from _lib import (
+    apply_private_fence,
     is_generated_file,
     is_generated_text,
     read_record,
@@ -218,6 +219,39 @@ class StripUnacceptedDraftsTests(unittest.TestCase):
             'Draft B.\n\n<!-- AI-DRAFT 2 m - broken\n')
         self.assertEqual(out, '')
         self.assertIsNotNone(problem)
+
+
+class PrivateFenceTests(unittest.TestCase):
+    """`<!-- private -->…<!-- /private -->` hides prose from a public/standalone
+    build (drop=True) but is kept, marker-stripped, in the linked preview."""
+
+    def test_closed_block_dropped_on_publish(self):
+        t = 'A\n\n<!-- private -->\nSECRET\n<!-- /private -->\n\nB'
+        self.assertEqual(apply_private_fence(t, drop=True), 'A\n\nB')
+
+    def test_closed_block_kept_but_markers_stripped_in_preview(self):
+        t = 'A\n<!-- private -->\nkept\n<!-- /private -->\nB'
+        out = apply_private_fence(t, drop=False)
+        self.assertIn('kept', out)
+        self.assertNotIn('private', out)          # both markers gone
+
+    def test_unterminated_fence_fails_closed(self):
+        # No closing marker → drop from the opener to end rather than risk a leak.
+        t = 'Public.\n<!-- private -->\nSECRET no closer\nmore'
+        self.assertEqual(apply_private_fence(t, drop=True), 'Public.\n')
+        self.assertIn('SECRET no closer', apply_private_fence(t, drop=False))
+
+    def test_multiple_blocks_all_dropped(self):
+        t = 'one <!-- private --> SECRET1 <!-- /private --> two <!-- private --> SECRET2 <!-- /private --> three'
+        out = apply_private_fence(t, drop=True)
+        self.assertNotIn('SECRET1', out)
+        self.assertNotIn('SECRET2', out)
+        for kept in ('one', 'two', 'three'):
+            self.assertIn(kept, out)
+
+    def test_no_marker_untouched(self):
+        t = 'He was a private in the 15th Kansas.'   # the word, not a fence
+        self.assertEqual(apply_private_fence(t, drop=True), t)
 
 
 class GeneratedOwnershipTests(unittest.TestCase):

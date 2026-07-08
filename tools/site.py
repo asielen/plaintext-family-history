@@ -126,6 +126,7 @@ from _lib import (
     EXIT_WARNINGS,
     Result,
     FhaConfigError,
+    apply_private_fence,
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
@@ -328,7 +329,7 @@ _LIST_RE = re.compile(r'^\s*[-*]\s+(.*)$')
 _EMBED_RE = re.compile(r'^!\[\[\s*([^\]|]+?)\s*(?:\|\s*([^\]]*?)\s*)?\]\]\s*$')
 
 
-def _prose_to_html(text: str, render_token, render_embed=None) -> str:
+def _prose_to_html(text: str, render_token, render_embed=None, *, drop_private: bool = False) -> str:
     """Convert a simple markdown block to HTML using only the stdlib.
 
     The profile prose format is deliberately simple (TOOLING §12: "headings,
@@ -338,7 +339,13 @@ def _prose_to_html(text: str, render_token, render_embed=None) -> str:
     `_inline_html`. Headings below the page H1 render as `<h3>` so they sit
     under the section's own `<h2>` ("Biography", "Stories") without competing
     with it.
+
+    `drop_private=True` (a public/standalone build) strips `<!-- private -->…
+    <!-- /private -->` fenced prose before rendering; the linked preview keeps
+    the content and only removes the marker comments.
     """
+    if text:
+        text = apply_private_fence(text, drop=drop_private)
     if not text or not text.strip():
         return ''
     lines = text.replace('\r\n', '\n').split('\n')
@@ -1318,7 +1325,7 @@ class _SiteBuilder:
         self._footnote_seq = []
 
         summary = self._person_summary(pid, page_dir)
-        biography_html, stories_html = self._person_prose(row, page_dir)
+        biography_html, stories_html, research_html = self._person_prose(row, page_dir)
         timeline = self._person_timeline(pid, page_dir)
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
@@ -1340,6 +1347,7 @@ class _SiteBuilder:
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
             'stories_html': self._markup(stories_html) if stories_html else None,
+            'research_html': self._markup(research_html) if research_html else None,
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
@@ -1389,8 +1397,8 @@ class _SiteBuilder:
                 })
         return summary
 
-    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str]:
-        """Biography and Stories HTML, read from the person `.md` body.
+    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str, str]:
+        """Biography, Stories and Research Notes HTML, read from the person `.md` body.
 
         Unaccepted `<!-- AI-DRAFT ... -->` prose is excluded before rendering
         (in both modes - the marker would render as escaped visible junk even
@@ -1410,11 +1418,12 @@ class _SiteBuilder:
             rec = read_record(self.archive_root / row['path'])
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); skipping its prose.')
-            return '', ''
+            return '', '', ''
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
         bio = _extract_section(rec['body'], 'Biography')
         stories = rec['stories']
+        research = _extract_section(rec['body'], 'Research Notes')
         problem: str | None = None
         if bio:
             bio, problem = strip_unaccepted_drafts(bio)
@@ -1422,16 +1431,22 @@ class _SiteBuilder:
         if stories and problem is None:
             stories, problem = strip_unaccepted_drafts(stories)
             stories = stories.strip()
+        if research and problem is None:
+            research, problem = strip_unaccepted_drafts(research)
+            research = research.strip()
         if problem is not None:
             self.messages.append(
                 f'WARNING: a draft marker in {row["path"]} is damaged ({problem}) - '
                 'fix the marker or remove the draft, then rebuild. Until then this '
-                "person's Biography and Stories are withheld from the site."
+                "person's Biography, Stories and Research Notes are withheld from the site."
             )
-            return '', ''
-        biography_html = _prose_to_html(bio, render, embed) if bio else ''
-        stories_html = _prose_to_html(stories, render, embed) if stories else ''
-        return biography_html, stories_html
+            return '', '', ''
+        # Standalone drops `<!-- private -->` fenced prose; the linked preview keeps it.
+        dp = not self.linked
+        biography_html = _prose_to_html(bio, render, embed, drop_private=dp) if bio else ''
+        stories_html = _prose_to_html(stories, render, embed, drop_private=dp) if stories else ''
+        research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
+        return biography_html, stories_html, research_html
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the
@@ -2003,7 +2018,7 @@ class _SiteBuilder:
         body, _entries = self._read_discoveries()
         page_dir = self.out_dir
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
-        content_html = _prose_to_html(body, render) if body else ''
+        content_html = _prose_to_html(body, render, drop_private=not self.linked) if body else ''
         self._write_page(self.out_dir / 'discoveries.html', 'discoveries.html', {
             'content_html': self._markup(content_html) if content_html else None,
             'root_prefix': '.',
@@ -2338,7 +2353,8 @@ class _SiteBuilder:
         ]
 
         _body, entries = self._read_discoveries()
-        discoveries = [self._markup(_prose_to_html(chunk, render, embed)) for chunk in entries]
+        discoveries = [self._markup(_prose_to_html(chunk, render, embed, drop_private=not self.linked))
+                       for chunk in entries]
 
         sources = sorted(
             ({'title': self.source_meta[sid]['title'] or fmt_id_display(sid),
@@ -2359,7 +2375,7 @@ class _SiteBuilder:
             try:
                 body = (read_record(home_md).get('body') or '').strip()
                 if body:
-                    intro = self._markup(_prose_to_html(body, render, embed))
+                    intro = self._markup(_prose_to_html(body, render, embed, drop_private=not self.linked))
             except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
                 self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
 

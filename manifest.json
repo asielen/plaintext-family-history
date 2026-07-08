@@ -291,7 +291,7 @@
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
-      "sha256": "e6fc2c7ac0ac7299473a80695b3bf8f60be06dd1a6e046066bfccee691783484",
+      "sha256": "5966e5b17360cfa6f19635ef656d372c0ba94d20ef4a61cd0d3ae779702cdaf6",
       "spec_version": "1.2",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
@@ -340,7 +340,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "f5922c3015695bcdd62275189b5e7ce4dd97765ff05494ad4bdf12bb1ae7b568",
+      "sha256": "d2252a2583f6eac9853c072e1d85e3bdf4a87cf11a80b7952a4b021535646710",
       "spec_version": "1.2",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     },
@@ -353,7 +353,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "ba35330b602c5944615c4b885c3bd30b91594debd921966c997cf3cf1c5eebb9",
+      "sha256": "042102f199e94612b8dd5a03b1ce3120ddd1994416afec796eaafaa33e391069",
       "spec_version": "1.2"
     },
     {
@@ -521,7 +521,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "601057a7b25e8fe89897fa5b3a2f9fc532b8faf417b3bfbc83991a1263de1b87",
+      "sha256": "cf146aa4dbdd24ebbe7e431ea1af158522c4483447b2436c5b72fb3e4623ac70",
       "spec_version": "1.2"
     },
     {
@@ -557,7 +557,7 @@
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "30d5eb7d032fcaf1b66c6456dfe9228eaa23fc8d96df96c6c646d911641c5217",
+      "sha256": "f6bb20976bf37c0f9fabe43d02a51da34544dbc1a7ae24b1f165c7a3559ebb60",
       "spec_version": "1.2"
     },
     {

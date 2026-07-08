@@ -22,5 +22,16 @@ Thomas Hartley spent most of his adult life in [[L-7c1a9f4e22|Fairview]], Kansas
 ## Stories
 *(none yet)*
 
+## Research Notes
+The 1880 census gives his birthplace as New York, but no county or town has been
+confirmed - the next step is the 1850/1860 New York state censuses for a Hartley
+household matching his age.
+
+<!-- private -->
+A living cousin mentioned a family story that Thomas left New York after a
+falling-out with a brother; unverified, and it names people who may still be
+living, so keep it out of anything shared until confirmed.
+<!-- /private -->
+
 ## Friends & Family
 *(none yet)*

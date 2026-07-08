@@ -83,6 +83,11 @@
   {{ person.stories_html }}
   {% endif %}
 
+  {% if person.research_html %}
+  <h2>Research Notes</h2>
+  {{ person.research_html }}
+  {% endif %}
+
   {% if person.family %}
   <h2>Friends &amp; Family</h2>
   {% for group in person.family %}

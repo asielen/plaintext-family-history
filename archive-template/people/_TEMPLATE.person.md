@@ -13,7 +13,14 @@ id: P-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING: Make 
 aliases:           # OPTIONAL - the code, repeated, so [[P-...]] and [[name]] links resolve
   - P-__________   # paste the same code here too
 
-name: Full Name Here       # how you'd say their name: "Thomas Edward Hartley"
+name: Full Name Here       # display name. CONVENTION: use their name AT BIRTH, so the record
+                           #   files under the birth surname (a tool can still show a married name).
+                           #   Set it to whatever reads best, though - it's your call.
+# name_at_birth: Margaret Cole     # OPTIONAL - birth / maiden name, if different from `name`
+# married_name: Margaret Hartley   # OPTIONAL - married / later name
+# also_known_as:                   # OPTIONAL - nicknames, alternate spellings, other names;
+#   - Peggy                        #   these become aliases, so [[Peggy]] resolves to this person
+#   - Maggie Cole
 sex: M                     # M / F / intersex / unknown - used only for grammar in generated text
 living: false              # true / false / unknown - WHEN UNSURE, write unknown. Living people
                            # are kept private in any public output.
@@ -23,6 +30,9 @@ living: false              # true / false / unknown - WHEN UNSURE, write unknown
 # restricted: by-request   # OPTIONAL - keep this person out of anything you share. Plain
                            # "restricted: true" can be re-included in a family packet on purpose;
                            # "by-request" is left out everywhere, no exceptions.
+# tags: [brick-wall, priority]   # OPTIONAL - your own labels for finding / grouping people
+                           # (research status, a project). NOT for facts - a job or a war record is
+                           # a claim in a source, not a tag. ("tier: stub" below is one such label.)
 
 # OPTIONAL provisional dates - an honest guess is fine here; a tool will remind
 # you to add a source later. Uncomment and fill in what you know:
@@ -56,6 +66,11 @@ tier: stub                 # stub (a placeholder) -> curated (you've written the
 **Parents:** Father Name · Mother Name
 **Children:** Child One · Child Two
 
+<!-- Recording a job, home, school, military service, immigration, or a church /
+     lodge / tribe membership? Those are CLAIMS - add them in the source that
+     proves them (see the source template's "## Claims"), and mention them in the
+     Biography below. -->
+
 ## Biography
 Write their story in plain sentences. Uncited prose is welcome - it's story and
 context, never treated as proven fact. Mark anything you mean to back up later
@@ -63,6 +78,17 @@ with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
 
 ## Stories
 *(none yet)*
+
+## Research Notes
+Open questions, hunches, and brick walls - where to look next. (Delete this line
+as you add your own.) This section is public by default; to keep a single note out
+of a shared copy, wrap it in a private fence like the example below.
+
+<!-- private -->
+A hunch you're not ready to publish - say, a possible tie to a living relative.
+This block stays in your local `--linked` preview but is dropped from the shared
+(standalone) site.
+<!-- /private -->
 
 ## Friends & Family
 People connected to them who aren't blood relatives - neighbors, business
