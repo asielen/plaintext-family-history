@@ -95,13 +95,19 @@ class TreeEdgeNatureTests(unittest.TestCase):
         self.assertEqual(by_to[ADO.lower()]['subtype'], 'adoptive')
 
     def test_site_tree_json_carries_nature(self):
-        out_dir = self.root / '.cache' / 'site'
-        # Make the index look fresh, then build the site (linked = no redaction).
-        future = time.time() + 5
-        os.utime(self.root / '.cache' / 'index.sqlite', (future, future))
-        site_mod.run_site(self.root, out_dir, linked=True)
-        data = json.loads(
-            (out_dir / 'data' / f'tree_{normalize_id(CHILD)}_ancestors.json').read_text(encoding='utf-8'))
+        # The neutral tree JSON must tag each parent/child edge with its nature
+        # (genetic vs a legal/adoptive bond). The interactive ancestors tree is no
+        # longer emitted per page (person pages show a static pedigree), so exercise
+        # the builder that produces the JSON directly - the biological and adoptive
+        # fathers are co-parents of one child, which no single descendant tree holds.
+        conn = site_mod.open_index_db(self.root, site_mod._REQUIRED_TABLES, strict=False)
+        try:
+            builder = site_mod._SiteBuilder(
+                conn, self.root, {}, self.root / '.cache' / 'site', linked=True)
+            builder.prepare()
+            data = builder._build_tree_data(normalize_id(CHILD), 'ancestors', 2, builder.out_dir)
+        finally:
+            conn.close()
         natures = {e['to']: e['genetic'] for e in data['edges']}
         self.assertIn('genetic', data['edges'][0])              # contract field present
         self.assertTrue(natures.get('P-bbbbbbbbbb'))           # biological father

@@ -31,14 +31,18 @@
   </nav>
   {% endif %}
 
-  {% if tree %}
-  <h2>Ancestors</h2>
-  {% include "_tree.html" %}
+  {% if person.pedigree %}
+  <details class="chart" open>
+    <summary class="chart-title">Ancestors</summary>
+    <div class="chart-body">{{ person.pedigree }}</div>
+  </details>
   {% endif %}
 
   {% if person.fan %}
-  <h2>Ancestor fan</h2>
-  {{ person.fan }}
+  <details class="chart">
+    <summary class="chart-title">Ancestor fan</summary>
+    <div class="chart-body">{{ person.fan }}</div>
+  </details>
   {% endif %}
 
   {% if person.biography_html %}

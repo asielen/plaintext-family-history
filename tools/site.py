@@ -543,6 +543,81 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     return '\n'.join(out)
 
 
+def _render_pedigree_svg(labels: dict) -> str:
+    """Render a horizontal (left→right) ancestor pedigree as a self-contained SVG.
+
+    `labels` is an Ahnentafel map {number: {'name','url','redacted','dates'}} covering
+    two generations up - slot 1 the subject, 2/3 the parents, 4-7 the grandparents
+    (see `_build_ahnentafel`, called with max_gen=2). The subject sits at the left and
+    each ancestor generation steps rightward - the genealogical convention, and the
+    fix for the descendant renderer drawing ancestors *downward* (upside-down). Node
+    cards are HTML in <foreignObject> so names wrap and links work; a drawn person's
+    un-researched parent shows as a faint 'Unknown' slot so the bracket reads as a
+    pedigree. Redacted (living/restricted) people never reach here - the walk drops
+    them - so no living name can surface."""
+    CW, CH = 176, 62
+    COL_GAP, ROW, PAD = 40, 72, 8
+    base = PAD + CH / 2
+
+    def col_x(gen: int) -> float:
+        return PAD + gen * (CW + COL_GAP)
+
+    def y_center(num: int) -> float:
+        g = num.bit_length() - 1
+        if g == 0:                                   # subject
+            return base + 1.5 * ROW
+        if g == 1:                                   # parent: centred over its 2 grandparents
+            return base + (0.5 if num == 2 else 2.5) * ROW
+        return base + (num - 4) * ROW                # grandparents: four stacked rows
+
+    # Draw the subject always; an ancestor slot only when its child is a drawn person -
+    # real ancestors as name cards, a known person's missing parent as a faint 'Unknown'.
+    render: dict[int, tuple] = {1: ('person', labels.get(1) or {'name': ''})}
+    for slot in (2, 3, 4, 5, 6, 7):
+        if render.get(slot // 2, ('', None))[0] != 'person':
+            continue
+        lab = labels.get(slot)
+        render[slot] = ('person', lab) if (lab and lab.get('name')) else ('empty', None)
+
+    W = 2 * PAD + 3 * CW + 2 * COL_GAP
+    H = 2 * PAD + CH + 3 * ROW
+
+    def yr(edtf) -> str:
+        m = re.search(r'\d{4}', str(edtf)) if edtf else None
+        return m.group(0) if m else ''
+
+    links: list[str] = []
+    cards: list[str] = []
+    for slot, (kind, lab) in render.items():
+        x = col_x(slot.bit_length() - 1)
+        yc = y_center(slot)
+        for pslot in (2 * slot, 2 * slot + 1):       # elbow to each drawn parent
+            if pslot in render:
+                x2, y2 = col_x(pslot.bit_length() - 1), y_center(pslot)
+                midx = (x + CW + x2) / 2
+                links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
+                             f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
+        if kind == 'empty':
+            cls, inner = 'ped-node ped-empty', '<span class="ped-name">Unknown</span>'
+        else:
+            cls = 'ped-node' + (' ped-self' if slot == 1 else '')
+            name = html.escape(lab.get('name') or '')
+            url = lab.get('url')
+            name_el = (f'<a class="ped-name" href="{html.escape(url, quote=True)}">{name}</a>'
+                       if url else f'<span class="ped-name">{name}</span>')
+            d = lab.get('dates') or {}
+            b, dd = yr(d.get('birth')), yr(d.get('death'))
+            span = f'{b}–{dd}' if (b and dd) else (f'b. {b}' if b else (f'd. {dd}' if dd else ''))
+            inner = name_el + (f'<span class="ped-dates">{span}</span>' if span else '')
+        cards.append(
+            f'<foreignObject x="{x:.0f}" y="{yc - CH / 2:.0f}" width="{CW}" height="{CH}">'
+            f'<div xmlns="http://www.w3.org/1999/xhtml" class="{cls}">{inner}</div>'
+            f'</foreignObject>')
+
+    return (f'<svg class="pedigree" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet" '
+            f'role="img" aria-label="Ancestor pedigree">' + ''.join(links) + ''.join(cards) + '</svg>')
+
+
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
 
 def _rel_href(target: Path, page_dir: Path) -> str:
@@ -1229,15 +1304,18 @@ class _SiteBuilder:
         family = self._person_family(pid, page_dir)
         photos = self._person_photos(pid, page_dir)
         name = row['name'] or fmt_id_display(pid)
-        tree = self._make_tree_ctx(pid, 'ancestors', _PEDIGREE_GENERATIONS - 1, page_dir,
-                                   f'Ancestor pedigree of {name}', home_id=pid)
+        # One Ahnentafel walk feeds both charts: the horizontal pedigree (subject +
+        # parents + grandparents, slots 1-7) and the deeper radial fan.
         ahnen = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
+        ped_labels = {n: e for n, e in ahnen.items() if n < 8}
+        pedigree = self._markup(_render_pedigree_svg(ped_labels)) if len(ped_labels) > 1 else None
         fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
+            'pedigree': pedigree,
             'fan': fan,
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
@@ -1245,7 +1323,7 @@ class _SiteBuilder:
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
-                         {'person': ctx, 'tree': tree, 'root_prefix': '..'})
+                         {'person': ctx, 'root_prefix': '..'})
         self._footnotes = None        # footnotes are strictly person-page-scoped
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
@@ -1970,10 +2048,13 @@ class _SiteBuilder:
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted'",
             (pid,),
         ):
-            # Standalone: skip dates from restricted claims or withheld sources.
+            # Standalone: show a (deceased) person's date even when its source is
+            # merely withheld - the node carries no citation to redact, and only
+            # living people are redacted outright. Drop only a restricted claim or a
+            # hard-restricted source (DNA / by-request / publication_ok:false).
             if not self.linked and normalize_id(str(r['id'])) in self.restricted_claims:
                 continue
-            if not self.linked and r['source_id'] is not None and r['source_id'] not in self.source_pages:
+            if not self.linked and self._source_hard_restricted(r['source_id']):
                 continue
             if vitals.get(r['type']) is None:
                 vitals[r['type']] = r['date_edtf'] or None
@@ -2052,7 +2133,13 @@ class _SiteBuilder:
             ):
                 other = r['other_id']
                 if not self.linked:
-                    if other not in self.person_pages:
+                    # Include a deceased person even when they have no page of their
+                    # own (a `stub`): they render as an unlinked name-only node, so
+                    # the lineage isn't severed at every un-curated ancestor. Only a
+                    # living/unknown/restricted person is dropped outright (never a
+                    # standalone tree node), plus a relationship with no public claim.
+                    ometa = self.person_meta.get(other)
+                    if ometa is None or self._person_is_redacted(ometa):
                         continue
                     if not self._has_public_claim(cur, other):
                         continue
@@ -2090,15 +2177,19 @@ class _SiteBuilder:
         even slot, mother (F) the odd one; unknown-sex parents fill whatever slot is
         free. Redaction is applied per person - a withheld ancestor becomes a blank
         segment, never a leaked name (mirrors `_tree_node`)."""
+        no_dates = {'birth': None, 'death': None}
+
         def entry(pid: str) -> dict:
             meta = self.person_meta.get(pid)
             if meta is None:
-                return {'name': fmt_id_display(pid), 'url': None, 'redacted': False}
+                return {'name': fmt_id_display(pid), 'url': None, 'redacted': False, 'dates': no_dates}
             if not self.linked and self._person_is_redacted(meta):
-                return {'name': '', 'url': None, 'redacted': True}
+                return {'name': '', 'url': None, 'redacted': True, 'dates': no_dates}
             url = (_rel_href(self.persons_dir / _page_filename(pid), page_dir)
                    if pid in self.person_pages else None)
-            return {'name': meta['name'] or fmt_id_display(pid), 'url': url, 'redacted': False}
+            # Dates ride along for the pedigree card; the radial fan ignores them.
+            return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
+                    'redacted': False, 'dates': self._person_vitals(pid)}
 
         labels: dict[int, dict] = {1: entry(seed)}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
@@ -2113,7 +2204,11 @@ class _SiteBuilder:
                    FROM relationships r JOIN persons p ON r.other_id = p.id
                    WHERE r.person_id = ? AND r.rel = 'parent' ''', (pid,)):
                 other = r['other_id']
-                if not self.linked and (other not in self.person_pages
+                # A deceased ancestor without a page (stub) still fills its slot as a
+                # name (unlinked); only a living/unknown/restricted ancestor stays a
+                # blank redaction, and a no-public-claim edge is skipped.
+                ometa = self.person_meta.get(other)
+                if not self.linked and (ometa is None or self._person_is_redacted(ometa)
                                         or not self._has_public_claim(pid, other)):
                     continue
                 parents.append((other, (r['sex'] or '').upper()))

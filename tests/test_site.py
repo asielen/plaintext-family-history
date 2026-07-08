@@ -755,13 +755,14 @@ class TreeTests(_Base):
     def test_person_ancestor_pedigree(self):
         self._seed_rels_chain()
         self._run(linked=True)
-        data = self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json'
-        self.assertTrue(data.exists())
-        tree = json.loads(data.read_text(encoding='utf-8'))
-        self.assertEqual(tree['mode'], 'ancestors')
-        # 3 generations: self + parent + grandparent (>= 2 generations).
-        self.assertGreaterEqual(len({n['p_id'] for n in tree['nodes']}), 3)
-        self.assertIn('fha-tree-data', self._read('persons/p-aaaaaaaaaa.html'))
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        # The person page now carries a static horizontal pedigree SVG (subject +
+        # parents + grandparents), not the interactive descendant renderer.
+        self.assertIn('class="pedigree"', page)
+        for name in ('Child Carl', 'Parent Pat', 'Grandparent Gus'):   # 3 generations
+            self.assertIn(name, page)
+        self.assertNotIn('fha-tree-data', page)                        # no interactive tree here
+        self.assertFalse((self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json').exists())
 
     def test_tree_redacts_living_and_links_only_existing_pages(self):
         self._seed_rels_chain()
@@ -785,29 +786,37 @@ class TreeTests(_Base):
 
     def test_home_tree_bounds_initial_paint(self):
         # P2-3: the home descendant explorer passes a bounded initialDepth to the
-        # renderer; the per-person pedigree leaves it null (small, shown in full).
+        # renderer. The per-person page now shows a static pedigree (no interactive
+        # renderer), so it carries no initialDepth.
         self._seed_rels_chain()
         self._run(linked=True)
         self.assertIn('initialDepth: 4', self._read('index.html'))
-        self.assertIn('initialDepth: null', self._read('persons/p-aaaaaaaaaa.html'))
+        person = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('initialDepth', person)
+        self.assertIn('class="pedigree"', person)
 
     def test_relationship_cycle_terminates(self):
         # A cousin-marriage style cycle must not loop forever; the BFS visited
-        # set bounds it and the node set is deduplicated.
+        # set bounds it and the node set is deduplicated. Exercised now via the
+        # home descendant tree (the only interactive tree that remains).
         self._seed_person('p-aaaaaaaaaa', 'A')
         self._seed_person('p-bbbbbbbbbb', 'B')
         for a, b in (('p-aaaaaaaaaa', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-aaaaaaaaaa')):
             self.conn.execute(
                 'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
                 (a, 'parent', b, 'c-1111111111'))
+            self.conn.execute(
+                'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
+                (a, 'child', b, 'c-1111111111'))
         (self.archive_root / 'fha.yaml').write_text(
             'roots: {}\nroot_person: P-aaaaaaaaaa\n', encoding='utf-8')
         res = self._run(linked=True)
-        self.assertEqual(res['status'], 'ok')
-        tree = json.loads(
-            (self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json').read_text(encoding='utf-8'))
-        ids = [n['p_id'] for n in tree['nodes']]
-        self.assertEqual(sorted(ids), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])   # each node once
+        self.assertEqual(res['status'], 'ok')                          # terminates
+        artifacts = list((self.out_dir / 'data').glob('tree_*_descendants.json'))
+        self.assertTrue(artifacts)
+        ids = [n['p_id'] for n in json.loads(artifacts[0].read_text(encoding='utf-8'))['nodes']]
+        self.assertEqual(sorted(set(ids)), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])
+        self.assertEqual(len(ids), len(set(ids)))                      # each node once
 
     def test_mistyped_root_person_warns(self):
         self._seed_person('p-aaaaaaaaaa', 'Real Person')
