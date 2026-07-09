@@ -116,7 +116,7 @@ fha site
 ```
 
 That reads your records and settings and writes a fresh site (by default into
-`.cache/site/`). Open its `index.html` in a browser to see your change. Building is safe
+`generated/site/`). Open its `index.html` in a browser to see your change. Building is safe
 to repeat as often as you like — it always produces the same site from the same source.
 
 When you are ready to share it, `fha site` already produces the **safe-to-share** version

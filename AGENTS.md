@@ -98,7 +98,8 @@ people/connections/     non-direct people (FAN club), ordinary §13 person files
 people/stubs/           unplaced person stubs
 places/places.yaml      place registry
 notes/                  general research; notes/questions.md = question log
-.cache/                 disposable tool caches - never treat as truth
+.cache/                 disposable tool caches (index.sqlite, photos.sqlite) - never truth
+generated/              built deliverables, regenerable (generated/site = fha site output)
 ```
 
 ## Format quick reference

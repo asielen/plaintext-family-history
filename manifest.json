@@ -54,7 +54,7 @@
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "2bbf1ae69a49db4ba4a8cc468a3539d6eac211b8a364c174453ddbe989838080",
+      "sha256": "7f8e2a9422b5c11b280c5a02691bb5a3954c1115fe9d00963cc58fe990966b5d",
       "spec_version": "1.2"
     },
     {
@@ -91,7 +91,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "267cb75f982bfaa8f2e913b5d4d8d652c388873de54c7fa9fa1eca741050bf72",
+      "sha256": "1f719a846bb087ee9ce09c2cd0e2a0d587a4fd973eda821bee6b876ce2b47da7",
       "spec_version": "1.2"
     },
     {
@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "1362b588b78af1b6fe712a74ab4e2813bffc7ccfdd9106b7b6618fed3940f044",
+      "sha256": "f708260db4755f44fd6ff2d2ad075cc09a285cfafe418f224be04252f58b093a",
       "spec_version": "1.2"
     },
     {
@@ -169,7 +169,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "189e623b2182ca6b3c224be0e010a37bcffb5f6cfb5d5f2fbb05b5ff4975a767",
+      "sha256": "6b5bb492df0681ae88b24b39cf093425359e89b133bc5d86281620e7dba3e3dd",
       "spec_version": "1.2"
     },
     {
@@ -347,7 +347,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "5c15373880196188be901d520298bab58e10319412573ec6259db9710a5d94cd",
+      "sha256": "2456fc6d57d34269d0f906d8ab91faa7a5c3753c4292fb4f58d30dbdfb19a00e",
       "spec_version": "1.2"
     },
     {
@@ -521,7 +521,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "936973a0b40e4c377a1ea2fd22c19b6161f18f197c71f48df5dc07bd3854f51e",
+      "sha256": "99b7bd9fd90f357944566569c6544d859da57c9e55e2c930be3a2ff00a9776b3",
       "spec_version": "1.2"
     },
     {

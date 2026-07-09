@@ -2733,7 +2733,7 @@ def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -
     with the archive's own record trees, so pointing `--out` at the archive root
     would delete real records. And building *into* a record or asset tree (e.g.
     `--out sources`) would scatter generated pages among the originals. Refuse
-    both before any write. The default `.cache/site/` is always safe.
+    both before any write. The default `generated/site/` is always safe.
     """
     try:
         out_res = out_dir.resolve()
@@ -2744,13 +2744,13 @@ def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -
         return (
             f'Refusing to build the site into the archive root ({archive_root}). '
             'The site clears its own sources/ folder when it rebuilds, which would '
-            'delete your records. Pick a separate folder, e.g. `--out .cache/site` (the default).'
+            'delete your records. Pick a separate folder, e.g. `--out generated/site` (the default).'
         )
     # A different archive (its own fha.yaml + record tree) must not be clobbered.
     if (out_dir / 'fha.yaml').exists():
         return (
             f'Refusing to build the site into {out_dir}: it looks like another archive '
-            '(it has an fha.yaml). Choose an empty or site-only folder, e.g. the default `.cache/site`.'
+            '(it has an fha.yaml). Choose an empty or site-only folder, e.g. the default `generated/site`.'
         )
     # Building at or inside a record/asset tree would pollute the originals.
     protected = ['sources', 'people', 'places', 'notes', 'inbox']
@@ -2769,7 +2769,7 @@ def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -
             return (
                 f'Refusing to build the site into {out_dir}: that is inside your archive\'s '
                 f'"{cand.name}" folder, where it would mix generated pages in with your originals. '
-                'Choose a separate folder, e.g. the default `.cache/site`.'
+                'Choose a separate folder, e.g. the default `generated/site`.'
             )
     return None
 
@@ -2832,7 +2832,11 @@ def _cmd_site(args: argparse.Namespace) -> int:
     if archive_root is None:
         return EXIT_FAILURE
 
-    out_dir = Path(getattr(args, 'out', None) or Path('.cache') / 'site')
+    # Deliverables live under a visible `generated/` parent (the databases stay in
+    # the hidden `.cache/`). Standalone and the linked preview default to separate
+    # subfolders so a preview build never overwrites the shareable snapshot.
+    default_sub = 'site-linked' if getattr(args, 'linked', False) else 'site'
+    out_dir = Path(getattr(args, 'out', None) or Path('generated') / default_sub)
     if not out_dir.is_absolute():
         out_dir = archive_root / out_dir
 
@@ -2882,7 +2886,7 @@ def _cmd_site(args: argparse.Namespace) -> int:
 
 def _add_site_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('--out', metavar='PATH', dest='out',
-                   help='Output directory (default: .cache/site/ under the archive root).')
+                   help='Output directory (default: generated/site/, or generated/site-linked/ with --linked).')
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--standalone', dest='linked', action='store_false',
                       help='Self-contained, redacted snapshot safe to share (default).')

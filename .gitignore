@@ -5,8 +5,10 @@
 /private/
 private/
 
-# Rebuildable cache - regenerated from the files, never committed
+# Rebuildable cache (databases) and generated deliverables (the built site, etc.)
+# - both regenerated from the records, never committed
 .cache/
+generated/
 *.sqlite
 *.sqlite-journal
 

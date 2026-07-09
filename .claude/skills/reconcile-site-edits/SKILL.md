@@ -111,8 +111,8 @@ Apply each confirmed change to source. Leave anything he does not confirm unwrit
 With the intent now in source, rebuild the real site the normal way:
 
 ```
-fha site --out .cache/site --standalone --dry-run   # preview the rebuild
-fha site --out .cache/site --standalone
+fha site --out generated/site --standalone --dry-run   # preview the rebuild (generated/site is the default)
+fha site --out generated/site --standalone
 ```
 
 Open the regenerated page and confirm the human's change is present *because it now comes from source* — the

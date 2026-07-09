@@ -557,7 +557,7 @@ Migrates a legacy transcript-mining pipeline output (`facts.txt` table rows, `st
 
 ## 12. `fha site` - static HTML explorer
 
-**Output:** `\.cache/site/` (or `--out`), fully relative links, no CDN, no JS frameworks - works from `file://` and a USB stick; the packet tool can embed a single-person slice.
+**Output:** `generated/site/` (or `--out`), fully relative links, no CDN, no JS frameworks - works from `file://` and a USB stick; the packet tool can embed a single-person slice.
 
 **Scope: the whole-family site** - the archive as a browsable website, not a single profile (the packet embeds a one-person slice of the same generator).
 
@@ -863,7 +863,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 
 | Command | When |
 |---|---|
-| `fha site [--standalone\|--linked] [--out PATH] [--dry-run]` (T C) | Regenerating the family site; before any share or USB hand-off. `--standalone` (default) is the redacted, self-contained snapshot; `--linked` is an unredacted local developer preview. Reads the index + record prose; writes only to the output dir (default `.cache/site/`). |
+| `fha site [--standalone\|--linked] [--out PATH] [--dry-run]` (T C) | Regenerating the family site; before any share or USB hand-off. `--standalone` (default) is the redacted, self-contained snapshot; `--linked` is an unredacted local developer preview. Reads the index + record prose; writes only to the output dir (default `generated/site/`, or `generated/site-linked/` with `--linked`). |
 | `fha wikitree <P-id>` (T C) | Publishing a curated profile in the WikiTree dialect. Never uploads. |
 | `fha install <path>` (clone) / `fha update-tools` (T C) | Bootstrap a private archive with the operating layer, or refresh it later - backs up your edits, never deletes, never touches data. |
 | `fha capture` (T C, + browser companion) | Capturing a record from an open web page (Ancestry etc.): citation + asset/HTML-snapshot + research-log entry → `fha process`. The main intake on-ramp. |
