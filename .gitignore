@@ -9,6 +9,10 @@ private/
 # - both regenerated from the records, never committed
 .cache/
 generated/
+# ...except the EXAMPLE archive ships its standalone site as a browsable showcase
+# (the deterministic, redacted build). Never the unredacted linked preview.
+!example-archive/generated/
+example-archive/generated/site-linked/
 *.sqlite
 *.sqlite-journal
 

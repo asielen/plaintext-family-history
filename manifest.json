@@ -84,7 +84,7 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "6f7b1f2eb95315a905df10749ceb913787355ac73479597724ea7764591d8827",
+      "sha256": "a5d3066eaefc0a1767e7ab49817fdb2f801e0f4abfd34e2910f4216e6f22e29c",
       "spec_version": "1.2",
       "src": "archive-template/.gitignore"
     },
