@@ -2447,7 +2447,16 @@ class _SiteBuilder:
             try:
                 body = (read_record(home_md).get('body') or '').strip()
                 if body:
-                    intro = self._markup(_prose_to_html(body, render, embed, drop_private=not self.linked))
+                    # Fail-closed on `<!-- AI-DRAFT ... -->`: unaccepted drafts
+                    # must not slip into the homepage prose, and a damaged marker
+                    # withholds the whole intro rather than leak partial draft.
+                    body, problem = strip_unaccepted_drafts(body)
+                    if problem is not None:
+                        self.messages.append(
+                            'WARNING: a draft marker in notes/home.md is damaged '
+                            f'({problem}) - the homepage intro is withheld until it is fixed.')
+                    elif body.strip():
+                        intro = self._markup(_prose_to_html(body, render, embed, drop_private=not self.linked))
             except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
                 self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
 
