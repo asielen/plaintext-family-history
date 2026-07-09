@@ -112,10 +112,12 @@ the homepage" is enough.
 Whenever you have changed any of the above, rebuild:
 
 ```
-fha site
+fha index && fha site
 ```
 
-That reads your records and settings and writes a fresh site (by default into
+`fha index` refreshes the archive index so the build sees your edits to
+`notes/home.md`, `fha.yaml`, and any records; `fha site` then reads your records
+and settings and writes a fresh site (by default into
 `generated/site/`). Open its `index.html` in a browser to see your change. Building is safe
 to repeat as often as you like — it always produces the same site from the same source.
 
