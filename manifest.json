@@ -54,7 +54,7 @@
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "7f8e2a9422b5c11b280c5a02691bb5a3954c1115fe9d00963cc58fe990966b5d",
+      "sha256": "0680322c88246a108d97d804116189241132bef0fb298592956699aaf574b6d1",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "d2f464ca9bdae9d88237a7de8ad4e5cc2ae37c714617d9ab4de646e18a23d073",
+      "sha256": "927a004279a999122d452dd7997bd733a8dd87a87f6692a6bbdc7cd1a9fdd1f9",
       "spec_version": "1.2"
     },
     {
@@ -629,7 +629,7 @@
     {
       "path": "tools/templates/index.html",
       "category": "operating",
-      "sha256": "b291f92c9955e401a9f0bbdebfa0ef5edc065182d397f873d24d1f28b0570442",
+      "sha256": "8e8bc821e4b320d1647daf08976d025e2137279798fe494c56a65c0418270c66",
       "spec_version": "1.2"
     },
     {

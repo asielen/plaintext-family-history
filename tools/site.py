@@ -1850,6 +1850,31 @@ class _SiteBuilder:
                     return Path(c)
             except OSError:
                 continue
+        # Documented layout is photos/<year>/<file>. When the ref is a bare
+        # filename (no directory component) and the direct paths above missed,
+        # scan the photos root for a unique basename match so a hero /
+        # profile_photo written as "foo.jpg" still resolves without a photo
+        # catalog. Restricted to image suffixes to cap traversal cost.
+        if photos_root and '/' not in ref and Path(ref).suffix.lower() in _IMAGE_SUFFIXES:
+            pr = Path(photos_root)
+            if not pr.is_absolute():
+                pr = self.archive_root / pr
+            try:
+                matches: list[Path] = []
+                if pr.is_dir():
+                    for m in pr.rglob(ref):
+                        if m.is_file():
+                            matches.append(m)
+                            if len(matches) > 1:
+                                break
+                if len(matches) == 1:
+                    return matches[0]
+                if len(matches) > 1:
+                    self.messages.append(
+                        f'WARNING: photo reference {ref!r} matched multiple files under photos root; '
+                        'qualify with a subdirectory (e.g. `<year>/foo.jpg`).')
+            except OSError:
+                pass
         return None
 
     def _resolve_sid_image(self, ref: str) -> Path | None:
@@ -2566,8 +2591,14 @@ class _SiteBuilder:
             # generations up front so a large family doesn't paint thousands of
             # nodes at once (the reader expands forward).
             # The tree "Home" button centers on the configured home person, or
-            # the Ahnentafel root by default.
+            # the Ahnentafel root by default. In standalone mode a redacted
+            # target (living/unknown/restricted) is dropped so the button
+            # doesn't point at a suppressed node or leak its P-id.
             home_person = normalize_id(str(site_cfg.get('home_person') or '')) or root_person
+            if not self.linked and home_person:
+                home_meta = self.person_meta.get(home_person)
+                if home_meta is None or self._person_is_redacted(home_meta):
+                    home_person = None
             tree = self._make_tree_ctx(apex, 'descendants', None, page_dir,
                                        f'Descendants of {apex_name}', initial_depth=4,
                                        home_id=home_person)
