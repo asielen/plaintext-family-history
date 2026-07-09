@@ -55,27 +55,22 @@ jobs:
             echo "  python tools/fha.py site --root example-archive --standalone --out example-archive/generated/site"
             exit 1
           fi
-      - name: Fail if generated media files are untracked or deleted
+      - name: Fail if generated media or font files are untracked or deleted
         run: |
           # Binary contents are ignored above, but the *presence* of every
           # derivative must be tracked — otherwise a PR could reference a new
           # `media/foo.jpg` without committing the file and CI would pass with
-          # broken images. `git status --porcelain` reports untracked (`??`)
-          # and deleted paths so this catches both directions.
-          status=$(git status --porcelain -- example-archive/generated/site/media)
-          if [ -n "$status" ]; then
-            echo "::error::example-archive/generated/site/media has untracked or missing files:"
-            echo "$status"
-            echo "Commit the media derivatives (or remove the references) and retry."
-            exit 1
-          fi
-          # Font files are excluded from the diff (binary re-encode drift), so
-          # apply the same presence check — a renamed/removed/new font file
-          # would otherwise ship broken references.
-          fonts=$(git status --porcelain -- example-archive/generated/site/assets/fonts)
-          if [ -n "$fonts" ]; then
-            echo "::error::example-archive/generated/site/assets/fonts has untracked or missing files:"
-            echo "$fonts"
-            echo "Commit the font files (or remove the references) and retry."
+          # broken images. Filter porcelain output to only added-but-untracked
+          # (`??`) and deleted (` D`, `D `, `AD`, `RD`) entries: a re-encoded
+          # JPEG or font file shows up as ` M` (modified) and is intentionally
+          # tolerated because Pillow re-encode is not byte-stable.
+          presence=$(git status --porcelain -- \
+                       example-archive/generated/site/media \
+                       example-archive/generated/site/assets/fonts \
+                       | grep -E '^(\?\?| D|D |AD|RD)' || true)
+          if [ -n "$presence" ]; then
+            echo "::error::Showcase media/font presence changed - files were added or removed without committing:"
+            echo "$presence"
+            echo "Commit the new/renamed derivatives (or drop the stale references) and retry."
             exit 1
           fi
