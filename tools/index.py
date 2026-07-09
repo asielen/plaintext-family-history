@@ -852,16 +852,32 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         # `[[Margaret Cole]]` / `[[Margaret Hartley]]` all click through to the
         # same P-id. The template documents them as aliases; the indexer folds
         # them into the alias-insertion path so the promise holds.
+        # `name_variants` above unwraps the `{value, restricted}` dict form; the
+        # same shape is legal here (SPEC §18), so mirror the unwrap - a bare
+        # `str(x)` on a dict would insert its Python repr as the alias, which
+        # never resolves. Restricted variants still enter aliases so name-links
+        # to a former name resolve internally (render paths handle redaction).
+        def _variant_value(x):
+            if isinstance(x, dict):
+                v = x.get('value')
+                return str(v) if v else None
+            return str(x) if x else None
+
         extra_alias_names: list[str] = []
         aka = meta.get('also_known_as') or []
         if isinstance(aka, (list, tuple)):
-            extra_alias_names.extend(str(a) for a in aka if a)
+            for a in aka:
+                v = _variant_value(a)
+                if v:
+                    extra_alias_names.append(v)
         elif aka:
-            extra_alias_names.append(str(aka))
+            v = _variant_value(aka)
+            if v:
+                extra_alias_names.append(v)
         for _fld in ('name_at_birth', 'married_name'):
-            val = meta.get(_fld)
-            if val:
-                extra_alias_names.append(str(val))
+            v = _variant_value(meta.get(_fld))
+            if v:
+                extra_alias_names.append(v)
         _insert_record_aliases(
             conn, pid,
             stems=tuple(str(a) for a in (meta.get('aliases') or [])),
