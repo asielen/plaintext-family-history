@@ -1834,7 +1834,12 @@ class _SiteBuilder:
         hand-written path/filename on disk - a deliberate publish choice, so not
         co-living gated. None if nothing resolves."""
         cat = self._resolve_photo_ref(ref)
-        if cat and (self.linked or self._photo_is_public(cat)):
+        if cat:
+            # A catalog match that the privacy gate rejects must NOT fall through to
+            # the on-disk fallback: that would re-publish the very file the gate meant
+            # to withhold (a co-tagged living/restricted person, a withheld source).
+            if not self.linked and not self._photo_is_public(cat):
+                return None
             try:
                 r = resolve_path(cat, self.fha_config, self.archive_root)
                 if r and r.exists():
