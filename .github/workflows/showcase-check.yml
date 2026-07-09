@@ -41,11 +41,31 @@ jobs:
           python tools/fha.py site --root example-archive --standalone --out example-archive/generated/site
       - name: Fail if the committed showcase drifted (text files only)
         run: |
+          # `.fha-site` carries a `Last build: <today>` stamp that changes every
+          # run — excluded so the drift check only fires on real content drift.
+          # Media binaries are excluded (Pillow re-encode isn't byte-stable), but
+          # the media file *list* is still checked below so a PR can't ship HTML
+          # referencing a new/deleted derivative without committing it.
           if ! git diff --exit-code -- example-archive/generated/site \
                 ':!example-archive/generated/site/media' \
-                ':!example-archive/generated/site/assets/fonts'; then
+                ':!example-archive/generated/site/assets/fonts' \
+                ':!example-archive/generated/site/.fha-site'; then
             echo "::error::example-archive/generated/site is out of date. Rebuild and commit it:"
             echo "  python tools/fha.py index --root example-archive"
             echo "  python tools/fha.py site --root example-archive --standalone --out example-archive/generated/site"
+            exit 1
+          fi
+      - name: Fail if generated media files are untracked or deleted
+        run: |
+          # Binary contents are ignored above, but the *presence* of every
+          # derivative must be tracked — otherwise a PR could reference a new
+          # `media/foo.jpg` without committing the file and CI would pass with
+          # broken images. `git status --porcelain` reports untracked (`??`)
+          # and deleted paths so this catches both directions.
+          status=$(git status --porcelain -- example-archive/generated/site/media)
+          if [ -n "$status" ]; then
+            echo "::error::example-archive/generated/site/media has untracked or missing files:"
+            echo "$status"
+            echo "Commit the media derivatives (or remove the references) and retry."
             exit 1
           fi
