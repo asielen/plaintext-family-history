@@ -147,7 +147,7 @@ _ROOT_OPERATING_DOCS = (
 # agent's genealogy workflow procedures (process-source, review-claims, …) - the
 # "how to operate" an archive, so it ships. `.claude/settings.json` is *not*
 # walked: it is this spec-repo's own agent config, not an archive's.
-_OPERATING_SUBTREES = ('tools', 'docs', '.claude/skills')
+_OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
 
 # The template folder whose *contents* seed the skeleton. The folder itself is
 # never copied into an archive - each file's archive path strips this prefix.
