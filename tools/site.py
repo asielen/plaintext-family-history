@@ -732,6 +732,12 @@ class _SiteBuilder:
         # restricted source caught only by a free-text type also lands here.
         self.restricted_persons: set[str] = set()       # pids withheld from public output
         self.restricted_sources: set[str] = set()        # sids the index 0/1 missed
+        # sids whose only reason to be withheld is that they name a person-level
+        # restricted person (`restricted: by-request` on a deceased individual).
+        # Kept alongside `restricted_sources` so `_source_hard_restricted` can
+        # treat these as intentionally private too — otherwise the deceased
+        # person's facts would publish through a redacted citation.
+        self.restricted_person_sources: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         # Opened once in prepare() when the photo index is fresh, reused across
@@ -844,6 +850,7 @@ class _SiteBuilder:
                     rp,
                 ):
                     source_living.add(row['source_id'])
+                    self.restricted_person_sources.add(row['source_id'])
                 for row in self.conn.execute(
                     f"SELECT DISTINCT c.source_id FROM claims c "
                     f"JOIN claim_persons cp ON c.id = cp.claim_id "
@@ -851,6 +858,7 @@ class _SiteBuilder:
                     rp,
                 ):
                     source_living.add(row['source_id'])
+                    self.restricted_person_sources.add(row['source_id'])
 
         for sid, row in self.source_meta.items():
             if self.linked or not self._source_is_redacted(row):
@@ -959,6 +967,11 @@ class _SiteBuilder:
         with the citation redacted (only living people are redacted outright)."""
         if not sid:
             return False
+        # A source named as evidence for a `restricted: by-request` person is
+        # also intentionally private — publishing its facts (even with the
+        # citation redacted) would leak the deceased person's material.
+        if sid in self.restricted_person_sources:
+            return True
         row = self.source_meta.get(sid)
         return row is not None and self._source_is_redacted(row)
 
