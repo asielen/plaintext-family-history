@@ -238,11 +238,38 @@
       return found;
     }
 
+    // Find a node anywhere in the hierarchy, ignoring collapsed state, and
+    // return the ancestor path (root ... node). Used by home() to expand any
+    // collapsed ancestor so the home person becomes reachable.
+    function findNodeAny(id) {
+      var path = null;
+      (function walk(node, trail) {
+        if (path) return;
+        trail = trail.concat([node]);
+        if (node.id === id) { path = trail; return; }
+        (node.children || []).forEach(function (c) { walk(c, trail); });
+      })(root, []);
+      return path;
+    }
+
     // Home: centre + zoom on the designated home person at a comfortable scale
     // (node + immediate neighbours in frame). Falls back to Fit when no homeId
-    // was given, or the person isn't present / is collapsed out of view.
+    // was given or the person isn't in the tree at all; if the home person is
+    // under a collapsed ancestor, expand the ancestor path so Home works.
     function home() {
       var n = options.homeId != null ? visibleNodeById(options.homeId) : null;
+      if (!n && options.homeId != null) {
+        var trail = findNodeAny(options.homeId);
+        if (trail) {
+          // Expand every ancestor (not the node itself, whose collapsed flag
+          // hides only its own descendants).
+          for (var i = 0; i < trail.length - 1; i++) {
+            if (collapsed[trail[i].id]) collapsed[trail[i].id] = false;
+          }
+          layout(root, collapsed); draw();
+          n = visibleNodeById(options.homeId);
+        }
+      }
       if (!n) { fit(); return; }
       userInteracted = true;
       var sc = clampScale(HOME_SCALE);
