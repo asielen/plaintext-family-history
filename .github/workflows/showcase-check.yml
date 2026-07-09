@@ -69,3 +69,13 @@ jobs:
             echo "Commit the media derivatives (or remove the references) and retry."
             exit 1
           fi
+          # Font files are excluded from the diff (binary re-encode drift), so
+          # apply the same presence check — a renamed/removed/new font file
+          # would otherwise ship broken references.
+          fonts=$(git status --porcelain -- example-archive/generated/site/assets/fonts)
+          if [ -n "$fonts" ]; then
+            echo "::error::example-archive/generated/site/assets/fonts has untracked or missing files:"
+            echo "$fonts"
+            echo "Commit the font files (or remove the references) and retry."
+            exit 1
+          fi
