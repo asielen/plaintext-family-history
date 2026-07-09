@@ -735,7 +735,7 @@ class _SiteBuilder:
         # sids whose only reason to be withheld is that they name a person-level
         # restricted person (`restricted: by-request` on a deceased individual).
         # Kept alongside `restricted_sources` so `_source_hard_restricted` can
-        # treat these as intentionally private too — otherwise the deceased
+        # treat these as intentionally private too - otherwise the deceased
         # person's facts would publish through a redacted citation.
         self.restricted_person_sources: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
@@ -968,7 +968,7 @@ class _SiteBuilder:
         if not sid:
             return False
         # A source named as evidence for a `restricted: by-request` person is
-        # also intentionally private — publishing its facts (even with the
+        # also intentionally private - publishing its facts (even with the
         # citation redacted) would leak the deceased person's material.
         if sid in self.restricted_person_sources:
             return True
@@ -1487,7 +1487,7 @@ class _SiteBuilder:
         # Apply the `<!-- private -->` fence to the whole body BEFORE section
         # extraction. Otherwise an opener that sits above a `## Research Notes`
         # heading is dropped with its parent section, and the extracted body
-        # sees only the trailing `<!-- /private -->` — leaving the private
+        # sees only the trailing `<!-- /private -->` - leaving the private
         # text unfenced and publishable on a standalone build.
         body = rec['body']
         stories = rec['stories']
@@ -1856,7 +1856,7 @@ class _SiteBuilder:
         """Resolve an `S-id` photo reference through the main index's
         `source_files` table (no photo catalog needed). The source page and the
         rest of the site already read this table, so an S-id must always
-        resolve — even when `.cache/photos.sqlite` is absent or stale — so long
+        resolve - even when `.cache/photos.sqlite` is absent or stale - so long
         as its source is publishable. Returns None if the id is not S-shaped,
         the source has no attached file on disk, or the source is withheld."""
         if not re.match(r'(?i)^s-[0-9a-z]+$', ref.strip()):
@@ -2036,7 +2036,7 @@ class _SiteBuilder:
             self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
             return ''
         cap = _escape(caption) if caption else ''
-        # `alt` is an HTML attribute — a caption like `" onerror="alert(1)` would
+        # `alt` is an HTML attribute - a caption like `" onerror="alert(1)` would
         # break out of the `_escape(quote=False)` body form. Quote-aware escaping
         # for the attribute; keep the body form for `<figcaption>`.
         cap_attr = html.escape(caption, quote=True) if caption else ''
@@ -2181,7 +2181,7 @@ class _SiteBuilder:
         # Apply the `<!-- private -->` fence to the WHOLE file before splitting
         # into entry chunks. Otherwise an opener that sits above a `##` heading
         # gets stranded in the previous chunk, and the entry it was meant to
-        # fence keeps only the trailing `<!-- /private -->` — leaking through
+        # fence keeps only the trailing `<!-- /private -->` - leaking through
         # the teaser and the discoveries page on standalone builds.
         text = apply_private_fence(text, drop=not self.linked)
         lines = text.replace('\r\n', '\n').split('\n')
@@ -2521,7 +2521,7 @@ class _SiteBuilder:
                 self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
 
         # Optional hero banner. `fha.yaml site: hero:` is either a scalar photo
-        # ref (an S-id or path — legacy shape) or a mapping documented in
+        # ref (an S-id or path - legacy shape) or a mapping documented in
         # CUSTOMIZING_SITE.md as `{image, title, tagline}`. Missing/unresolved →
         # the template shows a default patterned band.
         site_cfg = self.fha_config.get('site') if isinstance(self.fha_config.get('site'), dict) else {}

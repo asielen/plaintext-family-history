@@ -821,7 +821,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
             ),
         )
         # Restricted variants (deadnames, SPEC §18) go into aliases for internal
-        # link resolution only — they must not enter person_variants, which feeds
+        # link resolution only - they must not enter person_variants, which feeds
         # public rendering paths (WikiTree fold forms, search display, etc.).
         # Single pass over the raw list (entries are still dicts or strings here);
         # deriving public_variants from the already-flattened all_variants strings

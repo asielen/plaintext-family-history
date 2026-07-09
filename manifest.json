@@ -247,7 +247,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "6b5bb492df0681ae88b24b39cf093425359e89b133bc5d86281620e7dba3e3dd",
+      "sha256": "9f81a2b7bf8815025d68a983d9e77d1d17db377587f023ab95620f33fa803602",
       "spec_version": "1.2"
     },
     {
@@ -533,7 +533,7 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "d1a5d79febdbec7e90310273673067e2147130eff7a66bb5dfd1993781e62737",
+      "sha256": "2f28d0d1782e71ccac1fb1d7458549e1c4a267a04802883aacfeca46e6728721",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "ae663549965e4544f465be68d900c534a4df1ae7de3b6eabaf0902711feffb17",
+      "sha256": "d2f464ca9bdae9d88237a7de8ad4e5cc2ae37c714617d9ab4de646e18a23d073",
       "spec_version": "1.2"
     },
     {
@@ -671,7 +671,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "81a2ac4834f56f83167e68e364ab7203e295eed550b0357d890e443ccfbceb90",
+      "sha256": "6318382371a746423106bd3cff23fdb6746f7f3fc1a752a6d74fa211e9e44ef6",
       "spec_version": "1.2"
     },
     {
