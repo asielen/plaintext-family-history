@@ -6,7 +6,7 @@ name: Deploy example site to Pages
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
     paths:
       - 'example-archive/generated/site/**'
       - '.github/workflows/pages.yml'
@@ -30,9 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: example-archive/generated/site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90cbd2fc84fd3f395883e952c419ef0e3a55 # v4.0.5
