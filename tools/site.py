@@ -1852,6 +1852,42 @@ class _SiteBuilder:
                 continue
         return None
 
+    def _resolve_sid_image(self, ref: str) -> Path | None:
+        """Resolve an `S-id` photo reference through the main index's
+        `source_files` table (no photo catalog needed). The source page and the
+        rest of the site already read this table, so an S-id must always
+        resolve — even when `.cache/photos.sqlite` is absent or stale — so long
+        as its source is publishable. Returns None if the id is not S-shaped,
+        the source has no attached file on disk, or the source is withheld."""
+        if not re.match(r'(?i)^s-[0-9a-z]+$', ref.strip()):
+            return None
+        sid = normalize_id(ref.strip())
+        if not self.linked and sid not in self.source_pages:
+            return None
+        try:
+            rows = self.conn.execute(
+                'SELECT path FROM source_files WHERE source_id = ? '
+                'AND COALESCE(exists_on_disk,1) = 1 '
+                'ORDER BY COALESCE(derived,0), path',
+                (sid,),
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            return None
+        for r in rows:
+            p = r['path']
+            if not p:
+                continue
+            try:
+                cand = resolve_path(p, self.fha_config, self.archive_root)
+            except Exception:  # noqa: BLE001
+                cand = self.archive_root / p
+            try:
+                if cand and Path(cand).is_file():
+                    return Path(cand)
+            except OSError:
+                continue
+        return None
+
     def _resolve_image_source(self, ref: str) -> Path | None:
         """The on-disk source file for a photo reference. Prefers a catalogued
         photo (S-id or indexed path), applying the strip's privacy gate; else a
@@ -1870,6 +1906,11 @@ class _SiteBuilder:
                     return r
             except Exception:  # noqa: BLE001
                 pass
+        # An S-id resolves via `source_files` too, so a stale/absent photo
+        # catalog does not silently drop hero / embed / profile images.
+        sid_hit = self._resolve_sid_image(ref)
+        if sid_hit is not None:
+            return sid_hit
         return self._resolve_asset_path(ref)
 
     def _resolve_profile_photo(self, pid: str) -> Path | None:
