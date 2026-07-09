@@ -1471,9 +1471,20 @@ class _SiteBuilder:
             return '', '', ''
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
-        bio = _extract_section(rec['body'], 'Biography')
+        # Apply the `<!-- private -->` fence to the whole body BEFORE section
+        # extraction. Otherwise an opener that sits above a `## Research Notes`
+        # heading is dropped with its parent section, and the extracted body
+        # sees only the trailing `<!-- /private -->` — leaving the private
+        # text unfenced and publishable on a standalone build.
+        body = rec['body']
         stories = rec['stories']
-        research = _extract_section(rec['body'], 'Research Notes')
+        dp = not self.linked
+        if body:
+            body = apply_private_fence(body, drop=dp)
+        if stories:
+            stories = apply_private_fence(stories, drop=dp)
+        bio = _extract_section(body, 'Biography')
+        research = _extract_section(body, 'Research Notes')
         problem: str | None = None
         if bio:
             bio, problem = strip_unaccepted_drafts(bio)
@@ -1491,8 +1502,8 @@ class _SiteBuilder:
                 "person's Biography, Stories and Research Notes are withheld from the site."
             )
             return '', '', ''
-        # Standalone drops `<!-- private -->` fenced prose; the linked preview keeps it.
-        dp = not self.linked
+        # Private fences were already applied to the whole body above, so
+        # _prose_to_html need not re-apply them here.
         biography_html = _prose_to_html(bio, render, embed, drop_private=dp) if bio else ''
         stories_html = _prose_to_html(stories, render, embed, drop_private=dp) if stories else ''
         research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
@@ -2107,6 +2118,12 @@ class _SiteBuilder:
                 f'({problem}) - the discoveries page is withheld from the site.')
             self._discoveries = ('', [])
             return self._discoveries
+        # Apply the `<!-- private -->` fence to the WHOLE file before splitting
+        # into entry chunks. Otherwise an opener that sits above a `##` heading
+        # gets stranded in the previous chunk, and the entry it was meant to
+        # fence keeps only the trailing `<!-- /private -->` — leaking through
+        # the teaser and the discoveries page on standalone builds.
+        text = apply_private_fence(text, drop=not self.linked)
         lines = text.replace('\r\n', '\n').split('\n')
         # Drop a single leading H1 (the page supplies its own title).
         if lines and lines[0].startswith('# '):
