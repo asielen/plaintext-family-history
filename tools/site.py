@@ -1993,9 +1993,13 @@ class _SiteBuilder:
             self.messages.append(f'WARNING: embed {target!r} matched no publishable photo; skipped.')
             return ''
         cap = _escape(caption) if caption else ''
+        # `alt` is an HTML attribute — a caption like `" onerror="alert(1)` would
+        # break out of the `_escape(quote=False)` body form. Quote-aware escaping
+        # for the attribute; keep the body form for `<figcaption>`.
+        cap_attr = html.escape(caption, quote=True) if caption else ''
         figcap = f'<figcaption>{cap}</figcaption>' if cap else ''
         return (f'<figure class="embed"><img class="embed-img" src="{html.escape(href, quote=True)}" '
-                f'alt="{cap}" loading="lazy">{figcap}</figure>')
+                f'alt="{cap_attr}" loading="lazy">{figcap}</figure>')
 
     # - place page (M8.3) -
 
