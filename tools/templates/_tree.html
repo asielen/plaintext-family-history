@@ -17,7 +17,8 @@
   try {
     var data = JSON.parse(holder.textContent);
     var root = window.FhaTreeAdapter.fromNeutral(data);
-    var opts = { initialDepth: {{ tree.initial_depth if tree.initial_depth is not none else 'null' }} };
+    var opts = { initialDepth: {{ tree.initial_depth if tree.initial_depth is not none else 'null' }},
+                 homeId: {{ (tree.home_id | tojson) if tree.home_id else 'null' }} };
     window.FhaTree.render(document.getElementById('fha-tree'), root, opts);
   } catch (e) { /* a bad tree must never blank the page */ }
 })();

@@ -13,6 +13,12 @@
 <body>
 <header class="site-header">
   <a class="home-link" href="{{ root_prefix }}/index.html">{{ site_title }}</a>
+  <nav class="site-nav" aria-label="Primary">
+    <a href="{{ root_prefix }}/index.html">Home</a>
+    <a href="{{ root_prefix }}/index.html#people">People</a>
+    <a href="{{ root_prefix }}/index.html#places">Places</a>
+    <a href="{{ root_prefix }}/index.html#sources">Sources</a>
+  </nav>
 </header>
 <main>
 {% block content %}{% endblock %}

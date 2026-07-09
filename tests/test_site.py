@@ -51,11 +51,12 @@ class _Base(unittest.TestCase):
     # - seeding -
 
     def _seed_person(self, pid, name='Test Person', *, living='false', tier='curated',
-                     surname='Person', body='# Test Person\n'):
+                     surname='Person', body='# Test Person\n', frontmatter_extra=''):
         rel = f'people/{surname.lower()}__test_{pid}.md'
         path = self.archive_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f'---\nid: {pid}\nname: {name}\n---\n{body}', encoding='utf-8')
+        extra = f'{frontmatter_extra}\n' if frontmatter_extra else ''
+        path.write_text(f'---\nid: {pid}\nname: {name}\n{extra}---\n{body}', encoding='utf-8')
         self.conn.execute(
             'INSERT INTO persons(id, name, surname, sex, living, tier, status, path) '
             'VALUES (?,?,?,?,?,?,?,?)',
@@ -261,6 +262,34 @@ class PersonPageTests(_Base):
         self.assertNotIn('[S-1111111111]', html)                 # backend id never shown inline
         self.assertNotIn('<h3>census</h3>', html)                # no longer grouped by type
         self.assertNotIn('class="ids"', html)                    # person id line removed
+
+    def test_alt_names_and_tags_in_header(self):
+        self._seed_person(
+            'p-aaaaaaaaaa', 'Margaret Hartley', surname='Hartley',
+            frontmatter_extra='name_at_birth: Margaret Cole\nalso_known_as: [Peggy]\ntags: [brick-wall, priority]')
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="alt-names"', html)
+        self.assertIn('Margaret Cole', html)                     # birth name (né/née)
+        self.assertIn('Peggy', html)                             # also_known_as
+        self.assertIn('class="tag-pill"', html)
+        self.assertIn('brick-wall', html)
+        self.assertIn('priority', html)
+
+    def test_research_notes_private_fence(self):
+        body = ('# P\n## Research Notes\nPublic research note.\n\n'
+                '<!-- private -->\nSecret hunch.\n<!-- /private -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'P', body=body)
+        self._run(linked=True)
+        linked = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Research Notes', linked)
+        self.assertIn('Public research note', linked)
+        self.assertIn('Secret hunch', linked)                    # kept in the preview
+        self._run(linked=False)
+        standalone = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Public research note', standalone)
+        self.assertNotIn('Secret hunch', standalone)             # dropped from the shared build
+        self.assertNotIn('private -->', standalone)              # no raw marker leak
 
 
 class PersonRedactionTests(_Base):
@@ -755,13 +784,14 @@ class TreeTests(_Base):
     def test_person_ancestor_pedigree(self):
         self._seed_rels_chain()
         self._run(linked=True)
-        data = self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json'
-        self.assertTrue(data.exists())
-        tree = json.loads(data.read_text(encoding='utf-8'))
-        self.assertEqual(tree['mode'], 'ancestors')
-        # 3 generations: self + parent + grandparent (>= 2 generations).
-        self.assertGreaterEqual(len({n['p_id'] for n in tree['nodes']}), 3)
-        self.assertIn('fha-tree-data', self._read('persons/p-aaaaaaaaaa.html'))
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        # The person page now carries a static horizontal pedigree SVG (subject +
+        # parents + grandparents), not the interactive descendant renderer.
+        self.assertIn('class="pedigree"', page)
+        for name in ('Child Carl', 'Parent Pat', 'Grandparent Gus'):   # 3 generations
+            self.assertIn(name, page)
+        self.assertNotIn('fha-tree-data', page)                        # no interactive tree here
+        self.assertFalse((self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json').exists())
 
     def test_tree_redacts_living_and_links_only_existing_pages(self):
         self._seed_rels_chain()
@@ -785,29 +815,37 @@ class TreeTests(_Base):
 
     def test_home_tree_bounds_initial_paint(self):
         # P2-3: the home descendant explorer passes a bounded initialDepth to the
-        # renderer; the per-person pedigree leaves it null (small, shown in full).
+        # renderer. The per-person page now shows a static pedigree (no interactive
+        # renderer), so it carries no initialDepth.
         self._seed_rels_chain()
         self._run(linked=True)
         self.assertIn('initialDepth: 4', self._read('index.html'))
-        self.assertIn('initialDepth: null', self._read('persons/p-aaaaaaaaaa.html'))
+        person = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('initialDepth', person)
+        self.assertIn('class="pedigree"', person)
 
     def test_relationship_cycle_terminates(self):
         # A cousin-marriage style cycle must not loop forever; the BFS visited
-        # set bounds it and the node set is deduplicated.
+        # set bounds it and the node set is deduplicated. Exercised now via the
+        # home descendant tree (the only interactive tree that remains).
         self._seed_person('p-aaaaaaaaaa', 'A')
         self._seed_person('p-bbbbbbbbbb', 'B')
         for a, b in (('p-aaaaaaaaaa', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-aaaaaaaaaa')):
             self.conn.execute(
                 'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
                 (a, 'parent', b, 'c-1111111111'))
+            self.conn.execute(
+                'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
+                (a, 'child', b, 'c-1111111111'))
         (self.archive_root / 'fha.yaml').write_text(
             'roots: {}\nroot_person: P-aaaaaaaaaa\n', encoding='utf-8')
         res = self._run(linked=True)
-        self.assertEqual(res['status'], 'ok')
-        tree = json.loads(
-            (self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json').read_text(encoding='utf-8'))
-        ids = [n['p_id'] for n in tree['nodes']]
-        self.assertEqual(sorted(ids), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])   # each node once
+        self.assertEqual(res['status'], 'ok')                          # terminates
+        artifacts = list((self.out_dir / 'data').glob('tree_*_descendants.json'))
+        self.assertTrue(artifacts)
+        ids = [n['p_id'] for n in json.loads(artifacts[0].read_text(encoding='utf-8'))['nodes']]
+        self.assertEqual(sorted(set(ids)), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])
+        self.assertEqual(len(ids), len(set(ids)))                      # each node once
 
     def test_mistyped_root_person_warns(self):
         self._seed_person('p-aaaaaaaaaa', 'Real Person')

@@ -2,11 +2,25 @@
 {% block title %}{{ site_title }}{% endblock %}
 {% block content %}
 <article class="home">
+  {% if hero %}
+  <div class="site-hero{% if not hero.image %} site-hero-default{% endif %}"{% if not hero.image %} aria-hidden="true"{% endif %}>
+    {% if hero.image %}<img src="{{ hero.image }}" alt="">{% endif %}
+    {% if hero.title or hero.tagline %}
+    <div class="site-hero-text">
+      {% if hero.title %}<div class="site-hero-title">{{ hero.title }}</div>{% endif %}
+      {% if hero.tagline %}<div class="site-hero-tagline">{{ hero.tagline }}</div>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="site-hero site-hero-default" aria-hidden="true"></div>
+  {% endif %}
+
   <h1>{{ site_title }}</h1>
-  <p>{{ intro }}</p>
+  <div class="home-intro">{{ intro }}</div>
 
   {% if tree %}
-  <h2>Family tree</h2>
+  <h2 id="tree">Family tree</h2>
   {% include "_tree.html" %}
   {% endif %}
 
@@ -18,7 +32,7 @@
   <p><a href="discoveries.html">All discoveries →</a></p>
   {% endif %}
 
-  <h2>People</h2>
+  <h2 id="people">People</h2>
   {% if surnames %}
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>
@@ -31,13 +45,13 @@
   {% endif %}
 
   {% if places %}
-  <h2>Places</h2>
+  <h2 id="places">Places</h2>
   <ul class="index-list">
     {% for pl in places %}<li><a href="{{ pl.href }}">{{ pl.name }}</a></li>{% endfor %}
   </ul>
   {% endif %}
 
-  <h2>Sources</h2>
+  <h2 id="sources">Sources</h2>
   {% if sources %}
   <ul class="index-list">
     {% for s in sources %}<li><a href="{{ s.href }}">{{ s.title }}</a></li>{% endfor %}

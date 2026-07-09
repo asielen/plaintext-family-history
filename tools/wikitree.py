@@ -402,7 +402,7 @@ def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str]
 def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
     """Claim IDs carrying a per-claim `restricted:` marker in their source record.
 
-    The claims table has no claim-level `restricted` column — the flag lives in
+    The claims table has no claim-level `restricted` column - the flag lives in
     the source record file. Reads every public (non-index-restricted) source file
     and collects claim IDs where the claim dict's `restricted:` is truthy."""
     out: set[str] = set()

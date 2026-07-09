@@ -821,7 +821,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
             ),
         )
         # Restricted variants (deadnames, SPEC §18) go into aliases for internal
-        # link resolution only — they must not enter person_variants, which feeds
+        # link resolution only - they must not enter person_variants, which feeds
         # public rendering paths (WikiTree fold forms, search display, etc.).
         # Single pass over the raw list (entries are still dicts or strings here);
         # deriving public_variants from the already-flattened all_variants strings
@@ -847,11 +847,42 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         # each name variant - so `[[Ken Smith]]` resolves to the right P-id.
         # All variants (including restricted) go into aliases so name-wikilinks
         # to former names still resolve internally; render paths redact the display.
+        # `also_known_as`, `name_at_birth`, and `married_name` (SPEC person
+        # template) are additional resolution surfaces so `[[Peggy]]` /
+        # `[[Margaret Cole]]` / `[[Margaret Hartley]]` all click through to the
+        # same P-id. The template documents them as aliases; the indexer folds
+        # them into the alias-insertion path so the promise holds.
+        # `name_variants` above unwraps the `{value, restricted}` dict form; the
+        # same shape is legal here (SPEC §18), so mirror the unwrap - a bare
+        # `str(x)` on a dict would insert its Python repr as the alias, which
+        # never resolves. Restricted variants still enter aliases so name-links
+        # to a former name resolve internally (render paths handle redaction).
+        def _variant_value(x):
+            if isinstance(x, dict):
+                v = x.get('value')
+                return str(v) if v else None
+            return str(x) if x else None
+
+        extra_alias_names: list[str] = []
+        aka = meta.get('also_known_as') or []
+        if isinstance(aka, (list, tuple)):
+            for a in aka:
+                v = _variant_value(a)
+                if v:
+                    extra_alias_names.append(v)
+        elif aka:
+            v = _variant_value(aka)
+            if v:
+                extra_alias_names.append(v)
+        for _fld in ('name_at_birth', 'married_name'):
+            v = _variant_value(meta.get(_fld))
+            if v:
+                extra_alias_names.append(v)
         _insert_record_aliases(
             conn, pid,
             stems=tuple(str(a) for a in (meta.get('aliases') or [])),
             names=(name,) if name and name != 'unknown' else (),
-            variants=tuple(all_variants),
+            variants=tuple(all_variants) + tuple(extra_alias_names),
         )
         for t in (meta.get('face_tags') or []):
             conn.execute('INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', (pid, str(t)))

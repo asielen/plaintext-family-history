@@ -4,6 +4,12 @@
 <article class="person">
   {% if person.portrait %}<img class="person-portrait" src="{{ person.portrait }}" alt="Portrait of {{ person.name }}">{% endif %}
   <h1>{{ person.name }}</h1>
+  {% if person.alt_names %}
+  <p class="alt-names">{% for a in person.alt_names %}{{ a }}{% if not loop.last %} <span class="alt-sep">·</span> {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if person.tags %}
+  <ul class="tag-pills" aria-label="Tags">{% for t in person.tags %}<li class="tag-pill">{{ t }}</li>{% endfor %}</ul>
+  {% endif %}
 
   {% if person.summary %}
   <dl class="summary">
@@ -14,14 +20,35 @@
   </dl>
   {% endif %}
 
-  {% if tree %}
-  <h2>Ancestors</h2>
-  {% include "_tree.html" %}
+  {% if person.family_strip %}
+  <nav class="family-strip" aria-label="Immediate family">
+    {% if person.family_strip.parents %}
+    <div class="fs-group"><span class="fs-label">Parents</span>
+      <ul>{% for m in person.family_strip.parents %}<li>{{ m }}</li>{% endfor %}</ul></div>
+    {% endif %}
+    {% if person.family_strip.siblings %}
+    <div class="fs-group"><span class="fs-label">Siblings</span>
+      <ul>{% for m in person.family_strip.siblings %}<li>{{ m }}</li>{% endfor %}</ul></div>
+    {% endif %}
+    {% if person.family_strip.children %}
+    <div class="fs-group"><span class="fs-label">Children</span>
+      <ul>{% for m in person.family_strip.children %}<li>{{ m }}</li>{% endfor %}</ul></div>
+    {% endif %}
+  </nav>
+  {% endif %}
+
+  {% if person.pedigree %}
+  <details class="chart" open>
+    <summary class="chart-title">Ancestors</summary>
+    <div class="chart-body">{{ person.pedigree }}</div>
+  </details>
   {% endif %}
 
   {% if person.fan %}
-  <h2>Ancestor fan</h2>
-  {{ person.fan }}
+  <details class="chart">
+    <summary class="chart-title">Ancestor fan</summary>
+    <div class="chart-body">{{ person.fan }}</div>
+  </details>
   {% endif %}
 
   {% if person.biography_html %}
@@ -60,6 +87,11 @@
   {% if person.stories_html %}
   <h2>Stories</h2>
   {{ person.stories_html }}
+  {% endif %}
+
+  {% if person.research_html %}
+  <h2>Research Notes</h2>
+  {{ person.research_html }}
   {% endif %}
 
   {% if person.family %}

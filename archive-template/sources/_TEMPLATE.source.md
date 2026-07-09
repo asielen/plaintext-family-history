@@ -76,16 +76,42 @@ created: 2026-01-01        # the date you added this (any date is fine)
 #   status: suggested
 #   confidence: high
 
-# A MEMBERSHIP - someone belonged to a group (a regiment, a tribe, a lodge, an employer).
+# A MEMBERSHIP - someone belonged to a group: a regiment, a tribe, a lodge, an
+# employer, or a CHURCH / faith community. (Religion is recorded this way, as a
+# membership - there is no separate "religion" field.)
 # - value: "Enrolled member, Cherokee Nation (1902 Dawes Roll #4471)"
 #   type: relationship
 #   persons: [P-__________]
 #   id: C-__________
 #   subtype: member-of           # or "employer" for a workplace
 #   roles: {member: P-__________}
-#   value_org: "Cherokee Nation" # the organization, in plain text
+#   value_org: "Cherokee Nation" # the organization, in plain text (a church, unit, lodge, ...)
 #   status: suggested
 #   confidence: high
+
+# MORE LIFE EVENTS - each is a claim with a different "type" (occupation, military,
+# immigration, education, census, divorce, ...). Copy the shape above, change type + value:
+# - value: "Bookkeeper, Plains Junction Railroad"
+#   type: occupation
+#   persons: [P-__________]
+#   id: C-__________
+#   date: 1874
+#   status: suggested
+#   confidence: medium
+# - value: "Enlisted, Union Army, 15th Kansas Cavalry"
+#   type: military
+#   persons: [P-__________]
+#   id: C-__________
+#   date: 1863
+#   status: suggested
+#   confidence: medium
+# - value: "Immigrated from Cork aboard the SS Britannia"
+#   type: immigration
+#   persons: [P-__________]
+#   id: C-__________
+#   date: 1851
+#   status: suggested
+#   confidence: low
 ```
 
 ## Notes

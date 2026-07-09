@@ -9,6 +9,8 @@ This project stemmed from one idea: **for a hundred years, genealogy lived in a 
 Plaintext is that filing cabinet, built to last. Plain files at the foundation, with search, structured claims, and an AI research layer stacked *on top of* the files, never *instead of* them.
 Delete every layer above and the archive still works, the way the drawer still works.
 
+> **See it in action:** the [**live example site**](https://asielen.github.io/plaintext-family-history/) is the fictional [`example-archive/`](example-archive/) compiled by `fha site` — the same self-contained, redacted output you'd publish or hand off on a USB stick. Its files are committed under [`example-archive/generated/site/`](example-archive/generated/site/).
+
 ## Which one are you?
 
 | You are… | Start here |
