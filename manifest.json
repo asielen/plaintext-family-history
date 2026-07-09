@@ -533,7 +533,7 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "2f28d0d1782e71ccac1fb1d7458549e1c4a267a04802883aacfeca46e6728721",
+      "sha256": "b2e74b94935e404534421523904c9a69e6172fc084eb55f70498e603e31f4416",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "927a004279a999122d452dd7997bd733a8dd87a87f6692a6bbdc7cd1a9fdd1f9",
+      "sha256": "ede3f65106ddc759840c53449aec6fd4c1c357fcb94a05c72c6a5a42fec8f496",
       "spec_version": "1.2"
     },
     {
