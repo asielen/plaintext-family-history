@@ -847,11 +847,26 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         # each name variant - so `[[Ken Smith]]` resolves to the right P-id.
         # All variants (including restricted) go into aliases so name-wikilinks
         # to former names still resolve internally; render paths redact the display.
+        # `also_known_as`, `name_at_birth`, and `married_name` (SPEC person
+        # template) are additional resolution surfaces so `[[Peggy]]` /
+        # `[[Margaret Cole]]` / `[[Margaret Hartley]]` all click through to the
+        # same P-id. The template documents them as aliases; the indexer folds
+        # them into the alias-insertion path so the promise holds.
+        extra_alias_names: list[str] = []
+        aka = meta.get('also_known_as') or []
+        if isinstance(aka, (list, tuple)):
+            extra_alias_names.extend(str(a) for a in aka if a)
+        elif aka:
+            extra_alias_names.append(str(aka))
+        for _fld in ('name_at_birth', 'married_name'):
+            val = meta.get(_fld)
+            if val:
+                extra_alias_names.append(str(val))
         _insert_record_aliases(
             conn, pid,
             stems=tuple(str(a) for a in (meta.get('aliases') or [])),
             names=(name,) if name and name != 'unknown' else (),
-            variants=tuple(all_variants),
+            variants=tuple(all_variants) + tuple(extra_alias_names),
         )
         for t in (meta.get('face_tags') or []):
             conn.execute('INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', (pid, str(t)))
