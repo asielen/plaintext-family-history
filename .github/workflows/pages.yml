@@ -1,0 +1,38 @@
+name: Deploy example site to Pages
+
+# Publishes the committed example archive's standalone site
+# (example-archive/generated/site) as the repo's GitHub Pages demo. Requires
+# Settings -> Pages -> Source: "GitHub Actions" to be enabled once, by hand.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'example-archive/generated/site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: example-archive/generated/site
+      - id: deployment
+        uses: actions/deploy-pages@v4
