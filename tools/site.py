@@ -1877,6 +1877,8 @@ class _SiteBuilder:
             p = r['path']
             if not p:
                 continue
+            if Path(p).suffix.lower() not in _IMAGE_SUFFIXES:
+                continue
             try:
                 cand = resolve_path(p, self.fha_config, self.archive_root)
             except Exception:  # noqa: BLE001
