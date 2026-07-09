@@ -157,6 +157,16 @@ _SKELETON_SRC_DIR = 'archive-template'
 # human how to start an archive, which the docs/ guides already cover.
 _SKELETON_EXCLUDE = {'README.md'}
 
+# Files that live under an operating subtree but are user-owned skeleton seeds:
+# install-once, then never touched by `update-tools`. `design/custom.css` is the
+# per-archive style hook - stock on install so a genealogist has something to
+# customize, and preserved across updates so a hand-edit is not clobbered.
+# (archive_path, in-repo src path.)
+_SKELETON_OVERRIDES: tuple[tuple[str, str], ...] = (
+    ('design/custom.css', 'design/custom.css'),
+)
+_SKELETON_OVERRIDE_PATHS = frozenset(a for a, _ in _SKELETON_OVERRIDES)
+
 # The two on-disk footprints of the updater. Both are safe to inspect or delete
 # by hand; neither is ever copied or compared as part of the operating layer.
 VERSION_FILE = '.plaintext-version'
@@ -221,6 +231,10 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
             if '__pycache__' in p.parts or p.suffix in ('.pyc', '.pyo'):
                 continue
             rel = p.relative_to(repo_root).as_posix()
+            # Skip skeleton-override files - they live under an operating
+            # subtree but are user-owned (see _SKELETON_OVERRIDES).
+            if rel in _SKELETON_OVERRIDE_PATHS:
+                continue
             out.append((rel, p))
 
     return out
@@ -247,6 +261,13 @@ def _skeleton_files(repo_root: Path) -> list[tuple[str, Path]]:
             continue
         archive_path = rel_in_template.as_posix()
         out.append((archive_path, p))
+    # Also seed skeleton overrides that live outside archive-template/ - the
+    # per-archive style hook design/custom.css, whose stock copy is the
+    # in-repo file.
+    for archive_path, src_rel in _SKELETON_OVERRIDES:
+        src = repo_root / src_rel
+        if src.is_file():
+            out.append((archive_path, src))
     return out
 
 

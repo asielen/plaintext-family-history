@@ -156,7 +156,7 @@
     },
     {
       "path": "design/custom.css",
-      "category": "operating",
+      "category": "skeleton",
       "sha256": "817986f1e6e096e29f0ea598dac2bbde2b98c917b2862ea34ac6c64544946e20",
       "spec_version": "1.2"
     },
@@ -593,13 +593,13 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "20be14e07083179136e185daf5d4e2dea336ab5563f0e9c533a52946d62afd55",
+      "sha256": "e4b178440f0184743b49d8dace9fff80fb6f1264140657532bbc89c226a84083",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "ddc632a63fd6a885bfc4cd8e3404d7a47b9703211ab87b21af489efda400aac1",
+      "sha256": "ae663549965e4544f465be68d900c534a4df1ae7de3b6eabaf0902711feffb17",
       "spec_version": "1.2"
     },
     {
@@ -653,7 +653,7 @@
     {
       "path": "tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "500493d92e03c476b99e934770a1b8babf5bde64b64926182fbeed99cf80be63",
+      "sha256": "ef2cff386e1b50256d2583efcc08eb18d9cc50b4d46cbe19d2587a61bac7d81a",
       "spec_version": "1.2"
     },
     {
