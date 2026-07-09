@@ -1695,7 +1695,11 @@ class _SiteBuilder:
                 seen.add(oid)
                 meta = self.person_meta.get(oid)
                 if not self.linked:
-                    if meta and self._person_is_redacted(meta):
+                    # A stub (no meta row) has no page and no known living
+                    # status; skip rather than emit a raw P-id chip.
+                    if meta is None:
+                        continue
+                    if self._person_is_redacted(meta):
                         continue
                     if not self._has_public_claim(ev, oid):
                         continue
@@ -1918,8 +1922,11 @@ class _SiteBuilder:
     def _resolve_image_source(self, ref: str) -> Path | None:
         """The on-disk source file for a photo reference. Prefers a catalogued
         photo (S-id or indexed path), applying the strip's privacy gate; else a
-        hand-written path/filename on disk - a deliberate publish choice, so not
-        co-living gated. None if nothing resolves."""
+        hand-written path/filename on disk. If a photo catalog is available in
+        standalone mode, an uncatalogued disk hit is fail-closed - the author who
+        wrote a bare filename should either catalog the file or accept the safe
+        default; only when there is no catalog at all does a raw disk lookup
+        publish without a co-living gate. None if nothing resolves."""
         cat = self._resolve_photo_ref(ref)
         if cat:
             # A catalog match that the privacy gate rejects must NOT fall through to
@@ -1938,7 +1945,45 @@ class _SiteBuilder:
         sid_hit = self._resolve_sid_image(ref)
         if sid_hit is not None:
             return sid_hit
-        return self._resolve_asset_path(ref)
+        disk = self._resolve_asset_path(ref)
+        if disk is None:
+            return None
+        # Standalone + a catalog exists: a disk hit that has no catalog entry
+        # (or one that fails the privacy gate) is fail-closed. If there is no
+        # catalog at all (photos_conn is None) the hand-written path is the
+        # deliberate publish choice the caller made.
+        if not self.linked and self.photos_conn is not None:
+            cat_path = self._catalog_path_for_disk(disk)
+            if cat_path is None:
+                return None
+            if not self._photo_is_public(cat_path):
+                return None
+        return disk
+
+    def _catalog_path_for_disk(self, disk: Path) -> str | None:
+        """The catalog-stored path (if any) that names the file at `disk`. Tries
+        the archive-relative path first, then a basename LIKE. Returns None when
+        the file has no catalog entry."""
+        if self.photos_conn is None:
+            return None
+        try:
+            rel = str(disk.resolve().relative_to(self.archive_root.resolve()))
+        except (OSError, ValueError):
+            rel = None
+        try:
+            if rel:
+                row = self.photos_conn.execute(
+                    'SELECT path FROM photos WHERE path = ?', (rel,)).fetchone()
+                if row:
+                    return row['path']
+            row = self.photos_conn.execute(
+                'SELECT path FROM photos WHERE path = ? OR path LIKE ?',
+                (disk.name, '%/' + disk.name)).fetchone()
+            if row:
+                return row['path']
+        except sqlite3.DatabaseError:
+            return None
+        return None
 
     def _resolve_profile_photo(self, pid: str) -> Path | None:
         """Read the person's `profile_photo:` field, resolve it (a catalogued
@@ -2115,8 +2160,14 @@ class _SiteBuilder:
         # Standalone: also withhold events whose only source is restricted/living-linked,
         # and a restricted claim regardless of its source.
         if not self.linked:
+            # Match the person-timeline policy (`_source_hard_restricted`): show
+            # the event with its citation redacted when the source is merely
+            # withheld (names a living person), and omit only a restricted claim
+            # or a hard-restricted source. Using `source_pages` here instead
+            # would drop the same fact from the place page while the person
+            # page still shows it.
             claim_rows = [c for c in claim_rows
-                          if (c['source_id'] is None or c['source_id'] in self.source_pages)
+                          if not self._source_hard_restricted(c['source_id'])
                           and normalize_id(str(c['id'])) not in self.restricted_claims]
         claims = []
         person_freq: dict[str, int] = {}
@@ -2169,7 +2220,10 @@ class _SiteBuilder:
         body, _entries = self._read_discoveries()
         page_dir = self.out_dir
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
-        content_html = _prose_to_html(body, render, drop_private=not self.linked) if body else ''
+        # An `![[S-id|Cap]]` in discoveries prose renders as a `<figure>` on the
+        # home teaser; keep the same shape here so the full page matches.
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+        content_html = _prose_to_html(body, render, embed, drop_private=not self.linked) if body else ''
         self._write_page(self.out_dir / 'discoveries.html', 'discoveries.html', {
             'content_html': self._markup(content_html) if content_html else None,
             'root_prefix': '.',
