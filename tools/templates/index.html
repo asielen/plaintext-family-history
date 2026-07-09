@@ -3,7 +3,15 @@
 {% block content %}
 <article class="home">
   {% if hero %}
-  <div class="site-hero"><img src="{{ hero }}" alt=""></div>
+  <div class="site-hero{% if not hero.image %} site-hero-default{% endif %}"{% if not hero.image %} aria-hidden="true"{% endif %}>
+    {% if hero.image %}<img src="{{ hero.image }}" alt="">{% endif %}
+    {% if hero.title or hero.tagline %}
+    <div class="site-hero-text">
+      {% if hero.title %}<div class="site-hero-title">{{ hero.title }}</div>{% endif %}
+      {% if hero.tagline %}<div class="site-hero-tagline">{{ hero.tagline }}</div>{% endif %}
+    </div>
+    {% endif %}
+  </div>
   {% else %}
   <div class="site-hero site-hero-default" aria-hidden="true"></div>
   {% endif %}

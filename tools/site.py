@@ -2477,16 +2477,29 @@ class _SiteBuilder:
             except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
                 self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
 
-        # Optional hero banner (fha.yaml `site: hero:` = an S-id or photo path).
-        # Missing/unresolved → the template shows a default patterned band.
+        # Optional hero banner. `fha.yaml site: hero:` is either a scalar photo
+        # ref (an S-id or path — legacy shape) or a mapping documented in
+        # CUSTOMIZING_SITE.md as `{image, title, tagline}`. Missing/unresolved →
+        # the template shows a default patterned band.
         site_cfg = self.fha_config.get('site') if isinstance(self.fha_config.get('site'), dict) else {}
-        hero = None
-        hero_ref = str(site_cfg.get('hero') or '').strip()
+        hero: dict | None = None
+        hero_cfg = site_cfg.get('hero')
+        if isinstance(hero_cfg, dict):
+            hero_ref = str(hero_cfg.get('image') or '').strip()
+            hero_title = str(hero_cfg.get('title') or '').strip() or None
+            hero_tagline = str(hero_cfg.get('tagline') or '').strip() or None
+        else:
+            hero_ref = str(hero_cfg or '').strip()
+            hero_title = None
+            hero_tagline = None
+        hero_image = None
         if hero_ref:
-            hero = self._image_href(hero_ref, page_dir, 'hero')
-            if not hero:
+            hero_image = self._image_href(hero_ref, page_dir, 'hero')
+            if not hero_image:
                 self.messages.append(
                     f'WARNING: site.hero {hero_ref!r} matched no publishable photo; using the default banner.')
+        if hero_image or hero_title or hero_tagline:
+            hero = {'image': hero_image, 'title': hero_title, 'tagline': hero_tagline}
 
         # Descendant explorer (M8.5): seed from the apex of the configured
         # root_person's line so the tree fans forward across the whole family.
