@@ -111,6 +111,7 @@ Apply each confirmed change to source. Leave anything he does not confirm unwrit
 With the intent now in source, rebuild the real site the normal way:
 
 ```
+fha index                                              # freshness now covers home.md / records / fha.yaml
 fha site --out generated/site --standalone --dry-run   # preview the rebuild (generated/site is the default)
 fha site --out generated/site --standalone
 ```
