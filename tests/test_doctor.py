@@ -228,6 +228,29 @@ class BackupStampTests(unittest.TestCase):
         self.assertIn('restore = unzip', report)
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
 
+    def test_timezone_aware_stamp_date_reports_instead_of_crashing(self) -> None:
+        """A stamp date carrying a timezone (a hand-edit, a foreign tool's
+        stamp) must report normally: naive-now minus aware-when used to raise
+        an uncaught TypeError that killed the whole doctor run, violating the
+        check's 'unreadable = treated as absent' promise."""
+        when = (datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(days=3))
+        stamp = {
+            'date': when.isoformat(timespec='seconds'),   # e.g. ...+00:00
+            'zip': str(self.root.parent / 'arch-backups' / 'arch-backup_x.zip'),
+            'files': 12, 'bytes': 3456, 'assets_included': False,
+        }
+        cache = self.root / '.cache'
+        cache.mkdir(exist_ok=True)
+        (cache / 'last_backup.json').write_text(json.dumps(stamp), encoding='utf-8')
+
+        result = doctor.run_doctor(self.root, {})
+        check = self._backup_check(result)
+        self.assertEqual(check['status'], 'ok')
+        self.assertIn('3 days ago', check['detail'])
+        self.assertIn('last backup:', '\n'.join(result.data['lines']))
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
     def test_unreadable_stamp_degrades_to_none_recorded(self) -> None:
         cache = self.root / '.cache'
         cache.mkdir(exist_ok=True)

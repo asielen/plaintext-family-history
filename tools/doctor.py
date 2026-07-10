@@ -329,10 +329,13 @@ def _check_backup_stamp(archive_root: Path, lines: list[str], checks: list[dict]
     a reminder that turns every fresh archive's doctor red trains people to
     ignore red (the same alarm-blindness reasoning as the detectors' exit-0
     posture, TOOLING §14a):
-      - stamp present  → the real date, age, zip path, and whether assets rode along
+      - stamp present  → the real date, age, zip path, and whether assets rode
+        along (a timezone-aware date - a hand-edit or a foreign tool's stamp -
+        is converted to local time rather than crashing the arithmetic)
       - stamp absent   → an honest "no backup recorded" naming the command
       - stamp unreadable → treated as absent (the cache is disposable; the next
-        backup rewrites it) with the cause shown
+        backup rewrites it) with the cause shown; any parse or date-arithmetic
+        failure lands here, never as an uncaught exception
     A restored archive has no `.cache/`, so it lands on "no backup recorded"
     and prompts a fresh one - correct for a copy that just survived a disaster.
     """
@@ -350,7 +353,15 @@ def _check_backup_stamp(archive_root: Path, lines: list[str], checks: list[dict]
         if not isinstance(stamp, dict):
             raise ValueError(f'expected a JSON object, got {type(stamp).__name__}')
         when = datetime.datetime.fromisoformat(str(stamp['date']))
-    except (KeyError, ValueError, OSError) as exc:
+        if when.tzinfo is not None:
+            # fha backup writes naive local times, but a hand-edited or
+            # foreign stamp may carry a timezone. Convert to local naive so
+            # the age subtraction never mixes aware and naive datetimes
+            # (that mix raises TypeError, and an uncaught one would kill
+            # the whole doctor run over a disposable cache file).
+            when = when.astimezone().replace(tzinfo=None)
+        age_days = (datetime.datetime.now() - when).days
+    except (KeyError, ValueError, OSError, TypeError, OverflowError) as exc:
         lines.append(
             f'last backup: the note at {stamp_path} is unreadable ({exc}) - '
             f'treating it as none recorded  next: run `{backup_cmd}` to write a '
@@ -359,7 +370,6 @@ def _check_backup_stamp(archive_root: Path, lines: list[str], checks: list[dict]
         checks.append({'id': 'backup', 'status': 'info',
                        'detail': f'stamp unreadable ({exc})', 'next_step': backup_cmd})
         return
-    age_days = (datetime.datetime.now() - when).days
     if age_days <= 0:
         age = 'today'
     elif age_days == 1:
