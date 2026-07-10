@@ -140,7 +140,7 @@ plaintext-family-history/
 
 ## Quick start
 
-> You need an AI coding agent that can read project instructions and run shell commands - [Claude Code](https://www.anthropic.com/claude-code) is the reference harness. The spec is harness-agnostic; anything that reads `AGENTS.md` works.
+> You need an AI coding agent that can read project instructions and run shell commands - [Claude Code](https://www.anthropic.com/claude-code) is the reference harness. The spec is harness-agnostic; anything that reads `AGENTS.md` works. Codex, for example, reads `AGENTS.md` natively; see the FAQ.
 
 1. **Clone this repo** and read `SPEC.md` end to end. It is the contract; everything else serves it.
 2. **Open the folder in your agent.** It will read `CLAUDE.md` → `AGENTS.md` and know the rules before you say anything.
