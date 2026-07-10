@@ -3056,6 +3056,8 @@ def _cmd_site(args: argparse.Namespace) -> int:
         return EXIT_FAILURE   # the refusal message is already in result['messages']
     if status == 'reset-failed':
         return EXIT_FAILURE   # the OSError detail is already in result['messages']
+    if status == 'working-copy':
+        return EXIT_CLEAN   # the refusal warning is already in result['messages']
 
     mode = 'linked preview' if getattr(args, 'linked', False) else 'standalone snapshot'
     where = _display_path(result['out_dir'], archive_root)
