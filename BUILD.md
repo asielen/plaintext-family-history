@@ -608,7 +608,7 @@ Run 11 checks in order; collect results; print structured report. Exit 0 = all p
 | Inbox aging | items older than 14 days; print count + oldest (only if `inbox/` exists) |
 | Counts | restricted sources; living persons; unknown-living persons (from index if fresh) |
 | E018 findings | list agent-instruction drift findings if present |
-| Backup reminder | always print: "Backup policy must cover archive root and all mapped roots" |
+| Backup recency | always print; read `.cache/last_backup.json` (the `fha backup` stamp, TOOLING §13e): last-backup date + zip when present, "none recorded - run `fha backup`" when absent; info-level, never changes the exit code; end with the archive-root + mapped-roots list a full backup must cover |
 
 Index and photoindex freshness check: compare `os.path.getmtime(index.sqlite)` against
 `max(mtime)` across all `.md` files under `sources/`, `people/`, `notes/`, and

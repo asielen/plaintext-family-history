@@ -160,6 +160,8 @@ exactly as they are.
 > and never touches your `fha.yaml` or place list. No git required either way.
 
 > **Backups are your safety net, not git.** Since you're not using GitHub, make your own copies:
-> periodically zip your `my-family-archive` folder and keep it somewhere separate - an external
-> drive, another computer, a cloud-storage folder. Your records are plain files, so a plain copy
-> is a complete, future-proof backup.
+> `python tools/fha.py backup --root my-family-archive` writes a dated, verified zip into a folder
+> beside your archive - copy that zip somewhere separate (an external drive, another computer, a
+> cloud-storage folder). Your records are plain files, so that zip is a complete, future-proof
+> backup: to restore it, just unzip. (Photos and documents aren't included unless you add
+> `--include-assets` - the command names them every time so nothing is skipped silently.)

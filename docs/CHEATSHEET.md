@@ -30,6 +30,7 @@ python tools/fha.py report   --root my-family-archive   # the review queue + res
 python tools/fha.py find --text "Rose Hartley" --root my-family-archive   # search everything
 python tools/fha.py doctor   --root my-family-archive   # health check - run this when stuck
 python tools/fha.py lint     --root my-family-archive   # "is my archive shaped right?"
+python tools/fha.py backup   --root my-family-archive   # dated zip beside the archive - restore = unzip
 python tools/fha.py relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
 ```
 

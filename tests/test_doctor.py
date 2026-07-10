@@ -22,7 +22,9 @@ Doctor had no dedicated tests. Three contracts locked here:
 Synthetic tmp archives only - the real archive is never a test bed.
 """
 
+import datetime
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -173,6 +175,73 @@ class ExitLadderTests(unittest.TestCase):
             self.assertEqual(result.exit_code, EXIT_ERRORS)
             self.assertFalse(result.ok)
             self.assertIn('not reachable', '\n'.join(result.data['lines']))
+
+
+class BackupStampTests(unittest.TestCase):
+    """The backup reminder reads real state from `.cache/last_backup.json`
+    (written by `fha backup`) - the actual date and zip when a stamp exists,
+    an honest "none recorded" when it doesn't - and stays info-level either
+    way: the reminder's job is to name the command and the date, never to
+    turn a fresh archive's health check red (plan 04 / TOOLING §13e)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _make_archive(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _backup_check(self, result) -> dict:
+        return next(c for c in result.data['checks'] if c['id'] == 'backup')
+
+    def test_stamp_present_reports_date_and_zip(self) -> None:
+        stamp = {
+            'date': (datetime.datetime.now() - datetime.timedelta(days=3)
+                     ).isoformat(timespec='seconds'),
+            'zip': str(self.root.parent / 'arch-backups' / 'arch-backup_x.zip'),
+            'files': 12, 'bytes': 3456, 'assets_included': False,
+        }
+        cache = self.root / '.cache'
+        cache.mkdir(exist_ok=True)
+        (cache / 'last_backup.json').write_text(json.dumps(stamp), encoding='utf-8')
+
+        result = doctor.run_doctor(self.root, {})
+        check = self._backup_check(result)
+        self.assertEqual(check['status'], 'ok')
+        self.assertIn('3 days ago', check['detail'])
+        self.assertIn('arch-backup_x.zip', check['detail'])
+        report = '\n'.join(result.data['lines'])
+        self.assertIn('last backup:', report)
+        self.assertIn('records only', report)
+        # Exit contribution stays CLEAN: only the usual fresh-archive
+        # warnings (absent caches) set the code, never the backup check.
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_stamp_absent_names_the_command_and_stays_clean(self) -> None:
+        result = doctor.run_doctor(self.root, {})
+        check = self._backup_check(result)
+        self.assertEqual(check['status'], 'info')
+        self.assertIn('fha backup', check['next_step'])
+        report = '\n'.join(result.data['lines'])
+        self.assertIn('none recorded', report)
+        self.assertIn('restore = unzip', report)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_unreadable_stamp_degrades_to_none_recorded(self) -> None:
+        cache = self.root / '.cache'
+        cache.mkdir(exist_ok=True)
+        (cache / 'last_backup.json').write_text('{not json', encoding='utf-8')
+        result = doctor.run_doctor(self.root, {})
+        check = self._backup_check(result)
+        self.assertEqual(check['status'], 'info')
+        self.assertIn('unreadable', check['detail'])
+        self.assertIn('fha backup', check['next_step'])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+
+class RenderTests(unittest.TestCase):
+    """_cmd_doctor renders data['lines'] verbatim and returns the exit code."""
 
     def test_cmd_doctor_renders_lines_and_returns_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

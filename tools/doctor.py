@@ -21,7 +21,8 @@ Checks (in order):
   9. Counts             (restricted sources, living/unknown persons)
  10. E018 findings      (agent-instruction drift details)
  11. Tools version      (.plaintext-version + pending update backups)
- 12. Backup reminder    (always printed)
+ 12. Backup recency     (reads .cache/last_backup.json, the `fha backup` stamp;
+                         always printed, info-level - never changes the exit code)
 
 Exit codes: 0 = all pass; 1 = warnings only; 2 = errors.  TOOLING §3a.
 """
@@ -313,6 +314,65 @@ def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict
             checks.append({'id': 'update_backups', 'status': 'info',
                            'detail': f'{pending} pending', 'next_step': None})
     return worst
+
+
+# ── Backup recency (fha backup stamp, TOOLING §13e) ─────────────────────────────
+
+def _check_backup_stamp(archive_root: Path, lines: list[str], checks: list[dict],
+                        backup_cmd: str) -> None:
+    """Report the last `fha backup` run from `.cache/last_backup.json`.
+
+    The stamp is a per-copy, per-machine fact (the TOOLING §13d rationale that
+    keeps WORKING_COPY out of fha.yaml), written by `fha backup` after a
+    verified zip and read here as a plain artifact (tools never import tools).
+    Three states, all deliberately info-level with a CLEAN exit contribution -
+    a reminder that turns every fresh archive's doctor red trains people to
+    ignore red (the same alarm-blindness reasoning as the detectors' exit-0
+    posture, TOOLING §14a):
+      - stamp present  → the real date, age, zip path, and whether assets rode along
+      - stamp absent   → an honest "no backup recorded" naming the command
+      - stamp unreadable → treated as absent (the cache is disposable; the next
+        backup rewrites it) with the cause shown
+    A restored archive has no `.cache/`, so it lands on "no backup recorded"
+    and prompts a fresh one - correct for a copy that just survived a disaster.
+    """
+    stamp_path = archive_root / '.cache' / 'last_backup.json'
+    if not stamp_path.is_file():
+        lines.append(
+            f'last backup: none recorded  next: run `{backup_cmd}` - it writes a '
+            f'dated zip beside your archive (restore = unzip)'
+        )
+        checks.append({'id': 'backup', 'status': 'info',
+                       'detail': 'no backup recorded', 'next_step': backup_cmd})
+        return
+    try:
+        stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
+        if not isinstance(stamp, dict):
+            raise ValueError(f'expected a JSON object, got {type(stamp).__name__}')
+        when = datetime.datetime.fromisoformat(str(stamp['date']))
+    except (KeyError, ValueError, OSError) as exc:
+        lines.append(
+            f'last backup: the note at {stamp_path} is unreadable ({exc}) - '
+            f'treating it as none recorded  next: run `{backup_cmd}` to write a '
+            f'fresh backup (and a fresh note)'
+        )
+        checks.append({'id': 'backup', 'status': 'info',
+                       'detail': f'stamp unreadable ({exc})', 'next_step': backup_cmd})
+        return
+    age_days = (datetime.datetime.now() - when).days
+    if age_days <= 0:
+        age = 'today'
+    elif age_days == 1:
+        age = '1 day ago'
+    else:
+        age = f'{age_days} days ago'
+    scope = ('assets included' if stamp.get('assets_included')
+             else 'records only - photos and documents not included')
+    zip_name = stamp.get('zip', '?')
+    detail = f'{when.date().isoformat()} ({age}) -> {zip_name} ({scope})'
+    lines.append(f'last backup: {detail}  next: run `{backup_cmd}` any time for a fresh one')
+    checks.append({'id': 'backup', 'status': 'ok', 'detail': detail,
+                   'next_step': backup_cmd})
 
 
 # ── Main report ───────────────────────────────────────────────────────────────
@@ -783,12 +843,21 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     worst = max(worst, _check_tools_version(archive_root, lines, checks))
     lines.append('')
 
+    # ── 12. Backup recency (always printed; info-level, CLEAN contribution) ──
+    # Real state first (the fha backup stamp), then the always-printed list of
+    # paths a full backup must cover - the reminder names the command and the
+    # date instead of restating policy with no state behind it.
+    backup_cmd = f'fha backup --root "{root_arg}"'
     lines.append('-' * 60)
+    _check_backup_stamp(archive_root, lines, checks, backup_cmd)
     lines.append('Backup policy must cover both the archive root and all mapped asset roots.')
     lines.append(f'Archive root: {archive_root}')
     for alias in roots:
         lines.append(f'Asset root {alias}: {resolve_path(alias, fha_config, archive_root)}')
-    lines.append(f'Next: make sure those paths are included in your backup. More help: {troubleshooting}')
+    lines.append(
+        f'Next: `{backup_cmd}` zips the records; cover the asset roots with '
+        f'`--include-assets` or your own copy of those folders. More help: {troubleshooting}'
+    )
 
     return Result(
         ok=(worst not in (EXIT_ERRORS, EXIT_FAILURE)),

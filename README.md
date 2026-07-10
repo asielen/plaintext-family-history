@@ -112,6 +112,8 @@ The operating loop is simple: **capture → file → process → review → repo
 
 **Opens in Obsidian.** The archive is a Markdown-plus-frontmatter-plus-`[[wikilink]]` vault: point Obsidian (or another Markdown app) at the folder and it opens as-is, no import. An optional [Templater pack](obsidian-templater/) and the generated site's interactive family tree make it native to plaintext-PKM workflows; see [docs/USING_WITH_OBSIDIAN.md](docs/USING_WITH_OBSIDIAN.md).
 
+**Back it up with one command.** `fha backup` copies the archive into a dated zip in a folder *beside* it (`my-family-archive-backups/`) and verifies every file. Photos and documents are not included by default - they are often huge and often live on another drive - and the output says so every time; add `--include-assets` to pack them too, or back those folders up separately (`fha doctor` lists every path a full backup must cover, and reports when you last actually ran a backup). To restore: unzip the file. That's the whole procedure - a backup is just your files.
+
 ## Repository layout
 
 ```
@@ -211,6 +213,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha site` - static-site generator: source/person/place/discoveries/home pages, standalone (redacted, self-contained) vs linked preview, and vendored interactive descendant/ancestor trees (milestone 8.1-8.5)
 - [x] `fha install` / `fha update-tools` - archive scaffolding and updating: bootstrap a private archive's operating layer from a clone or unzipped download, then refresh it later, backing up your edits and never deleting or touching your `fha.yaml`/places data (milestone 9.1-9.2)
 - [x] working-copy mode - asset-less plain-text working copies synced to a second machine (toggle with `fha working-copy on/off`, which sets a git-ignored `WORKING_COPY` marker so the mode never syncs back): tools treat absent photos/documents as present-elsewhere (never "missing", never pruned), so you can write narratives and research against existing records anywhere (milestone 10 - SPEC §12.4 / TOOLING §13d)
+- [x] `fha backup` - one-command dated zip snapshot written outside the archive (records-only by default; `--include-assets` packs the mapped photo/document roots), verified after writing, with `fha doctor` reporting the real last-backup date; restore = unzip (2026-07 usability review, plan 04 - TOOLING §13e)
 
 ## A complementary project
 
