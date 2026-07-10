@@ -551,6 +551,248 @@ class CliRoutingTestCase(_ArchiveCase):
         self.assertNotIn('GEDCOM import plan', out.getvalue())
 
 
+# ── Review fixes (2026-07 gedcom findings) - one regression class per fix ─────
+
+class ReversedRangeTestCase(unittest.TestCase):
+    """Finding 5: 'BET 1900 AND 1850' must not become the inverted interval
+    '1900/1850' (both halves validate independently, so is_valid_edtf passes
+    it, queries see an empty window, and the living heuristic reads the wrong
+    bound). A reversed range is malformed: no date, wording kept in the value."""
+
+    def test_reversed_between_omits_date(self) -> None:
+        self.assertIsNone(gedcom_import.gedcom_date_to_edtf('BET 1900 AND 1850'))
+
+    def test_reversed_from_to_omits_date(self) -> None:
+        self.assertIsNone(gedcom_import.gedcom_date_to_edtf('FROM 1903 TO 1901'))
+
+    def test_reversed_mixed_precision_omits_date(self) -> None:
+        self.assertIsNone(gedcom_import.gedcom_date_to_edtf('BET JUN 1900 AND 1900'))
+
+    def test_in_order_and_equal_ranges_still_translate(self) -> None:
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('BET 1870 AND 1875'),
+                         '1870/1875')
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('BET 1900 AND 1900'),
+                         '1900/1900')
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('BET 1900 AND JUN 1900'),
+                         '1900/1900-06')
+
+
+class ReversedRangeIntegrationTestCase(_ArchiveCase):
+    def test_reversed_range_counts_as_untranslated(self) -> None:
+        ged = Path(self._tmp.name) / 'rev.ged'
+        ged.write_text(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n'
+            '0 @I1@ INDI\n1 NAME Pat /Example/\n1 BIRT\n'
+            '2 DATE BET 1900 AND 1850\n0 TRLR\n', encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, ged)
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertIsNone(birth.date)                          # never '1900/1850'
+        self.assertIn('BET 1900 AND 1850', birth.value)        # wording preserved
+        self.assertTrue(any('could not be translated' in w
+                            and 'BET 1900 AND 1850' in w for w in plan.warnings))
+        # No bogus 1900 upper bound feeds the living heuristic: stays unknown
+        # (the safe error direction - treated as living by every export).
+        self.assertEqual(plan.stubs[0].living, 'unknown')
+
+
+class AdminTagTestCase(_ArchiveCase):
+    """Finding 3: '1 CHAN / 2 DATE ...' (present on every INDI in most real
+    exports) is record-audit metadata. It must stay unread - _count_unread's
+    docstring's own example - never a suggested 'event: chan' claim."""
+
+    def _plan_for(self, body: str):
+        ged = Path(self._tmp.name) / 'admin.ged'
+        ged.write_text('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n' + body + '0 TRLR\n',
+                       encoding='utf-8')
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def test_chan_never_mints_an_event_claim(self) -> None:
+        plan = self._plan_for(
+            '0 @I1@ INDI\n1 NAME Pat /Example/\n1 BIRT\n2 DATE 1900\n'
+            '1 CHAN\n2 DATE 1 JAN 2020\n3 TIME 10:00:00\n')
+        self.assertEqual([c.claim_type for c in plan.claims], ['birth'])
+        self.assertFalse(any(c.subtype == 'chan' for c in plan.claims))
+        self.assertIn('CHAN', dict(plan.unread_top))           # counted as unread
+        self.assertGreaterEqual(plan.unread_lines, 3)          # CHAN + DATE + TIME
+
+    def test_crea_never_mints_an_event_claim(self) -> None:
+        plan = self._plan_for(
+            '0 @I1@ INDI\n1 NAME Pat /Example/\n1 CREA\n2 DATE 2 FEB 2021\n')
+        self.assertEqual(plan.claims, [])
+        self.assertIn('CREA', dict(plan.unread_top))
+
+
+class DuplicateXrefTestCase(_ArchiveCase):
+    """Finding 6: '0 @I1@ INDI' twice would map both people to ONE minted pid
+    (one id burned, the second stub write truncating the first). A malformed
+    GEDCOM is refused, never guessed."""
+
+    def test_duplicate_indi_xref_refused_before_any_write(self) -> None:
+        before = _tree_digest(self.archive)
+        result, _out, err = self._run(FIXTURES / 'dup-xref.ged', apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('@I1@', err)                             # names the xref
+        self.assertIn('more than once', err)
+        self.assertIn('re-', err.lower())                      # names a next step
+        self.assertEqual(_tree_digest(self.archive), before)
+
+
+class ContHeadSourTestCase(_ArchiveCase):
+    """Finding 2: a CONT continuation inside HEAD SOUR/NAME/DATE is legal,
+    cosmetic GEDCOM - it must never leak a raw newline into the rendered
+    record's 'citation: >' scalar (a column-0 continuation line there corrupts
+    the whole frontmatter, and --apply used to complete anyway)."""
+
+    def test_cont_in_head_sour_renders_a_valid_record(self) -> None:
+        result, _out, _err = self._run(FIXTURES / 'cont-head.ged', apply=True)
+        self.assertTrue(result.data['applied'])
+        rec_path = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        rec = read_record(rec_path)
+        self.assertEqual(rec['parse_errors'], [])              # frontmatter intact
+        self.assertEqual(rec['meta']['repository'], 'MegaTree Deluxe Edition')
+        self.assertNotIn('\n', rec['meta']['repository'])
+        self.assertIn('MegaTree Deluxe Edition', rec['meta']['citation'])
+
+    def test_render_guard_refuses_a_corrupt_render_before_any_write(self) -> None:
+        plan = gedcom_import.build_plan(self.archive, self.config, SMALL)
+        plan.repository = 'Evil\nbroken: ['                    # simulate a renderer bug
+        before = _tree_digest(self.archive)
+        with self.assertRaises(gedcom_import.GedcomImportError) as ctx:
+            gedcom_import.apply_plan(plan)
+        self.assertIn('Nothing was written', str(ctx.exception))
+        self.assertEqual(_tree_digest(self.archive), before)
+
+
+class DeadDriveTestCase(_ArchiveCase):
+    """Finding 1: a documents root on an unmounted drive must be a refusal
+    (exit 3, nothing written), never an infinite ensure_parent walk - a drive
+    root's .parent is itself, so the old loop never terminated."""
+
+    def test_missing_ancestors_terminates_when_nothing_exists(self) -> None:
+        # The dead-drive shape, simulated: no ancestor exists anywhere on the
+        # walk. The walk must stop at the filesystem root instead of chasing
+        # parent-of-root forever (a hang here IS the regression signal).
+        target = Path(self._tmp.name) / 'ghost' / 'docs' / 'gedcom' / 'x.ged'
+        with mock.patch.object(Path, 'exists', return_value=False):
+            missing = gedcom_import._missing_ancestors(target, self.archive)
+        self.assertGreater(len(missing), 0)
+        self.assertLess(len(missing), 100)                     # finite
+
+    def test_unreachable_anchor_detection(self) -> None:
+        target = Path(self._tmp.name) / 'x.ged'
+        self.assertIsNone(gedcom_import._unreachable_anchor(target))
+        with mock.patch.object(Path, 'exists', return_value=False):
+            self.assertEqual(gedcom_import._unreachable_anchor(target),
+                             target.anchor)
+
+    @unittest.skipUnless(sys.platform == 'win32',
+                         'drive anchors are a Windows concept')
+    def test_unreachable_anchor_real_unmounted_drive(self) -> None:
+        drive = next((f'{c}:\\' for c in 'QZYXWVUTSRK'
+                      if not Path(f'{c}:\\').exists()), None)
+        if drive is None:
+            self.skipTest('every candidate drive letter is mounted')
+        dest = Path(drive) / 'family' / 'documents' / 'gedcom' / 'x.ged'
+        self.assertEqual(gedcom_import._unreachable_anchor(dest), drive)
+        # And the ancestor walk over the dead drive terminates on its own.
+        missing = gedcom_import._missing_ancestors(dest, self.archive)
+        self.assertLess(len(missing), 100)
+
+    def test_apply_refuses_unreachable_documents_root_exit_3(self) -> None:
+        before = _tree_digest(self.archive)
+        with mock.patch.object(gedcom_import, '_unreachable_anchor',
+                               return_value='Q:\\'):
+            result, _out, err = self._run(SMALL, apply=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertFalse(result.ok)
+        self.assertIn('roots:', err)                           # names the fix
+        self.assertIn('plug', err.lower())
+        self.assertEqual(result.changed, [])
+        self.assertEqual(_tree_digest(self.archive), before)   # nothing written
+
+
+class WorkingCopyTestCase(_ArchiveCase):
+    """Finding 4: TOOLING §13d - on a WORKING_COPY machine the dry-run plan
+    still runs (read-only, with the banner), but --apply is asset-mutating
+    and refuses warning-level, pointing at the main archive."""
+
+    def _mark_working_copy(self) -> None:
+        (self.archive / 'WORKING_COPY').write_text(
+            'this machine holds no photo/document assets\n', encoding='utf-8')
+
+    def test_plan_runs_with_banner(self) -> None:
+        self._mark_working_copy()
+        before = _tree_digest(self.archive)
+        result, out, err = self._run(SMALL)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)      # small.ged's warnings
+        self.assertEqual(result.data['persons'], 10)
+        self.assertFalse(result.data['applied'])
+        self.assertIn('[working copy]', err)
+        self.assertIn('GEDCOM import plan', out)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_apply_refuses_warning_level(self) -> None:
+        self._mark_working_copy()
+        before = _tree_digest(self.archive)
+        result, _out, err = self._run(SMALL, apply=True)
+        self.assertTrue(result.ok)                             # a safe decline
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'working-copy')
+        self.assertFalse(result.data['applied'])
+        self.assertEqual(result.changed, [])
+        self.assertIn('main machine', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+
+class PlanOutOrderingTestCase(_ArchiveCase):
+    """Finding 7 (command-audit flag 16): --plan-out is written BEFORE the
+    apply, so its failure is a genuine exit-2 refusal with nothing written -
+    and a post-apply refresh failure never discards changed[] or mislabels a
+    completed apply as a refusal."""
+
+    def test_plan_out_failure_refuses_before_any_write(self) -> None:
+        out_file = Path(self._tmp.name) / 'plan.txt'
+        before = _tree_digest(self.archive)
+        with mock.patch.object(gedcom_import, '_write_plan_out',
+                               side_effect=OSError('disk full (injected)')):
+            result, _out, err = self._run(SMALL, apply=True, plan_out=str(out_file))
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('Nothing was imported', err)
+        self.assertEqual(result.changed, [])
+        self.assertEqual(_tree_digest(self.archive), before)   # exit 2 is honest
+        # No sentinel landed, so the fixed-up re-run applies cleanly.
+        result2, _out2, _err2 = self._run(SMALL, apply=True)
+        self.assertTrue(result2.data['applied'])
+
+    def test_plan_out_refresh_failure_after_apply_keeps_changed(self) -> None:
+        out_file = Path(self._tmp.name) / 'plan.txt'
+        real_write = gedcom_import._write_plan_out
+        calls = {'n': 0}
+
+        def second_write_fails(path, text):
+            calls['n'] += 1
+            if calls['n'] == 2:                                # the post-apply refresh
+                raise OSError('yanked (injected)')
+            real_write(path, text)
+
+        with mock.patch.object(gedcom_import, '_write_plan_out', second_write_fails):
+            result, _out, err = self._run(SMALL, apply=True, plan_out=str(out_file))
+        self.assertTrue(result.data['applied'])
+        self.assertTrue(result.ok)
+        self.assertGreater(len(result.changed), 0)             # the real changed[]
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertIn('import completed', err)
+        self.assertTrue(out_file.is_file())                    # pre-apply write survived
+
+    def test_plan_out_refreshed_with_applied_header_on_success(self) -> None:
+        out_file = Path(self._tmp.name) / 'plan.txt'
+        result, out, _err = self._run(SMALL, apply=True, plan_out=str(out_file))
+        self.assertTrue(result.data['applied'])
+        text = out_file.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('Applied GEDCOM import'))
+        self.assertIn('Full plan written', out)
+
+
 # ── Scale smoke ───────────────────────────────────────────────────────────────
 
 class ScaleSmokeTestCase(_ArchiveCase):

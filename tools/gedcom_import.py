@@ -47,7 +47,9 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #
 #  Field derivation
 #    gedcom_date_to_edtf       - GEDCOM date phrase → valid EDTF, or None
+#    _edtf_ymd                 - numeric ordering key for range sanity checks
 #    _parse_gedcom_name        - `Given /Surname/` → (display, given, surname)
+#    _oneline                  - CONT-folded HEAD value → one line (YAML-safe)
 #    living_flag_for_import    - THE living: heuristic (owner-flagged default)
 #    _birth_year_upper         - latest plausible birth year from an EDTF
 #
@@ -62,7 +64,11 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #    _render_source_record / _render_claim / _render_audit_csv
 #
 #  Plan/apply + CLI
-#    _plan_lines / print_plan / _preflight_apply / apply_plan
+#    _plan_lines / print_plan
+#    _missing_ancestors / _unreachable_anchor - dead-drive-safe parent walks
+#    _preflight_apply          - sentinel/collision/reachability refusals, pre-write
+#    _require_valid_frontmatter - render guard: never write a corrupt record
+#    apply_plan / _write_plan_out
 #    run_import / _cmd_import / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,6 +100,7 @@ from _lib import (
     fmt_id_display,
     is_template_file,
     is_valid_edtf,
+    is_working_copy,
     load_fha_yaml,
     mint_ids,
     parse_filename,
@@ -141,6 +148,13 @@ _EVENT_MAP: dict[str, tuple[str, str]] = {
 # through as free text - the subtype vocabulary is mostly closed, not sealed.
 _PEDI_SUBTYPES = {'adopted': 'adoptive', 'foster': 'foster'}
 
+# Administrative audit stamps most programs put on every record (CHAN = last
+# changed, CREA = created). They carry a DATE but are metadata about the file,
+# never events in a person's life - they stay UNREAD (counted honestly in the
+# plan's unread tally, preserved in the filed copy), and must never fall into
+# the dated-structure `event` fallback below.
+_ADMIN_TAGS = {'CHAN', 'CREA'}
+
 
 def _today() -> str:
     return datetime.date.today().isoformat()
@@ -151,6 +165,16 @@ class GedcomImportError(Exception):
 
     Every message names the cause AND the fix in plain words (AGENTS.md
     next-step rule); nothing has been written when this is raised."""
+
+
+class GedcomEnvironmentError(Exception):
+    """This machine cannot complete the apply right now - exit 3.
+
+    Distinct from GedcomImportError (a problem with the file or the request,
+    exit 2): the file and the plan are fine, but the environment is missing a
+    piece - typically the documents root lives on an external drive that is
+    not plugged in. Nothing has been written when this is raised, and the
+    message names the unreachable root and the fix."""
 
 
 # ── Slug / YAML helpers (mirrors convert_mining.py; tools never import tools) ──
@@ -179,6 +203,17 @@ def _yaml_inline(value: str) -> str:
     if rendered.endswith('...'):
         rendered = rendered[:-3].strip()
     return rendered
+
+
+def _oneline(text: str) -> str:
+    """Collapse a CONT/CONC-folded value to one whitespace-normalized line.
+
+    A CONT under a HEAD-level value (`1 SOUR` / `2 NAME` / `1 DATE`) is legal
+    GEDCOM but purely cosmetic - and those values are interpolated into the
+    rendered source record's `citation: >` folded scalar, where a raw newline
+    would emit a column-0 continuation line and corrupt the whole frontmatter.
+    Flattening at read time keeps every downstream render single-line-safe."""
+    return ' '.join((text or '').split())
 
 
 # ── GEDCOM parsing ─────────────────────────────────────────────────────────────
@@ -327,6 +362,17 @@ def _one_gedcom_date_to_edtf(s: str, approx: bool = False) -> str | None:
     return None
 
 
+def _edtf_ymd(edtf: str) -> tuple[int, ...]:
+    """Numeric (year[, month[, day]]) key of a plain EDTF token, for ordering.
+
+    Only ever fed the output of `_one_gedcom_date_to_edtf` (zero-padded
+    `YYYY[-MM[-DD]]`, optionally `~`-suffixed), so int-splitting on `-` is
+    exact. Tuples compare element-wise and a shorter tuple sorts before its
+    own extension, which is the right call for mixed-precision ranges: a
+    range whose left bound is strictly later than its right is malformed."""
+    return tuple(int(part) for part in edtf.rstrip('~').split('-'))
+
+
 def gedcom_date_to_edtf(raw: str) -> str | None:
     """GEDCOM date phrase → a valid EDTF string, or None to omit `date:`.
 
@@ -337,6 +383,9 @@ def gedcom_date_to_edtf(raw: str) -> str | None:
       1850            → 1850                AFT X         → [X..] IF the EDTF
       BET A AND B     → A/B                                 suite accepts the
       FROM A TO B     → A/B                                 after-form, else None
+
+    A range whose bounds are reversed (`BET 1900 AND 1850`) is treated as
+    malformed and omits `date:` - the wording stays in the claim value.
 
     The AFT arm is a runtime probe rather than a hardcoded No: today's
     `_lib._EDTF_PATTERNS` has no `[X..]` form, so AFT dates omit `date:` and
@@ -371,7 +420,16 @@ def gedcom_date_to_edtf(raw: str) -> str | None:
         if m:
             a = _one_gedcom_date_to_edtf(m.group(1))
             b = _one_gedcom_date_to_edtf(m.group(2))
-            edtf = f'{a}/{b}' if a and b else None
+            if a and b and _edtf_ymd(a) > _edtf_ymd(b):
+                # A reversed range ('BET 1900 AND 1850') is malformed, not a
+                # guessable date: `1900/1850` would pass is_valid_edtf (the
+                # halves validate independently) but query as an empty window
+                # and feed the living heuristic the wrong bound. Same posture
+                # as the AFT fallback: no date, wording kept in the value,
+                # counted in the could-not-translate report.
+                edtf = None
+            else:
+                edtf = f'{a}/{b}' if a and b else None
         else:
             edtf = _one_gedcom_date_to_edtf(up)
 
@@ -674,6 +732,11 @@ def _map_individual(
                 death_edtf = claim.date
             claims.append(claim)
             continue
+        if tag in _ADMIN_TAGS:
+            # CHAN/CREA carry a DATE but are record-audit metadata, not life
+            # events - they stay unread (the _count_unread docstring's own
+            # example), never a suggested `event: chan` claim.
+            continue
         if tag == 'EVEN' or node.child('DATE') is not None:
             # §8.2: nothing stalls for lack of a category - a typed or dated
             # structure this importer doesn't know becomes `event` + subtype.
@@ -939,10 +1002,10 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     """Parse the GEDCOM and plan every record to write. No filesystem writes.
 
     Guard order matters: file-exists → encoding → looks-like-GEDCOM →
-    self-import → already-imported sentinel, all BEFORE any minting, so every
-    refusal is cheap and stateless. Minting is exactly three `mint_ids` calls
-    (S, P, C) - one tree scan each, never one per record - which is what keeps
-    a 2,000-person import tractable."""
+    self-import → no-individuals → duplicate-xref → already-imported sentinel,
+    all BEFORE any minting, so every refusal is cheap and stateless. Minting
+    is exactly three `mint_ids` calls (S, P, C) - one tree scan each, never
+    one per record - which is what keeps a 2,000-person import tractable."""
     if not ged_path.is_file():
         raise GedcomImportError(
             f'{ged_path} does not exist. Check the path (the file Ancestry gives '
@@ -982,7 +1045,10 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
             name_node = head_sour.child('NAME')
             if name_node is not None:
                 consumed.add(id(name_node))
-            repository = (name_node.value.strip() if name_node else '') or head_sour.value.strip()
+            # _oneline: a CONT-folded program name must never carry a newline
+            # into the rendered record's citation scalar (see _oneline).
+            repository = (_oneline(name_node.value) if name_node else '') \
+                or _oneline(head_sour.value)
         char_node = head.child('CHAR')
         if char_node is not None:
             consumed.add(id(char_node))
@@ -995,7 +1061,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         date_node = head.child('DATE')
         if date_node is not None:
             consumed.add(id(date_node))
-            export_date_raw = date_node.value.strip()
+            export_date_raw = _oneline(date_node.value)
             source_date = gedcom_date_to_edtf(export_date_raw)
         gedc = head.child('GEDC')
         if gedc is not None:
@@ -1014,6 +1080,24 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
             f'{ged_path.name} contains no individuals (no INDI records) - there is '
             'nothing to import. If your program offered export options, choose the '
             'one that includes people, then re-run.')
+
+    # A file that defines the same xref twice is malformed, and the damage is
+    # quiet: both INDIs would map to one minted P-id (one id burned, two stub
+    # writes to one path, the second truncating the first) and FAM/SOUR
+    # lookups would tangle. A malformed GEDCOM is refused, never guessed.
+    dup_xrefs = sorted(
+        xref for xref, n in Counter(r.xref for r in records if r.xref).items()
+        if n > 1)
+    if dup_xrefs:
+        shown = ', '.join(dup_xrefs[:5])
+        if len(dup_xrefs) > 5:
+            shown += f', ... ({len(dup_xrefs)} total)'
+        raise GedcomImportError(
+            f'{ged_path.name} defines the same record id more than once ({shown}) '
+            '- the file is malformed, and importing it would silently merge '
+            'different people into one. Re-export the tree from your genealogy '
+            'program (or fix the duplicate lines in a copy of the file), then '
+            're-run the import.')
 
     audit_path = archive_root / _AUDIT_DIR / f'{ged_hash[:12]}.csv'
     if audit_path.exists():
@@ -1374,14 +1458,55 @@ def _planned_stub_path(plan: ImportPlan, stub: _PersonStub) -> Path:
             / _person_filename(stub.given, stub.surname, stub.pid))
 
 
+def _missing_ancestors(path: Path, root: Path) -> list[Path]:
+    """Ancestor directories of `path` that do not exist yet, nearest first.
+
+    Feeds apply's undo stack so a rollback can remove directories it created.
+    The walk stops at the archive root OR the filesystem root: `parent !=
+    parent.parent` is the dead-drive guard - on an unplugged Windows drive
+    nothing on the walk ever exists and the drive root's parent is itself, so
+    without that clause the walk never terminates."""
+    missing: list[Path] = []
+    parent = path.parent
+    while parent != root and parent != parent.parent and not parent.exists():
+        missing.append(parent)
+        parent = parent.parent
+    return missing
+
+
+def _unreachable_anchor(path: Path) -> str | None:
+    """The path's drive/anchor when it does not exist on this machine, else None.
+
+    A missing anchor (`Q:\\` with no Q: drive mounted) is the one condition
+    mkdir cannot fix and the ancestor walk must not chase - it means the
+    resolved documents root points at hardware that is not here right now.
+    POSIX anchors (`/`) always exist, so this returns None there."""
+    anchor = path.anchor
+    if anchor and not Path(anchor).exists():
+        return anchor
+    return None
+
+
 def _preflight_apply(plan: ImportPlan) -> None:
-    """Refuse the apply before ANY write when it could collide or repeat.
+    """Refuse the apply before ANY write when it could collide, repeat, or
+    target an unreachable documents root.
 
     The same-hash audit sentinel was already checked at plan time; it is
     re-checked here (cheap) so a plan object can never be applied twice in one
     process either. Destination collisions list the first five - a collision
     usually means a resumed partial run or a hand-placed file, both of which
-    deserve eyes, not an overwrite."""
+    deserve eyes, not an overwrite. The reachability check raises
+    GedcomEnvironmentError (exit 3, an environment problem) rather than
+    GedcomImportError (exit 2, a request problem)."""
+    anchor = _unreachable_anchor(plan.doc_dest_path)
+    if anchor:
+        raise GedcomEnvironmentError(
+            f'the documents folder for the filed copy ({plan.doc_dest_path.parent}) '
+            f'is not reachable: {anchor} does not exist on this machine (usually '
+            'an unplugged or unmounted drive). Nothing was written. Plug the '
+            'drive back in, or point the documents entry under roots: in '
+            'fha.yaml at a folder this machine can reach, then re-run the import.')
+
     audit_path = plan.archive_root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv'
     if audit_path.exists():
         header = _read_audit_header(audit_path)
@@ -1409,26 +1534,52 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding='utf-8')
 
 
+def _require_valid_frontmatter(record_text: str) -> None:
+    """The render guard: the source record's frontmatter must parse as YAML.
+
+    Every interpolated field is sanitized upstream (_yaml_inline, _oneline),
+    so a failure here means a renderer bug slipped through - and the one
+    unacceptable outcome is a completed --apply that filed a corrupt record.
+    Cheap (one yaml parse of one document) and it refuses BEFORE any write
+    (GedcomImportError, exit 2)."""
+    m = re.match(r'^---\n(.*?)\n---\n', record_text, re.DOTALL)
+    parsed = None
+    if m is not None:
+        try:
+            parsed = yaml.safe_load(m.group(1))
+        except yaml.YAMLError:
+            parsed = None
+    if not isinstance(parsed, dict):
+        raise GedcomImportError(
+            'the source record this import would write did not come out as a '
+            'valid record (a value from the GEDCOM header broke the record '
+            'format). Nothing was written. This is a tool bug worth reporting; '
+            'as a workaround, simplify the odd header line (the program name '
+            'or export date near the top) in a copy of the .ged file and '
+            're-run the import.')
+
+
 def apply_plan(plan: ImportPlan, progress=print) -> list[str]:
     """Write everything, or nothing: every write registers its undo first.
 
-    Write order: filed .ged copy → person stubs (one progress line per
-    {_PROGRESS_EVERY}) → the source record → the audit CSV LAST (so a
-    rolled-back run leaves no re-run sentinel). Any exception unwinds every
-    registered undo in reverse; the caller translates the failure. Returns the
-    list of written paths for Result.changed."""
+    The source record is rendered and its frontmatter yaml-checked BEFORE the
+    first write (_require_valid_frontmatter), so a render bug is a clean
+    refusal, never a filed corrupt record. Write order: filed .ged copy →
+    person stubs (one progress line per {_PROGRESS_EVERY}) → the source
+    record → the audit CSV LAST (so a rolled-back run leaves no re-run
+    sentinel). Any exception unwinds every registered undo in reverse; the
+    caller translates the failure. Returns the list of written paths for
+    Result.changed."""
     root = plan.archive_root
     _preflight_apply(plan)
     today = _today()
+    record_text = _render_source_record(plan, today)
+    _require_valid_frontmatter(record_text)
     undo: list = []
     written: list[str] = []
 
     def ensure_parent(path: Path) -> None:
-        missing: list[Path] = []
-        parent = path.parent
-        while parent != root and not parent.exists():
-            missing.append(parent)
-            parent = parent.parent
+        missing = _missing_ancestors(path, root)
         path.parent.mkdir(parents=True, exist_ok=True)
         for created in reversed(missing):
             undo.append(lambda p=created: p.rmdir())
@@ -1453,7 +1604,7 @@ def apply_plan(plan: ImportPlan, progress=print) -> list[str]:
             if i % _PROGRESS_EVERY == 0 and i < total:
                 progress(f'  wrote {i:,}/{total:,} person stubs...')
 
-        write_new(plan.record_path, _render_source_record(plan, today))
+        write_new(plan.record_path, record_text)
         write_new(root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv',
                   _render_audit_csv(plan, today))
     except Exception:
@@ -1489,6 +1640,16 @@ def _check_plan_out(plan_out: str, archive_root: Path) -> Path:
     return out_path
 
 
+def _write_plan_out(out_path: Path, text: str) -> None:
+    """The one --plan-out write seam (tests inject failure here).
+
+    Called BEFORE the apply (so a bad destination is a clean refusal while
+    nothing has been written) and again after a successful apply to refresh
+    the header from plan-form to applied-form."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding='utf-8')
+
+
 def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
                apply: bool = False, plan_out: str | None = None) -> Result:
     """Plan (and optionally apply) a GEDCOM import; return a Result.
@@ -1500,11 +1661,48 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
     written file on apply (stub paths, source record, filed .ged copy, audit
     CSV) and is empty on dry-run.
 
+    Working-copy machines (TOOLING §13d): the dry-run plan still runs (read-
+    only, printed under the one-line working-copy banner - the dispatcher
+    intercept bypasses fha.py's shared banner, so it is printed here), but
+    --apply is in the asset-mutating refusal class: it refuses warning-level
+    (ok=True, exit 0, data.status='working-copy') pointing at the main
+    archive, exactly like fha process / fha packet.
+
+    --plan-out is written BEFORE the apply: a bad destination refuses the
+    whole run while nothing has been written (exit 2, honest) instead of
+    failing AFTER a completed apply and mislabeling it a refusal. After a
+    successful apply the file is refreshed with the applied header; if that
+    refresh fails, the apply is still reported truthfully (changed[] intact,
+    exit 1 with a warning).
+
     Exit arms (the CLI returns Result.exit_code unchanged):
-      0 clean plan/apply · 1 completed with warnings · 2 refusal before/without
-      writes (GedcomImportError) · 3 write failure during apply - everything
-      rolled back, and the message says so (the catch-all arm: the one thing
-      the user must know is that nothing needs cleanup)."""
+      0 clean plan/apply, and the working-copy --apply refusal · 1 completed
+      with warnings · 2 refusal before/without writes (GedcomImportError, or
+      a failed pre-apply --plan-out) · 3 environment or write failure - an
+      unreachable documents root refuses before any write
+      (GedcomEnvironmentError), and a mid-apply failure rolls everything back
+      (the catch-all arm: the one thing the user must know is that nothing
+      needs cleanup)."""
+    if is_working_copy(archive_root):
+        if apply:
+            wc_msg = (
+                'fha gedcom import --apply is not available in working-copy '
+                'mode - the filed copy of the .ged belongs with the documents '
+                'on the main machine. Run the import there (the dry-run plan '
+                'still works here).')
+            print(wc_msg, file=sys.stderr)
+            # Warning-level refusal, not a failure (TOOLING §13d): it succeeded
+            # at the only thing it can do here - declining safely.
+            # data.status='working-copy' is the machine discriminator.
+            return Result(
+                ok=True, exit_code=EXIT_CLEAN,
+                data={'status': 'working-copy', 'applied': False},
+            ).add('warning', wc_msg)
+        print(
+            '[working copy] photos and documents live on the main machine - '
+            'this plan is a preview; run the import itself there',
+            file=sys.stderr)
+
     try:
         out_path = _check_plan_out(plan_out, archive_root) if plan_out else None
         plan = build_plan(archive_root, fha_config, ged_path)
@@ -1512,8 +1710,23 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
         print(f'ERROR: {e}', file=sys.stderr)
         return Result(ok=False, exit_code=EXIT_ERRORS)
 
+    def _plan_out_text(as_applied: bool) -> str:
+        return '\n'.join(_plan_lines(plan, applied=as_applied, capped=False)
+                         + [f'WARNING: {w}' for w in plan.warnings]) + '\n'
+
+    if out_path is not None:
+        try:
+            _write_plan_out(out_path, _plan_out_text(False))
+        except OSError as e:
+            print(
+                f'ERROR: could not write --plan-out {out_path}: {e}. Nothing '
+                'was imported - fix the destination (or drop --plan-out) and '
+                're-run.', file=sys.stderr)
+            return Result(ok=False, exit_code=EXIT_ERRORS)
+
     changed: list[str] = []
     applied = False
+    plan_out_warning: str | None = None
     if apply:
         try:
             changed = apply_plan(plan)
@@ -1521,6 +1734,9 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
         except GedcomImportError as e:
             print(f'ERROR: {e}', file=sys.stderr)
             return Result(ok=False, exit_code=EXIT_ERRORS)
+        except GedcomEnvironmentError as e:
+            print(f'ERROR: {e}', file=sys.stderr)
+            return Result(ok=False, exit_code=EXIT_FAILURE)
         except Exception as e:  # noqa: BLE001 - the rolled-back catch-all arm
             print(
                 f'ERROR: import failed and every write was rolled back: {e}. '
@@ -1532,23 +1748,29 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
     print_plan(plan, applied=applied)
 
     if out_path is not None:
-        full_text = '\n'.join(_plan_lines(plan, applied=applied, capped=False)
-                              + [f'WARNING: {w}' for w in plan.warnings]) + '\n'
-        try:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(full_text, encoding='utf-8')
+        if applied:
+            try:
+                _write_plan_out(out_path, _plan_out_text(True))
+            except OSError as e:
+                # The apply itself succeeded; a failed refresh of the already-
+                # written plan file must not be reported as a refusal (that
+                # would discard changed[] and lie about the writes). Warn.
+                plan_out_warning = (
+                    f'the import completed, but the --plan-out file could not '
+                    f'be refreshed with the applied plan: {e}. Every record '
+                    'was written; re-run without --apply to regenerate the '
+                    'plan text if you need it.')
+                print(f'WARNING: {plan_out_warning}', file=sys.stderr)
+        if plan_out_warning is None:
             print(f'Full plan written: {out_path}')
-        except OSError as e:
-            print(f'ERROR: could not write --plan-out {out_path}: {e}', file=sys.stderr)
-            return Result(ok=False, exit_code=EXIT_ERRORS)
 
     if applied:
         first = next((s.name for s in plan.stubs if s.name), 'your closest ancestor')
         print()
         print(_CLOSING_POSTURE.format(claims=len(plan.claims), first_person=first))
 
-    exit_code = EXIT_WARNINGS if plan.warnings else EXIT_CLEAN
-    return Result(
+    exit_code = EXIT_WARNINGS if (plan.warnings or plan_out_warning) else EXIT_CLEAN
+    result = Result(
         exit_code=exit_code, changed=changed,
         data={
             'applied': applied,
@@ -1561,6 +1783,9 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
             'source_id': plan.sid,
             'audit_csv': str(plan.archive_root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv'),
         })
+    if plan_out_warning:
+        result.add('warning', plan_out_warning)
+    return result
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

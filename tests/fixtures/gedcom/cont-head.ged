@@ -1,0 +1,13 @@
+0 HEAD
+1 SOUR MegaTree Builder
+2 CONT for Windows
+2 NAME MegaTree
+3 CONT Deluxe Edition
+1 DATE 1 JUL 2026
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Pat /Example/
+1 SEX F
+1 BIRT
+2 DATE 1900
+0 TRLR
