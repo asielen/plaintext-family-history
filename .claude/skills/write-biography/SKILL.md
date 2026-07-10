@@ -67,7 +67,7 @@ to one person.
    ```markdown
    {new biographical prose, every factual sentence cited}
 
-   <!-- AI-DRAFT 2026-07-01 claude-opus-4-8 - biography drafted from accepted census + marriage claims -->
+   <!-- AI-DRAFT 2026-07-01 {your-model-id} - biography drafted from accepted census + marriage claims -->
    ```
    Place the marker at the end of the block you wrote. Leave any existing human-written paragraph exactly
    as it is — add your paragraphs before/after it, never edit inside it. Never touch a `<!-- GENERATED …
