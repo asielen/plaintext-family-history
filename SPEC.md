@@ -781,6 +781,7 @@ Generated output that leaves the archive falls into two categories with differen
 
 **View maintenance (`fha views clean` / `fha views refresh`):**
 - Generated `.md` views carry the `<!-- GENERATED … -->` header. This header is the sole signal for deletion by `fha views clean` - files without it are never touched, even if they match a view filename pattern.
+- Views rendered as standalone HTML (`--format html`) are single-file documents under `generated/views/`, carrying the same header as their **first line, before the doctype**; `fha views clean` sweeps them by the same marker-per-file signal (a hand-written file in that folder is never touched). They render the same content as their `.md` twins and remain private, unredacted research artifacts - not public output (TOOLING §7 D11). <!-- PROPOSED AMENDMENT (views-html 2026-07, pending owner approval): this bullet, per AGENTS_TOOLING §8 spec-refinement gate. -->
 - `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step for bulk regeneration (a fresh copy, a reset after `views clean`); a review session instead refreshes just the touched persons' views (TOOLING §17), so untouched views keep their generation dates.
 - Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
 

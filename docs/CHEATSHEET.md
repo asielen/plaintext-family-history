@@ -31,6 +31,7 @@ python tools/fha.py find --text "Rose Hartley" --root my-family-archive   # sear
 python tools/fha.py doctor   --root my-family-archive   # health check - run this when stuck
 python tools/fha.py lint     --root my-family-archive   # "is my archive shaped right?"
 python tools/fha.py relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
+python tools/fha.py views timeline P-aaaa --format html --root my-family-archive   # a printable one-page timeline (lands in generated/views/)
 ```
 
 `--root` just names which archive folder to use. On a Mac, use `python3` if that's what answers.
