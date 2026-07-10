@@ -183,6 +183,28 @@ E009; accepted cooccur → derived `friend` edge (suggested → none); dismiss �
 the next `fha cooccur`; place mint/relink + `--into`; discovery append; draft flip - each with a
 `--dry-run`-writes-nothing and an invalid/not-found case.
 
+## fha person - implementation status
+
+The deterministic person-field write-back group (TOOLING §3c). One verb ships: `set-living`,
+the surgical edit of the `living:` flag every export redaction follows (SPEC §9/§19; `unknown`
+is treated as living). The record is located by scanning `people/` directly
+(`_lib.find_person_record_path`, shared with `fha confirm draft`), so a stale or absent index
+never blocks the write. Nothing flips the flag automatically - accepting a `death` claim only
+makes the `review-claims` skill *offer* this command.
+
+| Command | Flags | Status | Notes |
+|---|---|---|---|
+| `fha person set-living <P-id> true\|false\|unknown` | `--root`, `--dry-run` | ✓ | Surgical one-line frontmatter edit: only the top-level `living:` value changes (trailing hand comment preserved, CRLF endings byte-faithful); a missing key is inserted after `name:` in stub field order. Pre-write guard re-parses the rewritten frontmatter (must parse; `living` = target; `id` unchanged; every other field present and value-identical) - any failure refuses with nothing written. Merged tombstone (`status: merged`) refuses and names the survivor (`merged_into`). Idempotent `already` no-op, exit 0. Success exits 0 with the `fha index` reminder as advice text; output states the privacy consequence in plain words. Exit 1 = P-id not found (+ `fha find` next step); exit 2 = argparse (bad value literal / bare `fha person`); exit 3 = invalid id shape, merged tombstone, guard refusal, unreadable/unwritable file |
+
+Automated tests: `tests/test_person.py` (stdlib `unittest`) covers each flip direction on a stub
+and a curated profile (full-text one-line-diff assertions, trailing-comment survival), a CRLF
+fixture (endings byte-identical outside the edited line), missing-key insertion (record parses,
+lint gains no new errors), the `already` no-op, every refusal arm (invalid id, unknown P-id +
+next step, merged tombstone naming the survivor, lookalike/broken-YAML frontmatter left
+byte-identical), `--dry-run` (diff shown, nothing written), the argparse choices error, bare
+`fha person`, a write under the WORKING_COPY banner, and a flip → `fha index` round-trip on a
+copy of `example-archive/` (persons.living reflects the new value).
+
 ## fha photoindex - implementation status
 
 | Feature | Status | Notes |
