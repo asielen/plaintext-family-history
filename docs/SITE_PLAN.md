@@ -137,7 +137,7 @@ a consistent way back to it.
   optional lead image.
 - **Intro prose** from `notes/home.md` (layer c) — the family's welcome, rendered below
   the hero.
-- **A generated `fha family-summary` block** — a deterministic at-a-glance panel
+- **A generated family-summary block** — a deterministic at-a-glance panel
   (people counted, surnames, the span of years the archive covers, the apex ancestor,
   a recent-discoveries teaser). Generated from the index like every other fact section;
   it is *not* hand-edited (it carries a `GENERATED` header and is rebuilt each run).

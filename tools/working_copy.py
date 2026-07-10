@@ -23,7 +23,6 @@ from pathlib import Path
 
 from _lib import (
     EXIT_CLEAN,
-    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
@@ -251,15 +250,12 @@ def run_working_copy_status(archive_root: Path) -> Result:
 
 def _cmd_on(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
-    archive_root = resolve_root_arg(args)
+    # resolve_root_arg carries the archive guard (validates an explicit --root
+    # has fha.yaml at its top and prints its own plain ERROR) and returns None
+    # on failure; the caller returns EXIT_FAILURE, matching every other tool.
+    archive_root = resolve_root_arg(args, command='fha working-copy')
     if archive_root is None:
-        print('error: cannot find archive root - pass --root or run from inside the archive.',
-              file=sys.stderr)
-        return EXIT_ERRORS
-    if not (archive_root / 'fha.yaml').exists():
-        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
-              file=sys.stderr)
-        return EXIT_ERRORS
+        return EXIT_FAILURE
 
     result = run_working_copy_on(archive_root)
 
@@ -291,15 +287,9 @@ def _cmd_on(args: argparse.Namespace) -> int:
 
 def _cmd_off(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
-    archive_root = resolve_root_arg(args)
+    archive_root = resolve_root_arg(args, command='fha working-copy')
     if archive_root is None:
-        print('error: cannot find archive root - pass --root or run from inside the archive.',
-              file=sys.stderr)
-        return EXIT_ERRORS
-    if not (archive_root / 'fha.yaml').exists():
-        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
-              file=sys.stderr)
-        return EXIT_ERRORS
+        return EXIT_FAILURE
 
     from _lib import is_working_copy
     if not is_working_copy(archive_root):
@@ -343,15 +333,9 @@ def _cmd_off(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
-    archive_root = resolve_root_arg(args)
+    archive_root = resolve_root_arg(args, command='fha working-copy')
     if archive_root is None:
-        print('error: cannot find archive root - pass --root or run from inside the archive.',
-              file=sys.stderr)
-        return EXIT_ERRORS
-    if not (archive_root / 'fha.yaml').exists():
-        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
-              file=sys.stderr)
-        return EXIT_ERRORS
+        return EXIT_FAILURE
 
     result = run_working_copy_status(archive_root)
     if result.data['active']:
@@ -368,12 +352,25 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 # ── CLI registration ──────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Work on a synced copy of the archive that has your records but not the big
+photo and document files.
+
+  fha working-copy on       Turn on working-copy mode (asset features pause)
+  fha working-copy off      Turn it back off (asset files must be present)
+  fha working-copy status   Report whether this copy is in working-copy mode
+
+Use this on a second machine that syncs the text records but not the originals.
+Read-only commands work normally; commands that touch photos/documents pause."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'working-copy' onto the main fha parser."""
     p = subparsers.add_parser(
         'working-copy',
         help='Manage working-copy mode (synced archive without asset files).',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root.')
@@ -402,7 +399,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha working-copy',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')

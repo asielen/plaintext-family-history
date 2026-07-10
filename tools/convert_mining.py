@@ -13,6 +13,10 @@ TOOLING §11). It is the migration analogue of `fha process` + the draft pass, a
 migration (re-applying mints fresh IDs and would duplicate), so the dry-run plan
 is the safety gate; review it, then `--apply` once.
 
+This command is deliberately hidden from the top-level `fha --help` listing (its
+`add_parser` carries no `help=`): it is a one-owner, one-time migration, not an
+everyday verb. It stays fully runnable, with its own `fha convert-mining --help`.
+
 What it produces (TOOLING §11):
 
   1. **Sources first.** Each legacy `S###` → its transcript copied into
@@ -1065,6 +1069,15 @@ def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> Result:
         except OSError as e:
             print(f'ERROR: conversion write failed and was rolled back: {e}', file=sys.stderr)
             return Result(ok=False, exit_code=EXIT_FAILURE)
+        except Exception as e:
+            # apply_plan's undo journal already rolled back every write on any
+            # exception before re-raising (a KeyError, a YAML parse error), so
+            # the not-safe-to-re-run migration is undamaged. Catch it here to say
+            # so in plain words rather than leaking a traceback; --debug is inert
+            # for this arm since the exception never reaches fha.py's guard.
+            print(f'ERROR: conversion failed and every write was rolled back: {e}. '
+                  'Nothing needs cleanup - fix the cause and re-run.', file=sys.stderr)
+            return Result(ok=False, exit_code=EXIT_FAILURE)
         print_plan(plan, applied=True)
         print('Wrote .cache/convert_mapping.csv')
         print('Run `fha index` then `fha lint` to review the imported records.')
@@ -1080,11 +1093,26 @@ def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> Result:
                   data={'warnings': list(plan.warnings), 'applied': apply})
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Migrate a legacy transcript-mining project into archive records (one-time).
+
+  fha convert-mining            Print the conversion plan (dry run - writes nothing)
+  fha convert-mining --apply    Write the records
+
+Dry-run by default. It reads a `mining/` folder of old text files and turns it
+into sources, suggested claims, stories, and questions. Run it once: re-applying
+mints fresh IDs and would duplicate everything, so review the plan, then apply."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
+    # No help= kwarg on purpose: argparse then omits convert-mining from the
+    # top-level `fha --help` command listing (it is a one-owner, one-time legacy
+    # migration that does not belong in the everyday list) while keeping it fully
+    # runnable and still showing its own `fha convert-mining --help`.
     p = subparsers.add_parser(
         'convert-mining',
-        help='Migrate a legacy transcript-mining export into conformant records',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(p)
@@ -1112,7 +1140,7 @@ def _run_convert(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha convert-mining',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)

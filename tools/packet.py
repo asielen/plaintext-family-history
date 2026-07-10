@@ -1722,8 +1722,10 @@ def run_packet(
             'the photo and document files are on the main machine. '
             'Run this command there.'
         )
+        # Warning-level refusal, not a failure: ok stays True, exit stays clean,
+        # data.status='working-copy' is the machine discriminator (TOOLING §13d).
         return Result(
-            ok=False,
+            ok=True,
             exit_code=EXIT_CLEAN,
             data={'status': 'working-copy', 'packet_dir': None, 'zip_path': None,
                   'messages': [_wc_msg]},
@@ -1833,15 +1835,22 @@ def _cmd_packet(args: argparse.Namespace) -> int:
     return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Bundle everything about one person into a zip to share with family.
+
+  fha packet <P-id>              Build the packet (profile, timeline, sources, photos)
+  fha packet <P-id> --dry-run    Preview what's included and what's withheld
+
+A private family export, not a public website. Living people and restricted
+material are withheld by default; opt in per export with the --include flags."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'packet',
         help='Build a person export packet (profile, timeline, sources, files, photos) and zip it.',
-        description=(
-            'Gather everything the archive knows about one curated person into\n'
-            'packet_{surname}_{P-id}_{date}/, then zip it. A private/family export,\n'
-            'not a publication format (TOOLING §8).'
-        ),
+        description=_CLI_DESCRIPTION,
     )
     p.add_argument('person_id', metavar='P-id', help='Curated person to export.')
     p.add_argument('-o', '--out', metavar='PATH', dest='out',
@@ -1859,14 +1868,13 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p.add_argument('--overwrite', action='store_true',
                     help='Replace an existing same-name packet directory/zip.')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     p.set_defaults(func=_cmd_packet)
     return p
 
 
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog='fha packet', description=__doc__,
+        prog='fha packet', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('person_id', metavar='P-id', help='Curated person to export.')
@@ -1879,7 +1887,6 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--dry-run', action='store_true', dest='dry_run')
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    parser.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     parser.set_defaults(func=_cmd_packet)
     args = parser.parse_args(argv)
     return args.func(args)

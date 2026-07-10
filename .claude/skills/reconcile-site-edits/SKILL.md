@@ -40,7 +40,7 @@ it never runs as part of a routine `fha site` — a clean rebuild has no edits t
   his say-so — one confirmation per change. Silence is not consent (_STANDARD.md §3).
 - **Never overwrite human-written text, never edit below a `<!-- GENERATED … -->` header** (_STANDARD.md §3).
   A homepage or person edit is *merged into* existing prose, not pasted over it. If the human's HTML edit
-  landed on a `GENERATED` block (e.g. the `fha family-summary` panel or a timeline row), that content is not
+  landed on a `GENERATED` block (a timeline row, the sources index, or the planned family-summary panel), that content is not
   hand-editable — say so and route the real fix to its source (a claim, a record), don't fold it anywhere.
 - **Facts still need sources.** If a hand-edit added a *factual* sentence to a person page, it is a claim in
   disguise, not styling. Route it through the normal gate — draft it `suggested` and hand to `review-claims`
@@ -80,7 +80,7 @@ For every change in the diff, decide which source owns it. This is the whole jud
 | Homepage welcome/intro copy (prose in the home intro region) | `notes/home.md` |
 | A person's biography or story prose on their page | that person's curated `people/…` record |
 | The masthead archive name, or the homepage hero title / tagline / image | `fha.yaml` `site:` (`site.archive_name`, `site.hero`) |
-| A generated fact block (family-summary panel, timeline row, sources index, claims table) | **none — it's `GENERATED`.** The real fix is upstream: a claim, a vital, a record. Say so; don't fold it. |
+| A generated fact block (timeline row, sources index, claims table, or the planned family-summary panel) | **none — it's `GENERATED`.** The real fix is upstream: a claim, a vital, a record. Say so; don't fold it. |
 
 An edit can split across layers (a restyled *and* reworded homepage). Split it: the colour goes to
 `custom.css`, the words go to `notes/home.md`.

@@ -1950,15 +1950,9 @@ def run_tree(
     Missing index → exit 3 (tool cannot run without it).  The rendered tree text
     lands in `data['output']`; an `--out FILE` write is recorded in `changed`.
     """
-    # HTML is deferred per TOOLING §7 D6
-    if fmt == 'html':
-        print(
-            'ERROR: HTML tree output is not yet available. '
-            'Use fha site (coming in a later milestone) to render the tree as HTML.',
-            file=sys.stderr,
-        )
-        return _views_result(EXIT_FAILURE)
-
+    # HTML tree output is not offered yet: --format html is removed from the
+    # argparse choices (an argparse error) rather than accepted and refused at
+    # runtime. Plan 13 re-adds 'html' to the choices with the real renderer.
     if not person_id:
         print('ERROR: a P-id argument is required.', file=sys.stderr)
         return _views_result(EXIT_FAILURE)
@@ -2054,9 +2048,9 @@ def run_timeline(
             print(f'Generated {count} timeline file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
-                print('Run `fha index` to update the search index with the new view file(s).')
-                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+                # post-dates .cache/index.sqlite), but a successful write is not a
+                # warning: exit clean and print the reindex as advice, not an alarm.
+                print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
         if not person_id:
@@ -2069,9 +2063,9 @@ def run_timeline(
         out = _generate_timeline(conn, pid, archive_root)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
-            print('Run `fha index` to update the search index with the new view file.')
+            print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
@@ -2130,9 +2124,10 @@ def run_sources_index(
             print(f'Generated {count} sources-index file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
-                print('Run `fha index` to update the search index with the new view file(s).')
-                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+                # post-dates .cache/index.sqlite), but a successful write is not a
+                # warning: exit clean and print the reindex as advice, not an alarm.
+                print('Run `fha index` when convenient to update the search index with the new view file(s).')
+                return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
             if all_curated and not changed:
                 # Nothing generated because every curated record is parked in
                 # people/stubs/ (couple_folders_only with 0 folders stays clean).
@@ -2149,9 +2144,9 @@ def run_sources_index(
         out = _generate_sources_index_person(conn, pid, archive_root)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
-            print('Run `fha index` to update the search index with the new view file.')
+            print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
@@ -2202,9 +2197,9 @@ def run_draft_queue(
             print(f'Generated {count} draft-queue file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
-                print('Run `fha index` to update the search index with the new view file(s).')
-                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+                # post-dates .cache/index.sqlite), but a successful write is not a
+                # warning: exit clean and print the reindex as advice, not an alarm.
+                print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
         if not person_id:
@@ -2217,9 +2212,9 @@ def run_draft_queue(
         out = _generate_draft_queue(conn, pid, archive_root)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
-            print('Run `fha index` to update the search index with the new view file.')
+            print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
@@ -2337,10 +2332,10 @@ def run_refresh(archive_root: Path) -> Result:
         print(f'Generated {count} view file(s).')
         if count:
             # Refresh writes new/updated companion files, which makes the index
-            # stale by definition (newest_record_mtime now post-dates it). Signal
-            # that with a warnings exit so `fha index` is run before find/doctor.
-            print('Run `fha index` to update the search index with the new view files.')
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+            # stale by definition (newest_record_mtime now post-dates it). That is
+            # not a failure of the refresh: exit clean and print the reindex as
+            # advice, so a harness following the exit code isn't alarmed each run.
+            print('Run `fha index` when convenient to update the search index with the new view files.')
         return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
     except _ManualFileRefused as e:
@@ -2370,17 +2365,27 @@ def _cmd_views_help(args: argparse.Namespace) -> int:
 
 # ── Parser registration ───────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Build always-current summary pages from your records.
+
+  fha views timeline <P-id>        A person's life chronology
+  fha views sources-index <P-id>   Every source about a person
+  fha views draft-queue <P-id>     Accepted facts not yet written into the bio
+  fha views refresh                Rebuild every view for all curated people
+
+These pages are generated and rebuildable; edit the records, not the pages."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the `views` subcommand group on the given subparsers action."""
     views_p = subs.add_parser(
         'views',
         help='Generate view files from the index (timeline, sources-index, draft-queue, …).',
-        description='Generate GENERATED-headed .md view files from the index.',
+        description=_CLI_DESCRIPTION,
     )
     views_p.add_argument('--root', dest='views_root', metavar='PATH',
                          help='Archive root (auto-detected if omitted).')
-    views_p.add_argument('--spec-root', dest='views_spec_root', metavar='PATH',
-                         help='Spec docs root (accepted for CLI consistency).')
     views_p.set_defaults(func=_cmd_views_help)
 
     vsubs = views_p.add_subparsers(dest='views_command', metavar='SUBCOMMAND')
@@ -2399,7 +2404,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     tl.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
     tl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    tl.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     tl.set_defaults(func=_cmd_timeline)
 
     # ── sources-index ─────────────────────────────────────────────────────────
@@ -2419,7 +2423,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     si.add_argument('--couple-folders', action='store_true',
                     help='Generate sources-index.md in every curated couple folder.')
     si.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    si.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     si.set_defaults(func=_cmd_sources_index)
 
     # ── draft-queue ───────────────────────────────────────────────────────────
@@ -2436,7 +2439,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     dq.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
     dq.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    dq.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     dq.set_defaults(func=_cmd_draft_queue)
 
     # ── brackets ──────────────────────────────────────────────────────────────
@@ -2445,7 +2447,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Check and refresh couple-folder bracket lists (W103/W110).',
     )
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    br.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview changes without writing.')
@@ -2472,18 +2473,19 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Maximum generations / hops (default: unlimited; fan default: 2).',
     )
     tr.add_argument(
-        '--format', choices=['json', 'dot', 'html'], default='json', dest='format',
-        help='Output format (default: json; html is deferred to fha site).',
+        # 'html' is intentionally omitted until plan 13 ships the renderer; for a
+        # browsable tree today, build the site (`fha site`).
+        '--format', choices=['json', 'dot'], default='json', dest='format',
+        help='Output format (default: json). For an HTML tree, build the site.',
     )
     tr.add_argument('--out', metavar='FILE', help='Write output to FILE instead of stdout.')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    tr.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     tr.set_defaults(func=_cmd_tree)
 
     # ── clean ─────────────────────────────────────────────────────────────────
     cl = vsubs.add_parser(
         'clean',
-        help='Delete all GENERATED-headed companion .md files from the people/ tree.',
+        help='Delete every generated companion .md file; they regenerate with `fha views refresh`.',
         description=(
             'Delete all GENERATED-headed companion .md files (timeline, sources-index,\n'
             'draft-queue) from the people/ tree. Uses the <!-- GENERATED … --> header\n'
@@ -2492,7 +2494,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
     cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    cl.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     cl.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='List what would be removed without writing.')
     cl.set_defaults(func=_cmd_clean)
@@ -2508,7 +2509,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
     rf.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    rf.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     rf.set_defaults(func=_cmd_refresh)
 
     # Store a back-reference so _cmd_views_help can print the right help text
@@ -2522,21 +2522,17 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha views',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', dest='global_root', metavar='PATH',
                         help='Archive root (auto-detected if omitted).')
-    parser.add_argument('--spec-root', dest='global_spec_root', metavar='PATH',
-                        help='Spec docs root (accepted for CLI consistency).')
     subs = parser.add_subparsers(dest='views_command', metavar='SUBCOMMAND')
     register_standalone(subs)
 
     args = parser.parse_args(argv)
     if getattr(args, 'root', None) is None:
         args.root = getattr(args, 'global_root', None)
-    if getattr(args, 'spec_root', None) is None:
-        args.spec_root = getattr(args, 'global_spec_root', None)
     if not args.views_command:
         parser.print_help()
         return EXIT_CLEAN
@@ -2553,37 +2549,32 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     ]:
         p = subs.add_parser(name, help=help_text)
         p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-        p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
         if extra:
             extra(p)
         p.set_defaults(func=func)
 
     br = subs.add_parser('brackets', help='Check and refresh couple-folder bracket lists (W103/W110).')
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    br.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
 
-    cl = subs.add_parser('clean', help='Delete all GENERATED-headed companion .md files from the people/ tree.')
+    cl = subs.add_parser('clean', help='Delete every generated companion .md file; they regenerate with `fha views refresh`.')
     cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    cl.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     cl.add_argument('--dry-run', action='store_true', dest='dry_run', help='List what would be removed without writing.')
     cl.set_defaults(func=_cmd_clean)
 
     rf = subs.add_parser('refresh', help='Regenerate all content views for every curated person and couple folder.')
     rf.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    rf.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     rf.set_defaults(func=_cmd_refresh)
 
     tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
     tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')
     tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
     tr.add_argument('--generations', type=int, metavar='N')
-    tr.add_argument('--format', choices=['json', 'dot', 'html'], default='json', dest='format')
+    tr.add_argument('--format', choices=['json', 'dot'], default='json', dest='format')
     tr.add_argument('--out', metavar='FILE')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    tr.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     tr.set_defaults(func=_cmd_tree)
 
 

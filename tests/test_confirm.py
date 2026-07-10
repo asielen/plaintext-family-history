@@ -540,6 +540,28 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(result.changed, [])
         self.assertEqual(src.read_text(encoding='utf-8'), before)
 
+    def test_cooccur_reviewed_without_accept_refuses(self) -> None:
+        # --reviewed without --accept used to be a silent no-op; it must now
+        # refuse, name both flags, and write nothing.
+        src = self.root / 'sources' / 'other' / 'bradford-family-genealogy-notes_S-fc3456789d.md'
+        before = src.read_text(encoding='utf-8')
+        r = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
+            subtype='friend', reviewed='2026-01-01')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r.changed, [])
+        self.assertEqual(src.read_text(encoding='utf-8'), before)
+        text = ' '.join(m.text for m in r.messages)
+        self.assertIn('--reviewed', text)
+        self.assertIn('--accept', text)
+
+    def test_cooccur_accept_with_reviewed_still_works(self) -> None:
+        r = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
+            subtype='friend', accept=True, reviewed='2026-01-01')
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(r['claim_status'], 'accepted')
+
     def test_cooccur_bad_source_not_found(self) -> None:
         r = confirm.run_confirm_cooccur(
             self.root, person_a=PERSON_1, person_b=PERSON_2, source_id='S-0000000000', subtype='friend')

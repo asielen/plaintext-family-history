@@ -33,6 +33,16 @@ class FhaCliBoundaryTests(unittest.TestCase):
         self.assertIn('fha doctor --help', text)
         self.assertNotIn('Traceback', text)
 
+    def test_removed_fix_inventory_flag_is_argparse_error(self) -> None:
+        # --fix-inventory was removed while unimplemented; passing it is now a
+        # plain argparse error (exit 2), not a silent placeholder warning.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as cm:
+                    fha.main(['lint', '--fix-inventory', '--root', tmp])
+            self.assertEqual(cm.exception.code, 2)
+
     def test_uncaught_exception_is_plain_without_debug(self) -> None:
         original = fha._intercept_doctor
 
@@ -125,6 +135,53 @@ class IdCheckRootGuardTests(unittest.TestCase):
             # A real (empty) archive: an honest not-found, never the refusal 3.
             self.assertNotEqual(rc, 3)
             self.assertIn('not found', out.getvalue().lower())
+
+
+class SearchCheckAliasTests(unittest.TestCase):
+    """`fha search` (= `fha find --text`) and `fha check` (= `fha lint`) are the
+    two verbs a human actually types (persona B2). Each must produce output
+    identical to its canonical form and appear in `fha --help`."""
+
+    def _archive(self, tmp: str) -> Path:
+        root = Path(tmp)
+        (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        notes = root / 'sources' / 'notes'
+        notes.mkdir(parents=True)
+        (notes / 'n.md').write_text(
+            '---\nid: S-aaaaaaaaaa\ntitle: Note\nsource_type: note\n---\n\n'
+            '## Notes\n\nRose Hartley lived in Kansas.\n', encoding='utf-8')
+        return root
+
+    def _run(self, argv: list[str]) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_search_matches_find_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._archive(tmp)
+            rc_s, out_s, _ = self._run(['search', 'rose', 'hartley', '--root', str(root)])
+            rc_f, out_f, _ = self._run(['find', '--text', 'rose hartley', '--root', str(root)])
+            self.assertEqual(rc_s, rc_f)
+            self.assertEqual(out_s, out_f)
+
+    def test_check_routes_to_lint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._archive(tmp)
+            rc_c, out_c, _ = self._run(['check', '--root', str(root)])
+            rc_l, out_l, _ = self._run(['lint', '--root', str(root)])
+            self.assertEqual(rc_c, rc_l)
+            self.assertEqual(out_c, out_l)
+
+    def test_search_and_check_appear_in_help(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                fha.main(['--help'])
+        text = out.getvalue()
+        self.assertIn('search', text)
+        self.assertIn('check', text)
 
 
 if __name__ == '__main__':

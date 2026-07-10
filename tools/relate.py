@@ -442,11 +442,21 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Show how two people are related.
+
+  fha relate P-A P-B          Blood degree plus the shortest social path
+  fha relate P-A P-B --json   Same answer, as machine-readable JSON
+
+A read-only view over accepted relationship claims: nothing is written."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'relate',
         help='How are two people related? Blood degree + shortest social path.',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('person_a', metavar='P-A', help='First person ID')
@@ -473,7 +483,7 @@ def _run_relate(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha relate',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('person_a', metavar='P-A')

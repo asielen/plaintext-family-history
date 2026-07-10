@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import views
 import index as index_mod
-from _lib import load_fha_yaml, EXIT_WARNINGS
+from _lib import load_fha_yaml, EXIT_CLEAN, EXIT_WARNINGS
 
 CUR = 'P-aaaaaaaaaa'
 STUB = 'P-bbbbbbbbbb'
@@ -81,6 +81,33 @@ class StubGuardTests(unittest.TestCase):
         res = views.run_timeline(self.root, person_id=CUR)
         self.assertEqual(res.data.get('count'), 1)
         self.assertTrue(res.changed)
+
+    def _reindex(self) -> None:
+        # A prior view write stales the index; rebuild so the next view call's
+        # freshness gate (strict open) passes and we test the write path itself.
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def test_successful_writes_exit_clean(self) -> None:
+        # A successful companion write is not a warning: it exits 0 (the reindex
+        # nudge stays as printed advice), while the skip paths above stay at 1.
+        # Single-person forms:
+        for runner in (views.run_timeline, views.run_sources_index,
+                       views.run_draft_queue):
+            self._reindex()
+            res = runner(self.root, person_id=CUR)
+            self.assertEqual(res.exit_code, EXIT_CLEAN, runner.__name__)
+            self.assertTrue(res.changed, runner.__name__)
+        # Bulk --all-curated forms and refresh:
+        for runner in (
+            lambda: views.run_timeline(self.root, all_curated=True),
+            lambda: views.run_sources_index(self.root, all_curated=True),
+            lambda: views.run_draft_queue(self.root, all_curated=True),
+            lambda: views.run_refresh(self.root),
+        ):
+            self._reindex()
+            res = runner()
+            self.assertEqual(res.exit_code, EXIT_CLEAN)
+            self.assertTrue(res.changed)
 
     def test_bulk_refresh_skips_curated_record_in_stubs(self) -> None:
         # The bulk paths (refresh / --all-curated) must apply the same location

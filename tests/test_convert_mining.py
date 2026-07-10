@@ -8,6 +8,8 @@ archive lints with no errors - the M7.5 "Done when" contract.
 Run: python -m unittest tests.test_convert_mining -v   (from the repo root)
 """
 
+import contextlib
+import io
 import shutil
 import sys
 import tempfile
@@ -20,7 +22,14 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import convert_mining
 import lint
-from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS, load_fha_yaml, read_record
+from _lib import (
+    EXIT_CLEAN,
+    EXIT_ERRORS,
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    load_fha_yaml,
+    read_record,
+)
 
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'legacy-export'
 
@@ -87,6 +96,29 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertIn('## AI Passes', text)
         self.assertIn('model: gpt-4-class', text)
         self.assertIn('human_reviewed: false', text)
+
+    def test_apply_non_oserror_rolls_back_and_reports(self) -> None:
+        # A non-OSError, non-ConvertError failure mid-apply (e.g. a KeyError)
+        # must be caught in-scheme: exit 3, a plain "rolled back" message (no
+        # traceback), and the archive tree byte-identical to before the run.
+        before = self._snapshot(self.archive)
+        with mock.patch.object(
+            convert_mining, '_render_source_record',
+            side_effect=RuntimeError('planted')
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = convert_mining.run_convert(self.archive, self.config, apply=True)
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('rolled back', err.getvalue())
+        self.assertEqual(self._snapshot(self.archive), before)
+
+    @staticmethod
+    def _snapshot(root: Path) -> dict:
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob('*')) if p.is_file()
+        }
 
     def test_apply_imports_stories_and_questions(self) -> None:
         self._apply()

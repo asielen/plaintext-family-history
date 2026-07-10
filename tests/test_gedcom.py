@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import gedcom
 from index import _DDL
+from _lib import EXIT_FAILURE
 
 
 def _make_index(archive_root: Path) -> sqlite3.Connection:
@@ -143,6 +144,15 @@ class GedcomExportTests(unittest.TestCase):
         self.assertEqual(r['person_count'], 5)
         self.assertIn('0 TRLR', r['text'])
         self.assertTrue(r['text'].startswith('0 HEAD'))
+
+    def test_seed_and_all_conflict_rejected(self):
+        # A seed P-id together with --all is ambiguous; reject it rather than
+        # silently letting --all win and dropping the seed.
+        r = gedcom.run_gedcom(self.root, 'p-0000000001', all_persons=True)
+        self.assertEqual(r['status'], 'bad-args')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertIsNone(r['text'])
+        self.assertIn('conflict', ' '.join(r['messages']).lower())
 
     def test_generations_cap(self):
         r = gedcom.run_gedcom(self.root, 'p-0000000001', mode='descendants', generations=1)

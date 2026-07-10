@@ -122,8 +122,8 @@ source's claims are reviewed together because they share evidence.
    fha views draft-queue <P-id>
    ```
    Refresh only the people touched — never `fha views refresh` here: it regenerates *every* curated
-   person's views and churns their dated GENERATED headers into git noise. (The view commands exit `1`
-   after writing as a "run `fha index` when convenient" nudge — normal, not a failure.) If a
+   person's views and churns their dated GENERATED headers into git noise. (A successful view write
+   exits `0` and prints a "run `fha index` when convenient" nudge — advice, not a warning.) If a
    `relationship` claim was accepted, also run `fha views brackets` (report mode) and relay anything it
    flags in plain words; applying `--fix` renames folders and moves person files, so that stays the
    human's explicit call.
