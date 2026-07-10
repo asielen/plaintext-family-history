@@ -492,12 +492,23 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
     return EXIT_CLEAN
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Find people who keep showing up together - possible relatives or associates.
+
+  fha cooccur                  Pairs sharing sources, places, or organizations
+  fha cooccur --threshold 3    Require more shared sources before suggesting a pair
+
+Read-only: confirm a pair with `fha confirm cooccur`, or set it aside with
+`fha confirm dismiss`."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'cooccur' onto the main fha parser."""
     p = subs.add_parser(
         'cooccur',
-        help='Detect connection candidates: person co-occurrence and org/entity recurrence',
-        description=__doc__,
+        help='Find people who keep showing up together (shared sources, places, organizations)',
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -510,7 +521,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha cooccur',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')

@@ -377,11 +377,22 @@ def _cmd_normalize_links(args: argparse.Namespace) -> int:
     return _emit(result, show_diff=not bool(getattr(args, 'quiet', False)))
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Tidy the citations and cross-links in your prose to the archive's [[ ]] form.
+
+  fha normalize-links            Preview the rewrites (dry run - writes nothing)
+  fha normalize-links --write    Apply them, showing the same diff
+
+Runs as a preview by default; a real write needs --write. Your original names
+are kept as aliases, so the shortened links still resolve."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'normalize-links',
         help='Settle prose citations to the canonical [[ID]] / [[ID|name]] form',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
@@ -398,7 +409,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha normalize-links',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')

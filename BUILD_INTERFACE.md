@@ -16,6 +16,7 @@ This file is the build guide for the **interface layer** - the `.claude/skills/`
 - **Sessions are an interface, not memory** (AGENTS.md): anything worth keeping is written into archive records in SPEC formats before the skill hands back.
 - **Definition of done is behavioral, not unit-tested.** A SKILL.md is verified by running it in a real session against `example-archive/` and confirming it produces the documented archive writes (suggested claims, recorded passes, view refreshes) and the documented hand-offs - and that it makes **zero** writes the contract forbids. There is no automated harness for skill prose; the "Done when" blocks below are session checks.
 - **Vendor-lock rules hold** (TOOLING_INTERFACE.md §1): if a second harness is added, its convention file is a one-line deferral to AGENTS.md and the same SKILL.md files drive it unchanged.
+- **Discoverable without a skill loader.** `AGENTS.md`'s "Playbooks" subsection (plan 02, landed 2026-07-09) points any harness at `.claude/skills/{name}/SKILL.md` and tells it to read and follow the matching one when a request matches its trigger - closing the gap for a harness (e.g. Codex) that reads `AGENTS.md` natively but has no native skill loader.
 
 **Dependency note.** Every skill depends only on already-shipped `fha` commands; there is no skill→skill import. The ordering below is by daily-loop centrality (build the session spine first), not by hard dependency. `process-source` *hands off* to `review-claims`, so build `review-claims` no later than `process-source`.
 

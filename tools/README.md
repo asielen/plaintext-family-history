@@ -39,6 +39,7 @@ read the same structured result (TOOLING §1).
 | `fha doctor` | `doctor.py` | ✓ all 12 checks; D5 applied (absent index/photoindex = warning, not error); restricted-source counts use the open-marker predicate on both the index and scan paths; a failing staged-captures check degrades to a warning line instead of killing the report |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent; `[restricted]` label covers typed values (`dna`, `by-request`, …); `--root` without fha.yaml is refused (exit 3, the shared `_lib.resolve_root_arg` guard) |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated - transcript search deferred (D7) |
+| `fha search <words>` | `find.py` | ✓ alias for `fha find --text`; positional phrase joined with spaces (`fha search rose hartley`), same engine/output |
 | `fha find --related <ID> [--date EDTF]` | `find.py` | ✓ BUILD.md M4.3 (D4) - neighborhood query for all five ID types, plus a standalone `--related --date EDTF` time slice. Requires a real index (exit 3 if absent/unreadable - no tree-scan fallback, unlike find_by_id) |
 | `fha relate <P-A> <P-B>` | `relate.py` | ✓ blood relationship (LCA over genetic edges: cousin/removal/lineal/aunt-uncle) + shortest social path (BFS over all edges); `--json`; structured `Result`. Requires a real index (exit 3 if absent/unreadable). ⚑ `--include-hypotheses` deferred (index derives only accepted edges) |
 | `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher; root resolves through the shared `_lib.resolve_root_arg` guard (`--root` without fha.yaml is refused, exit 3, nothing created) |
@@ -217,7 +218,7 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 |---|---|---|
 | `fha process FILE|FOLDER [--type TYPE] [--title …] [--date DATE] [--slug SLUG] [--people P-IDS] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1-M7.4 - single-file documents and photos + `--more`; `--people` records known P-ids on photos at intake; folder triage + tier-1 variation detection (M7.3); `notes.md` bundle dissolution (M7.4); see "fha process - implementation status" below |
 | `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--ingest [DIR]] [--host] [--install-host [--extension-id ID] [--host-manifest-dir DIR] [--browser chrome\|edge]] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ MG1.1-MG1.3 - paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; MG2.1 `--ingest` sweeps browser-staged bundles into the inbox; MG2.3 `--host`/`--install-host` are the native-messaging host (§5.7); see "fha capture - implementation status" below |
-| `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.5 - one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; see "fha convert-mining - implementation status" below |
+| `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.5 - one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; **hidden from the top-level `fha --help` listing** (no `help=` on its `add_parser`) as a one-owner migration, but fully runnable; see "fha convert-mining - implementation status" below |
 
 ## Implemented tools (milestone 8)
 
@@ -274,7 +275,7 @@ pointing to absent directories, WORKING_COPY marker present. Lints clean.
 | Tool | File | Status |
 |---|---|---|
 | `fha install ARCHIVE-PATH [--repo PATH] [--dry-run]` | `scaffold.py`, `manifest.json` | ✓ M9.1 - first-time bootstrap: copy the operating layer + skeleton into a new archive and stamp `.plaintext-version`. See "fha install / fha update-tools - implementation status" below |
-| `fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH] [--spec-root PATH]` | `scaffold.py` | ✓ M9.2 - refresh the operating layer from an updated public clone; back up customized/retired files, never delete, never touch skeleton seeds. (`--spec-root` is accepted for CLI consistency but unused by this command.) See below |
+| `fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH]` | `scaffold.py` | ✓ M9.2 - refresh the operating layer from an updated public clone; back up customized/retired files, never delete, never touch skeleton seeds. (The no-op per-command `--spec-root` was removed; only the global `fha --spec-root` and `fha lint --spec-root` remain.) See below |
 
 `manifest.json` (repo root) is the committed packing list every install/update reads.
 It is regenerated from the repo - not hand-edited - with the maintenance command
@@ -624,7 +625,7 @@ Run with `python -m unittest tests.test_scaffold -v` from the repo root.
 | `fha id mint/check` | `id.py` | ✓ Crockford Base32, existence check |
 | `fha index` | `index.py` | ✓ full SQLite rebuild + incremental upsert; any truthy `restricted:` (incl. typed `dna`/`by-request`) indexes as restricted = 1 (schema v5); `--root` pointing at a folder without fha.yaml is refused (exit 3, nothing created - the shared `_lib.resolve_root_arg` guard); full rebuild and `--source` upsert resolve claim/frontmatter names through the same persons+places alias map, so upserts stay row-for-row identical to the full rebuild even when another record's alias clashes with a person name |
 | `fha normalize-links [--dry-run] [--write] [--quiet]` | `normalize_links.py` | ✓ the one explicit, previewed rewrite pass settling citations to the canonical `[[ID]]`/`[[ID\|display]]` form: legacy single-bracket `[S-…]` upgraded, resolved human stems/name-links pinned to their ID (display text kept, the stem preserved in `aliases:`), `people:`/`places:` frontmatter name-links settled; an ambiguous name (alias clash, W113) is reported and left as written (exit 1), never guessed. Dry-run is the default AND `--dry-run` parses as an explicit no-op (the always-preview habit); `--dry-run --write` together is refused with a plain pick-one message (exit 2); `--write` applies, showing the same diff (`--quiet` suppresses it). The claims yaml block and bare-ID frontmatter lists are never touched. GENERATED companion files are skipped by their first NON-BLANK line (`_lib.is_generated_file`, BOM tolerated - matching lint/views ownership semantics); the old byte-0 check rewrote generated files that began with a blank line. Engine covered by `tests/test_alias_layer.py`; the CLI flag contract by `tests/test_normalize_links.py` |
-| `fha lint` | `lint.py` | ✓ see lint status table below |
+| `fha lint` (alias `fha check`) | `lint.py` | ✓ see lint status table below; `check` is an argparse alias routing to the same command |
 | `fha stubs` | `stubs.py` | ✓ scan + mint stubs |
 
 `fha lint --root example-archive` exits 1 with the documented baseline warnings (TOOLING.md §15):
@@ -672,4 +673,4 @@ A code listed in TOOLING must appear here as either ✓ or ⚑ before the tool i
 | `--mint-stubs` | ✓ implemented | - |
 | `--spawn-questions` | ✓ implemented | - |
 | `--fix-reciprocal` | ✓ implemented | Appends the missing mirror entry (W116) to the other person's `relationships:` block; additive only, previewed with `--dry-run`, skips a person who has no record yet. |
-| `--fix-inventory` | ⚠ CLI placeholder | Prints a not-yet-implemented warning; `fha process` is the current alternative. |
+| `--fix-inventory` | ⚑ deferred (not exposed) | Removed from the CLI while unimplemented (a flag that only printed a warning taught users flags might be decorative). `fha process` per document is the current path; re-add with the real E011 fixer. |

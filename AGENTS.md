@@ -34,6 +34,33 @@ The human is a **non-technical genealogist with a paper-filing mental model** - 
 
 These bind exactly like the contract below. They are why **sessions are an interface, not memory** (he should never have to re-explain himself) and why **your suggestions are not facts** (you carry the burden of being wrong gracefully, not him). Read them as law, not garnish.
 
+### Speculation and storytelling
+
+The formats above fence what you *write* (suggested claims, AI-DRAFT markers, origin-tagged
+hypotheses). The same line binds what you *say* — the human hears your confidence as fact
+unless you tell him otherwise:
+
+- **Label spoken speculation in the same breath.** Any assertion not backed by an `accepted`
+  claim carries its basis and a hedge as you say it — "that's a guess from the census age, not
+  something in your records." The suggested/accepted line must be audible in conversation, not
+  just visible in the files.
+- **Never fabricate a citation or a source.** Never speak or write an `[[S-…]]`, a repository,
+  or a collection name you have not verified (`fha find`) or clearly flagged as to-be-confirmed.
+  General historical knowledge ("Kansas kept statewide death records from 1911") is offered as
+  general knowledge to check against the repository — never as archive fact.
+- **Never invent lore.** When asked to make a story vivid, every specific traces to something
+  in the archive — a Story block, a transcript, an anecdote the human told — or is explicitly
+  framed as period-general context ("as was common then…"). No invented names, dialogue,
+  weather, or motives, cited or not: an invented detail in a family story becomes family truth
+  in one generation, and preventing that is what this archive is for.
+- **Historical context takes loose citations.** Background prose — what a town was like, what
+  an era implied — cites loosely (a county history, a general reference) and reads as context,
+  never as a sourced family fact. This is the place-research rule, generalized to everything
+  you write and say.
+- **A photo-date guess is a hypothesis.** "When do you think this was taken?" gets an estimate
+  with its stated basis (clothing, print format, photo process) — recorded as an
+  `origin: agent` hypothesis if it's worth keeping, never as a claim.
+
 ## The contract (non-negotiable)
 
 1. **Your suggestions are not facts.** Every claim you draft gets `status: suggested`.
@@ -100,6 +127,7 @@ places/places.yaml      place registry
 notes/                  general research; notes/questions.md = question log
 .cache/                 disposable tool caches (index.sqlite, photos.sqlite) - never truth
 generated/              built deliverables, regenerable (generated/site = fha site output)
+.claude/skills/{name}/   workflow playbooks - portable SKILL.md procedures (see Playbooks)
 ```
 
 ## Format quick reference
@@ -174,6 +202,19 @@ Execution rules (all tools): run from the archive root; `--dry-run` (or the tool
 
 Query the index, not the tree: person/claim/photo questions are SQL or `fha` calls.
 Never bulk-ingest `photos/` or `documents/` into context.
+
+### Playbooks (workflow skills)
+
+Nine workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
+procedures, `fha` invocations and judgment only, no harness APIs (the standard they follow is
+`.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the
+human's own words ("process the inbox", "review the census claims", "are these the same
+person?", "what should I work on?").
+If your harness loads skills natively, prefer the matching skill over improvising.
+If it does not - any harness reading this file without a skill loader - treat them as
+documentation: when a request matches a playbook's trigger, **read that SKILL.md and follow
+it** before doing the task freehand. The playbooks restate the contract above; they never
+relax it, and they bind the same in every harness.
 
 ## Common workflows
 

@@ -70,12 +70,25 @@ def check_id(id_str: str, archive_root: Path) -> list[tuple[Path, int]]:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text. The module docstring stays developer-facing; this is
+# what a researcher sees, so it leads with the plain job and shows examples.
+_CLI_DESCRIPTION = """\
+Mint and check the archive's ID codes.
+
+  fha id mint P|S|C|L|H [-n N]   Print fresh IDs (P=person, S=source, C=claim,
+                                 L=place, H=hypothesis)
+  fha id check <ID>              Show everywhere an ID appears in the archive
+
+You rarely need this by hand: `fha lint --fix-ids` assigns IDs to records you
+named in plain English."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'id' subcommands onto the main parser."""
     id_parser = subparsers.add_parser(
         'id',
         help='Mint and check archive IDs',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     id_parser.add_argument('--root', metavar='PATH', help='Archive root')
@@ -91,7 +104,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         'prefix', metavar='TYPE', choices=['P', 'S', 'C', 'L', 'H', 'p', 's', 'c', 'l', 'h'],
         help='ID type: P (person) S (source) C (claim) L (place) H (hypothesis)',
     )
-    mint_p.add_argument('-n', type=int, default=1, metavar='N', help='How many IDs to mint (default: 1)')
+    mint_p.add_argument('-n', type=int, default=1, metavar='N', help='How many IDs to mint (default: 1, max 100)')
     # Accept --root after the nested subcommand too (TOOLING §1 dual-position root):
     # fha id mint P --root PATH.  SUPPRESS so an absent flag here doesn't clobber a
     # --root given at the `fha` or `id` level.
@@ -119,6 +132,13 @@ def _run_id(args: argparse.Namespace) -> int:
     if sub == 'mint':
         if args.n < 1:
             print('ERROR: -n must be at least 1.', file=sys.stderr)
+            return EXIT_FAILURE
+        if args.n > 100:
+            # Guard a fat-fingered `-n 500000`: minting is verified one at a time,
+            # so a huge count would grind for no real use. 100 is plenty for a
+            # batch; ask again if you genuinely need more.
+            print('ERROR: -n is capped at 100 IDs per call. Run it again for more.',
+                  file=sys.stderr)
             return EXIT_FAILURE
         try:
             ids = mint_ids(args.prefix, args.n, archive_root)
@@ -155,7 +175,7 @@ def _run_id(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha id',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root')

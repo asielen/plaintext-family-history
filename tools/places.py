@@ -743,7 +743,6 @@ def run_geocode(
     fha_config: dict,
     *,
     place_id: str | None = None,
-    all_places: bool = False,
     offline: bool = False,
     dry_run: bool = False,
     confirm=None,
@@ -993,6 +992,9 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     place_id = getattr(args, 'place', None)
+    # --all is the explicit opt-in for the bulk mode; the CLI requires a scope so
+    # a bare `fha places geocode` can't silently process every place. The engine
+    # itself needs no all_places flag - place_id=None IS the all-mode.
     all_places = getattr(args, 'all', False)
     if not place_id and not all_places:
         print('ERROR: pass --place L-id or --all.', file=sys.stderr)
@@ -1003,7 +1005,7 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
 
     result = run_geocode(
         archive_root, fha_config,
-        place_id=place_id, all_places=all_places,
+        place_id=place_id,
         offline=getattr(args, 'offline', False),
         dry_run=getattr(args, 'dry_run', False),
     )
@@ -1018,12 +1020,24 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
     return EXIT_CLEAN
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Keep your places tidy and fill in their coordinates.
+
+  fha places lint                    Check the place registry for problems
+  fha places candidates              Recurring place-text worth a registry entry
+  fha places geocode (--place L-id | --all)  Fill in coordinates (offline, confirmed one by one)
+
+"Am I spelling this town three different ways?", "which place should become a
+real entry?", "fill in the coordinates for these towns.\""""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'places' onto the main fha parser."""
     p = subs.add_parser(
         'places',
         help='Place registry hygiene (lint) and recurrence detection (candidates)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -1056,7 +1070,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha places',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subs = parser.add_subparsers(dest='places_command', metavar='SUBCOMMAND')

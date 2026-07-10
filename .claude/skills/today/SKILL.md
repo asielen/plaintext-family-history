@@ -1,10 +1,10 @@
 ---
 name: today
 description: >
-  Run at session start, when the human asks "what should I work on?" / "where do things stand?", or via
-  the `/today` wrapper. Reads `fha report`, narrates it discoveries-first in plain language, then offers
-  one concrete next action. Read-only — it writes nothing on its own; a confirmed win lands only via
-  `fha confirm discovery` on the human's explicit say-so.
+  Run at session start, or when the human asks "what should I work on?" / "where do things stand?" (some
+  harnesses surface this as a /today shortcut). Reads `fha report`, narrates it discoveries-first in plain
+  language, then offers one concrete next action. Read-only — it writes nothing on its own; a confirmed win
+  lands only via `fha confirm discovery` on the human's explicit say-so.
 ---
 
 # today
@@ -17,8 +17,8 @@ without an explicit human decision. See [`../_STANDARD.md`](../_STANDARD.md).
 
 ## When this runs
 
-Session start, or "what should I work on?", "what's new?", "where do things stand?", or `/today`. It is
-safe to run anytime — it only reads.
+Session start, or "what should I work on?", "what's new?", "where do things stand?" — or the harness's
+shortcut for this skill, where one exists. It is safe to run anytime — it only reads.
 
 ## The contract for this skill
 
@@ -85,7 +85,7 @@ safe to run anytime — it only reads.
 
 ## Done when
 
-- In a session on `example-archive`, `/today` (or "what should I work on?") runs `fha report`, narrates
+- In a session on `example-archive`, invoking this skill (e.g. "what should I work on?") runs `fha report`, narrates
   sections 0–8 **discoveries-first**, and offers one concrete next action in plain language.
 - It makes **zero** archive writes unless the human confirms one; a confirmed discovery lands via
   `fha confirm discovery`, never by hand-editing `notes/discoveries.md`.

@@ -1695,10 +1695,12 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     succeeded would drop it from the recovery list this error reports.
     """
     if is_working_copy(archive_root):
+        # Warning-level refusal, not a failure: ok stays True, exit stays clean,
+        # data.status='working-copy' is the machine discriminator (TOOLING §13d).
         return Result(
-            ok=False,
+            ok=True,
             exit_code=EXIT_CLEAN,
-            data={'tagged': [], 'failed': []},
+            data={'status': 'working-copy', 'tagged': [], 'failed': []},
         ).add(
             'warning',
             'photoindex tag-person is not available in working-copy mode - '
@@ -2020,19 +2022,17 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     other.
     """
     p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency)')
     p.add_argument('--full', action='store_true', help='Rescan every file via exiftool, bypassing the incremental mtime/size check')
     p.set_defaults(func=_cmd_scan)
     deferred = p.add_subparsers(dest='photoindex_command', metavar='SUBCOMMAND')
 
-    # default=SUPPRESS so omitting the child --root/--spec-root does NOT clobber a
-    # value already parsed from the parent `photoindex` form
+    # default=SUPPRESS so omitting the child --root does NOT clobber a value
+    # already parsed from the parent `photoindex` form
     # (`fha photoindex --root X find ...`); argparse otherwise resets the shared
     # dest back to the subparser's default. The attribute stays absent when neither
     # form supplies it, which `_cmd_find`'s getattr(..., None) handles.
     find_p = deferred.add_parser('find', help='Query the photo catalog')
     find_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    find_p.add_argument('--spec-root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     find_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this P-id (any confidence tier)')
     find_p.add_argument('--keyword', metavar='TERM', help='Case-insensitive substring match against cached keywords')
     find_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
@@ -2042,20 +2042,17 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
 
     triage_p = deferred.add_parser('triage', help='Rank unprocessed photo groups by evidence signals')
     triage_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    triage_p.add_argument('--spec-root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     triage_p.add_argument('--top', metavar='N', type=int, default=10, help='Show this many top candidates (default 10)')
     triage_p.set_defaults(func=_cmd_triage)
 
     report_p = deferred.add_parser('report', help='List photo groups with conflicting variant dates')
     report_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    report_p.add_argument('--spec-root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     report_p.set_defaults(func=_cmd_report)
 
     reconcile_p = deferred.add_parser(
         'reconcile', help='Re-match moved photos by SOURCE: keyword; flag the rest as missing'
     )
     reconcile_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    reconcile_p.add_argument('--spec-root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     reconcile_p.add_argument(
         '--with-exif', action='store_true',
         help='Read embedded SOURCE: keywords from untracked files to re-match missing paths (requires exiftool)',
@@ -2068,7 +2065,6 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
 
     tag_p = deferred.add_parser('tag-person', help='Write a bare P-id keyword onto matched or explicit photos')
     tag_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    tag_p.add_argument('--spec-root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     tag_p.add_argument('person_id', metavar='P-ID', help='Person to tag')
     tag_p.add_argument('--from-face-tag', metavar='TAG', help='Tag every photo whose cached face region carries this name')
     tag_p.add_argument('--paths', nargs='+', metavar='PATH', help='Tag these specific catalog paths')
@@ -2076,11 +2072,23 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     tag_p.set_defaults(func=_cmd_tag_person)
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Make your photo library searchable without opening Lightroom.
+
+  fha photoindex                       Scan the photos root into the catalog
+  fha photoindex find --person <P-id>  Every photo of someone
+  fha photoindex triage --top 20       Un-filed photos worth processing next
+  fha photoindex tag-person <P-id>     Tag a face across every copy
+
+Photos are never renamed; identity lives in the embedded metadata."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'photoindex',
         help='Scrape photo metadata into .cache/photos.sqlite',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_photoindex_args(p)
@@ -2467,7 +2475,7 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha photoindex',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_photoindex_args(parser)

@@ -554,14 +554,14 @@ class GeocodeRunTests(unittest.TestCase):
         (self.root / 'places' / 'places.yaml').write_text(
             '- id: L-7c1a9f4e22\n  name: Fairview\n', encoding='utf-8')
         self._fresh_index()
-        result = places.run_geocode(self.root, {}, all_places=True, offline=True)
+        result = places.run_geocode(self.root, {}, offline=True)
         self.assertEqual(result['status'], 'no-gazetteer')
         self.assertEqual(result['written'], 0)
 
     def test_all_have_coords_is_clean(self):
         _add_place(self.conn, 'l-7c1a9f4e22', 'Fairview', lat=39.8, lon=-95.6)
         self.conn.commit()
-        result = places.run_geocode(self.root, {}, all_places=True, offline=True)
+        result = places.run_geocode(self.root, {}, offline=True)
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(result['written'], 0)
 
@@ -576,7 +576,7 @@ class GeocodeRunTests(unittest.TestCase):
         yaml_path.write_text(original, encoding='utf-8')
         self._write_gazetteer([{'name': 'Fairview', 'lat': 39.8, 'lon': -95.6, 'admin1': 'KS'}])
         self._fresh_index()
-        result = places.run_geocode(self.root, {}, all_places=True, offline=True,
+        result = places.run_geocode(self.root, {}, offline=True,
                                     confirm=lambda prompt: False)
         self.assertEqual(result['written'], 0)
         self.assertEqual(yaml_path.read_text(encoding='utf-8'), original)
@@ -592,7 +592,7 @@ class GeocodeRunTests(unittest.TestCase):
             encoding='utf-8')
         self._write_gazetteer([{'name': 'Fairview', 'lat': 39.8, 'lon': -95.6, 'admin1': 'KS'}])
         self._fresh_index()
-        result = places.run_geocode(self.root, {}, all_places=True, offline=True,
+        result = places.run_geocode(self.root, {}, offline=True,
                                     confirm=lambda prompt: True)
         self.assertEqual(result['written'], 1)
         self.assertIn('coords: [39.8, -95.6]', yaml_path.read_text(encoding='utf-8'))

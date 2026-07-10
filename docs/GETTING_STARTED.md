@@ -121,15 +121,16 @@ is already in this project at [`../archive-template/`](../archive-template/).
    [`../archive-template/README.md`](../archive-template/README.md). If you're starting fresh
    with nothing yet, the defaults are fine; leave it as-is.
 
-**Did it work?** From the project folder, run the linter against your archive (it checks that
-everything is shaped the way the spec expects):
+**Did it work?** From the project folder, run the check against your archive (it looks for
+anything shaped the wrong way):
 
 ```
-python tools/fha.py lint --root my-family-archive
+python tools/fha.py check --root my-family-archive
 ```
 
 A fresh archive prints **`✓ No issues found.`** - that's a green light. (`--root` just tells the
-tools which archive folder to look at.)
+tools which archive folder to look at. `check` is the friendly name for the command also called
+`lint`.)
 
 ---
 

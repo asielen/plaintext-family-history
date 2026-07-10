@@ -812,6 +812,16 @@ def run_confirm_cooccur(
         'subtype': subtype, 'source': None, 'claim_status': None,
     })
 
+    # --reviewed only stamps the review date onto an *accepted* claim; a
+    # suggested claim is by definition unreviewed. Passing it without --accept
+    # used to be a silent no-op (the date was validated then discarded), so
+    # refuse the combination rather than quietly dropping a date the human typed.
+    if reviewed is not None and not accept:
+        return _fail(result, 'failed',
+                     '--reviewed only takes effect with --accept (it stamps the review '
+                     'date on the accepted claim). Add --accept, or drop --reviewed to '
+                     'mint the claim as suggested.')
+
     for label, pid in (('first', person_a), ('second', person_b)):
         if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
             return _fail(result, 'invalid-id',
@@ -1595,12 +1605,27 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     dr_p.set_defaults(func=_cmd_draft)
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Write down a suggestion you've decided to accept.
+
+  fha confirm xref <C-a> <C-b> --as corroborates|contradicts
+  fha confirm cooccur <P-a> <P-b> --source <S-id> --subtype friend|associate|neighbor
+  fha confirm dismiss <P-a> <P-b>
+  fha confirm place <C-id...> (--name NAME | --into <L-id>)
+  fha confirm discovery "<text>"
+  fha confirm draft <P-id>
+
+Each verb turns one kind of proposed link, connection, place, or note into a
+record. Every verb previews with --dry-run first."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'confirm' onto the main fha parser."""
     p = subs.add_parser(
         'confirm',
         help='Write back a detection candidate the human picked (xref/cooccur/place/discovery/draft)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -1613,7 +1638,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha confirm',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest='confirm_command', metavar='SUBCOMMAND')

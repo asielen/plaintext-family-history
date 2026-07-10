@@ -2889,15 +2889,24 @@ def run_site(
     writes nothing and leaves `changed` empty.
     """
     if is_working_copy(archive_root):
-        return Result(
-            ok=False,
-            exit_code=EXIT_CLEAN,
-            data={'status': 'working-copy', 'out_dir': str(out_dir), 'pages': [], 'messages': []},
-        ).add(
-            'warning',
+        # Warning-level refusal, not a failure: ok stays True, exit stays clean,
+        # data.status='working-copy' is the machine discriminator (TOOLING §13d).
+        # data['messages'] carries the human-facing text (as _cmd_site prints
+        # it, same as every other status); .add() below is for headless
+        # callers reading Result.messages.
+        warning_text = (
             'fha site is not available in working-copy mode - '
             'the photo and document files are on the main machine. '
-            'Build the site there.',
+            'Build the site there.'
+        )
+        return Result(
+            ok=True,
+            exit_code=EXIT_CLEAN,
+            data={'status': 'working-copy', 'out_dir': str(out_dir), 'pages': [],
+                  'messages': [warning_text]},
+        ).add(
+            'warning',
+            warning_text,
         )
     payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run)
     status = payload['status']
@@ -3054,6 +3063,8 @@ def _cmd_site(args: argparse.Namespace) -> int:
         return EXIT_FAILURE   # the refusal message is already in result['messages']
     if status == 'reset-failed':
         return EXIT_FAILURE   # the OSError detail is already in result['messages']
+    if status == 'working-copy':
+        return EXIT_CLEAN   # the refusal warning is already in result['messages']
 
     mode = 'linked preview' if getattr(args, 'linked', False) else 'standalone snapshot'
     where = _display_path(result['out_dir'], archive_root)
@@ -3086,18 +3097,25 @@ def _add_site_args(p: argparse.ArgumentParser) -> None:
                    help='Report how many pages would be built and what a rebuild would '
                         'first remove from the output folder, without writing anything.')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
+
+
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Build a browsable family website you can open in any browser.
+
+  fha site                Build the shareable snapshot (redacted, self-contained)
+  fha site --standalone   The same shareable snapshot, named explicitly
+  fha site --linked       An unredacted local preview (for yourself, not to share)
+
+Opens from a plain file, no server needed - want to see your tree? build the
+site and open it. Living people and restricted material are redacted by default."""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'site',
         help='Generate the static HTML family explorer (standalone snapshot or linked preview).',
-        description=(
-            'Render the archive as a browsable static website that opens from file://.\n'
-            '--standalone (default) is the redacted, self-contained snapshot safe to share;\n'
-            '--linked is an unredacted local preview for developers (TOOLING §12).'
-        ),
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_site_args(p)
@@ -3107,7 +3125,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog='fha site', description=__doc__,
+        prog='fha site', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_site_args(parser)

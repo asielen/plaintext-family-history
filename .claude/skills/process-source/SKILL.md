@@ -55,9 +55,11 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 
 ### Stage B — the AI draft (judgment)
 
-3. **Read the evidence — including vision for images.** Read the document text, or *look at* the scan /
-   photo (vision), or read the note. Query the index for context; **never bulk-read** the asset trees —
-   this one file is the subject, the rest of the library is `fha` calls.
+3. **Read the evidence — with your eyes when you have them.** Read the document text, or *look at* the
+   scan / photo if your harness can view images, or read the note. **If you cannot view images, say so
+   plainly and work from the sidecar notes and filename/keyword hints — never guess at what a scan
+   shows.** Query the index for context; **never bulk-read** the asset trees — this one file is the
+   subject, the rest of the library is `fha` calls.
 
 4. **Resolve every named person and place against the index — propose, don't guess.**
    ```
@@ -102,7 +104,8 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 7. **Record the AI pass** in the source's `## AI Passes` block:
    ```yaml
    ## AI Passes
-   - {date: 2026-07-01, model: claude-opus-4-8, harness: claude-code,
+   - {date: 2026-07-01, model: {your-model-id}, harness: {your-harness},
+      # use your real model/harness identifiers - these two are placeholders, not values to copy
       task: "draft claims from 1880 census scan", outputs: [C-…, C-…], human_reviewed: false}
    ```
 

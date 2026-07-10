@@ -71,7 +71,8 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
 5. **Record the AI pass** in the source's `## AI Passes` block:
    ```yaml
    ## AI Passes
-   - {date: 2026-07-01, model: claude-sonnet-4-6, harness: claude-code,
+   - {date: 2026-07-01, model: {your-model-id}, harness: {your-harness},
+      # use your real model/harness identifiers - these two are placeholders, not values to copy
       task: "mine Ethel Hartley interview for claims", outputs: [C-…, C-…], human_reviewed: false}
    ```
 

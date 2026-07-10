@@ -6,7 +6,7 @@ lint.py - fha lint: verify the archive against the spec.
   fha lint --with-exif               Also verify embedded SOURCE: keywords (slow)
   fha lint --json                    Machine-readable JSON output
   fha lint --format-check            Check formatting without fixing
-  fha lint --format-write            Planned formatter write mode (not yet implemented)
+  fha lint --format-write            Apply conservative formatting fixes (frontmatter normalization deferred)
   fha lint --mint-stubs              Create missing person stubs (E005 set)
   fha lint --spawn-questions         Append questions for E009 contradictions
   fha lint --fix-ids                 Complete hand-authored id-less records AND
@@ -14,7 +14,6 @@ lint.py - fha lint: verify the archive against the spec.
                                      template placeholder ids (P-__________)
                                      count as missing and are replaced in place
   fha lint --fix-reciprocal          Add the missing mirror edge for each W116
-  fha lint --fix-inventory           Planned inventory fixer (not yet implemented)
 
 Exit codes: 0 = clean, 1 = warnings only, 2 = errors, 3 = tool failure.
 SPEC §16, TOOLING §3.
@@ -2420,7 +2419,6 @@ def run_lint(
     dry_run: bool = False,
     mint_stubs: bool = False,
     spawn_questions: bool = False,
-    fix_inventory: bool = False,
     fix_claims_fence: bool = False,
     fix_ids: bool = False,
     fix_reciprocal: bool = False,
@@ -2482,12 +2480,6 @@ def run_lint(
         _fix_mint_stubs(registry, archive_root, progress, changed, dry_run=dry_run)
     if spawn_questions:
         _fix_spawn_questions(registry, findings, archive_root, progress, changed, dry_run=dry_run)
-    if fix_inventory:
-        if dry_run:
-            progress.append('--fix-inventory dry-run: would scan documents root and update files: blocks for E011 set')
-        else:
-            progress.append('WARNING: --fix-inventory is not yet implemented.')
-            progress.append('         Run `fha process` on each document to update its source record.')
     if fix_claims_fence:
         _fix_claims_fence(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_ids:
@@ -3723,11 +3715,26 @@ def run_lint_silent(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Check the archive for problems and report them (a spell-check for your data).
+
+  fha lint                Walk and check the archive; report only
+  fha check               The same command, plainer name
+  fha lint --fix-ids      Give IDs to records you named in plain English
+  fha lint --mint-stubs   Create placeholder records for people named but not filed
+
+Catches broken links, missing dates, contradictions, and people referenced but
+never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
+2 errors, 3 tool failure."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'lint',
-        help='Verify the archive against the spec',
-        description=__doc__,
+        aliases=['check'],
+        help='Check the archive for problems and report them (alias: `fha check`)',
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH',
@@ -3755,8 +3762,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'as an alias) and for id-less claims inside sources (with --dry-run to preview)')
     p.add_argument('--fix-reciprocal', action='store_true',
                    help='Add the missing mirror edge for each W116 (with --dry-run to preview)')
-    p.add_argument('--fix-inventory', action='store_true',
-                   help='Regenerate files: from ID glob for E011 set')
+    # NOTE: --fix-inventory (an E011 documents-inventory fixer) was removed while
+    # unimplemented - a flag that only printed a warning taught users flags might
+    # be decorative. Re-add it here with the real fixer when it is built.
     p.set_defaults(func=_run_lint)
 
 
@@ -3781,7 +3789,6 @@ def _run_lint(args: argparse.Namespace) -> int:
         dry_run=getattr(args, 'dry_run', False),
         mint_stubs=getattr(args, 'mint_stubs', False),
         spawn_questions=getattr(args, 'spawn_questions', False),
-        fix_inventory=getattr(args, 'fix_inventory', False),
         fix_claims_fence=getattr(args, 'fix_claims_fence', False),
         fix_ids=getattr(args, 'fix_ids', False),
         fix_reciprocal=getattr(args, 'fix_reciprocal', False),
@@ -3795,7 +3802,7 @@ def _run_lint(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha lint',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')
@@ -3810,7 +3817,6 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--fix-claims-fence', action='store_true')
     parser.add_argument('--fix-ids', action='store_true')
     parser.add_argument('--fix-reciprocal', action='store_true')
-    parser.add_argument('--fix-inventory', action='store_true')
     args = parser.parse_args(argv)
     return _run_lint(args)
 

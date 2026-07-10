@@ -1885,16 +1885,27 @@ def run_find(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Locate anything in the archive, or search its full text.
+
+  fha find <ID>              Everything about one ID (person, source, place...)
+  fha find --text "phrase"   Full-text search across records, notes, captions
+  fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
+
+This is your search box. For plain word search, `fha search <words>` is the same
+as `fha find --text`."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'find' onto the main fha parser."""
     p = subparsers.add_parser(
         'find',
         help='Locate any ID, or full-text search across records and notes',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root')
 
     # Mutually exclusive modes
     mode = p.add_mutually_exclusive_group()
@@ -1922,6 +1933,29 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help='Archive ID (P-/S-/C-/L-/H-) or text to search',
     )
     p.set_defaults(func=_run_find)
+
+    # `fha search <words>` - the plainest verb for full-text search, the one a
+    # human who never read the docs will reach for first (persona B2). Same
+    # engine as `fha find --text`; a separate subparser (not an argparse alias)
+    # because the argument shape differs - a bare positional phrase joined with
+    # spaces, so `fha search rose hartley` works unquoted.
+    s = subparsers.add_parser(
+        'search',
+        help='Search everything for a word or phrase (same as `fha find --text`)',
+        description='Search everything for a word or phrase - records, notes, '
+                    'transcripts, photo captions.\n\n'
+                    'Examples:\n'
+                    '  fha search rose hartley\n'
+                    '  fha search "1880 census"\n\n'
+                    'Same as `fha find --text "..."`.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    s.add_argument('--root', metavar='PATH', help='Archive root')
+    s.add_argument(
+        'phrase', nargs='+', metavar='WORD',
+        help='Word or phrase to search for (joined with spaces if several words)',
+    )
+    s.set_defaults(func=_run_search)
 
 
 def _run_find(args: argparse.Namespace) -> int:
@@ -1983,14 +2017,35 @@ def _run_find(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
 
+def _run_search(args: argparse.Namespace) -> int:
+    """argparse → run_find bridge for `fha search <words>` (= `fha find --text`).
+
+    The positional phrase arrives as a list of words (nargs='+'); joining with
+    spaces lets `fha search rose hartley` work unquoted while `fha search "1880
+    census"` still passes a single token. Root resolution goes through the same
+    shared chokepoint as `fha find`.
+    """
+    archive_root = resolve_root_arg(args, command='fha search')
+    if archive_root is None:
+        return EXIT_FAILURE
+
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    phrase = ' '.join(getattr(args, 'phrase', []) or [])
+    return run_find(phrase, archive_root, fha_config, text_mode=True).exit_code
+
+
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha find',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root')
-    parser.add_argument('--spec-root', metavar='PATH', help='Spec docs root')
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--text', metavar='PHRASE')

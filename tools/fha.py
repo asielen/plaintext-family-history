@@ -23,10 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 import argparse
 
 COMMANDS = (
-    'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'relate', 'photoindex',
-    'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
-    'process', 'capture', 'convert-mining', 'claim', 'confirm', 'site', 'install',
-    'update-tools', 'working-copy', 'normalize-links',
+    'id', 'index', 'lint', 'check', 'stubs', 'views', 'doctor', 'find', 'search',
+    'relate', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
+    'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
+    'site', 'install', 'update-tools', 'working-copy', 'normalize-links',
 )
 
 
@@ -49,7 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
         '--spec-root', metavar='PATH',
         dest='global_spec_root',
         help='Spec docs root when SPEC.md/TOOLING.md are not in the archive '
-             '(e.g. running from the public spec repo)',
+             '(e.g. running from the public spec repo). '
+             '(reserved: only `fha lint` reads it yet)',
     )
     parser.add_argument(
         '--debug',
@@ -245,10 +246,24 @@ def _intercept_doctor(argv: list[str]) -> int | None:
         return None
 
     from doctor import _standalone_main as doctor_main
-    rest = [
-        tok for tok in (argv[:command_idx] + argv[command_idx + 1:])
-        if tok != '--debug'
-    ]
+    # doctor's own parser only ever accepted `--root`; the global `--spec-root`
+    # is reserved for `fha lint` (see the top-level parser's help text) and
+    # must not be forwarded here, or doctor_main's argparse rejects it as
+    # unrecognized.
+    rest = []
+    skip_next = False
+    for tok in (argv[:command_idx] + argv[command_idx + 1:]):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == '--debug':
+            continue
+        if tok == '--spec-root':
+            skip_next = True
+            continue
+        if tok.startswith('--spec-root='):
+            continue
+        rest.append(tok)
     return doctor_main(rest)
 
 
@@ -410,10 +425,10 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, 'global_root', None)
             )
         if getattr(args, 'spec_root', None) is None:
-            args.spec_root = (
-                getattr(args, 'views_spec_root', None)
-                or getattr(args, 'global_spec_root', None)
-            )
+            # Only `fha lint` still defines a subcommand --spec-root; every other
+            # subcommand's copy was removed (it read nothing). The global
+            # `fha --spec-root` position stays, threaded here for lint.
+            args.spec_root = getattr(args, 'global_spec_root', None)
 
         if not args.command:
             parser.print_help()
