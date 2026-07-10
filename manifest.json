@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "01c52f5b52b081875886d7609691a4d6ccc34fbe3c57b31887344e7c0db42f0b",
+      "sha256": "9f6b95c325bf5b6ea9874e8bfed4bf9e9de71de415b0c0496c2c4607f94abc7b",
       "spec_version": "1.2"
     },
     {
@@ -443,7 +443,7 @@
     {
       "path": "tools/backup.py",
       "category": "operating",
-      "sha256": "a7ad65782b81e9f7a2fbd1da8e3d7e6a3b35d46aa2894844266f91e9010f8356",
+      "sha256": "65202bcf39f20e6cf00d8c36e859288c7fd3bc0097e783d4aa1d17baef26c172",
       "spec_version": "1.2"
     },
     {
@@ -515,7 +515,7 @@
     {
       "path": "tools/doctor.py",
       "category": "operating",
-      "sha256": "24de5174843ed1a9d13cda4f15cedc8502aea2aa86a6ae4af33a266f49f28059",
+      "sha256": "6aecad6496184b87f03bbfb8f3f01d81cced7795114031c5c62cf879a13a7d0e",
       "spec_version": "1.2"
     },
     {
