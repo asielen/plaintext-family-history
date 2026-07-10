@@ -6,5 +6,6 @@
 *.html text eol=lf
 *.js text eol=lf
 *.json text eol=lf
+*.css text eol=lf
 *.txt text eol=lf
 .gitignore text eol=lf

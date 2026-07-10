@@ -157,7 +157,7 @@
     {
       "path": "design/custom.css",
       "category": "skeleton",
-      "sha256": "ec5e92d69db34dd4d6d97dc600e71197b56d7dc889ed68e0c66d7ade106fc512",
+      "sha256": "817986f1e6e096e29f0ea598dac2bbde2b98c917b2862ea34ac6c64544946e20",
       "spec_version": "1.2"
     },
     {
@@ -229,13 +229,13 @@
     {
       "path": "design/styles.css",
       "category": "operating",
-      "sha256": "010ac2aec2879b54ba8c1d2165c8f560874db951e9d1f92d1a943637f45a8b69",
+      "sha256": "262f4093528b5c834c5b9d1df792aedfbb728011bca35e86cb22cd28984a469a",
       "spec_version": "1.2"
     },
     {
       "path": "design/view.css",
       "category": "operating",
-      "sha256": "1472af70c3fb2f0dffcba764b20b3a079c781501671d5b9fc28922dd46f62e5b",
+      "sha256": "ae8fc68240d2ebe505f534f6faff753c4825016890fa3b1152f748ab6e70a7be",
       "spec_version": "1.2"
     },
     {
