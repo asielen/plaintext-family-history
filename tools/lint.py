@@ -3723,12 +3723,26 @@ def run_lint_silent(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Check the archive for problems and report them (a spell-check for your data).
+
+  fha lint                Walk and check the archive; report only
+  fha check               The same command, plainer name
+  fha lint --fix-ids      Give IDs to records you named in plain English
+  fha lint --mint-stubs   Create placeholder records for people named but not filed
+
+Catches broken links, missing dates, contradictions, and people referenced but
+never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
+2 errors, 3 tool failure."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'lint',
         aliases=['check'],
         help='Check the archive for problems and report them (alias: `fha check`)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH',
@@ -3796,7 +3810,7 @@ def _run_lint(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha lint',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')

@@ -944,11 +944,25 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--out', metavar='FILE', help='Write to FILE (default: stdout).')
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Export your tree to a GEDCOM file for another genealogy app.
+
+  fha gedcom --all                        Export everyone
+  fha gedcom <P-id> --mode descendants    Export from one person, down the line
+  fha gedcom <P-id> --mode ancestors      Export from one person, up the line
+  fha gedcom --all --out family.ged       Choose the output file
+
+Living people are redacted by default (use --include-living to override). GEDCOM
+is the portable format Ancestry, RootsMagic, and others read; it is a one-way
+export, never re-imported as truth."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'gedcom',
         help='Derive a GEDCOM 5.5.1 export from relationships + accepted vitals.',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(p)
@@ -960,7 +974,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog='fha gedcom', description=__doc__,
+        prog='fha gedcom', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)

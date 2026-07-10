@@ -3091,15 +3091,23 @@ def _add_site_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Build a browsable family website you can open in any browser.
+
+  fha site                Build the shareable snapshot (redacted, self-contained)
+  fha site --standalone   The same shareable snapshot, named explicitly
+  fha site --linked       An unredacted local preview (for yourself, not to share)
+
+Opens from a plain file, no server needed - want to see your tree? build the
+site and open it. Living people and restricted material are redacted by default."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'site',
         help='Generate the static HTML family explorer (standalone snapshot or linked preview).',
-        description=(
-            'Render the archive as a browsable static website that opens from file://.\n'
-            '--standalone (default) is the redacted, self-contained snapshot safe to share;\n'
-            '--linked is an unredacted local preview for developers (TOOLING §12).'
-        ),
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_site_args(p)
@@ -3109,7 +3117,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog='fha site', description=__doc__,
+        prog='fha site', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_site_args(parser)

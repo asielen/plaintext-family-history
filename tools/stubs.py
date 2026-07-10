@@ -205,11 +205,23 @@ def mint_named_stubs(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Create placeholder records for people who are named but not yet filed.
+
+  fha stubs                          Stub every unresolved person reference
+  fha stubs --from-names "A; B; C"   Stub these named people
+  fha stubs --dry-run                Preview without writing
+
+Like dropping a blank labeled folder in the cabinet for a name you've heard but
+not yet researched. --from-names runs INSTEAD of the reference scan, not with it."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'stubs',
         help='Mint person stubs for unresolved P-id references',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
@@ -259,7 +271,7 @@ def _run_stubs(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha stubs',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')

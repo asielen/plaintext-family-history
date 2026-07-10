@@ -1835,15 +1835,22 @@ def _cmd_packet(args: argparse.Namespace) -> int:
     return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Bundle everything about one person into a zip to share with family.
+
+  fha packet <P-id>              Build the packet (profile, timeline, sources, photos)
+  fha packet <P-id> --dry-run    Preview what's included and what's withheld
+
+A private family export, not a public website. Living people and restricted
+material are withheld by default; opt in per export with the --include flags."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'packet',
         help='Build a person export packet (profile, timeline, sources, files, photos) and zip it.',
-        description=(
-            'Gather everything the archive knows about one curated person into\n'
-            'packet_{surname}_{P-id}_{date}/, then zip it. A private/family export,\n'
-            'not a publication format (TOOLING §8).'
-        ),
+        description=_CLI_DESCRIPTION,
     )
     p.add_argument('person_id', metavar='P-id', help='Curated person to export.')
     p.add_argument('-o', '--out', metavar='PATH', dest='out',
@@ -1868,7 +1875,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog='fha packet', description=__doc__,
+        prog='fha packet', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('person_id', metavar='P-id', help='Curated person to export.')

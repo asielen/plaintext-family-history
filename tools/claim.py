@@ -611,12 +611,23 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help='Preview the YAML change without writing.')
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Record your verdict on a suggested fact - the human decision point.
+
+  fha claim <C-id> --status accepted   Confirm a fact (stamps today's date)
+  fha claim <C-id> --status disputed|rejected|needs-review|superseded
+
+Only you move a claim to accepted. Nothing becomes a fact until you decide here.
+Preview any change first with --dry-run."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'claim' onto the main fha parser."""
     p = subs.add_parser(
         'claim',
         help='Review one claim: set its status and stamp reviewed: (human-directed write-back)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(p)
@@ -627,7 +638,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha claim',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)

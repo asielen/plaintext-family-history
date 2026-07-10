@@ -1018,12 +1018,24 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
     return EXIT_CLEAN
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Keep your places tidy and fill in their coordinates.
+
+  fha places lint                    Check the place registry for problems
+  fha places candidates              Recurring place-text worth a registry entry
+  fha places geocode [--place L-id]  Fill in coordinates (offline, confirmed one by one)
+
+"Am I spelling this town three different ways?", "which place should become a
+real entry?", "fill in the coordinates for these towns.\""""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'places' onto the main fha parser."""
     p = subs.add_parser(
         'places',
         help='Place registry hygiene (lint) and recurrence detection (candidates)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -1056,7 +1068,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha places',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subs = parser.add_subparsers(dest='places_command', metavar='SUBCOMMAND')

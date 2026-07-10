@@ -1065,11 +1065,23 @@ def run_report(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Your session briefing: what's new, what's worth a look, what to work on next.
+
+  fha report                    The research feed (discoveries first, chores next)
+  fha report --full             Everything, not just the highlights
+  fha report --section NAME     Just one section
+
+Refreshes the index, runs the checks, and compares against last session. Usually
+you'll hear this narrated by asking "what should I work on?"."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'report',
         help='Generate the session research report (refresh, diff, render)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
@@ -1113,7 +1125,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha report',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')

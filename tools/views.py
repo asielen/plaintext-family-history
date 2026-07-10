@@ -2371,12 +2371,24 @@ def _cmd_views_help(args: argparse.Namespace) -> int:
 
 # ── Parser registration ───────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Build always-current summary pages from your records.
+
+  fha views timeline <P-id>        A person's life chronology
+  fha views sources-index <P-id>   Every source about a person
+  fha views draft-queue <P-id>     Accepted facts not yet written into the bio
+  fha views refresh                Rebuild every view for all curated people
+
+These pages are generated and rebuildable; edit the records, not the pages."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the `views` subcommand group on the given subparsers action."""
     views_p = subs.add_parser(
         'views',
         help='Generate view files from the index (timeline, sources-index, draft-queue, …).',
-        description='Generate GENERATED-headed .md view files from the index.',
+        description=_CLI_DESCRIPTION,
     )
     views_p.add_argument('--root', dest='views_root', metavar='PATH',
                          help='Archive root (auto-detected if omitted).')
@@ -2523,7 +2535,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha views',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', dest='global_root', metavar='PATH',

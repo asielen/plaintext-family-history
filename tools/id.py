@@ -70,12 +70,25 @@ def check_id(id_str: str, archive_root: Path) -> list[tuple[Path, int]]:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text. The module docstring stays developer-facing; this is
+# what a researcher sees, so it leads with the plain job and shows examples.
+_CLI_DESCRIPTION = """\
+Mint and check the archive's ID codes.
+
+  fha id mint P|S|C|L|H [-n N]   Print fresh IDs (P=person, S=source, C=claim,
+                                 L=place, H=hypothesis)
+  fha id check <ID>              Show everywhere an ID appears in the archive
+
+You rarely need this by hand: `fha lint --fix-ids` assigns IDs to records you
+named in plain English."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'id' subcommands onto the main parser."""
     id_parser = subparsers.add_parser(
         'id',
         help='Mint and check archive IDs',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     id_parser.add_argument('--root', metavar='PATH', help='Archive root')
@@ -155,7 +168,7 @@ def _run_id(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha id',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root')

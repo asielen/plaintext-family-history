@@ -1872,11 +1872,23 @@ def _native_manifest_dir(browser: str = 'chrome') -> Path:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Clip an open web-record page into your inbox to process later.
+
+  fha capture --url URL              Capture a page (HTML piped on stdin)
+  fha capture --asset saved.html     Capture from a saved page file
+  fha capture --ingest               Sweep staged capture bundles into the inbox
+
+Writes a stub in inbox/, never a finished source; a later `fha process` turns it
+into a real record. It reads only the page you already have - never logs in."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'capture',
         help='Capture an open web record page into an inbox source stub',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(p)
@@ -2065,7 +2077,7 @@ def _run_capture(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha capture',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)

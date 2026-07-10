@@ -807,12 +807,22 @@ def _cmd_doctor(result: Result) -> int:
     return result.exit_code
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Check that the tools, dependencies, and file paths are all wired correctly.
+
+  fha doctor
+
+Run this when something's broken, or when setting up on a new machine. Safe on a
+fresh archive: missing caches are warnings, not errors."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'doctor' onto the main fha parser."""
     p = subparsers.add_parser(
         'doctor',
         help='Archive health check - what is wrong with this archive?',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
@@ -843,7 +853,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha doctor',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root')

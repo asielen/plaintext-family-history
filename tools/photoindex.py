@@ -2078,11 +2078,23 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     tag_p.set_defaults(func=_cmd_tag_person)
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Make your photo library searchable without opening Lightroom.
+
+  fha photoindex                       Scan the photos root into the catalog
+  fha photoindex find --person <P-id>  Every photo of someone
+  fha photoindex triage --top 20       Un-filed photos worth processing next
+  fha photoindex tag-person <P-id>     Tag a face across every copy
+
+Photos are never renamed; identity lives in the embedded metadata."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'photoindex',
         help='Scrape photo metadata into .cache/photos.sqlite',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_photoindex_args(p)
@@ -2469,7 +2481,7 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha photoindex',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_photoindex_args(parser)

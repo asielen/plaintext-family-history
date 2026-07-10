@@ -1713,11 +1713,21 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Rebuild the search index so timelines, find, and reports see your latest edits.
+
+  fha index                  Full rebuild (after adding or moving records)
+  fha index --source S-xxxx  Update just one source (fast)
+
+The index is a disposable cache, always rebuildable from your files."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'index',
         help='Rebuild the SQLite index from the archive tree',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
@@ -1796,7 +1806,7 @@ def _run_index(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha index',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')

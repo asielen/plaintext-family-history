@@ -355,12 +355,22 @@ def _cmd_xref(args: argparse.Namespace) -> int:
     return EXIT_CLEAN
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Find which of your facts back each other up and which ones conflict.
+
+  fha xref
+
+Read-only: it lists corroboration and contradiction candidates for you to act
+on with `fha confirm xref`. It never writes to the archive."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'xref' onto the main fha parser."""
     p = subs.add_parser(
         'xref',
         help='Cross-reference accepted/needs-review claims for corroboration/contradiction candidates',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -371,7 +381,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha xref',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')

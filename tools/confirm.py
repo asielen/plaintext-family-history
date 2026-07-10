@@ -1605,12 +1605,27 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     dr_p.set_defaults(func=_cmd_draft)
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Write down a suggestion you've decided to accept.
+
+  fha confirm xref <C-a> <C-b> --as corroborates|contradicts
+  fha confirm cooccur <P-a> <P-b> --source <S-id> --subtype friend|associate|neighbor
+  fha confirm dismiss <P-a> <P-b>
+  fha confirm place <C-id...> (--name NAME | --into <L-id>)
+  fha confirm discovery "<text>"
+  fha confirm draft <P-id>
+
+Each verb turns one kind of proposed link, connection, place, or note into a
+record. Every verb previews with --dry-run first."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'confirm' onto the main fha parser."""
     p = subs.add_parser(
         'confirm',
         help='Write back a detection candidate the human picked (xref/cooccur/place/discovery/draft)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -1623,7 +1638,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha confirm',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest='confirm_command', metavar='SUBCOMMAND')

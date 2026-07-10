@@ -352,12 +352,25 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 # ── CLI registration ──────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Work on a synced copy of the archive that has your records but not the big
+photo and document files.
+
+  fha working-copy on       Turn on working-copy mode (asset features pause)
+  fha working-copy off      Turn it back off (asset files must be present)
+  fha working-copy status   Report whether this copy is in working-copy mode
+
+Use this on a second machine that syncs the text records but not the originals.
+Read-only commands work normally; commands that touch photos/documents pause."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'working-copy' onto the main fha parser."""
     p = subparsers.add_parser(
         'working-copy',
         help='Manage working-copy mode (synced archive without asset files).',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root.')
@@ -386,7 +399,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha working-copy',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')

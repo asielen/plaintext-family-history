@@ -2320,11 +2320,24 @@ def _resolve_input_file(
     return None, f'{what} not found: {raw}'
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+File a new document or photo into the archive with a permanent ID.
+
+  fha process <file>                        File one document or photo
+  fha process <photo> --more <file> ROLE    Attach another file to its source
+  fha process <file> --dry-run              Preview, write nothing
+
+Documents are renamed with their new ID (the old name is kept as provenance);
+photos are never renamed. This is the deterministic step; drafting claims and
+reviewing them come after, through the process-source and review-claims skills."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'process',
         help='Process an original asset into a Source (mint + mark + scaffold)',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(p)
@@ -2593,7 +2606,7 @@ def _run_process(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha process',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)

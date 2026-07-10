@@ -1084,11 +1084,22 @@ def _cmd_wikitree(args: argparse.Namespace) -> int:
     return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN
 
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Render a person's profile into WikiTree's markup for a family-tree wiki.
+
+  fha wikitree <P-id>              Print the WikiTree-dialect profile
+  fha wikitree <P-id> --out FILE   Write it to a file
+
+Turns a curated person's profile prose and its citations into the wiki markup
+WikiTree expects. Privacy rules are enforced: restricted material is withheld."""
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'wikitree',
         help='Render a curated profile to the WikiTree dialect (refs, spacetime spans, links).',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('person_id', metavar='P-id', help='Curated person to export.')
@@ -1101,7 +1112,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog='fha wikitree', description=__doc__,
+        prog='fha wikitree', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('person_id', metavar='P-id', help='Curated person to export.')

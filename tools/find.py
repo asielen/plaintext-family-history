@@ -1885,12 +1885,24 @@ def run_find(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+# User-facing --help text (the module docstring stays developer-facing).
+_CLI_DESCRIPTION = """\
+Locate anything in the archive, or search its full text.
+
+  fha find <ID>              Everything about one ID (person, source, place...)
+  fha find --text "phrase"   Full-text search across records, notes, captions
+  fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
+
+This is your search box. For plain word search, `fha search <words>` is the same
+as `fha find --text`."""
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'find' onto the main fha parser."""
     p = subparsers.add_parser(
         'find',
         help='Locate any ID, or full-text search across records and notes',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
@@ -2031,7 +2043,7 @@ def _run_search(args: argparse.Namespace) -> int:
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha find',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root')
