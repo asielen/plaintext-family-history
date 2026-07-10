@@ -1,0 +1,12 @@
+0 HEAD
+1 SOUR SomeApp
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME First /Person/
+1 BIRT
+2 DATE 1900
+0 @I1@ INDI
+1 NAME Second /Person/
+1 BIRT
+2 DATE 1905
+0 TRLR
