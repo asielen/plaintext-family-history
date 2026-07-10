@@ -36,7 +36,7 @@ read the same structured result (TOOLING §1).
 | `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
 | `fha views brackets` | `views.py` | ✓ W103 bracket refresh, W110 Ahnentafel placement; `--fix` applies, `--dry-run` previews |
 | `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; `--format html` deferred (D6) |
-| `fha doctor` | `doctor.py` | ✓ all 12 checks; D5 applied (absent index/photoindex = warning, not error); restricted-source counts use the open-marker predicate on both the index and scan paths; a failing staged-captures check degrades to a warning line instead of killing the report |
+| `fha doctor` | `doctor.py` | ✓ all 12 checks; D5 applied (absent index/photoindex = warning, not error); restricted-source counts use the open-marker predicate on both the index and scan paths; a failing staged-captures check degrades to a warning line instead of killing the report; the backup reminder reads the `fha backup` stamp (`.cache/last_backup.json`) and reports the real last-backup date, info-level |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent; `[restricted]` label covers typed values (`dna`, `by-request`, …); `--root` without fha.yaml is refused (exit 3, the shared `_lib.resolve_root_arg` guard) |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated - transcript search deferred (D7) |
 | `fha search <words>` | `find.py` | ✓ alias for `fha find --text`; positional phrase joined with spaces (`fha search rose hartley`), same engine/output |
@@ -269,6 +269,12 @@ gives every new archive the guarantee for free.
 
 Test fixture: `tests/fixtures/working-copy/` - records present, asset roots
 pointing to absent directories, WORKING_COPY marker present. Lints clean.
+
+## Implemented tools (phase 1 - 2026-07 usability review)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha backup [--to PATH] [--include-assets] [--dry-run]` | `backup.py` | ✓ plan 04 - dated zip snapshot outside the archive, doctor stamp, restore = unzip; see "fha backup - implementation status" below |
 
 ## Implemented tools (milestone 9)
 
@@ -554,7 +560,37 @@ Automated tests: `tests/test_wikitree.py` builds a small on-disk archive (profil
 | Counts | ✓ | from index when fresh, else quick scan |
 | E018 findings detail | ✓ | lists findings when present |
 | Tools version (M9) | ✓ | reads `.plaintext-version` (present/absent/unreadable) + counts pending `.plaintext-backup/` files; unreadable stamp → exit 1, else informational. Self-contained read (no import of scaffold.py) |
-| Backup reminder | ✓ | always printed |
+| Backup recency (plan 04) | ✓ | always printed; reads `.cache/last_backup.json` (the `fha backup` stamp) as a plain artifact - real last-backup date/age/zip when present, an honest "none recorded - run `fha backup`" when absent, unreadable treated as absent with the cause shown. Info-level, CLEAN exit contribution in every state (a reminder that turns a fresh archive's doctor red trains alarm-blindness); followed by the always-printed archive-root + asset-roots list a full backup must cover |
+
+## fha backup - implementation status
+
+One dated zip of the whole archive, written outside it; restore = unzip, by design
+no restore verb exists (TOOLING §13e). The archive tree is only ever read; the one
+in-tree mutation is the `.cache/last_backup.json` stamp `fha doctor` reports.
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Default destination | ✓ | Sibling folder `{root-folder-name}-backups/` beside the archive root, created on first live run; zip named `{root-folder-name}-backup_{YYYY-MM-DD}.zip`, a same-day re-run appending `_2`, `_3`, … (never overwrites) |
+| `--to PATH` / `backup: path:` | ✓ | `--to` (a normal CLI path) beats the optional fha.yaml `backup: {path:}` key (absolute as-is, relative joined to the archive root - the `roots:` tolerance) beats the sibling default. A `backup:` key whose shape is not understood is refused with the expected shape shown, never silently ignored |
+| Destination guard | ✓ | A destination resolving (symlinks resolved first) inside the archive root or any mapped asset root is refused, exit 3, message naming the conflicting folder, the setting it came from, and the fix - a zip inside the tree would be swept into the next backup or an asset scan |
+| Records-only default | ✓ | Walk-and-subtract over the archive root (a hand-added folder is never silently skipped): excludes `.cache/` (rebuildable), `generated/` + `out/` (rebuildable), `.git/` (its own history), the `WORKING_COPY` marker (machine-local), and the resolved photos/documents roots wherever they live - even alias roots inside the archive root (one predictable rule). An `inbox/` resolving inside the root is always included (staged material is irreplaceable); an inbox mapped outside is treated like the other asset roots. Every exclusion prints with its reason; every records-only run prints the NOT-in-this-backup note with real estimated sizes |
+| `--include-assets` | ✓ | Zips each mapped root under its alias name (`photos/…`, `documents/…`) so an unzip restores a self-contained layout; nested roots (e.g. an inbox inside the photo library) are deduplicated by absolute path; an unreachable root is named, never silently empty; external roots get the one-wrinkle restore note (move back and keep fha.yaml, or keep inside and drop the `roots:` mapping). Refused warning-level in working-copy mode (`ok=True`, exit 0, `data.status='working-copy'`) - an asset backup with no assets in it must not exist |
+| Integrity | ✓ | Every member CRC-verified after writing (`zipfile.testzip`); reports `backup verified: N file(s), SIZE`. Any write/verify failure deletes the partial zip and exits 3 with "nothing to clean up" |
+| Doctor stamp | ✓ | `.cache/last_backup.json` (`date`, `zip`, `files`, `bytes`, `assets_included`) written after verification; machine-local by the TOOLING §13d rationale and excluded from the zip itself, so a restored archive honestly reports "no backup recorded". A stamp-write failure after a verified zip warns (doctor will over-remind) but stays exit 0 - the backup the human asked for exists |
+| Working-copy mode | ✓ | Records-only backup runs (reads the tree, writes outside it) with the honest main-archive note and still stamps; `--include-assets` refused as above |
+| `--dry-run` | ✓ | Prints the full plan (destination, per-top-folder file counts and sizes computed at plan time, exclusions with reasons, the assets note) and is byte-for-byte side-effect-free - the destination folder is not even created |
+| Exit codes | ✓ | 0 written+verified / dry-run / WC `--include-assets` refusal; 2 argparse-level bad invocation only; 3 unresolvable root, refused destination, malformed fha.yaml (strict load - wrong roots would exclude the wrong things), write/verify failure. No exit-1 arm: a partial or suspect backup is never a warning, it is a failure |
+
+Automated tests: `tests/test_backup.py` (stdlib `unittest`, synthetic tmp archives)
+covers the records-only sibling-folder default (contents in, exclusions out, stamp
+fields), `--include-assets` alias-path packing for internal and external roots, the
+external-root NOT-in-this-backup note, every destination-guard arm (`--to` inside the
+archive/asset root, the `backup: path:` key, `--to` precedence, an unrecognized
+`backup:` shape), the same-day `_2` suffix with the first zip untouched, dry-run
+byte-for-byte no-op, write- and verify-failure partial-zip cleanup, both working-copy
+arms, and the restore smoke test (extract the zip, `fha lint` the result: zero errors).
+`tests/test_doctor.py` covers the stamp-present/absent/unreadable doctor states and
+their CLEAN exit contribution.
 
 ## fha install / fha update-tools - implementation status
 

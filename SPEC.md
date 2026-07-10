@@ -485,7 +485,12 @@ roots:
   photos: C:/Photos          # absolute path (external library), or "photos" to keep it internal
   documents: documents       # relative → under the archive root
   inbox: C:/Photos/_inbox    # staging may sit inside the photo library's own workflow
+backup:                      # optional: where `fha backup` writes its dated zips (absolute, or
+  path: D:/ArchiveBackups    # relative to the archive root - same tolerance as roots: values).
+                              # Default: a "{root-folder-name}-backups" folder beside the archive.
+                              # Must resolve outside the archive and its asset roots (TOOLING §13e).
 ```
+<!-- PROPOSED AMENDMENT (04-fha-backup, pending owner approval): the optional backup: key above is new with the `fha backup` build. -->
 
 Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name).
 Moving a library is a one-line edit and **no record changes**.

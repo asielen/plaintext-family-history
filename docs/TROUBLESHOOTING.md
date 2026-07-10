@@ -171,10 +171,42 @@ folder.
 still undo, because your archive is plain files and you keep backups.
 
 **Fix.** Restore the affected file (or the whole folder) from your most recent backup zip - the one
-[SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-still-no-git) recommends you keep on a
-separate drive or cloud folder. Copy the good version back over the broken one. *This is the whole
-reason for the backup habit:* a plain copy of plain files is a complete undo. Going forward, zip
-your archive folder before any big editing session and you'll always have a point to fall back to.
+`fha backup` writes into the folder beside your archive (and that
+[SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-still-no-git) recommends you also keep on a
+separate drive or cloud folder). Unzip it somewhere handy and copy the good version back over the
+broken one. *This is the whole reason for the backup habit:* a plain copy of plain files is a
+complete undo. Going forward, run `fha backup` before any big editing session and you'll always
+have a point to fall back to - `fha doctor` tells you how long it's been.
+
+---
+
+## "fha backup" refused the folder I pointed it at
+
+**What happened.** The backup was aimed at a folder *inside* your archive (or inside your photo or
+document folders). A zip stored inside the archive would be swept into the next backup - backups
+of backups, growing forever - so the command refuses rather than quietly doing that.
+
+**Fix.** Point it somewhere outside: `fha backup --to D:/ArchiveBackups`, or just drop `--to` and
+let it use the default folder it creates beside your archive. To make a choice permanent, put it in
+`fha.yaml`:
+
+```yaml
+backup:
+  path: D:/ArchiveBackups
+```
+
+---
+
+## A backup failed partway
+
+**What happened.** `fha backup` couldn't finish writing the zip, or the finished zip failed its
+integrity check (a full disk and a locked file are the usual causes). The half-written file was
+already deleted for you - a backup that might be corrupt is worse than no backup - so there is
+nothing to clean up.
+
+**Fix.** Read the message: it names the cause. Free up disk space (or close the program holding a
+file open, or pick a different `--to` folder), then run `fha backup` again. Your archive itself was
+never touched - backup only reads it.
 
 > **If you *do* use git:** ask the assistant to "show me what changed and undo my last edit," or
 > run `git restore <file>` to drop uncommitted changes (or `git revert` a bad commit). Git keeps a

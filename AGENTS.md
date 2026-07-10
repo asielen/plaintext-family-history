@@ -196,6 +196,8 @@ fha find --related <ID>      neighborhood of any ID - people/places/sources/clai
                             adjacent to a person, place, source, claim, or hypothesis
 fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
 fha packet <P-id>            person export packet
+fha backup                   dated zip of the records, written outside the archive
+                            (--include-assets adds the photo/document roots; restore = unzip)
 ```
 
 Execution rules (all tools): run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.
