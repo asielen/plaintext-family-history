@@ -21,8 +21,10 @@ Plain files zip trivially - that is the payoff of the whole design.  Over
   2. It knows where the assets really live: the photos/documents roots are
      resolved through fha.yaml `roots:` (never hardcoded - they are often
      external and often tens of GB).  The default run is records-only and says
-     so in plain words every time; `--include-assets` zips each mapped root
-     under its alias name so an unzip restores a self-contained layout.
+     so in plain words every time; `--include-assets` zips each EXTERNAL root
+     under its alias name, and a root mapped INSIDE the archive at a different
+     path (`roots: photos: media/photos`) under its real relative path, so an
+     unzip restores exactly the layout the zipped fha.yaml describes.
      An `inbox/` that resolves inside the archive root is always included
      (staged material is irreplaceable); an inbox mapped outside the root is
      treated like the other asset roots.
@@ -40,8 +42,10 @@ and every mapped asset root (a zip inside the tree would be swept into the
 next backup, or into an asset scan).  After writing, every member's CRC is
 verified (`ZipFile.testzip`); on any write or verify failure the partial zip
 is deleted and the run exits 3 - a backup that might be corrupt and says
-nothing is worse than no backup.  Dry-run is byte-for-byte side-effect-free
-(the destination folder is not even created).
+nothing is worse than no backup.  The same cleanup holds for ANY exception
+mid-write, Ctrl-C included: the partial zip is deleted before the exception
+propagates.  Dry-run is byte-for-byte side-effect-free (the destination
+folder is not even created).
 
 Working-copy mode: a records-only backup RUNS (backup reads the tree and
 writes outside it - nothing in the §13d asset-mutating refusal class), with an
@@ -52,9 +56,12 @@ assets is the worst possible output for a backup tool.
 
 Exit codes: 0 = backup written + verified, or dry-run plan printed, or the WC
 --include-assets refusal; 2 = argparse-level bad invocation only; 3 = root
-unresolvable, destination inside the archive/an asset root, malformed
-fha.yaml, or a write/verify failure (partial zip deleted).  There is no exit-1
-arm: a partial or suspect backup is never a warning, it is a failure.
+unresolvable, destination inside the archive/an asset root, a duplicate
+in-zip name (refused before anything is written - extraction of a zip with
+duplicate members silently keeps one copy, and a backup tool never guesses),
+malformed fha.yaml, or a write/verify failure (partial zip deleted).  There
+is no exit-1 arm: a partial or suspect backup is never a warning, it is a
+failure.
 """
 
 from __future__ import annotations
@@ -96,11 +103,13 @@ configure_utf8_stdout()
 #    _asset_roots             - alias -> resolved Path for every excluded asset root
 #    _walk_files              - one tree walk -> (abs_path, arcname, size) entries
 #    _plan_backup             - the full include/exclude plan + size estimates
+#    _arcname_collisions      - names claimed by 2+ files (run_backup refuses)
 #    _fmt_size                - human-readable byte counts for the notes
 #
 #  Execution
 #    _write_zip               - write entries into the zip (test seam)
 #    _verify_zip              - CRC-check every member via testzip (test seam)
+#    _discard_partial         - best-effort unlink of a failed/interrupted zip
 #    _write_stamp             - .cache/last_backup.json, the doctor stamp
 #
 #  Engine / interface
@@ -288,8 +297,8 @@ def _walk_files(
     """Walk `base` and return sorted (abs_path, arcname, size) entries.
 
     Arcnames are posix-form relative paths (the plan's Windows-long-path watch
-    item), prefixed with `arc_prefix` when zipping an asset root under its
-    alias name.  Directory pruning happens against resolved+case-folded paths
+    item), prefixed with `arc_prefix` when zipping an asset root (an external
+    root uses its alias, an internal one its real in-archive relative path).  Directory pruning happens against resolved+case-folded paths
     so an exclusion from fha.yaml matches regardless of stored casing.  A file
     whose size cannot be read is kept with size 0 rather than dropped - if it
     is truly unreadable the zip write fails loudly later, which beats a backup
@@ -365,8 +374,17 @@ def _plan_backup(
             if not root.is_dir():
                 skipped_roots.append((alias, str(root), 0))
                 continue
-            included_roots.append((alias, str(root), not _inside(root, archive_root)))
-            for p, arc, size in _walk_files(root, arc_prefix=alias):
+            internal = _inside(root, archive_root)
+            # An internal mapped root keeps its REAL relative path in the zip
+            # (media/photos/..., not photos/...): the zipped fha.yaml still
+            # maps `photos: media/photos`, so re-homing the files under the
+            # alias would make a 'verified' backup whose unzip puts the
+            # assets where the restored config does not look.  External
+            # roots have no in-archive path, so they pack under the alias
+            # name and the restore note explains the wrinkle.
+            prefix = root.relative_to(archive_root).as_posix() if internal else alias
+            included_roots.append((alias, str(root), not internal))
+            for p, arc, size in _walk_files(root, arc_prefix=prefix):
                 key = _norm(p)
                 if key in seen:
                     continue
@@ -403,6 +421,27 @@ def _plan_backup(
     }
 
 
+def _arcname_collisions(
+    entries: list[tuple[Path, str, int]],
+) -> dict[str, list[Path]]:
+    """Map arcname -> source paths for every in-zip name claimed by 2+ files.
+
+    Zip members are identified by name alone: two entries with the same
+    arcname both write fine and both pass CRC verification (testzip checks
+    integrity, not uniqueness), but extraction silently keeps only one copy -
+    data loss wearing a 'verified' badge.  The known route here is an
+    archive-internal top-level folder named like a mapped root's alias (a
+    real `photos/` folder plus `roots: photos:` pointing at an external
+    library, with --include-assets).  run_backup refuses to write anything
+    when this returns a non-empty dict: a backup tool never guesses which
+    copy the human meant to keep.
+    """
+    by_arc: dict[str, list[Path]] = {}
+    for path, arcname, _size in entries:
+        by_arc.setdefault(arcname, []).append(path)
+    return {arc: paths for arc, paths in by_arc.items() if len(paths) > 1}
+
+
 # ── Execution ─────────────────────────────────────────────────────────────────
 
 def _write_zip(zip_path: Path, entries: list[tuple[Path, str, int]]) -> None:
@@ -433,6 +472,19 @@ def _verify_zip(zip_path: Path) -> str | None:
     return None
 
 
+def _discard_partial(zip_path: Path) -> None:
+    """Best-effort removal of a partial zip after a failed/interrupted write.
+
+    A cleanup failure must never mask the original error, so OSError here is
+    swallowed - the worst case is a leftover partial file, which is exactly
+    the state cleanup was trying to prevent, not a new failure to report.
+    """
+    try:
+        zip_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _write_stamp(archive_root: Path, stamp: dict) -> Path:
     """Write `.cache/last_backup.json`, the fact `fha doctor` reports.
 
@@ -460,16 +512,22 @@ def run_backup(
     """Compute the backup plan and (unless dry-run) write + verify the zip.
 
     The engine half of the TOOLING §1 split: returns a Result, prints nothing.
-    Result.data carries {'status': 'ok'|'dry-run'|'working-copy'|
-    'bad-destination'|'write-failed', 'zip_path', 'files', 'bytes',
-    'assets_included', 'skipped_roots', 'folders', 'excluded'};
-    `changed` lists the zip and the stamp on a live run, nothing on dry-run.
+    Result.data carries the SAME keys on every status - {'status':
+    'ok'|'dry-run'|'working-copy'|'bad-destination'|'name-collision'|
+    'write-failed', 'zip_path', 'files', 'bytes', 'assets_included',
+    'skipped_roots', 'folders', 'excluded'} - so a headless consumer never
+    needs a per-arm guard; arms that never reached planning carry empty
+    values.  `changed` lists the zip and the stamp on a live run, nothing
+    on dry-run.
     `bytes` is the finished zip's on-disk size (the number a human compares
     against free disk space); the per-folder plan sizes are content bytes.
 
-    Failure posture: any write or verify problem deletes the partial zip
-    (the unlink is registered before the first write, so an interrupted run
-    leaves nothing behind) and returns exit 3.  A stamp-write failure after a
+    Failure posture: a duplicate in-zip name is refused BEFORE anything is
+    written (exit 3, data.status='name-collision') - extraction would
+    silently keep one copy, so the plan itself is the failure.  Any write or
+    verify problem deletes the partial zip (the unlink is registered before
+    the first write, so an interrupted run leaves nothing behind) and
+    returns exit 3.  A stamp-write failure after a
     verified zip is reported as a warning message but stays exit 0: the thing
     the human asked for - a verified backup - exists; only doctor's memory of
     it is degraded, and doctor over-reminding is the safe direction.
@@ -488,7 +546,8 @@ def run_backup(
             ok=True,
             exit_code=EXIT_CLEAN,
             data={'status': 'working-copy', 'zip_path': None, 'files': 0,
-                  'bytes': 0, 'assets_included': False, 'skipped_roots': []},
+                  'bytes': 0, 'assets_included': False, 'skipped_roots': [],
+                  'folders': {}, 'excluded': []},
         ).add('warning', msg)
 
     dest_dir, source_desc = _resolve_destination(archive_root, fha_config, to)
@@ -497,7 +556,8 @@ def run_backup(
             ok=False,
             exit_code=EXIT_FAILURE,
             data={'status': 'bad-destination', 'zip_path': None, 'files': 0,
-                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': []},
+                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': [],
+                  'folders': {}, 'excluded': []},
         ).add('error', f'ERROR: {source_desc}')
 
     conflict = _destination_conflict(dest_dir, archive_root, fha_config, source_desc)
@@ -506,11 +566,46 @@ def run_backup(
             ok=False,
             exit_code=EXIT_FAILURE,
             data={'status': 'bad-destination', 'zip_path': None, 'files': 0,
-                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': []},
+                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': [],
+                  'folders': {}, 'excluded': []},
         ).add('error', f'ERROR: {conflict}')
 
     plan = _plan_backup(archive_root, fha_config, include_assets)
     entries = plan['entries']
+
+    collisions = _arcname_collisions(entries)
+    if collisions:
+        alias_roots = {alias: path for alias, path, _ext in plan['included_roots']}
+        causes = []
+        for top in sorted({arc.split('/', 1)[0] for arc in collisions}):
+            if top in alias_roots:
+                causes.append(
+                    f"your archive has its own folder named '{top}/' AND fha.yaml "
+                    f"maps a {top} root ({alias_roots[top]}, the `roots: {top}:` "
+                    f"line) - with --include-assets both would unpack to '{top}/'"
+                )
+            else:
+                causes.append(
+                    f"two different files would both unpack into '{top}/'"
+                )
+        example = sorted(collisions)[0]
+        return Result(
+            ok=False,
+            exit_code=EXIT_FAILURE,
+            data={'status': 'name-collision', 'zip_path': None, 'files': 0,
+                  'bytes': 0, 'assets_included': include_assets,
+                  'skipped_roots': plan['skipped_roots'],
+                  'folders': plan['folders'], 'excluded': plan['excluded']},
+        ).add('error', (
+            f'ERROR: this backup was NOT written: {len(collisions)} file '
+            f'name(s) would collide inside the zip (for example {example}), '
+            f'and unzipping a zip with duplicate names silently keeps only '
+            f'one copy - a backup tool never guesses which. '
+            f'Cause: {"; ".join(causes)}. '
+            f'Fix: rename that archive folder, or point the `roots:` line in '
+            f'fha.yaml somewhere else, then re-run `fha backup`.'
+        ))
+
     total_bytes = sum(size for _p, _arc, size in entries)
     zip_path = _zip_target(dest_dir, archive_root.name)
 
@@ -579,7 +674,10 @@ def run_backup(
         return result
 
     # Live run. Register the cleanup path before the first write: a write that
-    # fails partway (disk full, permission) can still leave a partial file.
+    # fails partway (disk full, permission, Ctrl-C) can still leave a partial
+    # file.  The typed arm turns expected failures into a plain message +
+    # exit 3; the BaseException arm keeps the no-partial-zip promise for
+    # everything else (KeyboardInterrupt included) and lets it propagate.
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
         _write_zip(zip_path, entries)
@@ -587,20 +685,24 @@ def run_backup(
         if verify_error:
             raise OSError(verify_error)
     except (OSError, zipfile.BadZipFile, ValueError) as exc:
-        try:
-            zip_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _discard_partial(zip_path)
         return Result(
             ok=False,
             exit_code=EXIT_FAILURE,
             data={'status': 'write-failed', 'zip_path': str(zip_path),
                   'files': 0, 'bytes': 0, 'assets_included': include_assets,
-                  'skipped_roots': plan['skipped_roots']},
+                  'skipped_roots': plan['skipped_roots'],
+                  'folders': plan['folders'], 'excluded': plan['excluded']},
         ).add('error', (
             f'ERROR: backup failed and the partial file was removed: {exc}. '
             f'Nothing to clean up - fix the cause and re-run `fha backup`.'
         ))
+    except BaseException:
+        # Ctrl-C or anything unforeseen: delete the partial zip, then let
+        # the exception travel.  The promise is 'no partial zip survives an
+        # interrupted run', not 'every failure becomes a Result'.
+        _discard_partial(zip_path)
+        raise
 
     zip_bytes = zip_path.stat().st_size
     result.data['bytes'] = zip_bytes

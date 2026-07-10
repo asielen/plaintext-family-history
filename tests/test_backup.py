@@ -7,7 +7,9 @@ The contracts locked here (plan 04, TOOLING §13e):
     folder and contains the plain-text core (sources/people/places/notes/
     fha.yaml) but nothing rebuildable (.cache/, generated/, out/, .git/), no
     WORKING_COPY marker, and no asset-root files - wherever the asset roots
-    live.  `--include-assets` packs each root under its alias name.
+    live.  `--include-assets` packs each external root under its alias name
+    and each internal mapped root under its real relative path, so an unzip
+    restores exactly the layout the zipped fha.yaml describes.
   - Destination safety: a destination inside the archive root or inside any
     mapped asset root is refused (exit 3) with a message naming the fix; the
     fha.yaml `backup: path:` key is honored and `--to` beats it.
@@ -213,6 +215,83 @@ class ExternalRootTests(unittest.TestCase):
         self.assertIn('outside the archive folder', _message_text(result))
 
 
+class InternalMappedRootTests(unittest.TestCase):
+    """A root mapped INSIDE the archive at a non-default path (`roots:
+    photos: media/photos`) must keep its real relative path in the zip.
+    Re-homing it under the alias made a 'verified' backup whose unzip put
+    the photos at photos/ while the restored fha.yaml still said
+    media/photos - a layout-corrupting restore with exit 0."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.root = _make_archive(self.parent, photos_root='media/photos')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_internal_root_keeps_real_path_and_restore_is_faithful(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            names = zf.namelist()
+        self.assertIn('media/photos/1920/pic.jpg', names)
+        self.assertFalse(any(n.startswith('photos/') for n in names),
+                         f'internal root was re-homed under its alias: {names}')
+        # The external-root restore note must NOT print: the layout in the
+        # zip already matches what the zipped fha.yaml describes.
+        self.assertNotIn('outside the archive folder', _message_text(result))
+        # Restore = unzip, literally: the mapped root resolves after unzip.
+        restored = self.parent / 'restored'
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            zf.extractall(restored)
+        cfg = load_fha_yaml(restored, strict=True)
+        self.assertEqual(cfg['roots']['photos'], 'media/photos')
+        self.assertTrue((restored / 'media' / 'photos' / '1920' / 'pic.jpg').is_file())
+
+
+class ArcnameCollisionTests(unittest.TestCase):
+    """An archive-internal top-level folder named like an external root's
+    alias would put two files at the same name inside the zip; extraction
+    silently keeps one, so the run must refuse (exit 3) before writing
+    anything - a backup tool never guesses which copy the human meant."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.ext_photos = self.parent / 'external-photos'
+        self.root = _make_archive(self.parent, photos_root=str(self.ext_photos))
+        # An ordinary in-archive folder that happens to share the alias name
+        # AND a relative file path with the external photos root.
+        _write(self.root / 'photos' / '1920' / 'pic.jpg', 'a different picture')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_alias_collision_refuses_before_writing(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'name-collision')
+        text = _message_text(result)
+        self.assertIn("'photos/'", text)                 # the colliding folder
+        self.assertIn('roots: photos:', text)            # the fha.yaml line
+        self.assertIn('rename', text.lower())            # the fix
+        self.assertIn('photos/1920/pic.jpg', text)       # an example collision
+        # Nothing was written: no destination folder, no zip, no stamp.
+        self.assertFalse((self.parent / 'my-archive-backups').exists())
+        self.assertFalse((self.root / '.cache' / 'last_backup.json').exists())
+
+    def test_records_only_run_with_lookalike_folder_still_works(self) -> None:
+        # Without --include-assets there is no alias packing, so the
+        # in-archive photos/ folder is just an ordinary records folder.
+        result = _run(self.root)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            self.assertIn('photos/1920/pic.jpg', zf.namelist())
+
+
 class DestinationGuardTests(unittest.TestCase):
     """No destination inside the tree is possible; config key and --to obey
     their precedence."""
@@ -326,6 +405,27 @@ class FailureInjectionTests(unittest.TestCase):
         self.assertFalse(Path(result.data['zip_path']).exists())
         self.assertFalse((self.root / '.cache' / 'last_backup.json').exists())
 
+    def test_keyboard_interrupt_removes_partial_zip(self) -> None:
+        """The docstring promise - an interrupted run leaves nothing behind -
+        must hold for BaseException too: a Ctrl-C mid-write used to skip the
+        typed cleanup arms and leave a partial zip on disk."""
+        def _interrupt(zip_path, entries):
+            zip_path.write_bytes(b'partial garbage')
+            raise KeyboardInterrupt
+
+        orig = backup._write_zip
+        backup._write_zip = _interrupt
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                _run(self.root)
+        finally:
+            backup._write_zip = orig
+
+        dest = self.parent / 'my-archive-backups'
+        leftovers = sorted(dest.glob('*.zip')) if dest.is_dir() else []
+        self.assertEqual(leftovers, [], 'a partial zip survived the interrupt')
+        self.assertFalse((self.root / '.cache' / 'last_backup.json').exists())
+
     def test_verify_failure_removes_zip(self) -> None:
         orig = backup._verify_zip
         backup._verify_zip = lambda zip_path: 'a member failed its integrity check'
@@ -369,6 +469,64 @@ class WorkingCopyTests(unittest.TestCase):
         self.assertEqual(result.data['status'], 'working-copy')
         self.assertIn('main archive', _message_text(result))
         self.assertFalse((self.parent / 'my-archive-backups').exists())
+
+
+class ResultDataContractTests(unittest.TestCase):
+    """run_backup's docstring promises the SAME data keys on every status;
+    a headless consumer reading data['folders'] or data['excluded'] must
+    never hit a KeyError on the early arms (working-copy, bad-destination,
+    name-collision, write-failed)."""
+
+    _KEYS = {'status', 'zip_path', 'files', 'bytes', 'assets_included',
+             'skipped_roots', 'folders', 'excluded'}
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.root = _make_archive(self.parent)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _assert_documented_keys(self, result, status: str) -> None:
+        self.assertEqual(result.data['status'], status)
+        missing = self._KEYS - set(result.data)
+        self.assertFalse(missing, f'{status} arm omits documented keys: {missing}')
+
+    def test_working_copy_arm_carries_all_documented_keys(self) -> None:
+        (self.root / 'WORKING_COPY').write_text('marker\n', encoding='utf-8')
+        result = _run(self.root, include_assets=True)
+        self._assert_documented_keys(result, 'working-copy')
+
+    def test_bad_destination_arm_carries_all_documented_keys(self) -> None:
+        result = _run(self.root, to=str(self.root / 'backups'))
+        self._assert_documented_keys(result, 'bad-destination')
+
+    def test_write_failed_arm_carries_all_documented_keys(self) -> None:
+        def _boom(zip_path, entries):
+            raise OSError('disk full')
+
+        orig = backup._write_zip
+        backup._write_zip = _boom
+        try:
+            result = _run(self.root)
+        finally:
+            backup._write_zip = orig
+        self._assert_documented_keys(result, 'write-failed')
+
+    def test_name_collision_arm_carries_all_documented_keys(self) -> None:
+        # Remap photos to an external root that shares a relative file path
+        # with the archive's own (now ordinary) photos/ folder.
+        ext = self.parent / 'ext-photos'
+        _write(ext / '1920' / 'pic.jpg', 'external copy')
+        (self.root / 'fha.yaml').write_text(
+            f'roots:\n  photos: {ext}\n  documents: documents\n', encoding='utf-8')
+        result = _run(self.root, include_assets=True)
+        self._assert_documented_keys(result, 'name-collision')
+
+    def test_ok_and_dry_run_arms_carry_all_documented_keys(self) -> None:
+        self._assert_documented_keys(_run(self.root, dry_run=True), 'dry-run')
+        self._assert_documented_keys(_run(self.root), 'ok')
 
 
 class RestoreSmokeTests(unittest.TestCase):
