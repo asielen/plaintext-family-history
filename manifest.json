@@ -30,7 +30,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "f4cc69b89578739a8c56940eac7a29940d9de688e15a589e0e3d2e57b8dc3cfe",
+      "sha256": "53d3283b40e5c47b71149fa88239c8c0d9f532d25314ca87c360be89393ceeb8",
       "spec_version": "1.2"
     },
     {
@@ -48,7 +48,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "1bd194d1049d8a141d666781bee93354b35e938a93f7ea67180acbe4a249d2b3",
+      "sha256": "feac922c612a2ecc5529edba9c34c50ceaf95b5430f848356dbc9cf9be0d1cda",
       "spec_version": "1.2"
     },
     {
@@ -72,13 +72,13 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "891cd74786432cd0eada2387fdb0b70d8de3bc65d32897b1ef4e2a9e038882f6",
+      "sha256": "87a9fe248b343075c77aae1de46262be299c6c2c3d814ef8fed5101d40154e38",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "bd90205d06e2ace587f9d5527f808f0adce191d26c6f34c23959db075db41ee8",
+      "sha256": "6081ddd724573a28e9ed6f598a33788a5d3c7d77dfd5705b2d47238bb44f7843",
       "spec_version": "1.2"
     },
     {
@@ -91,7 +91,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "1f719a846bb087ee9ce09c2cd0e2a0d587a4fd973eda821bee6b876ce2b47da7",
+      "sha256": "2c39ccfdfc48b3376040df46e803d179230d8b290a8c6e1d8393e60318485f50",
       "spec_version": "1.2"
     },
     {
@@ -115,7 +115,7 @@
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "23bae59ce2754336902da47671b41288260aa971a71d98108e55a89d550c9887",
+      "sha256": "7a8192e5924ca14bd1802bd6f53d3082d4e0e5f1aa60bf4fd337a2293142c3c9",
       "spec_version": "1.2"
     },
     {
@@ -127,7 +127,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "b17c0679cbfb017926f1cc04cd17905fbaf5fabd346dfb4392792b9ff13478ea",
+      "sha256": "ca9da7372a200fc5c7e20dbd4371569a713f66bf3eb6378352048e142020c1f5",
       "spec_version": "1.2"
     },
     {
@@ -259,7 +259,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "7fb3420aef0428ebcff551bf188f6f362967799db490b0c687360d3a4c82ff80",
+      "sha256": "06ca6aab3a71d10fe7b966128f01d0b895c6e189a3969e0999600896062d112c",
       "spec_version": "1.2"
     },
     {
