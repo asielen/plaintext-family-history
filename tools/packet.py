@@ -1868,7 +1868,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p.add_argument('--overwrite', action='store_true',
                     help='Replace an existing same-name packet directory/zip.')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     p.set_defaults(func=_cmd_packet)
     return p
 
@@ -1888,7 +1887,6 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--dry-run', action='store_true', dest='dry_run')
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    parser.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     parser.set_defaults(func=_cmd_packet)
     args = parser.parse_args(argv)
     return args.func(args)

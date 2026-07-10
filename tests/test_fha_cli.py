@@ -33,6 +33,16 @@ class FhaCliBoundaryTests(unittest.TestCase):
         self.assertIn('fha doctor --help', text)
         self.assertNotIn('Traceback', text)
 
+    def test_removed_fix_inventory_flag_is_argparse_error(self) -> None:
+        # --fix-inventory was removed while unimplemented; passing it is now a
+        # plain argparse error (exit 2), not a silent placeholder warning.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as cm:
+                    fha.main(['lint', '--fix-inventory', '--root', tmp])
+            self.assertEqual(cm.exception.code, 2)
+
     def test_uncaught_exception_is_plain_without_debug(self) -> None:
         original = fha._intercept_doctor
 

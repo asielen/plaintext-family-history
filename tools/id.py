@@ -104,7 +104,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         'prefix', metavar='TYPE', choices=['P', 'S', 'C', 'L', 'H', 'p', 's', 'c', 'l', 'h'],
         help='ID type: P (person) S (source) C (claim) L (place) H (hypothesis)',
     )
-    mint_p.add_argument('-n', type=int, default=1, metavar='N', help='How many IDs to mint (default: 1)')
+    mint_p.add_argument('-n', type=int, default=1, metavar='N', help='How many IDs to mint (default: 1, max 100)')
     # Accept --root after the nested subcommand too (TOOLING §1 dual-position root):
     # fha id mint P --root PATH.  SUPPRESS so an absent flag here doesn't clobber a
     # --root given at the `fha` or `id` level.
@@ -132,6 +132,13 @@ def _run_id(args: argparse.Namespace) -> int:
     if sub == 'mint':
         if args.n < 1:
             print('ERROR: -n must be at least 1.', file=sys.stderr)
+            return EXIT_FAILURE
+        if args.n > 100:
+            # Guard a fat-fingered `-n 500000`: minting is verified one at a time,
+            # so a huge count would grind for no real use. 100 is plenty for a
+            # batch; ask again if you genuinely need more.
+            print('ERROR: -n is capped at 100 IDs per call. Run it again for more.',
+                  file=sys.stderr)
             return EXIT_FAILURE
         try:
             ids = mint_ids(args.prefix, args.n, archive_root)

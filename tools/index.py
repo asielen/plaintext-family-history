@@ -1735,7 +1735,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         '--source', metavar='S-ID',
         help='Upsert only this source (incremental mode)',
     )
-    p.add_argument('-v', '--verbose', action='store_true', help='Show progress')
+    p.add_argument('-v', '--verbose', action='store_true',
+                   help='Show progress (full rebuilds only; ignored with --source)')
     p.set_defaults(func=_run_index)
 
 

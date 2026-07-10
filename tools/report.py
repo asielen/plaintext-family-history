@@ -1085,7 +1085,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
-    p.add_argument('--spec-root', metavar='PATH', help=argparse.SUPPRESS)
     p.add_argument('--full', action='store_true', help='Ignore the snapshot baseline (everything looks new)')
     p.add_argument(
         '--section', metavar='NAME', choices=sorted(_SECTION_KEYS),
@@ -1129,7 +1128,6 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')
-    parser.add_argument('--spec-root', metavar='PATH', help=argparse.SUPPRESS)
     parser.add_argument('--full', action='store_true')
     parser.add_argument('--section', metavar='NAME', choices=sorted(_SECTION_KEYS))
     args = parser.parse_args(argv)

@@ -227,7 +227,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--root', metavar='PATH', help='Archive root')
     p.add_argument(
         '--from-names', metavar='NAMES',
-        help='Semicolon-separated list of names to mint IDs and stubs for',
+        help='Semicolon-separated names to mint IDs and stubs for. Runs INSTEAD '
+             'of the unresolved-reference scan, not in addition to it.',
     )
     p.add_argument('--dry-run', action='store_true',
                    help='Preview without writing')

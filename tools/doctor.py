@@ -826,7 +826,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root')
     p.set_defaults(func=_run_doctor)
 
 
@@ -857,7 +856,6 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root')
-    parser.add_argument('--spec-root', metavar='PATH', help='Spec docs root')
     args = parser.parse_args(argv)
     return _run_doctor(args)
 

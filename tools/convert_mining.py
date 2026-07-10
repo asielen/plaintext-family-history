@@ -13,6 +13,10 @@ TOOLING §11). It is the migration analogue of `fha process` + the draft pass, a
 migration (re-applying mints fresh IDs and would duplicate), so the dry-run plan
 is the safety gate; review it, then `--apply` once.
 
+This command is deliberately hidden from the top-level `fha --help` listing (its
+`add_parser` carries no `help=`): it is a one-owner, one-time migration, not an
+everyday verb. It stays fully runnable, with its own `fha convert-mining --help`.
+
 What it produces (TOOLING §11):
 
   1. **Sources first.** Each legacy `S###` → its transcript copied into
@@ -1102,9 +1106,12 @@ mints fresh IDs and would duplicate everything, so review the plan, then apply."
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
+    # No help= kwarg on purpose: argparse then omits convert-mining from the
+    # top-level `fha --help` command listing (it is a one-owner, one-time legacy
+    # migration that does not belong in the everyday list) while keeping it fully
+    # runnable and still showing its own `fha convert-mining --help`.
     p = subparsers.add_parser(
         'convert-mining',
-        help='Migrate a legacy transcript-mining export into conformant records',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -1057,7 +1057,6 @@ def register(subs: argparse._SubParsersAction) -> None:
         help='Also list files that are already up to date.',
     )
     p_update.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    p_update.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     p_update.set_defaults(func=_cmd_update_tools)
 
 

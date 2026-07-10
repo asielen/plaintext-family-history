@@ -686,6 +686,16 @@ def _gedcom_payload(
     """
     messages: list[str] = []
 
+    # A seed P-id and --all name two different exports (from that person, vs
+    # everyone), so the combination is ambiguous - reject it rather than
+    # silently letting --all win and dropping the seed the user typed.
+    if all_persons and pid:
+        return {'status': 'bad-args', 'text': None,
+                'messages': ['ERROR: a P-id and --all conflict - drop one. '
+                             'Pass <P-id> to export from that person, or --all to '
+                             'export everyone.'],
+                'person_count': 0, 'family_count': 0}
+
     if not all_persons:
         if not pid:
             return {'status': 'bad-args', 'text': None,
@@ -938,7 +948,8 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--generations', type=int, metavar='N',
                    help='Depth cap for descendants/ancestors (default: unlimited).')
     p.add_argument('--all', action='store_true',
-                   help='Export every person in the index (ignores --mode).')
+                   help='Export every person in the index. Do not combine with a '
+                        'P-id (they conflict); --all needs no --mode.')
     p.add_argument('--include-living', action='store_true', dest='include_living',
                    help='Export living/unknown persons in full (default: redacted).')
     p.add_argument('--out', metavar='FILE', help='Write to FILE (default: stdout).')
@@ -967,7 +978,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     _add_arguments(p)
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     p.set_defaults(func=_cmd_gedcom)
     return p
 
@@ -979,7 +989,6 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     )
     _add_arguments(parser)
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    parser.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     parser.set_defaults(func=_cmd_gedcom)
     args = parser.parse_args(argv)
     return args.func(args)

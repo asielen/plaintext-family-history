@@ -1105,7 +1105,6 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p.add_argument('person_id', metavar='P-id', help='Curated person to export.')
     p.add_argument('--out', metavar='FILE', help='Write to FILE (default: stdout).')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     p.set_defaults(func=_cmd_wikitree)
     return p
 
@@ -1118,7 +1117,6 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('person_id', metavar='P-id', help='Curated person to export.')
     parser.add_argument('--out', metavar='FILE', help='Write to FILE (default: stdout).')
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    parser.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     parser.set_defaults(func=_cmd_wikitree)
     args = parser.parse_args(argv)
     return args.func(args)

@@ -3088,7 +3088,6 @@ def _add_site_args(p: argparse.ArgumentParser) -> None:
                    help='Report how many pages would be built and what a rebuild would '
                         'first remove from the output folder, without writing anything.')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    p.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
 
 
 # User-facing --help text (the module docstring stays developer-facing).

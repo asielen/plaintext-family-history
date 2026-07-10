@@ -49,7 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
         '--spec-root', metavar='PATH',
         dest='global_spec_root',
         help='Spec docs root when SPEC.md/TOOLING.md are not in the archive '
-             '(e.g. running from the public spec repo)',
+             '(e.g. running from the public spec repo). '
+             '(reserved: only `fha lint` reads it yet)',
     )
     parser.add_argument(
         '--debug',
@@ -410,10 +411,10 @@ def main(argv: list[str] | None = None) -> int:
                 or getattr(args, 'global_root', None)
             )
         if getattr(args, 'spec_root', None) is None:
-            args.spec_root = (
-                getattr(args, 'views_spec_root', None)
-                or getattr(args, 'global_spec_root', None)
-            )
+            # Only `fha lint` still defines a subcommand --spec-root; every other
+            # subcommand's copy was removed (it read nothing). The global
+            # `fha --spec-root` position stays, threaded here for lint.
+            args.spec_root = getattr(args, 'global_spec_root', None)
 
         if not args.command:
             parser.print_help()

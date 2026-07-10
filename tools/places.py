@@ -743,7 +743,6 @@ def run_geocode(
     fha_config: dict,
     *,
     place_id: str | None = None,
-    all_places: bool = False,
     offline: bool = False,
     dry_run: bool = False,
     confirm=None,
@@ -993,6 +992,9 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     place_id = getattr(args, 'place', None)
+    # --all is the explicit opt-in for the bulk mode; the CLI requires a scope so
+    # a bare `fha places geocode` can't silently process every place. The engine
+    # itself needs no all_places flag - place_id=None IS the all-mode.
     all_places = getattr(args, 'all', False)
     if not place_id and not all_places:
         print('ERROR: pass --place L-id or --all.', file=sys.stderr)
@@ -1003,7 +1005,7 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
 
     result = run_geocode(
         archive_root, fha_config,
-        place_id=place_id, all_places=all_places,
+        place_id=place_id,
         offline=getattr(args, 'offline', False),
         dry_run=getattr(args, 'dry_run', False),
     )
