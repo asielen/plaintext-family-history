@@ -1950,9 +1950,15 @@ def run_tree(
     Missing index → exit 3 (tool cannot run without it).  The rendered tree text
     lands in `data['output']`; an `--out FILE` write is recorded in `changed`.
     """
-    # HTML tree output is not offered yet: --format html is removed from the
-    # argparse choices (an argparse error) rather than accepted and refused at
-    # runtime. Plan 13 re-adds 'html' to the choices with the real renderer.
+    # HTML is deferred per TOOLING §7 D6
+    if fmt == 'html':
+        print(
+            'ERROR: HTML tree output is not yet available from `fha views tree`. '
+            'Use `fha site` to render the tree as HTML.',
+            file=sys.stderr,
+        )
+        return _views_result(EXIT_FAILURE)
+
     if not person_id:
         print('ERROR: a P-id argument is required.', file=sys.stderr)
         return _views_result(EXIT_FAILURE)
@@ -2473,10 +2479,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Maximum generations / hops (default: unlimited; fan default: 2).',
     )
     tr.add_argument(
-        # 'html' is intentionally omitted until plan 13 ships the renderer; for a
-        # browsable tree today, build the site (`fha site`).
-        '--format', choices=['json', 'dot'], default='json', dest='format',
-        help='Output format (default: json). For an HTML tree, build the site.',
+        '--format', choices=['json', 'dot', 'html'], default='json', dest='format',
+        help='Output format (default: json; html is deferred to fha site).',
     )
     tr.add_argument('--out', metavar='FILE', help='Write output to FILE instead of stdout.')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -2572,7 +2576,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')
     tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
     tr.add_argument('--generations', type=int, metavar='N')
-    tr.add_argument('--format', choices=['json', 'dot'], default='json', dest='format')
+    tr.add_argument('--format', choices=['json', 'dot', 'html'], default='json', dest='format')
     tr.add_argument('--out', metavar='FILE')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     tr.set_defaults(func=_cmd_tree)

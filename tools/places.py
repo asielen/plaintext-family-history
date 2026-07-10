@@ -1026,7 +1026,7 @@ Keep your places tidy and fill in their coordinates.
 
   fha places lint                    Check the place registry for problems
   fha places candidates              Recurring place-text worth a registry entry
-  fha places geocode [--place L-id]  Fill in coordinates (offline, confirmed one by one)
+  fha places geocode (--place L-id | --all)  Fill in coordinates (offline, confirmed one by one)
 
 "Am I spelling this town three different ways?", "which place should become a
 real entry?", "fill in the coordinates for these towns.\""""

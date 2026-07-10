@@ -563,7 +563,7 @@
     {
       "path": "tools/places.py",
       "category": "operating",
-      "sha256": "f04ca79b9e385abb603078908825a6d6bed9836ff482f92e7ccabb7a4fe2abd9",
+      "sha256": "f2fc095f94767e17303743c387965512dcf6bafd55197c0d9fa47d205f04e0df",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "8a5ca53c584fc2e637e14739586510cc609016ff9c8c106f4fae07911d1f3b67",
+      "sha256": "b61900a36b68fb4e7ee695e9a231373fd3a33ee47d8a0413ef265581cb4a7a73",
       "spec_version": "1.2"
     },
     {
@@ -665,7 +665,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "b6eeed57e5abd9b7a0474677b3eccc605d8745d882cb38781589dc09a5e308c9",
+      "sha256": "bdb4b57dd1e0f0e77c584df4a55b2a0478420c6e9cd7d7ea7dcfaee8c202177d",
       "spec_version": "1.2"
     },
     {
