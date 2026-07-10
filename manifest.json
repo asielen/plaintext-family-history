@@ -6,13 +6,13 @@
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "e5667e1156968365a46d7913b7f039ccac26b5d01c5f5fecafeb9ffae73e3f87",
+      "sha256": "c3918693d1e3090c28ff5a0174f79afc2c83870fd7ee86661aa4d6c6a5e01cce",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "6d7124115343c1b869c4ff34825422aa58bda0439449ac8d75755612e5ec7242",
+      "sha256": "9b8cffe810837104d068346090895f900da7c9d78327f6573c6ecdc965791e3e",
       "spec_version": "1.2"
     },
     {
@@ -36,7 +36,7 @@
     {
       "path": ".claude/skills/photo-context/DESIGN.md",
       "category": "operating",
-      "sha256": "60545c3a9a710c723e9ffe101377d90d2163e3185980cc6174d2cdc740145b30",
+      "sha256": "61b2512d70f7c1f5e32a7167ce0638a841cb259fafb10d071426b37bfe8ef28d",
       "spec_version": "1.2"
     },
     {
@@ -103,7 +103,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "9ab280ac44a351b1611f925f901e70742e3e48ab405c4e07d4f1adfac2525a0c",
+      "sha256": "15aa9ac7cf36c514da7fcc59ca3121f49594afe61078f404c14a722729230414",
       "spec_version": "1.2"
     },
     {
@@ -115,7 +115,7 @@
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "7a8192e5924ca14bd1802bd6f53d3082d4e0e5f1aa60bf4fd337a2293142c3c9",
+      "sha256": "199bc74e22813f153227f70375f50478b5160bca2df20a9eef2a974793529f90",
       "spec_version": "1.2"
     },
     {
@@ -127,7 +127,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "a518bea30530b8f373b9099ae13772d4fe5366896a343d2016506cf68017a13d",
+      "sha256": "5a6b3152ac752626f33e2c4d18043707ffc0a49a9a678dc6d1262225e7d8b746",
       "spec_version": "1.2"
     },
     {
@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "0cabd4e65f39195c1c2b736e14bb122bc4fe3c43d391cfaff113ccb87211e4d5",
+      "sha256": "c6b60f0ffa250bb41811073fb7a284b21c85f922a5c4f907dd217cb02d96394d",
       "spec_version": "1.2"
     },
     {
@@ -151,7 +151,7 @@
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "011a068ef1a8af875297f804e7068753b1786e4055a123a70f133932f0f2a19e",
+      "sha256": "e3ba77f179ae911fca0c38e97672ff50bd534f0841c33b03f82c9711b92d90e9",
       "spec_version": "1.2"
     },
     {
@@ -425,7 +425,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "f7c8216849c7e1f2830074c73d2576b6ee8d09792564b4177c8b68059578c750",
+      "sha256": "4b997d4434d43c2e41cb5edbefd6c97dfd16f330718b6aa3b6f0448e91dee3a5",
       "spec_version": "1.2"
     },
     {
@@ -569,7 +569,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "15085697892cf9ea5f8b8695b9a5bcda3b0d784dae4843eaaddeab85c66146df",
+      "sha256": "fe28118b105653596d66c5a8ecb8f4630cb7aa49b51dd1f92516f4dacf33b998",
       "spec_version": "1.2"
     },
     {

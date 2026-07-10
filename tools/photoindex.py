@@ -33,7 +33,7 @@ re-scraped via exiftool (the slow step). Face-region metadata is cached in
 SQLite alongside keywords, so grouping, person resolution, and the FTS table
 can be recomputed in full after every scan from already-scraped rows.
 
-This PR (BUILD.md M3.4) adds `fha photoindex reconcile` and `fha photoindex
+BUILD.md M3.4 added `fha photoindex reconcile` and `fha photoindex
 tag-person`, the two sub-commands that touch on-disk state or embedded
 metadata, completing layer 3. `reconcile` heals drift between the catalog's
 stored paths and what is actually on disk (a file moved outside `fha` is
@@ -41,6 +41,11 @@ re-matched by its embedded `SOURCE:` keyword, never by trusting the old
 path); `tag-person` writes a bare `P-id` keyword into specific photos -
 either explicit `--paths` or every photo carrying an ambiguous `--from-face-
 tag` name - making a human identification durable in the file itself.
+BUILD.md M3.5 adds `fha photoindex set-summary`, the second embedded-
+metadata write path: it rewrites a photo's AI summary (`UserComment`,
+SPEC §20 rule 5) while preserving any human-written comment text verbatim,
+addressed by one catalog path or a whole variation group so fronts/backs/
+copies stay consistent.
 
 CODE MAP
 --------
@@ -95,13 +100,24 @@ CODE MAP
     _refresh_photo_fts_keywords - resync photo_fts.keywords for just-tagged paths
     apply_tag_person          - write the P-id keyword + update photo_keywords/photo_people/photo_fts
 
+  Set-summary (fha photoindex set-summary - M3.5)
+    _compose_user_comment     - pure compose rule: AI text replaces AI text; human text
+                                 is preserved verbatim and the AI block appended below
+    _run_exiftool_read_comments - per-file `exiftool -j -UserComment` read (test seam)
+    _run_exiftool_write_comment - per-file `exiftool -UserComment=` write (test seam;
+                                 the second original-file write path after _run_exiftool_write)
+    _resolve_group_id         - forgiving --group lookup (exact, bare-S-id shorthand,
+                                 unambiguous case-insensitive fallback)
+    run_set_summary_plan      - resolve targets + read current comments (read-only preview)
+    run_set_summary           - WC refusal; per-file read-compose-write; photos/photo_fts mirror
+
   Scan orchestration
     _get_db                   - open (or create) .cache/photos.sqlite, apply DDL
     run_scan                  - top-level: walk photos root, scrape, group, report
 
   CLI
     register                  - attach 'photoindex' to the main fha parser; wires 'find',
-                                 'triage', 'report', 'reconcile', 'tag-person'
+                                 'triage', 'report', 'reconcile', 'tag-person', 'set-summary'
     _resolve_root_and_config  - shared --root/fha.yaml preamble for every _cmd_* handler
     _print_photoindex_status  - shared absent/unreadable/stale message + exit-code mapping
     _cmd_scan                 - argparse -> run_scan bridge
@@ -110,6 +126,7 @@ CODE MAP
     _cmd_report               - argparse -> run_report bridge
     _cmd_reconcile            - argparse -> run_reconcile bridge
     _cmd_tag_person           - argparse -> run_tag_person_plan -> preview/confirm -> apply_tag_person
+    _cmd_set_summary          - argparse -> run_set_summary_plan -> preview/confirm -> run_set_summary
     _standalone_main          - for `python tools/photoindex.py` direct invocation
 """
 
@@ -1752,6 +1769,346 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     )
 
 
+# ── Set-summary (fha photoindex set-summary - BUILD.md M3.5) ─────────────
+
+def _compose_user_comment(existing: str | None, new_text: str, append: bool) -> tuple[str, bool]:
+    """
+    Compose the UserComment text `fha photoindex set-summary` will write.
+
+    Returns (composed_text, preserved_human). Pure function with no I/O so
+    the compose rule - the part of this command that decides whether a
+    human's words survive - is unit-testable in isolation.
+
+    The rule fails toward preservation (SPEC §20 rule 5: "AI output stays
+    marked as AI; human captions are preserved"):
+      - New text is always written AI-marked (`AI: <text>`, the same
+        convention _AI_COMMENT_RE / the triage scorer already recognize).
+      - An existing comment that is itself AI-marked is replaced - captions
+        are supposed to get smarter over time - unless `append` keeps the
+        old block and adds the new one below it.
+      - An existing comment with no AI marker is human text: it is preserved
+        byte-for-byte and the AI block is appended below, whether or not
+        `append` was requested. There is deliberately no flag that can
+        replace human text.
+    """
+    new_block = 'AI: ' + new_text
+    if existing is None or not existing.strip():
+        return new_block, False
+    if _AI_COMMENT_RE.match(existing):
+        if append:
+            return existing + '\n\n' + new_block, False
+        return new_block, False
+    return existing + '\n\n' + new_block, True
+
+
+def _run_exiftool_read_comments(paths: list[Path]) -> dict[Path, tuple[str | None, str | None]]:
+    """
+    Read each file's current embedded `UserComment` - one `exiftool -j`
+    process per file, mirroring _run_exiftool_write's per-file rationale:
+    a single locked or corrupt file must report as that file's failure, not
+    poison a batched call covering every sibling.
+
+    Returns {path: (comment, error)}: (text_or_None, None) on success -
+    None meaning the file has no UserComment - or (None, message) when the
+    file could not be read. Raises RuntimeError only when exiftool itself
+    is missing (an environment problem, not a per-file outcome).
+    """
+    results: dict[Path, tuple[str | None, str | None]] = {}
+    for p in paths:
+        cmd = ['exiftool', '-j', '-UserComment', str(p)]
+        try:
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
+        except FileNotFoundError as e:
+            raise RuntimeError(format_exiftool_error('fha photoindex set-summary')) from e
+        if proc.returncode != 0:
+            results[p] = (None, proc.stderr.strip() or 'exiftool could not read this file')
+            continue
+        try:
+            rows = json.loads(proc.stdout)
+        except ValueError:
+            results[p] = (None, 'exiftool returned unreadable output for this file')
+            continue
+        comment = rows[0].get('UserComment') if rows else None
+        results[p] = (comment if isinstance(comment, str) else None, None)
+    return results
+
+
+def _run_exiftool_write_comment(items: list[tuple[Path, str]]) -> dict[Path, str | None]:
+    """
+    Write each (path, composed_comment) pair's text into the file's embedded
+    `UserComment`, overwriting the original in place.
+
+    One exiftool process per file, not one batched call: exiftool reports a
+    single non-zero exit for the whole invocation if *any* file fails, which
+    would hide successful sibling writes behind one bare error. Per-file
+    processes let the caller cache exactly the paths that wrote and report
+    the rest (AGENTS_TOOLING: partial success must be reported clearly).
+
+    Only `-UserComment` is ever written. The human-caption fields
+    (`Caption-Abstract`, `XMP-dc:Description`) are never named in the
+    command - preserving them is a hard contract (SPEC §20 rule 5), not a
+    default. This is an original-photo-file mutation (AGENTS.md: photos are
+    never renamed, but spec'd metadata writes through `fha` tools are the
+    sanctioned exception); callers must preview and get human confirmation
+    first - see `_cmd_set_summary`.
+
+    Returns `{path: None}` per successful write, `{path: stderr}` per
+    failure. Raises RuntimeError only when exiftool itself is missing.
+    """
+    results: dict[Path, str | None] = {}
+    for p, comment in items:
+        cmd = ['exiftool', f'-UserComment={comment}', '-overwrite_original_in_place', str(p)]
+        try:
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
+        except FileNotFoundError as e:
+            raise RuntimeError(format_exiftool_error('fha photoindex set-summary')) from e
+        results[p] = None if proc.returncode == 0 else proc.stderr.strip()
+    return results
+
+
+def _resolve_group_id(conn: sqlite3.Connection, raw: str) -> str:
+    """
+    Match a user-supplied --group argument to a stored photo_groups.group_id.
+
+    Forgiving on purpose (AGENTS.md "forgiving, not fussy"): group ids are
+    stored as `SOURCE:<lowercase S-id>` or `STEM:<dir>:<stem>`, but a human
+    will type the S-id as it appears in the source record (`S-AB12...`),
+    with or without the `SOURCE:` prefix. Tries, in order: the exact string;
+    a bare S-id normalized into `SOURCE:` form; a `SOURCE:`-prefixed id with
+    the id part normalized; finally a case-insensitive match, accepted only
+    when it resolves to exactly one stored group (STEM keys embed filesystem
+    paths whose case can be significant, so an ambiguous fold never guesses).
+
+    Raises ValueError with the format example when nothing matches.
+    """
+    candidates = [raw]
+    if is_valid_id(raw) and id_type_of(raw) == 'S':
+        candidates.append(f'SOURCE:{normalize_id(raw)}')
+    if raw.upper().startswith('SOURCE:'):
+        candidates.append(f'SOURCE:{normalize_id(raw.split(":", 1)[1])}')
+    for cand in candidates:
+        row = conn.execute(
+            'SELECT group_id FROM photo_groups WHERE group_id=?', (cand,)
+        ).fetchone()
+        if row:
+            return row['group_id']
+    rows = conn.execute(
+        'SELECT group_id FROM photo_groups WHERE LOWER(group_id)=LOWER(?)', (raw,)
+    ).fetchall()
+    distinct = {r['group_id'] for r in rows}
+    if len(distinct) == 1:
+        return next(iter(distinct))
+    raise ValueError(
+        f'{raw!r} is not a known photo group. For a processed photo the group id is '
+        'SOURCE: plus its S-id (e.g. --group "SOURCE:S-ab12cd34ef"); '
+        'or pass the photo\'s path instead to write just that one file.'
+    )
+
+
+def run_set_summary_plan(
+    archive_root: Path,
+    fha_config: dict,
+    text: str,
+    path: str | None = None,
+    group: str | None = None,
+    append: bool = False,
+) -> Result:
+    """
+    Resolve the target files for `fha photoindex set-summary` and read their
+    current comments, writing nothing (the plan half of the plan/apply split,
+    mirroring run_tag_person_plan). The CLI previews this old -> new plan and
+    prompts before any original file is touched; tests exercise target
+    resolution and composition without invoking exiftool for real.
+
+    Exactly one of `path` (one catalog file) or `group` (every member of a
+    variation group, so fronts/backs/copies stay consistent - TOOLING §9)
+    is required; ValueError otherwise, and for an empty --text, an unknown
+    path/group, or a group with no on-disk members.
+
+    Unlike tag-person's plan, any non-fresh catalog blocks here (ok=False,
+    EXIT_FAILURE, data.status carries the reason) rather than letting the
+    CLI decide: building the preview means reading original files resolved
+    through cached paths, and a stale cache can point a read - and the write
+    that follows it - at the wrong file. There is no useful stale mode for
+    a mutating command.
+
+    Returns Result data {'status', 'text', 'append', 'plan': [{'path',
+    'old', 'new', 'preserved_human'}, ...], 'failed': [(path, error), ...]}
+    where 'failed' lists files whose current comment could not be read -
+    they are excluded from 'plan' so an unreadable comment can never be
+    silently composed over (fail toward preservation).
+    """
+    if bool(path) == bool(group):
+        raise ValueError(
+            'give exactly one target: a photo path (as printed by fha photoindex find) '
+            'or --group <group-id>'
+        )
+    text = (text or '').strip()
+    if not text:
+        raise ValueError(
+            '--text is empty - pass the summary to write, '
+            'e.g. --text "Margaret and her father at the farm, about 1912"'
+        )
+
+    status, _lag = photoindex_status(archive_root, fha_config)
+    empty = {'status': status, 'text': text, 'append': append, 'plan': [], 'failed': []}
+    if status != 'fresh':
+        return Result(ok=False, exit_code=EXIT_FAILURE, data=empty)
+
+    conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
+    conn.row_factory = sqlite3.Row
+    try:
+        if not _schema_is_usable(conn):
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={**empty, 'status': 'unreadable'})
+        try:
+            if path:
+                targets = [_resolve_catalog_path(conn, archive_root, fha_config, path)]
+            else:
+                group_id = _resolve_group_id(conn, group)
+                targets = [
+                    row['path'] for row in conn.execute(
+                        'SELECT path FROM photos WHERE group_id=? AND path NOT LIKE ? '
+                        'ORDER BY path',
+                        (group_id, f'{_MISSING_PREFIX}%'),
+                    )
+                ]
+                if not targets:
+                    raise ValueError(
+                        f'photo group {group_id} has no files on disk to write - '
+                        'run fha photoindex reconcile to check for missing files'
+                    )
+        except sqlite3.Error:
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={**empty, 'status': 'unreadable'})
+    finally:
+        conn.close()
+
+    abs_by_target = {t: resolve_path(t, fha_config, archive_root) for t in targets}
+    reads = _run_exiftool_read_comments(list(abs_by_target.values()))
+
+    plan_rows: list[dict] = []
+    failed: list[tuple[str, str]] = []
+    for target in targets:
+        comment, error = reads[abs_by_target[target]]
+        if error is not None:
+            failed.append((target, error))
+            continue
+        composed, preserved = _compose_user_comment(comment, text, append)
+        plan_rows.append({
+            'path': target, 'old': comment, 'new': composed, 'preserved_human': preserved,
+        })
+    return Result(data={
+        'status': status, 'text': text, 'append': append,
+        'plan': plan_rows, 'failed': failed,
+    })
+
+
+def run_set_summary(
+    archive_root: Path,
+    fha_config: dict,
+    text: str,
+    candidates: list[str],
+    append: bool = False,
+) -> Result:
+    """
+    Write the AI summary into each candidate photo's embedded `UserComment`,
+    then patch the cache (`photos.user_comment` + `photo_fts.user_comment`)
+    for the paths that wrote, so `fha photoindex find --text` and `fha find`
+    see the new summary immediately - no rescan needed. The mirror update is
+    written-paths-only, the same discipline as _refresh_photo_fts_keywords.
+
+    Each file is read-composed-written independently right here, per file:
+    the composition input is the file's own current comment at write time,
+    never the cached copy, so the preserve-human rule can never act on a
+    stale value the freshness gate happened to miss. A failed read or write
+    on one photo never discards the writes and cache updates of siblings
+    that succeeded.
+
+    `candidates` are catalog alias paths (from run_set_summary_plan). In
+    working-copy mode this refuses up front - warning-level Result, ok=True,
+    exit clean, data.status='working-copy' (TOOLING §13d): the photo files
+    live on the main machine.
+
+    Returns Result data {'written': [path...], 'failed': [(path, error)...],
+    'preserved_human': [path...]} with `changed` = the files written; exit
+    EXIT_FAILURE when any candidate failed, matching apply_tag_person.
+
+    Raises RuntimeError (wrapping sqlite3.Error) if the cache update fails
+    after one or more originals were already written - the in-file writes
+    cannot be rolled back, so the caller must learn exactly which `written`
+    paths now carry the new comment even though the cache did not keep up.
+    Each path is recorded in `written` before its own cache update is
+    attempted, for the same recovery-list reason as apply_tag_person.
+    """
+    if is_working_copy(archive_root):
+        # Warning-level refusal, not a failure: ok stays True, exit stays clean,
+        # data.status='working-copy' is the machine discriminator (TOOLING §13d).
+        return Result(
+            ok=True,
+            exit_code=EXIT_CLEAN,
+            data={'status': 'working-copy', 'written': [], 'failed': [], 'preserved_human': []},
+        ).add(
+            'warning',
+            'photoindex set-summary is not available in working-copy mode - '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+        )
+    text = (text or '').strip()
+    seen: set[str] = set()
+    candidates = [c for c in candidates if not (c in seen or seen.add(c))]
+    if not candidates:
+        return Result(data={'written': [], 'failed': [], 'preserved_human': []})
+
+    abs_by_candidate = {c: resolve_path(c, fha_config, archive_root) for c in candidates}
+    reads = _run_exiftool_read_comments(list(abs_by_candidate.values()))
+
+    failed: list[tuple[str, str]] = []
+    to_write: list[tuple[str, Path, str, bool]] = []   # (alias, abs, composed, preserved)
+    for candidate in candidates:
+        abs_path = abs_by_candidate[candidate]
+        comment, error = reads[abs_path]
+        if error is not None:
+            failed.append((candidate, error))
+            continue
+        composed, preserved = _compose_user_comment(comment, text, append)
+        to_write.append((candidate, abs_path, composed, preserved))
+
+    write_results = _run_exiftool_write_comment([(a, c) for _, a, c, _ in to_write])
+
+    written: list[str] = []
+    preserved_human: list[str] = []
+    conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
+    try:
+        try:
+            for candidate, abs_path, composed, preserved in to_write:
+                error = write_results[abs_path]
+                if error is not None:
+                    failed.append((candidate, error))
+                    continue
+                written.append(candidate)
+                if preserved:
+                    preserved_human.append(candidate)
+                conn.execute(
+                    'UPDATE photos SET user_comment=? WHERE path=?', (composed, candidate)
+                )
+                conn.execute(
+                    'UPDATE photo_fts SET user_comment=? WHERE path=?', (composed, candidate)
+                )
+            conn.commit()
+        except sqlite3.Error as e:
+            written_list = ', '.join(written) if written else 'none'
+            raise RuntimeError(
+                f'photo cache update failed after writing in-file summaries to: {written_list} ({e})'
+            ) from e
+    finally:
+        conn.close()
+    return Result(
+        ok=(not failed),
+        exit_code=(EXIT_FAILURE if failed else EXIT_CLEAN),
+        data={'written': written, 'failed': failed, 'preserved_human': preserved_human},
+        changed=list(written),
+    )
+
+
 # ── Scan orchestration ───────────────────────────────────────────────────
 
 def _delete_path_rows(conn: sqlite3.Connection, tables: tuple[str, ...], path_key: str) -> None:
@@ -2071,6 +2428,17 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     tag_p.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview the candidate list without writing or prompting')
     tag_p.set_defaults(func=_cmd_tag_person)
 
+    summary_p = deferred.add_parser(
+        'set-summary', help='Write an AI summary into a photo\'s embedded comment, preserving human text'
+    )
+    summary_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
+    summary_p.add_argument('path', nargs='?', metavar='PATH', help='One catalog photo path to write (as printed by fha photoindex find)')
+    summary_p.add_argument('--group', metavar='GROUP-ID', help='Write every variant in this photo group instead of one file (e.g. "SOURCE:S-ab12cd34ef")')
+    summary_p.add_argument('--text', required=True, metavar='TEXT', help='The new summary text (stored AI-marked, as "AI: <text>")')
+    summary_p.add_argument('--append', action='store_true', help='Keep an existing AI summary and add this one below it instead of replacing it')
+    summary_p.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview the old and new comment per file without writing or prompting')
+    summary_p.set_defaults(func=_cmd_set_summary)
+
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
@@ -2080,6 +2448,7 @@ Make your photo library searchable without opening Lightroom.
   fha photoindex find --person <P-id>  Every photo of someone
   fha photoindex triage --top 20       Un-filed photos worth processing next
   fha photoindex tag-person <P-id>     Tag a face across every copy
+  fha photoindex set-summary <path> --text "..."   Update a photo's AI summary
 
 Photos are never renamed; identity lives in the embedded metadata."""
 
@@ -2467,6 +2836,115 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     print(f"Tagged {len(result['tagged'])} photo(s).")
+    return EXIT_CLEAN
+
+
+def _confirm_write(prompt: str) -> bool:
+    """
+    The default [y/N] confirmation for set-summary's live write path.
+
+    A module-level callable (rather than an inline input()) so tests and
+    headless harnesses can inject an answer - the same injectable-confirm
+    seam as `fha places geocode`. EOF (a closed stdin, a piped run) declines:
+    an original-file write must never proceed on a missing answer.
+    """
+    try:
+        return input(prompt).strip().lower() == 'y'
+    except EOFError:
+        return False
+
+
+def _one_line(text: str | None) -> str:
+    """Collapse a comment to one displayable line for the preview (display only)."""
+    if not text:
+        return '(none)'
+    return ' '.join(text.split())
+
+
+def _cmd_set_summary(args: argparse.Namespace, confirm=None) -> int:
+    if confirm is None:
+        confirm = _confirm_write
+    resolved = _resolve_root_and_config(args)
+    if isinstance(resolved, int):
+        return resolved
+    archive_root, fha_config = resolved
+
+    if is_working_copy(archive_root):
+        print(
+            'photoindex set-summary is not available in working-copy mode - '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
+
+    try:
+        plan = run_set_summary_plan(
+            archive_root, fha_config, getattr(args, 'text', ''),
+            path=getattr(args, 'path', None),
+            group=getattr(args, 'group', None),
+            append=getattr(args, 'append', False),
+        )
+    except (ValueError, RuntimeError) as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    exit_code = _print_photoindex_status(plan['status'], require_fresh=True, archive_root=archive_root)
+    if exit_code is not None:
+        return exit_code
+
+    for path, error in plan['failed']:
+        print(
+            f'WARNING: could not read the current comment on {path} ({error}) - '
+            'this file will be skipped.',
+            file=sys.stderr,
+        )
+
+    rows = plan['plan']
+    if not rows:
+        print('No photos to update.', file=sys.stderr)
+        return EXIT_FAILURE if plan['failed'] else EXIT_CLEAN
+
+    print(f'Will update the summary on {len(rows)} photo(s):')
+    for row in rows:
+        print(f"  {row['path']}")
+        print(f"    now:  {_one_line(row['old'])}")
+        print(f"    new:  {_one_line(row['new'])}")
+        if row['preserved_human']:
+            print('    (the existing human-written text is kept; the AI summary is added below it)')
+
+    if getattr(args, 'dry_run', False):
+        print('\n(dry-run: no changes written)')
+        return EXIT_FAILURE if plan['failed'] else EXIT_CLEAN
+
+    if not confirm('\nWrite these summaries? [y/N] '):
+        print('Aborted - no changes written.')
+        return EXIT_CLEAN
+
+    try:
+        result = run_set_summary(
+            archive_root, fha_config, plan['text'],
+            [row['path'] for row in rows], append=plan['append'],
+        )
+    except RuntimeError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    if result['preserved_human']:
+        print(
+            'Kept the human-written text on: ' + ', '.join(result['preserved_human'])
+        )
+    if result['failed'] or plan['failed']:
+        print(
+            f"Updated {len(result['written'])} photo(s); "
+            f"{len(result['failed']) + len(plan['failed'])} failed:",
+            file=sys.stderr,
+        )
+        for path, error in plan['failed'] + list(result['failed']):
+            print(f'  {path}: {error}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"Updated {len(result['written'])} photo(s).")
     return EXIT_CLEAN
 
 

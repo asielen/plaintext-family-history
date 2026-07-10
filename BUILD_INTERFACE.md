@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: session spine + drafting/inference + frontier skills authored (I1-I2 + place-research authored; merge-identities authored with an interim enactment; photo-context blocked on a core gap).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract), `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, and `merge-identities` SKILL.md files, plus a `photo-context/DESIGN.md`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps** (see MI3.1 and MI4).
+**Status: session spine + drafting/inference + frontier skills authored (I1-I2 + place-research authored; merge-identities authored with an interim enactment; photo-context's core verb shipped, its SKILL.md pending).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract), `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, and `merge-identities` SKILL.md files, plus a `photo-context/DESIGN.md`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps** (see MI3.1 and MI4).
 
 ---
 
@@ -168,23 +168,24 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 ---
 
-## Layer I4 - Skill backlog (Milestone I4 - designed, BLOCKED on a core PR)
+## Layer I4 - Skill backlog (Milestone I4 - designed; core verb shipped, SKILL.md pending)
 
-Ideas carried from TOOLING_INTERFACE.md §2.3. `photo-context` now has a settled design; it is **blocked**,
-not undesigned - it needs a core tool that does not exist yet.
+Ideas carried from TOOLING_INTERFACE.md §2.3. `photo-context` has a settled design and its core-tool
+gap is now closed (`fha photoindex set-summary` shipped, BUILD.md M3.5); the SKILL.md itself is not
+yet written, so the layer stays unshipped.
 
 | Skill | Status | Sketch |
 |---|---|---|
-| `photo-context` | **designed; blocked** | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - captions get smarter as the archive grows. Writes marked as AI (SPEC §20); operates through `fha photoindex` and exiftool-via-tool, never bulk-reading the photos tree. |
+| `photo-context` | **designed; core verb shipped - SKILL.md pending** | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - captions get smarter as the archive grows. Writes marked as AI (SPEC §20); operates through `fha photoindex` and exiftool-via-tool, never bulk-reading the photos tree. |
 
-**Design + gap:** `.claude/skills/photo-context/DESIGN.md` settles the trigger (invoked-only, one photo or a
+**Design + status:** `.claude/skills/photo-context/DESIGN.md` settles the trigger (invoked-only, one photo or a
 small batch), inputs (`photoindex find`, `photo_people`, `fha relate`, claim/place context), and the
-provenance rule (AI-marked, human caption preserved). It **confirms a core-tool gap**: no `fha` verb writes
-a photo's `UserComment`/AI summary - `fha photoindex tag-person` writes bare `P-id`/`SOURCE:` keywords only.
-Per `_STANDARD.md` §6, the SKILL.md is **not** written; the step blocks on a BUILD.md core PR (a proposed
-`fha photoindex set-summary` verb - AI-marked write, preserves human caption, `--dry-run`, working-copy-aware).
-SPEC §20 already permits the write, so no SPEC amendment is needed - only the tool. When it ships, write
-`photo-context/SKILL.md` against the design and flip this to shipped.
+provenance rule (AI-marked, human caption preserved). The core-tool gap it confirmed is closed:
+`fha photoindex set-summary` (BUILD.md M3.5) writes the AI-marked `UserComment`, preserves human comment
+text verbatim, previews with `--dry-run`, and is working-copy-aware. SPEC §20 already permitted the write,
+so no SPEC amendment was needed - only the tool. Per `_STANDARD.md` §6 the SKILL.md was deferred until
+that verb existed; writing `photo-context/SKILL.md` against the design is a separate, later skill-mode PR.
+This layer flips to shipped only when that SKILL.md lands.
 
 ---
 

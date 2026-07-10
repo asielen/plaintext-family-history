@@ -52,7 +52,7 @@ the insertion point in the same edit.
 |---|---|---|---|
 | 1 | Layer 1 - Foundation | M1.1-M1.9 | ✓ shipped - includes the `Result` contract (M1.1), `fha lint` as its reference renderer (M1.4), and `fha claim` the claim-review write-back (M1.9) |
 | 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | ✓ shipped |
-| 3 | Layer 3 - Photo catalog | M3.1-M3.4 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
+| 3 | Layer 3 - Photo catalog | M3.1-M3.5 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`), M3.5 (`photoindex set-summary`) |
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
@@ -816,6 +816,31 @@ fha photoindex tag-person <P-id> --paths <file> --root ...   # previews; writes 
 
 ---
 
+### M3.5 - `fha photoindex set-summary` (✓ shipped)
+
+**One PR.** Extend `tools/photoindex.py` with the embedded-AI-summary write verb (TOOLING §9;
+SPEC §20 rule 5 already sanctions the write). This is the core verb the `photo-context` skill
+was blocked on (BUILD_INTERFACE.md Layer I4); the SKILL.md itself is separate, later skill-mode work.
+
+**`fha photoindex set-summary (<path> | --group <group-id>) --text "…" [--append] [--dry-run]`.**
+Preview old → new per file → interactive `[y/N]` confirm (injectable; EOF declines) → per-file
+read-compose-write: `exiftool -UserComment=<composed> -overwrite_original_in_place`, then patch
+`photos.user_comment` + `photo_fts.user_comment` for the paths that wrote (no rescan needed).
+The compose rule fails toward preservation: new text is always AI-marked (`AI: <text>`);
+an AI-marked comment is replaced (kept with `--append`); an unmarked (human) comment is
+preserved verbatim and the AI block appended below - flag or no flag. Never touches
+`Caption-Abstract`/`XMP-dc:Description`. Requires a **fresh** photoindex (stale hard-blocks -
+a stale cache could address the wrong file for a mutating write); refuses in working-copy mode
+(warning-level Result, TOOLING §13d). Exit 0, or 3 when any per-file read/write fails.
+
+**Done when:**
+```sh
+fha photoindex set-summary photos/x.jpg --text "…" --dry-run --root ...   # previews, writes nothing
+fha photoindex set-summary --group "SOURCE:S-…" --text "…" --root ...     # previews; writes on y
+```
+
+---
+
 ## Layer 4 - Cross-reference & connection (Milestone 4 - ✓ shipped)
 
 Depends on: index (claim_links, relationships).
@@ -1560,7 +1585,8 @@ conservative, never less*:
   is built normally from the `.md` files.
 - **photoindex scan** refuses and **never prunes** (`this is a working copy - run photo
   indexing on your main archive`); read-only photo queries return whatever the cache holds.
-- **asset-mutating commands** (`fha process <file>`, `fha photoindex tag-person`, `fha packet`)
+- **asset-mutating commands** (`fha process <file>`, `fha photoindex tag-person`,
+  `fha photoindex set-summary`, `fha packet`)
   refuse with a plain `the photo/document files aren't here - do this on your main archive`,
   exit clean. Plain-text editing, `fha index`, `find`, `views`, `report`, and
   `fha capture` → `inbox/` all work normally.
