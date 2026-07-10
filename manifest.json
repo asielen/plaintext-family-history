@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -66,13 +66,13 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "28b0f299c65c75308bd10585ff55739ff68aa42a4572ad3021dff361285af13e",
+      "sha256": "ae950d7f5ab9efb7b8f0326662717fb569da70a3bc039f092cc58515d032173c",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "87a9fe248b343075c77aae1de46262be299c6c2c3d814ef8fed5101d40154e38",
+      "sha256": "f404afaa1f12227afdf36724db40b27871ba20d5e3dd605644279ec101e52119",
       "spec_version": "1.2"
     },
     {
@@ -91,7 +91,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "2c39ccfdfc48b3376040df46e803d179230d8b290a8c6e1d8393e60318485f50",
+      "sha256": "9c44b046417ed91aca65adcdac05f62fe57d9432ffa3e65b4ac482ba925539db",
       "spec_version": "1.2"
     },
     {
@@ -103,7 +103,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "4e24486c3b2ddddbd8b1aced0eac06bbf3050ba7e2366585cb3766a240380a6e",
+      "sha256": "32f8ec23725822b732085c1747a8d59663311e5ad2567d386f937bea5412cfd8",
       "spec_version": "1.2"
     },
     {
@@ -127,19 +127,19 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "ca9da7372a200fc5c7e20dbd4371569a713f66bf3eb6378352048e142020c1f5",
+      "sha256": "a9b0a07a04def5b1178ad17fb0171e536963bf4878ea5d486386f157c4d250e8",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "771dc8b23fcf701e903b88287adb062a1d80e45691030baf10ee23a40347c6eb",
+      "sha256": "2a512ba47278d1a69763796df987c2b324e0e8d9ce269e38cc81f7a904a9973c",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "97033b6b03e7e152c77fbf9868cba3dc4544f3317765395a0f15ea804a9afbec",
+      "sha256": "b925c5a1fb8b539083fe7e5297c8c4110167bd01bd8f445b1056c7770de3d551",
       "spec_version": "1.2"
     },
     {
@@ -259,7 +259,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "06ca6aab3a71d10fe7b966128f01d0b895c6e189a3969e0999600896062d112c",
+      "sha256": "5e6d00bb4356ce0f32ae4613abc986532402f7b66c019592dd5547ee494dcb83",
       "spec_version": "1.2"
     },
     {
@@ -271,7 +271,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "95003ace832116eefc44cfd9701bc08a6bbe9836d6fe72a7af673fc9a90839ce",
+      "sha256": "6e31c0cfad08b0cc4baac7e5ccc832c096a7d31a614032f1a40f300ac4fe8495",
       "spec_version": "1.2"
     },
     {
@@ -301,7 +301,7 @@
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "f529f4f748a84a22c565bbf8306793d7100b13444cc5b2396dd10e721f9ee328",
+      "sha256": "4c80c45307b5ede5b656b873a6a4ad1ee4dbe4771185e70ce9f4733e3699e2d0",
       "spec_version": "1.2"
     },
     {
@@ -425,7 +425,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "096ec5a875050bb15005fe5c821565e020c41f056a3bc6eae9cbb1ce955a84dd",
+      "sha256": "0c242962567b60fbe4528d0395b0d7ccd08a76f4cbc4331845e6c4b2be4d39e8",
       "spec_version": "1.2"
     },
     {
@@ -509,7 +509,7 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "d76377f09d45f7c29d04f803d060905d64e55bd302019bd7e6212eb3b318e3fe",
+      "sha256": "ba1240a2c0b9e0f0f7675d6aff0ac03a63853cbd8a34568cd0222bc692d1f050",
       "spec_version": "1.2"
     },
     {
@@ -521,7 +521,13 @@
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "373cdf75ba9d851d2d3d0d6fd1c71d58f323b491bb3f00227ee198e920072bb5",
+      "sha256": "1fd608f1efa45d6bee437f842a9d2b0164351fd6f7a2c264b58783132dd6f54e",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/gedcom_import.py",
+      "category": "operating",
+      "sha256": "ab381034bd0033ff8349b5feaf55d8206ca8ec719631f74ab239a2a988822f93",
       "spec_version": "1.2"
     },
     {

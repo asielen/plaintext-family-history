@@ -146,6 +146,7 @@ plaintext-family-history/
 2. **Open the folder in your agent.** It will read `CLAUDE.md` → `AGENTS.md` and know the rules before you say anything.
 3. **Use or extend the tools.** Milestones 1-10 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
 4. **Start your own archive.** Copy the structure, drop your first scan or note into `inbox/`, and ask the agent to process it.
+5. **Coming from Ancestry (or any app)?** You don't start over. Download your tree as a GEDCOM file and run `fha gedcom import family-tree.ged` - every person arrives as a record and every assertion as a reviewable suggestion, with your original file kept untouched.
 
 See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthrough.
 
@@ -182,7 +183,8 @@ candidate-finding tools (contradiction/corroboration detection, person and
 place co-occurrence, and `fha find --related`'s neighborhood queries), the
 deterministic review write-backs (`fha claim` for claim status, `fha confirm`
 for the detectors' confirm/dismiss), the
-`fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export,
+`fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export
+and the GEDCOM import on-ramp (`fha gedcom import`),
 the milestone 7 intake tools (`fha process`, `fha capture`, `fha convert-mining`),
 the milestone 8 static-site generator (`fha site`), the milestone 9
 scaffolding tools (`fha install`/`fha update-tools`), and the milestone 10 working-copy mode (`fha working-copy`). See `BUILD.md` for the detailed
@@ -205,6 +207,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha packet` - person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)
 - [x] `fha places` - place registry lint, recurring unlinked place/GPS candidate detection, and offline GeoNames coordinate backfill (milestone 6.2-6.3)
 - [x] `fha gedcom` - GEDCOM 5.5.1 relationship export (living-redacted by default); `fha wikitree` - curated-profile export in the WikiTree dialect (milestone 6.4-6.5)
+- [x] `fha gedcom import` - the Ancestry on-ramp: file a GEDCOM download as one source, a person stub per individual, and every assertion as a suggested claim with a line anchor - plan first, `--apply` to write, full rollback, one-shot re-run guard (milestone 6.6)
 - [x] `fha process` - asset intake: single-file documents/photos, `--more`, folder triage, variation grouping, and bundle dissolution (milestone 7.1-7.4)
 - [x] `fha capture` - paste-fallback web capture, generic recipe, and Ancestry/FamilySearch/Newspapers.com/FindAGrave recipes (milestone 7.5-7.7)
 - [x] `fha convert-mining` - one-time legacy transcript-mining migration (milestone 7.8)

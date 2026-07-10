@@ -604,7 +604,41 @@ Derives a standard GEDCOM 5.5.1 file at export time - never stored, never re-imp
 From the `relationships` edges and vital claims: INDI records (name, sex, birth/death/marriage from accepted vital claims with dates), FAM records (from spouse + child edges). `living`/`unknown` persons are redacted by default (living individuals → name withheld, à la standard privacy); `--include-living` overrides.
 GEDCOM is a public-export path, so it honors `restricted` wherever it appears: a `restricted` source (any value, including DNA) is not an eligible fact source, a `restricted` claim is withheld, a `restricted` person's name becomes `/Restricted/` (their structural links kept so the tree shape survives), and a restricted name renders as the person's unrestricted display name. `restricted: by-request` is honored with no override - `--include-living` lifts only the living redaction, never `restricted`.
 Sources: each fact's `[[S-id]]` becomes a SOUR note referencing the source citation.
-Output is a `.ged` file; round-tripping back in is explicitly unsupported - GEDCOM is a one-way bridge to other apps.
+Output is a `.ged` file; round-tripping back in is explicitly unsupported - GEDCOM is a one-way bridge to other apps. (A *foreign* GEDCOM arriving here is a different matter - that on-ramp is §13a2 below.)
+
+## 13a2. `fha gedcom import` - the Ancestry on-ramp (GEDCOM importer)
+
+`fha gedcom import <file.ged> [--apply] [--plan-out FILE] [--root PATH]` - the import side of the
+one-way-bridge contract, extended: the archive's own **export** is never re-imported as truth (the
+importer's self-import guard refuses a file stamped `HEAD SOUR fha`), but a **foreign** GEDCOM -
+fifteen years of Ancestry clicking - is a legitimate on-ramp. It is filed the way this system files
+everything: the `.ged` file is **copied** (original untouched) into `documents/gedcom/` and becomes
+**one source record** (`sources/other/`, `source_type: other` + `subtype: gedcom`,
+`source_class: derivative` - a compiled tree, not a record); every individual becomes a **person
+stub** in `people/stubs/` (with provisional `birth:`/`death:` estimates so the tree is immediately
+legible, and extra NAME lines as `name_variants:`); and every assertion becomes a
+**`status: suggested` claim** on that source, `confidence: low` (`medium` when the event carried a
+GEDCOM citation), with `anchor: "line N"` into the filed copy. GEDCOM `SOUR` titles ride along as
+research leads (claim `notes:` + the record's `## Notes`), never as minted S-records - we do not
+hold that evidence. `PLAC` values land in `place_text:` only; no place is ever minted. Nothing
+imported is ever `accepted`; the imported tree joins timelines, exports, and the family tree
+gradually as claims are accepted (the relationships table derives from accepted claims only).
+
+Contract highlights: **plan-then-apply, one-shot** (dry-run default prints the plan and writes
+nothing; `--plan-out FILE` writes the full uncapped plan, refused inside the archive except
+`out/`); UTF-8 only in v1 (ANSEL/UTF-16 refused with a re-export fix); **sentinel + rollback** -
+the audit CSV `.cache/gedcom_import/{sha12-of-file-hash}.csv` maps every GEDCOM xref to its minted
+id AND is the re-run guard (same file twice = refusal naming the date and S-id; a *different*
+export imports cleanly and the dedupe report flags overlaps); every write registers an undo first
+and any failure rolls everything back (the audit CSV is the final write, so a failed run leaves no
+sentinel). Possible duplicates against people already in the archive are **reported, never
+auto-merged** - merging is a human decision (merge-identities). The **`living:` heuristic** is the
+one privacy-relevant default the import writes: DEAT present (even dateless) or latest-plausible
+birth year more than 110 years back → `living: false`; everyone else stays `unknown` (treated as
+living by every export) - a single isolated predicate (`living_flag_for_import`), owner-reviewable
+in one place. Implemented in `tools/gedcom_import.py`; routed by a dispatcher intercept in
+`fha.py` (the `fha id check` mechanism, §4a) so the exporter's positional `P-id` surface is
+untouched.
 
 ## 13b. `fha capture` - web record capture (the intake on-ramp)
 
@@ -708,7 +742,7 @@ The archive's own `.gitignore` must list `WORKING_COPY` (and `.cache/`) so the m
 
 | Idea | Sketch |
 |---|---|
-| WikiTree importer | Reverse of §13 for legacy profiles: named refs → draft source records (Ancestry/Newspapers.com citation patterns recognized), spacetime spans → claim date/place hints, wikilinks → external_ids, sections → profile scaffold; everything enters `suggested`. The existing WikiTree corpus is migration source material. |
+| WikiTree importer | Reverse of §13 for legacy profiles: named refs → draft source records (Ancestry/Newspapers.com citation patterns recognized), spacetime spans → claim date/place hints, wikilinks → external_ids, sections → profile scaffold; everything enters `suggested`. The existing WikiTree corpus is migration source material. (Its GEDCOM sibling is built: `fha gedcom import`, §13a2 - same everything-enters-`suggested` posture.) |
 | Citation assistant | Match uncited factual sentences in profiles against accepted claims (person + type + date overlap); suggest `[[S-…]]` insertions as a diff. |
 | Auto-anchor refinement | Re-run anchor matching with better text alignment for converter output. |
 
@@ -872,6 +906,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha install <path>` (clone) / `fha update-tools` (T C) | Bootstrap a private archive with the operating layer, or refresh it later - backs up your edits, never deletes, never touches data. |
 | `fha capture` (T C, + browser companion) | Capturing a record from an open web page (Ancestry etc.): citation + asset/HTML-snapshot + research-log entry → `fha process`. The main intake on-ramp. |
 | `fha gedcom <P-id\|--all>` (T C) | Exporting relationships+vitals to GEDCOM for another genealogy app. One-way; redacts living/unknown. |
+| `fha gedcom import <file.ged> [--apply] [--plan-out FILE]` (T C) | Coming FROM Ancestry (or any GEDCOM): file the tree as one source + person stubs + suggested claims. Dry-run plan by default; one-shot re-run guard; everything enters `suggested` (§13a2). |
 | `fha views tree <P-id> --mode …` (T C) | Generating an ancestor/descendant/FAN tree (json/html/dot). |
 | `fha views timeline\|sources-index\|draft-queue\|brackets` (T C) | Manual view refresh (review sessions refresh the touched persons' views); `brackets --fix` after family-structure changes - also verifies and corrects Ahnentafel folder numbers and person file placement (requires `root_person` in `fha.yaml`). |
 | `fha normalize-links [--dry-run \| --write]` (T C) | Tidy citations/cross-links to the standard form: single-bracket `[S-…]` → `[[S-…]]`; a resolved human stem → canonical `[[S-…]]` (keeping the stem in `aliases:`); a resolved frontmatter name-link `[[Ken Smith]]` → `[[P-…\|Ken Smith]]`. Flags ambiguous name-links (alias clash, W113) rather than guessing. Dry-run by default; returns a `Result`. Sits beside the formatter - deliberately not part of it (the formatter never rewrites prose). |

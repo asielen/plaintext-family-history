@@ -55,7 +55,7 @@ the insertion point in the same edit.
 | 3 | Layer 3 - Photo catalog | M3.1-M3.4 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
-| 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
+| 6 | Layer 6 - Data output | M6.1-M6.6 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`), M6.6 (`fha gedcom import` - the Ancestry on-ramp, added in the 2026-07 usability follow-up) |
 | 7 | Layer 7 - Intake pipeline (core side) | M7.1-M7.5 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha convert-mining`). The `fha capture` on-ramp is a separate track in [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (MG series). |
 | 8 | Layer 8 - Publication | M8.1-M8.5 | ✓ shipped - M8.1 (`fha site` foundations: query layer, Jinja2, source page), M8.2 (person page), M8.3 (place + discoveries pages), M8.4 (home page + standalone redaction audit), M8.5 (interactive trees via a vendored, dependency-free renderer + adapter seam) |
 | 9 | Layer 9 - Scaffolding | M9.1-M9.2 | ✓ shipped - M9.1 (`fha install` + `manifest.json`: bootstrap an archive's operating layer + skeleton, stamp `.plaintext-version`, zip/git-free), M9.2 (`fha update-tools`: refresh the operating layer, back up customized/retired files, never delete, never touch skeleton seeds) |
@@ -87,7 +87,9 @@ install/update-tools ─────── (needs complete tool manifest)
 candidates`) plus the report's discovery prompts and the `write-biography` accept gesture.
 
 Tools with no inbound lines - places, gedcom, wikitree, packet, convert-mining - depend only
-on the index and can be built in any order once the index is stable.
+on the index and can be built in any order once the index is stable. (`gedcom_import` sits
+even lower: it scaffolds from `_lib` alone and needs no index at all - a first import is
+expected to run before one exists.)
 
 ---
 
@@ -1168,6 +1170,34 @@ from `person_external`; plain name if absent. Ancestry image URLs in `external_l
 ```sh
 fha wikitree P-de957bcda1 --root example-archive   # valid WikiTree markup to stdout
 # each S-id appears once in the references div
+```
+
+---
+
+### M6.6 - `fha gedcom import` (✓ shipped - 2026-07 usability follow-up, plan 06)
+
+**One PR.** New file `tools/gedcom_import.py` + a dispatcher intercept in `fha.py`
+(`_intercept_gedcom_import`, the `fha id check` mechanism - the exporter's positional
+`P-id` parser in `gedcom.py` stays untouched). Wire
+`fha gedcom import <file.ged> [--apply] [--plan-out FILE] [--root PATH]` (TOOLING §13a2).
+
+The Ancestry on-ramp: parse the GEDCOM in-module (5.5/5.5.1 line grammar, CONC/CONT
+folding, UTF-8 only - ANSEL/UTF-16 refused with a re-export fix; `HEAD SOUR fha`
+self-import guard); file the `.ged` as ONE source record (`sources/other/`,
+`subtype: gedcom`, `source_class: derivative`, the copy under `documents/gedcom/`);
+mint a person stub per INDI (provisional vitals, `name_variants`, the isolated
+`living_flag_for_import` heuristic); every assertion → a `suggested` claim with
+`anchor: "line N"` into the filed copy (DATE→EDTF table validated with `is_valid_edtf`;
+PLAC → `place_text:` only; FAM → marriage/divorce/relationship claims with roles;
+PEDI → subtype). Plan-then-apply (dry-run default, convert-mining's undo-registered
+rollback, audit CSV `.cache/gedcom_import/{sha12}.csv` written last = re-run sentinel);
+duplicates reported, never merged; exactly three `mint_ids` batches for scale.
+
+**Done when:**
+```sh
+python tools/fha.py gedcom import family-tree.ged --root <archive>            # plan, no writes
+python tools/fha.py gedcom import family-tree.ged --root <archive> --apply   # stubs + record + copy
+# fha index && fha lint afterward: no E-codes; re-running the same file: exit 2, zero writes
 ```
 
 ---

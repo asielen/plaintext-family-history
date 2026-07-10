@@ -22,7 +22,10 @@ quickly, and turning his stated decision into the right tool call. Every skill t
 
 "Review the census claims", "review this source", "let's go through the Hartley notes", or automatically
 as the last stage of `process-source` / `mine-transcript`. Always scoped to **one source at a time** — a
-source's claims are reviewed together because they share evidence.
+source's claims are reviewed together because they share evidence. The one exception to
+whole-source scope: a GEDCOM-import source (`fha gedcom import`) can hold thousands of claims and is
+reviewed **person-by-person or family-by-family** ("review the Hartleys"), never front-to-back — filter
+its claims to the people asked about and leave the rest for later sessions.
 
 ## The contract for this skill (state it before you start)
 

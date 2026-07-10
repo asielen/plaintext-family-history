@@ -98,6 +98,25 @@ assistant drive it rather than hand-editing two files.)
 
 ---
 
+## My GEDCOM won't import, or the imported tree "isn't showing up"
+
+**What happened - it refuses the file.** `fha gedcom import` reads modern (UTF-8) GEDCOM files.
+If it says the file is **ANSEL** or **UTF-16** encoded, it's an export from an older program:
+open the file in your genealogy program and re-export/save it as UTF-8 (Ancestry's downloads
+already are), then re-run. If it says the file was **already imported**, that's the guard doing
+its job - importing the same file twice would duplicate every person. Downloaded a *newer* export
+since? Import that file; it's different and goes through cleanly.
+
+**What happened - it imported, but trees and timelines look empty.** That's by design, not a
+failure. Everything from a GEDCOM arrives as *suggested* facts - leads, not proven facts - and
+the family tree, timelines, and exports only show facts you've accepted. Your people are all
+there (look in `people/stubs/`, each with the birth/death dates your tree carried), and the
+statements wait in the review queue (`fha report` shows them). Review them a family at a time -
+*"review the claims about Grandma Rose"* - and the tree fills in as you accept. You never need
+to review them all at once, or ever.
+
+---
+
 ## My photos/documents drive is offline
 
 **What happened.** Your `fha.yaml` points the archive at an external drive (or a network folder)

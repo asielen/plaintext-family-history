@@ -1,0 +1,118 @@
+0 HEAD
+1 SOUR AncestryTree
+2 NAME Ancestry Family Trees
+1 DATE 1 JUL 2026
+1 GEDC
+2 VERS 5.5.1
+2 FORM LINEAGE-LINKED
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Rose /Hartley/
+1 SEX F
+1 BIRT
+2 DATE 12 JAN 1878
+2 PLAC Springfield, Illinois
+2 SOUR @S1@
+1 DEAT
+2 DATE ABT 1950
+2 PLAC Fairview, Kansas
+1 FAMS @F1@
+1 NOTE She kept the family bible and recorded every birth in its front pages un
+2 CONC til 1932.
+2 CONT The bible passed to her eldest daughter.
+0 @I2@ INDI
+1 NAME Thomas /Hartley/
+1 SEX M
+1 BIRT
+2 DATE BEF 1880
+1 DEAT Y
+1 OCCU Bookkeeper
+2 DATE BET 1898 AND 1902
+2 PLAC Plains Junction, Kansas
+1 FAMS @F1@
+0 @I3@ INDI
+1 NAME Ada /Hartley/
+1 SEX F
+1 BIRT
+2 DATE AFT 1900
+1 FAMC @F1@
+0 @I4@ INDI
+1 NAME Ben /Hartley/
+1 SEX M
+1 BIRT
+2 DATE INT 1902 (spring after the flood)
+1 FAMC @F1@
+2 PEDI adopted
+0 @I5@ INDI
+1 NAME Mary Ann /Cole/
+1 SEX F
+1 BIRT
+2 DATE JAN 1850
+1 DEAT
+2 DATE (deceased)
+1 FAMS @F2@
+0 @I6@ INDI
+1 NAME Silas /Cole/
+1 SEX M
+1 BIRT
+2 DATE EST 1848
+1 FAMS @F2@
+1 CENS
+2 DATE 1900
+2 PLAC Breton County, Kansas
+2 SOUR @S2@
+0 @I7@ INDI
+1 NAME Rose /Cole/
+1 SEX F
+1 BIRT
+2 DATE 1878
+1 FAMC @F2@
+1 RESI
+2 DATE FROM 1901 TO 1903
+2 PLAC Topeka, Kansas
+0 @I8@ INDI
+1 NAME Frances /Thorsson/
+1 SEX F
+1 BIRT
+2 DATE 1990
+1 FAMS @F3@
+0 @I9@ INDI
+1 SEX M
+1 EVEN
+2 TYPE Homestead claim
+2 DATE 1889
+2 PLAC Cherokee Strip
+0 @I10@ INDI
+1 NAME Jon /Thorsson/
+1 NAME Jón /Þórsson/
+1 SEX M
+1 IMMI
+2 DATE 1888
+2 PLAC New York
+1 FAMS @F3@
+0 @F1@ FAM
+1 HUSB @I2@
+1 WIFE @I1@
+1 CHIL @I3@
+1 CHIL @I4@
+1 CHIL @I99@
+1 MARR
+2 DATE 5 JUN 1897
+2 PLAC Fairview, Kansas
+2 SOUR @S1@
+0 @F2@ FAM
+1 HUSB @I6@
+1 WIFE @I5@
+1 CHIL @I7@
+1 MARR
+2 DATE ABT 1875
+1 DIV
+2 DATE 1910
+0 @F3@ FAM
+1 HUSB @I10@
+1 WIFE @I8@
+0 @S1@ SOUR
+1 TITL Kansas County Marriage Records, 1855-1911
+0 @S2@ SOUR
+1 TITL 1900 United States Federal Census
+0 TRLR

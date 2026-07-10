@@ -210,6 +210,7 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `fha packet <P-id> [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]` | `packet.py` | ✓ M6.1 - see "fha packet - implementation status" below |
 | `fha places lint` / `fha places candidates [--threshold N]` / `fha places geocode [--place L-id] [--all] [--offline]` | `places.py` | ✓ M6.2-M6.3 - see "fha places - implementation status" below |
 | `fha gedcom [<P-id>] [--mode descendants\|ancestors\|connected] [--generations N] [--all] [--include-living] [--out FILE]` | `gedcom.py` | ✓ M6.4 - see "fha gedcom - implementation status" below |
+| `fha gedcom import <file.ged> [--apply] [--plan-out FILE]` | `gedcom_import.py` (dispatcher-intercepted in `fha.py`) | ✓ M6.6 - see "fha gedcom import - implementation status" below |
 | `fha wikitree <P-id> [--out FILE]` | `wikitree.py` | ✓ M6.5 - see "fha wikitree - implementation status" below |
 
 ## Implemented tools (milestone 7)
@@ -521,6 +522,52 @@ Automated tests: `tests/test_places.py` builds a synthetic `.cache/index.sqlite`
 | Output | ✓ | GEDCOM 5.5.1 with a "do not re-import as truth" HEAD note; CRLF line endings; stdout or `--out FILE`. Never re-imported - GEDCOM is a one-way export bridge. Stable xrefs: persons `I{n}` by id, families `F{n}`, sources `S{n}` |
 
 Automated tests: `tests/test_gedcom.py` (synthetic `.cache/index.sqlite`, relationships inserted directly) covers descendant/ancestor traversal and the generations cap, living-redaction default vs. `--include-living`, restricted/DNA fact exclusion, marriage role handling with witnesses, vitals/marriage/source emission, `--all`, the EDTF→GEDCOM and name-formatting helpers, and the not-found/bad-id/no-index paths. `tests/test_privacy_restricted.py` additionally covers a `restricted` person redacted as `/Restricted/` with no `--include-living` override and a free-text `by-request` source dropped as a fact source.
+
+## fha gedcom import - implementation status
+
+The Ancestry on-ramp (TOOLING §13a2): file a *foreign* GEDCOM as one source record + person
+stubs + suggested claims, plan-then-apply. Routed by a dispatcher intercept in `fha.py`
+(the `fha id check` mechanism) so the exporter's positional `P-id` surface is untouched;
+`tools/gedcom_import.py` also runs standalone. Scaffolds directly from `_lib` primitives
+(tools never import tools).
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Dry-run plan (default) | ✓ | Parses + plans + prints, writes nothing (byte-for-byte). Headline counts first (persons/families/claims/cited databases/duplicates + the living-flag split), then detail capped at 20 with a `--plan-out` pointer |
+| `--apply` | ✓ | Copies the `.ged` to `documents/gedcom/{slug}_{S-id}.ged` (original untouched; documents root resolved through `fha.yaml` roots), writes one stub per INDI into `people/stubs/` (progress line per 100), one source record `sources/other/{slug}_{S-id}.md`, and the audit CSV **last**. Closing output states the review posture (imported ≠ reviewed; edges materialize as claims are accepted) |
+| Parser (in-module, no new dependency) | ✓ | GEDCOM 5.5/5.5.1 line grammar `LEVEL [@XREF@] TAG [VALUE]`; CONC (no space)/CONT (newline) folded; malformed lines counted + warned, never fatal. Unread tags tallied honestly in the plan (`N lines carried tags this importer does not read`) - the filed copy preserves 100% of the file |
+| Encoding guards (UTF-8-only v1) | ✓ | UTF-8 BOM stripped; UTF-16 BOM, undecodable bytes, and a `HEAD CHAR ANSEL` declaration each refuse (exit 2) naming the re-export-as-UTF-8 fix. ⚑ ANSEL translation table deferred (explicitly not v1) |
+| Self-import guard | ✓ | `HEAD SOUR fha` (our exporter's stamp) refuses: the archive is the source of record; GEDCOM is a one-way bridge out |
+| INDI → person stub | ✓ | `{surname}__{given}_{P-id}.md` grammar (no NAME → `unknown__unknown_…`; surname-less leads with `__`); primary NAME → `name:`, extra NAMEs → `name_variants:`; `sex:` kept only for M/F; provisional `birth:`/`death:` EDTF from BIRT/DEAT; `tier: stub`, `aliases: [P-id]`. No `relationships:` blocks (the suggested claims are the durable home). GEDCOM xrefs live in the audit CSV only, not `external_ids:` |
+| `living:` heuristic | ✓ | The one privacy-relevant default, isolated in `living_flag_for_import`: DEAT present (even dateless `DEAT Y`) or latest-plausible birth year >110 years back → `living: false`; else `unknown`. Counts printed in every plan. Owner-flagged at review (plan 06 open question 1) |
+| Events → suggested claims | ✓ | BIRT/DEAT/CHR/BAPM/BURI/OCCU/RESI/CENS/EDUC/IMMI/EMIG/NATU/`_MILT` → the §8.2 vocabulary; `EVEN`/any dated unknown tag → `event` + `subtype`; INDI NOTE → `note` claim (first line = value). All `status: suggested`, `confidence: low` (`medium` with a GEDCOM SOUR citation), `anchor: "line N"` into the filed copy, values lead with the assertion and name the xref, dates as-written kept in the value |
+| FAM → couple + parent-child claims | ✓ | MARR → `marriage` (roles `{spouse: […]}`), DIV → `divorce`; one `relationship` claim per child (`roles: {child, parent}`, E015-satisfying); `FAMC…PEDI adopted/foster` → `subtype: adoptive`/`foster` (biological default stays unwritten). Dangling HUSB/WIFE/CHIL pointers warned + skipped |
+| DATE → EDTF table | ✓ | `12 JAN 1850`→`1850-01-12` · `JAN 1850`→`1850-01` · `1850`→`1850` · ABT/EST/CAL→`~` at precision · `BEF X`→`[..X]` · `BET A AND B`/`FROM A TO B`→`A/B` · `AFT X`→ runtime probe of the `[X..]` after-form (today's `_lib` suite rejects it, so AFT omits `date:` and keeps the wording in the value) · INT/phrase/unparseable → omit `date:`, wording kept. Every emitted date validated with `is_valid_edtf`; failures downgrade to omit-date with one summarized warning |
+| GEDCOM SOUR records | ✓ | Titles ride as research leads: claim `notes:` gains `GEDCOM cites: …`, the record's `## Notes` lists every cited database with its citation count and the honest "find the original records" framing. No S-records minted for them (we do not hold that evidence) |
+| PLAC handling | ✓ | `place_text:` only, never an L-id; the existing `fha places candidates` flow harvests them later |
+| Dedupe report | ✓ | Tree-scan of `people/**/*.md` (templates/companions skipped; the index may be stale on a first-import machine): normalized name-token match + birth year ±2 (or exact-name when a year is absent) → listed as possible matches, **still imported as new stubs, never auto-merged** |
+| Re-run guard + audit CSV | ✓ | `.cache/gedcom_import/{sha12}.csv` (sha12 = first 12 hex of the file's SHA-256): `#` header rows carry file name/full hash/date/S-id; body rows map every xref → minted id. Same-hash re-import refused naming the date + S-id; a different export (different hash) imports cleanly |
+| Rollback | ✓ | Every write registers its undo before executing; any failure unwinds in reverse and the message says everything was rolled back and no cleanup is needed. The audit CSV is the final write, so a failed run leaves no sentinel |
+| `--plan-out FILE` | ✓ | Writes the FULL (uncapped) plan text; refused inside the archive root except top-level `out/` (packet's guard). An explicit flag so dry-run stays side-effect-free by default |
+| Scale | ✓ | Exactly three `mint_ids` batches (S, P, C) - one tree scan each; apply prints one progress line per 100 stubs; one big `## Claims` block by design (SPEC §14 - reviewed in filtered passes, never read linearly) |
+| Exit codes | ✓ | 0 clean plan/apply · 1 completed with warnings (downgraded dates, skipped malformed lines, dangling pointers) · 2 refusals before/without writes (missing/not-GEDCOM file, encoding, self-import, already-imported sentinel, destination collision, bad `--plan-out`) · 3 root unresolvable, or a write failure during apply (everything rolled back, message says so) |
+| `run_import(...) -> Result` | ✓ | `data = {'applied','persons','families','claims','cited_sources','duplicates','warnings','source_id','audit_csv'}`; `changed` lists every written file on apply, empty on dry-run |
+
+Automated tests: `tests/test_gedcom_import.py` over crafted fixtures in
+`tests/fixtures/gedcom/` (`small.ged` with ABT/BEF/AFT/BET/FROM-TO/phrase dates, CONC/CONT,
+an adoptive PEDI, a dateless `DEAT Y`, a dangling CHIL pointer, and two SOUR records;
+`ansel.ged`; `utf16.ged`; `self-export.ged`): the full DATE table incl. the AFT probe, the
+living heuristic (dateless-DEAT false / 1850 false / 1990 unknown / conservative upper-bound
+reading), dry-run byte-for-byte no-op + counts, `--plan-out` full text + inside-archive
+refusal + `out/` exemption, stub grammar/fields/variants, source-record shape (no `people:`,
+`subtype: gedcom`, role `original`), claim completeness (required fields, roles, PEDI subtype,
+confidence lift, unparseable-date wording preserved), anchors verified against the filed
+copy's lines, post-apply `fha index` + `fha lint` (0 E-codes) + accepted-relationship edge
+materialization, re-run guard (refusal naming date + S-id; modified copy imports + dedupe
+flags), dedupe report-but-still-import, injected-failure rollback (byte-identical tree, no
+sentinel, clean re-run), encoding/self-import/missing/not-GEDCOM/collision refusals,
+dispatcher routing (both `--root` positions; exporter surface untouched), and a
+1,000-person scale smoke (exactly 3 mint scans, progress lines, capped plan).
 
 ## fha wikitree - implementation status
 

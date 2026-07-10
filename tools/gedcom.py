@@ -12,6 +12,9 @@ never stored in the archive, never re-imported as truth (the archive is never
 GEDCOM's corpus - GEDCOM is a one-way bridge to other apps). The header carries an explicit
 "do not re-import as truth" note to make that contract travel with the file.
 
+Importing a GEDCOM from Ancestry or another program? That is the separate
+`fha gedcom import <file.ged>` (TOOLING §13a2) - this command is the exporter.
+
 SCOPE SELECTION
 ---------------
 Either a starting `<P-id>` with a traversal `--mode`, or `--all` for everyone:

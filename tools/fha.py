@@ -302,6 +302,80 @@ def _intercept_scaffold(argv: list[str]) -> int | None:
     return scaffold_main(subargv)
 
 
+def _intercept_gedcom_import(argv: list[str]) -> int | None:
+    """
+    Early interception for `fha gedcom import <file.ged> …` (TOOLING §13a2).
+
+    The GEDCOM exporter's parser (gedcom.py) takes a positional P-id, so
+    argparse would read 'import' as a (bad) P-id. Rather than disturb the
+    exporter's surface, the importer is routed here in the dispatcher before
+    argparse ever sees it - the same mechanism `fha id check` uses (TOOLING
+    §4a). `fha gedcom <P-id> …` continues to behave exactly as before.
+
+    Returns an exit code when the first two command tokens are `gedcom import`,
+    or None to let normal argparse handling proceed.
+    """
+    global_root: str | None = None
+    command_idx: int | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--debug':
+            i += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and i + 1 < len(argv):
+                global_root = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            i += 1
+            continue
+        if tok.startswith('--spec-root='):
+            i += 1
+            continue
+        command_idx = i
+        break
+
+    if command_idx is None or argv[command_idx] != 'gedcom':
+        return None
+
+    # Skip any flags between 'gedcom' and the next positional (TOOLING §1's
+    # dual-position --root convention: `fha gedcom --root A import f.ged`
+    # must route here too, not fall through to the exporter's P-id parser).
+    j = command_idx + 1
+    while j < len(argv):
+        tok = argv[j]
+        if tok == '--debug':
+            j += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and j + 1 < len(argv):
+                global_root = argv[j + 1]
+            j += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            j += 1
+            continue
+        if tok.startswith('--spec-root='):
+            j += 1
+            continue
+        break
+    if j >= len(argv) or argv[j] != 'import':
+        return None
+
+    from gedcom_import import _standalone_main as gedcom_import_main
+    subargv = [tok for tok in argv[j + 1:] if tok != '--debug']
+    # Honor a --root supplied before the 'import' word when the subcommand
+    # didn't set its own.
+    if global_root and '--root' not in subargv \
+            and not any(t.startswith('--root=') for t in subargv):
+        subargv += ['--root', global_root]
+    return gedcom_import_main(subargv)
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for `fha` (or `python tools/fha.py`).
@@ -340,6 +414,12 @@ def main(argv: list[str] | None = None) -> int:
         # PyYAML.  Without this intercept a user on a fresh machine (PyYAML not yet
         # installed) hits a ModuleNotFoundError before `fha install` can run.
         result = _intercept_scaffold(argv_list)
+        if result is not None:
+            return result
+
+        # Intercept 'gedcom import' before argparse: the exporter's parser takes
+        # a positional P-id and must stay unchanged (TOOLING §13a/§13a2).
+        result = _intercept_gedcom_import(argv_list)
         if result is not None:
             return result
 
