@@ -54,10 +54,13 @@ THE SEVEN WRITE-BACKS
                preserved, not erased - the original date/model stay in the marker.
   merge      - enact a human-confirmed identity merge (SPEC §9) in one verb:
                tombstone the merged person (`status: merged`, `merged_into:`,
-               `merge_reason:`, `merged_date:`), rename its file with the
+               `merge_reason:`, `merged_date:`; its `tier:` is stripped - a
+               tombstone is a redirect, not a profile), rename its file with the
                `MERGED-INTO-P-survivor__` prefix (kept forever, never deleted),
                fold its name variants / external ids / relationships into the
-               survivor, and relink every claim (ALL statuses - lint E016 has no
+               survivor, delete its GENERATED companion views (timeline /
+               sources-index / draft-queue - the survivor's views carry that
+               life now), and relink every claim (ALL statuses - lint E016 has no
                status filter) plus other records' `relationships:`/`people:`
                references from the merged P-id to the survivor. Prose `[[P-…]]`
                mentions are deliberately left for lint W107's gradual-cleanup
@@ -93,14 +96,17 @@ CODE MAP
     _append_claim_to_source       - append a whole new claim item to the block
 
   Merge machinery (confirm merge)
-    _fm_span / _fm_key_span       - locate frontmatter and one top-level key
+    _fm_key_span                  - locate one top-level frontmatter key
+    (fences via the shared _lib.frontmatter_fence_span, the FRONT_RE grammar)
     _render_scalar / _render_variant_item / _render_relationship_entry
     _split_flow_items / _unquote  - bracket/quote-aware flow-list reading
     _fold_fm_list, _fold_external_ids, _fold_relationship_entries
     _set_fm_scalar, _remove_fm_key, _replace_fm_inline_list,
     _strip_external_id_keys       - tombstone/survivor frontmatter surgery
-    _person_fm_problem            - post-rewrite frontmatter guard
+    _merge_fm_problem             - post-rewrite guard (_lib.frontmatter_edit_problem
+                                    with the merge's intended-keys sets)
     _scan_person_profiles         - pid -> (path, meta) map from people/
+    _merged_companion_views       - the tombstone's generated views to delete
     _final_survivor               - follow a merged_into chain to its end
     _person_token_re, _resolve_person_item, _rewrite_ref_item,
     _rewrite_person_list_value, _rewrite_span_person_fields,
@@ -142,12 +148,17 @@ from _lib import (
     configure_utf8_stdout,
     find_person_record_path,
     fmt_id_display,
+    frontmatter_edit_problem,
+    frontmatter_fence_span,
     id_type_of,
+    is_generated_file,
+    is_merged_meta,
     is_valid_id,
     link_field_refs,
     mint_ids,
     normalize_id,
     parse_filename,
+    parse_frontmatter_strict,
     read_record,
     read_text_exact,
     reapply_newline,
@@ -886,12 +897,16 @@ def run_confirm_cooccur(
         ex_id = str(existing.get('id') or '').strip()
         ex_disp = fmt_id_display(normalize_id(ex_id)) if is_valid_id(ex_id) else None
         ex_status = str(existing.get('status') or '').strip() or 'unknown'
+        # Comparisons use the lowercased form (a hand-edited `Status: Suggested`
+        # must behave like the canonical spelling); ex_status keeps the
+        # author's casing for display.
+        ex_status_norm = ex_status.lower()
         # --accept on a pair this source already covers with a still-suggested
         # (or needs-review) claim PROMOTES that claim rather than silently
         # dropping the request: the human directed the accept (TOOLING §3b), and
         # minting a second claim would duplicate. A claim already accepted (or
         # disputed/rejected) is left alone - only forward moves out of suggested.
-        if accept and ex_disp and ex_status in ('suggested', 'needs-review'):
+        if accept and ex_disp and ex_status_norm in ('suggested', 'needs-review'):
             if reviewed is not None:
                 try:
                     datetime.date.fromisoformat(reviewed)
@@ -938,7 +953,7 @@ def run_confirm_cooccur(
                    f'{fmt_id_display(pa)} and {fmt_id_display(pb)} already have a '
                    f'{subtype} relationship claim in {source_path.name} '
                    f'({ex_disp or "no id yet"}, status {ex_status}). Nothing to do.')
-        if ex_status == 'suggested' and ex_disp:
+        if ex_status_norm == 'suggested' and ex_disp:
             result.add('info',
                        f'To accept it, review it with `fha claim {ex_disp} --status accepted`.',
                        next_step=f'fha claim {ex_disp} --status accepted')
@@ -1422,6 +1437,27 @@ def run_accept_draft(
                          next_step='fha find ' + fmt_id_display(pid))
     result.data['profile'] = str(profile)
 
+    # A merged tombstone is never edited (the fha person set-living posture):
+    # readers resolve THROUGH merged_into (SPEC §9), so accepting draft prose
+    # onto the tombstone would grow a fork of the truth no reader ever sees.
+    meta = read_record(profile).get('meta') or {}
+    if is_merged_meta(meta):
+        name = str(meta.get('name') or '').strip()
+        label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+        survivor = normalize_id(str(meta.get('merged_into') or ''))
+        if survivor and is_valid_id(survivor):
+            return _fail(result, 'merged',
+                         f'{label} was merged into {fmt_id_display(survivor)} - this '
+                         'record is a tombstone that readers resolve through, so '
+                         'draft prose belongs on the surviving record. Accept it '
+                         f'there: `fha confirm draft {fmt_id_display(survivor)}`. '
+                         'Nothing was written.')
+        return _fail(result, 'merged',
+                     f'{label} is a merged tombstone, but its merged_into: pointer '
+                     'is missing or malformed, so the surviving record cannot be '
+                     f'named. Find it with `fha find {fmt_id_display(pid)}`, then '
+                     'accept the draft on the survivor. Nothing was written.')
+
     try:
         before = read_text_exact(profile)
     except OSError as e:
@@ -1483,7 +1519,7 @@ def run_accept_draft(
 
 # The frontmatter surgery below assumes SPEC-shaped person records: top-level
 # keys at column zero between `---` fences. Anything weirder fails the
-# `_person_fm_problem` re-parse guard and becomes a refusal, never a bad write.
+# `_merge_fm_problem` re-parse guard and becomes a refusal, never a bad write.
 
 _TOMBSTONE_KIN_TYPES = ('relationship', 'marriage')
 
@@ -1502,16 +1538,6 @@ def _person_token_re(person_id: str) -> re.Pattern:
         r'(?<![0-9a-hjkmnp-tv-z-])' + re.escape(person_id) + r'(?![0-9a-hjkmnp-tv-z])',
         re.I,
     )
-
-
-def _fm_span(lines: list[str]) -> tuple[int, int] | None:
-    """Return (open_fence, close_fence) line indexes of the `---` frontmatter."""
-    if not lines or lines[0].strip() != '---':
-        return None
-    for i in range(1, len(lines)):
-        if lines[i].strip() == '---':
-            return 0, i
-    return None
 
 
 def _fm_key_span(lines: list[str], fm_open: int, fm_close: int, key: str) -> tuple[int, int] | None:
@@ -1972,7 +1998,7 @@ def _relink_people_frontmatter(
     longer parses.
     """
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         return text, False
     span = _fm_key_span(lines, fm[0], fm[1], 'people')
@@ -2043,7 +2069,7 @@ def _relink_relationship_targets(
     everything else pass through untouched. Returns (new_text, entries_changed).
     """
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         return text, 0
     span = _fm_key_span(lines, fm[0], fm[1], 'relationships')
@@ -2078,7 +2104,7 @@ def _relink_relationship_targets(
 def _fm_parse_problem(text: str) -> str | None:
     """Vet a rewritten record's frontmatter: it must still parse as a mapping."""
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         return 'the record would lose its frontmatter'
     try:
@@ -2090,17 +2116,36 @@ def _fm_parse_problem(text: str) -> str | None:
     return None
 
 
-def _person_fm_problem(text: str, expect_id: str) -> str | None:
-    """Vet a rewritten person record: frontmatter parses and the id is intact."""
-    problem = _fm_parse_problem(text)
-    if problem is not None:
-        return problem
-    lines = text.splitlines()
-    fm = _fm_span(lines)
-    meta = yaml.safe_load('\n'.join(lines[1:fm[1]]))
-    if normalize_id(str(meta.get('id') or '')) != expect_id:
-        return 'the record id would change'
-    return None
+# The merge's declared frontmatter intent, per record (the changed_keys
+# contract of `_lib.frontmatter_edit_problem`): the survivor gains folds in
+# exactly these four keys; the tombstone additionally gains the four SPEC §9
+# tombstone fields and loses `tier:` (a redirect is not a curated profile, so
+# keeping the tier would keep regenerating companion views for it). Any other
+# field appearing, disappearing, or changing value is a refusal - the same
+# strictness `fha person set-living` applies to its one-key edit.
+_MERGE_SURVIVOR_KEYS = frozenset(
+    {'name_variants', 'aliases', 'external_ids', 'relationships'})
+_MERGE_TOMBSTONE_KEYS = _MERGE_SURVIVOR_KEYS | frozenset(
+    {'status', 'merged_into', 'merge_reason', 'merged_date', 'tier'})
+
+
+def _merge_fm_problem(
+    before_text: str, new_text: str, changed_keys: frozenset[str],
+) -> str | None:
+    """Vet one rewritten person record against the merge's declared intent.
+
+    Wraps the shared `_lib.frontmatter_edit_problem` with the strict-parsed
+    original (`parse_frontmatter_strict` - read_record's coerced meta would
+    false-flag booleans): the rewrite must still parse as a mapping, keep its
+    id, and touch ONLY `changed_keys`. Replaces the old parse+id-only check,
+    which let a surgery bug rewrite any unrelated field unnoticed.
+    """
+    before_meta = parse_frontmatter_strict(before_text)
+    if before_meta is None:
+        return ('the record\'s current frontmatter could not be re-read for '
+                'the pre-write check')
+    return frontmatter_edit_problem(
+        new_text, before_meta=before_meta, changed_keys=changed_keys)
 
 
 def _fold_fm_list(text: str, key: str, rendered_items: list[str],
@@ -2117,7 +2162,7 @@ def _fold_fm_list(text: str, key: str, rendered_items: list[str],
     if not rendered_items:
         return text
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         raise _EditRefused('the record has no frontmatter to edit')
     span = _fm_key_span(lines, fm[0], fm[1], key)
@@ -2170,7 +2215,7 @@ def _fold_external_ids(text: str, pairs: list[tuple[str, object]]) -> str:
     if not pairs:
         return text
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         raise _EditRefused('the record has no frontmatter to edit')
     span = _fm_key_span(lines, fm[0], fm[1], 'external_ids')
@@ -2229,7 +2274,7 @@ def _fold_relationship_entries(text: str, entries: list[dict]) -> str:
     if not entries:
         return text
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         raise _EditRefused('the record has no frontmatter to edit')
     span = _fm_key_span(lines, fm[0], fm[1], 'relationships')
@@ -2274,7 +2319,7 @@ def _set_fm_scalar(text: str, key: str, rendered_value: str) -> str:
     frontmatter, so the four tombstone fields land together in call order.
     """
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         raise _EditRefused('the record has no frontmatter to edit')
     span = _fm_key_span(lines, fm[0], fm[1], key)
@@ -2289,7 +2334,7 @@ def _set_fm_scalar(text: str, key: str, rendered_value: str) -> str:
 def _remove_fm_key(text: str, key: str) -> str:
     """Remove one top-level frontmatter key and its nested block, if present."""
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         return text
     span = _fm_key_span(lines, fm[0], fm[1], key)
@@ -2308,7 +2353,7 @@ def _replace_fm_inline_list(text: str, key: str, rendered_items: list[str]) -> s
     `name:` stays, as SPEC §9's tombstone keeps its identity readable).
     """
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         return text
     span = _fm_key_span(lines, fm[0], fm[1], key)
@@ -2329,7 +2374,7 @@ def _strip_external_id_keys(text: str, keys: set[str]) -> str:
     if not keys:
         return text
     lines = text.splitlines()
-    fm = _fm_span(lines)
+    fm = frontmatter_fence_span(lines)
     if fm is None:
         return text
     span = _fm_key_span(lines, fm[0], fm[1], 'external_ids')
@@ -2403,6 +2448,41 @@ def _scan_person_profiles(archive_root: Path) -> dict[str, tuple[Path, dict]]:
     return out
 
 
+# The GENERATED companion view kinds the merge cleans up. `research` is a
+# companion by filename grammar too, but it is human-authored - never deleted.
+_GENERATED_VIEW_KINDS = frozenset({'timeline', 'sources-index', 'draft-queue'})
+
+
+def _merged_companion_views(
+    archive_root: Path, person_id: str,
+) -> tuple[list[Path], list[Path]]:
+    """The merged person's companion VIEW files: (generated, lookalikes).
+
+    A merge leaves the tombstone with no curated life to view, so its
+    timeline / sources-index / draft-queue files are deleted with the merge
+    (regeneration is prevented by the tombstone's tier strip - `fha views
+    refresh` only generates for curated persons). Only files that carry the
+    GENERATED header are deletable; a human file parked at a companion
+    filename is never touched (AGENTS.md: never delete without instruction)
+    and is returned separately so the merge can name it as a loose end.
+    """
+    people_dir = archive_root / 'people'
+    generated: list[Path] = []
+    lookalike: list[Path] = []
+    if not people_dir.is_dir():
+        return generated, lookalike
+    for path in sorted(people_dir.rglob('*.md')):
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('id_type') != 'P' or not parsed.get('is_companion'):
+            continue
+        if normalize_id(parsed['id_str']) != person_id:
+            continue
+        if parsed.get('kind') not in _GENERATED_VIEW_KINDS:
+            continue
+        (generated if is_generated_file(path) else lookalike).append(path)
+    return generated, lookalike
+
+
 def _final_survivor(profiles: dict[str, tuple[Path, dict]], person_id: str) -> str:
     """Follow a `merged_into` chain to its living end (cycle-safe).
 
@@ -2418,7 +2498,7 @@ def _final_survivor(profiles: dict[str, tuple[Path, dict]], person_id: str) -> s
         if entry is None:
             return current
         meta = entry[1]
-        if str(meta.get('status') or '').strip().lower() != 'merged':
+        if not is_merged_meta(meta):
             return current
         nxt = normalize_id(str(meta.get('merged_into') or ''))
         if not nxt:
@@ -2450,13 +2530,15 @@ def run_confirm_merge(
 
     `data` is {'status', 'merged', 'survivor', 'folded': {counts},
     'relinked_claims', 'relinked_profiles', 'prose_refs_remaining',
-    'renamed_to'}. The plan is built completely in memory (validation, folds,
-    tombstone, every relink) before anything is written; `--dry-run` prints
-    that plan as per-file unified diffs plus the pending rename and writes
-    nothing. Live mode applies with an undo journal and rolls everything back
-    on any failure. Exit: 0 clean or idempotent `already`; 1 when the merge
-    landed but carries warnings (an external-id conflict, evidence of a
-    relationship between the two); 3 for a refusal or a rolled-back failure.
+    'renamed_to', 'deleted_views'}. The plan is built completely in memory
+    (validation, folds, tombstone, every relink, the generated companion
+    views to delete) before anything is written; `--dry-run` prints that
+    plan as per-file unified diffs plus the pending rename/deletions and
+    writes nothing. Live mode applies with an undo journal and rolls
+    everything back on any failure. Exit: 0 clean or idempotent `already`;
+    1 when the merge landed but carries warnings (an external-id conflict,
+    evidence of a relationship between the two); 3 for a refusal or a
+    rolled-back failure.
 
     Deliberately out of scope: the split (`confirm separate` stays a guided
     human task, SPEC §9) and evidence judgment - the merge-identities skill
@@ -2467,7 +2549,7 @@ def run_confirm_merge(
     result = Result(data={
         'status': None, 'merged': None, 'survivor': None, 'folded': {},
         'relinked_claims': 0, 'relinked_profiles': 0,
-        'prose_refs_remaining': 0, 'renamed_to': None,
+        'prose_refs_remaining': 0, 'renamed_to': None, 'deleted_views': [],
     })
 
     # ── Validation: everything refusable is refused before any write ────────
@@ -2503,7 +2585,7 @@ def run_confirm_merge(
 
     # Idempotence and chain checks come before anything else so a re-run of a
     # finished merge is a clean no-op, matching confirm cooccur's `already`.
-    if str(merged_meta.get('status') or '').strip().lower() == 'merged':
+    if is_merged_meta(merged_meta):
         existing_target = normalize_id(str(merged_meta.get('merged_into') or ''))
         if existing_target == ps:
             result.data['status'] = 'already'
@@ -2515,7 +2597,7 @@ def run_confirm_merge(
                      f'{fmt_id_display(existing_target) or "another person"}. To '
                      f'move it to {ps_disp} instead, undo the earlier merge by '
                      'hand first (edit the tombstone record), then re-run.')
-    if str(survivor_meta.get('status') or '').strip().lower() == 'merged':
+    if is_merged_meta(survivor_meta):
         final = _final_survivor(profiles, ps)
         final_disp = fmt_id_display(final)
         return _fail(result, 'merged-survivor',
@@ -2528,6 +2610,22 @@ def run_confirm_merge(
         return _fail(result, 'rename-collision',
                      f'Cannot rename the merged record: {dest.name} already exists '
                      f'in {dest.parent}. Move that file aside, then retry.')
+
+    # The merged person's generated companion views (timeline, sources-index,
+    # draft-queue) go with the merge: they describe a life the survivor now
+    # owns, and left behind they sit beside the tombstone forever (refresh
+    # only regenerates for curated persons, and the tombstone's tier is
+    # stripped below). A companion-NAMED file without the GENERATED header is
+    # human-owned: it is left in place and named as a loose end.
+    view_files, view_lookalikes = _merged_companion_views(archive_root, pm)
+    result.data['deleted_views'] = [str(p) for p in view_files]
+    if view_lookalikes:
+        names = ', '.join(p.name for p in view_lookalikes)
+        result.add('warning',
+                   f'{names}: named like a generated companion view of the '
+                   'merged person but missing the GENERATED header, so it is '
+                   'human-written and was left in place. Review it and remove '
+                   'or rename it by hand if it is stale.')
 
     # Names resolve through the archive-wide alias map (built from every person
     # record), so an ambiguous name - two people sharing it - never resolves
@@ -2624,6 +2722,14 @@ def run_confirm_merge(
         survivor_alias_known.add(a.strip().lower())
         fold_alias_items.append(_yaml_inline(a))
         folded['aliases'] += 1
+    if fold_alias_items and not survivor_has_aliases:
+        # The fold is about to CREATE the survivor's aliases: list. A
+        # non-empty aliases: list must carry the record's own ID (lint W111 -
+        # the line that makes [[P-...]] click through in Obsidian), so the
+        # merge writes it first rather than minting an instant warning. Not
+        # counted in folded['aliases']: it is the survivor's own id, nothing
+        # folded from the merged record.
+        fold_alias_items.insert(0, ps_disp)
 
     # Fold external ids; a same-key different-value conflict keeps the
     # survivor's value and is NEVER silently resolved (owner decision) - the
@@ -2698,7 +2804,8 @@ def run_confirm_merge(
         # is covered by the evidence warning above).
         survivor_text, survivor_self_relinks = _relink_relationship_targets(
             survivor_text, pm, ps, alias_map, token_re)
-        problem = _person_fm_problem(survivor_text, ps)
+        problem = _merge_fm_problem(survivor_before, survivor_text,
+                                    _MERGE_SURVIVOR_KEYS)
     except _EditRefused as e:
         return _fail(result, 'refused',
                      f'{survivor_path.name}: {e}. Nothing was written.')
@@ -2721,13 +2828,19 @@ def run_confirm_merge(
     try:
         tombstone_text = _remove_fm_key(merged_before, 'name_variants')
         tombstone_text = _remove_fm_key(tombstone_text, 'relationships')
+        # The tier goes too: a tombstone is a redirect, not a profile (SPEC
+        # §9), and a `tier: curated` left behind would keep `fha views
+        # refresh` regenerating companion views for a person who no longer
+        # exists as an identity. Absent tier reads as stub everywhere.
+        tombstone_text = _remove_fm_key(tombstone_text, 'tier')
         tombstone_text = _strip_external_id_keys(tombstone_text, strip_ext_keys)
         tombstone_text = _replace_fm_inline_list(tombstone_text, 'aliases', [pm_disp])
         tombstone_text = _set_fm_scalar(tombstone_text, 'status', 'merged')
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_into', ps_disp)
         tombstone_text = _set_fm_scalar(tombstone_text, 'merge_reason', _yaml_inline(reason))
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_date', _today())
-        problem = _person_fm_problem(tombstone_text, pm)
+        problem = _merge_fm_problem(merged_before, tombstone_text,
+                                    _MERGE_TOMBSTONE_KEYS)
     except _EditRefused as e:
         return _fail(result, 'refused',
                      f'{merged_path.name}: {e}. Nothing was written.')
@@ -2883,6 +2996,10 @@ def run_confirm_merge(
             ):
                 result.add('info', dline)
         result.add('info', f'[dry-run] Would rename {merged_path.name} -> {dest.name}')
+        for p in view_files:
+            result.add('info',
+                       f'[dry-run] Would delete the generated companion view '
+                       f'{p.name} (the merged life now belongs to the survivor).')
         result.add('info',
                    f'[dry-run] Would relink {relinked_claims} claim(s) and '
                    f'{relinked_profiles} other record(s); {prose_refs} prose '
@@ -2916,6 +3033,26 @@ def run_confirm_merge(
                          f'cannot write {path}: {e}; every earlier write was '
                          'rolled back - nothing to clean up.')
 
+    # Companion-view deletion sits between the content writes and the rename
+    # (rename stays LAST): each file's bytes are captured for the undo journal
+    # before the unlink, so a mid-apply failure restores them verbatim.
+    for path in view_files:
+        try:
+            original_bytes = path.read_bytes()
+        except OSError as e:
+            _rollback_merge()
+            return _fail(result, 'failed',
+                         f'cannot read {path} before deleting it: {e}; every '
+                         'earlier write was rolled back - nothing to clean up.')
+        undo.append(lambda p=path, b=original_bytes: p.write_bytes(b))
+        try:
+            path.unlink()
+        except OSError as e:
+            _rollback_merge()
+            return _fail(result, 'failed',
+                         f'cannot delete the generated view {path}: {e}; every '
+                         'earlier write was rolled back - nothing to clean up.')
+
     try:
         undo.append(lambda src=dest, back=merged_path: src.rename(back))
         merged_path.rename(dest)
@@ -2928,12 +3065,19 @@ def run_confirm_merge(
     for path in planned:
         if path != merged_path:
             result.note_changed(path)
+    for path in view_files:
+        result.note_changed(path)
     result.note_changed(dest)
 
     result.data['status'] = 'ok'
     result.add('info',
                f'Merged {pm_disp} into {ps_disp}. The old record is kept forever '
                f'as a tombstone, renamed to {dest.name}.', path=dest)
+    if view_files:
+        result.add('info',
+                   f'Deleted {len(view_files)} generated companion view(s) of '
+                   f'the merged person ({", ".join(p.name for p in view_files)}) '
+                   '- that life now shows on the survivor\'s views instead.')
     result.add('info',
                f'Folded into the survivor: {folded["name_variants"]} name '
                f'variant(s), {folded["aliases"]} alias(es), '

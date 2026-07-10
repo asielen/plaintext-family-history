@@ -20,6 +20,19 @@ mutation plus a rename), so the coverage here is deliberately thorough:
   lists), prose mentions counted but never touched (the W107 contract);
 - idempotent `already`, the full refusal matrix, a byte-identical `--dry-run`,
   rollback on an injected write failure and on a rename failure;
+- the alias surface after a merge: the tombstone registers ONLY its bare
+  P-id (unit + example-archive reproduction - the folded name resolves to
+  the survivor only, no fresh W112, `[[old name]]` still resolves), and a
+  fold onto a no-aliases survivor creates the list with the survivor's own
+  id first (no instant W111);
+- the tombstone is never written to after the merge: `fha confirm draft`
+  refuses it naming the survivor (case-insensitive status, like set-living);
+- the strict pre-write guard (`_lib.frontmatter_edit_problem` with the
+  merge's intended-keys sets) and the shared FRONT_RE-exact fence grammar;
+- generated companion views (timeline/sources-index/draft-queue) of the
+  merged person are deleted (GENERATED-verified; human lookalikes kept and
+  named), the tombstone's `tier:` is stripped so refresh does not regrow
+  them, dry-run previews the deletions, rollback restores them;
 - an end-to-end pass against a copy of `example-archive` proving the
   post-merge archive lints with no E016/W115 and no new W107.
 
@@ -342,6 +355,102 @@ class MergeHelperTests(unittest.TestCase):
         self.assertIsNotNone(lint._PERSON_FILENAME_RE.match(stem))
 
 
+class MergedAliasFilterTests(unittest.TestCase):
+    """A tombstone registers ONLY its bare P-id on the alias surface: the
+    tombstone keeps its `name:` for readability, but the merge folded that
+    name into the survivor, and registering it from both records would clash
+    the folded name out of every resolve map - the merge itself would break
+    the `[[Name]]` links it just preserved (plus a fresh W112 per merge)."""
+
+    def test_tombstone_registers_only_its_bare_id(self) -> None:
+        from _lib import alias_clashes, build_alias_map
+        records = [
+            {'id': SURVIVOR.lower(), 'name': 'Thomas Edward Hartley',
+             'name_variants': ['Thos. Hartley'],
+             'aliases': [SURVIVOR, 'Thomas Edward Hartley', 'Thos. Hartley']},
+            # The tombstone: status casing is deliberately hand-edited-shaped -
+            # the filter must normalize, exactly like every merged guard.
+            {'id': MERGED.lower(), 'name': 'Thos. Hartley',
+             'aliases': [MERGED], 'status': 'Merged',
+             'merged_into': SURVIVOR.lower()},
+        ]
+        amap = build_alias_map(records)
+        # The folded name resolves to the SURVIVOR only; no clash anywhere.
+        self.assertEqual(amap.get('thos. hartley'), SURVIVOR.lower())
+        self.assertEqual(alias_clashes(records), {})
+        # The tombstone's bare id still resolves (readers walk merged_into).
+        self.assertEqual(amap.get(MERGED.lower()), MERGED.lower())
+
+    def test_unmerged_records_still_clash_on_a_shared_name(self) -> None:
+        # The filter is scoped to merged tombstones: two LIVING same-name
+        # records remain a clash (SPEC §7 - never guess between them).
+        from _lib import alias_clashes
+        records = [
+            {'id': SURVIVOR.lower(), 'name': 'John Smith'},
+            {'id': MERGED.lower(), 'name': 'John Smith'},
+        ]
+        self.assertIn('john smith', alias_clashes(records))
+
+
+class MergeGuardTests(unittest.TestCase):
+    """The merge's pre-write guard is the shared `_lib.frontmatter_edit_problem`
+    with the merge's intended-keys sets - the same strictness `fha person
+    set-living` applies, scoped to the keys the merge means to touch."""
+
+    BEFORE = (
+        f'---\nid: {SURVIVOR}\nname: Thomas Edward Hartley\nliving: false\n'
+        f'created: 2026-01-01\n---\n\n# Thomas\n'
+    )
+
+    def test_guard_refuses_an_unintended_field_change(self) -> None:
+        tampered = self.BEFORE.replace('name: Thomas Edward Hartley',
+                                       'name: Someone Else')
+        problem = confirm._merge_fm_problem(
+            self.BEFORE, tampered, confirm._MERGE_TOMBSTONE_KEYS)
+        self.assertIsNotNone(problem)
+        self.assertIn("'name'", problem)
+
+    def test_guard_refuses_an_unintended_field_disappearing(self) -> None:
+        tampered = self.BEFORE.replace('living: false\n', '')
+        problem = confirm._merge_fm_problem(
+            self.BEFORE, tampered, confirm._MERGE_SURVIVOR_KEYS)
+        self.assertIsNotNone(problem)
+        self.assertIn('appear or disappear', problem)
+
+    def test_guard_refuses_an_id_change(self) -> None:
+        tampered = self.BEFORE.replace(SURVIVOR, MERGED)
+        problem = confirm._merge_fm_problem(
+            self.BEFORE, tampered, confirm._MERGE_TOMBSTONE_KEYS)
+        self.assertEqual(problem, 'the id: field would change')
+
+    def test_guard_accepts_exactly_the_tombstone_intent(self) -> None:
+        after = (
+            f'---\nid: {SURVIVOR}\nname: Thomas Edward Hartley\nliving: false\n'
+            f'created: 2026-01-01\naliases: [{SURVIVOR}]\nstatus: merged\n'
+            f'merged_into: {MERGED}\nmerge_reason: duplicate\n'
+            f'merged_date: 2026-07-10\n---\n\n# Thomas\n'
+        )
+        self.assertIsNone(confirm._merge_fm_problem(
+            self.BEFORE, after, confirm._MERGE_TOMBSTONE_KEYS))
+
+    def test_fence_grammar_matches_read_record(self) -> None:
+        # The shared fence locator only accepts what FRONT_RE/read_record
+        # parse as frontmatter: exactly `---` at column zero. An indented or
+        # trailing-space fence is prose to the readers, so no surgical editor
+        # may treat it as frontmatter either (person.py and confirm.py used
+        # to disagree here).
+        from _lib import frontmatter_fence_span
+        self.assertEqual(frontmatter_fence_span(['---', 'id: x', '---']), (0, 2))
+        self.assertEqual(frontmatter_fence_span(['---\r', 'id: x', '---\r']), (0, 2))
+        self.assertIsNone(frontmatter_fence_span(['  ---', 'id: x', '---']))
+        self.assertIsNone(frontmatter_fence_span(['---   ', 'id: x', '---']))
+        # A decorated `---` is skipped, not treated as the close - the span
+        # runs to the next EXACT fence, exactly as FRONT_RE's grammar does.
+        self.assertEqual(
+            frontmatter_fence_span(['---', 'id: x', '---   ', 'more', '---']),
+            (0, 4))
+
+
 # ── The synthetic-archive matrix ─────────────────────────────────────────────────
 
 class MergeArchiveTests(unittest.TestCase):
@@ -467,6 +576,120 @@ class MergeArchiveTests(unittest.TestCase):
             self.assertIn(untouched, after)
         third = self.root / 'people' / 'stubs' / 'reed__john_P-dddddddddd.md'
         self.assertEqual(third.read_text(encoding='utf-8'), THIRD_FILE)
+
+    def test_fold_onto_no_aliases_survivor_writes_its_own_id_first(self) -> None:
+        # A survivor with no aliases: key gets one created by the fold. A
+        # non-empty aliases: list must carry the record's own ID (lint W111),
+        # so the merge writes it first instead of minting an instant warning.
+        no_alias = SURVIVOR_FILE.replace(
+            'aliases: [P-aaaaaaaaaa, Thomas Edward Hartley, T. E. Hartley]\n', '')
+        self.survivor_path.write_text(no_alias, encoding='utf-8')
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        smeta = read_record(self.survivor_path)['meta']
+        entries = [str(a).strip() for a in smeta['aliases']]
+        self.assertEqual(normalize_id(entries[0]), SURVIVOR.lower())
+        self.assertIn('Tommy', entries)   # the merged stem still folded
+        import lint
+        self.assertTrue(lint._self_alias_ok(smeta, SURVIVOR))
+
+    def test_accept_draft_refuses_a_merged_tombstone_naming_survivor(self) -> None:
+        run_merge(self.root)
+        # Give the tombstone an AI-DRAFT marker and a hand-edited status
+        # casing: the refusal must come first and must be case-insensitive.
+        text = self.tombstone_path.read_text(encoding='utf-8')
+        text = text.replace('status: merged', 'status: Merged')
+        text += '\n<!-- AI-DRAFT 2026-07-10 model=test -->\ndrafted prose\n'
+        self.tombstone_path.write_text(text, encoding='utf-8')
+        before = self.tombstone_path.read_bytes()
+        r = confirm.run_accept_draft(self.root, person_id=MERGED)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r['status'], 'merged')
+        msg = ' '.join(m.text for m in r.messages)
+        self.assertIn(f'fha confirm draft {SURVIVOR}', msg)
+        self.assertEqual(self.tombstone_path.read_bytes(), before)
+        self.assertEqual(r.changed, [])
+
+    def test_accept_draft_names_the_find_step_when_pointer_is_broken(self) -> None:
+        run_merge(self.root)
+        text = self.tombstone_path.read_text(encoding='utf-8')
+        text = text.replace(f'merged_into: {SURVIVOR}', 'merged_into: nowhere')
+        text += '\n<!-- AI-DRAFT 2026-07-10 model=test -->\ndrafted prose\n'
+        self.tombstone_path.write_text(text, encoding='utf-8')
+        r = confirm.run_accept_draft(self.root, person_id=MERGED)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r['status'], 'merged')
+        self.assertIn(f'fha find {MERGED}', ' '.join(m.text for m in r.messages))
+
+    # Companion views ------------------------------------------------------------
+
+    GEN_TIMELINE = ('<!-- GENERATED by fha views timeline - do not edit -->\n'
+                    '\n# Timeline\n')
+    GEN_SOURCES = ('<!-- GENERATED by fha views sources-index - do not edit -->\n'
+                   '\n# Sources\n')
+
+    def _write_companions(self) -> tuple[Path, Path, Path, Path]:
+        """Two GENERATED views + one human lookalike for the merged person,
+        plus a GENERATED view for the SURVIVOR (which must never be touched)."""
+        t = self.merged_path.with_name(f'hartley__thos_timeline_{MERGED}.md')
+        s = self.merged_path.with_name(f'hartley__thos_sources-index_{MERGED}.md')
+        h = self.merged_path.with_name(f'hartley__thos_draft-queue_{MERGED}.md')
+        keep = self.survivor_path.with_name(
+            f'hartley__thomas_edward_timeline_{SURVIVOR}.md')
+        t.write_text(self.GEN_TIMELINE, encoding='utf-8')
+        s.write_text(self.GEN_SOURCES, encoding='utf-8')
+        h.write_text('# My hand-written notes at a companion filename\n',
+                     encoding='utf-8')
+        keep.write_text(self.GEN_TIMELINE, encoding='utf-8')
+        return t, s, h, keep
+
+    def test_merge_deletes_generated_views_and_strips_tier(self) -> None:
+        t, s, h, keep = self._write_companions()
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        # GENERATED views of the merged person are deleted; the human
+        # lookalike and the survivor's own view are untouched.
+        self.assertFalse(t.exists())
+        self.assertFalse(s.exists())
+        self.assertTrue(h.exists())
+        self.assertTrue(keep.exists())
+        changed = {Path(p).name for p in result.changed}
+        self.assertIn(t.name, changed)
+        self.assertIn(s.name, changed)
+        self.assertNotIn(h.name, changed)
+        self.assertEqual({Path(p).name for p in result['deleted_views']},
+                         {t.name, s.name})
+        msgs = ' | '.join(m.text for m in result.messages)
+        self.assertIn(t.name, msgs)
+        # The human lookalike is named as a loose end, never deleted.
+        warnings = ' | '.join(m.text for m in result.messages
+                              if m.level == 'warning')
+        self.assertIn(h.name, warnings)
+        # The tombstone keeps no tier: a redirect is not a curated profile,
+        # so `fha views refresh` will not regenerate views for it.
+        meta = read_record(self.tombstone_path)['meta']
+        self.assertNotIn('tier', meta)
+
+    def test_dry_run_previews_view_deletion_and_deletes_nothing(self) -> None:
+        t, s, h, keep = self._write_companions()
+        before = tree_state(self.root)
+        result = run_merge(self.root, dry_run=True)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(tree_state(self.root), before)
+        text = '\n'.join(m.text for m in result.messages if m.level == 'info')
+        self.assertIn('Would delete the generated companion view', text)
+        self.assertIn(t.name, text)
+        self.assertIn(s.name, text)
+        self.assertNotIn(h.name, text)
+
+    def test_rollback_restores_deleted_views_on_rename_failure(self) -> None:
+        t, s, h, keep = self._write_companions()
+        before = tree_state(self.root)
+        with mock.patch.object(Path, 'rename', side_effect=OSError('locked')):
+            r = run_merge(self.root)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r.changed, [])
+        self.assertEqual(tree_state(self.root), before)
 
     # Dry-run --------------------------------------------------------------------
 
@@ -738,6 +961,43 @@ class ExampleArchiveMergeTests(unittest.TestCase):
         self.assertEqual(after.get('W107', 0), baseline.get('W107', 0))
         self.assertEqual(after.get('W115', 0), baseline.get('W115', 0))
         self.assertEqual(after.get('E005', 0), baseline.get('E005', 0))
+
+    def test_merged_name_still_resolves_to_the_survivor_only(self) -> None:
+        # The alias-surface reproduction: before the fix, the tombstone's kept
+        # name: registered beside the survivor's freshly folded variant, so
+        # the folded name became a two-record clash - dropped from every
+        # resolve map (breaking existing [[Name]] links) and a fresh W112 on
+        # every completed merge.
+        import sqlite3
+        baseline = self._lint_codes()
+        result = confirm.run_confirm_merge(
+            self.root, person_merged=DUP_STUB_ID, into=THOMAS,
+            reason='duplicate stub of Thomas Edward Hartley')
+        self.assertEqual(result['status'], 'ok')
+        self.index.build_index(self.root, self.config)
+
+        # No fresh W112: the merge must not mint an alias clash.
+        after = self._lint_codes()
+        self.assertEqual(after.get('W112', 0), baseline.get('W112', 0))
+        self.assertEqual(after.get('W113', 0), baseline.get('W113', 0))
+
+        conn = sqlite3.connect(self.root / '.cache' / 'index.sqlite')
+        try:
+            amap = self.index._resolve_map_from_aliases(conn)
+            # [[Thos. E. Hartley]] (the folded name) resolves - to the
+            # survivor, and only the survivor.
+            self.assertEqual(amap.get('thos. e. hartley'), THOMAS.lower())
+            # The folded variant resolves too.
+            self.assertEqual(amap.get('t.e.h. of fairview'), THOMAS.lower())
+            # The tombstone's bare P-id still resolves (readers walk
+            # merged_into from there) - and it is ALL the tombstone registers.
+            self.assertEqual(amap.get(DUP_STUB_ID.lower()), DUP_STUB_ID.lower())
+            rows = conn.execute(
+                'SELECT alias FROM aliases WHERE canonical_id=?',
+                (DUP_STUB_ID.lower(),)).fetchall()
+            self.assertEqual([r[0] for r in rows], [DUP_STUB_ID.lower()])
+        finally:
+            conn.close()
 
 
 if __name__ == '__main__':
