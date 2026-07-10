@@ -2054,9 +2054,9 @@ def run_timeline(
             print(f'Generated {count} timeline file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
-                print('Run `fha index` to update the search index with the new view file(s).')
-                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+                # post-dates .cache/index.sqlite), but a successful write is not a
+                # warning: exit clean and print the reindex as advice, not an alarm.
+                print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
         if not person_id:
@@ -2069,9 +2069,9 @@ def run_timeline(
         out = _generate_timeline(conn, pid, archive_root)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
-            print('Run `fha index` to update the search index with the new view file.')
+            print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
@@ -2130,9 +2130,10 @@ def run_sources_index(
             print(f'Generated {count} sources-index file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
-                print('Run `fha index` to update the search index with the new view file(s).')
-                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+                # post-dates .cache/index.sqlite), but a successful write is not a
+                # warning: exit clean and print the reindex as advice, not an alarm.
+                print('Run `fha index` when convenient to update the search index with the new view file(s).')
+                return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
             if all_curated and not changed:
                 # Nothing generated because every curated record is parked in
                 # people/stubs/ (couple_folders_only with 0 folders stays clean).
@@ -2149,9 +2150,9 @@ def run_sources_index(
         out = _generate_sources_index_person(conn, pid, archive_root)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
-            print('Run `fha index` to update the search index with the new view file.')
+            print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
@@ -2202,9 +2203,9 @@ def run_draft_queue(
             print(f'Generated {count} draft-queue file(s).')
             if count:
                 # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
-                print('Run `fha index` to update the search index with the new view file(s).')
-                return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+                # post-dates .cache/index.sqlite), but a successful write is not a
+                # warning: exit clean and print the reindex as advice, not an alarm.
+                print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
         if not person_id:
@@ -2217,9 +2218,9 @@ def run_draft_queue(
         out = _generate_draft_queue(conn, pid, archive_root)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
-            print('Run `fha index` to update the search index with the new view file.')
+            print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': 1})
+            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except _ManualFileRefused as e:
@@ -2337,10 +2338,10 @@ def run_refresh(archive_root: Path) -> Result:
         print(f'Generated {count} view file(s).')
         if count:
             # Refresh writes new/updated companion files, which makes the index
-            # stale by definition (newest_record_mtime now post-dates it). Signal
-            # that with a warnings exit so `fha index` is run before find/doctor.
-            print('Run `fha index` to update the search index with the new view files.')
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'count': count})
+            # stale by definition (newest_record_mtime now post-dates it). That is
+            # not a failure of the refresh: exit clean and print the reindex as
+            # advice, so a harness following the exit code isn't alarmed each run.
+            print('Run `fha index` when convenient to update the search index with the new view files.')
         return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
     except _ManualFileRefused as e:
