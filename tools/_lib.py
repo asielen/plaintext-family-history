@@ -99,6 +99,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    read_record               - parse frontmatter + claims + body from a .md file
 #    claim_item_key_indent     - one claim item's real mapping-key column (surgical edits)
 #    claims_edit_problem       - pre-write re-parse guard for surgical claims-block edits
+#    is_merged_meta            - normalized SPEC §9 tombstone test (status: merged)
+#    frontmatter_fence_span    - the ONE `---` fence grammar (exact, FRONT_RE-matched)
+#    parse_frontmatter_strict  - frontmatter mapping via plain yaml.safe_load (no coercion)
+#    frontmatter_edit_problem  - pre-write guard for surgical frontmatter edits
 #    parse_filename            - decompose filename into {id_str, kind, is_companion}
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
@@ -1228,6 +1232,130 @@ def claims_edit_problem(
     return None
 
 
+def is_merged_meta(meta: dict | None) -> bool:
+    """True when a record's frontmatter marks it a merged tombstone (SPEC §9).
+
+    The one merged-status test every tool shares. Comparison is normalized
+    (strip + lowercase) because tombstones can be hand-edited: a
+    `status: Merged` or a value with a stray trailing space must trip the
+    same guards a canonical `status: merged` does - a guard that only one
+    byte-exact spelling can arm is not a guard. Works on both parse shapes
+    (read_record's coerced meta and a plain yaml.safe_load mapping); a
+    non-mapping or absent meta is simply not merged.
+    """
+    if not isinstance(meta, dict):
+        return False
+    return str(meta.get('status') or '').strip().lower() == 'merged'
+
+
+# One frontmatter fence line: exactly `---` at column zero. The optional
+# trailing `\r` mirrors FRONT_RE's `\r?\n` (callers may split with
+# `text.split('\n')`, which leaves the `\r` of a CRLF line in place).
+_FENCE_LINE_EXACT_RE = re.compile(r'---\r?')
+
+
+def frontmatter_fence_span(lines: list[str]) -> tuple[int, int] | None:
+    """Return (open, close) line indexes of the frontmatter `---` pair, or None.
+
+    The ONE fence grammar every surgical frontmatter editor shares, matched to
+    `FRONT_RE` (what `read_record` actually parses): each fence is exactly
+    `---` at column zero - no indent, no trailing spaces. Anything looser lets
+    an editor operate on a region the readers treat as prose (an indented or
+    trailing-space `---` never opens frontmatter for `read_record`), so the
+    edit would land where no tool ever looks. `lines` may come from
+    `text.split('\\n')` (CRLF lines keep their `\\r` - tolerated, as FRONT_RE
+    tolerates it) or `text.splitlines()`.
+    """
+    if not lines or not _FENCE_LINE_EXACT_RE.fullmatch(lines[0]):
+        return None
+    for i in range(1, len(lines)):
+        if _FENCE_LINE_EXACT_RE.fullmatch(lines[i]):
+            return 0, i
+    return None
+
+
+def parse_frontmatter_strict(text: str) -> dict | None:
+    """The frontmatter mapping exactly as YAML reads it, or None.
+
+    Parses with FRONT_RE + plain yaml.safe_load and NO scalar coercion -
+    unlike `read_record`, which coerces booleans/dates to strings for
+    cross-record comparisons. `frontmatter_edit_problem` compares a rewrite
+    against its original value-by-value, so both sides must come from the
+    same parse; feeding it read_record's coerced meta would false-flag every
+    boolean (`living: false` reads False on one side, 'false' on the other).
+    Returns None when there is no frontmatter or it does not read as a
+    mapping.
+    """
+    if yaml is None:
+        return None
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return None
+    try:
+        meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def frontmatter_edit_problem(
+    new_text: str,
+    *,
+    before_meta: dict,
+    changed_keys: frozenset[str] | set[str] = frozenset(),
+) -> str | None:
+    """Vet a surgically rewritten record's frontmatter BEFORE it is written.
+
+    The frontmatter sibling of `claims_edit_problem`, shared by every tool
+    that edits person frontmatter as text (`fha person set-living`,
+    `fha confirm merge`). Text surgery preserves key order and hand comments;
+    the price is that a bad rewrite could leave YAML that no longer parses,
+    or silently rewrite a field the edit never meant to touch (a key
+    lookalike inside a multi-line quoted scalar). Re-parse and require:
+
+      (a) the frontmatter still parses as a mapping (fences per FRONT_RE);
+      (b) `id:` still names the same record (normalized comparison);
+      (c) every key OUTSIDE `changed_keys` is present and value-identical,
+          and no key outside the set appears or disappears.
+
+    `changed_keys` is the caller's declared intent - `{'living'}` for the
+    one-key flip, the tombstone/fold key set for the merge - so a multi-key
+    rewrite gets the same appear/disappear/change-value discipline as a
+    single-key edit, scoped to what it meant to touch. Anything beyond that
+    intent is a refusal, never a write.
+
+    `before_meta` must be the strict-parsed original frontmatter
+    (`parse_frontmatter_strict` or an equivalent plain yaml.safe_load), so
+    value comparisons see the same types on both sides. Returns None when
+    the rewrite is sound, else a short plain-language description of what
+    would break; the caller refuses and writes nothing.
+    """
+    if yaml is None:
+        return format_yaml_dependency_error()
+    fm = FRONT_RE.match(new_text)
+    if fm is None:
+        return 'the frontmatter block (its --- fences) would be missing'
+    try:
+        meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        return 'the frontmatter would no longer read as YAML'
+    if not isinstance(meta, dict):
+        return 'the frontmatter would no longer read as a set of fields'
+    before_id = normalize_id(str(before_meta.get('id') or ''))
+    after_id = normalize_id(str(meta.get('id') or ''))
+    if before_id != after_id:
+        return 'the id: field would change'
+    ignore = set(changed_keys)
+    before_keys = set(before_meta) - ignore
+    after_keys = set(meta) - ignore
+    if before_keys != after_keys:
+        return 'another frontmatter field would appear or disappear'
+    for key in before_keys:
+        if meta.get(key) != before_meta.get(key):
+            return f'the {key!r} field would change value'
+    return None
+
+
 def parse_filename(path: str | Path) -> dict | None:
     """
     Parse a record filename into its components.
@@ -2001,11 +2129,22 @@ def _record_alias_strings(rec: dict) -> list[str]:
     entries, and (people/places) the display `name` plus name/alt variants.
 
     Tolerant of the field names both record types use, so one helper feeds both
-    the resolve map and the clash check."""
+    the resolve map and the clash check.
+
+    A merged tombstone (`status: merged`, SPEC §9) registers ONLY its bare
+    canonical ID - the one alias the merge leaves in its `aliases:` list.
+    Its `name:` stays on the record for human readability, but the name (and
+    any variant or stem) now belongs to the survivor, where the merge folded
+    it; letting the tombstone register it too would make every folded name a
+    two-record clash, dropped from every resolve map - so the very merge
+    that moved a name would break every `[[Name]]` link to it (plus a fresh
+    W112 per merge). Readers resolve the bare ID through `merged_into`."""
     out: list[str] = []
     rid = rec.get('id')
     if rid:
         out.append(str(rid))
+    if is_merged_meta(rec):
+        return out
     for a in rec.get('aliases') or []:
         out.append(str(a))
     if rec.get('name'):
@@ -2044,7 +2183,9 @@ def build_alias_map(records: Any) -> dict[str, str]:
     """Build the resolve map `alias_lower → canonical_id` from record dicts.
 
     Each record is a dict with at least `id`; optional `aliases`, `name`,
-    `name_variants`, `alt_names`. Only UNAMBIGUOUS aliases are included - a
+    `name_variants`, `alt_names`, and `status` (pass it through: a
+    `status: merged` tombstone contributes only its bare ID - see
+    `_record_alias_strings`). Only UNAMBIGUOUS aliases are included - a
     string naming ≥2 records (two "John Smith"s, or a stem colliding with another
     record) is omitted so `resolve_ref` returns None rather than guessing. Use
     `alias_clashes` to enumerate the omitted ambiguous strings."""
@@ -2476,7 +2617,7 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
     never the record itself, so they are excluded.
 
     Shared here because several tools need the same lookup (`fha confirm draft`,
-    `fha person set-living`, and the planned `fha confirm merge`) - the same
+    `fha person set-living`, `fha confirm merge`) - the same
     shared-infrastructure rationale as `mint_ids`.
     """
     target = normalize_id(person_id)
