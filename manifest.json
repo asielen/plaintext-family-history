@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -66,7 +66,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "28b0f299c65c75308bd10585ff55739ff68aa42a4572ad3021dff361285af13e",
+      "sha256": "ffc07b1cf9eb7c57316a69eac89582dfba11213e080c1b64008b03e4e57442e3",
       "spec_version": "1.2"
     },
     {
@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "97033b6b03e7e152c77fbf9868cba3dc4544f3317765395a0f15ea804a9afbec",
+      "sha256": "38b96875190947336b6c1a87015073add7b288ba142071fdd6d6b182b6e120d9",
       "spec_version": "1.2"
     },
     {
@@ -151,7 +151,7 @@
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "add02c52e6afaa2f920e671314222abaa6051e53855af493e5d7c822d45a320a",
+      "sha256": "011a068ef1a8af875297f804e7068753b1786e4055a123a70f133932f0f2a19e",
       "spec_version": "1.2"
     },
     {
@@ -259,7 +259,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "06ca6aab3a71d10fe7b966128f01d0b895c6e189a3969e0999600896062d112c",
+      "sha256": "e6b40560412f10fbb8e652474ee9ebea739a02676ceb8267612ed9f1b1177444",
       "spec_version": "1.2"
     },
     {
@@ -425,13 +425,13 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "096ec5a875050bb15005fe5c821565e020c41f056a3bc6eae9cbb1ce955a84dd",
+      "sha256": "afa603a989a38bed1ff208669d8f72d81cbf539c1b542dbdfaba7449befbd14f",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "042102f199e94612b8dd5a03b1ce3120ddd1994416afec796eaafaa33e391069",
+      "sha256": "959cbb1d0f3254f5ee2ea9fa8c67f1fab551904e1a8b0ea50ec12be2e6ebd6b9",
       "spec_version": "1.2"
     },
     {
@@ -485,7 +485,7 @@
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "d4ba366edffc0297e30340a8fb5d2daf33fba53e1f90e852633ead75a60b35e9",
+      "sha256": "8d7ca61593e4c01e0facf30001b385a0fbef649c469ec4e20479169be75b4cfb",
       "spec_version": "1.2"
     },
     {
@@ -509,7 +509,7 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "d76377f09d45f7c29d04f803d060905d64e55bd302019bd7e6212eb3b318e3fe",
+      "sha256": "e38261c1f820de2edb4386818a47c5d7f7be8b0a45f42200874153568f00d110",
       "spec_version": "1.2"
     },
     {
@@ -552,6 +552,12 @@
       "path": "tools/packet.py",
       "category": "operating",
       "sha256": "6c977a732131b813f31e062801bfede212c1bd2a737c178c716a355ad321bccf",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/person.py",
+      "category": "operating",
+      "sha256": "c2d40e79eee32588bd9ae660af75158a8d62229608e5aad90e797829dd2704e3",
       "spec_version": "1.2"
     },
     {
