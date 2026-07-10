@@ -3726,7 +3726,8 @@ def run_lint_silent(
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'lint',
-        help='Verify the archive against the spec',
+        aliases=['check'],
+        help='Check the archive for problems and report them (alias: `fha check`)',
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

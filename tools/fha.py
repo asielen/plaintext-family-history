@@ -23,10 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 import argparse
 
 COMMANDS = (
-    'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'relate', 'photoindex',
-    'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
-    'process', 'capture', 'convert-mining', 'claim', 'confirm', 'site', 'install',
-    'update-tools', 'working-copy', 'normalize-links',
+    'id', 'index', 'lint', 'check', 'stubs', 'views', 'doctor', 'find', 'search',
+    'relate', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
+    'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
+    'site', 'install', 'update-tools', 'working-copy', 'normalize-links',
 )
 
 

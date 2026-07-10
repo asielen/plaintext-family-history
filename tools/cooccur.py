@@ -496,7 +496,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'cooccur' onto the main fha parser."""
     p = subs.add_parser(
         'cooccur',
-        help='Detect connection candidates: person co-occurrence and org/entity recurrence',
+        help='Find people who keep showing up together (shared sources, places, organizations)',
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

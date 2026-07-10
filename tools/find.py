@@ -1923,6 +1923,29 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     p.set_defaults(func=_run_find)
 
+    # `fha search <words>` - the plainest verb for full-text search, the one a
+    # human who never read the docs will reach for first (persona B2). Same
+    # engine as `fha find --text`; a separate subparser (not an argparse alias)
+    # because the argument shape differs - a bare positional phrase joined with
+    # spaces, so `fha search rose hartley` works unquoted.
+    s = subparsers.add_parser(
+        'search',
+        help='Search everything for a word or phrase (same as `fha find --text`)',
+        description='Search everything for a word or phrase - records, notes, '
+                    'transcripts, photo captions.\n\n'
+                    'Examples:\n'
+                    '  fha search rose hartley\n'
+                    '  fha search "1880 census"\n\n'
+                    'Same as `fha find --text "..."`.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    s.add_argument('--root', metavar='PATH', help='Archive root')
+    s.add_argument(
+        'phrase', nargs='+', metavar='WORD',
+        help='Word or phrase to search for (joined with spaces if several words)',
+    )
+    s.set_defaults(func=_run_search)
+
 
 def _run_find(args: argparse.Namespace) -> int:
     """argparse → run_find bridge; returns the plain int exit code.
@@ -1981,6 +2004,28 @@ def _run_find(args: argparse.Namespace) -> int:
         print('Usage: fha find <ID>  |  fha find --text "phrase"  |  fha find --related <ID> [--date EDTF]',
               file=sys.stderr)
         return EXIT_FAILURE
+
+
+def _run_search(args: argparse.Namespace) -> int:
+    """argparse → run_find bridge for `fha search <words>` (= `fha find --text`).
+
+    The positional phrase arrives as a list of words (nargs='+'); joining with
+    spaces lets `fha search rose hartley` work unquoted while `fha search "1880
+    census"` still passes a single token. Root resolution goes through the same
+    shared chokepoint as `fha find`.
+    """
+    archive_root = resolve_root_arg(args, command='fha search')
+    if archive_root is None:
+        return EXIT_FAILURE
+
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    phrase = ' '.join(getattr(args, 'phrase', []) or [])
+    return run_find(phrase, archive_root, fha_config, text_mode=True).exit_code
 
 
 def _standalone_main(argv: list[str] | None = None) -> int:
