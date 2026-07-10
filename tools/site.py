@@ -2891,15 +2891,22 @@ def run_site(
     if is_working_copy(archive_root):
         # Warning-level refusal, not a failure: ok stays True, exit stays clean,
         # data.status='working-copy' is the machine discriminator (TOOLING §13d).
+        # data['messages'] carries the human-facing text (as _cmd_site prints
+        # it, same as every other status); .add() below is for headless
+        # callers reading Result.messages.
+        warning_text = (
+            'fha site is not available in working-copy mode - '
+            'the photo and document files are on the main machine. '
+            'Build the site there.'
+        )
         return Result(
             ok=True,
             exit_code=EXIT_CLEAN,
-            data={'status': 'working-copy', 'out_dir': str(out_dir), 'pages': [], 'messages': []},
+            data={'status': 'working-copy', 'out_dir': str(out_dir), 'pages': [],
+                  'messages': [warning_text]},
         ).add(
             'warning',
-            'fha site is not available in working-copy mode - '
-            'the photo and document files are on the main machine. '
-            'Build the site there.',
+            warning_text,
         )
     payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run)
     status = payload['status']
@@ -3056,6 +3063,8 @@ def _cmd_site(args: argparse.Namespace) -> int:
         return EXIT_FAILURE   # the refusal message is already in result['messages']
     if status == 'reset-failed':
         return EXIT_FAILURE   # the OSError detail is already in result['messages']
+    if status == 'working-copy':
+        return EXIT_CLEAN   # the refusal warning is already in result['messages']
 
     mode = 'linked preview' if getattr(args, 'linked', False) else 'standalone snapshot'
     where = _display_path(result['out_dir'], archive_root)

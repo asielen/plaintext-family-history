@@ -247,10 +247,24 @@ def _intercept_doctor(argv: list[str]) -> int | None:
         return None
 
     from doctor import _standalone_main as doctor_main
-    rest = [
-        tok for tok in (argv[:command_idx] + argv[command_idx + 1:])
-        if tok != '--debug'
-    ]
+    # doctor's own parser only ever accepted `--root`; the global `--spec-root`
+    # is reserved for `fha lint` (see the top-level parser's help text) and
+    # must not be forwarded here, or doctor_main's argparse rejects it as
+    # unrecognized.
+    rest = []
+    skip_next = False
+    for tok in (argv[:command_idx] + argv[command_idx + 1:]):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == '--debug':
+            continue
+        if tok == '--spec-root':
+            skip_next = True
+            continue
+        if tok.startswith('--spec-root='):
+            continue
+        rest.append(tok)
     return doctor_main(rest)
 
 

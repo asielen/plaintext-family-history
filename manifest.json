@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "002e59f181285260fe49fcf318fd16b5fa0b4f2e601138eeef44bfb23630eafb",
+      "sha256": "01c52f5b52b081875886d7609691a4d6ccc34fbe3c57b31887344e7c0db42f0b",
       "spec_version": "1.2"
     },
     {
@@ -521,7 +521,7 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "a340ac24d6c3fdd43be5a8aab05e3843b53cc1b92b1fcaab68e441cc179d5c0d",
+      "sha256": "7bf5b8718439dc315ae48606c13b60e3a6ec53516d7253047a7365da0d020ed4",
       "spec_version": "1.2"
     },
     {
@@ -587,7 +587,7 @@
     {
       "path": "tools/places.py",
       "category": "operating",
-      "sha256": "f04ca79b9e385abb603078908825a6d6bed9836ff482f92e7ccabb7a4fe2abd9",
+      "sha256": "f2fc095f94767e17303743c387965512dcf6bafd55197c0d9fa47d205f04e0df",
       "spec_version": "1.2"
     },
     {
@@ -623,7 +623,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "7d86105a4c176d3505b7e3ce3b7e7db51a3f6d2cb90626127b3eff99925e77e5",
+      "sha256": "b61900a36b68fb4e7ee695e9a231373fd3a33ee47d8a0413ef265581cb4a7a73",
       "spec_version": "1.2"
     },
     {
@@ -695,7 +695,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "fd30438238e5b2fb6df9b7467174d7d9dde8493635233f0cf02e7823cb9ee783",
+      "sha256": "7f22b82c5675dab9abe7e14db378070dda5020a078c76f059835d91584d737bc",
       "spec_version": "1.2"
     },
     {

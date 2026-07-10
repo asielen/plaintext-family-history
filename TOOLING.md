@@ -40,7 +40,8 @@ The spec docs (`SPEC.md`/`TOOLING.md`) normally live at the archive root but may
 In the public spec repo, the fixture is run explicitly: `fha lint --root example-archive --spec-root .` - the repo root is not itself an archive.
 All stored paths are alias-form with forward slashes (normalize on Windows).
 
-**`--root` per subcommand.** Because Python's `argparse` does not propagate parent-parser flags into subparsers, **every subcommand defines its own `--root` (and `--spec-root`) flag**. Both `fha --root X lint` and `fha lint --root X` work; the subcommand's own flag wins. Implementations in other languages must respect the same dual-position convention.
+**`--root` per subcommand.** Because Python's `argparse` does not propagate parent-parser flags into subparsers, **every subcommand defines its own `--root` flag**. Both `fha --root X lint` and `fha lint --root X` work; the subcommand's own flag wins. Implementations in other languages must respect the same dual-position convention.
+`--spec-root` is narrower: only `fha lint` reads it, so only `lint` defines a subcommand-level copy (`fha lint --spec-root X`); every other subcommand relies on the global `fha --spec-root X <command>` position, which the dispatcher threads through (and strips before forwarding to any subcommand, like `doctor`, that builds its own standalone parser unaware of the flag).
 
 **Path resolution (`resolve_path`).** Record paths begin with a root alias (`photos/…`, `documents/…`). `_lib.py` loads `fha.yaml` once per run; `resolve_path(p)` maps the first segment through `roots:` (absolute values used as-is; relative values join the archive root; a missing `fha.yaml` or alias defaults to the internal directory of the same name).
 Every tool that touches asset files - lint E011/E012, photoindex, packet, process, site - resolves through this function and never assumes assets are under the archive root.

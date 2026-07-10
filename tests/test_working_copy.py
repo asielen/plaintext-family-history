@@ -166,6 +166,12 @@ class WorkingCopyTests(unittest.TestCase):
                 })()),
                 EXIT_CLEAN,
             )
+            self.assertEqual(
+                site._cmd_site(type('Args', (), {
+                    'root': str(archive), 'out': None, 'linked': False, 'dry_run': False,
+                })()),
+                EXIT_CLEAN,
+            )
 
     def test_asset_refusals_report_ok_true_with_status(self) -> None:
         # The asset-mutating commands, refused in working-copy mode, are a
