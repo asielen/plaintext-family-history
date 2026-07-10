@@ -471,6 +471,64 @@ class WorkingCopyTests(unittest.TestCase):
         self.assertFalse((self.parent / 'my-archive-backups').exists())
 
 
+class ResultDataContractTests(unittest.TestCase):
+    """run_backup's docstring promises the SAME data keys on every status;
+    a headless consumer reading data['folders'] or data['excluded'] must
+    never hit a KeyError on the early arms (working-copy, bad-destination,
+    name-collision, write-failed)."""
+
+    _KEYS = {'status', 'zip_path', 'files', 'bytes', 'assets_included',
+             'skipped_roots', 'folders', 'excluded'}
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.root = _make_archive(self.parent)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _assert_documented_keys(self, result, status: str) -> None:
+        self.assertEqual(result.data['status'], status)
+        missing = self._KEYS - set(result.data)
+        self.assertFalse(missing, f'{status} arm omits documented keys: {missing}')
+
+    def test_working_copy_arm_carries_all_documented_keys(self) -> None:
+        (self.root / 'WORKING_COPY').write_text('marker\n', encoding='utf-8')
+        result = _run(self.root, include_assets=True)
+        self._assert_documented_keys(result, 'working-copy')
+
+    def test_bad_destination_arm_carries_all_documented_keys(self) -> None:
+        result = _run(self.root, to=str(self.root / 'backups'))
+        self._assert_documented_keys(result, 'bad-destination')
+
+    def test_write_failed_arm_carries_all_documented_keys(self) -> None:
+        def _boom(zip_path, entries):
+            raise OSError('disk full')
+
+        orig = backup._write_zip
+        backup._write_zip = _boom
+        try:
+            result = _run(self.root)
+        finally:
+            backup._write_zip = orig
+        self._assert_documented_keys(result, 'write-failed')
+
+    def test_name_collision_arm_carries_all_documented_keys(self) -> None:
+        # Remap photos to an external root that shares a relative file path
+        # with the archive's own (now ordinary) photos/ folder.
+        ext = self.parent / 'ext-photos'
+        _write(ext / '1920' / 'pic.jpg', 'external copy')
+        (self.root / 'fha.yaml').write_text(
+            f'roots:\n  photos: {ext}\n  documents: documents\n', encoding='utf-8')
+        result = _run(self.root, include_assets=True)
+        self._assert_documented_keys(result, 'name-collision')
+
+    def test_ok_and_dry_run_arms_carry_all_documented_keys(self) -> None:
+        self._assert_documented_keys(_run(self.root, dry_run=True), 'dry-run')
+        self._assert_documented_keys(_run(self.root), 'ok')
+
+
 class RestoreSmokeTests(unittest.TestCase):
     """Restore = unzip, literally: the extracted tree is a working archive."""
 

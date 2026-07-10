@@ -512,10 +512,13 @@ def run_backup(
     """Compute the backup plan and (unless dry-run) write + verify the zip.
 
     The engine half of the TOOLING §1 split: returns a Result, prints nothing.
-    Result.data carries {'status': 'ok'|'dry-run'|'working-copy'|
-    'bad-destination'|'name-collision'|'write-failed', 'zip_path', 'files',
-    'bytes', 'assets_included', 'skipped_roots', 'folders', 'excluded'};
-    `changed` lists the zip and the stamp on a live run, nothing on dry-run.
+    Result.data carries the SAME keys on every status - {'status':
+    'ok'|'dry-run'|'working-copy'|'bad-destination'|'name-collision'|
+    'write-failed', 'zip_path', 'files', 'bytes', 'assets_included',
+    'skipped_roots', 'folders', 'excluded'} - so a headless consumer never
+    needs a per-arm guard; arms that never reached planning carry empty
+    values.  `changed` lists the zip and the stamp on a live run, nothing
+    on dry-run.
     `bytes` is the finished zip's on-disk size (the number a human compares
     against free disk space); the per-folder plan sizes are content bytes.
 
@@ -543,7 +546,8 @@ def run_backup(
             ok=True,
             exit_code=EXIT_CLEAN,
             data={'status': 'working-copy', 'zip_path': None, 'files': 0,
-                  'bytes': 0, 'assets_included': False, 'skipped_roots': []},
+                  'bytes': 0, 'assets_included': False, 'skipped_roots': [],
+                  'folders': {}, 'excluded': []},
         ).add('warning', msg)
 
     dest_dir, source_desc = _resolve_destination(archive_root, fha_config, to)
@@ -552,7 +556,8 @@ def run_backup(
             ok=False,
             exit_code=EXIT_FAILURE,
             data={'status': 'bad-destination', 'zip_path': None, 'files': 0,
-                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': []},
+                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': [],
+                  'folders': {}, 'excluded': []},
         ).add('error', f'ERROR: {source_desc}')
 
     conflict = _destination_conflict(dest_dir, archive_root, fha_config, source_desc)
@@ -561,7 +566,8 @@ def run_backup(
             ok=False,
             exit_code=EXIT_FAILURE,
             data={'status': 'bad-destination', 'zip_path': None, 'files': 0,
-                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': []},
+                  'bytes': 0, 'assets_included': include_assets, 'skipped_roots': [],
+                  'folders': {}, 'excluded': []},
         ).add('error', f'ERROR: {conflict}')
 
     plan = _plan_backup(archive_root, fha_config, include_assets)
@@ -685,7 +691,8 @@ def run_backup(
             exit_code=EXIT_FAILURE,
             data={'status': 'write-failed', 'zip_path': str(zip_path),
                   'files': 0, 'bytes': 0, 'assets_included': include_assets,
-                  'skipped_roots': plan['skipped_roots']},
+                  'skipped_roots': plan['skipped_roots'],
+                  'folders': plan['folders'], 'excluded': plan['excluded']},
         ).add('error', (
             f'ERROR: backup failed and the partial file was removed: {exc}. '
             f'Nothing to clean up - fix the cause and re-run `fha backup`.'
