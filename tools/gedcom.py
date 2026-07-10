@@ -969,7 +969,10 @@ Export your tree to a GEDCOM file for another genealogy app.
 
 Living people are redacted by default (use --include-living to override). GEDCOM
 is the portable format Ancestry, RootsMagic, and others read; it is a one-way
-export, never re-imported as truth."""
+export, never re-imported as truth.
+
+Importing a GEDCOM from Ancestry or another program? That is the separate
+`fha gedcom import <file.ged>` - this command is the exporter."""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:

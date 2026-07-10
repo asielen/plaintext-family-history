@@ -521,13 +521,13 @@
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "1fd608f1efa45d6bee437f842a9d2b0164351fd6f7a2c264b58783132dd6f54e",
+      "sha256": "14c6164fb336c6d3a3c194157a4673fd2ed56c4d06a2a1ca8e598be5e201b5d8",
       "spec_version": "1.2"
     },
     {
       "path": "tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "ab381034bd0033ff8349b5feaf55d8206ca8ec719631f74ab239a2a988822f93",
+      "sha256": "1e0fb91f405a6d7c0a3110dc5f4d12b94f181778dae8fb7266620a5022bc8326",
       "spec_version": "1.2"
     },
     {

@@ -1583,6 +1583,24 @@ def _cmd_import(args: argparse.Namespace) -> int:
     ).exit_code
 
 
+# User-facing --help (the persona-B help pattern: what it does for you, in
+# plain words, with copyable examples - the module docstring above is for
+# tool-builders). No --spec-root: this command reads nothing from a spec root
+# (persona-E posture: no decorative flags).
+_CLI_DESCRIPTION = """Bring a tree from Ancestry (or any genealogy program) into your archive.
+
+  fha gedcom import family-tree.ged            Show the plan - writes nothing
+  fha gedcom import family-tree.ged --apply    Do the import
+
+Download your tree as a GEDCOM (.ged) file, then run this. The file itself is
+filed as one source (your original untouched); every person becomes a record
+with their dates; every statement becomes a SUGGESTED fact for you to review
+later, family by family - nothing imported is treated as proven. Re-importing
+the same file is refused, and a failed import cleans up after itself.
+
+  --plan-out FILE    Also write the full, uncut plan text to FILE."""
+
+
 def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('ged_file', metavar='FILE.ged',
                    help='The GEDCOM file to import (e.g. an Ancestry tree download).')
@@ -1593,14 +1611,12 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'inside the archive except its out/ folder.')
     p.add_argument('--root', metavar='PATH',
                    help='Archive root (auto-detected if omitted).')
-    p.add_argument('--spec-root', metavar='PATH',
-                   help='Spec docs root (accepted for CLI consistency).')
 
 
 def _standalone_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog='fha gedcom import',
-        description=__doc__,
+        description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
