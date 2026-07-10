@@ -650,12 +650,16 @@ gradually as claims are accepted (the relationships table derives from accepted 
 
 Contract highlights: **plan-then-apply, one-shot** (dry-run default prints the plan and writes
 nothing; `--plan-out FILE` writes the full uncapped plan, refused inside the archive except
-`out/`); UTF-8 only in v1 (ANSEL/UTF-16 refused with a re-export fix); **sentinel + rollback** -
+`out/`, and is written *before* an apply so a bad destination refuses while nothing has been
+written); UTF-8 only in v1 (ANSEL/UTF-16 refused with a re-export fix); a file that defines the
+same xref twice is **refused as malformed, never guessed**; **sentinel + rollback** -
 the audit CSV `.cache/gedcom_import/{sha12-of-file-hash}.csv` maps every GEDCOM xref to its minted
 id AND is the re-run guard (same file twice = refusal naming the date and S-id; a *different*
 export imports cleanly and the dedupe report flags overlaps); every write registers an undo first
 and any failure rolls everything back (the audit CSV is the final write, so a failed run leaves no
-sentinel). Possible duplicates against people already in the archive are **reported, never
+sentinel); an unreachable documents root (an unplugged external drive) refuses the apply before
+any write, naming the drive and the `roots:` fix. On a `WORKING_COPY` machine (§13d) the dry-run
+plan still runs; `--apply` is in the asset-mutating refusal class and points at the main archive. Possible duplicates against people already in the archive are **reported, never
 auto-merged** - merging is a human decision (merge-identities). The **`living:` heuristic** is the
 one privacy-relevant default the import writes: DEAT present (even dateless) or latest-plausible
 birth year more than 110 years back → `living: false`; everyone else stays `unknown` (treated as
@@ -755,7 +759,7 @@ mode without importing it.
 | `fha lint` | Suppress E011/E012 (asset-on-disk checks); emit one note (`working copy: N asset files assumed present in the main archive`), not a per-file warning flood. All non-asset codes run normally. |
 | `fha index` | Record `source_files.exists_on_disk = NULL` (unknown), never `0`; skip the on-disk asset-reconciliation glob. The record-derived surface is built unchanged. |
 | `fha photoindex` | A scan **refuses and prunes nothing** (`this is a working copy - run photo indexing on your main archive`). Read-only photo queries return whatever the existing cache holds. |
-| asset-mutating commands | `fha process <file>`, `fha photoindex tag-person`, `fha photoindex set-summary`, `fha packet`, and `fha site` refuse with a plain pointer to the main archive (exit clean, not a crash). The refusal is a warning-level `Result` - `ok=True`, exit 0, `data.status='working-copy'` - not a failure; `data.status` is the machine discriminator that nothing was filed. `fha capture` → `inbox/`, plain-text editing, `find`, `views`, `report` stay available. |
+| asset-mutating commands | `fha process <file>`, `fha photoindex tag-person`, `fha photoindex set-summary`, `fha packet`, `fha site`, and `fha gedcom import --apply` refuse with a plain pointer to the main archive (exit clean, not a crash). The refusal is a warning-level `Result` - `ok=True`, exit 0, `data.status='working-copy'` - not a failure; `data.status` is the machine discriminator that nothing was filed. (`fha gedcom import`'s dry-run plan still runs, printed under the working-copy banner.) `fha capture` → `inbox/`, plain-text editing, `find`, `views`, `report` stay available. |
 | `fha doctor` | Headline the mode; stop flagging missing asset roots as errors. |
 | `fha backup` | A records-only backup **runs** (it reads the tree and writes outside it - not in the asset-mutating refusal class) with one honest note that the main archive is the copy needing the real backup; the `.cache/last_backup.json` stamp is still written (a per-copy fact). `--include-assets` is refused warning-level (`ok=True`, exit 0, `data.status='working-copy'`) - an asset backup with no assets in it must not exist. §13e. |
 
