@@ -42,8 +42,10 @@ and every mapped asset root (a zip inside the tree would be swept into the
 next backup, or into an asset scan).  After writing, every member's CRC is
 verified (`ZipFile.testzip`); on any write or verify failure the partial zip
 is deleted and the run exits 3 - a backup that might be corrupt and says
-nothing is worse than no backup.  Dry-run is byte-for-byte side-effect-free
-(the destination folder is not even created).
+nothing is worse than no backup.  The same cleanup holds for ANY exception
+mid-write, Ctrl-C included: the partial zip is deleted before the exception
+propagates.  Dry-run is byte-for-byte side-effect-free (the destination
+folder is not even created).
 
 Working-copy mode: a records-only backup RUNS (backup reads the tree and
 writes outside it - nothing in the §13d asset-mutating refusal class), with an
@@ -107,6 +109,7 @@ configure_utf8_stdout()
 #  Execution
 #    _write_zip               - write entries into the zip (test seam)
 #    _verify_zip              - CRC-check every member via testzip (test seam)
+#    _discard_partial         - best-effort unlink of a failed/interrupted zip
 #    _write_stamp             - .cache/last_backup.json, the doctor stamp
 #
 #  Engine / interface
@@ -469,6 +472,19 @@ def _verify_zip(zip_path: Path) -> str | None:
     return None
 
 
+def _discard_partial(zip_path: Path) -> None:
+    """Best-effort removal of a partial zip after a failed/interrupted write.
+
+    A cleanup failure must never mask the original error, so OSError here is
+    swallowed - the worst case is a leftover partial file, which is exactly
+    the state cleanup was trying to prevent, not a new failure to report.
+    """
+    try:
+        zip_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _write_stamp(archive_root: Path, stamp: dict) -> Path:
     """Write `.cache/last_backup.json`, the fact `fha doctor` reports.
 
@@ -652,7 +668,10 @@ def run_backup(
         return result
 
     # Live run. Register the cleanup path before the first write: a write that
-    # fails partway (disk full, permission) can still leave a partial file.
+    # fails partway (disk full, permission, Ctrl-C) can still leave a partial
+    # file.  The typed arm turns expected failures into a plain message +
+    # exit 3; the BaseException arm keeps the no-partial-zip promise for
+    # everything else (KeyboardInterrupt included) and lets it propagate.
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
         _write_zip(zip_path, entries)
@@ -660,10 +679,7 @@ def run_backup(
         if verify_error:
             raise OSError(verify_error)
     except (OSError, zipfile.BadZipFile, ValueError) as exc:
-        try:
-            zip_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _discard_partial(zip_path)
         return Result(
             ok=False,
             exit_code=EXIT_FAILURE,
@@ -674,6 +690,12 @@ def run_backup(
             f'ERROR: backup failed and the partial file was removed: {exc}. '
             f'Nothing to clean up - fix the cause and re-run `fha backup`.'
         ))
+    except BaseException:
+        # Ctrl-C or anything unforeseen: delete the partial zip, then let
+        # the exception travel.  The promise is 'no partial zip survives an
+        # interrupted run', not 'every failure becomes a Result'.
+        _discard_partial(zip_path)
+        raise
 
     zip_bytes = zip_path.stat().st_size
     result.data['bytes'] = zip_bytes

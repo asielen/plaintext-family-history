@@ -405,6 +405,27 @@ class FailureInjectionTests(unittest.TestCase):
         self.assertFalse(Path(result.data['zip_path']).exists())
         self.assertFalse((self.root / '.cache' / 'last_backup.json').exists())
 
+    def test_keyboard_interrupt_removes_partial_zip(self) -> None:
+        """The docstring promise - an interrupted run leaves nothing behind -
+        must hold for BaseException too: a Ctrl-C mid-write used to skip the
+        typed cleanup arms and leave a partial zip on disk."""
+        def _interrupt(zip_path, entries):
+            zip_path.write_bytes(b'partial garbage')
+            raise KeyboardInterrupt
+
+        orig = backup._write_zip
+        backup._write_zip = _interrupt
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                _run(self.root)
+        finally:
+            backup._write_zip = orig
+
+        dest = self.parent / 'my-archive-backups'
+        leftovers = sorted(dest.glob('*.zip')) if dest.is_dir() else []
+        self.assertEqual(leftovers, [], 'a partial zip survived the interrupt')
+        self.assertFalse((self.root / '.cache' / 'last_backup.json').exists())
+
     def test_verify_failure_removes_zip(self) -> None:
         orig = backup._verify_zip
         backup._verify_zip = lambda zip_path: 'a member failed its integrity check'
