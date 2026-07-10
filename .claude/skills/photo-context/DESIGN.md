@@ -1,12 +1,14 @@
 # `photo-context` — design note (step 09)
 
-**Status: BLOCKED on a core-tool gap.** The design below is settled; the `SKILL.md` is intentionally
-**not** written, because the deterministic write path it requires does not exist yet. Per the
+**Status: core verb shipped — SKILL.md pending.** The design below is settled, and the deterministic
+write path it requires now exists (`fha photoindex set-summary`, BUILD.md M3.5). The `SKILL.md` is still
+intentionally **not** written — that is a separate, later skill-mode PR against this design. Per the
 interface-skills index and [`../_STANDARD.md`](../_STANDARD.md) §6 (the stop-don't-improvise rule), this
-step halts and surfaces the gap as core (BUILD.md) work rather than hand-rolling the write in skill prose.
+step originally halted and surfaced the gap as core (BUILD.md) work rather than hand-rolling the write in
+skill prose; that core work has since landed.
 
 This note satisfies step 09's first job: name the trigger, inputs, the deterministic write verb, and the
-provenance/AI-marking rule — and explicitly confirm whether a tool gap exists. It does.
+provenance/AI-marking rule — and explicitly confirm whether a tool gap exists. It did; the gap is now closed.
 
 ---
 
@@ -16,8 +18,9 @@ The photo pipeline's embedded captions (the `UserComment` AI summary, SPEC §20)
 and never improve. As the archive grows, it *knows* more about a photo than its caption says — who the
 tagged people are to each other, what event or claim it depicts, the history of the place it was taken.
 `photo-context` would rewrite a photo's embedded AI summary with that accumulated knowledge, so captions
-get smarter over time. It began as **backlog** in TOOLING_INTERFACE.md §2.3 and is now **designed but
-blocked** on a core-tool gap (BUILD_INTERFACE.md Layer I4); this note is that settled design.
+get smarter over time. It began as **backlog** in TOOLING_INTERFACE.md §2.3, was **designed but blocked**
+on a core-tool gap (BUILD_INTERFACE.md Layer I4), and is now unblocked — the core verb shipped
+(BUILD.md M3.5) and only the SKILL.md remains; this note is that settled design.
 
 ## The design (settled)
 
@@ -41,48 +44,46 @@ blocked** on a core-tool gap (BUILD_INTERFACE.md Layer I4); this note is that se
 - **Provenance:** the new summary carries an AI marker per SPEC §20; the original human caption survives;
   the `import_date`/date keywords are untouched (SPEC §20 rule 2 — the technical date never becomes truth).
 
-## The gap (why this blocks)
+## The gap (closed — the core verb shipped)
 
-**No `fha` verb writes a photo's embedded AI summary / `UserComment`.** Verified against the shipped
-suite (`tools/photoindex.py`): the photoindex write surface is `fha photoindex tag-person`, which writes
-**bare `P-id` (and `SOURCE:`) keywords only** (SPEC §20 rules 3-4). There is:
+**When this note was written, no `fha` verb wrote a photo's embedded AI summary / `UserComment`** — the
+photoindex write surface was `fha photoindex tag-person`, bare `P-id` (and `SOURCE:`) keywords only
+(SPEC §20 rules 3-4). SPEC §20's preamble and rule 5 *sanction* AI captions as embedded metadata and
+require AI output to stay marked as AI, but the tool that performs that specific write had never been
+built, and per _STANDARD.md §6 the skill must not shell exiftool or hand-roll the metadata write.
 
-- **no** verb that writes/rewrites the `UserComment` (the AI caption/summary) field, and
-- **no** verb that appends an AI-marked summary while preserving a human caption.
+That gap is now closed: `fha photoindex set-summary` shipped (BUILD.md M3.5, TOOLING.md §9).
 
-SPEC §20's preamble and rule 5 *sanction* AI captions as embedded metadata and require AI output to stay marked as AI —
-but the tool that performs that specific write was never built. `photo-context`'s entire job is that write.
-Per _STANDARD.md §6, the skill must not shell exiftool or hand-roll the metadata write; therefore the skill
-cannot be built until the core verb exists.
+## What unblocked it (shipped: BUILD.md M3.5)
 
-## What unblocks it (proposed BUILD.md / TOOLING.md core work)
-
-A deterministic photoindex write verb, e.g.:
+The deterministic photoindex write verb, as proposed here:
 
 ```
-fha photoindex set-summary <photo|group> --text "<AI summary>" [--append] --dry-run
+fha photoindex set-summary (<path> | --group <group-id>) --text "<AI summary>" [--append] [--dry-run]
 ```
 
-- writes `UserComment` (and/or XMP description) via exiftool, **AI-marked** per SPEC §20 rule 5;
-- **preserves** any existing human caption (append/annotate, never clobber);
-- previews the change (`--dry-run`) and returns a `Result` whose `changed[]` lists the file written —
-  mirroring `photoindex tag-person`'s contract;
-- honors working-copy mode (refuse when the asset is absent, like other asset-mutating verbs, TOOLING §13d).
+- writes `UserComment` via exiftool, **AI-marked** per SPEC §20 rule 5 (`AI: <text>`);
+- **preserves** any existing human comment text verbatim (append below, never clobber — no flag can
+  replace human text); never touches the human-caption fields (`Caption-Abstract`/`XMP-dc:Description`);
+- previews old → new (`--dry-run`), prompts `[y/N]` before a live write, and returns a `Result` whose
+  `changed[]` lists the files written — mirroring `photoindex tag-person`'s contract;
+- honors working-copy mode (refuses when the assets are absent, like other asset-mutating verbs,
+  TOOLING §13d) and hard-blocks on a stale photoindex;
+- `--group` writes every member of a variation group so fronts/backs/copies stay consistent.
 
-This is a **core (BUILD.md) PR**, not skill work. It should be specified in TOOLING.md §9 (photoindex) and
-added to BUILD.md's photoindex phase; SPEC §20 already permits the write, so no SPEC amendment is required —
-only the tool.
+SPEC §20 already permitted the write, so no SPEC amendment was required — only the tool.
 
 ## Definition of done for step 09 (this note)
 
 - [x] Design named: trigger (invoked-only, one photo/small batch), inputs (`photoindex find`, `photo_people`,
       `fha relate`, claim/place context), the deterministic write verb (must exist), the provenance rule
       (AI-marked, human caption preserved).
-- [x] Tool gap explicitly confirmed: **yes** — no `UserComment`-write verb exists; `photoindex tag-person`
-      writes keywords only.
-- [ ] **Blocked:** `SKILL.md` is deferred until the core `fha photoindex set-summary` (or equivalent) verb
-      ships. BUILD_INTERFACE.md Layer I4 stays "**designed; blocked on a core PR**"; it does **not**
-      flip to shipped.
+- [x] Tool gap explicitly confirmed: **yes** — at design time no `UserComment`-write verb existed;
+      `photoindex tag-person` writes keywords only.
+- [x] Core verb shipped: `fha photoindex set-summary` (BUILD.md M3.5) — the write path exists.
+- [ ] **Pending the SKILL.md:** write `photo-context/SKILL.md` against this design (a separate skill-mode
+      PR). BUILD_INTERFACE.md Layer I4 stays "**designed; core verb shipped — SKILL.md pending**"; it
+      flips to shipped only when the SKILL.md lands.
 
-When the write verb lands, write `photo-context/SKILL.md` against this design, conforming to
+The write verb has landed. Write `photo-context/SKILL.md` against this design, conforming to
 [`../_STANDARD.md`](../_STANDARD.md), and flip BUILD_INTERFACE.md Layer I4 to shipped.

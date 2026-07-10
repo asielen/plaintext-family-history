@@ -63,7 +63,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ### 2.3 Skill backlog
 
-`photo-context` (below) now has a settled design - it is **blocked** on a core-tool gap, not undesigned; see [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) Layer I4 for the authoritative status.
+`photo-context` (below) has a settled design and its core-tool gap is closed (`fha photoindex set-summary` shipped, BUILD.md M3.5) - the SKILL.md itself is still pending; see [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) Layer I4 for the authoritative status.
 
 | Idea | Sketch |
 |---|---|
@@ -73,6 +73,6 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ## 3. Build status & milestones
 
-The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus the SKILL.md files, with `photo-context` designed but blocked on a core-tool gap. Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
+The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus the SKILL.md files, with `photo-context` designed and its core verb shipped (`fha photoindex set-summary`, BUILD.md M3.5) but its SKILL.md still pending. Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
 
 The workbench harness configuration (§1) is not "built" in the tool-suite sense - it is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script). Its "build" is keeping those conventions accurate as the harness landscape changes.

@@ -25,13 +25,14 @@ gate to `accepted`.**
 | [`merge-identities`](merge-identities/SKILL.md) | **authored (interim enactment)** | "Same person / two people" judgment: lay out the neighborhood evidence, propose, wait for human confirmation. Enacts a confirmed merge by a SPEC §9 hand-edit until an `fha confirm merge` verb ships ([`GAP.md`](merge-identities/GAP.md)). | Opus |
 | [`place-research`](place-research/SKILL.md) | **authored** | Place history (loose citations OK): draft dated `history:`, propose registry entries via `fha confirm place`. Never edits coordinates without confirmation. | Sonnet |
 | [`reconcile-site-edits`](reconcile-site-edits/SKILL.md) | **authored** | The site escape hatch: when a human hand-edits generated HTML, diff it against a pristine `fha site` baseline and fold the intent into the right source (`custom.css` / `notes/home.md` / a record / `fha.yaml` `site:`), then rebuild. Keeps `fha site` deterministic; every source write is human-confirmed. See [`docs/SITE_PLAN.md`](../../docs/SITE_PLAN.md). | Opus |
-| [`photo-context`](photo-context/DESIGN.md) | **designed; blocked** | Rewrite a photo's embedded AI summary with archive knowledge. **Blocked on a core-tool gap** — no `fha` verb writes a photo's UserComment yet; see the [design note](photo-context/DESIGN.md). | Opus |
+| [`photo-context`](photo-context/DESIGN.md) | **designed; core verb shipped — SKILL.md pending** | Rewrite a photo's embedded AI summary with archive knowledge. Its core-tool gap is closed (`fha photoindex set-summary` shipped, BUILD.md M3.5); the SKILL.md is a separate, later skill-mode PR — see the [design note](photo-context/DESIGN.md). | Opus |
 
 Statuses track [`BUILD_INTERFACE.md`](../../BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
 verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session
 check** against `example-archive/` (capture the transcript). **interim enactment** = authored, but one step
-uses a documented temporary hand-edit pending a core verb. **blocked** = designed but waiting on a core
-(BUILD.md) tool PR.
+uses a documented temporary hand-edit pending a core verb. **core verb shipped — SKILL.md pending** =
+designed, the core (BUILD.md) tool it needed has shipped, and writing the SKILL.md is a separate
+skill-mode PR.
 
 ## Conventions (all skills)
 

@@ -103,8 +103,8 @@ work (BUILD.md)** — never hand-roll it in prose. A skill does not shell `exift
 `places.yaml` coordinates directly, does not compute Ahnentafel numbers, does not write the SQLite
 index. Those are tool jobs. When you hit a missing capability while authoring a skill, stop and report it
 as a spec-discovery; do not paper over it with logic a skill should not hold. (Worked example: the
-`photo-context` skill blocked on a missing UserComment-write verb — see
-[`photo-context/DESIGN.md`](photo-context/DESIGN.md).)
+`photo-context` skill blocked on a then-missing UserComment-write verb until the core work shipped
+as `fha photoindex set-summary` — see [`photo-context/DESIGN.md`](photo-context/DESIGN.md).)
 
 One narrow exception exists: the **owner** may explicitly decide that a skill enacts a missing verb by a
 documented interim hand-edit — recorded in the skill's folder (a `GAP.md` naming the wanted verb) and in
