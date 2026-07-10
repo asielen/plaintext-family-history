@@ -12,6 +12,9 @@ never stored in the archive, never re-imported as truth (the archive is never
 GEDCOM's corpus - GEDCOM is a one-way bridge to other apps). The header carries an explicit
 "do not re-import as truth" note to make that contract travel with the file.
 
+Importing a GEDCOM from Ancestry or another program? That is the separate
+`fha gedcom import <file.ged>` (TOOLING §13a2) - this command is the exporter.
+
 SCOPE SELECTION
 ---------------
 Either a starting `<P-id>` with a traversal `--mode`, or `--all` for everyone:
@@ -966,7 +969,10 @@ Export your tree to a GEDCOM file for another genealogy app.
 
 Living people are redacted by default (use --include-living to override). GEDCOM
 is the portable format Ancestry, RootsMagic, and others read; it is a one-way
-export, never re-imported as truth."""
+export, never re-imported as truth.
+
+Importing a GEDCOM from Ancestry or another program? That is the separate
+`fha gedcom import <file.ged>` - this command is the exporter."""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:

@@ -132,6 +132,21 @@ A fresh archive prints **`✓ No issues found.`** - that's a green light. (`--ro
 tools which archive folder to look at. `check` is the friendly name for the command also called
 `lint`.)
 
+### Coming from Ancestry (or another genealogy program)?
+
+You don't re-type anything. Every genealogy program can export your tree as a **GEDCOM** file
+(on Ancestry: Trees → your tree → Tree Settings → "Export tree" - you get a `.ged` file in your
+Downloads). Then ask your assistant:
+
+> "Import my GEDCOM file" (or run
+> `python tools/fha.py gedcom import family-tree.ged --root my-family-archive`)
+
+First it shows you a **plan** - how many people, families, and statements it found - and writes
+nothing. Add `--apply` and every person in your tree becomes a record, every assertion becomes a
+*suggested* fact citing the GEDCOM file (which is filed as a source, your original untouched).
+Nothing imported is treated as proven: your tree's statements wait in the same review queue as
+everything else, and you review them family by family, whenever you like - never all at once.
+
 ---
 
 ## Part 3 - File your first document (five minutes)

@@ -21,6 +21,7 @@ Those are genealogy *applications* - excellent, but database- or service-first: 
 Plaintext inverts that.
 The archive is plain files you own; a genealogy app can be *fed* from it (via GEDCOM export) but never owns it.
 If you love an app's tree view, generate a GEDCOM and use it - the truth stays in your files.
+And it works in the other direction too: coming *from* Ancestry (or any app), download your tree as a GEDCOM file and `fha gedcom import` files it - every person becomes a record and every assertion a reviewable suggestion, so years of clicking arrive as leads, not lost work.
 
 ### What happens to my photos?
 They're never renamed or moved by the system (so your catalog stays intact).

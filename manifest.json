@@ -66,13 +66,13 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "ffc07b1cf9eb7c57316a69eac89582dfba11213e080c1b64008b03e4e57442e3",
+      "sha256": "e0c7cb6399c69dbaf111dc1d3772b730246bf4f584b32fcfc2333a1868b90fe9",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "87a9fe248b343075c77aae1de46262be299c6c2c3d814ef8fed5101d40154e38",
+      "sha256": "f404afaa1f12227afdf36724db40b27871ba20d5e3dd605644279ec101e52119",
       "spec_version": "1.2"
     },
     {
@@ -91,7 +91,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "2d145e477a217acc4ef99212e0766b23a90710efeae12ff7a43dc2856fb29ba7",
+      "sha256": "9753410f3a4449e28b442d961c2050cd0f65308c2221895609a9ccc9bdb1c3d2",
       "spec_version": "1.2"
     },
     {
@@ -103,7 +103,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "69ca38904c0288c35e674adea019a55c5457b391ef4789e2108e868237e11a54",
+      "sha256": "30b7208a4835474edf5d2fd0f27916e03e43f7bc1941dec1d44dfef965937ff7",
       "spec_version": "1.2"
     },
     {
@@ -127,19 +127,19 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "ccf1dd0673f4d6e1ad0fe1e6838446d041b9c772384cda46c196aaf5ae3d1b28",
+      "sha256": "964b5d35bfc3320643afc8eb3dfe8c29b1baa82d68d357300bab79642a2841e6",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "30523297dd4cfb31672568bc974b7c43a2099acee6782ace0386760235b2c20d",
+      "sha256": "e4d6c28180849600aef39a8dd4f670d3cb6061297857e33e13a44ca57b16e48b",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "f9d282b2c4c5786c6d62869567ee2864f0c63605a875fae3c9dac73b08912444",
+      "sha256": "a49d51800a0e99cce90c7d990310ba5ef11483bc931ae4868f29a55c2e6b5164",
       "spec_version": "1.2"
     },
     {
@@ -265,7 +265,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "e6b40560412f10fbb8e652474ee9ebea739a02676ceb8267612ed9f1b1177444",
+      "sha256": "97031f8b28a09540a9228f4d29cb705e567dd88b1e42f6042f0561907128af6a",
       "spec_version": "1.2"
     },
     {
@@ -277,7 +277,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "c3c1cce4359ef2f639b1d421df50480fffe9a28d65e8d44a3f2ea8a0a11d87ce",
+      "sha256": "e025770c849742d7e5f5015b3676a0bf87e7b6a7b9d49493f7eb8cc07a88174b",
       "spec_version": "1.2"
     },
     {
@@ -307,7 +307,7 @@
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "68cacb172e795e74951ffc4f2e374c991615509641ff6b6764bb44c374fe6ce4",
+      "sha256": "334436a11d261c1055fd4684f5b5671125174e0d163190546b653c119b8282db",
       "spec_version": "1.2"
     },
     {
@@ -431,7 +431,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "757cb546290e0fdf0f223c998f052aae1b45002afcc8f81fab0654c394cba9dc",
+      "sha256": "01332638a89373a4337e56c9fb6ca03fd6be3595c295d2bde63058bdc5dc92d6",
       "spec_version": "1.2"
     },
     {
@@ -521,7 +521,7 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "331e5f1a9e6068526db40241914eb0b6ba12776f1449d77d2448f5ad9b208c0d",
+      "sha256": "a340ac24d6c3fdd43be5a8aab05e3843b53cc1b92b1fcaab68e441cc179d5c0d",
       "spec_version": "1.2"
     },
     {
@@ -533,7 +533,13 @@
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "373cdf75ba9d851d2d3d0d6fd1c71d58f323b491bb3f00227ee198e920072bb5",
+      "sha256": "4ea94d41dc9f6d1ee9a6ddf883e9513ebb2ad21b17e06f910a4dcb57da8be8a4",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/gedcom_import.py",
+      "category": "operating",
+      "sha256": "cb54f974bf243111d0bd164d14dcb5c3b315789a8fc39a3988b2af0fb54b98b9",
       "spec_version": "1.2"
     },
     {

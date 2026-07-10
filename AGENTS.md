@@ -98,6 +98,7 @@ report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
 - **migration** - bulk intake of existing material into the structure. The highest-risk
 mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → human approval → execute in bounded batches (≤200 files) → report.
 Never deletes anything; photos are never renamed even here; only staged files move.
+(A GEDCOM tree has its own deterministic path - `fha gedcom import`, plan-then-apply with rollback - prefer it over hand-migrating one.)
 - **spec-refinement** - edits SPEC.md/TOOLING.md (changes tracked in git history), and MUST update
 README.md whenever a change affects how a human reads the archive (the README rule).
 
@@ -197,6 +198,8 @@ fha find --related <ID>      neighborhood of any ID - people/places/sources/clai
                             adjacent to a person, place, source, claim, or hypothesis
 fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
 fha packet <P-id>            person export packet
+fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
+                            person stubs + suggested claims; plan first, --apply to write
 fha backup                   dated zip of the records, written outside the archive
                             (--include-assets adds the photo/document roots; restore = unzip)
 ```
