@@ -1,30 +1,30 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-09",
+  "generated": "2026-07-10",
   "files": [
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "e5667e1156968365a46d7913b7f039ccac26b5d01c5f5fecafeb9ffae73e3f87",
+      "sha256": "0b316968a8c3618336c8291ae465808092f2cdebb4cd786c753862e4a26f1e02",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "6d7124115343c1b869c4ff34825422aa58bda0439449ac8d75755612e5ec7242",
+      "sha256": "95b649972d53dd881fb8a73cd143bcb7329cb8ac3409e5167a259b7aac61e17c",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/merge-identities/GAP.md",
       "category": "operating",
-      "sha256": "ccbc8d21828dfdb620d83ac9c8850af9f0bb9ba6894e4a533e9b1c310ab8a15f",
+      "sha256": "13a7aaaaf21ada0a6ca3e4686e253f6201697e747648f849b400125a9fba0150",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "b78dfb7274535ecfd35eb294fe5d7d6a46bd8804e6f5f20fb48412401a3353cf",
+      "sha256": "563d878c4ec6d6403b87f5e188b21070d38e79a6d6b8cbfca131f1a6a8a9fb99",
       "spec_version": "1.2"
     },
     {
@@ -91,7 +91,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "2c39ccfdfc48b3376040df46e803d179230d8b290a8c6e1d8393e60318485f50",
+      "sha256": "2b54b0b165964f974ba70a6dc4915743958d43cd5718d91a6b5999484875d626",
       "spec_version": "1.2"
     },
     {
@@ -103,7 +103,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "4e24486c3b2ddddbd8b1aced0eac06bbf3050ba7e2366585cb3766a240380a6e",
+      "sha256": "efec38ea8174a337c3bde5b5c2aa62741d93fe8598f6c79db80c6d5331935455",
       "spec_version": "1.2"
     },
     {
@@ -115,7 +115,7 @@
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "7a8192e5924ca14bd1802bd6f53d3082d4e0e5f1aa60bf4fd337a2293142c3c9",
+      "sha256": "c48398745e1fe11462d9b9c589cf3f698a2b069307f583d85b9724eaac80e375",
       "spec_version": "1.2"
     },
     {
@@ -127,7 +127,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "ca9da7372a200fc5c7e20dbd4371569a713f66bf3eb6378352048e142020c1f5",
+      "sha256": "46fdeb0ec99bcfb66d15eeeb532bbe41a78ed4ad5894f64fffaf348cbcd1d02e",
       "spec_version": "1.2"
     },
     {
@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "97033b6b03e7e152c77fbf9868cba3dc4544f3317765395a0f15ea804a9afbec",
+      "sha256": "7729bd1f1477629754e1e4e8ff333c79f3d9e6ab07f1653ee33c54a77fd1aaf5",
       "spec_version": "1.2"
     },
     {
@@ -425,7 +425,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "096ec5a875050bb15005fe5c821565e020c41f056a3bc6eae9cbb1ce955a84dd",
+      "sha256": "0810bd0072d796ddbd478adb4471cfc2492fd9f2f46bc0e785e58eac13f43d06",
       "spec_version": "1.2"
     },
     {
@@ -485,7 +485,7 @@
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "d4ba366edffc0297e30340a8fb5d2daf33fba53e1f90e852633ead75a60b35e9",
+      "sha256": "49c31b9eeab28cf4e97d082d2fed5a8092e3c278ef85f616f29608d9d333283f",
       "spec_version": "1.2"
     },
     {

@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: session spine + drafting/inference + frontier skills authored (I1-I2 + place-research authored; merge-identities authored with an interim enactment; photo-context blocked on a core gap).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract), `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, and `merge-identities` SKILL.md files, plus a `photo-context/DESIGN.md`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps** (see MI3.1 and MI4).
+**Status: session spine + drafting/inference + frontier skills authored (I1-I3 authored; photo-context blocked on a core gap).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract), `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, and `merge-identities` SKILL.md files, plus a `photo-context/DESIGN.md`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**: MI3.1's merge verb (closed - `fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (still open).
 
 ---
 
@@ -132,7 +132,7 @@ Inference and steering. **Checks the research log FIRST** - never proposes a sea
 
 ---
 
-## Layer I3 - Frontier-tier skills (Milestone I3 - authored; MI3.1 has an interim enactment + core gap)
+## Layer I3 - Frontier-tier skills (Milestone I3 - authored)
 
 Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (TOOLING_INTERFACE.md §1).
 
@@ -142,11 +142,11 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 **One PR.** `.claude/skills/merge-identities/SKILL.md`.
 
-**Status: authored, with an interim enactment path** (`.claude/skills/merge-identities/SKILL.md`). The judgment half - pull both neighborhoods, lay out the evidence, propose, wait for human confirmation - is fully on shipped tools. **Core gap surfaced:** SPEC §9 defines the merge write but **no `fha` verb performs it** (`fha confirm` has no `merge` verb). Per the owner's decision, the skill enacts a human-confirmed merge by a careful SPEC §9 hand-edit **for now**, and `.claude/skills/merge-identities/GAP.md` tracks the wanted `fha confirm merge` verb that should replace it (a BUILD.md core PR). Session check pending.
+**Status: authored** (`.claude/skills/merge-identities/SKILL.md`). The judgment half - pull both neighborhoods, lay out the evidence, propose, wait for human confirmation - is fully on shipped tools, and so is the write: the core gap this milestone surfaced (SPEC §9's merge write had no `fha` verb) **closed when `fha confirm merge` shipped** (BUILD.md M4.4a; audit Wave 3 / plan 16). The skill now drives the verb (dry-run first) and the interim hand-edit path was retired; `.claude/skills/merge-identities/GAP.md` remains as the historical record of the spec-discovery. Session check pending.
 
-"Same person" / "two people" judgment. Read the candidate neighborhood (`fha find --related`, co-occurrence signals); propose a merge or a split with the evidence laid out; the human confirms. The mechanical write (setting `merged_into`, relinking) is the deterministic tool's job - the skill never silently merges. A merged person is never directly referenced again (lint E016/W107 enforce this).
+"Same person" / "two people" judgment. Read the candidate neighborhood (`fha find --related`, co-occurrence signals); propose a merge or a split with the evidence laid out; the human confirms. The mechanical write is `fha confirm merge`'s job - the skill never silently merges, and the split stays hand-guided (SPEC §9). A merged person is never directly referenced again (lint E016/W107 enforce this).
 
-**Orchestrates:** `fha find --related`, `fha cooccur`, `fha lint` (E016/W107 verification).
+**Orchestrates:** `fha find --related`, `fha cooccur`, `fha confirm merge`, `fha lint` (E016/W107/W115 verification).
 
 **Done when:**
 - A merge/split proposal in a session lays out the neighborhood evidence and waits for human confirmation; post-merge, lint shows no E016/W107 regressions.
