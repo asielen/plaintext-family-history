@@ -17,11 +17,6 @@ split scatters a person. So this is a **frontier-tier** skill, and it **always**
 confirmation. The skill lays out the evidence and proposes; it never silently merges. See
 [`../_STANDARD.md`](../_STANDARD.md).
 
-> **Interim enactment (read this).** SPEC §9 defines the merge write, but no `fha` verb performs it yet —
-> see [`GAP.md`](GAP.md). By the owner's decision, this skill enacts a **human-confirmed** merge by a
-> careful SPEC §9 hand-edit **for now**, and the gap note tracks the wanted `fha confirm merge` verb that
-> will replace the hand-edit. The hand-edit is temporary; the confirmation gate is not.
-
 ## When this runs
 
 "Are these the same person?", "this looks like two people", "the report flagged a possible duplicate", "did
@@ -35,9 +30,10 @@ Thomas Hartley and Thos. Hartley get entered twice?"
 - **Evidence before any proposal.** Never propose a merge/split before showing the neighborhood evidence
   for **and against**. "Cheap to attempt, expensive to get wrong" means the human sees the case before he
   decides.
-- **The mechanical write is deterministic-tool territory** (deferred to a hand-edit only until
-  `fha confirm merge` ships — [`GAP.md`](GAP.md)). Even the hand-edit is strictly SPEC §9; the skill
-  invents nothing.
+- **The mechanical write is deterministic-tool territory.** A confirmed merge is enacted by
+  `fha confirm merge` — dry-run preview first, then live — never by hand-editing records. The skill
+  supplies the judgment and the human's reason; the tool performs SPEC §9 exactly; the skill invents
+  nothing.
 - **Merged persons are never referenced anew** — post-merge, lint must show no new **E016** (a new claim on
   a merged P-id) or **W107** (direct reference to a merged person).
 
@@ -68,34 +64,34 @@ Thomas Hartley and Thos. Hartley get entered twice?"
    nothing to the records until he says yes to a specific decision. If he's unsure, leave both records as
    they are — a non-merge is always safe.
 
-4a. **On a confirmed MERGE — enact it (SPEC §9; interim hand-edit per [`GAP.md`](GAP.md)).** The
-   **survivor** is the one that keeps the canonical home (prefer the curated record over a stub; the
-   lower-numbered couple folder when both are placed). On the **other** (merged) record:
-   - set `status: merged`, `merged_into: P-survivor`, `merge_reason: "<the human's stated reason>"`,
-     `merged_date: <today>`;
-   - **rename the file** with the tombstone prefix — `MERGED-INTO-P-survivor__<original-filename>` (e.g.
-     `MERGED-INTO-P-de957bcda1__hartley__thomas_P-old.md`) — the file **persists forever**, never deleted;
-   - **fold** the merged record's `name_variants:`, external IDs, **and its own `relationships:` block**
-     into the survivor's record — repoint each folded edge to the survivor and **remove it from the
-     tombstone's** frontmatter. Lint still reconciles the tombstone (`_check_relationship_reconciliation`
-     has no `status: merged` filter), so a sourced `relationships:` entry left on it — backed by a claim you
-     just relinked to `P-survivor` — trips **W115**; and the survivor's opted-in block must *list* the
-     folded kin edges, or the reverse reconciliation check trips W115 on the survivor;
-   - **relink every claim that names the merged person** — for each claim, *whatever its status*
-     (`suggested`, `accepted`, `disputed`, `rejected`, `superseded`, `needs-review`), whose
-     `persons:`/`roles:` includes `P-old`, change it to `P-survivor`. E016 has no status filter — it fires
-     on any claim referencing a merged person, and disputed/rejected claims are kept, never deleted — so
-     this is required, not optional cleanup: a claim left pointing at `P-old` both trips lint **E016** *and*
-     (for accepted claims) silently drops out of the survivor's timeline/draft-queue views;
-   - **relink `relationships:` edges** — any *other* profile's `relationships:` entry that names `P-old`
-     (a sourced edge carrying `claim:`/`source:`) must be repointed to `P-survivor`; left stale it trips
-     lint **W115** (the entry no longer reconciles with its backing claim) and the human-facing
-     relationship section keeps naming the tombstoned record;
-   - **relink** the remaining direct references you can reach (frontmatter `people:`, prose `[[P-old]]`);
-     only loose *prose* mentions you don't reach may resolve *through* `merged_into` and appear on lint's
-     W107 gradual-cleanup list — that (prose, never a claim) is expected, not an error.
-   Record the reasoning where the merge is enacted (the `merge_reason:` and, if useful, a note on the
-   survivor). **Never create a new claim on the merged P-id** (that is exactly E016).
+4a. **On a confirmed MERGE — enact it with the verb (SPEC §9).** The **survivor** is the one that keeps
+   the canonical home (prefer the curated record over a stub; the lower-numbered couple folder when both
+   are placed). Then drive the deterministic write — never hand-edit the records:
+   ```
+   fha confirm merge <P-old> --into <P-survivor> --reason "<the human's stated reason>" --dry-run
+   ```
+   Walk the preview with the human (it shows every file edit as a diff plus the pending rename). When it
+   matches the confirmed decision, run it live:
+   ```
+   fha confirm merge <P-old> --into <P-survivor> --reason "<the human's stated reason>"
+   ```
+   The verb performs the whole SPEC §9 write in one pass: the four tombstone fields (`status: merged`,
+   `merged_into:`, `merge_reason:`, `merged_date:`), the `MERGED-INTO-P-survivor__` rename (the file
+   **persists forever**, never deleted), the folds (name variants — restricted mapping forms preserved —
+   external IDs, `relationships:` entries, deduped, with the tombstone's frontmatter stripped of what
+   folded and its `aliases:` reduced to the bare P-id), and the relinks — every claim naming `P-old`
+   *whatever its status* (E016 has no status filter), other profiles' `relationships:` edges (stale ones
+   trip W115), and source `people:` lists. Loose *prose* `[[P-old]]` mentions are deliberately left; they
+   resolve *through* `merged_into` and appear on lint's W107 gradual-cleanup list — expected, not an error.
+   **Heed the verb's warnings — they are yours to judge, not suppress:**
+   - an *external-id conflict* (exit 1) means the two records point at different WikiTree/Ancestry
+     profiles: the survivor's value was kept and the tombstone keeps the other — bring the conflict back
+     to the human;
+   - an *existing relationship edge between the two* is evidence they may be two different people — the
+     tool warns and proceeds (the decision was the human's), but re-open the conversation if this is news;
+   - a *W115 heads-up* means the survivor's opted-in `relationships:` block should now apply relinked
+     accepted kin claims — add those entries with the human.
+   **Never create a new claim on the merged P-id** (that is exactly E016).
 
 4b. **On a confirmed SPLIT (conflation) — reassign deliberately (SPEC §9).** Splitting an identity is
    research judgment, so it stays guided:
@@ -125,8 +121,8 @@ Thomas Hartley and Thos. Hartley get entered twice?"
 - **Human-confirmed only** — no `merged_into` (or split reassignment) without an explicit decision in the
   transcript.
 - Evidence for **and against** is laid out before any proposal.
-- The merge write follows SPEC §9 exactly (tombstone rename, four fields, fold variants) — interim
-  hand-edit only, per [`GAP.md`](GAP.md); no invented mechanics.
+- The merge write is `fha confirm merge`'s alone (SPEC §9 exactly: tombstone rename, four fields, folds,
+  relinks) — always dry-run first; the skill never hand-edits a merge and invents no mechanics.
 - Post-merge lint is clean of **new** E016/W107/W115; merged files are renamed-and-kept, never deleted.
 
 ## Done when
