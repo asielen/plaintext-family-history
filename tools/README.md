@@ -31,11 +31,11 @@ read the same structured result (TOOLING §1).
 
 | Tool | File | Status |
 |---|---|---|
-| `fha views timeline` | `views.py` | ✓ per-person and --all-curated |
-| `fha views sources-index` | `views.py` | ✓ per-person, --all-curated, --couple-folders |
-| `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
+| `fha views timeline` | `views.py` | ✓ per-person and --all-curated; `--format md\|html` - html writes a standalone single-file page under `generated/views/` (TOOLING §7 D11) |
+| `fha views sources-index` | `views.py` | ✓ per-person, --all-curated, --couple-folders; `--format md\|html` (couple-folder html is `{folder}_sources-index.html` - the shared `.md` stem would collide) |
+| `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated; `--format md\|html` |
 | `fha views brackets` | `views.py` | ✓ W103 bracket refresh, W110 Ahnentafel placement; `--fix` applies, `--dry-run` previews |
-| `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; `--format html` deferred (D6) |
+| `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; ⚑ `--format html` refused with a pointer to `fha site` - the HTML tree ships with the site's full-tree feature (D6) |
 | `fha doctor` | `doctor.py` | ✓ all 12 checks; D5 applied (absent index/photoindex = warning, not error); restricted-source counts use the open-marker predicate on both the index and scan paths; a failing staged-captures check degrades to a warning line instead of killing the report; the backup reminder reads the `fha backup` stamp (`.cache/last_backup.json`) and reports the real last-backup date, info-level |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent; `[restricted]` label covers typed values (`dna`, `by-request`, …); `--root` without fha.yaml is refused (exit 3, the shared `_lib.resolve_root_arg` guard) |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated - transcript search deferred (D7) |
@@ -46,6 +46,7 @@ read the same structured result (TOOLING §1).
 
 Views require a fresh `.cache/index.sqlite` (run `fha index` first). The per-person timeline/sources-index/draft-queue forms skip a stub person with a plain note and exit 1 - companion views are curated-person files (SPEC §16); covered by `tests/test_views_stub_guard.py`. `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches. Both `.cache/index.sqlite` and `.cache/photos.sqlite` carry a `meta.schema_version` row plus `PRAGMA user_version`; missing, old, corrupt, or unreadable caches are treated as disposable and rebuilt by `fha index` / `fha photoindex`.
 Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.
+`--format html` renders any content view as a standalone single-file page under `generated/views/` (same queries and lines as the `.md` twin; marker on line 1 before the doctype; inline `design/view.css`; visible not-for-publication banner; `[[ID]]` tokens as plain styled text; exits 0 because `generated/` is never indexed). `views refresh --format md|html|both` selects the set(s); `views clean` sweeps `generated/views/` by the same marker-per-file rule (a hand-written file there survives, and an html-only sweep exits 0). Conventions: TOOLING §7 D11; covered by `tests/test_views_html.py`.
 
 ## Implemented tools (milestone 3)
 

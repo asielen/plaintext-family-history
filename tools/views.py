@@ -2,13 +2,13 @@
 """
 views.py - fha views: generate view files from the index.
 
-  fha views timeline [P-id | --all-curated]
-  fha views sources-index [P-id | --all-curated | --couple-folders]
-  fha views draft-queue [P-id | --all-curated]
+  fha views timeline [P-id | --all-curated] [--format md|html]
+  fha views sources-index [P-id | --all-curated | --couple-folders] [--format md|html]
+  fha views draft-queue [P-id | --all-curated] [--format md|html]
   fha views brackets [--fix] [--dry-run]
   fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
   fha views clean [--dry-run]
-  fha views refresh
+  fha views refresh [--format md|html|both]
 
 ARCHITECTURE OVERVIEW
 ---------------------
@@ -34,6 +34,26 @@ describe and share its naming prefix:
 The couple-folder sources-index is the one exception: it has no P-id because
 it describes a whole couple folder, not a single person (TOOLING §7).
 
+Each content view also renders as a standalone single-file HTML page
+(`--format html`), written under generated/views/ from the SAME queries and
+the SAME line rendering as the .md twin: the HTML serializer re-renders the
+finished .md lines (_md_inline_to_html), so the two formats cannot drift in
+what they say.  The single-file-HTML conventions - shared by every fha
+single-file artifact (the photo gallery inherits them; TOOLING §7 D11):
+
+  - the GENERATED marker is line 1, BEFORE <!DOCTYPE html> (a comment before
+    the doctype is valid HTML, no quirks mode); ownership is judged by
+    _lib.is_generated_text exactly as for .md files;
+  - one inline <style> block (design/view.css - a curated subset of the site
+    stylesheet with a system font stack); no external requests of any kind;
+  - a visible not-for-publication banner: views are private and UNREDACTED
+    (SPEC §21 scope - views are not a public-output path); sharing goes
+    through `fha site`;
+  - [[ID]] tokens render as plain styled text (<span class="cite">), never
+    links - a standalone file has nothing durable to link to;
+  - writes under generated/ touch nothing the indexer scans, so HTML runs
+    never stale the index (exit 0 clean, no reindex advice).
+
 `fha views brackets` is a maintenance view, not a content view.  It reads
 the index to derive expected bracket lists and Ahnentafel positions, then
 reports mismatches as W103/W110 findings.  With --fix it renames folders and
@@ -53,6 +73,7 @@ import shutil
 import sqlite3
 import sys
 from collections import deque
+from html import escape as html_escape
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -111,6 +132,14 @@ def _views_result(
 #    _format_sid, _place_label    - formatting helpers
 #    _curated_person_ids          - list all curated P-ids from index
 #    _couple_folders              - identify curated couple folders + their members
+#
+#  HTML single-file rendering (--format html; conventions in TOOLING §7 D11)
+#    _md_inline_to_html           - escape + [[ID]] tokens → styled <span> text
+#    _html_out_path               - generated/views/{stem}.html target path
+#    _format_precheck             - engine-level fmt validation + Jinja2 probe
+#    _view_css, _view_template    - cached design/view.css + view.html template
+#    _render_view_html            - wrap a body in the standalone page shell
+#    _timeline_body_html          - timeline sections → HTML body
 #
 #  Timeline view  (_generate_timeline)
 #    _decade_from_edtf            - EDTF string → '### 1880s' decade header
@@ -241,6 +270,173 @@ def _rebase(p: Path, old: Path, new: Path) -> Path:
         return new / p.relative_to(old)
     except ValueError:
         return p
+
+
+# ── HTML single-file rendering ────────────────────────────────────────────────
+# `--format html` renders each content view as one standalone HTML file under
+# generated/views/.  The conventions here (marker before the doctype, inline
+# CSS subset, not-for-publication banner, plain-text [[ID]] tokens, exit-0
+# writes) are shared by every fha single-file HTML artifact - TOOLING §7 D11
+# is the authoritative statement; the module docstring carries the summary.
+
+# Matches [[target]] and [[target|display]] citation tokens in an already
+# markdown-rendered view line.  Applied AFTER html-escaping (escaping touches
+# neither brackets nor the pipe), so the display text is already safe.
+_TOKEN_RE = re.compile(r'\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]')
+
+
+def _md_inline_to_html(text: str) -> str:
+    """Render one finished .md view line as HTML.
+
+    The HTML views are deliberately derived from the same rendered lines the
+    .md serializer writes - one query, one line format, two wrappers - so the
+    two formats cannot drift in content (TOOLING §7 D11).  Escapes the whole
+    line, then turns `[[ID]]` / `[[ID|display]]` tokens into plain styled
+    `<span class="cite">` text.  Never links: a standalone file has nothing
+    durable to link to (owner decision 7-Q3 - views never link into
+    generated/site/; the standalone-file property wins).
+    """
+    escaped = html_escape(text)
+
+    def _token(m: re.Match) -> str:
+        target, display = m.group(1), m.group(2)
+        if display:
+            return f'<span class="cite" title="{target}">{display}</span>'
+        return f'<span class="cite">{target}</span>'
+
+    return _TOKEN_RE.sub(_token, escaped)
+
+
+def _html_out_path(archive_root: Path, md_out_path: Path, stem: str | None = None) -> Path:
+    """Return (and create the folder for) the HTML twin of a .md view path.
+
+    HTML views land under a visible generated/views/ folder, named by the .md
+    twin's stem, so the two formats pair by name and the archive record tree
+    stays plain text (the .md companions are Obsidian-linkable research
+    artifacts; the HTML is a rendering).  `stem` overrides the name for the
+    couple-folder sources-index, whose .md stem ('sources-index') repeats in
+    every couple folder - the caller prefixes the folder name to keep one
+    collision-free file per folder.
+    """
+    out_dir = archive_root / 'generated' / 'views'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f'{stem or md_out_path.stem}.html'
+
+
+def _format_precheck(fmt: str, allowed: tuple[str, ...]) -> Result | None:
+    """Validate a run_*'s fmt argument; None when generation can proceed.
+
+    The engines are callable headlessly (not only through argparse choices),
+    so the format contract is enforced here: an unknown format and a missing
+    Jinja2 (the HTML renderer's one dependency, deliberately not imported on
+    the md path so plain view runs never require it) both return a failure
+    Result whose message names the fix.
+    """
+    if fmt not in allowed:
+        allowed_text = ', '.join(repr(a) for a in allowed)
+        print(
+            f"ERROR: unknown view format {fmt!r} - choose one of {allowed_text}. "
+            f"'md' writes the companion markdown file (the default); 'html' writes "
+            f"a standalone printable page under generated/views/.",
+            file=sys.stderr,
+        )
+        return _views_result(EXIT_FAILURE)
+    if fmt != 'md':
+        try:
+            import jinja2  # noqa: F401  - availability probe only
+        except ImportError:
+            print(
+                'ERROR: --format html needs the Jinja2 library, which is not '
+                'installed. Install it with `pip install jinja2` (or `pip install '
+                '-r tools/requirements.txt`), or run without --format html for '
+                'the markdown view.',
+                file=sys.stderr,
+            )
+            return _views_result(EXIT_FAILURE)
+    return None
+
+
+# Both caches are per-process: the CSS and template are the same for every
+# file in a bulk `views refresh --format both`, and re-reading them per file
+# would dominate the render time for no benefit.
+_VIEW_CSS_CACHE: str | None = None
+_VIEW_TEMPLATE_CACHE = None
+
+
+def _view_css() -> str:
+    """Return design/view.css for inlining (cached; '' when missing).
+
+    Resolved as `fha site` resolves its design package: the design/ folder
+    sits beside tools/ both in this repo and in an installed archive (the
+    manifest ships it), so a tools-relative path works in both.  A missing
+    file degrades to an unstyled-but-complete page with a warning naming the
+    fix - styling is never load-bearing.
+    """
+    global _VIEW_CSS_CACHE
+    if _VIEW_CSS_CACHE is None:
+        css_path = Path(__file__).resolve().parent.parent / 'design' / 'view.css'
+        try:
+            _VIEW_CSS_CACHE = css_path.read_text(encoding='utf-8')
+        except OSError:
+            print(
+                'WARNING: design/view.css is missing - the HTML view will be '
+                'unstyled (its content is still complete). Restore the design/ '
+                'folder next to tools/ (re-run your tools install/update) for '
+                'the styled version.',
+                file=sys.stderr,
+            )
+            _VIEW_CSS_CACHE = ''
+    return _VIEW_CSS_CACHE
+
+
+def _view_template():
+    """Return the cached Jinja2 view.html template.
+
+    Autoescape is ON: the template escapes title/masthead/date itself, and the
+    pre-rendered fragments (marker, css, body) pass through `| safe` in the
+    template - the body is built exclusively by the serializers below, which
+    escape every piece of record text they interpolate.
+    Callers reach this only after _format_precheck proved Jinja2 importable.
+    """
+    global _VIEW_TEMPLATE_CACHE
+    if _VIEW_TEMPLATE_CACHE is None:
+        import jinja2
+        env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(str(Path(__file__).parent / 'templates')),
+            autoescape=True,
+        )
+        _VIEW_TEMPLATE_CACHE = env.get_template('view.html')
+    return _VIEW_TEMPLATE_CACHE
+
+
+def _render_view_html(archive_root: Path, subcommand: str, title: str, body_html: str) -> str:
+    """Wrap a rendered body in the standalone single-file page shell.
+
+    The GENERATED marker is the file's FIRST line, before <!DOCTYPE html> - a
+    comment there is valid HTML (no quirks mode) and satisfies the exact same
+    `is_generated_text` ownership test the .md views use, so `_write_view_file`
+    and `views clean` need no format-specific logic.  The masthead title comes
+    from fha.yaml `site: archive_name:` (the `fha site` key, with the legacy
+    top-level fallback) so the printed page names the archive it came from.
+    """
+    cfg = load_fha_yaml(archive_root)
+    site_cfg = cfg.get('site')
+    if not isinstance(site_cfg, dict):   # a hand-edited scalar `site:` must not crash a view
+        site_cfg = {}
+    archive_title = (
+        str(site_cfg.get('archive_name') or cfg.get('archive_name') or '').strip()
+        or 'Family History Archive'
+    )
+    marker = _gen_header(subcommand).rstrip('\n')
+    return _view_template().render(
+        marker=marker,
+        title=title,
+        subcommand=subcommand,
+        date=_today(),
+        archive_title=archive_title,
+        css=_view_css(),
+        body=body_html,
+    ) + '\n'
 
 
 def _profile_path_for(conn: sqlite3.Connection, person_id: str, archive_root: Path) -> Path | None:
@@ -514,8 +710,44 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     return line
 
 
+def _timeline_body_html(
+    conn: sqlite3.Connection,
+    sections: list[tuple[str | None, list[sqlite3.Row]]],
+    suggested_rows: list[sqlite3.Row],
+) -> str:
+    """Render the timeline sections as an HTML body fragment.
+
+    Consumes the exact section structure the .md serializer renders and reuses
+    `_timeline_claim_line` for every entry (the finished .md line, escaped and
+    token-styled by `_md_inline_to_html`), so the HTML twin can never say
+    something the .md does not.
+    """
+    parts: list[str] = []
+    for decade_hdr, rows in sections:
+        if not rows:
+            continue
+        if decade_hdr:
+            # decade_hdr is the .md '### 1880s' header; strip the '### ' prefix.
+            parts.append(f'<h3>{html_escape(decade_hdr[4:])}</h3>')
+        items = ''.join(
+            f'<li>{_md_inline_to_html(_timeline_claim_line(r, conn))}</li>'
+            for r in rows
+        )
+        parts.append(f'<ul class="timeline">{items}</ul>')
+    if suggested_rows:
+        parts.append('<h2>Unreviewed</h2>')
+        items = ''.join(
+            f'<li>{_md_inline_to_html(_timeline_claim_line(r, conn))}</li>'
+            for r in suggested_rows
+        )
+        parts.append(f'<ul class="timeline">{items}</ul>')
+    if not parts:
+        parts.append('<p class="empty">(No claims recorded yet.)</p>')
+    return '\n'.join(parts) + '\n'
+
+
 def _generate_timeline(
-    conn: sqlite3.Connection, person_id: str, archive_root: Path
+    conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md'
 ) -> Path | None:
     """
     Generate the timeline view for one person and write it to disk.
@@ -526,6 +758,10 @@ def _generate_timeline(
         NULL date_min last)
       - ## Unreviewed section at the end for suggested claims
         (suggested = AI-drafted, not yet accepted by a human reviewer)
+
+    `fmt='html'` writes the standalone single-file twin under generated/views/
+    instead - same queries, same sections, same rendered lines (D11); callers
+    reach the html branch only through run_timeline's _format_precheck.
 
     Returns the path written, or None if the person has no profile in the index.
     """
@@ -588,6 +824,14 @@ def _generate_timeline(
     if current_rows or current_decade != 'UNSET':
         sections.append((current_decade if current_decade != 'UNSET' else None, current_rows))
 
+    if fmt == 'html':
+        body = _timeline_body_html(conn, sections, suggested_rows)
+        return _write_view_file(
+            _html_out_path(archive_root, out_path),
+            _render_view_html(
+                archive_root, 'timeline', f'Timeline: {person_name}', body),
+        )
+
     parts: list[str] = [_gen_header('timeline'), f'# Timeline: {person_name}\n']
 
     for decade_hdr, rows in sections:
@@ -647,22 +891,40 @@ def _write_sources_index(
     out_path: Path,
     title: str,
     subcommand: str = 'sources-index',
-) -> None:
+    fmt: str = 'md',
+    archive_root: Path | None = None,
+    html_stem: str | None = None,
+) -> Path:
     """
-    Write a sources-index .md file for the given source IDs.
+    Write a sources-index file for the given source IDs; return the path written.
 
     Shared by both the per-person and couple-folder generators so the output
     format stays identical regardless of scope.  Callers supply the title and
     output path; everything else is derived from the index.
     Sources are grouped by source_type (census, newspaper, other, …) and sorted
     alphabetically within each group.
+
+    One query, two serializers: `fmt='html'` renders the SAME grouped rows as a
+    ledger table in the standalone page shell (D11) - `archive_root` is
+    required then, and `html_stem` overrides the output stem for the
+    couple-folder index (whose .md stem repeats in every folder).
     """
+    if fmt == 'html':
+        html_path = _html_out_path(archive_root, out_path, stem=html_stem)
+
     if not source_ids:
+        if fmt == 'html':
+            return _write_view_file(
+                html_path,
+                _render_view_html(
+                    archive_root, subcommand, title,
+                    '<p class="empty">(No sources found.)</p>\n'),
+            )
         _write_view_file(
             out_path,
             _gen_header(subcommand) + f'# {title}\n\n*(No sources found.)*\n',
         )
-        return
+        return out_path
 
     placeholders = ','.join('?' * len(source_ids))
     rows = conn.execute(
@@ -681,6 +943,27 @@ def _write_sources_index(
         st = row['source_type'] or 'other'
         by_type.setdefault(st, []).append(row)
 
+    if fmt == 'html':
+        parts: list[str] = []
+        for source_type in sorted(by_type.keys()):
+            parts.append(f'<h2>{html_escape(source_type)}</h2>')
+            parts.append('<table class="claims">')
+            parts.append('<thead><tr><th>Source</th><th>ID</th><th>File</th></tr></thead>')
+            parts.append('<tbody>')
+            for row in by_type[source_type]:
+                sid_html = _md_inline_to_html(_format_sid(row['id']))
+                path_text = row['path'].replace('\\', '/')
+                parts.append(
+                    f'<tr><td><strong>{html_escape(row["title"])}</strong></td>'
+                    f'<td>{sid_html}</td>'
+                    f'<td class="path">{html_escape(path_text)}</td></tr>'
+                )
+            parts.append('</tbody></table>')
+        return _write_view_file(
+            html_path,
+            _render_view_html(archive_root, subcommand, title, '\n'.join(parts) + '\n'),
+        )
+
     lines: list[str] = [_gen_header(subcommand), f'# {title}\n']
 
     for source_type in sorted(by_type.keys()):
@@ -692,10 +975,11 @@ def _write_sources_index(
             lines.append(f'  {path_text}\n')
 
     _write_view_file(out_path, ''.join(lines))
+    return out_path
 
 
 def _generate_sources_index_person(
-    conn: sqlite3.Connection, person_id: str, archive_root: Path
+    conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md'
 ) -> Path | None:
     """Generate the per-person sources-index. Returns the path written, or None."""
     profile_p = _profile_path_for(conn, person_id, archive_root)
@@ -708,35 +992,45 @@ def _generate_sources_index_person(
 
     source_ids = _source_ids_for_persons(conn, [person_id])
     out_path = _out_path_for(profile_p, 'sources-index', person_id)
-    _write_sources_index(conn, source_ids, out_path, f'Sources: {person_name}')
-    return out_path
+    return _write_sources_index(
+        conn, source_ids, out_path, f'Sources: {person_name}',
+        fmt=fmt, archive_root=archive_root,
+    )
 
 
 def _generate_sources_index_couple_folder(
     conn: sqlite3.Connection,
     folder_path: Path,
     person_ids: list[str],
+    fmt: str = 'md',
+    archive_root: Path | None = None,
 ) -> Path:
     """
-    Generate the couple-folder sources-index.md at the folder root.
-    Returns the path written.
+    Generate the couple-folder sources-index.md at the folder root (or, for
+    fmt='html', the standalone twin `generated/views/{folder}_sources-index.html`
+    - the folder name is prefixed because every couple folder shares the same
+    .md stem).  Returns the path written.
     """
     source_ids = _source_ids_for_persons(conn, person_ids)
     out_path = folder_path / 'sources-index.md'
     folder_name = folder_path.name
-    _write_sources_index(
+    return _write_sources_index(
         conn, source_ids, out_path, f'Sources: {folder_name}',
+        fmt=fmt, archive_root=archive_root,
+        html_stem=f'{folder_name}_sources-index',
     )
-    return out_path
 
 
 # ── Draft-queue ───────────────────────────────────────────────────────────────
 
 def _generate_draft_queue(
-    conn: sqlite3.Connection, person_id: str, archive_root: Path
+    conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md'
 ) -> Path | None:
     """
     Generate the draft-queue view for one person and write it to disk.
+    `fmt='html'` writes the standalone twin under generated/views/ from the
+    same diff (D11); the html branch is reached only via run_draft_queue's
+    _format_precheck.
 
     Purpose: the draft-queue is the biographer's to-do list.  It answers the
     question "which accepted sources have I not yet cited in the profile prose?"
@@ -792,6 +1086,13 @@ def _generate_draft_queue(
     lines: list[str] = [_gen_header('draft-queue'), f'# Draft Queue: {person_name}\n']
 
     if not uncited_sids:
+        if fmt == 'html':
+            return _write_view_file(
+                _html_out_path(archive_root, out_path),
+                _render_view_html(
+                    archive_root, 'draft-queue', f'Draft Queue: {person_name}',
+                    '<p>All accepted claims are cited in the profile.</p>\n'),
+            )
         lines.append('\nAll accepted claims are cited in the profile.\n')
         return _write_view_file(out_path, ''.join(lines))
 
@@ -813,6 +1114,33 @@ def _generate_draft_queue(
         sid = normalize_id(row['source_id'])
         if sid in uncited_sids:
             claims_by_source.setdefault(sid, []).append(row)
+
+    if fmt == 'html':
+        parts: list[str] = [
+            f'<p>{len(uncited_sids)} source(s) with accepted claims '
+            f'not yet cited in the profile:</p>'
+        ]
+        for src in source_rows:
+            sid = normalize_id(src['id'])
+            sid_html = _md_inline_to_html(_format_sid(src['id']))
+            parts.append(
+                f'<p class="queue-source"><strong>{html_escape(src["title"])}</strong> '
+                f'{sid_html}</p>'
+            )
+            items: list[str] = []
+            for claim_row in claims_by_source.get(sid, []):
+                date_edtf = claim_row['date_edtf']
+                date_str = f'({date_edtf})' if date_edtf else '(undated)'
+                claim_line = f'{claim_row["type"]}: {claim_row["value"]} {date_str}'
+                items.append(f'<li>{html_escape(claim_line)}</li>')
+            if items:
+                parts.append('<ul>' + ''.join(items) + '</ul>')
+        return _write_view_file(
+            _html_out_path(archive_root, out_path),
+            _render_view_html(
+                archive_root, 'draft-queue', f'Draft Queue: {person_name}',
+                '\n'.join(parts) + '\n'),
+        )
 
     lines.append(
         f'\n{len(uncited_sids)} source(s) with accepted claims not yet cited in the profile:\n'
@@ -1944,21 +2272,35 @@ def run_tree(
 
     Traverses the relationships table from the seed person using BFS and
     emits the result as neutral JSON (TOOLING §7 D3) or GraphViz DOT.
-    HTML output is deferred to the site generator (TOOLING §7 D6).
+    `fmt='html'` is refused with a pointer to `fha site` until the site's
+    full-tree feature lands (TOOLING §7 D6) - the HTML tree will be a thin
+    single-file wrap of that renderer, never a stopgap built twice.
 
     Exit codes follow the §1 convention: 0 clean, 1 warnings, 3 tool failure.
     Missing index → exit 3 (tool cannot run without it).  The rendered tree text
     lands in `data['output']`; an `--out FILE` write is recorded in `changed`.
     """
-    # HTML tree output is not offered yet: --format html is removed from the
-    # argparse choices (an argparse error) rather than accepted and refused at
-    # runtime. Plan 13 re-adds 'html' to the choices with the real renderer.
     if not person_id:
         print('ERROR: a P-id argument is required.', file=sys.stderr)
         return _views_result(EXIT_FAILURE)
 
     if not mode:
         print('ERROR: --mode ancestors|descendants|fan is required.', file=sys.stderr)
+        return _views_result(EXIT_FAILURE)
+
+    # 'html' is accepted by argparse (so the refusal can explain itself in
+    # plain language instead of a bare choices error) but refused here: the
+    # HTML tree ships with the site's full-tree feature, as a thin wrap of
+    # that renderer. The content views DO render html today (TOOLING §7 D11).
+    if fmt == 'html':
+        print(
+            "ERROR: an HTML tree is not available from `fha views tree` yet - "
+            "it arrives with the site's full family tree feature. For a "
+            "browsable tree today run `fha site` (person pages include "
+            "pedigree and descendant charts), or use `--format json` / "
+            "`--format dot` for tree data.",
+            file=sys.stderr,
+        )
         return _views_result(EXIT_FAILURE)
 
     seed_pid = normalize_id(person_id)
@@ -2022,12 +2364,22 @@ def run_timeline(
     archive_root: Path,
     person_id: str | None = None,
     all_curated: bool = False,
+    fmt: str = 'md',
 ) -> Result:
     """Generate timeline companion file(s); return a Result (prints progress inline).
 
     Generated files are recorded in `changed`; the per-file "timeline ->…" lines
     stay inline as before so output is byte-for-byte unchanged.
+
+    `fmt='md'` (default) writes the companion file beside the profile exactly
+    as always; `fmt='html'` writes the standalone single-file twin under
+    generated/views/ - same query, same lines (D11).  An HTML write touches
+    nothing the indexer scans, so it never stales the index: no reindex advice
+    is printed and the run exits 0 clean.
     """
+    precheck = _format_precheck(fmt, ('md', 'html'))
+    if precheck is not None:
+        return precheck
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return _views_result(EXIT_FAILURE)
@@ -2040,16 +2392,17 @@ def run_timeline(
                 return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
-                out = _generate_timeline(conn, pid, archive_root)
+                out = _generate_timeline(conn, pid, archive_root, fmt=fmt)
                 if out:
                     print(f'  timeline ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
                     count += 1
             print(f'Generated {count} timeline file(s).')
-            if count:
+            if count and fmt == 'md':
                 # Writing a companion file makes the index stale (its mtime now
                 # post-dates .cache/index.sqlite), but a successful write is not a
                 # warning: exit clean and print the reindex as advice, not an alarm.
+                # (HTML lands under generated/, which the indexer never scans.)
                 print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
@@ -2060,10 +2413,11 @@ def run_timeline(
         pid = normalize_id(person_id)
         if _skip_stub_person(conn, pid, 'timeline', archive_root):
             return _views_result(EXIT_WARNINGS, data={'count': 0})
-        out = _generate_timeline(conn, pid, archive_root)
+        out = _generate_timeline(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
-            print('Run `fha index` when convenient to update the search index with the new view file.')
+            if fmt == 'md':
+                print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
@@ -2083,6 +2437,7 @@ def _cmd_timeline(args: argparse.Namespace) -> int:
         archive_root,
         person_id=getattr(args, 'person_id', None),
         all_curated=getattr(args, 'all_curated', False),
+        fmt=getattr(args, 'format', 'md') or 'md',
     ).exit_code
 
 
@@ -2091,12 +2446,18 @@ def run_sources_index(
     person_id: str | None = None,
     all_curated: bool = False,
     couple_folders_only: bool = False,
+    fmt: str = 'md',
 ) -> Result:
     """Generate sources-index companion/couple-folder file(s); return a Result.
 
     Progress narration stays inline (byte-identical); written files land in
-    `changed`.
+    `changed`.  `fmt='html'` writes standalone twins under generated/views/
+    (couple folders as `{folder}_sources-index.html`); HTML writes never stale
+    the index, so the reindex advice stays md-only.
     """
+    precheck = _format_precheck(fmt, ('md', 'html'))
+    if precheck is not None:
+        return precheck
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return _views_result(EXIT_FAILURE)
@@ -2108,7 +2469,7 @@ def run_sources_index(
             if all_curated:
                 # Per-person files for all curated persons
                 for pid in _view_eligible_curated_ids(conn, archive_root):
-                    out = _generate_sources_index_person(conn, pid, archive_root)
+                    out = _generate_sources_index_person(conn, pid, archive_root, fmt=fmt)
                     if out:
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
                         changed.append(str(out))
@@ -2116,7 +2477,8 @@ def run_sources_index(
 
             # Couple-folder sources-index.md files
             for folder_path, person_ids in _couple_folders(conn, archive_root):
-                out = _generate_sources_index_couple_folder(conn, folder_path, person_ids)
+                out = _generate_sources_index_couple_folder(
+                    conn, folder_path, person_ids, fmt=fmt, archive_root=archive_root)
                 print(f'  sources-index ->{out.relative_to(archive_root)}')
                 changed.append(str(out))
                 count += 1
@@ -2126,7 +2488,9 @@ def run_sources_index(
                 # Writing a companion file makes the index stale (its mtime now
                 # post-dates .cache/index.sqlite), but a successful write is not a
                 # warning: exit clean and print the reindex as advice, not an alarm.
-                print('Run `fha index` when convenient to update the search index with the new view file(s).')
+                # (HTML lands under generated/, which the indexer never scans.)
+                if fmt == 'md':
+                    print('Run `fha index` when convenient to update the search index with the new view file(s).')
                 return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
             if all_curated and not changed:
                 # Nothing generated because every curated record is parked in
@@ -2141,10 +2505,11 @@ def run_sources_index(
         pid = normalize_id(person_id)
         if _skip_stub_person(conn, pid, 'sources-index', archive_root):
             return _views_result(EXIT_WARNINGS, data={'count': 0})
-        out = _generate_sources_index_person(conn, pid, archive_root)
+        out = _generate_sources_index_person(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
-            print('Run `fha index` when convenient to update the search index with the new view file.')
+            if fmt == 'md':
+                print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
@@ -2165,6 +2530,7 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
         person_id=getattr(args, 'person_id', None),
         all_curated=getattr(args, 'all_curated', False),
         couple_folders_only=getattr(args, 'couple_folders', False),
+        fmt=getattr(args, 'format', 'md') or 'md',
     ).exit_code
 
 
@@ -2172,11 +2538,17 @@ def run_draft_queue(
     archive_root: Path,
     person_id: str | None = None,
     all_curated: bool = False,
+    fmt: str = 'md',
 ) -> Result:
     """Generate draft-queue companion file(s); return a Result (prints inline).
 
     Written files are recorded in `changed`; progress lines stay byte-identical.
+    `fmt='html'` writes the standalone twin under generated/views/; HTML writes
+    never stale the index, so the reindex advice stays md-only.
     """
+    precheck = _format_precheck(fmt, ('md', 'html'))
+    if precheck is not None:
+        return precheck
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return _views_result(EXIT_FAILURE)
@@ -2189,16 +2561,17 @@ def run_draft_queue(
                 return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
-                out = _generate_draft_queue(conn, pid, archive_root)
+                out = _generate_draft_queue(conn, pid, archive_root, fmt=fmt)
                 if out:
                     print(f'  draft-queue ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
                     count += 1
             print(f'Generated {count} draft-queue file(s).')
-            if count:
+            if count and fmt == 'md':
                 # Writing a companion file makes the index stale (its mtime now
                 # post-dates .cache/index.sqlite), but a successful write is not a
                 # warning: exit clean and print the reindex as advice, not an alarm.
+                # (HTML lands under generated/, which the indexer never scans.)
                 print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
@@ -2209,10 +2582,11 @@ def run_draft_queue(
         pid = normalize_id(person_id)
         if _skip_stub_person(conn, pid, 'draft-queue', archive_root):
             return _views_result(EXIT_WARNINGS, data={'count': 0})
-        out = _generate_draft_queue(conn, pid, archive_root)
+        out = _generate_draft_queue(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
-            print('Run `fha index` when convenient to update the search index with the new view file.')
+            if fmt == 'md':
+                print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
@@ -2232,15 +2606,24 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
         archive_root,
         person_id=getattr(args, 'person_id', None),
         all_curated=getattr(args, 'all_curated', False),
+        fmt=getattr(args, 'format', 'md') or 'md',
     ).exit_code
 
 
 def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     """Delete GENERATED view files; return a Result (prints progress inline).
 
-    Only files whose first non-blank line is the GENERATED marker are removed
-    (hand-authored files are never touched).  Removed paths are recorded in
-    `changed`; under --dry-run nothing is deleted and `changed` stays empty.
+    Two sweeps, one ownership test (the views marker on the first non-blank
+    line - marker-per-file, never folder ownership):
+      1. companion `.md` files in the people/ tree, as always;
+      2. single-file `.html` views (and any stray `.md`) under generated/views/.
+    Hand-authored files are never touched in either place.  Removed paths are
+    recorded in `changed`; under --dry-run nothing is deleted, both sweeps are
+    listed, and `changed` stays empty.
+
+    Exit codes: removing a people/-tree companion leaves stale rows in the
+    index (exit 1 + the reindex note, as always); generated/views/ files are
+    never indexed, so a sweep that removed only those exits 0 clean.
     """
     dry_run = bool(dry_run)
 
@@ -2262,12 +2645,27 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
         if is_generated_text(text, prefix=_GEN_MARKER):
             found.append(p)
 
-    if not found:
+    # Second sweep: standalone HTML views under generated/views/ (D11). Same
+    # marker-per-file ownership - the folder is visible and a human may park
+    # anything there; only files views wrote are removed.
+    gen_found: list[Path] = []
+    gen_dir = archive_root / 'generated' / 'views'
+    if gen_dir.is_dir():
+        for p in sorted(list(gen_dir.glob('*.html')) + list(gen_dir.glob('*.md'))):
+            try:
+                text = p.read_text(encoding='utf-8', errors='ignore')
+            except OSError:
+                continue
+            if is_generated_text(text, prefix=_GEN_MARKER):
+                gen_found.append(p)
+
+    all_found = found + gen_found
+    if not all_found:
         print('No GENERATED view files found.')
         return _views_result(EXIT_CLEAN)
 
     changed: list[str] = []
-    for p in found:
+    for p in all_found:
         rel = p.relative_to(archive_root)
         if dry_run:
             print(f'  would remove {rel}')
@@ -2277,11 +2675,14 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
             changed.append(str(p))
 
     verb = 'Would remove' if dry_run else 'Removed'
-    print(f'{verb} {len(found)} generated file(s).')
+    print(f'{verb} {len(all_found)} generated file(s).')
     if not dry_run:
-        print('Note: deleted files still appear in .cache/index.sqlite - run `fha index` to update the cache.')
-        return _views_result(EXIT_WARNINGS, changed=changed, data={'removed': len(found)})
-    return _views_result(EXIT_CLEAN, data={'removed': 0, 'would_remove': len(found)})
+        if found:
+            print('Note: deleted files still appear in .cache/index.sqlite - run `fha index` to update the cache.')
+            return _views_result(EXIT_WARNINGS, changed=changed, data={'removed': len(all_found)})
+        # Only generated/views/ files were removed - the index never saw them.
+        return _views_result(EXIT_CLEAN, changed=changed, data={'removed': len(all_found)})
+    return _views_result(EXIT_CLEAN, data={'removed': 0, 'would_remove': len(all_found)})
 
 
 def _cmd_clean(args: argparse.Namespace) -> int:
@@ -2292,12 +2693,21 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     return run_clean(archive_root, dry_run=getattr(args, 'dry_run', False)).exit_code
 
 
-def run_refresh(archive_root: Path) -> Result:
+def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
     """Regenerate every curated person's view files; return a Result (prints inline).
 
     Written files are recorded in `changed`; the per-file progress lines stay
     byte-for-byte as before.
+
+    `fmt` selects the output set: 'md' (default) the companion files as
+    always; 'html' the standalone generated/views/ set only; 'both' the two
+    sets in one pass (owner decision 7-Q2).  The reindex advice prints only
+    when .md companions were written - HTML never stales the index.
     """
+    precheck = _format_precheck(fmt, ('md', 'html', 'both'))
+    if precheck is not None:
+        return precheck
+    fmt_passes: tuple[str, ...] = ('md', 'html') if fmt == 'both' else (fmt,)
     conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return _views_result(EXIT_FAILURE)
@@ -2316,25 +2726,30 @@ def run_refresh(archive_root: Path) -> Result:
         count = 0
         for pid in person_ids:
             for fn, label in _per_person:
-                out = fn(conn, pid, archive_root)
+                for fmt_pass in fmt_passes:
+                    out = fn(conn, pid, archive_root, fmt=fmt_pass)
+                    if out:
+                        print(f'  {label}->{out.relative_to(archive_root)}')
+                        changed.append(str(out))
+                        count += 1
+
+        for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
+            for fmt_pass in fmt_passes:
+                out = _generate_sources_index_couple_folder(
+                    conn, folder_path, pids_in_folder,
+                    fmt=fmt_pass, archive_root=archive_root)
                 if out:
-                    print(f'  {label}->{out.relative_to(archive_root)}')
+                    print(f'  sources-index  ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
                     count += 1
 
-        for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
-            out = _generate_sources_index_couple_folder(conn, folder_path, pids_in_folder)
-            if out:
-                print(f'  sources-index  ->{out.relative_to(archive_root)}')
-                changed.append(str(out))
-                count += 1
-
         print(f'Generated {count} view file(s).')
-        if count:
+        if count and 'md' in fmt_passes:
             # Refresh writes new/updated companion files, which makes the index
             # stale by definition (newest_record_mtime now post-dates it). That is
             # not a failure of the refresh: exit clean and print the reindex as
             # advice, so a harness following the exit code isn't alarmed each run.
+            # (An html-only refresh writes under generated/ and stales nothing.)
             print('Run `fha index` when convenient to update the search index with the new view files.')
         return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
@@ -2349,7 +2764,10 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
-    return run_refresh(archive_root).exit_code
+    return run_refresh(
+        archive_root,
+        fmt=getattr(args, 'format', 'md') or 'md',
+    ).exit_code
 
 
 def _cmd_views_help(args: argparse.Namespace) -> int:
@@ -2374,7 +2792,20 @@ Build always-current summary pages from your records.
   fha views draft-queue <P-id>     Accepted facts not yet written into the bio
   fha views refresh                Rebuild every view for all curated people
 
+Add --format html (refresh also takes --format both) for a printable
+single-file page under generated/views/ - private and unredacted, with a
+visible not-for-publication banner; share through `fha site` instead.
+
 These pages are generated and rebuildable; edit the records, not the pages."""
+
+
+# Shared --format help text for the three content views (refresh differs: it
+# also takes 'both').
+_FORMAT_HELP = (
+    'md (default): the companion .md beside the profile. html: a standalone '
+    'printable page under generated/views/ (private and unredacted - it '
+    'carries a visible not-for-publication banner; share through `fha site`).'
+)
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -2403,6 +2834,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                     help='Person to generate for.')
     tl.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
+    tl.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
+                    help=_FORMAT_HELP)
     tl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     tl.set_defaults(func=_cmd_timeline)
 
@@ -2422,6 +2855,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                     help='Generate per-person and couple-folder files for all curated persons.')
     si.add_argument('--couple-folders', action='store_true',
                     help='Generate sources-index.md in every curated couple folder.')
+    si.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
+                    help=_FORMAT_HELP)
     si.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     si.set_defaults(func=_cmd_sources_index)
 
@@ -2438,6 +2873,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                     help='Person to generate for.')
     dq.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
+    dq.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
+                    help=_FORMAT_HELP)
     dq.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     dq.set_defaults(func=_cmd_draft_queue)
 
@@ -2473,10 +2910,13 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Maximum generations / hops (default: unlimited; fan default: 2).',
     )
     tr.add_argument(
-        # 'html' is intentionally omitted until plan 13 ships the renderer; for a
-        # browsable tree today, build the site (`fha site`).
-        '--format', choices=['json', 'dot'], default='json', dest='format',
-        help='Output format (default: json). For an HTML tree, build the site.',
+        # 'html' is accepted so run_tree can refuse it with a plain pointer
+        # (the HTML tree arrives with the site's full-tree feature) instead of
+        # a bare argparse choices error.
+        '--format', choices=['json', 'dot', 'html'], default='json', dest='format',
+        help='Output format (default: json). html is not available yet - it '
+             'arrives with the site-wide family tree; run `fha site` for a '
+             'browsable tree today.',
     )
     tr.add_argument('--out', metavar='FILE', help='Write output to FILE instead of stdout.')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -2485,12 +2925,14 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     # ── clean ─────────────────────────────────────────────────────────────────
     cl = vsubs.add_parser(
         'clean',
-        help='Delete every generated companion .md file; they regenerate with `fha views refresh`.',
+        help='Delete every generated view file (companion .md + generated/views/ HTML); '
+             'they regenerate with `fha views refresh`.',
         description=(
-            'Delete all GENERATED-headed companion .md files (timeline, sources-index,\n'
-            'draft-queue) from the people/ tree. Uses the <!-- GENERATED … --> header\n'
-            'as the sole signal; never touches profiles or manually authored files.\n'
-            '--dry-run lists what would be removed without writing.'
+            'Delete all GENERATED-headed view files: companion .md files (timeline,\n'
+            'sources-index, draft-queue) from the people/ tree, and single-file HTML\n'
+            'views under generated/views/. Uses the <!-- GENERATED … --> header as\n'
+            'the sole signal, file by file; never touches profiles or manually\n'
+            'authored files. --dry-run lists what would be removed without writing.'
         ),
     )
     cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -2505,9 +2947,14 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description=(
             'Regenerate timeline, draft-queue, and sources-index for every curated\n'
             'person, plus sources-index.md for every curated couple folder.\n'
+            '--format html regenerates the standalone generated/views/ pages\n'
+            'instead; --format both writes the two sets in one pass.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
+    rf.add_argument('--format', choices=['md', 'html', 'both'], default='md', dest='format',
+                    help='md (default): companion .md files as always. html: standalone '
+                         'pages under generated/views/. both: write the two sets in one pass.')
     rf.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     rf.set_defaults(func=_cmd_refresh)
 
@@ -2559,12 +3006,13 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
 
-    cl = subs.add_parser('clean', help='Delete every generated companion .md file; they regenerate with `fha views refresh`.')
+    cl = subs.add_parser('clean', help='Delete every generated view file (companion .md + generated/views/ HTML); they regenerate with `fha views refresh`.')
     cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     cl.add_argument('--dry-run', action='store_true', dest='dry_run', help='List what would be removed without writing.')
     cl.set_defaults(func=_cmd_clean)
 
     rf = subs.add_parser('refresh', help='Regenerate all content views for every curated person and couple folder.')
+    rf.add_argument('--format', choices=['md', 'html', 'both'], default='md', dest='format')
     rf.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     rf.set_defaults(func=_cmd_refresh)
 
@@ -2572,7 +3020,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')
     tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
     tr.add_argument('--generations', type=int, metavar='N')
-    tr.add_argument('--format', choices=['json', 'dot'], default='json', dest='format')
+    tr.add_argument('--format', choices=['json', 'dot', 'html'], default='json', dest='format')
     tr.add_argument('--out', metavar='FILE')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     tr.set_defaults(func=_cmd_tree)
@@ -2581,12 +3029,14 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
 def _add_person_curated_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('person_id', nargs='?', metavar='P-id')
     p.add_argument('--all-curated', action='store_true')
+    p.add_argument('--format', choices=['md', 'html'], default='md', dest='format')
 
 
 def _add_si_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('person_id', nargs='?', metavar='P-id')
     p.add_argument('--all-curated', action='store_true')
     p.add_argument('--couple-folders', action='store_true')
+    p.add_argument('--format', choices=['md', 'html'], default='md', dest='format')
 
 
 if __name__ == '__main__':

@@ -1,0 +1,144 @@
+/* ============================================================================
+   view.css - the inline stylesheet for fha single-file HTML artifacts
+   ----------------------------------------------------------------------------
+   Inlined whole into every `fha views --format html` page (and inherited by
+   the other single-file HTML artifacts, e.g. the photo gallery) - see
+   TOOLING.md §7 D11 for the conventions this file serves.
+
+   It is a curated subset of styles.css: §2 tokens, §3 base, §6 ledger table,
+   with one deliberate change - a SYSTEM font stack. A single-file artifact
+   gets mailed, printed, dropped in a folder; it embeds no fonts and makes no
+   external requests of any kind. Keep this file self-contained: no @import,
+   no url(...), no external references. Keep it small (~5 KB) - every view
+   carries a full copy.
+   ============================================================================ */
+
+
+/* Tokens (styles.css §2, trimmed; fonts swapped to system stacks) */
+
+:root {
+  --paper:          #F2EDE2;  /* page ground (toned register paper)  */
+  --surface:        #F8F5EE;  /* faintly raised areas                */
+  --surface-sunken: #E8E0D0;  /* wells                               */
+  --ink:            #2A2420;  /* primary text                        */
+  --ink-soft:       #574E42;  /* secondary text, heavy rules         */
+  --muted:          #6E6656;  /* meta text                           */
+  --rule:           #D8D0BF;  /* hairlines                           */
+  --rule-strong:    #B9AD98;  /* emphasized hairlines                */
+  --accent:         #6E3A26;  /* deep sienna; used sparingly         */
+  --link:           var(--accent);
+
+  /* Claim / review status inks (text only - no fills) */
+  --status-accepted-fg:  #3F5130;
+  --status-review-fg:    #6F5214;
+  --status-suggested-fg: #2F4256;
+  --status-rejected-fg:  var(--muted);
+
+  /* System stacks - single-file artifacts embed no webfonts */
+  --font-serif: Georgia, 'Times New Roman', 'Iowan Old Style', serif;
+  --font-sans:  system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:  ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --text-xs:   0.8rem;
+  --text-sm:   0.9rem;
+  --text-base: 1.05rem;
+  --text-lg:   1.1rem;
+  --text-xl:   1.2rem;
+  --text-2xl:  1.5rem;
+  --text-3xl:  2.2rem;
+
+  --leading-body:  1.6;
+  --leading-tight: 1.15;
+  --tracking-caps: 0.08em;
+
+  --space-1: 0.25rem;  --space-2: 0.5rem;  --space-3: 0.75rem;  --space-4: 1rem;
+  --space-5: 1.5rem;   --space-6: 2rem;    --space-8: 3rem;
+
+  --measure:     68ch;
+  --content-max: 54rem;
+  --page-pad:    var(--space-5);
+}
+
+
+/* Base (styles.css §3, trimmed) */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-base);
+  line-height: var(--leading-body);
+  color: var(--ink);
+  background: var(--paper);
+}
+
+h1, h2, h3 { font-weight: 600; line-height: var(--leading-tight); color: var(--ink); margin: 0 0 var(--space-3); }
+h1 { font-size: var(--text-3xl); letter-spacing: -0.01em; }
+h2 { font-size: var(--text-2xl); margin-top: var(--space-8);
+     border-bottom: 2px solid var(--ink-soft); padding-bottom: var(--space-2); }
+h3 { font-size: var(--text-xl); margin-top: var(--space-6); }
+
+p { margin: 0 0 var(--space-4); max-width: var(--measure); }
+a { color: var(--link); }
+strong, b { font-weight: 600; }
+em, i { font-style: italic; }
+small { font-size: var(--text-sm); }
+code { font-family: var(--font-mono); font-size: 0.88em;
+       background: var(--surface-sunken); padding: 0.1em 0.35em; border-radius: 2px; }
+hr { border: none; border-top: 1px solid var(--rule); margin: var(--space-6) 0; }
+ul, ol { padding-left: 1.3em; }
+li { margin: 0.15em 0; }
+
+main { max-width: var(--content-max); margin: 0 auto; padding: var(--space-6) var(--page-pad); }
+
+
+/* Masthead - the thick-thin double rule off a record-book title page */
+
+.view-masthead {
+  font-size: var(--text-xl); font-weight: 600; color: var(--ink);
+  padding: var(--space-5) var(--page-pad) 0;
+}
+.view-masthead::after {
+  content: ""; display: block; margin-top: var(--space-3);
+  height: 8px; border-top: 3px solid var(--ink); border-bottom: 1px solid var(--ink);
+}
+
+
+/* The not-for-publication banner - always visible, prints too */
+
+.view-banner {
+  font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-soft);
+  background: var(--surface-sunken); border: 1px solid var(--rule-strong);
+  border-left: 4px solid var(--accent);
+  margin: var(--space-4) var(--page-pad) 0; padding: var(--space-2) var(--space-3);
+  max-width: none;
+}
+
+.view-generated { color: var(--muted); font-size: var(--text-sm); font-style: italic; }
+
+
+/* Citation tokens and file paths - plain styled text, never links */
+
+.cite { font-family: var(--font-mono); font-size: 0.85em; color: var(--accent); white-space: nowrap; }
+.path { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--muted); word-break: break-all; }
+.empty { color: var(--muted); font-style: italic; }
+
+
+/* Ledger table & typographic statuses (styles.css §6) */
+
+table.claims { border-collapse: collapse; width: 100%; font-size: var(--text-sm);
+               margin-top: var(--space-3); }
+table.claims th, table.claims td { border: none; border-bottom: 1px solid var(--rule);
+               padding: var(--space-2) var(--space-4) var(--space-2) 0;
+               text-align: left; vertical-align: baseline; }
+table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-soft);
+               font-family: var(--font-sans); font-weight: 600; font-size: var(--text-xs);
+               text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--muted); }
+
+.status { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600;
+          letter-spacing: 0.02em; white-space: nowrap; }
+.status-accepted     { color: var(--status-accepted-fg); }
+.status-needs-review { color: var(--status-review-fg); }
+.status-suggested    { color: var(--status-suggested-fg); }
+.status-rejected, .status-superseded { color: var(--status-rejected-fg); text-decoration: line-through; }

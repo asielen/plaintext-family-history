@@ -187,7 +187,8 @@ fha confirm <verb> …         act on a detection candidate or report prompt the
                             picked (xref/cooccur/dismiss/place/discovery/draft)
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
-fha views timeline|sources-index|brackets     regenerate views
+fha views timeline|sources-index|brackets     regenerate views (--format html for a
+                            printable standalone page under generated/views/)
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default)
 fha photoindex find ...      query the photo library (never bulk-read photos/)
 fha find <ID|text>           locate anything: record + assets + citations for an ID;
