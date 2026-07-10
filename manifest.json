@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "7713aad77ffb1a43caae9d6a2f7a98bebb0a683cf0c40a984e967fac4c224850",
+      "sha256": "6f3d0ab836e6221887e3cda92b2263c5a3f8edd8993b521b4435d5b76318e287",
       "spec_version": "1.2"
     },
     {
@@ -157,7 +157,7 @@
     {
       "path": "design/custom.css",
       "category": "skeleton",
-      "sha256": "ec5e92d69db34dd4d6d97dc600e71197b56d7dc889ed68e0c66d7ade106fc512",
+      "sha256": "817986f1e6e096e29f0ea598dac2bbde2b98c917b2862ea34ac6c64544946e20",
       "spec_version": "1.2"
     },
     {
@@ -229,7 +229,7 @@
     {
       "path": "design/styles.css",
       "category": "operating",
-      "sha256": "010ac2aec2879b54ba8c1d2165c8f560874db951e9d1f92d1a943637f45a8b69",
+      "sha256": "262f4093528b5c834c5b9d1df792aedfbb728011bca35e86cb22cd28984a469a",
       "spec_version": "1.2"
     },
     {
@@ -431,7 +431,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "1cb5474b47b58227d97361fa5af5e4e4ca21508366d7372a393f136941035cb2",
+      "sha256": "a2858fc18761e043e79e22eee4956b23658ffdd3b85dd25180df899f1f7d4c3b",
       "spec_version": "1.2"
     },
     {
@@ -563,7 +563,7 @@
     {
       "path": "tools/normalize_links.py",
       "category": "operating",
-      "sha256": "4664097b6f150ba491b1dd193e255caa5d5a9040da98e1ca2ea07d74b649a0a8",
+      "sha256": "6f4682851b57d3892aa6491334ca5d836b7acb85cac7058bee24ebe5c0f2a211",
       "spec_version": "1.2"
     },
     {
