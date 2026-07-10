@@ -23,7 +23,6 @@ from pathlib import Path
 
 from _lib import (
     EXIT_CLEAN,
-    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
@@ -251,15 +250,12 @@ def run_working_copy_status(archive_root: Path) -> Result:
 
 def _cmd_on(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
-    archive_root = resolve_root_arg(args)
+    # resolve_root_arg carries the archive guard (validates an explicit --root
+    # has fha.yaml at its top and prints its own plain ERROR) and returns None
+    # on failure; the caller returns EXIT_FAILURE, matching every other tool.
+    archive_root = resolve_root_arg(args, command='fha working-copy')
     if archive_root is None:
-        print('error: cannot find archive root - pass --root or run from inside the archive.',
-              file=sys.stderr)
-        return EXIT_ERRORS
-    if not (archive_root / 'fha.yaml').exists():
-        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
-              file=sys.stderr)
-        return EXIT_ERRORS
+        return EXIT_FAILURE
 
     result = run_working_copy_on(archive_root)
 
@@ -291,15 +287,9 @@ def _cmd_on(args: argparse.Namespace) -> int:
 
 def _cmd_off(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
-    archive_root = resolve_root_arg(args)
+    archive_root = resolve_root_arg(args, command='fha working-copy')
     if archive_root is None:
-        print('error: cannot find archive root - pass --root or run from inside the archive.',
-              file=sys.stderr)
-        return EXIT_ERRORS
-    if not (archive_root / 'fha.yaml').exists():
-        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
-              file=sys.stderr)
-        return EXIT_ERRORS
+        return EXIT_FAILURE
 
     from _lib import is_working_copy
     if not is_working_copy(archive_root):
@@ -343,15 +333,9 @@ def _cmd_off(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
-    archive_root = resolve_root_arg(args)
+    archive_root = resolve_root_arg(args, command='fha working-copy')
     if archive_root is None:
-        print('error: cannot find archive root - pass --root or run from inside the archive.',
-              file=sys.stderr)
-        return EXIT_ERRORS
-    if not (archive_root / 'fha.yaml').exists():
-        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
-              file=sys.stderr)
-        return EXIT_ERRORS
+        return EXIT_FAILURE
 
     result = run_working_copy_status(archive_root)
     if result.data['active']:

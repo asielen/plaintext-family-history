@@ -1695,10 +1695,12 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     succeeded would drop it from the recovery list this error reports.
     """
     if is_working_copy(archive_root):
+        # Warning-level refusal, not a failure: ok stays True, exit stays clean,
+        # data.status='working-copy' is the machine discriminator (TOOLING §13d).
         return Result(
-            ok=False,
+            ok=True,
             exit_code=EXIT_CLEAN,
-            data={'tagged': [], 'failed': []},
+            data={'status': 'working-copy', 'tagged': [], 'failed': []},
         ).add(
             'warning',
             'photoindex tag-person is not available in working-copy mode - '

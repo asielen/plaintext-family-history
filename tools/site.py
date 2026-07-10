@@ -2889,8 +2889,10 @@ def run_site(
     writes nothing and leaves `changed` empty.
     """
     if is_working_copy(archive_root):
+        # Warning-level refusal, not a failure: ok stays True, exit stays clean,
+        # data.status='working-copy' is the machine discriminator (TOOLING §13d).
         return Result(
-            ok=False,
+            ok=True,
             exit_code=EXIT_CLEAN,
             data={'status': 'working-copy', 'out_dir': str(out_dir), 'pages': [], 'messages': []},
         ).add(

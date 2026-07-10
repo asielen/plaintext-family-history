@@ -1722,8 +1722,10 @@ def run_packet(
             'the photo and document files are on the main machine. '
             'Run this command there.'
         )
+        # Warning-level refusal, not a failure: ok stays True, exit stays clean,
+        # data.status='working-copy' is the machine discriminator (TOOLING §13d).
         return Result(
-            ok=False,
+            ok=True,
             exit_code=EXIT_CLEAN,
             data={'status': 'working-copy', 'packet_dir': None, 'zip_path': None,
                   'messages': [_wc_msg]},

@@ -2368,8 +2368,13 @@ def run_process(args: argparse.Namespace) -> Result:
     """
     archive_root = resolve_root_arg(args)
     if archive_root is not None and is_working_copy(archive_root):
+        # A working-copy refusal is a warning-level Result, not a failure: it
+        # succeeded at the only thing it can do here (declining safely and
+        # pointing at the main archive), so ok stays True and the exit is clean.
+        # data.status='working-copy' is the machine discriminator for headless
+        # callers that need to know nothing was filed (TOOLING §13d).
         return Result(
-            ok=False,
+            ok=True,
             exit_code=EXIT_CLEAN,
             data={'status': 'working-copy'},
         ).add(
