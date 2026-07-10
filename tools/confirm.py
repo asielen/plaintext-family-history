@@ -2389,6 +2389,14 @@ def _scan_person_profiles(archive_root: Path) -> dict[str, tuple[Path, dict]]:
         except Exception:  # noqa: BLE001 - unreadable record cannot take part
             continue
         meta = rec.get('meta') or {}
+        if not meta:
+            # read_record reports junk via parse_errors rather than raising, so
+            # a file with no parseable frontmatter must be skipped here, not
+            # caught above - otherwise a lookalike filename ending in the same
+            # _{P-id}.md suffix can shadow the real record, and which of the
+            # two wins depends on Path sort order (case-insensitive on Windows
+            # only).
+            continue
         pid = normalize_id(parsed['id_str'])
         if pid not in out:
             out[pid] = (path, meta)

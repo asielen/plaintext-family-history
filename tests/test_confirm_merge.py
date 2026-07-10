@@ -551,6 +551,16 @@ class MergeArchiveTests(unittest.TestCase):
         self.assertEqual(r['status'], 'rename-collision')
         self.assertEqual(tree_state(self.root), before)
 
+    def test_scan_never_lets_a_frontmatterless_lookalike_shadow_the_record(self) -> None:
+        # A junk file whose name ends with the same _{P-id}.md suffix must not
+        # become the P-id's profile. The decoy sorts before the real record on
+        # every platform (Path order is case-insensitive on Windows only, which
+        # is how the rename-collision test above passed here and failed on CI).
+        decoy = self.merged_path.with_name(f'a__decoy_{MERGED}.md')
+        decoy.write_text('in the way\n', encoding='utf-8')
+        profiles = confirm._scan_person_profiles(self.root)
+        self.assertEqual(profiles[MERGED.lower()][0], self.merged_path)
+
     def test_guard_refusal_on_broken_claims_block_writes_nothing(self) -> None:
         self._tmp.cleanup()
         self._tmp = tempfile.TemporaryDirectory()
