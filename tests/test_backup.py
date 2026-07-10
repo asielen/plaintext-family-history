@@ -213,6 +213,48 @@ class ExternalRootTests(unittest.TestCase):
         self.assertIn('outside the archive folder', _message_text(result))
 
 
+class ArcnameCollisionTests(unittest.TestCase):
+    """An archive-internal top-level folder named like an external root's
+    alias would put two files at the same name inside the zip; extraction
+    silently keeps one, so the run must refuse (exit 3) before writing
+    anything - a backup tool never guesses which copy the human meant."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.ext_photos = self.parent / 'external-photos'
+        self.root = _make_archive(self.parent, photos_root=str(self.ext_photos))
+        # An ordinary in-archive folder that happens to share the alias name
+        # AND a relative file path with the external photos root.
+        _write(self.root / 'photos' / '1920' / 'pic.jpg', 'a different picture')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_alias_collision_refuses_before_writing(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'name-collision')
+        text = _message_text(result)
+        self.assertIn("'photos/'", text)                 # the colliding folder
+        self.assertIn('roots: photos:', text)            # the fha.yaml line
+        self.assertIn('rename', text.lower())            # the fix
+        self.assertIn('photos/1920/pic.jpg', text)       # an example collision
+        # Nothing was written: no destination folder, no zip, no stamp.
+        self.assertFalse((self.parent / 'my-archive-backups').exists())
+        self.assertFalse((self.root / '.cache' / 'last_backup.json').exists())
+
+    def test_records_only_run_with_lookalike_folder_still_works(self) -> None:
+        # Without --include-assets there is no alias packing, so the
+        # in-archive photos/ folder is just an ordinary records folder.
+        result = _run(self.root)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            self.assertIn('photos/1920/pic.jpg', zf.namelist())
+
+
 class DestinationGuardTests(unittest.TestCase):
     """No destination inside the tree is possible; config key and --to obey
     their precedence."""

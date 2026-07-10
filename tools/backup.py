@@ -52,9 +52,12 @@ assets is the worst possible output for a backup tool.
 
 Exit codes: 0 = backup written + verified, or dry-run plan printed, or the WC
 --include-assets refusal; 2 = argparse-level bad invocation only; 3 = root
-unresolvable, destination inside the archive/an asset root, malformed
-fha.yaml, or a write/verify failure (partial zip deleted).  There is no exit-1
-arm: a partial or suspect backup is never a warning, it is a failure.
+unresolvable, destination inside the archive/an asset root, a duplicate
+in-zip name (refused before anything is written - extraction of a zip with
+duplicate members silently keeps one copy, and a backup tool never guesses),
+malformed fha.yaml, or a write/verify failure (partial zip deleted).  There
+is no exit-1 arm: a partial or suspect backup is never a warning, it is a
+failure.
 """
 
 from __future__ import annotations
@@ -96,6 +99,7 @@ configure_utf8_stdout()
 #    _asset_roots             - alias -> resolved Path for every excluded asset root
 #    _walk_files              - one tree walk -> (abs_path, arcname, size) entries
 #    _plan_backup             - the full include/exclude plan + size estimates
+#    _arcname_collisions      - names claimed by 2+ files (run_backup refuses)
 #    _fmt_size                - human-readable byte counts for the notes
 #
 #  Execution
@@ -403,6 +407,27 @@ def _plan_backup(
     }
 
 
+def _arcname_collisions(
+    entries: list[tuple[Path, str, int]],
+) -> dict[str, list[Path]]:
+    """Map arcname -> source paths for every in-zip name claimed by 2+ files.
+
+    Zip members are identified by name alone: two entries with the same
+    arcname both write fine and both pass CRC verification (testzip checks
+    integrity, not uniqueness), but extraction silently keeps only one copy -
+    data loss wearing a 'verified' badge.  The known route here is an
+    archive-internal top-level folder named like a mapped root's alias (a
+    real `photos/` folder plus `roots: photos:` pointing at an external
+    library, with --include-assets).  run_backup refuses to write anything
+    when this returns a non-empty dict: a backup tool never guesses which
+    copy the human meant to keep.
+    """
+    by_arc: dict[str, list[Path]] = {}
+    for path, arcname, _size in entries:
+        by_arc.setdefault(arcname, []).append(path)
+    return {arc: paths for arc, paths in by_arc.items() if len(paths) > 1}
+
+
 # ── Execution ─────────────────────────────────────────────────────────────────
 
 def _write_zip(zip_path: Path, entries: list[tuple[Path, str, int]]) -> None:
@@ -461,15 +486,18 @@ def run_backup(
 
     The engine half of the TOOLING §1 split: returns a Result, prints nothing.
     Result.data carries {'status': 'ok'|'dry-run'|'working-copy'|
-    'bad-destination'|'write-failed', 'zip_path', 'files', 'bytes',
-    'assets_included', 'skipped_roots', 'folders', 'excluded'};
+    'bad-destination'|'name-collision'|'write-failed', 'zip_path', 'files',
+    'bytes', 'assets_included', 'skipped_roots', 'folders', 'excluded'};
     `changed` lists the zip and the stamp on a live run, nothing on dry-run.
     `bytes` is the finished zip's on-disk size (the number a human compares
     against free disk space); the per-folder plan sizes are content bytes.
 
-    Failure posture: any write or verify problem deletes the partial zip
-    (the unlink is registered before the first write, so an interrupted run
-    leaves nothing behind) and returns exit 3.  A stamp-write failure after a
+    Failure posture: a duplicate in-zip name is refused BEFORE anything is
+    written (exit 3, data.status='name-collision') - extraction would
+    silently keep one copy, so the plan itself is the failure.  Any write or
+    verify problem deletes the partial zip (the unlink is registered before
+    the first write, so an interrupted run leaves nothing behind) and
+    returns exit 3.  A stamp-write failure after a
     verified zip is reported as a warning message but stays exit 0: the thing
     the human asked for - a verified backup - exists; only doctor's memory of
     it is degraded, and doctor over-reminding is the safe direction.
@@ -511,6 +539,40 @@ def run_backup(
 
     plan = _plan_backup(archive_root, fha_config, include_assets)
     entries = plan['entries']
+
+    collisions = _arcname_collisions(entries)
+    if collisions:
+        alias_roots = {alias: path for alias, path, _ext in plan['included_roots']}
+        causes = []
+        for top in sorted({arc.split('/', 1)[0] for arc in collisions}):
+            if top in alias_roots:
+                causes.append(
+                    f"your archive has its own folder named '{top}/' AND fha.yaml "
+                    f"maps a {top} root ({alias_roots[top]}, the `roots: {top}:` "
+                    f"line) - with --include-assets both would unpack to '{top}/'"
+                )
+            else:
+                causes.append(
+                    f"two different files would both unpack into '{top}/'"
+                )
+        example = sorted(collisions)[0]
+        return Result(
+            ok=False,
+            exit_code=EXIT_FAILURE,
+            data={'status': 'name-collision', 'zip_path': None, 'files': 0,
+                  'bytes': 0, 'assets_included': include_assets,
+                  'skipped_roots': plan['skipped_roots'],
+                  'folders': plan['folders'], 'excluded': plan['excluded']},
+        ).add('error', (
+            f'ERROR: this backup was NOT written: {len(collisions)} file '
+            f'name(s) would collide inside the zip (for example {example}), '
+            f'and unzipping a zip with duplicate names silently keeps only '
+            f'one copy - a backup tool never guesses which. '
+            f'Cause: {"; ".join(causes)}. '
+            f'Fix: rename that archive folder, or point the `roots:` line in '
+            f'fha.yaml somewhere else, then re-run `fha backup`.'
+        ))
+
     total_bytes = sum(size for _p, _arc, size in entries)
     zip_path = _zip_target(dest_dir, archive_root.name)
 
