@@ -57,6 +57,7 @@ from _lib import (
     edtf_bounds,
     extract_wikilinks,
     id_type_of,
+    is_merged_meta,
     is_template_file,
     is_valid_id,
     is_working_copy,
@@ -878,12 +879,21 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
             v = _variant_value(meta.get(_fld))
             if v:
                 extra_alias_names.append(v)
-        _insert_record_aliases(
-            conn, pid,
-            stems=tuple(str(a) for a in (meta.get('aliases') or [])),
-            names=(name,) if name and name != 'unknown' else (),
-            variants=tuple(all_variants) + tuple(extra_alias_names),
-        )
+        if is_merged_meta(meta):
+            # A merged tombstone (SPEC §9) registers ONLY its bare P-id - the
+            # same rule as _lib._record_alias_strings. Its name/variants/stems
+            # were folded into the survivor by the merge; registering them
+            # here too would clash every folded name out of the resolve map,
+            # breaking the very [[Name]] links the fold preserved. The bare
+            # id keeps resolving, and readers follow merged_into from there.
+            _insert_record_aliases(conn, pid)
+        else:
+            _insert_record_aliases(
+                conn, pid,
+                stems=tuple(str(a) for a in (meta.get('aliases') or [])),
+                names=(name,) if name and name != 'unknown' else (),
+                variants=tuple(all_variants) + tuple(extra_alias_names),
+            )
         for t in (meta.get('face_tags') or []):
             conn.execute('INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', (pid, str(t)))
         ext_ids = meta.get('external_ids') or {}

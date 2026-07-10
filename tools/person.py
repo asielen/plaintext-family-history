@@ -29,8 +29,9 @@ DESIGN RULES (why the code looks the way it does)
   survive. Reading and writing go through `read_text_exact`/`write_text_exact`
   so a CRLF-authored record churns only the edited line.
 - **Refuse rather than guess.** Before anything is written the rewritten
-  frontmatter is re-parsed (`_frontmatter_edit_problem`, the frontmatter twin
-  of `_lib.claims_edit_problem`): it must parse, `living` must equal the
+  frontmatter is re-parsed (`_frontmatter_edit_problem`, a thin wrapper over
+  the shared `_lib.frontmatter_edit_problem` - the frontmatter sibling of
+  `_lib.claims_edit_problem`): it must parse, `living` must equal the
   target, `id` must be unchanged, and no other field may appear, disappear, or
   change value. Any failure - including a `living:`-lookalike line the editor
   cannot own with certainty - is a plain refusal with nothing written.
@@ -48,10 +49,11 @@ DESIGN RULES (why the code looks the way it does)
 CODE MAP
 --------
   _normalize_living          - bool/str/None -> 'true'/'false'/'unknown'/other/None
-  _find_frontmatter_bounds   - the --- pair as line indexes (process.py pattern)
-  _key_line_indexes          - column-0 `key:` lines between the bounds
+  (fence location and the pre-write guard are the shared _lib helpers:
+   frontmatter_fence_span + frontmatter_edit_problem, also used by confirm merge)
+  _key_line_indexes          - column-0 `key:` lines between the fence span
   _replace_living_line       - swap only the value, keep any trailing comment
-  _frontmatter_edit_problem  - pre-write re-parse guard (refuse, never mangle)
+  _frontmatter_edit_problem  - the living-specific wrapper over the shared guard
   run_set_living             - validate, locate, edit; returns a _lib.Result
   _emit / _cmd_set_living / register / _standalone_main
 """
@@ -76,7 +78,10 @@ from _lib import (
     configure_utf8_stdout,
     find_person_record_path,
     fmt_id_display,
+    frontmatter_edit_problem,
+    frontmatter_fence_span,
     id_type_of,
+    is_merged_meta,
     is_valid_id,
     normalize_id,
     read_text_exact,
@@ -111,22 +116,6 @@ def _normalize_living(value: object) -> str | None:
     if isinstance(value, bool):
         return 'true' if value else 'false'
     return str(value).strip().lower()
-
-
-def _find_frontmatter_bounds(lines: list[str]) -> tuple[int, int] | None:
-    """Return (open, close) line indexes of the frontmatter `---` pair, or None.
-
-    The record text is split on '\\n', so a CRLF-authored file leaves a '\\r'
-    on every line - the match tolerates it. The opening fence must be line 0
-    (the same anchor `_lib.FRONT_RE` uses), so prose that merely contains a
-    `---` rule can never be mistaken for frontmatter.
-    """
-    if not lines or not re.fullmatch(r'---\s*', lines[0]):
-        return None
-    for i in range(1, len(lines)):
-        if re.fullmatch(r'---\s*', lines[i]):
-            return 0, i
-    return None
 
 
 def _key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
@@ -166,43 +155,28 @@ def _frontmatter_edit_problem(
 ) -> str | None:
     """Vet the rewritten record's frontmatter BEFORE it is written.
 
-    The frontmatter twin of `_lib.claims_edit_problem`: the edit is text
-    surgery (to preserve comments and key order), so the price is that a bad
-    rewrite could leave YAML that no longer parses - which would hide the
-    person's identity fields from every tool until a human repairs the file.
-    Re-parse the rewritten frontmatter and require that (a) it parses as a
-    mapping, (b) `living` equals the target, (c) `id` is unchanged, and
-    (d) every other top-level field is present and value-identical. The
-    value-identity check is deliberately stronger than a key-set compare: it
-    catches a `living:` lookalike inside a multi-line quoted scalar, where
-    replacing the line silently rewrites ANOTHER field's value.
+    The shared guard `_lib.frontmatter_edit_problem` (the frontmatter sibling
+    of `_lib.claims_edit_problem`, also used by `fha confirm merge`) carries
+    the general contract: the rewrite must parse as a mapping, `id` must be
+    unchanged, and no field outside the declared intent - here exactly
+    `{'living'}` - may appear, disappear, or change value. The value-identity
+    check is deliberately stronger than a key-set compare: it catches a
+    `living:` lookalike inside a multi-line quoted scalar, where replacing
+    the line silently rewrites ANOTHER field's value. This wrapper adds the
+    one field-specific check the shared guard cannot know: `living` must
+    equal the target after normalization.
 
     Returns None when the rewrite is sound, else a short plain-language
     description of what would break; the caller refuses and writes nothing.
     """
-    fm = FRONT_RE.match(new_text)
-    if fm is None:
-        return 'the frontmatter block (its --- fences) would be missing'
-    try:
-        meta = yaml.safe_load(fm.group(1))
-    except yaml.YAMLError:
-        return 'the frontmatter would no longer read as YAML'
-    if not isinstance(meta, dict):
-        return 'the frontmatter would no longer read as a set of fields'
+    problem = frontmatter_edit_problem(
+        new_text, before_meta=before_meta, changed_keys={'living'})
+    if problem is not None:
+        return problem
+    meta = yaml.safe_load(FRONT_RE.match(new_text).group(1))
     if _normalize_living(meta.get('living')) != expect_living:
         return (f'the living flag would read {meta.get("living")!r} '
                 f'instead of {expect_living!r}')
-    before_id = normalize_id(str(before_meta.get('id') or ''))
-    after_id = normalize_id(str(meta.get('id') or ''))
-    if before_id != after_id:
-        return 'the id: field would change'
-    before_keys = set(before_meta) - {'living'}
-    after_keys = set(meta) - {'living'}
-    if before_keys != after_keys:
-        return 'another frontmatter field would appear or disappear'
-    for key in before_keys:
-        if meta.get(key) != before_meta.get(key):
-            return f'the {key!r} field would change value'
     return None
 
 
@@ -294,8 +268,9 @@ def run_set_living(
 
     # A merged tombstone is never edited: readers resolve THROUGH merged_into
     # (SPEC §9), so writing the flag here would fork the truth between the
-    # tombstone and the surviving record.
-    if str(before_meta.get('status') or '') == 'merged':
+    # tombstone and the surviving record. is_merged_meta normalizes, so a
+    # hand-edited `status: Merged` cannot slip past the guard.
+    if is_merged_meta(before_meta):
         result.exit_code = EXIT_FAILURE
         result.ok = False
         result.data['status'] = 'merged'
@@ -323,7 +298,7 @@ def run_set_living(
         return result
 
     lines = text.split('\n')
-    bounds = _find_frontmatter_bounds(lines)
+    bounds = frontmatter_fence_span(lines)
     if bounds is None:  # FRONT_RE matched, so this cannot normally happen
         return _refuse(
             'refused',

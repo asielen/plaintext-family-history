@@ -264,6 +264,32 @@ class SetLivingRefusalTests(unittest.TestCase):
         self.assertIn('fha person set-living P-cccccccccc true', result.messages[0].text)
         self.assertEqual(path.read_bytes(), before)
 
+    def test_hand_edited_merged_status_casing_still_refused(self) -> None:
+        # A hand-edited tombstone can carry `status: Merged` (case) or a quoted
+        # value with stray whitespace. The guard compares the NORMALIZED status
+        # (_lib.is_merged_meta): a casing bypass would write the flag on the
+        # tombstone and fork the truth from the surviving record.
+        for status_line in ('status: Merged', 'status: " merged "'):
+            tomb = (
+                '---\n'
+                'id: P-dddddddddd\n'
+                'name: Thomas Hartley\n'
+                'living: false\n'
+                f'{status_line}\n'
+                'merged_into: P-cccccccccc\n'
+                '---\n'
+            )
+            path = self.root / 'people' / \
+                'MERGED-INTO-P-cccccccccc__hartley__thomas_P-dddddddddd.md'
+            path.write_text(tomb, encoding='utf-8')
+            before = path.read_bytes()
+            result = person.run_set_living(self.root, 'P-dddddddddd', 'true')
+            self.assertEqual(result.exit_code, EXIT_FAILURE, status_line)
+            self.assertEqual(result.data['status'], 'merged', status_line)
+            self.assertIn('P-cccccccccc', result.messages[0].text)
+            self.assertEqual(path.read_bytes(), before, status_line)
+            path.unlink()
+
     def test_broken_frontmatter_refused_untouched(self) -> None:
         broken = f'---\nid: {PID}\nname: [unterminated\nliving: true\n---\n'
         self.stub.write_text(broken, encoding='utf-8')
