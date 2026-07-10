@@ -101,8 +101,10 @@ CODE MAP
     apply_tag_person          - write the P-id keyword + update photo_keywords/photo_people/photo_fts
 
   Set-summary (fha photoindex set-summary - M3.5)
+    _trailing_ai_block_start  - locate a mixed comment's clearly-delimited trailing AI block
     _compose_user_comment     - pure compose rule: AI text replaces AI text; human text
-                                 is preserved verbatim and the AI block appended below
+                                 is preserved verbatim (a mixed comment's trailing AI
+                                 block is replaced, its human prefix kept)
     _run_exiftool_read_comments - per-file `exiftool -j -UserComment` read (test seam)
     _run_exiftool_write_comment - per-file `exiftool -UserComment=` write (test seam;
                                  the second original-file write path after _run_exiftool_write)
@@ -1771,6 +1773,41 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
 
 # ── Set-summary (fha photoindex set-summary - BUILD.md M3.5) ─────────────
 
+# A blank line (tolerating \r\n and stray spaces) followed by the AI marker -
+# the paragraph boundary _compose_user_comment itself writes between a human
+# caption and the AI block. Only this shape delimits a replaceable AI block
+# inside a mixed comment; anything looser is treated as human text.
+_TRAILING_AI_BLOCK_RE = re.compile(r'(?:\r?\n)[ \t]*(?:\r?\n)\s*(?:AI|Model):', re.I)
+_PARAGRAPH_BOUNDARY_RE = re.compile(r'(?:\r?\n)[ \t]*(?:\r?\n)')
+
+
+def _trailing_ai_block_start(existing: str) -> int | None:
+    """
+    Offset where a mixed comment's trailing AI block begins, or None.
+
+    A mixed comment is what `set-summary` itself produces when it appends
+    below a human caption: `<human text>\\n\\nAI: <summary>`. The trailing
+    AI block only counts when it is clearly delimited - a blank line plus an
+    `AI:`/`Model:` marker, and no further paragraph after it. A paragraph
+    following the last marker could be a human note someone typed under the
+    old summary, so in that case nothing is treated as replaceable and the
+    whole comment reads as human (ambiguity preserves; SPEC §20 rule 5).
+
+    Returns the offset of the blank line that opens the block, so
+    `existing[:offset]` is byte-for-byte the human text as it stood before
+    the tool first appended to it.
+    """
+    matches = list(_TRAILING_AI_BLOCK_RE.finditer(existing))
+    if not matches:
+        return None
+    last = matches[-1]
+    tail = existing[last.end():]
+    boundary = _PARAGRAPH_BOUNDARY_RE.search(tail)
+    if boundary and tail[boundary.end():].strip():
+        return None
+    return last.start()
+
+
 def _compose_user_comment(existing: str | None, new_text: str, append: bool) -> tuple[str, bool]:
     """
     Compose the UserComment text `fha photoindex set-summary` will write.
@@ -1786,10 +1823,22 @@ def _compose_user_comment(existing: str | None, new_text: str, append: bool) -> 
       - An existing comment that is itself AI-marked is replaced - captions
         are supposed to get smarter over time - unless `append` keeps the
         old block and adds the new one below it.
-      - An existing comment with no AI marker is human text: it is preserved
+      - A mixed comment - human text ending in a blank-line-delimited
+        `AI:`/`Model:` paragraph, the exact shape this function produces
+        when it appends below a human caption - keeps the human prefix
+        byte-for-byte and replaces only that trailing AI block (`append`
+        keeps the old block and adds the new one below instead). Without
+        this, every rerun on a captioned photo would stack one more AI
+        block forever: the replace-AI promise above would be permanently
+        unreachable once any human caption existed.
+      - Any other existing comment is human text: it is preserved
         byte-for-byte and the AI block is appended below, whether or not
         `append` was requested. There is deliberately no flag that can
-        replace human text.
+        replace human text. This covers the ambiguous shapes too - an
+        `AI:` mid-paragraph, a single (not blank) line break before the
+        marker, or paragraphs after the last marker (they may be human
+        notes added under an old summary): anything not clearly delimited
+        as the trailing AI block is treated as human.
     """
     new_block = 'AI: ' + new_text
     if existing is None or not existing.strip():
@@ -1798,6 +1847,9 @@ def _compose_user_comment(existing: str | None, new_text: str, append: bool) -> 
         if append:
             return existing + '\n\n' + new_block, False
         return new_block, False
+    trailing = _trailing_ai_block_start(existing)
+    if trailing is not None and not append:
+        return existing[:trailing] + '\n\n' + new_block, True
     return existing + '\n\n' + new_block, True
 
 
@@ -1829,7 +1881,13 @@ def _run_exiftool_read_comments(paths: list[Path]) -> dict[Path, tuple[str | Non
             results[p] = (None, 'exiftool returned unreadable output for this file')
             continue
         comment = rows[0].get('UserComment') if rows else None
-        results[p] = (comment if isinstance(comment, str) else None, None)
+        # exiftool -j emits a numeric-looking comment (a caption like '1912')
+        # as a JSON number, not a string. Discarding non-str values would
+        # read that human caption as 'no comment' - the preview would show
+        # 'now: (none)' and the write would destroy it. Coerce any non-null
+        # value to text; only a genuine null/missing UserComment means the
+        # file has no comment.
+        results[p] = (None if comment is None else str(comment), None)
     return results
 
 
@@ -2026,7 +2084,10 @@ def run_set_summary(
     `candidates` are catalog alias paths (from run_set_summary_plan). In
     working-copy mode this refuses up front - warning-level Result, ok=True,
     exit clean, data.status='working-copy' (TOOLING §13d): the photo files
-    live on the main machine.
+    live on the main machine. Empty/whitespace `text` raises ValueError,
+    the same guard run_set_summary_plan applies - the engine must refuse it
+    too, or a headless caller skipping the plan would compose a bare 'AI: '
+    block over an existing summary.
 
     Returns Result data {'written': [path...], 'failed': [(path, error)...],
     'preserved_human': [path...]} with `changed` = the files written; exit
@@ -2053,6 +2114,15 @@ def run_set_summary(
             'Run this command there.',
         )
     text = (text or '').strip()
+    if not text:
+        # Same guard as run_set_summary_plan: the CLI always goes through the
+        # plan, but a headless caller can reach this engine directly, and an
+        # empty text would compose a bare 'AI: ' block over an existing AI
+        # summary in the file, the cache, and photo_fts.
+        raise ValueError(
+            '--text is empty - pass the summary to write, '
+            'e.g. --text "Margaret and her father at the farm, about 1912"'
+        )
     seen: set[str] = set()
     candidates = [c for c in candidates if not (c in seen or seen.add(c))]
     if not candidates:
