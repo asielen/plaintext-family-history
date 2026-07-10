@@ -100,6 +100,7 @@ places/places.yaml      place registry
 notes/                  general research; notes/questions.md = question log
 .cache/                 disposable tool caches (index.sqlite, photos.sqlite) - never truth
 generated/              built deliverables, regenerable (generated/site = fha site output)
+.claude/skills/{name}/   workflow playbooks - portable SKILL.md procedures (see Playbooks)
 ```
 
 ## Format quick reference
@@ -174,6 +175,19 @@ Execution rules (all tools): run from the archive root; `--dry-run` (or the tool
 
 Query the index, not the tree: person/claim/photo questions are SQL or `fha` calls.
 Never bulk-ingest `photos/` or `documents/` into context.
+
+### Playbooks (workflow skills)
+
+Nine workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
+procedures, `fha` invocations and judgment only, no harness APIs (the standard they follow is
+`.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the
+human's own words ("process the inbox", "review the census claims", "are these the same
+person?", "what should I work on?").
+If your harness loads skills natively, prefer the matching skill over improvising.
+If it does not - any harness reading this file without a skill loader - treat them as
+documentation: when a request matches a playbook's trigger, **read that SKILL.md and follow
+it** before doing the task freehand. The playbooks restate the contract above; they never
+relax it, and they bind the same in every harness.
 
 ## Common workflows
 
