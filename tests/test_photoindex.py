@@ -3408,6 +3408,40 @@ class SetSummaryTests(unittest.TestCase):
             self.assertEqual(stored, f'{human}\n\nAI: v2')
             self.assertEqual(fts, f'{human}\n\nAI: v2')
 
+    def test_numeric_user_comment_is_read_as_text_not_discarded(self) -> None:
+        """exiftool -j emits a numeric-looking caption ('1912') as a JSON
+        number; it must read back as the string '1912', not as no-comment -
+        the (None, None) misread previewed 'now: (none)' and let the write
+        destroy a human caption."""
+        p = Path('x.jpg')
+
+        def fake_run_factory(stdout: str):
+            class _FakeProc:
+                returncode = 0
+                stderr = ''
+
+            proc = _FakeProc()
+            proc.stdout = stdout
+            return lambda cmd, **kwargs: proc
+
+        orig_subprocess_run = photoindex.subprocess.run
+        try:
+            photoindex.subprocess.run = fake_run_factory('[{"UserComment": 1912}]')
+            reads = photoindex._run_exiftool_read_comments([p])
+            self.assertEqual(reads[p], ('1912', None))
+
+            # A genuinely absent UserComment still reads as no-comment.
+            photoindex.subprocess.run = fake_run_factory('[{"SourceFile": "x.jpg"}]')
+            reads = photoindex._run_exiftool_read_comments([p])
+            self.assertEqual(reads[p], (None, None))
+        finally:
+            photoindex.subprocess.run = orig_subprocess_run
+
+        # And the compose rule treats the coerced text as a human caption.
+        composed, preserved = photoindex._compose_user_comment('1912', 'new', False)
+        self.assertEqual(composed, '1912\n\nAI: new')
+        self.assertTrue(preserved)
+
     def test_decline_prompt_writes_nothing(self) -> None:
         """'n' and EOF (closed stdin) both decline; nothing is written."""
         for answer in ('n', EOFError):

@@ -1881,7 +1881,13 @@ def _run_exiftool_read_comments(paths: list[Path]) -> dict[Path, tuple[str | Non
             results[p] = (None, 'exiftool returned unreadable output for this file')
             continue
         comment = rows[0].get('UserComment') if rows else None
-        results[p] = (comment if isinstance(comment, str) else None, None)
+        # exiftool -j emits a numeric-looking comment (a caption like '1912')
+        # as a JSON number, not a string. Discarding non-str values would
+        # read that human caption as 'no comment' - the preview would show
+        # 'now: (none)' and the write would destroy it. Coerce any non-null
+        # value to text; only a genuine null/missing UserComment means the
+        # file has no comment.
+        results[p] = (None if comment is None else str(comment), None)
     return results
 
 
