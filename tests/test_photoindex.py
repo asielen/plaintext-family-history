@@ -969,8 +969,12 @@ class PhotoindexTests(unittest.TestCase):
                 conn.close()
 
     def test_photoindex_subcommands_are_registered_in_the_cli(self) -> None:
-        """`fha photoindex <subcommand> --help` should resolve for every M3.1-M3.4 subcommand."""
-        for name in ('find', 'triage', 'report', 'reconcile', 'tag-person'):
+        """`fha photoindex <subcommand> --help` should resolve for every M3.1-M3.5 subcommand.
+
+        set-summary is additionally exercised through the standalone entry point
+        (`python tools/photoindex.py`) - both parsers share _add_photoindex_args,
+        and this pins that a new subcommand reached both front doors."""
+        for name in ('find', 'triage', 'report', 'reconcile', 'tag-person', 'set-summary'):
             with self.subTest(name=name):
                 proc = subprocess.run(
                     [sys.executable, 'tools/fha.py', 'photoindex', name, '--help'],
@@ -981,6 +985,15 @@ class PhotoindexTests(unittest.TestCase):
                     encoding='utf-8',
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
+        proc = subprocess.run(
+            [sys.executable, 'tools/photoindex.py', 'set-summary', '--help'],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def _scan_with_find_fixture(self, archive: Path) -> None:
         """Scan with a fixed exiftool payload exercising person/keyword/edtf/text filters."""
@@ -2929,6 +2942,442 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertEqual(rows[0][1], 'pid-keyword')
             finally:
                 conn.close()
+
+
+class SetSummaryTests(unittest.TestCase):
+    """`fha photoindex set-summary` (BUILD.md M3.5, plan 07).
+
+    The exiftool seams (`_run_exiftool`, `_run_exiftool_read_comments`,
+    `_run_exiftool_write_comment`) are monkeypatched by assignment like the
+    rest of this file; every test runs against a temp copy of the photo
+    fixture, never the real archive."""
+
+    TEXT = 'Margaret Hartley and her father outside the Harlan farm, about 1912'
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+        self._orig_read = photoindex._run_exiftool_read_comments
+        self._orig_write = photoindex._run_exiftool_write_comment
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+        photoindex._run_exiftool_read_comments = self._orig_read
+        photoindex._run_exiftool_write_comment = self._orig_write
+
+    def _scan(self, archive: Path, user_comments: dict[str, str] | None = None) -> None:
+        """Scan the fixture with optional canned UserComment values per filename."""
+        comments = user_comments or {}
+
+        def fake_exiftool(paths: list[Path]) -> list[dict]:
+            rows = []
+            for p in paths:
+                row: dict = {'SourceFile': str(p)}
+                if p.name in comments:
+                    row['UserComment'] = comments[p.name]
+                rows.append(row)
+            return rows
+
+        photoindex._run_exiftool = fake_exiftool
+        photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+    def _fake_reads(self, comments_by_name: dict[str, str]):
+        """A read-seam fake serving canned current comments by filename."""
+        def fake(paths: list[Path]) -> dict:
+            return {p: (comments_by_name.get(p.name), None) for p in paths}
+        return fake
+
+    # ── compose rule (pure function) ──────────────────────────────────────
+
+    def test_compose_replaces_existing_ai_comment(self) -> None:
+        composed, preserved = photoindex._compose_user_comment('AI: old summary', 'new text', False)
+        self.assertEqual(composed, 'AI: new text')
+        self.assertFalse(preserved)
+        # The Model: prefix is the same AI convention (_AI_COMMENT_RE).
+        composed, preserved = photoindex._compose_user_comment('Model: old', 'new text', False)
+        self.assertEqual(composed, 'AI: new text')
+        self.assertFalse(preserved)
+        # No existing comment at all -> just the AI block.
+        composed, preserved = photoindex._compose_user_comment(None, 'new text', False)
+        self.assertEqual(composed, 'AI: new text')
+        self.assertFalse(preserved)
+
+    def test_compose_append_keeps_prior_ai_block(self) -> None:
+        composed, preserved = photoindex._compose_user_comment('AI: old summary', 'new text', True)
+        self.assertEqual(composed, 'AI: old summary\n\nAI: new text')
+        self.assertFalse(preserved)
+
+    def test_compose_preserves_human_text_verbatim_and_appends(self) -> None:
+        human = 'Written on the back:\n  "Margaret, June 1912" '
+        for append in (False, True):
+            with self.subTest(append=append):
+                composed, preserved = photoindex._compose_user_comment(human, 'new text', append)
+                # Byte-for-byte: the human text survives untouched, AI block below.
+                self.assertEqual(composed, human + '\n\nAI: new text')
+                self.assertTrue(preserved)
+
+    # ── engine: plan + apply ──────────────────────────────────────────────
+
+    def test_set_summary_plan_requires_exactly_one_target_and_real_text(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive)
+            cfg = {'roots': {'photos': 'photos'}}
+            with self.assertRaises(ValueError):   # neither target
+                photoindex.run_set_summary_plan(archive, cfg, self.TEXT)
+            with self.assertRaises(ValueError):   # both targets
+                photoindex.run_set_summary_plan(
+                    archive, cfg, self.TEXT,
+                    path='photos/wedding_1902.jpg', group='SOURCE:s-123456789a',
+                )
+            with self.assertRaises(ValueError):   # empty text
+                photoindex.run_set_summary_plan(
+                    archive, cfg, '   ', path='photos/wedding_1902.jpg',
+                )
+            with self.assertRaises(ValueError):   # unknown group
+                photoindex.run_set_summary_plan(
+                    archive, cfg, self.TEXT, group='SOURCE:s-zzzzzzzzzz',
+                )
+
+    def test_group_addressing_writes_every_variant(self) -> None:
+        """--group targets every member of a variation group; a path targets one file."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive)
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool_read_comments = self._fake_reads({})
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                group_id = conn.execute(
+                    "SELECT group_id FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+            plan = photoindex.run_set_summary_plan(archive, cfg, self.TEXT, group=group_id)
+            self.assertEqual(
+                [row['path'] for row in plan['plan']],
+                ['photos/portrait_1880-back.jpg', 'photos/portrait_1880.jpg'],
+            )
+
+            written_files: list[Path] = []
+
+            def fake_write(items: list) -> dict:
+                written_files.extend(p for p, _text in items)
+                return {p: None for p, _text in items}
+
+            photoindex._run_exiftool_write_comment = fake_write
+            result = photoindex.run_set_summary(
+                archive, cfg, self.TEXT, [row['path'] for row in plan['plan']],
+            )
+            self.assertEqual(len(written_files), 2)
+            self.assertEqual(
+                result['written'],
+                ['photos/portrait_1880-back.jpg', 'photos/portrait_1880.jpg'],
+            )
+
+            # Path addressing plans exactly one file.
+            plan_one = photoindex.run_set_summary_plan(
+                archive, cfg, self.TEXT, path='photos/wedding_1902.jpg',
+            )
+            self.assertEqual([row['path'] for row in plan_one['plan']],
+                             ['photos/wedding_1902.jpg'])
+
+    def test_group_lookup_is_forgiving_about_source_id_case(self) -> None:
+        """A human types the S-id as the source record shows it; the stored
+        group key is the normalized lowercase form - both must resolve."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = []
+                for p in paths:
+                    row: dict = {'SourceFile': str(p)}
+                    if p.name == 'wedding_1902.jpg':
+                        row['Keywords'] = ['SOURCE: S-123456789a']
+                    rows.append(row)
+                return rows
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool_read_comments = self._fake_reads({})
+
+            for spelling in ('SOURCE:S-123456789a', 'S-123456789A', 'source:s-123456789a'):
+                with self.subTest(spelling=spelling):
+                    plan = photoindex.run_set_summary_plan(
+                        archive, cfg, self.TEXT, group=spelling,
+                    )
+                    self.assertEqual([row['path'] for row in plan['plan']],
+                                     ['photos/wedding_1902.jpg'])
+
+    def test_set_summary_never_touches_caption_abstract(self) -> None:
+        """The real exiftool command lines must name only UserComment - the
+        human-caption fields (Caption-Abstract / XMP-dc:Description) are
+        contract-protected (SPEC §20 rule 5)."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive)
+            cfg = {'roots': {'photos': 'photos'}}
+
+            commands: list[list[str]] = []
+
+            class _FakeProc:
+                returncode = 0
+                stderr = ''
+                stdout = '[{"UserComment": "AI: old"}]'
+
+            orig_subprocess_run = photoindex.subprocess.run
+
+            def fake_run(cmd, **kwargs):
+                commands.append(list(cmd))
+                return _FakeProc()
+
+            photoindex.subprocess.run = fake_run
+            try:
+                result = photoindex.run_set_summary(
+                    archive, cfg, self.TEXT, ['photos/wedding_1902.jpg'],
+                )
+            finally:
+                photoindex.subprocess.run = orig_subprocess_run
+
+            self.assertEqual(result['written'], ['photos/wedding_1902.jpg'])
+            self.assertTrue(commands)
+            write_cmds = [c for c in commands if any(a.startswith('-UserComment=') for a in c)]
+            self.assertTrue(write_cmds, 'no -UserComment= write call was issued')
+            for cmd in commands:
+                joined = ' '.join(cmd)
+                self.assertNotIn('Caption-Abstract', joined)
+                self.assertNotIn('XMP-dc:Description', joined)
+                self.assertNotIn('Description=', joined)
+
+    def test_cache_and_fts_mirror_updated(self) -> None:
+        """After a live write, photos.user_comment and a photo_fts match both
+        see the new text with no rescan (the check-4 symmetry trap)."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive)
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool_read_comments = self._fake_reads({})
+            photoindex._run_exiftool_write_comment = (
+                lambda items: {p: None for p, _t in items}
+            )
+
+            result = photoindex.run_set_summary(
+                archive, cfg, self.TEXT, ['photos/wedding_1902.jpg'],
+            )
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            self.assertEqual(result.changed, ['photos/wedding_1902.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                stored = conn.execute(
+                    "SELECT user_comment FROM photos WHERE path='photos/wedding_1902.jpg'"
+                ).fetchone()[0]
+                self.assertEqual(stored, f'AI: {self.TEXT}')
+                fts_hit = conn.execute(
+                    "SELECT path FROM photo_fts WHERE photo_fts MATCH 'Harlan'"
+                ).fetchall()
+                self.assertEqual([row[0] for row in fts_hit], ['photos/wedding_1902.jpg'])
+            finally:
+                conn.close()
+
+            # The full read path agrees: find --text sees it without a rescan.
+            found = photoindex.run_find(archive, cfg, text='Harlan')
+            self.assertEqual([r['path'] for r in found['rows']], ['photos/wedding_1902.jpg'])
+
+    def test_stale_index_blocks_set_summary(self) -> None:
+        """A stale catalog can address the wrong file for a mutating write -
+        the CLI must hard-block (EXIT_FAILURE), not warn-and-continue, and
+        must not read or write anything."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            person_file = people_dir / 'grandma_P-de957bcda1.md'
+            person_file.write_text('---\nid: P-de957bcda1\n---\n', encoding='utf-8')
+            self._scan(archive)
+            db_mtime = (archive / '.cache' / 'photos.sqlite').stat().st_mtime
+            future = db_mtime + 5
+            os.utime(person_file, (future, future))
+
+            def _fail(*a, **k):
+                raise AssertionError('no exiftool call may happen on a stale index')
+
+            photoindex._run_exiftool_read_comments = _fail
+            photoindex._run_exiftool_write_comment = _fail
+
+            args = type('Args', (), {
+                'root': str(archive), 'path': 'photos/wedding_1902.jpg',
+                'group': None, 'text': self.TEXT, 'append': False, 'dry_run': True,
+            })()
+            code = photoindex._cmd_set_summary(args)
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_dry_run_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive, {'wedding_1902.jpg': 'AI: old summary'})
+            db_path = archive / '.cache' / 'photos.sqlite'
+            before = db_path.read_bytes()
+
+            photoindex._run_exiftool_read_comments = self._fake_reads(
+                {'wedding_1902.jpg': 'AI: old summary'})
+            photoindex._run_exiftool_write_comment = lambda items: (
+                _ for _ in ()).throw(AssertionError('dry-run must not write'))
+
+            args = type('Args', (), {
+                'root': str(archive), 'path': 'photos/wedding_1902.jpg',
+                'group': None, 'text': self.TEXT, 'append': False, 'dry_run': True,
+            })()
+            code = photoindex._cmd_set_summary(args)
+
+            self.assertEqual(code, photoindex.EXIT_CLEAN)
+            self.assertEqual(db_path.read_bytes(), before)
+
+    def test_partial_failure_reports_both_lists_and_exits_3(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive, {'portrait_1880-back.jpg': 'AI: back caption'})
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool_read_comments = self._fake_reads(
+                {'portrait_1880-back.jpg': 'AI: back caption'})
+
+            def fake_write(items: list) -> dict:
+                return {
+                    p: ('locked file' if p.name == 'portrait_1880-back.jpg' else None)
+                    for p, _t in items
+                }
+
+            photoindex._run_exiftool_write_comment = fake_write
+            result = photoindex.run_set_summary(
+                archive, cfg, self.TEXT,
+                ['photos/portrait_1880.jpg', 'photos/portrait_1880-back.jpg'],
+            )
+
+            self.assertEqual(result['written'], ['photos/portrait_1880.jpg'])
+            self.assertEqual(result['failed'],
+                             [('photos/portrait_1880-back.jpg', 'locked file')])
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.exit_code, EXIT_FAILURE)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                front = conn.execute(
+                    "SELECT user_comment FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()[0]
+                back = conn.execute(
+                    "SELECT user_comment FROM photos WHERE path='photos/portrait_1880-back.jpg'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(front, f'AI: {self.TEXT}')   # written path mirrored
+            self.assertEqual(back, 'AI: back caption')    # failed path untouched
+
+    def test_non_ascii_summary_round_trip(self) -> None:
+        """EXIF UserComment has UTF-8/Latin-1 encoding quirks - a summary with
+        ę/ü/ł must survive compose -> write args -> cache mirror unchanged."""
+        text = 'Zdjęcie Małgorzaty w Suwałkach, ürodziny'
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive)
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool_read_comments = self._fake_reads({})
+
+            written_args: list[str] = []
+
+            def fake_write(items: list) -> dict:
+                written_args.extend(t for _p, t in items)
+                return {p: None for p, _t in items}
+
+            photoindex._run_exiftool_write_comment = fake_write
+            result = photoindex.run_set_summary(
+                archive, cfg, text, ['photos/wedding_1902.jpg'],
+            )
+            self.assertEqual(result['written'], ['photos/wedding_1902.jpg'])
+            self.assertEqual(written_args, [f'AI: {text}'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                stored = conn.execute(
+                    "SELECT user_comment FROM photos WHERE path='photos/wedding_1902.jpg'"
+                ).fetchone()[0]
+                self.assertEqual(stored, f'AI: {text}')
+                fts_hit = conn.execute(
+                    "SELECT path FROM photo_fts WHERE photo_fts MATCH 'Suwałkach'"
+                ).fetchall()
+                self.assertEqual([row[0] for row in fts_hit], ['photos/wedding_1902.jpg'])
+            finally:
+                conn.close()
+
+    def test_decline_prompt_writes_nothing(self) -> None:
+        """'n' and EOF (closed stdin) both decline; nothing is written."""
+        for answer in ('n', EOFError):
+            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as d:
+                archive = _copy_fixture(Path(d))
+                self._scan(archive)
+                db_path = archive / '.cache' / 'photos.sqlite'
+                before = db_path.read_bytes()
+
+                photoindex._run_exiftool_read_comments = self._fake_reads({})
+                photoindex._run_exiftool_write_comment = lambda items: (
+                    _ for _ in ()).throw(AssertionError('declined prompt must not write'))
+
+                if answer is EOFError:
+                    def fake_input(prompt=''):
+                        raise EOFError
+                else:
+                    def fake_input(prompt=''):
+                        return answer
+
+                args = type('Args', (), {
+                    'root': str(archive), 'path': 'photos/wedding_1902.jpg',
+                    'group': None, 'text': self.TEXT, 'append': False, 'dry_run': False,
+                })()
+                orig_input = builtins.input
+                builtins.input = fake_input
+                try:
+                    code = photoindex._cmd_set_summary(args)
+                finally:
+                    builtins.input = orig_input
+
+                self.assertEqual(code, photoindex.EXIT_CLEAN)
+                self.assertEqual(db_path.read_bytes(), before)
+
+    def test_cmd_set_summary_confirms_and_writes(self) -> None:
+        """The full CLI arm: preview -> y -> write -> cache mirrored, exit 0."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive, {'wedding_1902.jpg': 'Grandma wrote: June wedding.'})
+
+            photoindex._run_exiftool_read_comments = self._fake_reads(
+                {'wedding_1902.jpg': 'Grandma wrote: June wedding.'})
+            photoindex._run_exiftool_write_comment = (
+                lambda items: {p: None for p, _t in items}
+            )
+
+            args = type('Args', (), {
+                'root': str(archive), 'path': 'photos/wedding_1902.jpg',
+                'group': None, 'text': self.TEXT, 'append': False, 'dry_run': False,
+            })()
+            orig_input = builtins.input
+            builtins.input = lambda prompt='': 'y'
+            try:
+                code = photoindex._cmd_set_summary(args)
+            finally:
+                builtins.input = orig_input
+
+            self.assertEqual(code, photoindex.EXIT_CLEAN)
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                stored = conn.execute(
+                    "SELECT user_comment FROM photos WHERE path='photos/wedding_1902.jpg'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            # The human text survives verbatim with the AI block below it.
+            self.assertEqual(stored, f'Grandma wrote: June wedding.\n\nAI: {self.TEXT}')
 
 
 if __name__ == '__main__':
