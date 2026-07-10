@@ -2084,7 +2084,10 @@ def run_set_summary(
     `candidates` are catalog alias paths (from run_set_summary_plan). In
     working-copy mode this refuses up front - warning-level Result, ok=True,
     exit clean, data.status='working-copy' (TOOLING §13d): the photo files
-    live on the main machine.
+    live on the main machine. Empty/whitespace `text` raises ValueError,
+    the same guard run_set_summary_plan applies - the engine must refuse it
+    too, or a headless caller skipping the plan would compose a bare 'AI: '
+    block over an existing summary.
 
     Returns Result data {'written': [path...], 'failed': [(path, error)...],
     'preserved_human': [path...]} with `changed` = the files written; exit
@@ -2111,6 +2114,15 @@ def run_set_summary(
             'Run this command there.',
         )
     text = (text or '').strip()
+    if not text:
+        # Same guard as run_set_summary_plan: the CLI always goes through the
+        # plan, but a headless caller can reach this engine directly, and an
+        # empty text would compose a bare 'AI: ' block over an existing AI
+        # summary in the file, the cache, and photo_fts.
+        raise ValueError(
+            '--text is empty - pass the summary to write, '
+            'e.g. --text "Margaret and her father at the farm, about 1912"'
+        )
     seen: set[str] = set()
     candidates = [c for c in candidates if not (c in seen or seen.add(c))]
     if not candidates:

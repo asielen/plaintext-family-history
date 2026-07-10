@@ -3442,6 +3442,25 @@ class SetSummaryTests(unittest.TestCase):
         self.assertEqual(composed, '1912\n\nAI: new')
         self.assertTrue(preserved)
 
+    def test_run_set_summary_engine_refuses_empty_text(self) -> None:
+        """The engine must refuse empty/whitespace text like the plan does -
+        a headless caller skipping the plan would otherwise compose a bare
+        'AI: ' block over an existing summary in file, cache, and FTS."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            def _fail(*a, **k):
+                raise AssertionError('empty text must be refused before any exiftool call')
+
+            photoindex._run_exiftool_read_comments = _fail
+            photoindex._run_exiftool_write_comment = _fail
+            for empty in ('', '   ', None):
+                with self.subTest(text=empty):
+                    with self.assertRaises(ValueError):
+                        photoindex.run_set_summary(
+                            archive, cfg, empty, ['photos/wedding_1902.jpg'])
+
     def test_decline_prompt_writes_nothing(self) -> None:
         """'n' and EOF (closed stdin) both decline; nothing is written."""
         for answer in ('n', EOFError):
