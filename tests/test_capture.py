@@ -156,6 +156,39 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertFalse(list((self.archive / 'inbox').glob('*.notes.md')))
 
+    def _mode_conflict_rc(self, **flags) -> tuple[int, str]:
+        args = SimpleNamespace(root=str(self.archive), **flags)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = capture._run_capture(args)
+        return rc, err.getvalue()
+
+    def test_ingest_with_page_flag_refuses_and_stages_nothing(self) -> None:
+        rc, err = self._mode_conflict_rc(ingest=True, url='https://x.test/p')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--url', err)
+        self.assertIn('--ingest', err)
+        self.assertIn('two separate commands', err)
+        self.assertFalse(list((self.archive / 'inbox').glob('*.notes.md')))
+
+    def test_host_with_page_flag_refuses(self) -> None:
+        rc, err = self._mode_conflict_rc(host=True, title='Stray Title')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--title', err)
+        self.assertIn('--host', err)
+
+    def test_install_host_option_on_ingest_refuses(self) -> None:
+        rc, err = self._mode_conflict_rc(ingest=True, extension_id='abc123')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--extension-id', err)
+        self.assertIn('--ingest', err)
+
+    def test_two_mode_flags_refuse(self) -> None:
+        rc, err = self._mode_conflict_rc(host=True, ingest=True)
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--ingest', err)
+        self.assertIn('--host', err)
+
     def test_asset_copied_with_matching_stem(self) -> None:
         asset = self.tmp / 'scan.jpg'
         asset.write_bytes(b'\xff\xd8\xff jpeg-ish')

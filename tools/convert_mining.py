@@ -1065,6 +1065,15 @@ def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> Result:
         except OSError as e:
             print(f'ERROR: conversion write failed and was rolled back: {e}', file=sys.stderr)
             return Result(ok=False, exit_code=EXIT_FAILURE)
+        except Exception as e:
+            # apply_plan's undo journal already rolled back every write on any
+            # exception before re-raising (a KeyError, a YAML parse error), so
+            # the not-safe-to-re-run migration is undamaged. Catch it here to say
+            # so in plain words rather than leaking a traceback; --debug is inert
+            # for this arm since the exception never reaches fha.py's guard.
+            print(f'ERROR: conversion failed and every write was rolled back: {e}. '
+                  'Nothing needs cleanup - fix the cause and re-run.', file=sys.stderr)
+            return Result(ok=False, exit_code=EXIT_FAILURE)
         print_plan(plan, applied=True)
         print('Wrote .cache/convert_mapping.csv')
         print('Run `fha index` then `fha lint` to review the imported records.')

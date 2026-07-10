@@ -1911,6 +1911,73 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
+# Each capture mode owns a set of flags. Mode precedence (highest first):
+# --install-host, --host, --ingest, then the default page capture. Mixing
+# flags from two modes is almost always a copy-paste mistake (a stray --url
+# left on an --ingest command line); the old code silently ran the winning
+# mode and dropped the loser's flags without a word. Refuse the combination up
+# front instead, naming both sides so the fix is obvious. --browser (defaulted,
+# only read by --install-host) and --dry-run (cross-mode; --host keeps its own
+# refusal) are deliberately not mode-owned here.
+_CAPTURE_MODE_NOUN = {
+    'install-host': 'the host installer',
+    'host': 'the native-messaging host',
+    'ingest': 'the staging sweep',
+    'page capture': 'a page capture',
+}
+
+# (attr, display flag, owning mode) in a stable reporting order.
+_CAPTURE_FLAG_MODES = [
+    ('install_host', '--install-host', 'install-host'),
+    ('extension_id', '--extension-id', 'install-host'),
+    ('host_manifest_dir', '--host-manifest-dir', 'install-host'),
+    ('host', '--host', 'host'),
+    ('ingest', '--ingest', 'ingest'),
+    ('url', '--url', 'page capture'),
+    ('title', '--title', 'page capture'),
+    ('source_type', '--type', 'page capture'),
+    ('source_date', '--date', 'page capture'),
+    ('asset', '--asset', 'page capture'),
+]
+
+
+def _flag_given(args: argparse.Namespace, attr: str) -> bool:
+    """True when a capture flag was explicitly supplied (past its default)."""
+    # --ingest defaults to False (bare = True, DIR = str); the rest default to
+    # None (options) or False (store_true), so "not in (None, False)" covers all.
+    return getattr(args, attr, None) not in (None, False)
+
+
+def _mode_conflict_error(args: argparse.Namespace) -> str | None:
+    """Return a plain refusal if flags from two capture modes were mixed, else None.
+
+    The winning mode is whichever the dispatch would actually run (precedence
+    order above). Any explicitly-given flag owned by a different mode is a
+    conflict: report the first such flag, naming both the losing flag's mode and
+    the winning mode, and tell the human to run the two as separate commands.
+    """
+    if _flag_given(args, 'install_host'):
+        winner, trigger = 'install-host', '--install-host'
+    elif _flag_given(args, 'host'):
+        winner, trigger = 'host', '--host'
+    elif _flag_given(args, 'ingest'):
+        winner, trigger = 'ingest', '--ingest'
+    else:
+        winner, trigger = 'page capture', None
+
+    for attr, display, mode in _CAPTURE_FLAG_MODES:
+        if mode == winner:
+            continue
+        if _flag_given(args, attr):
+            trigger_note = f' ({trigger})' if trigger else ''
+            return (
+                f'{display} belongs to {_CAPTURE_MODE_NOUN[mode]}, but '
+                f'{_CAPTURE_MODE_NOUN[winner]} is what this command is doing'
+                f'{trigger_note}. Run them as two separate commands.'
+            )
+    return None
+
+
 def _run_capture(args: argparse.Namespace) -> int:
     # resolve_root_arg carries the archive guard: a typo'd --root used to
     # stage stubs into `<typo>/inbox` with exit 0 (round-2 finding 10). The
@@ -1923,6 +1990,11 @@ def _run_capture(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    conflict = _mode_conflict_error(args)
+    if conflict is not None:
+        print(f'ERROR: {conflict}', file=sys.stderr)
+        return EXIT_ERRORS
 
     # The native-messaging host and its installer are distinct modes.
     if getattr(args, 'install_host', False):

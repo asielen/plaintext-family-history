@@ -812,6 +812,16 @@ def run_confirm_cooccur(
         'subtype': subtype, 'source': None, 'claim_status': None,
     })
 
+    # --reviewed only stamps the review date onto an *accepted* claim; a
+    # suggested claim is by definition unreviewed. Passing it without --accept
+    # used to be a silent no-op (the date was validated then discarded), so
+    # refuse the combination rather than quietly dropping a date the human typed.
+    if reviewed is not None and not accept:
+        return _fail(result, 'failed',
+                     '--reviewed only takes effect with --accept (it stamps the review '
+                     'date on the accepted claim). Add --accept, or drop --reviewed to '
+                     'mint the claim as suggested.')
+
     for label, pid in (('first', person_a), ('second', person_b)):
         if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
             return _fail(result, 'invalid-id',
