@@ -108,9 +108,10 @@ as `fha photoindex set-summary` — see [`photo-context/DESIGN.md`](photo-contex
 
 One narrow exception exists: the **owner** may explicitly decide that a skill enacts a missing verb by a
 documented interim hand-edit — recorded in the skill's folder (a `GAP.md` naming the wanted verb) and in
-BUILD_INTERFACE.md, never silently. `merge-identities` is the one current example (the SPEC §9 merge
-write, pending `fha confirm merge`). Blocking, as `photo-context` did, remains the default; an interim
-enactment is an owner decision, not an authoring choice.
+BUILD_INTERFACE.md, never silently. `merge-identities` was the one such case (the SPEC §9 merge write)
+until `fha confirm merge` shipped and retired it; no current skill uses an interim enactment. Blocking,
+as `photo-context` did, remains the default; an interim enactment is an owner decision, not an authoring
+choice.
 
 ## 7. Sessions are an interface, not memory
 

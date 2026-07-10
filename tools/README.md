@@ -161,12 +161,13 @@ malformed/unknown-C-id refusals, a `--dry-run`-writes-nothing case, and an end-t
 
 ## fha confirm - implementation status
 
-The deterministic write-back layer for the detection tools and the report's confirm/dismiss
-prompts (TOOLING §14a/§14a2/§15a, AGENTS.md). Every verb is a *human-directed* write: the
-detection tools propose, `fha confirm` writes back the human's pick. Source/registry edits
-are surgical text edits (sibling claims, key order, comments preserved), records are located
-by scanning `sources/`/`people/` directly (works when `.cache/index.sqlite` is stale or
-absent), every verb ships `--dry-run`, and each returns a `_lib.Result` with `changed[]`.
+The deterministic write-back layer for the detection tools, the report's confirm/dismiss
+prompts, and the merge-identities skill's confirmed decision (TOOLING §14a/§14a2/§14a3/§15a,
+AGENTS.md). Every verb is a *human-directed* write: the detection tools (or the skill) propose,
+`fha confirm` writes back the human's pick. Source/registry edits are surgical text edits
+(sibling claims, key order, comments preserved), records are located by scanning
+`sources/`/`people/` directly (works when `.cache/index.sqlite` is stale or absent), every verb
+ships `--dry-run`, and each returns a `_lib.Result` with `changed[]`.
 
 | Subcommand | Flags | Status | Notes |
 |---|---|---|---|
@@ -176,13 +177,22 @@ absent), every verb ships `--dry-run`, and each returns a `_lib.Result` with `ch
 | `fha confirm place <C-id> [<C-id> …]` | `--name NAME`, `--hierarchy TEXT`, `--into L-id`, `--root`, `--dry-run` | ✓ | Registers a place-text cluster: mints a new `L-id` place block in `places/places.yaml` (or merges into an existing one via `--into`) **and** relinks the named claims' `place:` to it, so the cluster stops surfacing as an unlinked `fha places candidates` group. Claims are located by their OWN `id:` key line with a parse-back cross-check (a quoted `id: C-…` inside a block scalar never gets the relink); a pre-existing duplicate C-id refuses with the E001 repair path (`fha id mint C`). A missing C-id aborts before any write |
 | `fha confirm discovery "<text>"` | `--refs IDS` (comma-separated S-/P-/C-/L-/H-), `--root`, `--dry-run` | ✓ | Appends `- YYYY-MM-DD: <text> [refs]` to `notes/discoveries.md` (the research-wins log `fha report` §0 leads with) |
 | `fha confirm draft <P-id>` | `--root`, `--dry-run` | ✓ | Flips a curated profile's `<!-- AI-DRAFT … -->` markers to `<!-- AI-ACCEPTED … (accepted DATE) -->`, preserving the original date/model (provenance kept, §20). No marker found → exit 1/`none` |
+| `fha confirm merge <P-merged>` | `--into P-survivor` (req), `--reason TEXT` (req), `--root`, `--dry-run` | ✓ | Enacts a human-confirmed identity merge - the full SPEC §9 write, planned entirely in memory then applied with an undo journal (any failure rolls everything back; the rename happens last). Folds `name`/`name_variants` (restricted `{value:, restricted: true}` mapping forms preserved as mappings; a restricted value never enters the survivor's plain `aliases:`), `external_ids:` (**same-key conflict: survivor's value kept, warning names both values, exit 1, tombstone keeps the losing value - never silent**), and `relationships:` entries (deduped by to+type+subtype; survivor-self edges skipped + warned) into the survivor. The tombstone gets the four §9 fields (`status: merged`, `merged_into:`, `merge_reason:`, `merged_date:`), is stripped of what folded, has `aliases:` reduced to the bare P-id, and is renamed `MERGED-INTO-P-survivor__<original>` (kept forever, never deleted). Relinks claims' `persons:`/`roles:` across **all** statuses (E016 has no status filter) in every taught form (bare `P-x`, `[[P-x]]`, `[[P-x\|Name]]`, a resolving name alias) with survivor-already-listed dedupe; other profiles' `relationships:` targets; source frontmatter `people:` lists. Prose mentions are deliberately left for W107 (counted in `data.prose_refs_remaining`). Per-file re-parse guard: a file it cannot rewrite safely (a broken or unfenced claims block naming the merged person, an exotic form) is a refusal naming the file, with zero writes anywhere. Idempotent: re-running the same merge → no-op `already`, exit 0. Refusals (exit 3): self-merge, unknown ids, a tombstone `--into` target (message names the chain's final survivor), a different-survivor re-merge, a rename collision, an empty reason. Evidence warnings (an existing relationship edge between the two, a W115 heads-up) never block - that judgment stays with the merge-identities skill and the human. The split (`confirm separate`) stays hand-guided per SPEC §9 |
 
 Automated tests: `tests/test_confirm.py` (stdlib `unittest`) covers the pure-text edit helpers
 (link append/idempotence, scalar set, claim append, AI-DRAFT flip) and each verb against a copy
 of `example-archive/`: confirm-xref → `claim_links` present after re-index; contradiction → no
 E009; accepted cooccur → derived `friend` edge (suggested → none); dismiss → pair excluded from
 the next `fha cooccur`; place mint/relink + `--into`; discovery append; draft flip - each with a
-`--dry-run`-writes-nothing and an invalid/not-found case.
+`--dry-run`-writes-nothing and an invalid/not-found case. `tests/test_confirm_merge.py` covers
+the merge verb: tombstone (four fields, rename grammar checked against lint's own filename
+regex, aliases reduced to the bare P-id); every fold including the restricted-mapping
+round-trip and the external-id conflict → exit 1; claim relink across all six statuses and
+every person form with sibling claims byte-untouched; other-record relinks; prose counted, not
+touched; idempotent `already`; the full refusal matrix; a byte-identical `--dry-run` (tree
+hashed before/after, previewed set = live write set); rollback on injected write and rename
+failures; and an end-to-end example-archive pass proving post-merge lint shows no E016 and no
+new W107/W115.
 
 ## fha person - implementation status
 

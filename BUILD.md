@@ -53,7 +53,7 @@ the insertion point in the same edit.
 | 1 | Layer 1 - Foundation | M1.1-M1.9 | ✓ shipped - includes the `Result` contract (M1.1), `fha lint` as its reference renderer (M1.4), and `fha claim` the claim-review write-back (M1.9) |
 | 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | ✓ shipped |
 | 3 | Layer 3 - Photo catalog | M3.1-M3.5 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`), M3.5 (`photoindex set-summary`) |
-| 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer) |
+| 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4a | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer), M4.4a (`fha confirm merge` - the SPEC §9 identity-merge write) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.6 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`), M6.6 (`fha gedcom import` - the Ancestry on-ramp, added in the 2026-07 usability follow-up) |
 | 7 | Layer 7 - Intake pipeline (core side) | M7.1-M7.5 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha convert-mining`). The `fha capture` on-ramp is a separate track in [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (MG series). |
@@ -957,9 +957,9 @@ front door (chat now, a click later) can drive. Keeping the writes here is what 
 advertise a clean read-only surface - a detector that also wrote would be two owners for one
 surface.
 
-**The six verbs** (each surgical, each `--dry-run`, each returns a `Result` whose `changed[]`
-lists files written; records located by scanning `sources/`/`people/` directly so a stale or
-absent index is fine):
+**The six original verbs** (a seventh, `confirm merge`, ships in M4.4a below; each surgical,
+each `--dry-run`, each returns a `Result` whose `changed[]` lists files written; records
+located by scanning `sources/`/`people/` directly so a stale or absent index is fine):
 
 | Verb | Write-back |
 |---|---|
@@ -980,6 +980,54 @@ fha confirm xref C-aaaaaaaaaa C-bbbbbbbbbb --as corroborates --root example-arch
 fha confirm cooccur P-aaaaaaaaaa P-bbbbbbbbbb --source S-cccccccccc --subtype friend --root example-archive  # suggested relationship claim
 fha confirm dismiss P-aaaaaaaaaa P-bbbbbbbbbb --dry-run --root example-archive  # previews tombstone write; writes nothing
 fha lint --root example-archive   # a confirmed contradiction stays E009-clean
+```
+
+---
+
+### M4.4a - `fha confirm merge` - the identity-merge write (✓ shipped)
+
+**One PR** (audit Wave 3 / usability plan 16). The seventh `confirm` verb, in `tools/confirm.py`:
+
+```
+fha confirm merge <P-merged> --into <P-survivor> --reason "<why>" [--dry-run] [--root PATH]
+```
+
+SPEC §9 fully defined the merge write - four tombstone fields, the `MERGED-INTO-P-survivor__`
+rename grammar, the folds, resolve-through-pointer - and the read side already existed (lint
+E016/W107 and the tombstone filename grammar, `merged_into` in the index, packet/site chain
+resolution), but nothing *performed* it; the merge-identities skill hand-edited per SPEC §9 as a
+documented owner-approved interim. This verb is the deterministic owner: in one
+plan-fully-in-memory-then-apply pass (undo journal; any failure rolls the whole archive back) it
+
+1. **folds** the merged record's `name` + `name_variants` (restricted `{value:, restricted: true}`
+   mappings preserved), `external_ids:` (a same-key different-value conflict keeps the survivor's
+   value, warns naming both, exits 1 - never silently resolved), and `relationships:` entries
+   (deduped by to+type+subtype; survivor-self edges skipped with an evidence warning) into the
+   survivor;
+2. **tombstones** the merged record (`status: merged`, `merged_into:`, `merge_reason:`,
+   `merged_date:`), strips what folded from its frontmatter (W115 protection) and reduces its
+   `aliases:` to the bare P-id;
+3. **renames** it to `MERGED-INTO-P-survivor__<original-filename>` - LAST, after every content
+   write; the file persists forever;
+4. **relinks** every claim's `persons:`/`roles:` across ALL statuses (E016 has no status filter;
+   bare, `[[P-id]]`, `[[P-id|Name]]`, and resolving-name forms; survivor-already-listed deduped;
+   per-file re-parse guard - a file that cannot be rewritten safely is a refusal naming it, with
+   zero writes anywhere), other profiles' `relationships:` targets, and source `people:` lists.
+   Prose `[[P-merged]]` mentions are deliberately left for lint W107's gradual-cleanup list
+   (counted and reported).
+
+Idempotent (`already` on a re-run of the same merge); refusals (exit 3) for self-merge, unknown
+ids, a tombstone `--into` target (names the chain's final survivor), a different-survivor
+re-merge, and a rename collision. Evidence judgment stays the skill's: the verb may WARN (an
+existing relationship edge between the two), never refuses on evidence grounds. The split
+(`confirm separate`) stays hand-guided - research judgment per SPEC §9, deliberately not built.
+Tests: `tests/test_confirm_merge.py`.
+
+**Done when:**
+```sh
+fha confirm merge P-mmmmmmmmmm --into P-ssssssssss --reason "same person" --dry-run --root example-archive  # full-diff preview, zero writes
+fha confirm merge P-mmmmmmmmmm --into P-ssssssssss --reason "same person" --root example-archive            # tombstone renamed-and-kept
+fha index --root example-archive && fha lint --root example-archive   # no E016, no new W115/W107
 ```
 
 ---

@@ -184,8 +184,8 @@ fha id mint P|S|C|L|H        mint verified IDs
 fha stubs                    create stubs for unresolved person references
 fha claim <C-id> --status …  the review write-back: move a claim's status and stamp
                             reviewed: (only the human moves a claim to accepted)
-fha confirm <verb> …         act on a detection candidate or report prompt the human
-                            picked (xref/cooccur/dismiss/place/discovery/draft)
+fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
+                            decision (xref/cooccur/dismiss/place/discovery/draft/merge)
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
 fha views timeline|sources-index|brackets     regenerate views (--format html for a
