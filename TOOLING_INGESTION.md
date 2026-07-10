@@ -82,7 +82,9 @@ Capture reads the **open DOM/HTML only**. It does not log in, paginate, query AP
 | `--ingest [DIR]` | sweep staged companion bundles from `DIR` (default: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`) into the inbox (§6) |
 | `--dry-run` | preview every write without touching disk |
 
-Exit: `0` clean · `2` user error (bad `--type`/`--date`, asset destination clash) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
+The modes are mutually exclusive: `--install-host`, `--host`, `--ingest`, and the default page capture (`--url`/`--title`/`--type`/`--date`/`--asset`) each run alone. Mixing flags across two modes (e.g. `--ingest --url …`) is a hard error naming both sides, not a silent drop of the losing mode's flags. (`--browser` belongs to `--install-host`; `--dry-run` is cross-mode.)
+
+Exit: `0` clean · `2` user error (bad `--type`/`--date`, asset destination clash, mixing mode flags) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
 
 ---
 

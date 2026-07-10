@@ -54,7 +54,7 @@
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "0680322c88246a108d97d804116189241132bef0fb298592956699aaf574b6d1",
+      "sha256": "129924b3247a1e9cd5fc6e268d889f7de251b84ad36fd0c2f47107f2a506f2a0",
       "spec_version": "1.2"
     },
     {
@@ -66,7 +66,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "d8a7ecf50a2fca3f7f3677a095892565d62016ca642ad13e849675214b437f93",
+      "sha256": "28b0f299c65c75308bd10585ff55739ff68aa42a4572ad3021dff361285af13e",
       "spec_version": "1.2"
     },
     {
@@ -139,13 +139,13 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "f708260db4755f44fd6ff2d2ad075cc09a285cfafe418f224be04252f58b093a",
+      "sha256": "97033b6b03e7e152c77fbf9868cba3dc4544f3317765395a0f15ea804a9afbec",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "ca5326fefef9ccd54ebf285141c9a838777145754e67d2cdf4e7b71064abf9c8",
+      "sha256": "dc68e9c8fd099af68da25ccc7008b0c67e552c762c2ea0d4e3a34a996dcad87c",
       "spec_version": "1.2"
     },
     {
@@ -271,7 +271,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "792bc095fbe1d7dca5d55ff90829f2a7f22cc6b9c357e926ed9a0bd2f4c9687a",
+      "sha256": "95003ace832116eefc44cfd9701bc08a6bbe9836d6fe72a7af673fc9a90839ce",
       "spec_version": "1.2"
     },
     {
@@ -295,7 +295,7 @@
     {
       "path": "docs/SITE_PLAN.md",
       "category": "operating",
-      "sha256": "772d1f16d04bab8d698eb837c76d6e052db401d1c10ead166cc9e83f5cc64f25",
+      "sha256": "fe0c12802fe111f7ffd7044da9ee5ca6e47682af994a4e7a80e63eaa6f72869e",
       "spec_version": "1.2"
     },
     {
@@ -425,7 +425,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "2456fc6d57d34269d0f906d8ab91faa7a5c3753c4292fb4f58d30dbdfb19a00e",
+      "sha256": "096ec5a875050bb15005fe5c821565e020c41f056a3bc6eae9cbb1ce955a84dd",
       "spec_version": "1.2"
     },
     {
