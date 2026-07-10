@@ -7,7 +7,9 @@ The contracts locked here (plan 04, TOOLING §13e):
     folder and contains the plain-text core (sources/people/places/notes/
     fha.yaml) but nothing rebuildable (.cache/, generated/, out/, .git/), no
     WORKING_COPY marker, and no asset-root files - wherever the asset roots
-    live.  `--include-assets` packs each root under its alias name.
+    live.  `--include-assets` packs each external root under its alias name
+    and each internal mapped root under its real relative path, so an unzip
+    restores exactly the layout the zipped fha.yaml describes.
   - Destination safety: a destination inside the archive root or inside any
     mapped asset root is refused (exit 3) with a message naming the fix; the
     fha.yaml `backup: path:` key is honored and `--to` beats it.
@@ -211,6 +213,41 @@ class ExternalRootTests(unittest.TestCase):
         self.assertIn('photos/1920/pic.jpg', names)
         # The restored-layout wrinkle is stated in plain words.
         self.assertIn('outside the archive folder', _message_text(result))
+
+
+class InternalMappedRootTests(unittest.TestCase):
+    """A root mapped INSIDE the archive at a non-default path (`roots:
+    photos: media/photos`) must keep its real relative path in the zip.
+    Re-homing it under the alias made a 'verified' backup whose unzip put
+    the photos at photos/ while the restored fha.yaml still said
+    media/photos - a layout-corrupting restore with exit 0."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.root = _make_archive(self.parent, photos_root='media/photos')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_internal_root_keeps_real_path_and_restore_is_faithful(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            names = zf.namelist()
+        self.assertIn('media/photos/1920/pic.jpg', names)
+        self.assertFalse(any(n.startswith('photos/') for n in names),
+                         f'internal root was re-homed under its alias: {names}')
+        # The external-root restore note must NOT print: the layout in the
+        # zip already matches what the zipped fha.yaml describes.
+        self.assertNotIn('outside the archive folder', _message_text(result))
+        # Restore = unzip, literally: the mapped root resolves after unzip.
+        restored = self.parent / 'restored'
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            zf.extractall(restored)
+        cfg = load_fha_yaml(restored, strict=True)
+        self.assertEqual(cfg['roots']['photos'], 'media/photos')
+        self.assertTrue((restored / 'media' / 'photos' / '1920' / 'pic.jpg').is_file())
 
 
 class ArcnameCollisionTests(unittest.TestCase):

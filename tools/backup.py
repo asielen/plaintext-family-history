@@ -21,8 +21,10 @@ Plain files zip trivially - that is the payoff of the whole design.  Over
   2. It knows where the assets really live: the photos/documents roots are
      resolved through fha.yaml `roots:` (never hardcoded - they are often
      external and often tens of GB).  The default run is records-only and says
-     so in plain words every time; `--include-assets` zips each mapped root
-     under its alias name so an unzip restores a self-contained layout.
+     so in plain words every time; `--include-assets` zips each EXTERNAL root
+     under its alias name, and a root mapped INSIDE the archive at a different
+     path (`roots: photos: media/photos`) under its real relative path, so an
+     unzip restores exactly the layout the zipped fha.yaml describes.
      An `inbox/` that resolves inside the archive root is always included
      (staged material is irreplaceable); an inbox mapped outside the root is
      treated like the other asset roots.
@@ -292,8 +294,8 @@ def _walk_files(
     """Walk `base` and return sorted (abs_path, arcname, size) entries.
 
     Arcnames are posix-form relative paths (the plan's Windows-long-path watch
-    item), prefixed with `arc_prefix` when zipping an asset root under its
-    alias name.  Directory pruning happens against resolved+case-folded paths
+    item), prefixed with `arc_prefix` when zipping an asset root (an external
+    root uses its alias, an internal one its real in-archive relative path).  Directory pruning happens against resolved+case-folded paths
     so an exclusion from fha.yaml matches regardless of stored casing.  A file
     whose size cannot be read is kept with size 0 rather than dropped - if it
     is truly unreadable the zip write fails loudly later, which beats a backup
@@ -369,8 +371,17 @@ def _plan_backup(
             if not root.is_dir():
                 skipped_roots.append((alias, str(root), 0))
                 continue
-            included_roots.append((alias, str(root), not _inside(root, archive_root)))
-            for p, arc, size in _walk_files(root, arc_prefix=alias):
+            internal = _inside(root, archive_root)
+            # An internal mapped root keeps its REAL relative path in the zip
+            # (media/photos/..., not photos/...): the zipped fha.yaml still
+            # maps `photos: media/photos`, so re-homing the files under the
+            # alias would make a 'verified' backup whose unzip puts the
+            # assets where the restored config does not look.  External
+            # roots have no in-archive path, so they pack under the alias
+            # name and the restore note explains the wrinkle.
+            prefix = root.relative_to(archive_root).as_posix() if internal else alias
+            included_roots.append((alias, str(root), not internal))
+            for p, arc, size in _walk_files(root, arc_prefix=prefix):
                 key = _norm(p)
                 if key in seen:
                     continue
