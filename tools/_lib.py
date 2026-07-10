@@ -120,6 +120,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Filename / path helpers
 #    is_working_copy           - WORKING_COPY marker present at archive root?
 #    is_fixture_path           - path under example-archive/ or tests/fixtures/?
+#    find_person_record_path   - scan people/ for one P-id's record file (never the index)
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
 #    extract_bare_ids          - all bare IDs from a text block
@@ -2460,6 +2461,35 @@ def scan_person_record_ids(archive_root: str | Path) -> set[str]:
         if parsed is not None and parsed['id_type'] == 'P' and parsed['kind'] == 'profile':
             found.add(parsed['id_str'])
     return found
+
+
+def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | None:
+    """Scan `people/` for one P-id's primary person record (not a companion view).
+
+    The `.md` files are archive truth, so this never consults
+    `.cache/index.sqlite` - a stale or absent index must never block or mislead
+    a write aimed at a person record (the `fha claim` locate-by-scanning rule).
+    Matches stubs, curated profiles, and merged tombstones alike: identity is
+    the `_{P-id}.md` filename suffix (`parse_filename`), so the folder, slug,
+    and any `MERGED-INTO-…` prefix are irrelevant. Companion files (research/
+    timeline/sources-index/draft-queue) share the P-id but are generated views,
+    never the record itself, so they are excluded.
+
+    Shared here because several tools need the same lookup (`fha confirm draft`,
+    `fha person set-living`, and the planned `fha confirm merge`) - the same
+    shared-infrastructure rationale as `mint_ids`.
+    """
+    target = normalize_id(person_id)
+    people_dir = Path(archive_root) / 'people'
+    if not people_dir.is_dir():
+        return None
+    for path in sorted(people_dir.rglob('*.md')):
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('id_str') != target:
+            continue
+        if parsed.get('id_type') == 'P' and not parsed.get('is_companion'):
+            return path
+    return None
 
 
 # Matches the `_{S-id}.md` suffix in a source record filename; used by

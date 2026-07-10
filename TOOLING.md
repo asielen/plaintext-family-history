@@ -278,6 +278,22 @@ The edit is **surgical**: only the one named claim's entry inside its source `.m
 
 This is the human gate from the engine side: the `review-claims` skill (§16) and `fha report`'s answerable-questions/connections prompts all drive `fha claim`, but the accept decision is always the human's. The detection-candidate write-backs (§14a/§14a2/§15a) live in their own sibling tool, `fha confirm`.
 
+## 3c. `fha person` - person-field write-backs
+
+<!-- PROPOSED AMENDMENT (plan 05 person-set-living, pending owner approval; AGENTS_TOOLING §8 spec-refinement gate): this whole section is new. -->
+
+The deterministic write-backs for a person record's own frontmatter fields. The group exists so that flipping a field every export decision hangs on is a safe one-line command instead of a hand edit; future person-field verbs (set-name, restricted-flag flips, …) would live here too, but **only `set-living` is shipped**.
+
+```
+fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
+```
+
+**Contract.** `living:` drives redaction in every external export (SPEC §9, §19; `unknown` is treated as living - the safe default). The record is located by scanning `people/` for the `_{P-id}.md` filename suffix (stubs and curated profiles alike; a stale or absent index never blocks or misleads a write - the §3b rule, via the shared `_lib.find_person_record_path`). The edit is **surgical text surgery**: only the one top-level `living:` line changes (trailing hand comment preserved; CRLF endings byte-faithful); when the key is absent (a legal hand-made record), a `living:` line is inserted after `name:` in the stub scaffold's field order. Before any write the rewritten frontmatter is **re-parsed and vetted** (the frontmatter twin of `_lib.claims_edit_problem`): it must parse, `living` must equal the target, `id` must be unchanged, and no other field may appear, disappear, or change value - any failure is a refusal with nothing written, so an odd hand-authored file becomes a clean refusal, never a corruption. A **merged tombstone** (`status: merged`) is never edited - readers resolve through `merged_into` (SPEC §9), so the refusal names the surviving record to edit instead. Idempotent: a value already equal to the target is a clean `already` no-op. Every arm previews under `--dry-run` (unified diff, nothing written).
+
+**Exit codes:** 0 flag written (the "run `fha index` when convenient" reminder is advice text, never a warning exit) / `already` / dry-run · 1 person not found (with the `fha find` next step) · 2 argparse (bad value literal, missing args, bare `fha person`) · 3 root unresolvable, invalid P-id shape, merged tombstone, guard refusal, unreadable/unwritable file. `run_set_living` returns a `Result` (`data.status` ∈ ok/already/dry-run/not-found/merged/refused); `changed[]` names the record on a live write.
+
+**The no-auto-flip rule.** Accepting a `death` claim does NOT change `living:` - the flag is a privacy judgment, and judgments are directed by the human. The `review-claims` skill offers the command after the human accepts a death claim for a `living: true|unknown` person, and runs it only on his explicit yes; no tool path flips the flag automatically. The persona-facing output states the privacy consequence of the new value in plain words (a `false` opens exports to the person; `true`/`unknown` redacts them).
+
 ## 4. `fha id` - minting
 
 `fha id mint P [-n 5]` → prints fresh IDs.
@@ -851,6 +867,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
 | `fha claim <C-id> --status …` (T C) | The review gesture: move one claim's `status:` (`accepted`/`disputed`/`rejected`/`needs-review`/`superseded`), stamp `reviewed:` (§3b). Driven by `review-claims` and the report's prompts; `accepted` is the human gate. `--value`/`--date`/`--dry-run`. |
 | `fha confirm <verb> …` (T C) | Act on a detection candidate or report prompt: `xref`, `cooccur`, `dismiss`, `place`, `discovery`, `draft` (§14a3). The deterministic write floor under the read-only detectors. Every verb `--dry-run`. |
+| `fha person set-living <P-id> true\|false\|unknown` (T C) | Flip one person's living flag - the switch every export redaction hangs on (§3c). Surgical one-line edit, `--dry-run` previews; never flipped automatically (accepting a death claim only prompts the offer). |
 | `fha lint` (T C) | After any batch of edits; the done-gate. Alias: **`fha check`**. Flags: `--with-exif`, fix modes (diff-previewed). |
 | `fha doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |
 | `fha process <file\|folder>` (T C) | Direct intake without the skill conversation; folder mode triages first. |

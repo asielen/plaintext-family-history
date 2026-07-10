@@ -87,6 +87,11 @@ source's claims are reviewed together because they share evidence.
      straight to `accepted`.
 
 5. **Close out the batch.**
+   If a **`death` claim was accepted** this session for a person whose `living:` is still `true` or
+   `unknown`, offer the flag flip before anything else — "mark them as no longer living, so exports can
+   include them? → `fha person set-living <P-id> false`" — and run it **only on his explicit yes**. The
+   flag is a privacy judgment and nothing ever flips it automatically; the tool's own output states the
+   export consequence.
    ```
    fha index                      # full rebuild — if this pass minted new people/places (a
                                   # process-source / mine-transcript hand-off usually does), `--source`

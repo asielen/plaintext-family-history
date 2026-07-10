@@ -66,7 +66,7 @@ CODE MAP
     _today, _EditRefused
     _find_source_path_for_claim   - scan sources/ for the .md holding one C-id
     _find_source_path_by_id       - scan sources/ for one S-id's record
-    _find_profile_path            - scan people/ for one P-id's curated profile
+    (person records are located via _lib.find_person_record_path, shared with fha person)
     _find_claims_block            - locate the ## Claims ```yaml fence
     _claim_spans                  - split the block into claim items
     _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
@@ -107,6 +107,7 @@ from _lib import (
     claim_item_key_indent,
     claims_edit_problem,
     configure_utf8_stdout,
+    find_person_record_path,
     fmt_id_display,
     id_type_of,
     is_valid_id,
@@ -173,21 +174,6 @@ def _find_source_path_by_id(archive_root: Path, source_id: str) -> Path | None:
     for path in sorted(sources_dir.rglob('*.md')):
         parsed = parse_filename(path)
         if parsed and parsed.get('id_str') == target:
-            return path
-    return None
-
-
-def _find_profile_path(archive_root: Path, person_id: str) -> Path | None:
-    """Scan `people/` for one P-id's *curated profile* (not a companion view)."""
-    target = normalize_id(person_id)
-    people_dir = archive_root / 'people'
-    if not people_dir.is_dir():
-        return None
-    for path in sorted(people_dir.rglob('*.md')):
-        parsed = parse_filename(path)
-        if not parsed or parsed.get('id_str') != target:
-            continue
-        if parsed.get('id_type') == 'P' and not parsed.get('is_companion'):
             return path
     return None
 
@@ -1394,7 +1380,7 @@ def run_accept_draft(
     pid = normalize_id(person_id)
     result.data['person_id'] = fmt_id_display(pid)
 
-    profile = _find_profile_path(archive_root, pid)
+    profile = find_person_record_path(archive_root, pid)
     if profile is None:
         return _notfound(result,
                          f'No curated profile found for {fmt_id_display(pid)} under '
