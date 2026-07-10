@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 confirm.py - fha confirm: human-directed write-back for detection candidates
-(AGENTS.md, TOOLING §14a / §14a2 / §15a).
+and confirmed decisions (AGENTS.md, TOOLING §14a / §14a2 / §14a3 / §15a).
 
   fha confirm xref      <C-a> <C-b> --as corroborates|contradicts [--dry-run]
   fha confirm cooccur   <P-a> <P-b> --source <S-id> --subtype friend|associate|neighbor
@@ -10,6 +10,7 @@ confirm.py - fha confirm: human-directed write-back for detection candidates
   fha confirm place     <C-id> [<C-id> …] (--name NAME [--hierarchy H] | --into <L-id>) [--dry-run]
   fha confirm discovery "<text>" [--refs S-…,P-…] [--dry-run]
   fha confirm draft     <P-id> [--dry-run]
+  fha confirm merge     <P-merged> --into <P-survivor> --reason "<why>" [--dry-run]
 
 The deterministic *detection* tools (`fha xref`, `fha cooccur`, `fha places
 candidates`) only ever read - they print candidate pairs/clusters for a human to
@@ -20,8 +21,8 @@ write-back itself is mechanical, so it lives here as a real CLI any front door
 the read-only contract the detection tools advertise (a detector that also wrote
 would be two owners for one surface).
 
-THE SIX WRITE-BACKS
--------------------
+THE SEVEN WRITE-BACKS
+---------------------
   xref       - confirm an `fha xref` pair: write reciprocal `corroborates:`/
                `contradicts:` claim_links into both claims' source records. A
                contradiction also spawns a templated open question in
@@ -51,6 +52,20 @@ THE SIX WRITE-BACKS
                `<!-- AI-ACCEPTED … (accepted DATE) -->` (AGENTS.md: draft prose
                carries the marker until the human accepts it). Provenance is
                preserved, not erased - the original date/model stay in the marker.
+  merge      - enact a human-confirmed identity merge (SPEC §9) in one verb:
+               tombstone the merged person (`status: merged`, `merged_into:`,
+               `merge_reason:`, `merged_date:`), rename its file with the
+               `MERGED-INTO-P-survivor__` prefix (kept forever, never deleted),
+               fold its name variants / external ids / relationships into the
+               survivor, and relink every claim (ALL statuses - lint E016 has no
+               status filter) plus other records' `relationships:`/`people:`
+               references from the merged P-id to the survivor. Prose `[[P-…]]`
+               mentions are deliberately left for lint W107's gradual-cleanup
+               list (counted and reported). The judgment half - is this really
+               one person? - stays with the merge-identities skill and the
+               human; this verb only enacts a decision already made, and it may
+               WARN on evidence (an existing relationship edge between the two)
+               but never refuses on evidence grounds.
 
 Every verb ships `--dry-run` (previews, writes nothing) and returns a `_lib.Result`
 whose `changed[]` lists each file written. Source/registry edits are **surgical**
@@ -77,9 +92,26 @@ CODE MAP
     _set_scalar_on_claim          - set a single scalar key (e.g. place:)
     _append_claim_to_source       - append a whole new claim item to the block
 
+  Merge machinery (confirm merge)
+    _fm_span / _fm_key_span       - locate frontmatter and one top-level key
+    _render_scalar / _render_variant_item / _render_relationship_entry
+    _split_flow_items / _unquote  - bracket/quote-aware flow-list reading
+    _fold_fm_list, _fold_external_ids, _fold_relationship_entries
+    _set_fm_scalar, _remove_fm_key, _replace_fm_inline_list,
+    _strip_external_id_keys       - tombstone/survivor frontmatter surgery
+    _person_fm_problem            - post-rewrite frontmatter guard
+    _scan_person_profiles         - pid -> (path, meta) map from people/
+    _final_survivor               - follow a merged_into chain to its end
+    _person_token_re, _resolve_person_item, _rewrite_ref_item,
+    _rewrite_person_list_value, _rewrite_span_person_fields,
+    _relink_claims_in_source      - claim persons:/roles: relink (guarded)
+    _relink_people_frontmatter    - source frontmatter people: relink
+    _relink_relationship_targets  - profile relationships: to: relink
+
   Verbs (each returns a Result)
     run_confirm_xref, run_confirm_cooccur, run_dismiss,
-    run_confirm_place, run_add_discovery, run_accept_draft
+    run_confirm_place, run_add_discovery, run_accept_draft,
+    run_confirm_merge
 
   CLI
     _emit, _cmd_*, register, _standalone_main
@@ -104,6 +136,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    build_alias_map,
     claim_item_key_indent,
     claims_edit_problem,
     configure_utf8_stdout,
@@ -119,6 +152,7 @@ from _lib import (
     reapply_newline,
     resolve_root_arg,
     resolve_typed_ref,
+    strip_link_wrapper,
     write_text_exact,
     scan_ids_in_tree,
     scan_person_record_ids,
@@ -1447,6 +1481,1495 @@ def run_accept_draft(
     return result
 
 
+# ── Verb: confirm merge (enact a human-confirmed identity merge, SPEC §9) ───────
+#
+# The merge write is the highest-blast-radius operation in the suite: it edits
+# the survivor, tombstones and renames the merged record, and rewrites person
+# references across every source and profile. The discipline that contains it:
+#   1. plan EVERYTHING in memory first (all validation and every rewritten text
+#      exists before the first byte is written);
+#   2. every rewritten file passes a re-parse guard in the planning pass, and a
+#      guard failure is a refusal naming the file with nothing written anywhere;
+#   3. apply with an undo journal (the convert_mining pattern: register the
+#      cleanup BEFORE each write) so any mid-apply failure rolls the whole
+#      archive back to its pre-merge bytes;
+#   4. the rename happens LAST, after every content write has landed.
+
+# The frontmatter surgery below assumes SPEC-shaped person records: top-level
+# keys at column zero between `---` fences. Anything weirder fails the
+# `_person_fm_problem` re-parse guard and becomes a refusal, never a bad write.
+
+_TOMBSTONE_KIN_TYPES = ('relationship', 'marriage')
+
+
+def _person_token_re(person_id: str) -> re.Pattern:
+    """A finder for one P-id used as a reference token in record text.
+
+    The lookarounds keep the match honest at both ends: no alphabet character
+    (or hyphen) may precede - so the survivor id inside an existing
+    `MERGED-INTO-P-…__` filename never reads as a reference to it - and no
+    alphabet character may follow, so a 10-char id never matches inside a
+    longer id-shaped string. Case-insensitive because display form uppercases
+    the type prefix.
+    """
+    return re.compile(
+        r'(?<![0-9a-hjkmnp-tv-z-])' + re.escape(person_id) + r'(?![0-9a-hjkmnp-tv-z])',
+        re.I,
+    )
+
+
+def _fm_span(lines: list[str]) -> tuple[int, int] | None:
+    """Return (open_fence, close_fence) line indexes of the `---` frontmatter."""
+    if not lines or lines[0].strip() != '---':
+        return None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == '---':
+            return 0, i
+    return None
+
+
+def _fm_key_span(lines: list[str], fm_open: int, fm_close: int, key: str) -> tuple[int, int] | None:
+    """Locate one TOP-LEVEL frontmatter key; return (key_line, end) or None.
+
+    A top-level key sits at column zero; its block extends through every
+    following line that is blank or indented (nested list items, mapping
+    children, block-scalar continuations). A column-zero comment ends the
+    block rather than joining it, so a human's comment ahead of the NEXT key
+    is never swept up when a span is removed or replaced.
+    """
+    key_re = re.compile(r'^' + re.escape(key) + r'\s*:')
+    for i in range(fm_open + 1, fm_close):
+        if key_re.match(lines[i]):
+            end = i + 1
+            while end < fm_close and (not lines[end].strip() or lines[end][:1] in (' ', '\t')):
+                end += 1
+            return i, end
+    return None
+
+
+def _render_scalar(value) -> str:
+    """Render any YAML scalar/flow value on one line, quoting only when needed.
+
+    The sibling of `_yaml_inline` for non-string values: folded external ids
+    keep their type (an unquoted number stays a number, a quoted numeric
+    string stays quoted), and a `{value:, restricted: true}` mapping keeps its
+    key order (`sort_keys=False`) so the folded form reads like the original.
+
+    `read_record` coerces YAML booleans to the strings 'true'/'false'
+    (`_coerce_yaml`); a folded `restricted:` flag is written back as the real
+    boolean so the mapping round-trips verbatim. Only that key is un-coerced -
+    a display name that literally reads "true" stays the string it was.
+    """
+    if isinstance(value, dict):
+        value = {
+            k: (v == 'true' if str(k) == 'restricted' and v in ('true', 'false') else v)
+            for k, v in value.items()
+        }
+    if isinstance(value, str):
+        return _yaml_inline(value)
+    rendered = yaml.safe_dump(
+        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
+        sort_keys=False,
+    ).strip()
+    if rendered.endswith('...'):
+        rendered = rendered[:-3].strip()
+    return rendered
+
+
+def _variant_value(variant) -> str | None:
+    """The display string of one `name_variants` entry.
+
+    Mirrors index.py's unwrap of the `{value:, restricted: true}` mapping form
+    (SPEC §18): the mapping's `value` is the name; `str()` on the dict would
+    yield a Python repr that matches nothing.
+    """
+    if isinstance(variant, dict):
+        val = variant.get('value')
+        return str(val) if val else None
+    return str(variant) if variant else None
+
+
+def _split_flow_items(inner: str) -> list[str]:
+    """Split the inside of a YAML flow list on top-level commas.
+
+    Bracket- and quote-aware so `[[P-x|Smith, John]]` and nested flow forms
+    stay one item; each returned item keeps its own quoting verbatim, which is
+    what lets a rewrite preserve untouched siblings byte-for-byte.
+    """
+    items: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote: str | None = None
+    for ch in inner:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in '[{':
+            depth += 1
+        elif ch in ']}':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            items.append(''.join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+    tail = ''.join(buf).strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _unquote(text: str) -> str:
+    """Strip one layer of surrounding YAML quotes from a flow-list item."""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        return text[1:-1]
+    return text
+
+
+def _resolve_person_item(item: str, alias_map: dict[str, str] | None) -> str | None:
+    """Resolve one raw persons/roles/to item (with its quoting) to a P-id."""
+    return resolve_typed_ref(_unquote(item.strip()), alias_map, want='P')
+
+
+# Pulls target and optional |display out of a wikilink, so a name link being
+# pinned to the survivor keeps the human-readable display text.
+_WIKI_PARTS_RE = re.compile(r'^\[\[(?P<target>[^\]|#]+)(?:#[^\]|]*)?(?:\|(?P<display>[^\]]+))?\]\]$')
+
+
+def _rewrite_ref_item(item: str, token_re: re.Pattern, survivor_disp: str) -> str:
+    """Rewrite ONE list item that resolves to the merged person.
+
+    Two shapes arrive here. An item carrying the merged P-id as a token (bare,
+    `[[P-id]]`, `[[P-id|Name]]`, quoted or not) keeps its exact wrapper and
+    display - only the id substring changes, so the edit is minimal. An item
+    that resolved through a NAME alias carries no id token to substitute; it
+    is pinned to the survivor as `"[[P-survivor|<display>]]"` - the standard
+    clash-pinning form (SPEC §9/§7) - keeping the name the human wrote as the
+    display half.
+    """
+    if token_re.search(item):
+        return token_re.sub(survivor_disp, item)
+    core = _unquote(item.strip()).strip()
+    m = _WIKI_PARTS_RE.match(core)
+    if m:
+        display = (m.group('display') or m.group('target')).strip()
+    else:
+        display = core
+    return f'"[[{survivor_disp}|{display}]]"'
+
+
+def _rewrite_person_list_value(
+    stripped: str, merged_id: str, survivor_id: str,
+    alias_map: dict[str, str] | None, token_re: re.Pattern,
+) -> tuple[str, bool]:
+    """Rewrite an inline persons/roles/people value (`[a, b]`, `{…}`, or scalar).
+
+    Items resolving to the merged person are rewritten to the survivor; items
+    whose post-rewrite id duplicates one already in the same list are dropped
+    (the survivor-already-listed dedupe). Unresolvable items are never touched
+    and never dropped. A flow MAPPING (`roles: {head: P-x}`) gets plain token
+    substitution only - good enough for id forms; a name-alias hiding inside
+    one is caught by the caller's whole-block re-parse guard and becomes a
+    refusal rather than a miss.
+
+    Raises `_EditRefused` for a block scalar, which this line-level rewrite
+    cannot safely restructure.
+    """
+    survivor_disp = fmt_id_display(survivor_id)
+    if stripped[:1] in ('>', '|'):
+        raise _EditRefused(
+            'the person list is written as a block scalar this tool cannot '
+            'rewrite; update it by hand'
+        )
+    if stripped.startswith('[') and stripped.endswith(']'):
+        items = _split_flow_items(stripped[1:-1])
+        out: list[str] = []
+        seen: set[str] = set()
+        changed = False
+        for item in items:
+            rid = _resolve_person_item(item, alias_map)
+            if rid == merged_id:
+                item = _rewrite_ref_item(item, token_re, survivor_disp)
+                rid = survivor_id
+                changed = True
+            if rid is not None:
+                if rid in seen:
+                    changed = True
+                    continue
+                seen.add(rid)
+            out.append(item)
+        return '[' + ', '.join(out) + ']', changed
+    if stripped.startswith('{'):
+        new = token_re.sub(survivor_disp, stripped)
+        return new, new != stripped
+    rid = _resolve_person_item(stripped, alias_map)
+    if rid == merged_id:
+        return _rewrite_ref_item(stripped, token_re, survivor_disp), True
+    return stripped, False
+
+
+def _rewrite_span_person_fields(
+    span_lines: list[str], base_indent: str, merged_id: str, survivor_id: str,
+    alias_map: dict[str, str] | None, token_re: re.Pattern,
+) -> tuple[list[str], bool]:
+    """Rewrite persons:/roles: person references inside ONE claim item's lines.
+
+    Only the item's OWN `persons:` and `roles:` keys are touched (the same
+    ownership discipline as `_own_id_key_line`: the key must sit on the dash
+    line or at the item's key column, so a look-alike line quoted inside a
+    block scalar is never edited). Handles inline values, block-list items,
+    and role sub-keys; a block-list item whose post-rewrite id duplicates one
+    already present in the same list is dropped. Every other line - `value:`,
+    `notes:`, comments, sibling keys - passes through byte-identical.
+    """
+    key_indent = claim_item_key_indent(span_lines, base_indent)
+    field_re = re.compile(
+        r'^(?:' + re.escape(base_indent) + r'-\s+|' + re.escape(key_indent) + r')'
+        r'(persons|roles)(\s*):(\s*)(.*)$'
+    )
+    item_re = re.compile(r'^(\s*-\s+)(.*)$')
+    out: list[str] = []
+    changed = False
+    i = 0
+    n = len(span_lines)
+
+    def rewrite_inline(line: str, m: re.Match) -> tuple[str, bool]:
+        raw = m.group(4)
+        value, comment = _split_inline_comment(raw)
+        stripped = value.strip()
+        if not stripped:
+            return line, False
+        new_val, ch = _rewrite_person_list_value(
+            stripped, merged_id, survivor_id, alias_map, token_re)
+        if not ch:
+            return line, False
+        suffix = f'  {comment}' if comment else ''
+        return line[:m.start(4)] + new_val + suffix, True
+
+    def rewrite_block_items(j: int, parent_col: int, seen: set[str]) -> int:
+        """Consume `- item` lines deeper than parent_col; rewrite/drop them."""
+        nonlocal changed
+        while j < n:
+            nxt = span_lines[j]
+            if not nxt.strip():
+                out.append(nxt)
+                j += 1
+                continue
+            ind = len(nxt) - len(nxt.lstrip())
+            if ind <= parent_col:
+                break
+            mi = item_re.match(nxt)
+            if not mi:
+                out.append(nxt)
+                j += 1
+                continue
+            ival, icom = _split_inline_comment(mi.group(2))
+            istr = ival.strip()
+            rid = _resolve_person_item(istr, alias_map)
+            new_item = istr
+            if rid == merged_id:
+                new_item = _rewrite_ref_item(istr, token_re, fmt_id_display(survivor_id))
+                rid = survivor_id
+                changed = True
+            if rid is not None and rid in seen:
+                changed = True
+                j += 1
+                continue          # duplicate of an id already listed: drop the line
+            if rid is not None:
+                seen.add(rid)
+            suffix = f'  {icom}' if icom else ''
+            out.append(mi.group(1) + new_item + suffix)
+            j += 1
+        return j
+
+    while i < n:
+        ln = span_lines[i]
+        m = field_re.match(ln)
+        if not m:
+            out.append(ln)
+            i += 1
+            continue
+        field = m.group(1)
+        key_col = m.start(1)
+        raw = m.group(4)
+        if raw.strip():
+            new_line, ch = rewrite_inline(ln, m)
+            out.append(new_line)
+            changed = changed or ch
+            i += 1
+            continue
+        out.append(ln)
+        if field == 'persons':
+            i = rewrite_block_items(i + 1, key_col, set())
+            continue
+        # roles: nested role keys, each with a scalar/flow value or its own
+        # block list. Track a seen-set per role so dedupe stays per-list.
+        j = i + 1
+        role_re = re.compile(r'^(\s+)([^\s#-][^:]*)(\s*):(\s*)(.*)$')
+        while j < n:
+            nxt = span_lines[j]
+            if not nxt.strip():
+                out.append(nxt)
+                j += 1
+                continue
+            ind = len(nxt) - len(nxt.lstrip())
+            if ind <= key_col:
+                break
+            mr = role_re.match(nxt)
+            if mr:
+                rraw = mr.group(5)
+                rval, rcom = _split_inline_comment(rraw)
+                rstr = rval.strip()
+                if rstr:
+                    new_val, ch = _rewrite_person_list_value(
+                        rstr, merged_id, survivor_id, alias_map, token_re)
+                    if ch:
+                        suffix = f'  {rcom}' if rcom else ''
+                        nxt = nxt[:mr.start(5)] + new_val + suffix
+                        changed = True
+                    out.append(nxt)
+                    j += 1
+                else:
+                    out.append(nxt)
+                    j = rewrite_block_items(j + 1, len(mr.group(1)), set())
+                continue
+            out.append(nxt)
+            j += 1
+        i = j
+    return out, changed
+
+
+def _claim_person_refs(claim: dict) -> list[str]:
+    """Every raw person reference a claim carries: `persons:` plus role values."""
+    refs = list(link_field_refs(claim.get('persons')))
+    roles = claim.get('roles')
+    if isinstance(roles, dict):
+        for value in roles.values():
+            refs.extend(link_field_refs(value))
+    return refs
+
+
+def _claim_resolved_persons(claim: dict, alias_map: dict[str, str] | None) -> set[str]:
+    """The set of P-ids a claim's persons/roles resolve to (names via aliases)."""
+    out: set[str] = set()
+    for ref in _claim_person_refs(claim):
+        rid = resolve_typed_ref(ref, alias_map, want='P')
+        if rid:
+            out.add(rid)
+    return out
+
+
+def _relink_claims_in_source(
+    text: str, merged_id: str, survivor_id: str,
+    alias_map: dict[str, str] | None, token_re: re.Pattern,
+) -> tuple[str, list[str], list[str]]:
+    """Relink every claim in one source's ## Claims block, ALL statuses.
+
+    Returns (new_text, edited_claim_ids, both_named_relationship_claim_ids).
+    E016 fires on ANY claim referencing a merged person - suggested, accepted,
+    disputed, rejected, superseded, needs-review alike - so no status is
+    skipped. Spans are rewritten bottom-up so earlier spans' line indexes stay
+    valid when a duplicate list item is dropped.
+
+    Safety is layered: the block must parse and align with the text spans
+    before any span is touched (a file that does not read back cleanly AND
+    mentions the merged id is a refusal, never a guess); afterwards the whole
+    rewritten block is re-parsed and must show the same claim count, the same
+    id in every position, and NO remaining reference resolving to the merged
+    person - so a form the line-level rewriter missed becomes a refusal
+    naming the file instead of a silent leftover E016.
+
+    Raises `_EditRefused` on any of those failures; the caller refuses the
+    whole merge with nothing written.
+    """
+    lines = text.splitlines()
+    block = _find_claims_block(lines)
+    if block is None:
+        return text, [], []
+    open_fence, close_fence = block
+    base_indent, spans = _claim_spans(lines, open_fence, close_fence)
+    block_text = '\n'.join(lines[open_fence + 1:close_fence])
+    try:
+        parsed = yaml.safe_load(block_text)
+    except yaml.YAMLError:
+        parsed = None
+    if parsed is None:
+        parsed = []
+    if not isinstance(parsed, list) or len(parsed) != len(spans):
+        if token_re.search(block_text):
+            raise _EditRefused(
+                'its ## Claims block does not read back cleanly, so the claim '
+                'relink has no safe landing place. Run `fha lint`, repair this '
+                'file by hand, then re-run the merge'
+            )
+        return text, [], []
+
+    edited: list[str] = []
+    both_named: list[str] = []
+    changed_any = False
+    for k in range(len(spans) - 1, -1, -1):
+        claim = parsed[k]
+        if not isinstance(claim, dict):
+            continue
+        resolved = _claim_resolved_persons(claim, alias_map)
+        if merged_id not in resolved:
+            continue
+        label = str(claim.get('id') or f'claim {k + 1}')
+        if survivor_id in resolved and \
+                str(claim.get('type') or '').strip().lower() in _TOMBSTONE_KIN_TYPES:
+            both_named.append(label)
+        start, end = spans[k]
+        new_span, ch = _rewrite_span_person_fields(
+            lines[start:end], base_indent, merged_id, survivor_id, alias_map, token_re)
+        if ch:
+            lines[start:end] = new_span
+            changed_any = True
+        edited.append(label)
+    edited.reverse()
+    both_named.reverse()
+    if not changed_any:
+        if edited:
+            # The parse says these claims name the merged person, yet the
+            # line-level rewrite found nothing to change - an exotic form.
+            raise _EditRefused(
+                f'claim(s) {", ".join(edited)} reference the merged person in a '
+                'form this tool cannot rewrite; update them by hand, then re-run'
+            )
+        return text, [], both_named
+
+    new_text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+    problem = claims_edit_problem(new_text, None)
+    if problem is not None:
+        raise _EditRefused(f'{problem} after the relink, so the edit was abandoned')
+    new_lines = new_text.splitlines()
+    new_block = _find_claims_block(new_lines)
+    reparsed = None
+    if new_block is not None:
+        try:
+            reparsed = yaml.safe_load('\n'.join(new_lines[new_block[0] + 1:new_block[1]]))
+        except yaml.YAMLError:
+            reparsed = None
+    if not isinstance(reparsed, list) or len(reparsed) != len(parsed):
+        raise _EditRefused('the relink would change the number of claims in the block')
+    for old, new in zip(parsed, reparsed):
+        if not isinstance(old, dict):
+            continue
+        if not isinstance(new, dict) or \
+                normalize_id(str(old.get('id') or '')) != normalize_id(str(new.get('id') or '')):
+            raise _EditRefused('the relink would disturb a claim id in the block')
+        if merged_id in _claim_resolved_persons(new, alias_map):
+            raise _EditRefused(
+                f'claim {new.get("id", "?")} still references the merged person '
+                'after the rewrite (a form this tool cannot rewrite); update it '
+                'by hand, then re-run'
+            )
+    return new_text, edited, both_named
+
+
+def _relink_people_frontmatter(
+    text: str, merged_id: str, survivor_id: str,
+    alias_map: dict[str, str] | None, token_re: re.Pattern,
+) -> tuple[str, bool]:
+    """Repoint a source record's frontmatter `people:` list to the survivor.
+
+    A `people:` entry naming the merged person is a W107 source after the
+    merge; the list is the human-maintained "this source shows these people"
+    statement, so it must follow the identity. Inline and block-list forms
+    both handled; an entry that becomes a duplicate of the survivor already
+    listed is dropped. Raises `_EditRefused` if the rewritten frontmatter no
+    longer parses.
+    """
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        return text, False
+    span = _fm_key_span(lines, fm[0], fm[1], 'people')
+    if span is None:
+        return text, False
+    key_line, end = span
+    m = re.match(r'^(people\s*:\s*)(.*)$', lines[key_line])
+    raw = m.group(2)
+    value, comment = _split_inline_comment(raw)
+    stripped = value.strip()
+    changed = False
+    if stripped:
+        new_val, ch = _rewrite_person_list_value(
+            stripped, merged_id, survivor_id, alias_map, token_re)
+        if ch:
+            suffix = f'  {comment}' if comment else ''
+            lines[key_line] = m.group(1) + new_val + suffix
+            changed = True
+    else:
+        item_re = re.compile(r'^(\s*-\s+)(.*)$')
+        seen: set[str] = set()
+        out: list[str] = []
+        for j in range(key_line + 1, end):
+            ln = lines[j]
+            mi = item_re.match(ln)
+            if not mi:
+                out.append(ln)
+                continue
+            ival, icom = _split_inline_comment(mi.group(2))
+            istr = ival.strip()
+            rid = _resolve_person_item(istr, alias_map)
+            new_item = istr
+            if rid == merged_id:
+                new_item = _rewrite_ref_item(istr, token_re, fmt_id_display(survivor_id))
+                rid = survivor_id
+                changed = True
+            if rid is not None and rid in seen:
+                changed = True
+                continue
+            if rid is not None:
+                seen.add(rid)
+            if new_item == istr:
+                out.append(ln)
+            else:
+                suffix = f'  {icom}' if icom else ''
+                out.append(mi.group(1) + new_item + suffix)
+        if changed:
+            lines[key_line + 1:end] = out
+    if not changed:
+        return text, False
+    new_text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+    problem = _fm_parse_problem(new_text)
+    if problem is not None:
+        raise _EditRefused(f'{problem} after the people: relink, so the edit was abandoned')
+    return new_text, True
+
+
+def _relink_relationship_targets(
+    text: str, merged_id: str, survivor_id: str,
+    alias_map: dict[str, str] | None, token_re: re.Pattern,
+) -> tuple[str, int]:
+    """Repoint `relationships:` entries' `to:` fields to the survivor.
+
+    A `to:` left naming the merged person trips W115 (the entry stops
+    reconciling with its backing claim, which this same merge relinks to the
+    survivor) and keeps the human-facing relationship section naming a
+    tombstone. Only the `to:` value changes; `claim:`/`source:`/`type:` and
+    everything else pass through untouched. Returns (new_text, entries_changed).
+    """
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        return text, 0
+    span = _fm_key_span(lines, fm[0], fm[1], 'relationships')
+    if span is None:
+        return text, 0
+    to_re = re.compile(r'^(\s+(?:-\s+)?to\s*:\s*)(.*)$')
+    count = 0
+    for j in range(span[0] + 1, span[1]):
+        m = to_re.match(lines[j])
+        if not m:
+            continue
+        value, comment = _split_inline_comment(m.group(2))
+        stripped = value.strip()
+        if not stripped:
+            continue
+        rid = _resolve_person_item(stripped, alias_map)
+        if rid != merged_id:
+            continue
+        new_item = _rewrite_ref_item(stripped, token_re, fmt_id_display(survivor_id))
+        suffix = f'  {comment}' if comment else ''
+        lines[j] = m.group(1) + new_item + suffix
+        count += 1
+    if count == 0:
+        return text, 0
+    new_text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+    problem = _fm_parse_problem(new_text)
+    if problem is not None:
+        raise _EditRefused(f'{problem} after the relationships relink, so the edit was abandoned')
+    return new_text, count
+
+
+def _fm_parse_problem(text: str) -> str | None:
+    """Vet a rewritten record's frontmatter: it must still parse as a mapping."""
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        return 'the record would lose its frontmatter'
+    try:
+        meta = yaml.safe_load('\n'.join(lines[1:fm[1]]))
+    except yaml.YAMLError:
+        return 'the frontmatter would no longer read as YAML'
+    if not isinstance(meta, dict):
+        return 'the frontmatter would no longer read as a mapping'
+    return None
+
+
+def _person_fm_problem(text: str, expect_id: str) -> str | None:
+    """Vet a rewritten person record: frontmatter parses and the id is intact."""
+    problem = _fm_parse_problem(text)
+    if problem is not None:
+        return problem
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    meta = yaml.safe_load('\n'.join(lines[1:fm[1]]))
+    if normalize_id(str(meta.get('id') or '')) != expect_id:
+        return 'the record id would change'
+    return None
+
+
+def _fold_fm_list(text: str, key: str, rendered_items: list[str],
+                  insert_after: tuple[str, ...] = ('name', 'id')) -> str:
+    """Append rendered items to a top-level frontmatter LIST key.
+
+    Extends an inline list in place (mapping items render as flow mappings, so
+    `[T. E. Hartley, {value: X, restricted: true}]` stays one line), appends
+    `- item` lines to a block list at its own indent, and creates the key as
+    an inline list after the first `insert_after` anchor found when absent.
+    Raises `_EditRefused` when the existing value is a form this text edit
+    cannot extend (a block scalar, a non-list scalar).
+    """
+    if not rendered_items:
+        return text
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        raise _EditRefused('the record has no frontmatter to edit')
+    span = _fm_key_span(lines, fm[0], fm[1], key)
+    if span is None:
+        pos = fm[1]
+        for anchor in insert_after:
+            a_span = _fm_key_span(lines, fm[0], fm[1], anchor)
+            if a_span is not None:
+                pos = a_span[1]
+                break
+        lines.insert(pos, f'{key}: [{", ".join(rendered_items)}]')
+    else:
+        key_line, end = span
+        m = re.match(r'^(' + re.escape(key) + r'\s*:\s*)(.*)$', lines[key_line])
+        value, comment = _split_inline_comment(m.group(2))
+        stripped = value.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            inner = stripped[1:-1].strip()
+            items = _split_flow_items(inner) if inner else []
+            items.extend(rendered_items)
+            suffix = f'  {comment}' if comment else ''
+            lines[key_line] = m.group(1) + '[' + ', '.join(items) + ']' + suffix
+        elif not stripped:
+            item_indent = '  '
+            for j in range(key_line + 1, end):
+                mi = re.match(r'^(\s*)-\s', lines[j])
+                if mi:
+                    item_indent = mi.group(1)
+                    break
+            insert_at = end
+            while insert_at > key_line + 1 and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            lines[insert_at:insert_at] = [f'{item_indent}- {item}' for item in rendered_items]
+        else:
+            raise _EditRefused(
+                f'the {key}: value is not a list this tool can extend; add the '
+                'folded entries by hand'
+            )
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+
+def _fold_external_ids(text: str, pairs: list[tuple[str, object]]) -> str:
+    """Append external-id keys the survivor lacks to its `external_ids:` mapping.
+
+    Extends a block mapping at its child indent, extends an inline flow
+    mapping in place, and creates the key (block form) before the closing
+    fence when absent. Values render through `_render_scalar` so a quoted
+    numeric string stays a string.
+    """
+    if not pairs:
+        return text
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        raise _EditRefused('the record has no frontmatter to edit')
+    span = _fm_key_span(lines, fm[0], fm[1], 'external_ids')
+    rendered = [f'{k}: {_render_scalar(v)}' for k, v in pairs]
+    if span is None:
+        lines[fm[1]:fm[1]] = ['external_ids:'] + [f'  {r}' for r in rendered]
+    else:
+        key_line, end = span
+        m = re.match(r'^(external_ids\s*:\s*)(.*)$', lines[key_line])
+        value, comment = _split_inline_comment(m.group(2))
+        stripped = value.strip()
+        if stripped.startswith('{') and stripped.endswith('}'):
+            inner = stripped[1:-1].strip()
+            items = _split_flow_items(inner) if inner else []
+            items.extend(rendered)
+            suffix = f'  {comment}' if comment else ''
+            lines[key_line] = m.group(1) + '{' + ', '.join(items) + '}' + suffix
+        elif not stripped:
+            child_indent = '  '
+            for j in range(key_line + 1, end):
+                if lines[j].strip():
+                    child_indent = re.match(r'^(\s*)', lines[j]).group(1)
+                    break
+            insert_at = end
+            while insert_at > key_line + 1 and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            lines[insert_at:insert_at] = [f'{child_indent}{r}' for r in rendered]
+        else:
+            raise _EditRefused(
+                'the external_ids: value is not a mapping this tool can extend; '
+                'add the folded ids by hand'
+            )
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+
+def _render_relationship_entry(entry: dict, item_indent: str) -> list[str]:
+    """Render one folded `relationships:` entry as block-list YAML lines.
+
+    Folding moves an entry between files, so it is re-rendered from its parsed
+    dict (insertion order preserved - the author's key order survives; a hand
+    comment inside the entry does not, which the fold reports honestly by
+    listing the tombstone in `changed[]`). Scalars quote only when YAML needs
+    it; nested values render flow-style on one line.
+    """
+    lines: list[str] = []
+    first = True
+    for k, v in entry.items():
+        prefix = f'{item_indent}- ' if first else f'{item_indent}  '
+        lines.append(f'{prefix}{k}: {_render_scalar(v)}')
+        first = False
+    return lines
+
+
+def _fold_relationship_entries(text: str, entries: list[dict]) -> str:
+    """Append folded relationship entries to the survivor's `relationships:` block."""
+    if not entries:
+        return text
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        raise _EditRefused('the record has no frontmatter to edit')
+    span = _fm_key_span(lines, fm[0], fm[1], 'relationships')
+    if span is None:
+        new_lines = ['relationships:']
+        for entry in entries:
+            new_lines.extend(_render_relationship_entry(entry, '  '))
+        lines[fm[1]:fm[1]] = new_lines
+    else:
+        key_line, end = span
+        m = re.match(r'^(relationships\s*:\s*)(.*)$', lines[key_line])
+        value, _comment = _split_inline_comment(m.group(2))
+        stripped = value.strip()
+        if stripped and stripped != '[]':
+            raise _EditRefused(
+                'the relationships: value is not a block list this tool can '
+                'extend; add the folded entries by hand'
+            )
+        if stripped == '[]':
+            lines[key_line] = m.group(1).rstrip()
+        item_indent = '  '
+        for j in range(key_line + 1, end):
+            mi = re.match(r'^(\s*)-\s', lines[j])
+            if mi:
+                item_indent = mi.group(1)
+                break
+        insert_at = end
+        while insert_at > key_line + 1 and not lines[insert_at - 1].strip():
+            insert_at -= 1
+        new_lines = []
+        for entry in entries:
+            new_lines.extend(_render_relationship_entry(entry, item_indent))
+        lines[insert_at:insert_at] = new_lines
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+
+def _set_fm_scalar(text: str, key: str, rendered_value: str) -> str:
+    """Set one top-level frontmatter key to a scalar (replace or append).
+
+    An existing key's whole span (including any nested block) is replaced by
+    the single scalar line; a missing key is appended at the bottom of the
+    frontmatter, so the four tombstone fields land together in call order.
+    """
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        raise _EditRefused('the record has no frontmatter to edit')
+    span = _fm_key_span(lines, fm[0], fm[1], key)
+    new_line = f'{key}: {rendered_value}'
+    if span is None:
+        lines.insert(fm[1], new_line)
+    else:
+        lines[span[0]:span[1]] = [new_line]
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+
+def _remove_fm_key(text: str, key: str) -> str:
+    """Remove one top-level frontmatter key and its nested block, if present."""
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        return text
+    span = _fm_key_span(lines, fm[0], fm[1], key)
+    if span is None:
+        return text
+    del lines[span[0]:span[1]]
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+
+def _replace_fm_inline_list(text: str, key: str, rendered_items: list[str]) -> str:
+    """Replace an existing top-level list key with a one-line inline list.
+
+    Used to reduce the tombstone's `aliases:` to the bare P-id so the merged
+    person's name-aliases resolve at the survivor rather than clashing. A
+    record without the key is left alone (there is nothing to reduce; its
+    `name:` stays, as SPEC §9's tombstone keeps its identity readable).
+    """
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        return text
+    span = _fm_key_span(lines, fm[0], fm[1], key)
+    if span is None:
+        return text
+    lines[span[0]:span[1]] = [f'{key}: [{", ".join(rendered_items)}]']
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+
+def _strip_external_id_keys(text: str, keys: set[str]) -> str:
+    """Remove folded keys from the tombstone's `external_ids:`, keeping conflicts.
+
+    A key whose value folded to (or already matched) the survivor is stripped;
+    a CONFLICTING key stays on the tombstone so the losing value is never
+    silently destroyed - the warning names both values and the tombstone
+    keeps the evidence. When nothing remains, the whole key goes.
+    """
+    if not keys:
+        return text
+    lines = text.splitlines()
+    fm = _fm_span(lines)
+    if fm is None:
+        return text
+    span = _fm_key_span(lines, fm[0], fm[1], 'external_ids')
+    if span is None:
+        return text
+    key_line, end = span
+    m = re.match(r'^(external_ids\s*:\s*)(.*)$', lines[key_line])
+    value, comment = _split_inline_comment(m.group(2))
+    stripped = value.strip()
+    if stripped.startswith('{') and stripped.endswith('}'):
+        inner = stripped[1:-1].strip()
+        items = _split_flow_items(inner) if inner else []
+        kept = [it for it in items
+                if _unquote(it.split(':', 1)[0].strip()) not in keys]
+        if kept:
+            suffix = f'  {comment}' if comment else ''
+            lines[key_line] = m.group(1) + '{' + ', '.join(kept) + '}' + suffix
+        else:
+            del lines[key_line:end]
+    else:
+        kept_lines: list[str] = []
+        remaining = False
+        for j in range(key_line + 1, end):
+            ln = lines[j]
+            mk = re.match(r'^\s+([^\s#][^:]*?)\s*:', ln)
+            if mk and _unquote(mk.group(1).strip()) in keys:
+                continue
+            if mk:
+                remaining = True
+            kept_lines.append(ln)
+        if remaining:
+            lines[key_line + 1:end] = kept_lines
+        else:
+            del lines[key_line:end]
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+
+def _scan_person_profiles(archive_root: Path) -> dict[str, tuple[Path, dict]]:
+    """Map every P-id under `people/` to its profile (path, frontmatter meta).
+
+    One scan feeds everything the merge needs - locating both records, the
+    merged_into chain walk, and the archive-wide alias map - so the verb works
+    with a stale or absent index (the §14a3 contract) and never scans twice.
+    Companion views are excluded; a record that will not parse is skipped
+    (it cannot be merged or resolve names, and lint owns reporting it).
+    """
+    people_dir = archive_root / 'people'
+    out: dict[str, tuple[Path, dict]] = {}
+    if not people_dir.is_dir():
+        return out
+    for path in sorted(people_dir.rglob('*.md')):
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('id_type') != 'P' or parsed.get('is_companion'):
+            continue
+        try:
+            rec = read_record(path)
+        except Exception:  # noqa: BLE001 - unreadable record cannot take part
+            continue
+        meta = rec.get('meta') or {}
+        pid = normalize_id(parsed['id_str'])
+        if pid not in out:
+            out[pid] = (path, meta)
+    return out
+
+
+def _final_survivor(profiles: dict[str, tuple[Path, dict]], person_id: str) -> str:
+    """Follow a `merged_into` chain to its living end (cycle-safe).
+
+    SPEC §9: tools resolve references *through* merged_into. Used to name the
+    chain's final survivor when someone tries to merge INTO a tombstone - the
+    refusal tells them where the merge should actually land.
+    """
+    seen: set[str] = set()
+    current = person_id
+    while current not in seen:
+        seen.add(current)
+        entry = profiles.get(current)
+        if entry is None:
+            return current
+        meta = entry[1]
+        if str(meta.get('status') or '').strip().lower() != 'merged':
+            return current
+        nxt = normalize_id(str(meta.get('merged_into') or ''))
+        if not nxt:
+            return current
+        current = nxt
+    return current
+
+
+def _relationship_edge_key(entry: dict, alias_map: dict[str, str] | None) -> tuple:
+    """The dedupe identity of one relationships entry: (to, type, subtype).
+
+    `to:` compares by resolved P-id when it resolves, else by its normalized
+    text; a missing `subtype` means `biological` (the SPEC §8.2 default), so
+    an explicit `subtype: biological` and an omitted one are the same edge.
+    """
+    to_raw = str(entry.get('to') or '')
+    to_key = resolve_typed_ref(to_raw, alias_map, want='P') \
+        or strip_link_wrapper(to_raw).strip().lower()
+    type_key = str(entry.get('type') or '').strip().lower()
+    subtype_key = str(entry.get('subtype') or 'biological').strip().lower()
+    return to_key, type_key, subtype_key
+
+
+def run_confirm_merge(
+    archive_root: Path, *, person_merged: str, into: str, reason: str,
+    dry_run: bool = False,
+) -> Result:
+    """Enact a human-confirmed identity merge - the full SPEC §9 write.
+
+    `data` is {'status', 'merged', 'survivor', 'folded': {counts},
+    'relinked_claims', 'relinked_profiles', 'prose_refs_remaining',
+    'renamed_to'}. The plan is built completely in memory (validation, folds,
+    tombstone, every relink) before anything is written; `--dry-run` prints
+    that plan as per-file unified diffs plus the pending rename and writes
+    nothing. Live mode applies with an undo journal and rolls everything back
+    on any failure. Exit: 0 clean or idempotent `already`; 1 when the merge
+    landed but carries warnings (an external-id conflict, evidence of a
+    relationship between the two); 3 for a refusal or a rolled-back failure.
+
+    Deliberately out of scope: the split (`confirm separate` stays a guided
+    human task, SPEC §9) and evidence judgment - the merge-identities skill
+    lays out the case and the human decides; this verb enacts, warning (never
+    refusing) when the records themselves hint the two may be different
+    people.
+    """
+    result = Result(data={
+        'status': None, 'merged': None, 'survivor': None, 'folded': {},
+        'relinked_claims': 0, 'relinked_profiles': 0,
+        'prose_refs_remaining': 0, 'renamed_to': None,
+    })
+
+    # ── Validation: everything refusable is refused before any write ────────
+    for label, pid in (('person to merge', person_merged), ('--into survivor', into)):
+        if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
+            return _fail(result, 'invalid-id',
+                         f'The {label} argument {pid!r} is not a valid person ID. '
+                         'P-ids look like P-de957bcda1.')
+    pm, ps = normalize_id(person_merged), normalize_id(into)
+    pm_disp, ps_disp = fmt_id_display(pm), fmt_id_display(ps)
+    result.data['merged'] = pm_disp
+    result.data['survivor'] = ps_disp
+    if pm == ps:
+        return _fail(result, 'same-person',
+                     'A person cannot be merged into themselves - pass two '
+                     'different P-ids.')
+    if not (reason or '').strip():
+        return _fail(result, 'failed',
+                     'Pass --reason "<why you decided these are one person>" - it '
+                     'is kept on the tombstone as merge_reason: so the decision '
+                     'is never lost.')
+    reason = reason.strip()
+
+    profiles = _scan_person_profiles(archive_root)
+    for label, pid in (('person to merge', pm), ('--into survivor', ps)):
+        if pid not in profiles:
+            return _fail(result, 'not-found',
+                         f'No person record for {fmt_id_display(pid)} (the {label}) '
+                         f'under {archive_root / "people"}. Check the ID with '
+                         f'`fha find {fmt_id_display(pid)}`.')
+    merged_path, merged_meta = profiles[pm]
+    survivor_path, survivor_meta = profiles[ps]
+
+    # Idempotence and chain checks come before anything else so a re-run of a
+    # finished merge is a clean no-op, matching confirm cooccur's `already`.
+    if str(merged_meta.get('status') or '').strip().lower() == 'merged':
+        existing_target = normalize_id(str(merged_meta.get('merged_into') or ''))
+        if existing_target == ps:
+            result.data['status'] = 'already'
+            result.add('info',
+                       f'{pm_disp} is already merged into {ps_disp}. Nothing to do.')
+            return result
+        return _fail(result, 'already-merged-elsewhere',
+                     f'{pm_disp} is already merged into '
+                     f'{fmt_id_display(existing_target) or "another person"}. To '
+                     f'move it to {ps_disp} instead, undo the earlier merge by '
+                     'hand first (edit the tombstone record), then re-run.')
+    if str(survivor_meta.get('status') or '').strip().lower() == 'merged':
+        final = _final_survivor(profiles, ps)
+        final_disp = fmt_id_display(final)
+        return _fail(result, 'merged-survivor',
+                     f'{ps_disp} is itself merged (a tombstone). Merge into the '
+                     f'chain\'s final survivor instead: fha confirm merge '
+                     f'{pm_disp} --into {final_disp} --reason "..."')
+
+    dest = merged_path.with_name(f'MERGED-INTO-{ps_disp}__{merged_path.name}')
+    if dest.exists():
+        return _fail(result, 'rename-collision',
+                     f'Cannot rename the merged record: {dest.name} already exists '
+                     f'in {dest.parent}. Move that file aside, then retry.')
+
+    # Names resolve through the archive-wide alias map (built from every person
+    # record), so an ambiguous name - two people sharing it - never resolves
+    # and is never relinked by guess; that is lint's clash to surface.
+    alias_map = build_alias_map(
+        dict(meta, id=pid) for pid, (_p, meta) in profiles.items()
+    )
+    token_re = _person_token_re(pm)
+
+    # ── Plan: survivor folds ────────────────────────────────────────────────
+    folded = {'name_variants': 0, 'aliases': 0, 'external_ids': 0,
+              'external_id_conflicts': 0, 'relationships': 0}
+    try:
+        survivor_before = read_text_exact(survivor_path)
+        merged_before = read_text_exact(merged_path)
+    except OSError as e:
+        return _fail(result, 'failed', f'cannot read the person records: {e}')
+
+    survivor_text = survivor_before
+
+    # Fold names: merged name + variants into the survivor's name_variants,
+    # deduped against everything the survivor already displays. A restricted
+    # `{value:, restricted: true}` mapping folds as a mapping (SPEC §18) so
+    # the privacy flag travels with the name.
+    survivor_known = set()
+    if survivor_meta.get('name'):
+        survivor_known.add(str(survivor_meta['name']).strip().lower())
+    survivor_variants = survivor_meta.get('name_variants') or []
+    if isinstance(survivor_variants, (list, tuple)):
+        for v in survivor_variants:
+            val = _variant_value(v)
+            if val:
+                survivor_known.add(val.strip().lower())
+    # Snapshot the PRE-fold display names now: the variant-fold loop below
+    # grows survivor_known as it dedupes, and the aliases fold must compare
+    # against what the survivor knew before - the freshly folded names are
+    # exactly what the aliases mirror needs to gain.
+    survivor_prefold_known = set(survivor_known)
+    fold_variant_items: list[str] = []
+    merged_name_candidates: list[object] = []
+    if merged_meta.get('name'):
+        merged_name_candidates.append(str(merged_meta['name']))
+    merged_variants = merged_meta.get('name_variants') or []
+    if isinstance(merged_variants, (list, tuple)):
+        merged_name_candidates.extend(merged_variants)
+    for cand in merged_name_candidates:
+        val = _variant_value(cand)
+        if not val or val.strip().lower() in survivor_known:
+            continue
+        survivor_known.add(val.strip().lower())
+        fold_variant_items.append(_render_scalar(cand))
+        folded['name_variants'] += 1
+
+    # Fold alias stems. The survivor's aliases: is the tool-maintained mirror
+    # (id + name + variants + human stems); when it exists, the folded names
+    # join it so the mirror stays complete. When it does not exist, only the
+    # merged record's HUMAN STEMS force its creation - name/variants already
+    # resolve through the name_variants fold above. A RESTRICTED variant's
+    # value never enters aliases: as plain text - it would strip the privacy
+    # marker from a name someone no longer uses; it resolves through the
+    # folded `{value:, restricted: true}` mapping instead (SPEC §18).
+    def _alias_strings(meta: dict) -> list[str]:
+        return [strip_link_wrapper(str(a)).strip() for a in (meta.get('aliases') or [])]
+
+    def _is_restricted_variant(variant) -> bool:
+        return isinstance(variant, dict) and \
+            variant.get('restricted') not in (None, False, '', 'false')
+
+    survivor_alias_known = {a.lower() for a in _alias_strings(survivor_meta) if a}
+    survivor_alias_known |= survivor_prefold_known
+    survivor_alias_known.add(ps)
+    merged_variant_values = {v.strip().lower() for v in
+                             (_variant_value(x) for x in merged_name_candidates) if v}
+    merged_public_names = [
+        v for v in (_variant_value(x) for x in merged_name_candidates
+                    if not _is_restricted_variant(x)) if v
+    ]
+    merged_stems: list[str] = []
+    fold_alias_items: list[str] = []
+    for a in _alias_strings(merged_meta):
+        if not a or normalize_id(a) == pm or id_type_of(a):
+            continue
+        if a.lower() not in merged_variant_values:
+            merged_stems.append(a)
+    survivor_has_aliases = bool(survivor_meta.get('aliases'))
+    alias_candidates: list[str] = []
+    if survivor_has_aliases:
+        alias_candidates = merged_public_names + merged_stems
+    elif merged_stems:
+        alias_candidates = merged_stems
+    for a in alias_candidates:
+        if a.strip().lower() in survivor_alias_known:
+            continue
+        survivor_alias_known.add(a.strip().lower())
+        fold_alias_items.append(_yaml_inline(a))
+        folded['aliases'] += 1
+
+    # Fold external ids; a same-key different-value conflict keeps the
+    # survivor's value and is NEVER silently resolved (owner decision) - the
+    # warning names both values and the tombstone keeps the losing one.
+    merged_ext = merged_meta.get('external_ids')
+    survivor_ext = survivor_meta.get('external_ids')
+    merged_ext = merged_ext if isinstance(merged_ext, dict) else {}
+    survivor_ext = survivor_ext if isinstance(survivor_ext, dict) else {}
+    fold_ext_pairs: list[tuple[str, object]] = []
+    conflict_keys: set[str] = set()
+    strip_ext_keys: set[str] = set()
+    for key, value in merged_ext.items():
+        key_s = str(key)
+        if key_s not in {str(k) for k in survivor_ext}:
+            fold_ext_pairs.append((key_s, value))
+            strip_ext_keys.add(key_s)
+            folded['external_ids'] += 1
+        elif str(survivor_ext.get(key_s)).strip() == str(value).strip():
+            strip_ext_keys.add(key_s)
+        else:
+            conflict_keys.add(key_s)
+            folded['external_id_conflicts'] += 1
+            result.add('warning',
+                       f'external_ids conflict on {key_s!r}: the survivor has '
+                       f'{str(survivor_ext.get(key_s))!r}, the merged record had '
+                       f'{str(value)!r}. Kept the survivor\'s; the merged '
+                       'record\'s value stays on its tombstone - reconcile by '
+                       'hand if the survivor\'s is the wrong one.')
+
+    # Fold relationships entries not already present (same to+type+subtype);
+    # an edge pointing AT the survivor is evidence the two may be different
+    # people, so it is skipped and warned about, never copied as a self-edge.
+    def _rel_entries(meta: dict) -> list[dict]:
+        block = meta.get('relationships')
+        return [e for e in block if isinstance(e, dict)] if isinstance(block, list) else []
+
+    survivor_edges = {_relationship_edge_key(e, alias_map) for e in _rel_entries(survivor_meta)}
+    survivor_block_claims = {
+        normalize_id(strip_link_wrapper(str(e.get('claim'))))
+        for e in _rel_entries(survivor_meta) if e.get('claim')
+    }
+    fold_rel_entries: list[dict] = []
+    skipped_self_types: list[str] = []
+    for entry in _rel_entries(merged_meta):
+        to_resolved = resolve_typed_ref(str(entry.get('to') or ''), alias_map, want='P')
+        if to_resolved in (ps, pm):
+            skipped_self_types.append(str(entry.get('type') or 'relationship'))
+            continue
+        edge_key = _relationship_edge_key(entry, alias_map)
+        if edge_key in survivor_edges:
+            continue
+        survivor_edges.add(edge_key)
+        fold_rel_entries.append(entry)
+        if entry.get('claim'):
+            survivor_block_claims.add(normalize_id(strip_link_wrapper(str(entry.get('claim')))))
+        folded['relationships'] += 1
+    if skipped_self_types:
+        result.add('warning',
+                   'The record being merged lists a relationship to the survivor '
+                   f'({", ".join(sorted(set(skipped_self_types)))}) - evidence the '
+                   'two may be different people. Re-check the decision if in '
+                   'doubt; that edge was not copied onto the survivor.')
+
+    try:
+        survivor_text = _fold_fm_list(survivor_text, 'name_variants', fold_variant_items)
+        survivor_text = _fold_fm_list(survivor_text, 'aliases', fold_alias_items,
+                                      insert_after=('name_variants', 'name', 'id'))
+        survivor_text = _fold_external_ids(survivor_text, fold_ext_pairs)
+        survivor_text = _fold_relationship_entries(survivor_text, fold_rel_entries)
+        # The survivor's own relationships may name the merged person; those
+        # entries repoint like any other profile's (the self-edge they become
+        # is covered by the evidence warning above).
+        survivor_text, survivor_self_relinks = _relink_relationship_targets(
+            survivor_text, pm, ps, alias_map, token_re)
+        problem = _person_fm_problem(survivor_text, ps)
+    except _EditRefused as e:
+        return _fail(result, 'refused',
+                     f'{survivor_path.name}: {e}. Nothing was written.')
+    if problem is not None:
+        return _fail(result, 'refused',
+                     f'{survivor_path.name}: {problem}, so the merge was '
+                     'abandoned. Nothing was written.')
+    if survivor_self_relinks:
+        result.add('warning',
+                   f'The survivor\'s own relationships: block listed the merged '
+                   f'person {survivor_self_relinks} time(s) - those entries now '
+                   'point at the survivor themselves. Evidence the two may be '
+                   'different people; review (and likely remove) those entries.')
+
+    # ── Plan: tombstone ─────────────────────────────────────────────────────
+    # Folds and strip land together: a folded name or sourced relationship
+    # left on the tombstone would clash as an alias or trip W115 (the
+    # reconciliation check has no merged filter), so steps 2 and 3 of SPEC §9
+    # are one atomic plan.
+    try:
+        tombstone_text = _remove_fm_key(merged_before, 'name_variants')
+        tombstone_text = _remove_fm_key(tombstone_text, 'relationships')
+        tombstone_text = _strip_external_id_keys(tombstone_text, strip_ext_keys)
+        tombstone_text = _replace_fm_inline_list(tombstone_text, 'aliases', [pm_disp])
+        tombstone_text = _set_fm_scalar(tombstone_text, 'status', 'merged')
+        tombstone_text = _set_fm_scalar(tombstone_text, 'merged_into', ps_disp)
+        tombstone_text = _set_fm_scalar(tombstone_text, 'merge_reason', _yaml_inline(reason))
+        tombstone_text = _set_fm_scalar(tombstone_text, 'merged_date', _today())
+        problem = _person_fm_problem(tombstone_text, pm)
+    except _EditRefused as e:
+        return _fail(result, 'refused',
+                     f'{merged_path.name}: {e}. Nothing was written.')
+    if problem is not None:
+        return _fail(result, 'refused',
+                     f'{merged_path.name}: {problem}, so the merge was abandoned. '
+                     'Nothing was written.')
+
+    # ── Plan: relink claims + source frontmatter, then other profiles ───────
+    planned: dict[Path, tuple[str, str]] = {}
+    if survivor_text != survivor_before:
+        planned[survivor_path] = (survivor_before, survivor_text)
+    planned[merged_path] = (merged_before, tombstone_text)
+
+    text_cache: dict[Path, str] = {
+        survivor_path: survivor_text, merged_path: tombstone_text,
+    }
+    relinked_claims = 0
+    relinked_profiles = 0
+    both_named_claims: list[str] = []
+    edited_claim_meta: list[dict] = []
+    sources_dir = archive_root / 'sources'
+    if sources_dir.is_dir():
+        for path in sorted(sources_dir.rglob('*.md')):
+            try:
+                before = read_text_exact(path)
+            except OSError as e:
+                return _fail(result, 'failed', f'cannot read {path}: {e}')
+            try:
+                rec = read_record(path)
+            except Exception:  # noqa: BLE001 - handled by the token check below
+                rec = None
+            if rec is not None and rec.get('unfenced_claims'):
+                if any(pm in _claim_resolved_persons(c, alias_map)
+                       for c in rec.get('claims') or [] if isinstance(c, dict)):
+                    return _fail(result, 'refused',
+                                 f'{path} keeps its claims outside a ```yaml fence '
+                                 'and they reference the person being merged. Wrap '
+                                 'the block first (`fha lint --fix-claims-fence` '
+                                 'offers to), then re-run. Nothing was written.')
+            try:
+                text, edited, both = _relink_claims_in_source(
+                    before, pm, ps, alias_map, token_re)
+                text, people_changed = _relink_people_frontmatter(
+                    text, pm, ps, alias_map, token_re)
+            except _EditRefused as e:
+                return _fail(result, 'refused',
+                             f'{path}: {e}. Nothing was written.')
+            relinked_claims += len(edited)
+            both_named_claims.extend(both)
+            if rec is not None and edited:
+                edited_ids = {normalize_id(str(x)) for x in edited if is_valid_id(str(x))}
+                for c in rec.get('claims') or []:
+                    if isinstance(c, dict) and \
+                            normalize_id(str(c.get('id') or '')) in edited_ids:
+                        edited_claim_meta.append(c)
+            if people_changed:
+                relinked_profiles += 1
+            if text != before:
+                planned[path] = (before, text)
+                text_cache[path] = text
+            else:
+                text_cache[path] = before
+
+    for pid, (path, _meta) in profiles.items():
+        if path in (merged_path, survivor_path):
+            continue
+        try:
+            before = read_text_exact(path)
+        except OSError as e:
+            return _fail(result, 'failed', f'cannot read {path}: {e}')
+        try:
+            text, n_changed = _relink_relationship_targets(
+                before, pm, ps, alias_map, token_re)
+        except _EditRefused as e:
+            return _fail(result, 'refused', f'{path}: {e}. Nothing was written.')
+        if n_changed:
+            relinked_profiles += 1
+            planned[path] = (before, text)
+        text_cache[path] = text
+
+    result.data['folded'] = folded
+    result.data['relinked_claims'] = relinked_claims
+    result.data['relinked_profiles'] = relinked_profiles
+    result.data['renamed_to'] = str(dest)
+
+    if both_named_claims:
+        ids = ', '.join(dict.fromkeys(both_named_claims))
+        result.add('warning',
+                   f'Relationship claim(s) {ids} recorded an edge between these '
+                   'two people - evidence they may be two different people. '
+                   'Review those claims after the merge (they now name only the '
+                   'survivor).')
+
+    # W115 heads-up: the reverse reconciliation check expects an opted-in
+    # relationships: block to APPLY every accepted kin claim naming its
+    # person. Relinked accepted kin claims the survivor's block does not link
+    # will surface as W115 - warn now so the human is not surprised by lint.
+    survivor_opted_in = bool(_rel_entries(survivor_meta)) or bool(fold_rel_entries)
+    if survivor_opted_in:
+        uncovered = []
+        for c in edited_claim_meta:
+            if str(c.get('status') or '').strip().lower() != 'accepted':
+                continue
+            if str(c.get('type') or '').strip().lower() not in _TOMBSTONE_KIN_TYPES:
+                continue
+            cid = normalize_id(str(c.get('id') or ''))
+            if cid and cid not in survivor_block_claims:
+                uncovered.append(fmt_id_display(cid))
+        if uncovered:
+            result.add('warning',
+                       f'The survivor\'s relationships: block does not yet apply '
+                       f'accepted claim(s) {", ".join(uncovered)}, which now name '
+                       'them - `fha lint` will list this (W115). Add the entries '
+                       'to the block, or remove the block if it is not meant to '
+                       'be complete.')
+
+    # Prose mentions are deliberately left for W107's gradual-cleanup list
+    # (SPEC §9); count them against the PLANNED text state so the number is
+    # what lint will actually see after the merge. Generated views are
+    # skipped - they are rebuilt, not cleaned up.
+    prose_refs = 0
+    for tree in ('people', 'sources', 'notes', 'places'):
+        tree_dir = archive_root / tree
+        if not tree_dir.is_dir():
+            continue
+        for path in sorted(tree_dir.rglob('*')):
+            if not path.is_file() or path.suffix.lower() not in ('.md', '.yaml', '.yml'):
+                continue
+            if path == merged_path:
+                continue
+            text = text_cache.get(path)
+            if text is None:
+                try:
+                    text = path.read_text(encoding='utf-8', errors='ignore')
+                except OSError:
+                    continue
+            if '<!-- GENERATED' in text[:400]:
+                continue
+            prose_refs += len(token_re.findall(text))
+    result.data['prose_refs_remaining'] = prose_refs
+
+    has_warnings = any(m.level == 'warning' for m in result.messages)
+
+    # ── Dry-run: the complete, honest preview ───────────────────────────────
+    if dry_run:
+        result.data['status'] = 'ok'
+        result.add('info', f'[dry-run] Would merge {pm_disp} into {ps_disp}.')
+        for path, (before, after) in planned.items():
+            for dline in difflib.unified_diff(
+                before.splitlines(), after.splitlines(),
+                fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+            ):
+                result.add('info', dline)
+        result.add('info', f'[dry-run] Would rename {merged_path.name} -> {dest.name}')
+        result.add('info',
+                   f'[dry-run] Would relink {relinked_claims} claim(s) and '
+                   f'{relinked_profiles} other record(s); {prose_refs} prose '
+                   f'mention(s) of {pm_disp} would remain for gradual cleanup (W107).')
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        if has_warnings:
+            result.exit_code = EXIT_WARNINGS
+        return result
+
+    # ── Apply: undo journal, rename last ────────────────────────────────────
+    undo: list = []
+
+    def _rollback_merge() -> None:
+        for fn in reversed(undo):
+            try:
+                fn()
+            except OSError:
+                pass
+        result.changed.clear()
+
+    for path, (before, after) in planned.items():
+        # Register the restore BEFORE writing (the convert_mining pattern): a
+        # write that fails partway can still leave a half-written file, and
+        # restoring the pristine text covers that too.
+        undo.append(lambda p=path, t=before: write_text_exact(p, t))
+        try:
+            write_text_exact(path, reapply_newline(after, before))
+        except OSError as e:
+            _rollback_merge()
+            return _fail(result, 'failed',
+                         f'cannot write {path}: {e}; every earlier write was '
+                         'rolled back - nothing to clean up.')
+
+    try:
+        undo.append(lambda src=dest, back=merged_path: src.rename(back))
+        merged_path.rename(dest)
+    except OSError as e:
+        _rollback_merge()
+        return _fail(result, 'failed',
+                     f'cannot rename {merged_path.name} -> {dest.name}: {e}; '
+                     'every content write was rolled back - nothing to clean up.')
+
+    for path in planned:
+        if path != merged_path:
+            result.note_changed(path)
+    result.note_changed(dest)
+
+    result.data['status'] = 'ok'
+    result.add('info',
+               f'Merged {pm_disp} into {ps_disp}. The old record is kept forever '
+               f'as a tombstone, renamed to {dest.name}.', path=dest)
+    result.add('info',
+               f'Folded into the survivor: {folded["name_variants"]} name '
+               f'variant(s), {folded["aliases"]} alias(es), '
+               f'{folded["external_ids"]} external id(s), '
+               f'{folded["relationships"]} relationship entr(y/ies).')
+    result.add('info',
+               f'Relinked {relinked_claims} claim(s) and {relinked_profiles} '
+               f'other record(s) to {ps_disp}.')
+    if prose_refs:
+        result.add('info',
+                   f'{prose_refs} prose mention(s) of {pm_disp} remain - they '
+                   'still resolve through the tombstone, and `fha lint` lists '
+                   'them (W107) for gradual cleanup.')
+    result.add('info', 'Next: run `fha index` so the merge enters the query surface.',
+               next_step='fha index')
+    if str(survivor_meta.get('tier') or '').strip().lower() == 'curated':
+        result.add('info',
+                   f'Then refresh the survivor\'s views - `fha views timeline '
+                   f'{ps_disp}`, `fha views sources-index {ps_disp}`, and '
+                   f'`fha views draft-queue {ps_disp}` - so the relinked life '
+                   'shows up there.',
+                   next_step=f'fha views timeline {ps_disp}')
+    result.add('info',
+               'Finish with `fha lint` to confirm nothing new points at the '
+               'merged id.', next_step='fha lint')
+    if has_warnings:
+        result.exit_code = EXIT_WARNINGS
+    return result
+
+
 # ── Result helpers ──────────────────────────────────────────────────────────────
 
 def _fail(result: Result, status: str, message: str) -> Result:
@@ -1536,8 +3059,17 @@ def _cmd_draft(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_merge(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_confirm_merge(
+        archive_root, person_merged=args.person_merged, into=args.into,
+        reason=args.reason, dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -> None:
-    """Build the six `confirm` subparsers (shared by main fha + standalone)."""
+    """Build the seven `confirm` subparsers (shared by main fha + standalone)."""
     def root_arg(p: argparse.ArgumentParser) -> None:
         if suppress_root:
             p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -1604,6 +3136,20 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     root_arg(dr_p)
     dr_p.set_defaults(func=_cmd_draft)
 
+    mg_p = subs.add_parser(
+        'merge',
+        help='Enact a human-confirmed identity merge: tombstone + rename + fold + relink (SPEC §9)')
+    mg_p.add_argument('person_merged', metavar='P-merged',
+                      help='The duplicate record that becomes the tombstone.')
+    mg_p.add_argument('--into', metavar='P-survivor', required=True,
+                      help='The record that keeps the canonical home.')
+    mg_p.add_argument('--reason', metavar='TEXT', required=True,
+                      help='Why these are one person; stored as merge_reason: on the tombstone.')
+    mg_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                      help='Preview every edit and the rename without writing.')
+    root_arg(mg_p)
+    mg_p.set_defaults(func=_cmd_merge)
+
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
@@ -1615,16 +3161,18 @@ Write down a suggestion you've decided to accept.
   fha confirm place <C-id...> (--name NAME | --into <L-id>)
   fha confirm discovery "<text>"
   fha confirm draft <P-id>
+  fha confirm merge <P-merged> --into <P-survivor> --reason "<why>"
 
-Each verb turns one kind of proposed link, connection, place, or note into a
-record. Every verb previews with --dry-run first."""
+Each verb turns one kind of decision you have made - a link, a connection, a
+place, a note, a draft, an identity merge - into the records. Every verb
+previews with --dry-run first."""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'confirm' onto the main fha parser."""
     p = subs.add_parser(
         'confirm',
-        help='Write back a detection candidate the human picked (xref/cooccur/place/discovery/draft)',
+        help='Write back a decision the human made (xref/cooccur/dismiss/place/discovery/draft/merge)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
