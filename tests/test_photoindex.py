@@ -3015,6 +3015,54 @@ class SetSummaryTests(unittest.TestCase):
                 self.assertEqual(composed, human + '\n\nAI: new text')
                 self.assertTrue(preserved)
 
+    def test_compose_mixed_comment_replaces_only_trailing_ai_block(self) -> None:
+        """A rerun on the mixed comment this command itself produces
+        ('human caption\\n\\nAI: v1') must replace the trailing AI block,
+        not stack 'AI: v2', 'AI: v3', ... forever - the human prefix is
+        kept byte-for-byte."""
+        mixed = 'Grandma wrote: June wedding.\n\nAI: v1'
+        composed, preserved = photoindex._compose_user_comment(mixed, 'v2', False)
+        self.assertEqual(composed, 'Grandma wrote: June wedding.\n\nAI: v2')
+        self.assertTrue(preserved)
+        # Rerunning on the result stays bounded: still exactly one AI block.
+        composed, preserved = photoindex._compose_user_comment(composed, 'v3', False)
+        self.assertEqual(composed, 'Grandma wrote: June wedding.\n\nAI: v3')
+        self.assertTrue(preserved)
+        # The Model: prefix is the same AI convention (_AI_COMMENT_RE).
+        composed, preserved = photoindex._compose_user_comment(
+            'human note\n\nModel: old summary', 'v2', False)
+        self.assertEqual(composed, 'human note\n\nAI: v2')
+        self.assertTrue(preserved)
+
+    def test_compose_mixed_comment_append_keeps_old_ai_block(self) -> None:
+        """--append on a mixed comment keeps the human prefix AND the old
+        AI block, adding the new block below both."""
+        mixed = 'Grandma wrote: June wedding.\n\nAI: v1'
+        composed, preserved = photoindex._compose_user_comment(mixed, 'v2', True)
+        self.assertEqual(composed, 'Grandma wrote: June wedding.\n\nAI: v1\n\nAI: v2')
+        self.assertTrue(preserved)
+        # A default (replace) run after that --append swaps only the final
+        # block: the deliberately-kept v1 is now part of the retained text.
+        composed, preserved = photoindex._compose_user_comment(composed, 'v3', False)
+        self.assertEqual(composed, 'Grandma wrote: June wedding.\n\nAI: v1\n\nAI: v3')
+        self.assertTrue(preserved)
+
+    def test_compose_ambiguous_ai_markers_are_treated_as_human(self) -> None:
+        """Ambiguity preserves: an AI marker that is not a blank-line-delimited
+        FINAL paragraph is not clearly the tool's own trailing block - it may
+        be, or may shield, human text, so the whole comment is kept and the
+        new block appended."""
+        cases = [
+            'She wrote AI: on the back herself',                # mid-line marker
+            'human line\nAI: one newline is not a blank line',  # no paragraph boundary
+            'caption\n\nAI: v1\n\nMom added this note later',   # human note below old block
+        ]
+        for existing in cases:
+            with self.subTest(existing=existing):
+                composed, preserved = photoindex._compose_user_comment(existing, 'new', False)
+                self.assertEqual(composed, existing + '\n\nAI: new')
+                self.assertTrue(preserved)
+
     # ── engine: plan + apply ──────────────────────────────────────────────
 
     def test_set_summary_plan_requires_exactly_one_target_and_real_text(self) -> None:
@@ -3310,6 +3358,55 @@ class SetSummaryTests(unittest.TestCase):
                 self.assertEqual([row[0] for row in fts_hit], ['photos/wedding_1902.jpg'])
             finally:
                 conn.close()
+
+    def test_set_summary_rerun_on_mixed_comment_does_not_accumulate(self) -> None:
+        """End-to-end regression for the accumulation bug: two engine runs on
+        a photo with a human caption leave exactly one AI block in the write
+        args and in the photos/photo_fts mirror, human prefix intact."""
+        human = 'Grandma wrote: June wedding.'
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan(archive, {'wedding_1902.jpg': human})
+            cfg = {'roots': {'photos': 'photos'}}
+
+            written_args: list[str] = []
+
+            def fake_write(items: list) -> dict:
+                written_args.extend(t for _p, t in items)
+                return {p: None for p, _t in items}
+
+            photoindex._run_exiftool_write_comment = fake_write
+
+            # First run: appends the AI block below the human caption.
+            photoindex._run_exiftool_read_comments = self._fake_reads(
+                {'wedding_1902.jpg': human})
+            result = photoindex.run_set_summary(
+                archive, cfg, 'v1', ['photos/wedding_1902.jpg'])
+            self.assertEqual(result['written'], ['photos/wedding_1902.jpg'])
+            self.assertEqual(written_args, [f'{human}\n\nAI: v1'])
+
+            # Second run reads what the first wrote: the trailing AI block is
+            # replaced, not stacked ('AI: v1' must not survive beside 'AI: v2').
+            photoindex._run_exiftool_read_comments = self._fake_reads(
+                {'wedding_1902.jpg': f'{human}\n\nAI: v1'})
+            result = photoindex.run_set_summary(
+                archive, cfg, 'v2', ['photos/wedding_1902.jpg'])
+            self.assertEqual(result['written'], ['photos/wedding_1902.jpg'])
+            self.assertEqual(result['preserved_human'], ['photos/wedding_1902.jpg'])
+            self.assertEqual(written_args[-1], f'{human}\n\nAI: v2')
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                stored = conn.execute(
+                    "SELECT user_comment FROM photos WHERE path='photos/wedding_1902.jpg'"
+                ).fetchone()[0]
+                fts = conn.execute(
+                    "SELECT user_comment FROM photo_fts WHERE path='photos/wedding_1902.jpg'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(stored, f'{human}\n\nAI: v2')
+            self.assertEqual(fts, f'{human}\n\nAI: v2')
 
     def test_decline_prompt_writes_nothing(self) -> None:
         """'n' and EOF (closed stdin) both decline; nothing is written."""
