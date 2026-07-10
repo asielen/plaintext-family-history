@@ -133,13 +133,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "e4d6c28180849600aef39a8dd4f670d3cb6061297857e33e13a44ca57b16e48b",
+      "sha256": "f516353dbdcc1571973add3909cadd85aa656810706ad27f4e20621bcdc96e9c",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "54301c377e521be8f05c815dd4d5312b375d1255f13e4666e73557e58021adfd",
+      "sha256": "002e59f181285260fe49fcf318fd16b5fa0b4f2e601138eeef44bfb23630eafb",
       "spec_version": "1.2"
     },
     {
