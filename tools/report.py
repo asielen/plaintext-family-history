@@ -46,8 +46,8 @@ snapshot (treats `prev` as empty) but still writes a fresh one afterward.
 
 Writing `notes/discoveries.md` and confirming/dismissing `fha cooccur`
 candidates both require human confirmation (TOOLING §15a) - that interactive
-loop is a future skill-layer concern (mirrors `fha cooccur`'s read-only
-tombstone discipline); this tool only ever proposes and prints.
+loop is owned by the today skill's reaction flow (mirrors `fha cooccur`'s
+read-only tombstone discipline); this tool only ever proposes and prints.
 
 CODE MAP
 --------
