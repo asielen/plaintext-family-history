@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: session spine + drafting/inference + frontier skills authored (I1-I3 authored; photo-context's core verb shipped, its SKILL.md pending).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract), `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, and `merge-identities` SKILL.md files, plus a `photo-context/DESIGN.md`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both since closed at the verb level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; the photo-context SKILL.md remains a separate, later skill-mode PR).
+**Status: all layers authored (I1-I5; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and twelve SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, and `share-and-export`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
 
 ---
 
@@ -168,15 +168,15 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 ---
 
-## Layer I4 - Skill backlog (Milestone I4 - designed; core verb shipped, SKILL.md pending)
+## Layer I4 - Skill backlog (Milestone I4 - shipped)
 
-Ideas carried from TOOLING_INTERFACE.md §2.3. `photo-context` has a settled design and its core-tool
-gap is now closed (`fha photoindex set-summary` shipped, BUILD.md M3.5); the SKILL.md itself is not
-yet written, so the layer stays unshipped.
+Ideas carried from the former TOOLING_INTERFACE.md §2.3 backlog. `photo-context`, its one entry, is
+fully shipped: the core verb (`fha photoindex set-summary`, BUILD.md M3.5) landed first, and the
+SKILL.md landed with the 2026-07 usability-review wave. The backlog is empty.
 
 | Skill | Status | Sketch |
 |---|---|---|
-| `photo-context` | **designed; core verb shipped - SKILL.md pending** | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - captions get smarter as the archive grows. Writes marked as AI (SPEC §20); operates through `fha photoindex` and exiftool-via-tool, never bulk-reading the photos tree. |
+| `photo-context` | **shipped** (`.claude/skills/photo-context/SKILL.md`) | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - captions get smarter as the archive grows. Writes marked as AI (SPEC §20); operates through `fha photoindex` and exiftool-via-tool, never bulk-reading the photos tree. |
 
 **Design + status:** `.claude/skills/photo-context/DESIGN.md` settles the trigger (invoked-only, one photo or a
 small batch), inputs (`photoindex find`, `photo_people`, `fha relate`, claim/place context), and the
@@ -184,8 +184,40 @@ provenance rule (AI-marked, human caption preserved). The core-tool gap it confi
 `fha photoindex set-summary` (BUILD.md M3.5) writes the AI-marked `UserComment`, preserves human comment
 text verbatim, previews with `--dry-run`, and is working-copy-aware. SPEC §20 already permitted the write,
 so no SPEC amendment was needed - only the tool. Per `_STANDARD.md` §6 the SKILL.md was deferred until
-that verb existed; writing `photo-context/SKILL.md` against the design is a separate, later skill-mode PR.
-This layer flips to shipped only when that SKILL.md lands.
+that verb existed; it was then authored against the design (DESIGN.md keeps the history and records the
+flip). Session check pending, like the other layers.
+
+---
+
+## Layer I5 - Usability-review session skills (Milestone I5 - authored)
+
+The 2026-07 usability review (owner point 3: skill coverage) added the two conversational front doors
+the persona report found missing, plus the `today` extension that completes the report's connection
+loop. Design: TOOLING_INTERFACE.md §2.3.
+
+### MI5.1 - `find-photos` skill
+
+**Status: authored** (`.claude/skills/find-photos/SKILL.md`). Session check pending (behavioral transcript with the phase-2 landing).
+
+The photo subsystem's front door: resolve "show me grandma's photos" to a P-id via `fha find`, answer from `fha photoindex find` at variation-group granularity in plain language, offer a clickable `fha photoindex gallery` page, and hand identification to `tag-person`'s own confirm prompt. Read-only.
+
+**Orchestrates:** `fha find` (+ `--related`), `fha photoindex` (freshen when stale), `fha photoindex find`/`triage`/`gallery`, `fha photoindex tag-person` (hand-off).
+
+**Done when:** person / date / topic / triage asks each produce a plain-language, group-level answer with zero archive writes; the gallery offer reports the exact file location and `file://` link.
+
+### MI5.2 - `share-and-export` skill
+
+**Status: authored** (`.claude/skills/share-and-export/SKILL.md`). Session check pending (behavioral transcript with the phase-2 landing).
+
+The guided path for the privacy-sensitive act: route the request to `packet` / `gedcom` / `site --standalone` / `wikitree` / `backup`, speak each tool's privacy defaults in plain words before running, preview first, then report exactly what went out and what stayed home. Never adds an override flag unasked; importing a tree INTO the archive is a gedcom-import / migration conversation, not this skill.
+
+**Orchestrates:** `fha packet`, `fha gedcom`, `fha site --standalone`, `fha wikitree`, `fha backup`.
+
+**Done when:** each sharing phrase routes to the right tool with the privacy script spoken first; a living-person packet request is declined with the tool's reason translated, never worked around; every write is preceded by a preview and the report names the artifact path and the exclusions.
+
+### MI5.3 - `today` connection-reaction extension
+
+**Status: authored** (folded into `.claude/skills/today/SKILL.md` as flow step 6). Completes the loop `tools/report.py` §8 left to the skill layer: "yes, they were neighbors" → `fha confirm cooccur` (dry-run echoed first, minted `suggested` unless the human's flat, unhedged answer is the review); "no, stop suggesting that pair" → `fha confirm dismiss` (tombstone, reversible). No write without an explicit ruling.
 
 ---
 

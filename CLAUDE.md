@@ -5,7 +5,8 @@ In **tool-building** or **code-review** mode, also read **AGENTS_TOOLING.md**.
 
 Claude-Code-specific notes:
 - Workflow skills live in `.claude/skills/` - process-source, review-claims,
-mine-transcript, write-biography, today, research-next, merge-identities, place-research (as implemented).
+mine-transcript, write-biography, today, research-next, merge-identities, place-research,
+reconcile-site-edits, find-photos, share-and-export, photo-context (as implemented).
 Prefer them when they match the task. Their design is in `TOOLING_INTERFACE.md`, their build
 sequence in `BUILD_INTERFACE.md`.
 - `SPEC.md` is the law. The tool design is split by concern: `TOOLING.md` (core tools),
