@@ -33,6 +33,7 @@ python tools/fha.py lint     --root my-family-archive   # "is my archive shaped 
 python tools/fha.py backup   --root my-family-archive   # dated zip beside the archive - restore = unzip
 python tools/fha.py relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
 python tools/fha.py views timeline P-aaaa --format html --root my-family-archive   # a printable one-page timeline (lands in generated/views/)
+python tools/fha.py photoindex gallery --person P-aaaa --root my-family-archive   # a clickable page of someone's photos - double-click to open (lands in generated/gallery/)
 ```
 
 `--root` just names which archive folder to use. On a Mac, use `python3` if that's what answers.

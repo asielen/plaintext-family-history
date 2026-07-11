@@ -8,8 +8,9 @@ Read-only candidate-suggestion tool (TOOLING §14a2) - sibling to
 `fha places candidates`: deterministic clustering, human-confirm discipline,
 consumed through `fha report`. Never writes to the archive: confirming a
 person-pair mints a `relationship` claim and dismissing one records a
-tombstone, but both of those writes belong to a future skill layer, not this
-tool. This tool only reads `.cache/cooccur_dismissed.json`; it never writes it.
+tombstone, but both of those writes belong to `fha confirm` (TOOLING §14a3)
+and the today skill's reaction flow, not this tool. This tool only reads
+`.cache/cooccur_dismissed.json`; it never writes it.
 
 THREE OUTPUTS (TOOLING §690)
 ----------------------------

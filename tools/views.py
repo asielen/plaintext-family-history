@@ -85,18 +85,24 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    GeneratedFileParentMissing,  # a companion's parent folder is missing (stale index)
+    GeneratedFileRefused,    # shared refusal when a write would clobber a non-generated file
     Result,               # the structured-result contract every run_* returns
     SOCIAL_PARENT_SUBTYPES,   # parent natures shown but NOT numbered (SPEC §12.2)
+    archive_title,        # masthead/page title from fha.yaml site.archive_name
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
     format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103
     is_generated_text,    # GENERATED-header ownership test (first non-blank line)
     is_genetic_parent_subtype,
     load_fha_yaml,
+    load_view_css,        # cached design/view.css loader -> (css, warning_or_None)
+    render_template,      # load + render a tools/templates/ Jinja2 template (shared)
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child
     normalize_id,         # lower-cases IDs for consistent set/dict keying
     open_index_db,        # open .cache/index.sqlite with freshness check + table probe
     read_record,          # parses YAML front-matter + body from a .md file
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message
+    write_generated_file,    # marker-guarded write shared with photoindex gallery
 )
 
 
@@ -137,7 +143,7 @@ def _views_result(
 #    _md_inline_to_html           - escape + [[ID]] tokens → styled <span> text
 #    _html_out_path               - generated/views/{stem}.html target path
 #    _format_precheck             - engine-level fmt validation + Jinja2 probe
-#    _view_css, _view_template    - cached design/view.css + view.html template
+#    _view_css                    - cached design/view.css for inlining
 #    _render_view_html            - wrap a body in the standalone page shell
 #    _timeline_body_html          - timeline sections → HTML body
 #
@@ -222,39 +228,19 @@ def _gen_header(subcommand: str) -> str:
     )
 
 
-class _ManualFileRefused(Exception):
-    """Raised when a view writer would overwrite a hand-written (non-generated) file.
-
-    The archive contract (AGENTS.md) forbids overwriting human-written text: a
-    file at a generated view's path that does not carry the GENERATED marker as
-    its first non-blank line is treated as human-owned and never clobbered.
-    """
-
-
 def _write_view_file(out_path: Path, content: str) -> Path:
     """Write a generated view file, refusing to clobber hand-written content.
 
-    Raises _ManualFileRefused if a file already exists at out_path whose first
-    non-blank line is not the GENERATED marker (i.e. a human-written file).
-    Returns out_path on success.
+    Thin wrapper over the shared _lib.write_generated_file guard (the ownership
+    rule lives there so views and the photoindex gallery cannot drift): raises
+    GeneratedFileRefused if a file already exists at out_path whose first
+    non-blank line is not the views GENERATED marker. The narrower views prefix
+    keeps another tool's GENERATED file protected from a views overwrite.
     """
-    if out_path.exists():
-        try:
-            existing = out_path.read_text(encoding='utf-8', errors='ignore')
-        except OSError:
-            existing = ''
-        # Ownership = the views marker on the first non-blank line, via the
-        # shared _lib predicate (which also tolerates a UTF-8 BOM: an editor
-        # re-save must not turn a generated file into a "hand-written" one
-        # this refuses to refresh). The narrower views prefix keeps another
-        # tool's GENERATED file protected from a views overwrite.
-        if not is_generated_text(existing, prefix=_GEN_MARKER):
-            raise _ManualFileRefused(out_path)
-    out_path.write_text(content, encoding='utf-8')
-    return out_path
+    return write_generated_file(out_path, content, _GEN_MARKER)
 
 
-def _refused_exit(e: _ManualFileRefused) -> int:
+def _refused_exit(e: GeneratedFileRefused) -> int:
     """Report a refused overwrite and return the failure exit code."""
     print(
         f'ERROR: refusing to overwrite hand-written file (no GENERATED header): '
@@ -262,6 +248,77 @@ def _refused_exit(e: _ManualFileRefused) -> int:
         file=sys.stderr,
     )
     return EXIT_FAILURE
+
+
+def _missing_parent_exit(e: GeneratedFileParentMissing) -> int:
+    """Report a companion write whose person folder no longer exists.
+
+    write_generated_file raises this instead of recreating the folder (a
+    stale .cache/index.sqlite can point at a folder that moved or was
+    deleted) - never silently rebuild archive structure from cache state.
+    """
+    print(
+        f'ERROR: the folder for {e} no longer exists on disk - it may have '
+        f'moved or been deleted since the index was last built. Run `fha index` '
+        f'to refresh the index, then try again (or restore the folder).',
+        file=sys.stderr,
+    )
+    return EXIT_FAILURE
+
+
+def _write_os_error_exit(e: OSError) -> int:
+    """Report a failed view write (permission denied, disk full, a bad --out
+    target) and return the failure exit code, instead of a raw traceback."""
+    print(
+        f'ERROR: could not write the view file ({e.strerror or e}). Check that '
+        f'the destination folder exists and is writable (or that the disk has '
+        f'room), then re-run.',
+        file=sys.stderr,
+    )
+    return EXIT_FAILURE
+
+
+def _runtime_error_exit(e: RuntimeError) -> int:
+    """Report an engine-layer RuntimeError (e.g. _lib.render_template's
+    translated broken-template message) and return the failure exit code."""
+    print(f'ERROR: {e}', file=sys.stderr)
+    return EXIT_FAILURE
+
+
+def _generate_or_warn(context: str, fn, *args, **kwargs):
+    """Call a per-item view generator inside a batch (--all-curated /
+    refresh), warning and returning None instead of letting a single item's
+    write failure abort the rest of the batch.
+
+    Before this wrapper, GeneratedFileParentMissing (routine: one curated
+    person's folder is stale/moved relative to the index) hit the same
+    top-level except as the rare GeneratedFileRefused case and aborted the
+    whole run, discarding `changed` for every person already written this
+    pass. `context` names what's being skipped, e.g. 'timeline for P-xxx'.
+    A single-person (non-batch) call is NOT expected to use this wrapper -
+    there the top-level except clauses below are correct, since one item IS
+    the whole run.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except GeneratedFileRefused as e:
+        print(
+            f'WARNING: skipped {context} - hand-written file at {e} has no '
+            f'GENERATED header (move or delete it, then re-run for this one).',
+            file=sys.stderr,
+        )
+    except GeneratedFileParentMissing as e:
+        print(
+            f'WARNING: skipped {context} - the folder for {e} no longer '
+            f'exists (run `fha index` to refresh, then retry this one).',
+            file=sys.stderr,
+        )
+    except OSError as e:
+        print(f'WARNING: skipped {context} - could not write ({e.strerror or e}).',
+              file=sys.stderr)
+    except RuntimeError as e:
+        print(f'WARNING: skipped {context} - {e}', file=sys.stderr)
+    return None
 
 
 def _rebase(p: Path, old: Path, new: Path) -> Path:
@@ -356,57 +413,27 @@ def _format_precheck(fmt: str, allowed: tuple[str, ...]) -> Result | None:
     return None
 
 
-# Both caches are per-process: the CSS and template are the same for every
-# file in a bulk `views refresh --format both`, and re-reading them per file
-# would dominate the render time for no benefit.
-_VIEW_CSS_CACHE: str | None = None
-_VIEW_TEMPLATE_CACHE = None
+# The CSS read and template load are cached per process inside _lib (the shared
+# single-file HTML infra); this flag preserves views' own contract of printing
+# the "css missing" warning at most ONCE per process even across a bulk
+# `views refresh --format both` that renders many files.
+_VIEW_CSS_WARNED = False
 
 
 def _view_css() -> str:
-    """Return design/view.css for inlining (cached; '' when missing).
+    """Return design/view.css for inlining ('' when missing), warning once.
 
-    Resolved as `fha site` resolves its design package: the design/ folder
-    sits beside tools/ both in this repo and in an installed archive (the
-    manifest ships it), so a tools-relative path works in both.  A missing
-    file degrades to an unstyled-but-complete page with a warning naming the
-    fix - styling is never load-bearing.
+    Delegates the (cached) read and the warning text to the shared loader; the
+    warning is printed here - the interface layer - once per process, exactly
+    as before, since re-reading is what the cache prevents, not re-warning.
+    A missing file degrades to an unstyled-but-complete page.
     """
-    global _VIEW_CSS_CACHE
-    if _VIEW_CSS_CACHE is None:
-        css_path = Path(__file__).resolve().parent.parent / 'design' / 'view.css'
-        try:
-            _VIEW_CSS_CACHE = css_path.read_text(encoding='utf-8')
-        except OSError:
-            print(
-                'WARNING: design/view.css is missing - the HTML view will be '
-                'unstyled (its content is still complete). Restore the design/ '
-                'folder next to tools/ (re-run your tools install/update) for '
-                'the styled version.',
-                file=sys.stderr,
-            )
-            _VIEW_CSS_CACHE = ''
-    return _VIEW_CSS_CACHE
-
-
-def _view_template():
-    """Return the cached Jinja2 view.html template.
-
-    Autoescape is ON: the template escapes title/masthead/date itself, and the
-    pre-rendered fragments (marker, css, body) pass through `| safe` in the
-    template - the body is built exclusively by the serializers below, which
-    escape every piece of record text they interpolate.
-    Callers reach this only after _format_precheck proved Jinja2 importable.
-    """
-    global _VIEW_TEMPLATE_CACHE
-    if _VIEW_TEMPLATE_CACHE is None:
-        import jinja2
-        env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(str(Path(__file__).parent / 'templates')),
-            autoescape=True,
-        )
-        _VIEW_TEMPLATE_CACHE = env.get_template('view.html')
-    return _VIEW_TEMPLATE_CACHE
+    global _VIEW_CSS_WARNED
+    css, warning = load_view_css('the HTML view')
+    if warning and not _VIEW_CSS_WARNED:
+        print(warning, file=sys.stderr)
+        _VIEW_CSS_WARNED = True
+    return css
 
 
 def _render_view_html(archive_root: Path, subcommand: str, title: str, body_html: str) -> str:
@@ -418,22 +445,21 @@ def _render_view_html(archive_root: Path, subcommand: str, title: str, body_html
     and `views clean` need no format-specific logic.  The masthead title comes
     from fha.yaml `site: archive_name:` (the `fha site` key, with the legacy
     top-level fallback) so the printed page names the archive it came from.
+    Autoescape (view.html, ON) escapes title/masthead/date; the pre-rendered
+    fragments (marker, css, body) pass through `| safe` in the template - the
+    body is built exclusively by the serializers below, which escape every
+    piece of record text they interpolate. Callers reach this only after
+    _format_precheck proved Jinja2 importable; render_template translates a
+    missing/broken template file into a plain RuntimeError.
     """
-    cfg = load_fha_yaml(archive_root)
-    site_cfg = cfg.get('site')
-    if not isinstance(site_cfg, dict):   # a hand-edited scalar `site:` must not crash a view
-        site_cfg = {}
-    archive_title = (
-        str(site_cfg.get('archive_name') or cfg.get('archive_name') or '').strip()
-        or 'Family History Archive'
-    )
     marker = _gen_header(subcommand).rstrip('\n')
-    return _view_template().render(
+    return render_template(
+        'view.html',
         marker=marker,
         title=title,
         subcommand=subcommand,
         date=_today(),
-        archive_title=archive_title,
+        archive_title=archive_title(load_fha_yaml(archive_root)),
         css=_view_css(),
         body=body_html,
     ) + '\n'
@@ -2392,7 +2418,9 @@ def run_timeline(
                 return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
-                out = _generate_timeline(conn, pid, archive_root, fmt=fmt)
+                out = _generate_or_warn(
+                    f'timeline for {pid}', _generate_timeline, conn, pid, archive_root, fmt=fmt,
+                )
                 if out:
                     print(f'  timeline ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
@@ -2422,8 +2450,14 @@ def run_timeline(
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 
@@ -2469,7 +2503,10 @@ def run_sources_index(
             if all_curated:
                 # Per-person files for all curated persons
                 for pid in _view_eligible_curated_ids(conn, archive_root):
-                    out = _generate_sources_index_person(conn, pid, archive_root, fmt=fmt)
+                    out = _generate_or_warn(
+                        f'sources-index for {pid}', _generate_sources_index_person,
+                        conn, pid, archive_root, fmt=fmt,
+                    )
                     if out:
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
                         changed.append(str(out))
@@ -2477,11 +2514,14 @@ def run_sources_index(
 
             # Couple-folder sources-index.md files
             for folder_path, person_ids in _couple_folders(conn, archive_root):
-                out = _generate_sources_index_couple_folder(
-                    conn, folder_path, person_ids, fmt=fmt, archive_root=archive_root)
-                print(f'  sources-index ->{out.relative_to(archive_root)}')
-                changed.append(str(out))
-                count += 1
+                out = _generate_or_warn(
+                    f'sources-index for {folder_path.name}', _generate_sources_index_couple_folder,
+                    conn, folder_path, person_ids, fmt=fmt, archive_root=archive_root,
+                )
+                if out:
+                    print(f'  sources-index ->{out.relative_to(archive_root)}')
+                    changed.append(str(out))
+                    count += 1
 
             print(f'Generated {count} sources-index file(s).')
             if count:
@@ -2514,8 +2554,14 @@ def run_sources_index(
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 
@@ -2561,7 +2607,9 @@ def run_draft_queue(
                 return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
-                out = _generate_draft_queue(conn, pid, archive_root, fmt=fmt)
+                out = _generate_or_warn(
+                    f'draft-queue for {pid}', _generate_draft_queue, conn, pid, archive_root, fmt=fmt,
+                )
                 if out:
                     print(f'  draft-queue ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
@@ -2591,8 +2639,14 @@ def run_draft_queue(
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 
@@ -2727,7 +2781,9 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         for pid in person_ids:
             for fn, label in _per_person:
                 for fmt_pass in fmt_passes:
-                    out = fn(conn, pid, archive_root, fmt=fmt_pass)
+                    out = _generate_or_warn(
+                        f'{label.strip()} for {pid}', fn, conn, pid, archive_root, fmt=fmt_pass,
+                    )
                     if out:
                         print(f'  {label}->{out.relative_to(archive_root)}')
                         changed.append(str(out))
@@ -2735,9 +2791,10 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
 
         for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
             for fmt_pass in fmt_passes:
-                out = _generate_sources_index_couple_folder(
-                    conn, folder_path, pids_in_folder,
-                    fmt=fmt_pass, archive_root=archive_root)
+                out = _generate_or_warn(
+                    f'sources-index for {folder_path.name}', _generate_sources_index_couple_folder,
+                    conn, folder_path, pids_in_folder, fmt=fmt_pass, archive_root=archive_root,
+                )
                 if out:
                     print(f'  sources-index  ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
@@ -2753,8 +2810,14 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
             print('Run `fha index` when convenient to update the search index with the new view files.')
         return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 

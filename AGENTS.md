@@ -192,6 +192,8 @@ fha views timeline|sources-index|brackets     regenerate views (--format html fo
                             printable standalone page under generated/views/)
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default)
 fha photoindex find ...      query the photo library (never bulk-read photos/)
+fha photoindex gallery ...   the matching photos as one clickable HTML page under
+                            generated/gallery/ (private, disposable, regenerate anytime)
 fha find <ID|text>           locate anything: record + assets + citations for an ID;
                             FTS across records, notes, transcripts, photo captions
 fha find --related <ID>      neighborhood of any ID - people/places/sources/claims
@@ -211,7 +213,7 @@ Never bulk-ingest `photos/` or `documents/` into context.
 
 ### Playbooks (workflow skills)
 
-Nine workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
+Twelve workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
 procedures, `fha` invocations and judgment only, no harness APIs (the standard they follow is
 `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the
 human's own words ("process the inbox", "review the census claims", "are these the same

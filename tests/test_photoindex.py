@@ -1,6 +1,8 @@
 import argparse
 import builtins
+import contextlib
 import inspect
+import io
 import os
 import subprocess
 import shutil
@@ -24,6 +26,7 @@ from _lib import (
     newest_person_record_mtime,
     parse_media_filename,
     photoindex_status,
+    resolve_path,
 )
 
 
@@ -969,12 +972,12 @@ class PhotoindexTests(unittest.TestCase):
                 conn.close()
 
     def test_photoindex_subcommands_are_registered_in_the_cli(self) -> None:
-        """`fha photoindex <subcommand> --help` should resolve for every M3.1-M3.5 subcommand.
+        """`fha photoindex <subcommand> --help` should resolve for every M3.1-M3.6 subcommand.
 
         set-summary is additionally exercised through the standalone entry point
         (`python tools/photoindex.py`) - both parsers share _add_photoindex_args,
         and this pins that a new subcommand reached both front doors."""
-        for name in ('find', 'triage', 'report', 'reconcile', 'tag-person', 'set-summary'):
+        for name in ('find', 'gallery', 'triage', 'report', 'reconcile', 'tag-person', 'set-summary'):
             with self.subTest(name=name):
                 proc = subprocess.run(
                     [sys.executable, 'tools/fha.py', 'photoindex', name, '--help'],
@@ -1885,6 +1888,88 @@ class PhotoindexTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM photos WHERE path LIKE 'MISSING:MISSING:%'"
                 ).fetchone()[0]
                 self.assertEqual(count, 0)
+            finally:
+                conn.close()
+
+    def test_reconcile_recomputes_group_date_after_its_dated_variant_goes_missing(self) -> None:
+        # A group's edtf_resolved must never keep reflecting a variant that
+        # reconcile just flagged MISSING: - _move_cached_path renames path
+        # text only, so without _recompute_group_dates the group's resolved
+        # date would silently survive its own source file's disappearance.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {'portrait_1880.jpg': {'Keywords': ['DATE: 1955!']}}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, cfg)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                before = conn.execute(
+                    "SELECT edtf_resolved FROM photo_groups WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()[0]
+                self.assertEqual(before, '1955')
+            finally:
+                conn.close()
+
+            # The dated front scan vanishes; the undated back scan survives.
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            result = photoindex.run_reconcile(archive, cfg, with_exif=False)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                after = conn.execute(
+                    "SELECT edtf_resolved FROM photo_groups WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()[0]
+                self.assertIsNone(after)
+            finally:
+                conn.close()
+
+    def test_reconcile_clears_date_conflict_when_conflicting_variant_goes_missing(self) -> None:
+        # A group's date_conflict badge must clear once the variant it
+        # conflicted with is gone, not keep flagging a conflict against a
+        # file that no longer exists.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {'Keywords': ['DATE: 1850!']},
+                    'portrait_1880-back.jpg': {'Keywords': ['DATE: 1950!']},
+                }
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, cfg)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                before = conn.execute(
+                    "SELECT date_conflict FROM photo_groups WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()[0]
+                self.assertEqual(before, 1)
+            finally:
+                conn.close()
+
+            # The non-primary back scan (1950) vanishes; only 1850 remains.
+            (archive / 'photos' / 'portrait_1880-back.jpg').unlink()
+            result = photoindex.run_reconcile(archive, cfg, with_exif=False)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880-back.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT edtf_resolved, date_conflict FROM photo_groups "
+                    "WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()
+                self.assertEqual(row[0], '1850')
+                self.assertEqual(row[1], 0)
             finally:
                 conn.close()
 
@@ -2942,6 +3027,851 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertEqual(rows[0][1], 'pid-keyword')
             finally:
                 conn.close()
+
+
+class GalleryTests(unittest.TestCase):
+    """`fha photoindex gallery` (plan 08) - the single-file HTML photo page.
+
+    Staged like the find tests: a fake exiftool payload feeds run_scan, then the
+    gallery is built and the HTML the tool actually wrote is inspected. The page
+    is a disposable private artifact under generated/gallery/; nothing here reads
+    a template in isolation - every assertion reads the produced file."""
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+
+    def _stage(self, archive: Path, rows: dict, cfg: dict | None = None,
+               extra_files: tuple = ()) -> None:
+        """Write any extra photo files, then scan with a fake exiftool payload.
+
+        `rows` maps a bare filename to its exiftool metadata dict; a discovered
+        file with no entry is scanned with empty metadata (it can still group with
+        a sibling). `extra_files` are created under the resolved photos root before
+        the scan so run_scan discovers them (the scan lists real on-disk files;
+        only the metadata is faked)."""
+        cfg = cfg or {'roots': {'photos': 'photos'}}
+        photos_dir = resolve_path('photos', cfg, archive)
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        for name in extra_files:
+            (photos_dir / name).write_bytes(b'\xff\xd8\xff\xd9')
+
+        def fake_exiftool(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+        photoindex._run_exiftool = fake_exiftool
+        photoindex.run_scan(archive, cfg)
+
+    def _make_index(self, archive: Path, persons, face_tags=(), variants=()) -> Path:
+        """Write a schema-valid .cache/index.sqlite so the weaker person tiers and
+        the display-name lookup have something to read. Person ids are stored
+        lowercase (the form photo_people carries), matching the real index."""
+        cache = archive / '.cache'
+        cache.mkdir(exist_ok=True)
+        index_db = cache / 'index.sqlite'
+        conn = sqlite3.connect(index_db)
+        try:
+            conn.executescript(
+                f"""
+                PRAGMA user_version={INDEX_SCHEMA_VERSION};
+                CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO meta(key, value) VALUES ('schema_version', '{INDEX_SCHEMA_VERSION}');
+                CREATE TABLE persons(id TEXT, name TEXT);
+                CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
+                CREATE TABLE person_variants(person_id TEXT, variant TEXT);
+                """
+            )
+            conn.executemany('INSERT INTO persons(id, name) VALUES (?,?)', persons)
+            conn.executemany(
+                'INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', face_tags)
+            conn.executemany(
+                'INSERT INTO person_variants(person_id, variant) VALUES (?,?)', variants)
+            conn.commit()
+        finally:
+            conn.close()
+        return index_db
+
+    @staticmethod
+    def _read(path) -> str:
+        return Path(path).read_text(encoding='utf-8')
+
+    @staticmethod
+    def _args(archive: Path, **over):
+        base = {'root': str(archive), 'person': None, 'keyword': None,
+                'edtf': None, 'text': None, 'out': None}
+        base.update(over)
+        return type('Args', (), base)()
+
+    def test_gallery_one_row_per_group_with_variant_chips(self) -> None:
+        # A front + back + copy of one physical photo collapse to a single row;
+        # the siblings become chips ("back", "copy b"), never their own rows.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(
+                archive,
+                {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}},
+                cfg,
+                extra_files=('portrait_1880b.jpg',),
+            )
+
+            result = photoindex.run_gallery(archive, cfg, edtf='188X')
+            html = self._read(result['written'])
+
+            self.assertEqual(result['matched'], 1)
+            self.assertEqual(html.count('<article class="photo-row">'), 1)
+            # The siblings are chips inside the <details>, not standalone rows.
+            self.assertIn('back', html)
+            self.assertIn('copy b', html)
+            self.assertIn('portrait_1880-back.jpg', html)
+
+    def test_gallery_filters_and_at_group_level(self) -> None:
+        # --edtf hits the front scan's date and --text hits the back scan's
+        # caption: no single raw file satisfies both, yet the group does. Gallery
+        # and find share the matching helper, so they must agree on the result.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {
+                'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                'portrait_1880-back.jpg': {'Caption-Abstract': 'cemetery visit'},
+                'wedding_1902.jpg': {'Keywords': ['DATE: 1902!'],
+                                     'Caption-Abstract': 'Wedding party'},
+            }, cfg)
+
+            find = photoindex.run_find(archive, cfg, edtf='188X', text='cemetery')
+            find_paths = sorted(r['path'] for r in find['rows'])
+            self.assertEqual(find_paths, ['photos/portrait_1880.jpg'])
+
+            gallery = photoindex.run_gallery(archive, cfg, edtf='188X', text='cemetery')
+            self.assertEqual(gallery['matched'], len(find_paths))
+            html = self._read(gallery['written'])
+            for path in find_paths:
+                self.assertIn(Path(path).name, html)
+            self.assertNotIn('wedding_1902.jpg', html)
+
+            # A filter set that matches nothing agrees too: both come back empty.
+            neg_find = photoindex.run_find(archive, cfg, edtf='1902', text='cemetery')
+            self.assertEqual(neg_find['rows'], [])
+            neg_gallery = photoindex.run_gallery(archive, cfg, edtf='1902', text='cemetery')
+            self.assertEqual(neg_gallery['matched'], 0)
+
+    def test_gallery_count_strip_humanizes_the_edtf_filter(self) -> None:
+        # Codex P2 (symmetry): the count strip's "matching dated ..." clause
+        # must read the same humanized form as each row's own date_label,
+        # not the raw EDTF filter syntax the per-row label no longer shows.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, edtf='188X')
+            html = self._read(result['written'])
+
+            self.assertIn('matching dated 1880s', html)
+            self.assertNotIn('188X', html)
+
+    def test_gallery_decade_sections_and_undated_tail(self) -> None:
+        # Dated groups land in decade sections newest-first; the undated group
+        # falls to the "Undated" tail section, which sorts last.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {
+                'portrait_1880.jpg': {'Keywords': ['DATE: 1920!', 'gallery-test']},
+                'portrait_1880-back.jpg': {'Keywords': ['gallery-test']},
+                'wedding_1902.jpg': {'Keywords': ['DATE: 1955!', 'gallery-test']},
+                'family_reunion.jpg': {'Keywords': ['gallery-test']},
+            }, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='gallery-test')
+            html = self._read(result['written'])
+
+            self.assertEqual(result['matched'], 3)
+            i_1950s = html.index('<h2>1950s</h2>')
+            i_1920s = html.index('<h2>1920s</h2>')
+            i_undated = html.index('<h2>Undated</h2>')
+            self.assertLess(i_1950s, i_1920s)   # newest decade first
+            self.assertLess(i_1920s, i_undated)  # undated tail is last
+
+    def test_gallery_confidence_split(self) -> None:
+        # A pid-keyword photo renders in the main flow; a name-match photo drops
+        # into the "Verify these" tail with its via label. Both resolve to the
+        # same person, so a --person build must separate them by confidence.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley')],
+                variants=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'family_reunion.jpg': {'Keywords': ['P-de957bcda1']},
+                'portrait_1880.jpg': {
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+            }, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            self.assertIn('Verify these', html)
+            self.assertIn('Margaret Hartley', html)      # display name in the strip
+            self.assertIn('name match', html)            # the via label
+            self.assertIn('tag-person P-de957bcda1', html)
+            verify_at = html.index('gallery-verify')
+            self.assertLess(html.index('family_reunion.jpg'), verify_at)   # main flow
+            self.assertGreater(html.index('portrait_1880.jpg'), verify_at)  # verify tail
+
+    def test_gallery_renderable_vs_placeholder_tiles(self) -> None:
+        # A browser-renderable .jpg gets a lazy <img>; a .tif gets a placeholder
+        # tile (no <img>) but is still wrapped in an <a href="file://..."> so a
+        # click opens the real file.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {
+                'portrait_1880.jpg': {'Keywords': ['tiletest']},
+                'oldscan.tif': {'Keywords': ['tiletest']},
+            }, cfg, extra_files=('oldscan.tif',))
+
+            result = photoindex.run_gallery(archive, cfg, keyword='tiletest')
+            html = self._read(result['written'])
+
+            self.assertEqual(result['matched'], 2)
+            self.assertEqual(html.count('<img loading="lazy"'), 1)   # only the jpg
+            self.assertIn('ext-badge">TIF<', html)                   # placeholder badge
+            self.assertIn('href="file://', html)
+            self.assertIn('oldscan.tif', html)
+            # The tif is never emitted as an <img> (its alt would name the file).
+            self.assertNotIn('oldscan.tif" alt=', html)
+
+    def test_gallery_file_urls_resolve_through_roots(self) -> None:
+        # With an external photos root in fha.yaml, hrefs must point at the
+        # resolved absolute location, not archive_root/photos.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            external = Path(d) / 'external-photos'
+            external.mkdir()
+            cfg = {'roots': {'photos': str(external)}}
+            self._stage(archive, {'photo1.jpg': {'Keywords': ['exttest']}},
+                        cfg, extra_files=('photo1.jpg',))
+
+            result = photoindex.run_gallery(archive, cfg, keyword='exttest')
+            html = self._read(result['written'])
+
+            self.assertIn((external / 'photo1.jpg').as_uri(), html)
+            # The internal archive/photos location must not appear.
+            self.assertNotIn((archive / 'photos' / 'photo1.jpg').as_uri(), html)
+
+    def test_gallery_overwrites_own_marker_refuses_foreign_file(self) -> None:
+        # The one write guard: a marker-owned file is silently regenerated, a
+        # marker-less (human) file at the target is never clobbered.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['marktest']}}, cfg)
+
+            first = photoindex.run_gallery(archive, cfg, keyword='marktest')
+            self.assertEqual(first.exit_code, EXIT_CLEAN)
+            out_path = Path(first['written'])
+            self.assertTrue(out_path.exists())
+
+            # A second run overwrites its own marker-owned output in place.
+            second = photoindex.run_gallery(archive, cfg, keyword='marktest')
+            self.assertEqual(second.exit_code, EXIT_CLEAN)
+            self.assertEqual(Path(second['written']), out_path)
+
+            # A hand-made file at the --out target is refused and left untouched.
+            foreign = archive / 'generated' / 'gallery' / 'foreign.html'
+            foreign.parent.mkdir(parents=True, exist_ok=True)
+            foreign.write_text('<html>hand made, keep me</html>', encoding='utf-8')
+            refused = photoindex.run_gallery(
+                archive, cfg, keyword='marktest', out='generated/gallery/foreign.html')
+            self.assertEqual(refused.exit_code, EXIT_FAILURE)
+            self.assertEqual(Path(refused.data['refused']), foreign)
+            self.assertEqual(foreign.read_text(encoding='utf-8'),
+                             '<html>hand made, keep me</html>')
+
+    def test_gallery_default_landing_and_out_override(self) -> None:
+        # Person galleries default to generated/gallery/{slug}_{P-id}.html; --out
+        # overrides; the site's own generated/site/ output is never disturbed.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(archive, persons=[('p-de957bcda1', 'Margaret Hartley')])
+            self._stage(archive, {'family_reunion.jpg': {'Keywords': ['P-de957bcda1']}}, cfg)
+
+            site_dir = archive / 'generated' / 'site'
+            site_dir.mkdir(parents=True, exist_ok=True)
+            sentinel = site_dir / 'index.html'
+            sentinel.write_text('SITE OUTPUT', encoding='utf-8')
+
+            default = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            expected = archive / 'generated' / 'gallery' / 'margaret-hartley_P-de957bcda1.html'
+            self.assertEqual(Path(default['written']), expected)
+            self.assertTrue(expected.exists())
+
+            override = photoindex.run_gallery(
+                archive, cfg, person='P-de957bcda1', out='generated/gallery/custom.html')
+            self.assertEqual(Path(override['written']),
+                             archive / 'generated' / 'gallery' / 'custom.html')
+            self.assertTrue((archive / 'generated' / 'gallery' / 'custom.html').exists())
+
+            # generated/site/ is a sibling the gallery never reads or clears.
+            self.assertTrue(sentinel.exists())
+            self.assertEqual(sentinel.read_text(encoding='utf-8'), 'SITE OUTPUT')
+
+    def test_gallery_out_with_missing_parent_folder_is_a_clear_error(self) -> None:
+        # Codex P2: only the default landing spot (generated/gallery/) may
+        # auto-create its folder - an explicit --out is human-typed input, so
+        # a typo'd/nonexistent parent must be a clear error, never a silently
+        # fabricated directory tree anywhere under the archive root.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+
+            missing_dir = archive / 'reports' / 'nested'
+            with self.assertRaises(RuntimeError) as ctx:
+                photoindex.run_gallery(
+                    archive, cfg, edtf='188X', out='reports/nested/farm.html')
+            self.assertIn('--out', str(ctx.exception))
+            self.assertFalse(missing_dir.exists())
+
+    def test_gallery_zero_matches_writes_nothing_exits_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {}, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='no-such-keyword')
+
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            self.assertEqual(result['matched'], 0)
+            self.assertIsNone(result['written'])
+            self.assertFalse((archive / 'generated' / 'gallery').exists())
+
+    def test_gallery_requires_a_filter_and_validates_inputs(self) -> None:
+        # No filter / bad P-id / invalid EDTF are refusals (exit 3), not silent
+        # empties. Driven through _cmd_gallery so the exit codes are exercised.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._stage(archive, {'family_reunion.jpg': {'Keywords': ['DATE: 1880!']}})
+
+            self.assertEqual(
+                photoindex._cmd_gallery(self._args(archive)), EXIT_FAILURE)
+            self.assertEqual(
+                photoindex._cmd_gallery(self._args(archive, person='not-an-id')),
+                EXIT_FAILURE)
+            self.assertEqual(
+                photoindex._cmd_gallery(self._args(archive, edtf='banana')),
+                EXIT_FAILURE)
+
+    def test_gallery_stale_warns_and_builds_absent_fails(self) -> None:
+        # Mirrors find's cache posture: a stale cache still builds (warn), an
+        # absent cache fails with the rebuild message and writes nothing.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'family_reunion.jpg': {'Keywords': ['marktest']}}, cfg)
+
+            # Force stale: an index newer than photos.sqlite (the find test's trick).
+            cache = archive / '.cache'
+            index_db = cache / 'index.sqlite'
+            sqlite3.connect(index_db).close()
+            photos_mtime = (cache / 'photos.sqlite').stat().st_mtime
+            os.utime(index_db, (photos_mtime + 10, photos_mtime + 10))
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'stale')
+
+            stale = photoindex.run_gallery(archive, cfg, keyword='marktest')
+            self.assertEqual(stale.exit_code, EXIT_CLEAN)
+            self.assertEqual(stale['status'], 'stale')
+            self.assertIsNotNone(stale['written'])
+
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            absent = photoindex.run_gallery(archive, cfg, keyword='marktest')
+            self.assertEqual(absent.exit_code, EXIT_FAILURE)
+            self.assertEqual(absent['status'], 'absent')
+            self.assertIsNone(absent.data.get('written'))
+            self.assertFalse((archive / 'generated' / 'gallery').exists())
+
+    def test_gallery_html_is_self_contained(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['marktest']}}, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='marktest')
+            html = self._read(result['written'])
+
+            self.assertNotIn('http://', html)
+            self.assertNotIn('https://', html)
+            self.assertNotIn('<script', html)
+
+    def test_gallery_banner_and_marker_present(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['marktest']}}, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='marktest')
+            html = self._read(result['written'])
+
+            first_line = html.splitlines()[0]
+            self.assertTrue(first_line.startswith('<!-- GENERATED by fha photoindex gallery'))
+            self.assertEqual(html.count('Private research companion'), 1)
+
+    # ── Review-fix regression tests (fix pass on the gallery feature) ──────────
+
+    def test_decade_of_reads_edtf_literal_not_bounds_midpoint(self) -> None:
+        # F1: the decade comes from the EDTF literal, not edtf_bounds' widened
+        # midpoint. The old midpoint code returned 1910 for '1920-01~' and 950
+        # for '[..1900]'; open ranges/sets now route to Undated (None).
+        self.assertEqual(photoindex._decade_of('1920-01~'), 1920)
+        self.assertEqual(photoindex._decade_of('1920-~01'), 1920)
+        self.assertEqual(photoindex._decade_of('192X'), 1920)
+        self.assertEqual(photoindex._decade_of('1955'), 1950)
+        self.assertIsNone(photoindex._decade_of('[..1900]'))
+        self.assertIsNone(photoindex._decade_of('[1900..]'))
+        self.assertIsNone(photoindex._decade_of(None))
+
+    def test_decade_of_routes_open_ended_slash_intervals_to_undated(self) -> None:
+        # Codex P2: an open-ended slash interval ('1870/..', '../1875') names a
+        # boundary, not one confident year - it must land in Undated exactly
+        # like the bracket open forms, never bucketed by its known side alone
+        # (an unbounded "after 1870" would otherwise look as precise as a real
+        # 1870s photo).
+        self.assertIsNone(photoindex._decade_of('1870/..'))
+        self.assertIsNone(photoindex._decade_of('../1875'))
+        # A closed range still buckets by its start year (unaffected).
+        self.assertEqual(photoindex._decade_of('1912/1915'), 1910)
+
+    def test_decade_of_routes_bare_comma_sets_to_undated(self) -> None:
+        # Codex P2: a bare comma-separated EDTF set ('1912,1913' - _edtf_slug's
+        # own docstring calls this a legitimate "set/choice" form) named no
+        # single confident year, but fell through the bracket-only set guard
+        # and got bucketed from its first choice's digits alone.
+        self.assertIsNone(photoindex._decade_of('1912,1913'))
+
+    def test_humanize_edtf_preserves_ranges_and_bracket_qualifiers(self) -> None:
+        # Codex P2: a slash range or a bracket-qualified bound used to render as
+        # only its first/boundary year, turning an uncertain span into a
+        # specific-looking date in the gallery label ('1912/1915' -> '1912';
+        # '[..1900]' -> '1900'). Both must keep their range/qualifier in the
+        # plain-language label instead of silently narrowing to one year.
+        h = photoindex._humanize_edtf
+        self.assertEqual(h('1912/1915'), '1912 to 1915')
+        self.assertEqual(h('1912~/1915'), 'about 1912 to 1915')
+        self.assertEqual(h('[..1900]'), 'before 1900')
+        self.assertEqual(h('[1900..]'), 'after 1900')
+        # Unchanged behavior for a plain (non-interval, non-bracket) date.
+        self.assertEqual(h('1920-01~'), 'about January 1920')
+        self.assertEqual(h('192X'), '1920s')
+        self.assertEqual(h(None), 'Undated')
+
+    def test_gallery_decade_from_edtf_literal_and_open_range_undated(self) -> None:
+        # End to end: a month-approximate 1920 date lands in the 1920s section
+        # (never the 1910s the old midpoint gave); a "[..1900]" open range has no
+        # confident year and falls to the Undated tail.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {
+                'portrait_1880.jpg': {'Keywords': ['DATE: 1920-01~', 'dtest']},
+                'wedding_1902.jpg': {'Keywords': ['DATE: [..1900]', 'dtest']},
+            }, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='dtest')
+            html = self._read(result['written'])
+
+            self.assertIn('<h2>1920s</h2>', html)
+            self.assertNotIn('<h2>1910s</h2>', html)
+            self.assertIn('<h2>Undated</h2>', html)
+            i_undated = html.index('<h2>Undated</h2>')
+            # The open-range photo is under Undated, not in any numeric decade.
+            self.assertIn('wedding_1902.jpg', html[i_undated:])
+            self.assertLess(html.index('<h2>1920s</h2>'), i_undated)
+
+    def test_gallery_renders_group_with_torn_photo_groups_row(self) -> None:
+        # F2: a matched group whose photo_groups row is missing (torn cache)
+        # still renders from a member path instead of being silently dropped -
+        # mirroring run_find's `or path` fallback.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(
+                archive,
+                {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!', 'torn']}},
+                cfg,
+                extra_files=('portrait_1880b.jpg',),
+            )
+
+            cache_db = archive / '.cache' / 'photos.sqlite'
+            conn = sqlite3.connect(cache_db)
+            try:
+                conn.execute('DELETE FROM photo_groups')
+                conn.commit()
+            finally:
+                conn.close()
+
+            result = photoindex.run_gallery(archive, cfg, keyword='torn')
+
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            self.assertEqual(result['matched'], 1)
+            html = self._read(result['written'])
+            self.assertEqual(html.count('<article class="photo-row">'), 1)
+            self.assertIn('portrait_1880.jpg', html)
+
+    def test_gallery_excludes_reconciled_missing_rows(self) -> None:
+        # Codex P2: reconcile keeps a vanished file's row queryable (caption/
+        # keyword history) but prefixes its path 'MISSING:' - a synthetic key
+        # that was never a real file. A gallery page exists to be clicked, so
+        # a group whose every variant has vanished must drop out of the page
+        # entirely, while a still-present sibling match still renders.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {
+                'family_reunion.jpg': {'Keywords': ['gone']},
+                'wedding_1902.jpg': {'Keywords': ['gone']},
+            }, cfg)
+
+            (archive / 'photos' / 'family_reunion.jpg').unlink()
+            reconcile_result = photoindex.run_reconcile(archive, cfg, with_exif=False)
+            self.assertEqual(reconcile_result['missing'], ['MISSING:photos/family_reunion.jpg'])
+
+            result = photoindex.run_gallery(archive, cfg, keyword='gone')
+            html = self._read(result['written'])
+
+            self.assertEqual(result['matched'], 1)
+            self.assertIn('wedding_1902.jpg', html)
+            self.assertNotIn('family_reunion.jpg', html)
+            self.assertNotIn('MISSING:', html)
+
+    def test_gallery_group_with_some_missing_variants_renders_from_present_ones(self) -> None:
+        # A logical photo whose front scan vanished but whose back scan is
+        # still on disk (family_reunion above has no back; portrait_1880's
+        # fixture pair does) must still render - from the still-present
+        # variant - rather than exposing the vanished front as a tile/chip or
+        # dropping the whole group just because one variant is gone.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['gone']}}, cfg)
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg, with_exif=False)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='gone')
+            html = self._read(result['written'])
+
+            self.assertEqual(result['matched'], 1)
+            self.assertIn('portrait_1880-back.jpg', html)
+            self.assertNotIn('MISSING:', html)
+
+    def test_gallery_all_matches_missing_writes_nothing_exits_clean(self) -> None:
+        # Codex P2: a keyword/text/person filter can still match at the SQL
+        # level when every matching row is MISSING: (reconcile keeps the
+        # metadata queryable), so the earlier `if not matched_groups` guard
+        # does not fire - but if _build_gallery_rows then drops every one of
+        # those groups, the zero-match contract (no write, clean exit) must
+        # still hold, not an empty clickable page reporting matched: 0.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'family_reunion.jpg': {'Keywords': ['onlygone']}}, cfg)
+
+            (archive / 'photos' / 'family_reunion.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg, with_exif=False)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='onlygone')
+
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            self.assertEqual(result['matched'], 0)
+            self.assertIsNone(result['written'])
+            self.assertFalse((archive / 'generated' / 'gallery').exists())
+
+    def test_gallery_verify_tag_command_quotes_paths_with_spaces(self) -> None:
+        # Codex P2: the generated tag-person command must stay copy-pasteable
+        # even when the weak match's catalog path has a space (or other shell
+        # punctuation) - an unquoted --paths value would split into two shell
+        # arguments when pasted into a terminal.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley')],
+                face_tags=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'family reunion.jpg': {
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+            }, cfg, extra_files=('family reunion.jpg',))
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            self.assertIn('Verify these', html)
+            # Autoescape renders the shell-quoting single-quotes as &#39;.
+            self.assertIn('--paths &#39;photos/family reunion.jpg&#39;', html)
+
+    def test_gallery_verify_tag_command_matches_first_rendered_row(self) -> None:
+        # Codex P2: the printed tag-person example must be the SAME row a
+        # reader actually sees first in the Verify section - it used to be
+        # drawn from the unsorted group-key set while the rows themselves
+        # render from a separately sorted list, so the two could disagree
+        # (and differ between runs of the identical command against
+        # unchanged data).
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley')],
+                face_tags=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'portrait_1880.jpg': {
+                    'Keywords': ['DATE: 1880!'],
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+                'wedding_1902.jpg': {
+                    'Keywords': ['DATE: 1902!'],
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+            }, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            i_verify = html.index('Verify these')
+            i_first_portrait = html.index('portrait_1880.jpg', i_verify)
+            i_first_wedding = html.index('wedding_1902.jpg', i_verify)
+            first_is_portrait = i_first_portrait < i_first_wedding
+            expected_example = 'photos/portrait_1880.jpg' if first_is_portrait else 'photos/wedding_1902.jpg'
+            self.assertIn(f'--paths {expected_example}', html)
+
+    def test_gallery_verify_label_excludes_unrelated_face_region(self) -> None:
+        # F3: a face-tag Verify row labels only the region name that maps to the
+        # galleried person, never an unrelated person's face tagged on the same
+        # photo.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley'),
+                         ('p-aaaaaaaaaa', 'A Stranger')],
+                face_tags=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'portrait_1880.jpg': {
+                    'RegionInfo': {'RegionList': [
+                        {'Name': 'Maggie', 'Type': 'Face'},
+                        {'Name': 'Stranger', 'Type': 'Face'},
+                    ]},
+                },
+            }, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            self.assertIn('Verify these', html)
+            # The apostrophes are HTML-escaped by the autoescaping template.
+            self.assertIn('face region &#39;Maggie&#39;', html)   # the person's own tag
+            self.assertNotIn('Stranger', html)                   # never the unrelated tag
+
+    def test_gallery_verify_label_degrades_when_index_absent(self) -> None:
+        # F3: with no fresh index (no tag->person mapping) a preserved face-tag
+        # row degrades to a generic 'face region match' label rather than naming
+        # faces it cannot attribute to the person.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            # Build a fresh index, scan (records the face-tag row), then drop the
+            # index so the gallery build has no mapping available.
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley')],
+                face_tags=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'portrait_1880.jpg': {
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+            }, cfg)
+            (archive / '.cache' / 'index.sqlite').unlink()
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            self.assertIn('Verify these', html)
+            self.assertIn('face region match', html)      # generic degrade
+            self.assertNotIn('Maggie', html)              # no per-name attribution
+
+    def test_gallery_person_plus_filter_filenames_are_distinct(self) -> None:
+        # F4: a person gallery with extra filters appends the filter tokens, so
+        # `--person X --keyword farm` and `--person X --keyword school` no longer
+        # overwrite the same {slug}_{P-id}.html file.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(archive, persons=[('p-de957bcda1', 'Margaret Hartley')])
+            self._stage(archive, {
+                'family_reunion.jpg': {'Keywords': ['P-de957bcda1', 'farm', 'school']},
+            }, cfg)
+
+            farm = photoindex.run_gallery(
+                archive, cfg, person='P-de957bcda1', keyword='farm')
+            school = photoindex.run_gallery(
+                archive, cfg, person='P-de957bcda1', keyword='school')
+
+            self.assertNotEqual(farm['written'], school['written'])
+            self.assertTrue(Path(farm['written']).name
+                            .endswith('_P-de957bcda1_keyword-farm.html'))
+            self.assertTrue(Path(school['written']).name
+                            .endswith('_P-de957bcda1_keyword-school.html'))
+            # Bare --person keeps the plain {slug}_{P-id}.html shape.
+            bare = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            self.assertEqual(Path(bare['written']).name,
+                             'margaret-hartley_P-de957bcda1.html')
+
+    def test_gallery_edtf_filename_keeps_qualifiers_distinct(self) -> None:
+        # F6: distinct EDTF forms map to distinct file stems - the qualifier is
+        # encoded as a readable token before slugifying, so 1912 and 1912~ do
+        # not collide.
+        with tempfile.TemporaryDirectory() as d:
+            archive = Path(d)
+            exact = photoindex._gallery_out_path(
+                archive, None, None, None, '1912', None, None)
+            approx = photoindex._gallery_out_path(
+                archive, None, None, None, '1912~', None, None)
+            uncertain = photoindex._gallery_out_path(
+                archive, None, None, None, '1912?', None, None)
+            interval = photoindex._gallery_out_path(
+                archive, None, None, None, '1912/1915', None, None)
+            before = photoindex._gallery_out_path(
+                archive, None, None, None, '[..1900]', None, None)
+
+            names = {p.name for p in (exact, approx, uncertain, interval, before)}
+            self.assertEqual(len(names), 5)   # all five stay distinct
+            self.assertEqual(exact.name, 'gallery_edtf-1912.html')
+            self.assertEqual(approx.name, 'gallery_edtf-1912-approx.html')
+            self.assertEqual(uncertain.name, 'gallery_edtf-1912-uncertain.html')
+            self.assertEqual(interval.name, 'gallery_edtf-1912-to-1915.html')
+            self.assertEqual(before.name, 'gallery_edtf-before-1900.html')
+
+    def test_gallery_count_strip_excludes_verify_tail(self) -> None:
+        # F5: the headline counts only the confirmed main-flow photos; the weak
+        # name-only matches get a separate clause, not folded into "N photos of".
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley')],
+                variants=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'family_reunion.jpg': {'Keywords': ['P-de957bcda1']},   # confirmed
+                'portrait_1880.jpg': {'RegionInfo': {'RegionList': [
+                    {'Name': 'Maggie', 'Type': 'Face'}]}},              # name-match
+            }, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            self.assertIn('1 photo of Margaret Hartley', html)
+            self.assertIn('plus 1 matched by name only', html)
+            self.assertEqual(result['counts']['total'], 1)
+            self.assertEqual(result['counts']['verify'], 1)
+            self.assertEqual(result['matched'], 2)   # whole page = confirmed + verify
+
+    def test_gallery_stale_index_uses_bare_pid_for_title_and_filename(self) -> None:
+        # F7: a stale index carries the person's OLD name, so the gallery falls
+        # back to the bare P-id for both the title and the filename rather than a
+        # possibly-outdated display name.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(archive, persons=[('p-de957bcda1', 'Margaret Hartley')])
+            self._stage(archive, {'family_reunion.jpg': {'Keywords': ['P-de957bcda1']}}, cfg)
+
+            # Stale the index: a person record newer than index.sqlite.
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            (people_dir / 'hartley__margaret_P-de957bcda1.md').write_text(
+                '---\nid: P-de957bcda1\nname: Margaret Hartley\n---\n', encoding='utf-8')
+            os.utime(archive / '.cache' / 'index.sqlite', (1, 1))
+            self.assertFalse(photoindex._index_is_fresh(archive))
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+
+            self.assertEqual(Path(result['written']).name, 'P-de957bcda1.html')
+            html = self._read(result['written'])
+            self.assertIn('Photos of P-de957bcda1', html)
+            self.assertNotIn('Margaret Hartley', html)
+
+    def test_gallery_missing_css_warning_travels_through_result_and_cmd(self) -> None:
+        # F9: a missing design/view.css is warned from the interface layer - the
+        # engine returns the warning in the Result (never prints it), and
+        # _cmd_gallery prints it to stderr while still exiting clean.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['csstest']}}, cfg)
+
+            orig = photoindex.load_view_css
+            photoindex.load_view_css = lambda label: (
+                '', f'WARNING: design/view.css is missing - {label} will be unstyled')
+            try:
+                result = photoindex.run_gallery(archive, cfg, keyword='csstest')
+                self.assertIn('design/view.css is missing', result.data['css_warning'])
+                self.assertIn('the gallery', result.data['css_warning'])
+
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code = photoindex._cmd_gallery(self._args(archive, keyword='csstest'))
+                self.assertEqual(code, EXIT_CLEAN)
+                self.assertIn('design/view.css is missing', err.getvalue())
+            finally:
+                photoindex.load_view_css = orig
+
+    def test_gallery_write_oserror_reports_plain_error_not_traceback(self) -> None:
+        # Codex P2: a filesystem failure during the marker-guarded write
+        # (permission denied, disk full, a bad --out target) must not leak a
+        # raw OSError - run_gallery translates it to a RuntimeError _cmd_gallery
+        # already knows how to report in plain language.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+
+            orig = photoindex.write_generated_file
+
+            def boom(*args, **kwargs):
+                raise OSError(28, 'No space left on device')
+
+            photoindex.write_generated_file = boom
+            try:
+                with self.assertRaises(RuntimeError):
+                    photoindex.run_gallery(archive, cfg, edtf='188X')
+
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code = photoindex._cmd_gallery(self._args(archive, edtf='188X'))
+                self.assertEqual(code, EXIT_FAILURE)
+                self.assertIn('ERROR:', err.getvalue())
+            finally:
+                photoindex.write_generated_file = orig
 
 
 class SetSummaryTests(unittest.TestCase):

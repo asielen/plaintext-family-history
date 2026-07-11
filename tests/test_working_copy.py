@@ -199,6 +199,21 @@ class WorkingCopyTests(unittest.TestCase):
                 self.assertEqual(result.exit_code, EXIT_CLEAN, name)
                 self.assertEqual(result.data.get('status'), 'working-copy', name)
 
+    def test_gallery_refuses_clean(self) -> None:
+        # The gallery is nothing but file:// links to local photo files; in
+        # working-copy mode those files live on the main machine, so every link
+        # would be broken. It must refuse before writing anything: exit clean,
+        # ok True, data.status == 'working-copy', and no artifact on disk.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            result = photoindex.run_gallery(
+                archive, {'roots': {'photos': 'photos'}}, person='P-wc00000001')
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            self.assertEqual(result.data.get('status'), 'working-copy')
+            self.assertFalse((archive / 'generated' / 'gallery').exists())
+
     @staticmethod
     def _photo_paths(archive: Path) -> list[str]:
         conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')

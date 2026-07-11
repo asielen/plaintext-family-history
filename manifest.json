@@ -1,18 +1,24 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-10",
+  "generated": "2026-07-11",
   "files": [
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "05439c57a0506bf9870b93b7b2ba40888505ee37d10ca287fcadef0c5bc0b8c5",
+      "sha256": "645a397e39f6dfb93e014984929c953666c5704f9cca9bda019435d45ac87b2c",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "27ef61cca13b263401990aa6c66106d28d2e0c5f30f0a88d5d041f9b6588e3af",
+      "sha256": "76b53a9087c4ee82e9f8896cfec66f8f91e38bacf1add9f2c23c253aac1cdd3e",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/find-photos/SKILL.md",
+      "category": "operating",
+      "sha256": "60f0c6583481216dbe93188fc5a8cca7eacbd9eb81572d822f5f84169d4340de",
       "spec_version": "1.2"
     },
     {
@@ -36,7 +42,13 @@
     {
       "path": ".claude/skills/photo-context/DESIGN.md",
       "category": "operating",
-      "sha256": "61b2512d70f7c1f5e32a7167ce0638a841cb259fafb10d071426b37bfe8ef28d",
+      "sha256": "c951379870a18ee0fab5d892bc2c3316a53e68eb2104a09361d24168bb76f61b",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/photo-context/SKILL.md",
+      "category": "operating",
+      "sha256": "615576c3af679f8d173127ba77d6d684db91e315b26323ff3d3674296bc88346",
       "spec_version": "1.2"
     },
     {
@@ -70,9 +82,15 @@
       "spec_version": "1.2"
     },
     {
+      "path": ".claude/skills/share-and-export/SKILL.md",
+      "category": "operating",
+      "sha256": "1a2dc2b74665b637970692fc9cb911ecaa4f2d08267212316577353acec05941",
+      "spec_version": "1.2"
+    },
+    {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "f404afaa1f12227afdf36724db40b27871ba20d5e3dd605644279ec101e52119",
+      "sha256": "9b51dd4a7e903df163887a91eedf7fbc607ee7c89624c650089e87bf127325ad",
       "spec_version": "1.2"
     },
     {
@@ -91,7 +109,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "5015f69befa333df485537c43a13a18944b59cf93ca64c6a2d4aeba4aab51fef",
+      "sha256": "50b262fd8857c76b844f8a739da53d002662b57867c32b44ec969d691f8beb96",
       "spec_version": "1.2"
     },
     {
@@ -103,7 +121,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "2676f0664e1d399c08570363913da712662259386af0f2851432d433b588b8ea",
+      "sha256": "58faf181d2dc6cdd3e12c2b07ad7a2db0f4c5abc85c0506c8fffbfd30563d9ce",
       "spec_version": "1.2"
     },
     {
@@ -115,13 +133,13 @@
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "07eb0864cb5a7be56ccdfdb8c708bf957961871db2742b075a77280a2b920adc",
+      "sha256": "2890adda9eb424b2015f4d3d76708550c519f4bcefa682a16c24545fd8a79089",
       "spec_version": "1.2"
     },
     {
       "path": "CLAUDE.md",
       "category": "operating",
-      "sha256": "4c3c3722774383f2de89c3cda810a9bfa7843837f9e5788073dffcc97811b795",
+      "sha256": "dff2749cc1a4f6ebcc47ce59ee12758e24ff319ee799b113f1caa10b66d9c64a",
       "spec_version": "1.2"
     },
     {
@@ -139,7 +157,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "927ea14f6f335a2f1be2c927cec58764b1872f9981167774d6e9bccd873bce78",
+      "sha256": "d4b80d4608ae762e6eefc46ef7a402f741273e25664706966655f0e8a155fa1c",
       "spec_version": "1.2"
     },
     {
@@ -151,7 +169,7 @@
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "e3ba77f179ae911fca0c38e97672ff50bd534f0841c33b03f82c9711b92d90e9",
+      "sha256": "848bc8f18493a79f0c6d710f7f4513991cc5bcc42adab2eb6e13d13ee8b6b7e3",
       "spec_version": "1.2"
     },
     {
@@ -241,7 +259,7 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "d43d48a0d35ff17923749cfd2193661ec150982e0d8b2c59334ae64fa9187bf3",
+      "sha256": "b2b42a9d2566049feea03e90ed5af867d717ab0e11540516aa631cc9634f5b63",
       "spec_version": "1.2"
     },
     {
@@ -431,13 +449,13 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "bfb06ac4df499480808ded1d9b048ac0961ff2a14c731ad4cd77fcd03c4d8c9c",
+      "sha256": "050bcf32eff9d33952f27d8d00f2ed0481a3d083811e118dbf751713bcad6f45",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "cbf2e82ff618a31acbe824343a720bd704eb494da447ad102cd8c703f15d453a",
+      "sha256": "d54cf09fe87c12251938147f134a30e75454f2b9d9c60e4148fbcf88707999e7",
       "spec_version": "1.2"
     },
     {
@@ -509,7 +527,7 @@
     {
       "path": "tools/cooccur.py",
       "category": "operating",
-      "sha256": "a3e41242da76eadf9b3e776876439c73cbff66ce67d0371c72b9aab6ba14671e",
+      "sha256": "b4b27ae37c3346cf6a3f49044ca419009b131cec7805c437333cac1feaed6a16",
       "spec_version": "1.2"
     },
     {
@@ -581,7 +599,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "4257233d9299b504b64d21c4c49523fe1b3e5cd8e05a993c9d9605bb3af8a962",
+      "sha256": "458ddae9f29b46b8740541d967a5c15049a942a9bb8e64e25cc99b58e28cf7d5",
       "spec_version": "1.2"
     },
     {
@@ -605,7 +623,7 @@
     {
       "path": "tools/report.py",
       "category": "operating",
-      "sha256": "e72c744c8f1301fca8b0eee2a7bdef7cae612e77dbc871d9c66190fc48dcfc54",
+      "sha256": "6f718f7653edabc40b2f4840df9c7534e3cb2e2a54faceeadd01f5d9bbca3049",
       "spec_version": "1.2"
     },
     {
@@ -648,6 +666,12 @@
       "path": "tools/templates/discoveries.html",
       "category": "operating",
       "sha256": "ecc14902c2fbb2b9072f62269269851815c5a18a7e708bb548c9778ccbcf9480",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/templates/gallery.html",
+      "category": "operating",
+      "sha256": "03389f68a4a843edf755682dcebb678af861d2aea0f56eba4aaef861389a667c",
       "spec_version": "1.2"
     },
     {
@@ -695,7 +719,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "ca0ef2ae5342e56cb3dba4f04a5f5fcd5c0e1922afe2f3cb9b6078cf2d2df146",
+      "sha256": "a01238f5411ae801092c4def7d8f272a62c8f002f7a0163bc06805359ee5c594",
       "spec_version": "1.2"
     },
     {

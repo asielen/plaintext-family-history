@@ -20,7 +20,10 @@ fha artifacts inherit (TOOLING §7 D11):
     `fha site` - the HTML tree ships with the site's full-tree feature.
 """
 
+import contextlib
+import io
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -232,6 +235,73 @@ class MarkerGuardTests(_ViewsHtmlBase):
         self.assertFalse(res.changed)
         self.assertEqual(target.read_text(encoding='utf-8'),
                          '<p>my hand-made page</p>')
+
+
+class WriteErrorHandlingTests(_ViewsHtmlBase):
+    """Codex P2 findings on the shared _lib write/render infra (tools/_lib.py):
+    a companion write must never recreate a person folder that moved or was
+    deleted since the index was last built, and a filesystem or template
+    failure must report a plain error instead of leaking a raw traceback."""
+
+    def test_stale_index_does_not_recreate_deleted_person_folder(self):
+        folder = self.profile.parent
+        shutil.rmtree(folder)
+        for runner, kind in self._runners():
+            res = runner(self.root, person_id=PID)
+            self.assertEqual(res.exit_code, EXIT_FAILURE, kind)
+            self.assertFalse(folder.exists(), kind)
+
+    def test_write_oserror_reports_plain_error_not_traceback(self):
+        orig = views.write_generated_file
+
+        def boom(*args, **kwargs):
+            raise OSError(28, 'No space left on device')
+
+        views.write_generated_file = boom
+        try:
+            res = views.run_timeline(self.root, person_id=PID)
+        finally:
+            views.write_generated_file = orig
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+
+    def test_broken_template_reports_plain_error_not_traceback(self):
+        orig = views.render_template
+
+        def boom(name, **context):
+            raise RuntimeError(f'the {name} template is missing or broken - boom')
+
+        views.render_template = boom
+        try:
+            res = views.run_timeline(self.root, person_id=PID, fmt='html')
+        finally:
+            views.render_template = orig
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+
+    def test_all_curated_batch_continues_past_one_missing_folder(self):
+        # A stale index pointing at one curated person's moved/deleted folder
+        # must not abort the whole --all-curated batch: before this fix,
+        # GeneratedFileParentMissing hit the same top-level except as the
+        # rare GeneratedFileRefused case and discarded every file already
+        # written this run, including a second curated person's, which
+        # never had anything wrong with it.
+        pid2 = 'P-cccccccccc'
+        folder2 = self.root / 'people' / '050 Second Person'
+        folder2.mkdir(parents=True)
+        (folder2 / f'second__person_{pid2}.md').write_text(
+            _person(pid2, 'Second Person', 'curated'), encoding='utf-8')
+        self._reindex()
+
+        shutil.rmtree(self.profile.parent)   # PID's folder vanishes; pid2's survives
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            res = views.run_timeline(self.root, all_curated=True)
+
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(len(res.changed), 1)
+        self.assertTrue(Path(res.changed[0]).name.startswith('second__person_timeline'))
+        self.assertIn('WARNING', err.getvalue())
+        self.assertIn(PID, err.getvalue())
 
 
 class ExitCodeTests(_ViewsHtmlBase):

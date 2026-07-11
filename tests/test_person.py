@@ -398,9 +398,9 @@ class SetLivingCliTests(unittest.TestCase):
                 fha.main(['person', 'set-living', PID, 'maybe', '--root', str(self.root)])
         self.assertEqual(cm.exception.code, 2)
         text = err.getvalue()
-        self.assertIn("'true'", text)
-        self.assertIn("'false'", text)
-        self.assertIn("'unknown'", text)
+        # Python 3.14 dropped the quotes around argparse choice values
+        # ("choose from true, false, unknown"); accept either rendering.
+        self.assertRegex(text, r"choose from '?true'?, '?false'?, '?unknown'?")
 
     def test_bare_person_prints_help_exit_2(self) -> None:
         rc, out, _ = self._run(['person', '--root', str(self.root)])

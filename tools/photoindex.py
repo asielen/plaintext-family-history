@@ -76,8 +76,28 @@ CODE MAP
     _paths_by_person/_keyword/_edtf/_text - one matching-path set per filter
     _group_keys_for           - map each path to its group key (group_id or singleton)
     _primary_path_for         - the primary_path of a group_id
+    _matched_filter_groups    - filters -> matched group keys (shared by find + gallery)
     run_find                  - AND the requested filters at the group level;
                                  group-dedupe unless --files
+
+  Gallery (fha photoindex gallery)
+    _slugify / _person_display_name - filename slug + display name from a fresh index.sqlite
+    _file_uri                 - alias path -> absolute file:// URI (through roots)
+    _humanize_edtf / _decade_of - EDTF -> reading date / decade (from the EDTF literal) for sections
+    _chip_label               - variant_role/variant_copy -> a variant chip label
+    _edtf_slug / _filter_slug_parts - qualifier-preserving EDTF slug + filter filename tokens
+    _gallery_out_path         - default landing spot or --out override
+    _filter_phrase            - "matching keyword ... and text ..." for the filter-only count strip
+    _gallery_group_dict       - pre-fetched rows -> one rendered row's data (no SQL)
+    _chunk                    - slice a key list into bounded IN () clauses
+    _best_via / _verify_label - group's person `via` + the Verify-tail 'why matched' label
+    _build_gallery_rows       - batch-fetch all rows in constant queries; split main vs verify
+    run_gallery               - build the single-file page; WRITES the .html (via _lib write guard)
+    _render_gallery_html      - assemble decade sections + verify tail into the shell
+    _today_iso                - today's date (YYYY-MM-DD) for the GENERATED marker
+    (page-shell infra - css, template, marker-guarded write, archive title - is
+     shared with views via _lib: load_view_css / render_template /
+     write_generated_file / archive_title)
 
   Triage (fha photoindex triage - M3.3)
     _candidate_groups         - groups with no source_id on any member (unprocessed)
@@ -119,11 +139,13 @@ CODE MAP
 
   CLI
     register                  - attach 'photoindex' to the main fha parser; wires 'find',
-                                 'triage', 'report', 'reconcile', 'tag-person', 'set-summary'
+                                 'gallery', 'triage', 'report', 'reconcile', 'tag-person',
+                                 'set-summary'
     _resolve_root_and_config  - shared --root/fha.yaml preamble for every _cmd_* handler
     _print_photoindex_status  - shared absent/unreadable/stale message + exit-code mapping
     _cmd_scan                 - argparse -> run_scan bridge
     _cmd_find                 - argparse -> run_find bridge
+    _cmd_gallery              - argparse -> run_gallery bridge (prints path + file:// URL)
     _cmd_triage               - argparse -> run_triage bridge
     _cmd_report               - argparse -> run_report bridge
     _cmd_reconcile            - argparse -> run_reconcile bridge
@@ -138,6 +160,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -152,10 +175,14 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    GeneratedFileParentMissing,
+    GeneratedFileRefused,
     Result,
+    archive_title,
     configure_utf8_stdout,
     db_mtime,
     find_source_record,
+    fmt_id_display,
     ParsedName,
     edtf_bounds,
     format_edtf_error,
@@ -166,6 +193,8 @@ from _lib import (
     is_valid_edtf,
     is_valid_id,
     load_fha_yaml,
+    load_view_css,
+    render_template,
     newest_person_record_mtime,
     normalize_date,
     normalize_id,
@@ -182,6 +211,7 @@ from _lib import (
     resolve_root_arg,
     scan_person_record_ids,
     sqlite_cache_schema_status,
+    write_generated_file,
 )
 
 configure_utf8_stdout()
@@ -998,6 +1028,54 @@ def _query_photoindex(
         conn.close()
 
 
+def _matched_filter_groups(
+    conn: sqlite3.Connection,
+    person: str | None,
+    keyword: str | None,
+    edtf: str | None,
+    text: str | None,
+) -> tuple[set, dict, set[str]]:
+    """Resolve the requested filters to the set of matched group keys.
+
+    This is the one place the "filters -> matched groups" logic lives, shared by
+    both `run_find` and `run_gallery` so the two surfaces can never disagree
+    about what a given filter set matches. Each filter yields a set of raw paths;
+    those paths are widened to their group keys (`_group_keys_for`) and the group
+    key sets are intersected, so filters AND at the GROUP level - a date on the
+    front scan and caption text on the back count as one logical hit (see
+    run_find's docstring for why raw-path intersection would be wrong).
+
+    Returns (matched_groups, group_key, all_paths):
+      - matched_groups: the group keys satisfying every filter (may be empty)
+      - group_key:      {path: group_key} for every path any filter matched
+      - all_paths:      the union of every filter's raw paths
+    Raises ValueError when no filter is supplied, or when --edtf is not valid
+    EDTF (mirroring run_find's contract - bad input is a refusal, never a silent
+    match-all). Callers pass an already-typechecked P-id; person normalization
+    (case) happens here so both front doors normalize identically.
+    """
+    filters: list[set[str]] = []
+    if person:
+        filters.append(_paths_by_person(conn, normalize_id(person)))
+    if keyword:
+        filters.append(_paths_by_keyword(conn, keyword))
+    if edtf:
+        filters.append(_paths_by_edtf(conn, edtf))
+    if text:
+        filters.append(_paths_by_text(conn, text))
+    if not filters:
+        raise ValueError('at least one of --person/--keyword/--edtf/--text is required')
+
+    all_paths: set[str] = set().union(*filters)
+    group_key = _group_keys_for(conn, all_paths)
+
+    group_sets = [{group_key[p] for p in f} for f in filters]
+    matched_groups = group_sets[0]
+    for gs in group_sets[1:]:
+        matched_groups &= gs
+    return matched_groups, group_key, all_paths
+
+
 def run_find(
     archive_root: Path,
     fha_config: dict,
@@ -1041,25 +1119,9 @@ def run_find(
         if not _schema_is_usable(conn):
             return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
         try:
-            filters: list[set[str]] = []
-            if person:
-                filters.append(_paths_by_person(conn, normalize_id(person)))
-            if keyword:
-                filters.append(_paths_by_keyword(conn, keyword))
-            if edtf:
-                filters.append(_paths_by_edtf(conn, edtf))
-            if text:
-                filters.append(_paths_by_text(conn, text))
-            if not filters:
-                raise ValueError('at least one of --person/--keyword/--edtf/--text is required')
-
-            all_paths: set[str] = set().union(*filters)
-            group_key = _group_keys_for(conn, all_paths)
-
-            group_sets = [{group_key[p] for p in f} for f in filters]
-            matched_groups = group_sets[0]
-            for gs in group_sets[1:]:
-                matched_groups &= gs
+            matched_groups, group_key, all_paths = _matched_filter_groups(
+                conn, person, keyword, edtf, text
+            )
             if not matched_groups:
                 return Result(data={'status': status, 'rows': []})
 
@@ -1102,6 +1164,875 @@ def run_find(
             return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
     finally:
         conn.close()
+
+
+# ── Gallery (fha photoindex gallery) ─────────────────────────────────────
+#
+# One command turns "every photo of Grandma" into a single, throwaway HTML page
+# you open with a double-click - no server, no internet, nothing installed. It
+# reuses `find`'s exact filter-to-groups logic (`_matched_filter_groups`), so
+# what the gallery shows and what `find` prints can never disagree. The page is
+# a private research artifact under the plan-13 single-file conventions: the
+# GENERATED marker is line 1 (before the doctype), the CSS is inlined, and the
+# only outbound references are file:// links / <img> sources pointing at the
+# real photo files (resolved through fha.yaml roots, emitted with Path.as_uri()).
+# Nothing is copied, converted, or resized; no original file is ever written.
+
+# The disposable-artifact ownership marker. Line 1 of every gallery file starts
+# with this prefix; the shared _lib.write_generated_file guard refuses to
+# overwrite a file at the target that does not carry it (never clobber a human's
+# file - AGENTS.md), and overwrites its own output silently. Mirrors
+# views._GEN_MARKER's contract with a photoindex-specific prefix so a views file
+# and a gallery file never claim each other's ownership.
+_GALLERY_GEN_PREFIX = '<!-- GENERATED by fha photoindex gallery'
+
+# Extensions a browser renders inline as an <img>; anything else gets a styled
+# placeholder tile that still opens the real file on click. Owner's list -
+# deliberately excludes .bmp and every raw/TIFF/HEIC format (those are the
+# v2 --thumbs case). TODO(v2): a --thumbs flag can reuse site._make_derivative
+# to render TIFF/HEIC tiles into generated/gallery/.thumbs/; that trades the
+# single-file property for Pillow + a thumbs folder, so it is a separate change.
+_RENDERABLE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+_MONTH_NAMES = [
+    '', 'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+
+def _slugify(text: str) -> str:
+    """Collapse text to a lowercase-hyphenated slug for a gallery filename.
+
+    Lifted from capture.py's `_slugify` (which follows process.py / SPEC §13)
+    rather than imported - tools never import tools, so the small helper is
+    duplicated. Used to turn a person's display name or a filter value into a
+    safe, stable file stem under generated/gallery/.
+    """
+    text = (text or '').strip().lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+    return slug or 'gallery'
+
+
+def _person_display_name(archive_root: Path, person_id: str) -> str | None:
+    """Return a person's display name from a FRESH .cache/index.sqlite, or None.
+
+    The gallery names a person-filtered page after the person; the display name
+    lives in the main index, not the photo cache. This read is best-effort and
+    silent: an absent, stale, unreadable, or schema-incompatible index yields
+    None (the caller falls back to the bare P-id), matching photoindex's posture
+    of never letting a stale/missing main index block a photo operation.
+
+    Gated on `_index_is_fresh` exactly like every other index reader in this
+    file (_load_face_tag_index, _load_alias_resolver): a stale index still on
+    disk carries the person's OLD name, so after a rename it would title and
+    NAME the gallery file from a name the archive no longer uses. Skipping a
+    stale index degrades to the bare P-id rather than a wrong-but-plausible name.
+    """
+    if not _index_is_fresh(archive_root):
+        return None
+    index_db = archive_root / '.cache' / 'index.sqlite'
+    try:
+        conn = sqlite3.connect(str(index_db))
+        try:
+            row = conn.execute(
+                'SELECT name FROM persons WHERE id = ?', (normalize_id(person_id),)
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if row and row[0] and str(row[0]).strip():
+        return str(row[0]).strip()
+    return None
+
+
+def _file_uri(alias_path: str, fha_config: dict, archive_root: Path) -> str:
+    """Resolve a stored alias path to an absolute file:// URI.
+
+    Alias-form paths ('photos/1880/foo.jpg') resolve through fha.yaml `roots:`
+    (so an external `photos:` root points the href at the real location, not
+    archive_root/photos), then Path.as_uri() handles Windows drive letters and
+    percent-encodes spaces/non-ASCII. A non-absolute resolution (only possible
+    with an unusual relative archive root) is anchored to the current directory
+    with plain `.resolve()` before as_uri(): resolve_path has already joined any
+    relative root, so its result is CWD-relative and `.resolve()` is the correct
+    anchor - re-joining archive_root would double a relative root. A malformed
+    drive-relative config root has no sane anchor and is left to doctor/lint's
+    config validation rather than guessed at here.
+    """
+    p = resolve_path(alias_path, fha_config, archive_root)
+    if not p.is_absolute():
+        p = p.resolve()
+    return p.as_uri()
+
+
+def _humanize_edtf_bound(s: str) -> str:
+    """Humanize one EDTF date token with no interval or bracket wrapper.
+
+    Shared by _humanize_edtf for a plain date and for each side of a range or
+    a bracket-qualified bound, so 'about 1912' and the '1912' half of a
+    '1912/1915' range go through the same month/day/decade logic. Decades
+    render as "Nx0s", a leading/trailing `~` or `?` becomes an "about "
+    prefix, and a plain year / year-month / full date reads naturally ("May
+    1912", "3 May 1912"). Anything this does not recognise falls back to the
+    raw core string rather than guessing.
+    """
+    prefix = 'about ' if ('~' in s or '?' in s) else ''
+    core = s.strip('~?')
+
+    decade = re.match(r'^(\d{3})[Xx]$', core)
+    if decade:
+        return f'{prefix}{int(decade.group(1)) * 10}s'
+
+    ymd = re.match(r'^(\d{4})(?:-~?(\d{2}))?(?:-~?(\d{2}))?$', core)
+    if ymd:
+        year, month, day = ymd.group(1), ymd.group(2), ymd.group(3)
+        if month:
+            mi = int(month)
+            month_label = _MONTH_NAMES[mi] if 1 <= mi <= 12 else month
+            if day:
+                return f'{prefix}{int(day)} {month_label} {year}'
+            return f'{prefix}{month_label} {year}'
+        return f'{prefix}{year}'
+    return f'{prefix}{core}'
+
+
+_EDTF_BEFORE_RE = re.compile(r'^\[\.\.(.+)\]$')
+_EDTF_AFTER_RE = re.compile(r'^\[(.+)\.\.\]$')
+
+
+def _humanize_edtf(edtf: str | None) -> str:
+    """Turn an EDTF date into a plain reading date for one gallery row.
+
+    Genealogy dates are EDTF (SPEC §20). Three shapes beyond a plain date need
+    their own reading, or the qualifier they carry silently vanishes and an
+    uncertain span reads as a specific-looking date (a real gallery bug: a
+    '1912/1915' row used to show bare "1912", and a '[..1900]' before-date
+    used to show bare "1900"):
+      - a slash interval ('1870/1875') reads as "1870 to 1875"; an open side
+        ('1870/..', '../1875') reads as "after 1870" / "before 1875";
+      - a bracket-qualified bound ('[..1900]' on/before, '[1900..]' on/after)
+        reads as "before 1900" / "after 1900";
+      - anything else goes through _humanize_edtf_bound for the decade/date
+        formatting a plain reader expects ("1920s", "about 1912", "May 1912").
+    None/empty yields "Undated".
+    """
+    if not edtf:
+        return 'Undated'
+    raw = str(edtf).strip()
+    if not raw:
+        return 'Undated'
+
+    if '/' in raw:
+        start, end = (part.strip() for part in raw.split('/', 1))
+        start_label = _humanize_edtf_bound(start) if start and start != '..' else None
+        end_label = _humanize_edtf_bound(end) if end and end != '..' else None
+        if start_label and end_label:
+            return f'{start_label} to {end_label}'
+        if start_label:
+            return f'after {start_label}'
+        if end_label:
+            return f'before {end_label}'
+        return 'Undated'
+
+    before = _EDTF_BEFORE_RE.match(raw)
+    if before:
+        return f'before {_humanize_edtf_bound(before.group(1))}'
+    after = _EDTF_AFTER_RE.match(raw)
+    if after:
+        return f'after {_humanize_edtf_bound(after.group(1))}'
+
+    return _humanize_edtf_bound(raw)
+
+
+def _decade_of(edtf: str | None) -> int | None:
+    """Decade (e.g. 1920) for a group's resolved date, read from the EDTF string.
+
+    Sections group by decade. The decade is taken from the EDTF literal
+    itself, NOT from edtf_bounds' widened midpoint (edtf_bounds' own
+    docstring warns against using them for display), so a `~`/`?` marker or
+    an open range would drift the section. '1920-01~' -> 1920, '192X' -> 1920.
+    views._decade_from_edtf takes the same literal-not-midpoint approach for
+    a plain date, but is not this function's twin for the open/set forms
+    below - it has no matching guard for them yet, a separate gap.
+
+    Open-ended and set forms - '[..1900]' (before 1900), '[1900..]' (1900
+    onward), '1870/..'/'../1875' (open slash interval), and EDTF sets - name a
+    boundary or a choice, not one confident year, so they return None and land
+    in the Undated tail rather than inventing a decade from the boundary
+    digits (an unbounded "after 1870" would otherwise look as precise as a
+    real 1870s photo). None/undecodable dates return None too.
+    """
+    if not edtf:
+        return None
+    raw = str(edtf).strip()
+    if '/' in raw:
+        start, end = (part.strip() for part in raw.split('/', 1))
+        if not start or start == '..' or not end or end == '..':
+            return None
+        s = start
+    else:
+        s = raw
+    # Bracket/brace-wrapped and bare comma-separated set forms ('1912,1913' -
+    # see _edtf_slug's identical set/choice handling) carry no single
+    # confident year - route to Undated rather than reading only the first
+    # choice's digits.
+    if s.startswith('[') or s.startswith('{') or ',' in s:
+        return None
+    s = s.rstrip('~?')
+    # EDTF decade form '192X': century+decade digits explicit, units 'X' literal.
+    if len(s) >= 4 and s[:3].isdigit() and s[3] in ('X', 'x'):
+        return int(s[:3]) * 10
+    m = re.match(r'^(\d{4})', s)
+    if not m:
+        return None
+    return (int(m.group(1)) // 10) * 10
+
+
+def _chip_label(variant_role: str | None, variant_copy: str | None) -> str:
+    """Human label for one non-primary variation member's chip.
+
+    `variant_role` is the compound role from the filename grammar ('back',
+    'negative', 'back-crop', 'page-3'); when a member differs from the primary
+    only by a copy letter it carries no role, so it reads as "copy b". Falls
+    back to a bare "copy" when neither is set.
+    """
+    if variant_role:
+        return variant_role
+    if variant_copy:
+        return f'copy {variant_copy}'
+    return 'copy'
+
+
+# The gallery's CSS (design/view.css), its Jinja2 template, and its marker-
+# guarded write all come from the shared single-file HTML infra in _lib
+# (load_view_css / render_template / write_generated_file), the one home views and
+# the gallery share so the page-shell rules cannot drift between them. The
+# gallery's own tile rules live inline in tools/templates/gallery.html, so
+# view.css stays a lean views subset.
+
+
+def _edtf_slug(edtf: str) -> str:
+    """Slug-encode an EDTF value so distinct EDTF forms stay distinct filenames.
+
+    `_slugify` strips the very characters EDTF uses as qualifiers (~ ? [ ] / . ,),
+    so '1912' and '1912~' would collapse to the same stem and two different
+    galleries would overwrite each other (F6). Map each qualifier to a readable
+    word BEFORE slugifying, then let `_slugify` hyphenate:
+      ~        -> ' approx'      (about)      1912~      -> edtf-1912-approx
+      ?        -> ' uncertain'   (uncertain)  1912?      -> edtf-1912-uncertain
+      /        -> ' to '         (interval)   1912/1915  -> edtf-1912-to-1915
+      [..X]    -> 'before X'     (open start) [..1900]   -> edtf-before-1900
+      [X..]    -> 'X onward'     (open end)   [1900..]   -> edtf-1900-onward
+      ,        -> ' or '         (set/choice) 1912,1913  -> edtf-1912-or-1913
+    A plain year keeps its digits ('1912' -> edtf-1912), so an exact date and its
+    approximate/uncertain twin never share a landing spot.
+    """
+    s = (edtf or '').strip()
+    before = re.match(r'^\[\.\.(.+)\]$', s)
+    after = re.match(r'^\[(.+)\.\.\]$', s)
+    if before:
+        s = f'before {before.group(1)}'
+    elif after:
+        s = f'{after.group(1)} onward'
+    s = (s.replace('~', ' approx')
+          .replace('?', ' uncertain')
+          .replace('/', ' to ')
+          .replace(',', ' or '))
+    return _slugify(s)
+
+
+def _filter_slug_parts(
+    keyword: str | None, edtf: str | None, text: str | None
+) -> list[str]:
+    """The filename tokens for the non-person filters, e.g. ['keyword-farm'].
+
+    One shared builder so the filter-only landing spot and the person-plus-filter
+    suffix stay identical (F4). EDTF goes through `_edtf_slug` so its qualifiers
+    survive as distinct tokens (F6).
+    """
+    parts: list[str] = []
+    if keyword:
+        parts.append(f'keyword-{_slugify(keyword)}')
+    if edtf:
+        parts.append(f'edtf-{_edtf_slug(edtf)}')
+    if text:
+        parts.append(f'text-{_slugify(text)}')
+    return parts
+
+
+def _gallery_out_path(
+    archive_root: Path,
+    person: str | None,
+    person_name: str | None,
+    keyword: str | None,
+    edtf: str | None,
+    text: str | None,
+    out: str | None,
+) -> Path:
+    """Compute the gallery's output path (default landing or --out override).
+
+    Default landing is under generated/gallery/ (a sibling of generated/site/
+    the site never reads or clears, and gitignored - disposable by construction):
+      - bare --person:  {slug}_{P-id}.html, slug from the display name, or the
+        bare P-id when the name is unknown (index absent/stale);
+      - --person plus other filters: the same stem with the filter tokens
+        appended, e.g. margaret-hartley_P-de957bcda1_keyword-farm.html, so
+        `--person X --keyword farm` and `--person X --keyword school` no longer
+        overwrite each other (F4);
+      - no person: gallery_{filter tokens}.html (e.g. gallery_edtf-1912-approx.html).
+    A relative --out is taken relative to the archive root (matching the doc
+    example `--out generated/gallery/farm.html`); an absolute --out is honored
+    as-is so the page can land anywhere the human names.
+    """
+    if out:
+        out_path = Path(out)
+        if not out_path.is_absolute():
+            out_path = archive_root / out_path
+        return out_path
+
+    gallery_dir = archive_root / 'generated' / 'gallery'
+    parts = _filter_slug_parts(keyword, edtf, text)
+    if person:
+        pid_display = fmt_id_display(person)
+        stem = f'{_slugify(person_name)}_{pid_display}' if person_name else pid_display
+        if parts:
+            stem = f'{stem}_' + '_'.join(parts)
+        return gallery_dir / f'{stem}.html'
+
+    return gallery_dir / f'gallery_{"_".join(parts) or "all"}.html'
+
+
+def _filter_phrase(keyword: str | None, edtf: str | None, text: str | None) -> str:
+    """A plain 'matching ...' phrase for the non-person count strip.
+
+    Person galleries read "N photos of {name}"; a filter-only gallery has no
+    subject, so the strip says what it filtered on instead ("matching keyword
+    'farm' and text 'Suwalki'"). Empty when no non-person filter is set.
+    """
+    bits: list[str] = []
+    if keyword:
+        bits.append(f'keyword "{keyword}"')
+    if edtf:
+        # Humanized the same way each row's own date_label is (F1's fix) - a
+        # decade/range/bracket filter reads "dated 1920s" here too, not the
+        # raw EDTF syntax the per-row label no longer shows.
+        bits.append(f'dated {_humanize_edtf(edtf)}')
+    if text:
+        bits.append(f'text "{text}"')
+    if not bits:
+        return ''
+    return 'matching ' + ' and '.join(bits)
+
+
+def _gallery_group_dict(
+    key,
+    group_meta,
+    members: list,
+    singleton_row,
+    fha_config: dict,
+    archive_root: Path,
+) -> dict | None:
+    """Assemble one gallery row from PRE-FETCHED rows (no SQL of its own).
+
+    `key` is either a group_id string (a real variation group) or the
+    ('path', path) singleton tuple `_group_keys_for` uses for an ungrouped
+    photo. For a real group, `group_meta` is its photo_groups row (or None when
+    the cache is torn) and `members` is its photos rows in primary-first order,
+    each carrying title/caption/edtf so no per-group SELECT is needed; for a
+    singleton, `singleton_row` is its one photos row. Returns the primary tile
+    plus its non-primary variants as chips, the resolved date and conflict flag,
+    and the sort/section keys. Every href is a resolved file:// URI.
+
+    Torn-cache fallback (F2): when the photo_groups row is missing or blank the
+    photo still renders from a member path (mirroring run_find's `or path`
+    fallback) rather than being silently dropped - a matched group always has at
+    least one member row even when its photo_groups row is gone. Returns None
+    only when there is genuinely no row to render.
+
+    Reconcile keeps a vanished file's row queryable but prefixes its path
+    'MISSING:' (a synthetic, never-on-disk key - see run_reconcile) so its
+    caption/date history stays searchable. A gallery page exists to be
+    clicked, so a MISSING: member can never be its primary tile or a chip
+    here: `members` is filtered to on-disk paths before a primary is chosen,
+    and a MISSING: group_meta primary_path is treated as absent, same as a
+    torn photo_groups row. A group left with no on-disk member (every variant
+    vanished) falls through to "no row to render", exactly like a torn cache
+    with no members at all - it is dropped, never shown as a broken link.
+    """
+    if isinstance(key, str):
+        members = [m for m in members if not m['path'].startswith(_MISSING_PREFIX)]
+        meta_primary = group_meta['primary_path'] if group_meta is not None else None
+        if meta_primary and not meta_primary.startswith(_MISSING_PREFIX):
+            primary_path = meta_primary
+            edtf_resolved = group_meta['edtf_resolved']
+            date_conflict = bool(group_meta['date_conflict'])
+        elif members:
+            fallback = members[0]   # members are ordered is_primary DESC, path
+            primary_path = fallback['path']
+            edtf_resolved = fallback['edtf']
+            date_conflict = False
+        else:
+            return None
+        primary_row = next((m for m in members if m['path'] == primary_path), None)
+        member_rows = members
+    else:
+        if singleton_row is None or key[1].startswith(_MISSING_PREFIX):
+            return None
+        primary_path = key[1]
+        edtf_resolved = singleton_row['edtf']
+        date_conflict = False
+        primary_row = singleton_row
+        member_rows = []
+
+    title = primary_row['title'] if primary_row is not None else None
+    caption_val = primary_row['caption'] if primary_row is not None else None
+    caption = (caption_val or title or '').strip()
+
+    chips: list[dict] = []
+    for member in member_rows:
+        if member['path'] == primary_path:
+            continue
+        chips.append({
+            'label': _chip_label(member['variant_role'], member['variant_copy']),
+            'href': _file_uri(member['path'], fha_config, archive_root),
+            'alias': member['path'],
+        })
+
+    ext = Path(primary_path).suffix.lower()
+    lo, _hi = edtf_bounds(edtf_resolved) if edtf_resolved else ('', '')
+    return {
+        'primary_path': primary_path,
+        'name': Path(primary_path).name,
+        'alias_path': primary_path,
+        'href': _file_uri(primary_path, fha_config, archive_root),
+        'renderable': ext in _RENDERABLE_EXTENSIONS,
+        'ext_badge': ext.lstrip('.').upper() or 'FILE',
+        'date_label': _humanize_edtf(edtf_resolved) if edtf_resolved else '',
+        'date_conflict': date_conflict,
+        'caption': caption,
+        'chips': chips,
+        'summary_text': ', '.join(c['label'] for c in chips),
+        'has_variants': bool(chips),
+        'edtf_resolved': edtf_resolved,
+        'decade': _decade_of(edtf_resolved),
+        'sort_key': (lo, primary_path),
+    }
+
+
+# Stay under SQLite's default 999-bound-variable limit, with room for a leading
+# person_ref parameter, when widening a match set into one IN () clause.
+_SQL_VAR_CHUNK = 900
+
+
+def _chunk(seq, size: int = _SQL_VAR_CHUNK):
+    """Yield successive size-length slices of seq for bounded IN () clauses."""
+    seq = list(seq)
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def _best_via(member_paths: list[str], via_by_path: dict[str, str]) -> str | None:
+    """The `via` linking the galleried person to this group, or None.
+
+    `_rebuild_photo_people` writes the SAME best `via` to every path in a group
+    for a given person (it aggregates at the group level, most-confident-wins),
+    so the first member path that carries a `via` is authoritative for the whole
+    group - no per-group min() re-derivation is needed (F13). None when the
+    person does not resolve to any member (should not happen for a --person
+    match, but handled).
+    """
+    for path in member_paths:
+        via = via_by_path.get(path)
+        if via is not None:
+            return via
+    return None
+
+
+def _verify_label(
+    via: str,
+    member_paths: list[str],
+    regions_by_path: dict[str, list[str]],
+    person_tags: set[str],
+) -> str:
+    """The 'why this matched' label for a weak (Verify-these) row.
+
+    A name-match reads 'name match'. A face-tag lists the region names on the
+    group's photos that map to THIS person via person_face_tags (F3) - never an
+    unrelated face tagged on the same photo. When the index is stale or absent
+    there is no tag->person mapping (`person_tags` is empty), so it degrades to
+    a generic 'face region match' rather than naming faces it cannot attribute.
+    """
+    if via != 'face-tag':
+        return 'name match'
+    named: list[str] = []
+    seen: set[str] = set()
+    for path in member_paths:
+        for name in regions_by_path.get(path, []):
+            if name in person_tags and name not in seen:
+                seen.add(name)
+                named.append(name)
+    if named:
+        return "face region '" + "', '".join(named) + "'"
+    return 'face region match'
+
+
+def _build_gallery_rows(
+    conn: sqlite3.Connection,
+    matched_groups,
+    fha_config: dict,
+    archive_root: Path,
+    person_id: str | None,
+    face_tags: dict[str, set[str]],
+) -> tuple[list[dict], list[dict], dict]:
+    """Assemble every gallery row from the matched group keys in a constant
+    number of queries, and split confirmed matches from weak ones.
+
+    The render loop used to be N+1: per group it re-queried photo_groups, member
+    rows, the primary's title/caption, the person's `via`, and the group's face
+    regions. This batches all of that up front (F11): one photo_groups fetch, one
+    member fetch (carrying title/caption/edtf so the duplicate primary SELECT is
+    gone), one singleton fetch, and - for a --person build - one photo_people
+    `via` fetch and one face-region fetch, each widened over the whole match set
+    with a bounded IN () clause. Rows are then assembled in Python.
+
+    Returns (main_groups, verify_groups, counts). Confidence split (F5): only
+    authoritative groups (`pid-keyword`/`source-people`) count toward the
+    headline tallies in `counts`; weak `face-tag`/`name-match` groups collect in
+    verify_groups and are tallied separately under counts['verify'], so the
+    count strip never folds unconfirmed matches into "N photos of {person}".
+    """
+    group_ids = [k for k in matched_groups if isinstance(k, str)]
+    singleton_paths = [k[1] for k in matched_groups if not isinstance(k, str)]
+
+    # photo_groups metadata per real group (a torn cache leaves a row absent).
+    groups_meta: dict[str, sqlite3.Row] = {}
+    for chunk in _chunk(group_ids):
+        placeholders = ','.join('?' * len(chunk))
+        for row in conn.execute(
+            f'SELECT group_id, primary_path, edtf_resolved, date_conflict, file_count '
+            f'FROM photo_groups WHERE group_id IN ({placeholders})', chunk
+        ):
+            groups_meta[row['group_id']] = row
+
+    # Every member row, primary-first, carrying the tile's title/caption/edtf.
+    members_by_group: dict[str, list[sqlite3.Row]] = {}
+    for chunk in _chunk(group_ids):
+        placeholders = ','.join('?' * len(chunk))
+        for row in conn.execute(
+            f'SELECT group_id, path, is_primary, variant_role, variant_copy, '
+            f'edtf, title, caption FROM photos WHERE group_id IN ({placeholders}) '
+            f'ORDER BY group_id, is_primary DESC, path', chunk
+        ):
+            members_by_group.setdefault(row['group_id'], []).append(row)
+
+    # Ungrouped (singleton) photo rows, one query.
+    singleton_rows: dict[str, sqlite3.Row] = {}
+    for chunk in _chunk(singleton_paths):
+        placeholders = ','.join('?' * len(chunk))
+        for row in conn.execute(
+            f'SELECT path, edtf, title, caption FROM photos WHERE path IN ({placeholders})',
+            chunk
+        ):
+            singleton_rows[row['path']] = row
+
+    # Person `via` and face-region names matter only for a --person build.
+    via_by_path: dict[str, str] = {}
+    regions_by_path: dict[str, list[str]] = {}
+    person_tags: set[str] = set()
+    if person_id:
+        all_paths: set[str] = set(singleton_paths)
+        for members in members_by_group.values():
+            all_paths.update(m['path'] for m in members)
+        for chunk in _chunk(sorted(all_paths)):
+            placeholders = ','.join('?' * len(chunk))
+            for path, via in conn.execute(
+                f'SELECT path, via FROM photo_people WHERE person_ref = ? '
+                f'AND path IN ({placeholders})', [person_id, *chunk]
+            ):
+                via_by_path[path] = via
+            for path, name in conn.execute(
+                f'SELECT DISTINCT path, name FROM photo_face_regions '
+                f'WHERE path IN ({placeholders})', chunk
+            ):
+                if name:
+                    regions_by_path.setdefault(path, []).append(name)
+        # Region names that resolve to THIS person via person_face_tags (F3).
+        person_tags = {tag for tag, pids in face_tags.items() if person_id in pids}
+
+    main_groups: list[dict] = []
+    verify_groups: list[dict] = []
+    counts = {'total': 0, 'dated': 0, 'undated': 0, 'with_variants': 0, 'verify': 0}
+
+    for key in matched_groups:
+        if isinstance(key, str):
+            members = members_by_group.get(key, [])
+            row = _gallery_group_dict(
+                key, groups_meta.get(key), members, None, fha_config, archive_root
+            )
+            member_paths = [m['path'] for m in members]
+        else:
+            row = _gallery_group_dict(
+                key, None, [], singleton_rows.get(key[1]), fha_config, archive_root
+            )
+            member_paths = [key[1]]
+        if row is None:
+            continue
+
+        if person_id:
+            via = _best_via(member_paths, via_by_path)
+            if via in ('face-tag', 'name-match'):
+                row['via_label'] = _verify_label(
+                    via, member_paths, regions_by_path, person_tags
+                )
+                verify_groups.append(row)
+                counts['verify'] += 1
+                continue
+
+        counts['total'] += 1
+        if row['edtf_resolved']:
+            counts['dated'] += 1
+        else:
+            counts['undated'] += 1
+        if row['has_variants']:
+            counts['with_variants'] += 1
+        main_groups.append(row)
+
+    return main_groups, verify_groups, counts
+
+
+def run_gallery(
+    archive_root: Path,
+    fha_config: dict,
+    person: str | None = None,
+    keyword: str | None = None,
+    edtf: str | None = None,
+    text: str | None = None,
+    out: str | None = None,
+) -> Result:
+    """Build a single-file HTML photo gallery from the requested filters.
+
+    Same filters as `photoindex find` (shared `_matched_filter_groups`), so the
+    two surfaces never disagree about what matches. On a real build this WRITES
+    one HTML file (the side effect) and returns a Result naming it; the _cmd
+    layer prints the path + file:// URL. Result.data shapes, by outcome:
+      - working-copy mode      -> {'status': 'working-copy'} , ok, exit clean
+                                  (refuse before writing: the file:// links would
+                                   all point at photos on the main machine)
+      - absent/unreadable/old  -> {'status': ...} , exit 3 (nothing written)
+      - zero matches           -> {'status', 'matched': 0, 'written': None} , clean
+      - marker-less collision  -> {'status', 'refused': path} , exit 3
+      - built                  -> {'status', 'matched': N, 'written': path,
+                                   'counts': {...}, 'css_warning': str|None}
+    'matched' counts every rendered group (confirmed plus the name-only Verify
+    tail); 'counts' breaks the confirmed flow down and carries the verify tally
+    separately (F5). 'css_warning' carries the styling-missing warning for the
+    _cmd layer to print (F9), never printed from this engine layer.
+    Raises ValueError (no filter / invalid EDTF) and RuntimeError (invalid FTS /
+    Jinja2 missing) for the CLI to translate; the caller validates the P-id's
+    type before calling, exactly as _cmd_find does.
+    """
+    # Working-copy: the whole artifact is file:// links to local photo files
+    # that live on the main machine here, so every link and thumbnail would be
+    # broken. Refuse before writing anything (TOOLING §13d), as a warning-level
+    # Result: ok, exit clean, status the machine discriminator.
+    if is_working_copy(archive_root):
+        return Result(ok=True, exit_code=EXIT_CLEAN, data={'status': 'working-copy'})
+
+    status, _lag = photoindex_status(archive_root, fha_config)
+    if status in ('absent', 'unreadable', 'old-schema'):
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': status})
+
+    conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
+    conn.row_factory = sqlite3.Row
+    try:
+        if not _schema_is_usable(conn):
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable'})
+
+        # ValueError (no filter / bad EDTF) and RuntimeError (bad FTS) propagate
+        # out of the shared helper to the CLI; only a genuine sqlite fault below
+        # is folded into the unreadable-cache result.
+        matched_groups, group_key, _all_paths = _matched_filter_groups(
+            conn, person, keyword, edtf, text
+        )
+
+        if not matched_groups:
+            return Result(ok=True, exit_code=EXIT_CLEAN,
+                          data={'status': status, 'matched': 0, 'written': None})
+
+        person_id = normalize_id(person) if person else None
+        person_name = _person_display_name(archive_root, person) if person else None
+        # Face-tag -> person mapping for the Verify-tail labels (F3); empty when
+        # no person filter, or when the index is stale/absent (degrades to a
+        # generic label rather than naming unrelated faces).
+        face_tags = _load_face_tag_index(archive_root)[0] if person_id else {}
+
+        main_groups, verify_groups, counts = _build_gallery_rows(
+            conn, matched_groups, fha_config, archive_root, person_id, face_tags,
+        )
+
+        # matched_groups can be non-empty at the SQL level (a MISSING:-flagged
+        # row still carries its caption/keyword metadata) while every one of
+        # those groups renders to nothing once _gallery_group_dict drops its
+        # vanished variants - the same zero-match contract as `not
+        # matched_groups` above applies here too: no write, clean exit.
+        if counts['total'] + counts['verify'] == 0:
+            return Result(ok=True, exit_code=EXIT_CLEAN,
+                          data={'status': status, 'matched': 0, 'written': None})
+
+        css, css_warning = load_view_css('the gallery')
+        try:
+            html = _render_gallery_html(
+                archive_root, person, person_name,
+                keyword, edtf, text, main_groups, verify_groups, counts, css,
+            )
+        except ImportError:
+            raise RuntimeError(
+                'building a gallery needs the Jinja2 library, which is not '
+                'installed. Install it with `pip install jinja2` (or '
+                '`pip install -r tools/requirements.txt`), then re-run.'
+            )
+
+        out_path = _gallery_out_path(
+            archive_root, person_id, person_name, keyword, edtf, text, out
+        )
+        try:
+            # The default landing folder (generated/gallery/) is disposable
+            # and may not exist yet on a fresh archive, so it's fine to
+            # create - but an explicit --out is human-typed input; a typo
+            # there should be caught, not silently turned into a new folder
+            # tree anywhere under the archive root. Only the default landing
+            # spot opts in to create_parents.
+            write_generated_file(
+                out_path, html, _GALLERY_GEN_PREFIX, create_parents=(out is None),
+            )
+        except GeneratedFileRefused as refused:
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': status, 'refused': str(refused)})
+        except GeneratedFileParentMissing as missing_parent:
+            raise RuntimeError(
+                f'the folder for --out ({missing_parent}) does not exist. '
+                f'Create it first, or pass a path under a folder that already '
+                f'exists, then re-run.'
+            ) from missing_parent
+        except OSError as e:
+            raise RuntimeError(
+                f'could not write the gallery to {out_path} ({e.strerror or e}). '
+                f'Check that the folder exists and is writable (or that the disk '
+                f'has room), or pass --out to write it somewhere else, then re-run.'
+            ) from e
+
+        return Result(ok=True, exit_code=EXIT_CLEAN, data={
+            'status': status,
+            'matched': counts['total'] + counts['verify'],
+            'written': str(out_path), 'counts': counts,
+            'css_warning': css_warning,
+        })
+    except sqlite3.Error:
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable'})
+    finally:
+        conn.close()
+
+
+def _render_gallery_html(
+    archive_root: Path,
+    person: str | None,
+    person_name: str | None,
+    keyword: str | None,
+    edtf: str | None,
+    text: str | None,
+    main_groups: list[dict],
+    verify_groups: list[dict],
+    counts: dict,
+    css: str,
+) -> str:
+    """Assemble the standalone gallery page from the grouped rows.
+
+    Sections are decades, newest first, with an Undated tail; rows inside a
+    section sort by resolved date then path. The GENERATED marker is line 1
+    (before the doctype) so the shared write guard / is_generated_text judge
+    ownership exactly as for a .md view. The masthead title comes from fha.yaml
+    `site: archive_name:` (with the legacy top-level fallback) via the shared
+    archive_title() helper. `css` is passed in (already read once by run_gallery)
+    so this pure-assembly function stays free of file I/O and its warning.
+    """
+    subject = person_name or (fmt_id_display(person) if person else None)
+
+    # Decade buckets for the main flow, newest first; the Undated tail last.
+    by_decade: dict[int, list[dict]] = {}
+    undated: list[dict] = []
+    for row in main_groups:
+        if row['decade'] is None:
+            undated.append(row)
+        else:
+            by_decade.setdefault(row['decade'], []).append(row)
+
+    sections: list[dict] = []
+    for decade in sorted(by_decade, reverse=True):
+        rows = sorted(by_decade[decade], key=lambda r: r['sort_key'])
+        sections.append({'heading': f'{decade}s', 'rows': rows})
+    if undated:
+        sections.append({
+            'heading': 'Undated',
+            'rows': sorted(undated, key=lambda r: r['sort_key']),
+        })
+
+    # Count strip headline counts only the confirmed main flow (F5); the weak
+    # name-only matches are named in a trailing clause, never folded into the
+    # "N photos of {person}" tally.
+    n = counts['total']
+    lead = f'{n} photo{"s" if n != 1 else ""}'
+    if subject:
+        lead += f' of {subject}'
+    else:
+        phrase = _filter_phrase(keyword, edtf, text)
+        if phrase:
+            lead += f' {phrase}'
+    count_strip = f'{lead} - {counts["dated"]} dated, {counts["undated"]} undated'
+    if counts['with_variants']:
+        count_strip += f' - {counts["with_variants"]} with backs or copies'
+    if counts.get('verify'):
+        m = counts['verify']
+        count_strip += (
+            f' - plus {m} matched by name only, listed under Verify these'
+        )
+
+    verify = None
+    if verify_groups:
+        # Sort once and take the example from the SAME sorted list the rows
+        # render from, so the printed command's --paths is always the first
+        # row a reader actually sees in this section (not an arbitrary,
+        # run-to-run-unstable member of the unsorted group-key set).
+        sorted_verify = sorted(verify_groups, key=lambda r: r['sort_key'])
+        example = sorted_verify[0]['alias_path']
+        verify = {
+            'heading': 'Verify these - matched by name, not yet tagged',
+            'tag_cmd': (
+                f'fha photoindex tag-person {fmt_id_display(person)} '
+                f'--paths {shlex.quote(example)}'
+            ),
+            'rows': sorted_verify,
+        }
+
+    title = f'Photos of {subject}' if subject else 'Photos'
+    marker = f'{_GALLERY_GEN_PREFIX} on {_today_iso()} - disposable; regenerate anytime -->'
+
+    return render_template(
+        'gallery.html',
+        marker=marker,
+        title=title,
+        archive_title=archive_title(load_fha_yaml(archive_root)),
+        date=_today_iso(),
+        css=css,
+        count_strip=count_strip,
+        sections=sections,
+        verify=verify,
+    ) + '\n'
+
+
+def _today_iso() -> str:
+    """Today's date as YYYY-MM-DD for the GENERATED marker line."""
+    return time.strftime('%Y-%m-%d', time.localtime())
 
 
 # ── Triage (fha photoindex triage - BUILD.md M3.3) ───────────────────────
@@ -1304,6 +2235,56 @@ def _move_cached_path(conn: sqlite3.Connection, old_path: str, new_path: str) ->
     )
 
 
+def _recompute_group_dates(conn: sqlite3.Connection, group_ids: set[str]) -> None:
+    """Recompute edtf_resolved/date_conflict for the given groups from only
+    their still-on-disk (non-MISSING:) members.
+
+    _move_cached_path renames path text as cache maintenance and never
+    touches photo_groups' resolved-date fields (only its own docstring),
+    so a group whose most-confident date - or a conflicting one - lived on
+    a variant that reconcile just flagged MISSING: would otherwise keep
+    reporting a date, or a date_conflict badge, contributed by a file no
+    longer on disk. Called for every group a rematch or a mark-missing
+    touched, right before commit.
+
+    Group membership, primary_path, and file_count are reconcile's usual
+    bookkeeping and are intentionally left alone here: _gallery_group_dict
+    already treats a MISSING: primary_path as absent and falls back to a
+    live member, and _group_photos (the full-rebuild path used by an
+    ordinary scan) is the only writer of group membership itself - this is
+    a narrower, reconcile-specific patch of just the two fields its own
+    mutation can silently stale.
+    """
+    for group_id in group_ids:
+        rows = conn.execute(
+            'SELECT path, edtf FROM photos WHERE group_id = ?', (group_id,)
+        ).fetchall()
+        live = sorted(
+            (
+                (edtf, path) for path, edtf in rows
+                if edtf and not path.startswith(_MISSING_PREFIX)
+            ),
+            key=lambda pair: pair[1],
+        )
+        best_edtf = max(live, key=lambda pair: _edtf_confidence(pair[0]))[0] if live else None
+        bounds = [edtf_bounds(e) for e, _ in live]
+        date_conflict = 0
+        for i in range(len(bounds)):
+            for j in range(i + 1, len(bounds)):
+                if bounds[i][1] < bounds[j][0] or bounds[j][1] < bounds[i][0]:
+                    date_conflict = 1
+        conn.execute(
+            'UPDATE photo_groups SET edtf_resolved=?, date_conflict=? WHERE group_id=?',
+            (best_edtf, date_conflict, group_id),
+        )
+
+
+def _group_id_of(conn: sqlite3.Connection, path: str) -> str | None:
+    """The group_id of the photos row currently at `path`, or None."""
+    row = conn.execute('SELECT group_id FROM photos WHERE path=?', (path,)).fetchone()
+    return row[0] if row and row[0] else None
+
+
 def _on_disk_aliases(photos_root: Path, fha_config: dict, archive_root: Path) -> dict[str, Path]:
     """Map alias-form path -> absolute Path for every photo file currently on disk."""
     out: dict[str, Path] = {}
@@ -1372,7 +2353,10 @@ def run_reconcile(
         naive cache-removal pass would erase it instead of resolving it) -
         only reconcile itself ever removes or transforms one, so the row's
         source_id/path history survives until a later --with-exif retry
-        heals it.
+        heals it. Either mutation also recomputes that row's group's
+        edtf_resolved/date_conflict from its still-live members
+        (_recompute_group_dates), so a group's resolved date or conflict
+        badge can never keep reflecting a variant that just vanished.
       - left untracked: a file with no claimed missing row is reported as new.
         With --with-exif, its SOURCE: keyword (if any) is read so it can be
         attached to that source's inventory in the report rather than being
@@ -1449,6 +2433,10 @@ def run_reconcile(
 
             rematched: list[tuple[str, str]] = []
             rematched_paths: list[Path] = []
+            # Groups touched by a rematch or a mark-missing below: their
+            # edtf_resolved/date_conflict need recomputing from surviving
+            # members before commit (_recompute_group_dates).
+            affected_group_ids: set[str] = set()
             if missing and candidate_source_ids:
                 claimed: set[str] = set()
                 for old_path, source_id in missing.items():
@@ -1463,6 +2451,9 @@ def run_reconcile(
                         claimed.add(new_path)
                         if not dry_run:
                             _move_cached_path(conn, old_path, new_path)
+                            gid = _group_id_of(conn, new_path)
+                            if gid:
+                                affected_group_ids.add(gid)
                         rematched.append((old_path, new_path))
                         rematched_paths.append(untracked[new_path])
                 rematched_old = {old for old, _new in rematched}
@@ -1477,6 +2468,9 @@ def run_reconcile(
                 new_key = f'{_MISSING_PREFIX}{old_path}'
                 if not dry_run:
                     _move_cached_path(conn, old_path, new_key)
+                    gid = _group_id_of(conn, new_key)
+                    if gid:
+                        affected_group_ids.add(gid)
                 now_missing.append(new_key)
 
             new_sourced: dict[str, list[str]] = {}
@@ -1494,6 +2488,8 @@ def run_reconcile(
             if dry_run:
                 conn.rollback()
             else:
+                if affected_group_ids:
+                    _recompute_group_dates(conn, affected_group_ids)
                 conn.commit()
             result = {
                 'status': status,
@@ -2467,6 +3463,17 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     find_p.add_argument('--files', action='store_true', help='Show every matching raw row instead of one path per group')
     find_p.set_defaults(func=_cmd_find)
 
+    gallery_p = deferred.add_parser(
+        'gallery', help='Build a clickable single-file HTML page of the matching photos'
+    )
+    gallery_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
+    gallery_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this P-id (any confidence tier)')
+    gallery_p.add_argument('--keyword', metavar='TERM', help='Case-insensitive substring match against cached keywords')
+    gallery_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
+    gallery_p.add_argument('--text', metavar='TEXT', help='Full-text search over title/caption/comment/keywords (photo_fts)')
+    gallery_p.add_argument('--out', metavar='FILE', help='Write the page here instead of the default generated/gallery/ landing spot')
+    gallery_p.set_defaults(func=_cmd_gallery)
+
     triage_p = deferred.add_parser('triage', help='Rank unprocessed photo groups by evidence signals')
     triage_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
     triage_p.add_argument('--top', metavar='N', type=int, default=10, help='Show this many top candidates (default 10)')
@@ -2516,6 +3523,7 @@ Make your photo library searchable without opening Lightroom.
 
   fha photoindex                       Scan the photos root into the catalog
   fha photoindex find --person <P-id>  Every photo of someone
+  fha photoindex gallery --person <P-id>  A clickable HTML page of the same photos
   fha photoindex triage --top 20       Un-filed photos worth processing next
   fha photoindex tag-person <P-id>     Tag a face across every copy
   fha photoindex set-summary <path> --text "..."   Update a photo's AI summary
@@ -2722,6 +3730,81 @@ def _cmd_find(args: argparse.Namespace) -> int:
         role = '' if row['is_primary'] else f"  [{row['variant_role'] or 'variant'}]"
         suffix = f'  - {caption}' if caption else ''
         print(f"  {row['path']}  [{date_label}]{role}{suffix}")
+    return EXIT_CLEAN
+
+
+def _cmd_gallery(args: argparse.Namespace) -> int:
+    resolved = _resolve_root_and_config(args)
+    if isinstance(resolved, int):
+        return resolved
+    archive_root, fha_config = resolved
+
+    person = getattr(args, 'person', None)
+    if person:
+        person = normalize_id(person)
+        # --person filters photo_people, which only holds P-ids; a valid but
+        # wrong-type id (S-/C-/…) would otherwise match nothing silently.
+        # Validated here (not in the engine) exactly like _cmd_find.
+        if not is_valid_id(person) or id_type_of(person) != 'P':
+            print(
+                f'ERROR: {person!r} is not a valid person id. A P-id looks like '
+                f'P-de957bcda1 (the letter P, a dash, then ten characters). '
+                f'Run `fha find <name>` to see the P-id you want.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+
+    try:
+        result = run_gallery(
+            archive_root, fha_config,
+            person=person,
+            keyword=getattr(args, 'keyword', None),
+            edtf=getattr(args, 'edtf', None),
+            text=getattr(args, 'text', None),
+            out=getattr(args, 'out', None),
+        )
+    except (ValueError, RuntimeError) as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    status = result['status']
+    if status == 'working-copy':
+        print(
+            'photoindex gallery is not available in working-copy mode - '
+            'the photo files are on the main machine, so every link in the page '
+            'would be broken. Build the gallery there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
+
+    exit_code = _print_photoindex_status(status, archive_root=archive_root)
+    if exit_code is not None:
+        return exit_code
+
+    if result.data.get('refused'):
+        print(
+            f"ERROR: {result['refused']} already exists and was not made by "
+            f"fha photoindex gallery - refusing to overwrite it. Move or delete "
+            f"that file, or pass --out to write the gallery somewhere else, then "
+            f"re-run.",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+
+    if not result.data.get('written'):
+        print('No photos match.')
+        return EXIT_CLEAN
+
+    # The styling-missing warning is computed in the engine and printed here, at
+    # the interface layer (F9), the same way the stale-cache warning travels.
+    css_warning = result.data.get('css_warning')
+    if css_warning:
+        print(css_warning, file=sys.stderr)
+
+    written = Path(result['written'])
+    print(f"Built a gallery of {result['matched']} photo(s):")
+    print(f'  {written}')
+    print(f'  {written.as_uri()}')
     return EXIT_CLEAN
 
 
