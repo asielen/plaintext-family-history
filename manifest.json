@@ -48,7 +48,7 @@
     {
       "path": ".claude/skills/photo-context/SKILL.md",
       "category": "operating",
-      "sha256": "b3afa9c541fb765758b7219a99bfadef04fb8abf6deb79e77000d14838af7aeb",
+      "sha256": "c39a40b8a05ad61d758ffd460adca9c762be475fe897322d392f294679e4aab4",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "5b31d688411841915a48d0e7611366ebbd02ed3b8f7666f9de316ac40733e92f",
+      "sha256": "02eae9fdb9a0677a111bce0535f4abf08d2474bd268ce90776d813bd88683305",
       "spec_version": "1.2"
     },
     {

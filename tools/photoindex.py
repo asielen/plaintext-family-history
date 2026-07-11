@@ -1354,13 +1354,22 @@ def _decade_of(edtf: str | None) -> int | None:
     open range would drift the section. '1920-01~' -> 1920, '192X' -> 1920.
 
     Open-ended and set forms - '[..1900]' (before 1900), '[1900..]' (1900
-    onward), and EDTF sets - name a boundary or a choice, not one confident
-    year, so they return None and land in the Undated tail rather than inventing
-    a decade from the boundary digits. None/undecodable dates return None too.
+    onward), '1870/..'/'../1875' (open slash interval), and EDTF sets - name a
+    boundary or a choice, not one confident year, so they return None and land
+    in the Undated tail rather than inventing a decade from the boundary
+    digits (an unbounded "after 1870" would otherwise look as precise as a
+    real 1870s photo). None/undecodable dates return None too.
     """
     if not edtf:
         return None
-    s = str(edtf).split('/')[0].strip()
+    raw = str(edtf).strip()
+    if '/' in raw:
+        start, end = (part.strip() for part in raw.split('/', 1))
+        if not start or start == '..' or not end or end == '..':
+            return None
+        s = start
+    else:
+        s = raw
     # Bracket/set forms carry no single confident year - route to Undated.
     if s.startswith('[') or s.startswith('{'):
         return None
@@ -1852,6 +1861,15 @@ def run_gallery(
         main_groups, verify_groups, counts = _build_gallery_rows(
             conn, matched_groups, fha_config, archive_root, person_id, face_tags,
         )
+
+        # matched_groups can be non-empty at the SQL level (a MISSING:-flagged
+        # row still carries its caption/keyword metadata) while every one of
+        # those groups renders to nothing once _gallery_group_dict drops its
+        # vanished variants - the same zero-match contract as `not
+        # matched_groups` above applies here too: no write, clean exit.
+        if counts['total'] + counts['verify'] == 0:
+            return Result(ok=True, exit_code=EXIT_CLEAN,
+                          data={'status': status, 'matched': 0, 'written': None})
 
         css, css_warning = load_view_css('the gallery')
         try:

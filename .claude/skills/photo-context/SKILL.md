@@ -108,20 +108,27 @@ and never runs over a whole folder or triage list.
       # use your real model/harness identifiers - these two are placeholders, not values to copy
       task: "photo-context caption", outputs: [UserComment], human_reviewed: true}
    ```
-   then reindex just that source (a source edit makes the main index stale):
+   then reindex just that source (a source edit makes the main index stale) and refresh the photo
+   catalog too — `photoindex_status` watches every `sources/photos/*.md` mtime, so this same edit
+   also makes `.cache/photos.sqlite` look stale, and the very next `fha photoindex find` or
+   `set-summary` in this session would warn or refuse on that staleness otherwise:
    ```
    fha index --source S-…
+   fha photoindex
    ```
    If the photo is **unprocessed** — no source record exists to write the pass on — say so
    plainly: the embedded `AI:` marker the write just added is the in-file provenance (SPEC §20
    rule 5). Suggest `fha process` when the photo looks evidence-worthy (a dated scene, named
    people, something worth its own source record) — that's a hand-off to `process-source`, not
-   something this skill does itself.
+   something this skill does itself. (No `sources/photos/*.md` was touched, so no stale-cache
+   follow-up is needed here.)
 
-6. **Close out.** No photoindex rescan needed — the write verb patches the catalog in the same
-   call, so `fha find` / `fha photoindex find` already see the new text. Run `fha lint` only when
-   step 5 touched a source record (the done-gate, `_STANDARD.md` §8). End by naming the next
-   step — "want me to do the other farm photos one at a time?"
+6. **Close out.** The embedded write itself needs no rescan — the write verb patches the catalog
+   in the same call, so `fha find` / `fha photoindex find` already see the new text. Step 5's
+   source-record edit is the one thing that does make the catalog look stale, and it's already
+   handled there. Run `fha lint` only when step 5 touched a source record (the done-gate,
+   `_STANDARD.md` §8). End by naming the next step — "want me to do the other farm photos one at
+   a time?"
 
 ## Guardrails
 

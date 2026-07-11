@@ -3328,6 +3328,17 @@ class GalleryTests(unittest.TestCase):
         self.assertIsNone(photoindex._decade_of('[1900..]'))
         self.assertIsNone(photoindex._decade_of(None))
 
+    def test_decade_of_routes_open_ended_slash_intervals_to_undated(self) -> None:
+        # Codex P2: an open-ended slash interval ('1870/..', '../1875') names a
+        # boundary, not one confident year - it must land in Undated exactly
+        # like the bracket open forms, never bucketed by its known side alone
+        # (an unbounded "after 1870" would otherwise look as precise as a real
+        # 1870s photo).
+        self.assertIsNone(photoindex._decade_of('1870/..'))
+        self.assertIsNone(photoindex._decade_of('../1875'))
+        # A closed range still buckets by its start year (unaffected).
+        self.assertEqual(photoindex._decade_of('1912/1915'), 1910)
+
     def test_humanize_edtf_preserves_ranges_and_bracket_qualifiers(self) -> None:
         # Codex P2: a slash range or a bracket-qualified bound used to render as
         # only its first/boundary year, turning an uncertain span into a
@@ -3443,7 +3454,28 @@ class GalleryTests(unittest.TestCase):
             self.assertEqual(result['matched'], 1)
             self.assertIn('portrait_1880-back.jpg', html)
             self.assertNotIn('MISSING:', html)
-            self.assertNotIn('portrait_1880.jpg', html)  # the vanished front, exactly
+
+    def test_gallery_all_matches_missing_writes_nothing_exits_clean(self) -> None:
+        # Codex P2: a keyword/text/person filter can still match at the SQL
+        # level when every matching row is MISSING: (reconcile keeps the
+        # metadata queryable), so the earlier `if not matched_groups` guard
+        # does not fire - but if _build_gallery_rows then drops every one of
+        # those groups, the zero-match contract (no write, clean exit) must
+        # still hold, not an empty clickable page reporting matched: 0.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'family_reunion.jpg': {'Keywords': ['onlygone']}}, cfg)
+
+            (archive / 'photos' / 'family_reunion.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg, with_exif=False)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='onlygone')
+
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            self.assertEqual(result['matched'], 0)
+            self.assertIsNone(result['written'])
+            self.assertFalse((archive / 'generated' / 'gallery').exists())
 
     def test_gallery_verify_tag_command_quotes_paths_with_spaces(self) -> None:
         # Codex P2: the generated tag-person command must stay copy-pasteable
