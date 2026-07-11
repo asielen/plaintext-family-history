@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     ID_RE,
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     mint_ids as _shared_mint_ids,
     resolve_root_arg,
@@ -123,11 +124,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_id(args: argparse.Namespace) -> int:
+    sub = getattr(args, 'id_command', None)
+
+    if sub not in ('mint', 'check', 'find'):
+        # Bare `fha id` (no verb) is a usage error, not a tool failure - and it
+        # needs no archive to report, so this check precedes root resolution:
+        # exit 2, matching `fha person`/`fha confirm`/`fha places`/`fha views`
+        # (audit flag 15).
+        print('Usage: fha id mint TYPE [-n N] | fha id check ID', file=sys.stderr)
+        return EXIT_ERRORS
+
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
-
-    sub = getattr(args, 'id_command', None)
 
     if sub == 'mint':
         if args.n < 1:
@@ -164,10 +173,9 @@ def _run_id(args: argparse.Namespace) -> int:
             print(f'  {rel}:{lineno}')
         return EXIT_CLEAN
 
-    else:
-        # No subcommand - print help
-        print('Usage: fha id mint TYPE [-n N] | fha id check ID')
-        return EXIT_CLEAN
+    # sub is guaranteed to be mint/check/find by the guard at the top; the
+    # no-subcommand case returned exit 2 there.
+    return EXIT_ERRORS
 
 
 # ── Standalone entry point ────────────────────────────────────────────────────

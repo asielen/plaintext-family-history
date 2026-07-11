@@ -2778,7 +2778,9 @@ def _cmd_views_help(args: argparse.Namespace) -> int:
     else:
         print('Usage: fha views <subcommand> [options]')
         print('Subcommands: timeline, sources-index, draft-queue, brackets, tree')
-    return EXIT_CLEAN
+    # Bare `fha views` (no verb) is a usage error, not clean success: exit 2,
+    # matching `fha person`/`fha confirm`/`fha places` (audit flag 15).
+    return EXIT_ERRORS
 
 
 # ── Parser registration ───────────────────────────────────────────────────────

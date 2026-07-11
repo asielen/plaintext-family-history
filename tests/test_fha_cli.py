@@ -97,6 +97,39 @@ class FhaCliBoundaryTests(unittest.TestCase):
         self.assertIn('documents: documents', text)
 
 
+class BareVerbGroupExitCodeTests(unittest.TestCase):
+    """A verb-group command invoked with no verb is a usage error (a verb is
+    required), so it prints help and returns 2 - the argparse-consistent posture,
+    uniform across every verb group (audit flag 15). Before the fix these
+    disagreed three ways: `person` used 2, `confirm`/`places` used 3, `id` used
+    0 (or 3 outside an archive, since it resolved the root before noticing no
+    verb was given). Out of scope (a different shape): `gedcom` and `wikitree`
+    are required-P-id commands (argparse enforces the positional), and
+    `photoindex`/`working-copy` dispatch to a deliberate default subcommand."""
+
+    def _bare(self, group: str) -> int:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return fha.main([group])
+
+    def test_every_verb_group_bare_exits_2(self) -> None:
+        for group in ('person', 'confirm', 'places', 'views', 'id'):
+            with self.subTest(group=group):
+                self.assertEqual(self._bare(group), 2)
+
+    def test_bare_id_needs_no_archive_to_report_the_missing_verb(self) -> None:
+        # The no-verb check precedes root resolution: run from a non-archive CWD
+        # (a temp dir) and bare `fha id` must still be the usage-error 2, never
+        # the root-unresolvable 3.
+        import os
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.chdir(tmp)
+                self.assertEqual(self._bare('id'), 2)
+            finally:
+                os.chdir(cwd)
+
+
 class IdCheckRootGuardTests(unittest.TestCase):
     """The `fha id check` alias resolves its root through the shared
     `_lib.resolve_root_arg` chokepoint (round-2 finding 10 deleted the

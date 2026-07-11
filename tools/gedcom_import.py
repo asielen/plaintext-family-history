@@ -500,7 +500,7 @@ def living_flag_for_import(has_death: bool, birth_edtf: str | None,
                            today_year: int | None = None) -> str:
     """THE `living:` heuristic - the one privacy-relevant default this import writes.
 
-    Rule (the plan's RECOMMENDED option, pending owner sign-off at review):
+    Rule (the plan's recommended option, owner-approved 2026-07-10):
     a person with a DEAT structure (even a dateless `1 DEAT Y`), or whose
     latest plausible birth year is more than 110 years ago, gets
     `living: false`; everyone else stays at the stub default `unknown`
@@ -513,8 +513,9 @@ def living_flag_for_import(has_death: bool, birth_edtf: str | None,
     tree to assert a death for a living person, and the residue's error
     direction is safe (dead-marked-unknown = over-redaction, never exposure).
 
-    Deliberately a single isolated predicate so the owner's review can confirm
-    or flip it in one place."""
+    Deliberately a single isolated predicate: the owner confirmed this rule at
+    review (over the all-`unknown` alternative), and it stays here so a future
+    change lives in one place."""
     if has_death:
         return 'false'
     year = _birth_year_upper(birth_edtf)

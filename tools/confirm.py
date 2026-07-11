@@ -139,6 +139,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
@@ -2576,6 +2577,12 @@ def run_confirm_merge(
     profiles = _scan_person_profiles(archive_root)
     for label, pid in (('person to merge', pm), ('--into survivor', ps)):
         if pid not in profiles:
+            # A not-found here is exit 3 (via _fail), NOT the exit-1 posture the
+            # other `confirm` verbs use for a missing target. Deliberate: merge
+            # reserves exit 1 for "the merge LANDED but carries warnings", so a
+            # not-found returning 1 would be indistinguishable from a successful
+            # merge-with-homework - the one confusion this verb must not create
+            # (audit flag 14; TOOLING §14a3).
             return _fail(result, 'not-found',
                          f'No person record for {fmt_id_display(pid)} (the {label}) '
                          f'under {archive_root / "people"}. Check the ID with '
@@ -3317,7 +3324,9 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = p.add_subparsers(dest='confirm_command', metavar='SUBCOMMAND')
     _add_subcommands(sub, suppress_root=True)
-    p.set_defaults(func=lambda a: p.print_help() or EXIT_FAILURE)
+    # Bare `fha confirm` (no verb) is a usage error, not a tool failure: exit 2,
+    # matching `fha person`/`fha wikitree` (audit flag 15).
+    p.set_defaults(func=lambda a: p.print_help() or EXIT_ERRORS)
     return p
 
 
@@ -3332,7 +3341,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not getattr(args, 'func', None):
         parser.print_help()
-        return EXIT_FAILURE
+        return EXIT_ERRORS
     return args.func(args)
 
 

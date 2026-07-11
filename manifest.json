@@ -139,7 +139,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "6f3d0ab836e6221887e3cda92b2263c5a3f8edd8993b521b4435d5b76318e287",
+      "sha256": "927ea14f6f335a2f1be2c927cec58764b1872f9981167774d6e9bccd873bce78",
       "spec_version": "1.2"
     },
     {
@@ -431,7 +431,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "a2858fc18761e043e79e22eee4956b23658ffdd3b85dd25180df899f1f7d4c3b",
+      "sha256": "bfb06ac4df499480808ded1d9b048ac0961ff2a14c731ad4cd77fcd03c4d8c9c",
       "spec_version": "1.2"
     },
     {
@@ -497,7 +497,7 @@
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "842fbbd7c96ed190676cbb0becd5e16a3e7c3e7bee880831dcf42b1c330f0980",
+      "sha256": "b15492a81f9a90190e029cf5fcb7c9c961ab693c8bcee5b9e7efe3712fdbeaec",
       "spec_version": "1.2"
     },
     {
@@ -539,13 +539,13 @@
     {
       "path": "tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "d98205ee168980e1010553802e61c67ca0e07eea70a400852cad5305e00d491a",
+      "sha256": "2f3623d0f966d0039bda695cdd690c4d7d9bf7515c21ffce2500060d2beee251",
       "spec_version": "1.2"
     },
     {
       "path": "tools/id.py",
       "category": "operating",
-      "sha256": "dd94ec488b6c2227f8a65b90482bec30c313c7ff1baabe03e04dfa05bb3f6158",
+      "sha256": "ecd66535c3ea896404c322ab34c7f3915efe3f9e8532daac5a8a9e822caf3629",
       "spec_version": "1.2"
     },
     {
@@ -587,7 +587,7 @@
     {
       "path": "tools/places.py",
       "category": "operating",
-      "sha256": "f2fc095f94767e17303743c387965512dcf6bafd55197c0d9fa47d205f04e0df",
+      "sha256": "5d1ec77248172e42954118e0c205f1180616596c14e700187add4626ab1a3e75",
       "spec_version": "1.2"
     },
     {
@@ -695,7 +695,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "fd30438238e5b2fb6df9b7467174d7d9dde8493635233f0cf02e7823cb9ee783",
+      "sha256": "ca0ef2ae5342e56cb3dba4f04a5f5fcd5c0e1922afe2f3cb9b6078cf2d2df146",
       "spec_version": "1.2"
     },
     {
