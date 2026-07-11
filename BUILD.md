@@ -52,7 +52,7 @@ the insertion point in the same edit.
 |---|---|---|---|
 | 1 | Layer 1 - Foundation | M1.1-M1.9 | ✓ shipped - includes the `Result` contract (M1.1), `fha lint` as its reference renderer (M1.4), and `fha claim` the claim-review write-back (M1.9) |
 | 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | ✓ shipped |
-| 3 | Layer 3 - Photo catalog | M3.1-M3.5 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`), M3.5 (`photoindex set-summary`) |
+| 3 | Layer 3 - Photo catalog | M3.1-M3.6 | ✓ shipped - M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`), M3.5 (`photoindex set-summary`), M3.6 (`photoindex gallery`) |
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4a | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer), M4.4a (`fha confirm merge` - the SPEC §9 identity-merge write) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.6 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`), M6.6 (`fha gedcom import` - the Ancestry on-ramp, added in the 2026-07 usability follow-up) |
@@ -842,6 +842,36 @@ a stale cache could address the wrong file for a mutating write); refuses in wor
 ```sh
 fha photoindex set-summary photos/x.jpg --text "…" --dry-run --root ...   # previews, writes nothing
 fha photoindex set-summary --group "SOURCE:S-…" --text "…" --root ...     # previews; writes on y
+```
+
+---
+
+### M3.6 - `fha photoindex gallery` (✓ shipped)
+
+**One PR** (plan 08). Extend `tools/photoindex.py` with a read-only build verb plus one new
+Jinja2 template `tools/templates/gallery.html`; no schema or scan change. Factor `find`'s
+"filters → matched groups" logic into a shared `_matched_filter_groups` helper so gallery and
+find can never disagree about what matches.
+
+**`fha photoindex gallery --person P-… | --keyword … | --edtf 192X | --text "…" [--out FILE]`.**
+Same filters as `find` (≥1 required, AND at the group level, same P-id/EDTF validation) →
+one throwaway self-contained HTML page under `generated/gallery/` (default
+`{slug}_{P-id}.html` or `gallery_{filters}.html`; `--out` overrides). One row per logical
+photo (group `primary_path`) with variants as zero-JS `<details>` chips, decade sections
+newest-first + an "Undated" tail + a count strip; with `--person`, weak `face-tag`/`name-match`
+groups collect into a "Verify these" tail. Inherits the plan-13 single-file-HTML conventions
+verbatim (TOOLING §7 D11): GENERATED marker on line 1 before the doctype (overwrite-by-default,
+refuse a marker-less target), inlined `design/view.css`, the private-artifact banner, `file://`
+hrefs + lazy `<img>` for renderable `.jpg/.jpeg/.png/.webp/.gif` (a placeholder tile that still
+opens the file otherwise). No derivative pipeline in v1 (`--thumbs` scaffolded as a documented
+v2). Refuses in working-copy mode (broken links; warning-level Result, TOOLING §13d). Cache
+posture mirrors `find`: absent/unreadable/old-schema → exit 3; stale warns and still builds
+(exit 0); zero matches writes nothing (exit 0); a build prints the path and its `file://` URL.
+
+**Done when:**
+```sh
+fha photoindex gallery --person <P-id> --root ...        # writes generated/gallery/*.html; prints path + file:// URL
+fha photoindex gallery --keyword farm --text "…" --root ...   # non-person landing spot
 ```
 
 ---

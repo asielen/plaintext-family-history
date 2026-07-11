@@ -1,0 +1,106 @@
+{{ marker | safe }}
+<!DOCTYPE html>
+<!-- Single-file fha photo gallery (TOOLING.md 9). The GENERATED marker above
+     the doctype is the ownership line every fha tool honors (a comment before
+     the doctype is valid HTML and does not trigger quirks mode); re-running
+     `fha photoindex gallery` overwrites this file in place. All style is inline
+     (design/view.css plus the gallery tile rules below); the only outbound
+     references are file:// links and <img> sources pointing straight at the
+     real photo files, so the page opens from file:// with zero network
+     requests and no JavaScript. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} - {{ archive_title }}</title>
+<style>
+{{ css | safe }}
+
+/* Gallery tiles - the photoindex-specific rules layered over design/view.css.
+   Kept in-template so the shared view.css stays a lean views subset. */
+.gallery-count { font-family: var(--font-sans); font-size: var(--text-sm);
+                 color: var(--ink-soft); margin: 0 0 var(--space-5); max-width: none; }
+.gallery-section { margin-bottom: var(--space-6); }
+.photo-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+              gap: var(--space-4); }
+.photo-row { display: flex; flex-direction: column; border: 1px solid var(--rule);
+             background: var(--surface); border-radius: 3px; overflow: hidden; }
+.photo-tile { display: block; }
+.photo-tile img { display: block; width: 100%; height: 12rem; object-fit: cover;
+                  background: var(--surface-sunken); }
+.photo-placeholder { display: flex; flex-direction: column; align-items: center;
+                     justify-content: center; height: 12rem; gap: var(--space-2);
+                     background: var(--surface-sunken); text-align: center; padding: var(--space-3); }
+.ext-badge { font-family: var(--font-sans); font-weight: 600; font-size: var(--text-xs);
+             letter-spacing: var(--tracking-caps); color: var(--paper);
+             background: var(--accent); padding: 0.15em 0.5em; border-radius: 2px; }
+.ph-name { font-size: var(--text-sm); color: var(--muted); word-break: break-all; }
+.photo-meta { padding: var(--space-2) var(--space-3) var(--space-3); font-size: var(--text-sm); }
+.photo-name { font-family: var(--font-sans); font-weight: 600; word-break: break-word; }
+.photo-date { color: var(--muted); }
+.photo-caption { color: var(--ink-soft); margin-top: var(--space-1); }
+.photo-via { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
+             margin-top: var(--space-1); }
+.badge-conflict { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600;
+                  color: var(--paper); background: var(--status-review-fg);
+                  padding: 0.1em 0.45em; border-radius: 2px; margin-left: var(--space-2); }
+.photo-variants { margin-top: var(--space-2); }
+.photo-variants summary { font-family: var(--font-sans); font-size: var(--text-xs);
+                          color: var(--accent); cursor: pointer; }
+.photo-variants ul { margin: var(--space-2) 0 0; }
+.verify-hint { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-soft); }
+</style>
+</head>
+<body>
+{% macro photo_row(row) %}
+<article class="photo-row">
+  <a class="photo-tile" href="{{ row.href }}">
+  {% if row.renderable %}
+    <img loading="lazy" src="{{ row.href }}" alt="{{ row.name }}">
+  {% else %}
+    <span class="photo-placeholder"><span class="ext-badge">{{ row.ext_badge }}</span><span class="ph-name">{{ row.name }}</span></span>
+  {% endif %}
+  </a>
+  <div class="photo-meta">
+    <div class="photo-name">{{ row.name }}{% if row.date_conflict %}<span class="badge-conflict" title="The variants of this photo carry dates that do not overlap - worth a second look">date conflict</span>{% endif %}</div>
+    <div class="path">{{ row.alias_path }}</div>
+    {% if row.date_label %}<div class="photo-date">{{ row.date_label }}</div>{% endif %}
+    {% if row.caption %}<div class="photo-caption">{{ row.caption }}</div>{% endif %}
+    {% if row.via_label %}<div class="photo-via">{{ row.via_label }}</div>{% endif %}
+    {% if row.chips %}
+    <details class="photo-variants">
+      <summary>{{ row.chips|length }} more file{{ 's' if row.chips|length != 1 else '' }}: {{ row.summary_text }}</summary>
+      <ul>
+      {% for chip in row.chips %}<li><a href="{{ chip.href }}">{{ chip.label }}</a> <span class="path">{{ chip.alias }}</span></li>
+      {% endfor %}</ul>
+    </details>
+    {% endif %}
+  </div>
+</article>
+{% endmacro %}
+<header class="view-masthead">{{ archive_title }}</header>
+<p class="view-banner">Private research companion - generated from the archive; not redacted for publication. Share photos through <code>fha site</code> instead.</p>
+<main>
+<h1>{{ title }}</h1>
+<p class="view-generated">Generated by <code>fha photoindex gallery</code> on {{ date }} - disposable; regenerate anytime.</p>
+<p class="gallery-count">{{ count_strip }}</p>
+{% for section in sections %}
+<section class="gallery-section">
+<h2>{{ section.heading }}</h2>
+<div class="photo-list">
+{% for row in section.rows %}{{ photo_row(row) }}{% endfor %}
+</div>
+</section>
+{% endfor %}
+{% if verify %}
+<section class="gallery-section gallery-verify">
+<h2>{{ verify.heading }}</h2>
+<p class="verify-hint">If one of these really is this person, run <code>{{ verify.tag_cmd }}</code> to make the match permanent.</p>
+<div class="photo-list">
+{% for row in verify.rows %}{{ photo_row(row) }}{% endfor %}
+</div>
+</section>
+{% endif %}
+</main>
+</body>
+</html>
