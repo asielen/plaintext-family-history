@@ -20,6 +20,8 @@ fha artifacts inherit (TOOLING §7 D11):
     `fha site` - the HTML tree ships with the site's full-tree feature.
 """
 
+import contextlib
+import io
 import re
 import shutil
 import sys
@@ -274,6 +276,32 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
         finally:
             views.render_template = orig
         self.assertEqual(res.exit_code, EXIT_FAILURE)
+
+    def test_all_curated_batch_continues_past_one_missing_folder(self):
+        # A stale index pointing at one curated person's moved/deleted folder
+        # must not abort the whole --all-curated batch: before this fix,
+        # GeneratedFileParentMissing hit the same top-level except as the
+        # rare GeneratedFileRefused case and discarded every file already
+        # written this run, including a second curated person's, which
+        # never had anything wrong with it.
+        pid2 = 'P-cccccccccc'
+        folder2 = self.root / 'people' / '050 Second Person'
+        folder2.mkdir(parents=True)
+        (folder2 / f'second__person_{pid2}.md').write_text(
+            _person(pid2, 'Second Person', 'curated'), encoding='utf-8')
+        self._reindex()
+
+        shutil.rmtree(self.profile.parent)   # PID's folder vanishes; pid2's survives
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            res = views.run_timeline(self.root, all_curated=True)
+
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(len(res.changed), 1)
+        self.assertTrue(Path(res.changed[0]).name.startswith('second__person_timeline'))
+        self.assertIn('WARNING', err.getvalue())
+        self.assertIn(PID, err.getvalue())
 
 
 class ExitCodeTests(_ViewsHtmlBase):

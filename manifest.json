@@ -12,7 +12,7 @@
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "27ef61cca13b263401990aa6c66106d28d2e0c5f30f0a88d5d041f9b6588e3af",
+      "sha256": "76b53a9087c4ee82e9f8896cfec66f8f91e38bacf1add9f2c23c253aac1cdd3e",
       "spec_version": "1.2"
     },
     {
@@ -48,7 +48,7 @@
     {
       "path": ".claude/skills/photo-context/SKILL.md",
       "category": "operating",
-      "sha256": "c39a40b8a05ad61d758ffd460adca9c762be475fe897322d392f294679e4aab4",
+      "sha256": "615576c3af679f8d173127ba77d6d684db91e315b26323ff3d3674296bc88346",
       "spec_version": "1.2"
     },
     {
@@ -84,7 +84,7 @@
     {
       "path": ".claude/skills/share-and-export/SKILL.md",
       "category": "operating",
-      "sha256": "61f8a01e2fac3df9e7563d4893c295ec0cb3095e428fcf9cc2db87f1cb4ed812",
+      "sha256": "1a2dc2b74665b637970692fc9cb911ecaa4f2d08267212316577353acec05941",
       "spec_version": "1.2"
     },
     {
@@ -157,7 +157,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3651cc9f0c09f7a2171080ace847dd61f6affb442835e6ea3bd45f484269df02",
+      "sha256": "d4b80d4608ae762e6eefc46ef7a402f741273e25664706966655f0e8a155fa1c",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "02eae9fdb9a0677a111bce0535f4abf08d2474bd268ce90776d813bd88683305",
+      "sha256": "458ddae9f29b46b8740541d967a5c15049a942a9bb8e64e25cc99b58e28cf7d5",
       "spec_version": "1.2"
     },
     {
@@ -719,7 +719,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "8d54bb138b6e5068b32de2db5d96ab566901a2de91ca3172bc5d0e9df7652c3e",
+      "sha256": "a01238f5411ae801092c4def7d8f272a62c8f002f7a0163bc06805359ee5c594",
       "spec_version": "1.2"
     },
     {

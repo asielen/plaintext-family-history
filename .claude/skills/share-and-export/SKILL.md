@@ -115,6 +115,9 @@ for "import my Ancestry tree into here" — see Guardrails.
   working as designed. Fix the underlying record (mark someone `living: false` only if that's
   actually true, resolve the citation) and re-export; never patch the export file to add back what
   was withheld.
+- **A packet re-run for the same person the same day refuses by default** (its output already
+  exists) — this is the routine case, not a privacy refusal: name `--overwrite` as the fix and
+  confirm the human wants the old packet replaced before adding it, same as any other flag here.
 - **Import is not this skill.** "Import my Ancestry tree" / "move my tree into here" hands off to
   the `fha gedcom import` path, run as an AGENTS.md **migration-mode** conversation (PLAN →
   DRY-RUN → human approval → bounded batches) — never handled here. A single loose file (a

@@ -285,6 +285,42 @@ def _runtime_error_exit(e: RuntimeError) -> int:
     return EXIT_FAILURE
 
 
+def _generate_or_warn(context: str, fn, *args, **kwargs):
+    """Call a per-item view generator inside a batch (--all-curated /
+    refresh), warning and returning None instead of letting a single item's
+    write failure abort the rest of the batch.
+
+    Before this wrapper, GeneratedFileParentMissing (routine: one curated
+    person's folder is stale/moved relative to the index) hit the same
+    top-level except as the rare GeneratedFileRefused case and aborted the
+    whole run, discarding `changed` for every person already written this
+    pass. `context` names what's being skipped, e.g. 'timeline for P-xxx'.
+    A single-person (non-batch) call is NOT expected to use this wrapper -
+    there the top-level except clauses below are correct, since one item IS
+    the whole run.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except GeneratedFileRefused as e:
+        print(
+            f'WARNING: skipped {context} - hand-written file at {e} has no '
+            f'GENERATED header (move or delete it, then re-run for this one).',
+            file=sys.stderr,
+        )
+    except GeneratedFileParentMissing as e:
+        print(
+            f'WARNING: skipped {context} - the folder for {e} no longer '
+            f'exists (run `fha index` to refresh, then retry this one).',
+            file=sys.stderr,
+        )
+    except OSError as e:
+        print(f'WARNING: skipped {context} - could not write ({e.strerror or e}).',
+              file=sys.stderr)
+    except RuntimeError as e:
+        print(f'WARNING: skipped {context} - {e}', file=sys.stderr)
+    return None
+
+
 def _rebase(p: Path, old: Path, new: Path) -> Path:
     """Return p relocated from old to new, or p unchanged if not under old."""
     try:
@@ -2382,7 +2418,9 @@ def run_timeline(
                 return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
-                out = _generate_timeline(conn, pid, archive_root, fmt=fmt)
+                out = _generate_or_warn(
+                    f'timeline for {pid}', _generate_timeline, conn, pid, archive_root, fmt=fmt,
+                )
                 if out:
                     print(f'  timeline ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
@@ -2465,7 +2503,10 @@ def run_sources_index(
             if all_curated:
                 # Per-person files for all curated persons
                 for pid in _view_eligible_curated_ids(conn, archive_root):
-                    out = _generate_sources_index_person(conn, pid, archive_root, fmt=fmt)
+                    out = _generate_or_warn(
+                        f'sources-index for {pid}', _generate_sources_index_person,
+                        conn, pid, archive_root, fmt=fmt,
+                    )
                     if out:
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
                         changed.append(str(out))
@@ -2473,11 +2514,14 @@ def run_sources_index(
 
             # Couple-folder sources-index.md files
             for folder_path, person_ids in _couple_folders(conn, archive_root):
-                out = _generate_sources_index_couple_folder(
-                    conn, folder_path, person_ids, fmt=fmt, archive_root=archive_root)
-                print(f'  sources-index ->{out.relative_to(archive_root)}')
-                changed.append(str(out))
-                count += 1
+                out = _generate_or_warn(
+                    f'sources-index for {folder_path.name}', _generate_sources_index_couple_folder,
+                    conn, folder_path, person_ids, fmt=fmt, archive_root=archive_root,
+                )
+                if out:
+                    print(f'  sources-index ->{out.relative_to(archive_root)}')
+                    changed.append(str(out))
+                    count += 1
 
             print(f'Generated {count} sources-index file(s).')
             if count:
@@ -2563,7 +2607,9 @@ def run_draft_queue(
                 return _empty_curated_views_result(conn)
             count = 0
             for pid in person_ids:
-                out = _generate_draft_queue(conn, pid, archive_root, fmt=fmt)
+                out = _generate_or_warn(
+                    f'draft-queue for {pid}', _generate_draft_queue, conn, pid, archive_root, fmt=fmt,
+                )
                 if out:
                     print(f'  draft-queue ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
@@ -2735,7 +2781,9 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         for pid in person_ids:
             for fn, label in _per_person:
                 for fmt_pass in fmt_passes:
-                    out = fn(conn, pid, archive_root, fmt=fmt_pass)
+                    out = _generate_or_warn(
+                        f'{label.strip()} for {pid}', fn, conn, pid, archive_root, fmt=fmt_pass,
+                    )
                     if out:
                         print(f'  {label}->{out.relative_to(archive_root)}')
                         changed.append(str(out))
@@ -2743,9 +2791,10 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
 
         for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
             for fmt_pass in fmt_passes:
-                out = _generate_sources_index_couple_folder(
-                    conn, folder_path, pids_in_folder,
-                    fmt=fmt_pass, archive_root=archive_root)
+                out = _generate_or_warn(
+                    f'sources-index for {folder_path.name}', _generate_sources_index_couple_folder,
+                    conn, folder_path, pids_in_folder, fmt=fmt_pass, archive_root=archive_root,
+                )
                 if out:
                     print(f'  sources-index  ->{out.relative_to(archive_root)}')
                     changed.append(str(out))

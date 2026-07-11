@@ -1891,6 +1891,88 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_reconcile_recomputes_group_date_after_its_dated_variant_goes_missing(self) -> None:
+        # A group's edtf_resolved must never keep reflecting a variant that
+        # reconcile just flagged MISSING: - _move_cached_path renames path
+        # text only, so without _recompute_group_dates the group's resolved
+        # date would silently survive its own source file's disappearance.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {'portrait_1880.jpg': {'Keywords': ['DATE: 1955!']}}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, cfg)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                before = conn.execute(
+                    "SELECT edtf_resolved FROM photo_groups WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()[0]
+                self.assertEqual(before, '1955')
+            finally:
+                conn.close()
+
+            # The dated front scan vanishes; the undated back scan survives.
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            result = photoindex.run_reconcile(archive, cfg, with_exif=False)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                after = conn.execute(
+                    "SELECT edtf_resolved FROM photo_groups WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()[0]
+                self.assertIsNone(after)
+            finally:
+                conn.close()
+
+    def test_reconcile_clears_date_conflict_when_conflicting_variant_goes_missing(self) -> None:
+        # A group's date_conflict badge must clear once the variant it
+        # conflicted with is gone, not keep flagging a conflict against a
+        # file that no longer exists.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {'Keywords': ['DATE: 1850!']},
+                    'portrait_1880-back.jpg': {'Keywords': ['DATE: 1950!']},
+                }
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, cfg)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                before = conn.execute(
+                    "SELECT date_conflict FROM photo_groups WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()[0]
+                self.assertEqual(before, 1)
+            finally:
+                conn.close()
+
+            # The non-primary back scan (1950) vanishes; only 1850 remains.
+            (archive / 'photos' / 'portrait_1880-back.jpg').unlink()
+            result = photoindex.run_reconcile(archive, cfg, with_exif=False)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880-back.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT edtf_resolved, date_conflict FROM photo_groups "
+                    "WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()
+                self.assertEqual(row[0], '1850')
+                self.assertEqual(row[1], 0)
+            finally:
+                conn.close()
+
     def test_ordinary_scan_preserves_missing_row_for_a_later_exif_rematch(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -3075,7 +3157,21 @@ class GalleryTests(unittest.TestCase):
             self.assertEqual(neg_find['rows'], [])
             neg_gallery = photoindex.run_gallery(archive, cfg, edtf='1902', text='cemetery')
             self.assertEqual(neg_gallery['matched'], 0)
-            self.assertIsNone(neg_gallery['written'])
+
+    def test_gallery_count_strip_humanizes_the_edtf_filter(self) -> None:
+        # Codex P2 (symmetry): the count strip's "matching dated ..." clause
+        # must read the same humanized form as each row's own date_label,
+        # not the raw EDTF filter syntax the per-row label no longer shows.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, edtf='188X')
+            html = self._read(result['written'])
+
+            self.assertIn('matching dated 1880s', html)
+            self.assertNotIn('188X', html)
 
     def test_gallery_decade_sections_and_undated_tail(self) -> None:
         # Dated groups land in decade sections newest-first; the undated group
@@ -3229,6 +3325,23 @@ class GalleryTests(unittest.TestCase):
             self.assertTrue(sentinel.exists())
             self.assertEqual(sentinel.read_text(encoding='utf-8'), 'SITE OUTPUT')
 
+    def test_gallery_out_with_missing_parent_folder_is_a_clear_error(self) -> None:
+        # Codex P2: only the default landing spot (generated/gallery/) may
+        # auto-create its folder - an explicit --out is human-typed input, so
+        # a typo'd/nonexistent parent must be a clear error, never a silently
+        # fabricated directory tree anywhere under the archive root.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+
+            missing_dir = archive / 'reports' / 'nested'
+            with self.assertRaises(RuntimeError) as ctx:
+                photoindex.run_gallery(
+                    archive, cfg, edtf='188X', out='reports/nested/farm.html')
+            self.assertIn('--out', str(ctx.exception))
+            self.assertFalse(missing_dir.exists())
+
     def test_gallery_zero_matches_writes_nothing_exits_clean(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -3338,6 +3451,13 @@ class GalleryTests(unittest.TestCase):
         self.assertIsNone(photoindex._decade_of('../1875'))
         # A closed range still buckets by its start year (unaffected).
         self.assertEqual(photoindex._decade_of('1912/1915'), 1910)
+
+    def test_decade_of_routes_bare_comma_sets_to_undated(self) -> None:
+        # Codex P2: a bare comma-separated EDTF set ('1912,1913' - _edtf_slug's
+        # own docstring calls this a legitimate "set/choice" form) named no
+        # single confident year, but fell through the bracket-only set guard
+        # and got bucketed from its first choice's digits alone.
+        self.assertIsNone(photoindex._decade_of('1912,1913'))
 
     def test_humanize_edtf_preserves_ranges_and_bracket_qualifiers(self) -> None:
         # Codex P2: a slash range or a bracket-qualified bound used to render as
@@ -3502,6 +3622,42 @@ class GalleryTests(unittest.TestCase):
             self.assertIn('Verify these', html)
             # Autoescape renders the shell-quoting single-quotes as &#39;.
             self.assertIn('--paths &#39;photos/family reunion.jpg&#39;', html)
+
+    def test_gallery_verify_tag_command_matches_first_rendered_row(self) -> None:
+        # Codex P2: the printed tag-person example must be the SAME row a
+        # reader actually sees first in the Verify section - it used to be
+        # drawn from the unsorted group-key set while the rows themselves
+        # render from a separately sorted list, so the two could disagree
+        # (and differ between runs of the identical command against
+        # unchanged data).
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley')],
+                face_tags=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'portrait_1880.jpg': {
+                    'Keywords': ['DATE: 1880!'],
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+                'wedding_1902.jpg': {
+                    'Keywords': ['DATE: 1902!'],
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+            }, cfg)
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            i_verify = html.index('Verify these')
+            i_first_portrait = html.index('portrait_1880.jpg', i_verify)
+            i_first_wedding = html.index('wedding_1902.jpg', i_verify)
+            first_is_portrait = i_first_portrait < i_first_wedding
+            expected_example = 'photos/portrait_1880.jpg' if first_is_portrait else 'photos/wedding_1902.jpg'
+            self.assertIn(f'--paths {expected_example}', html)
 
     def test_gallery_verify_label_excludes_unrelated_face_region(self) -> None:
         # F3: a face-tag Verify row labels only the region name that maps to the

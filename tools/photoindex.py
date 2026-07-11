@@ -175,6 +175,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    GeneratedFileParentMissing,
     GeneratedFileRefused,
     Result,
     archive_title,
@@ -1347,11 +1348,13 @@ def _humanize_edtf(edtf: str | None) -> str:
 def _decade_of(edtf: str | None) -> int | None:
     """Decade (e.g. 1920) for a group's resolved date, read from the EDTF string.
 
-    Sections group by decade. The decade is taken from the EDTF literal itself
-    the way views._decade_from_edtf does it, NOT from edtf_bounds' midpoint:
-    bounds are deliberately widened for approximate dates (edtf_bounds' own
-    docstring warns against using them for display), so a `~`/`?` marker or an
-    open range would drift the section. '1920-01~' -> 1920, '192X' -> 1920.
+    Sections group by decade. The decade is taken from the EDTF literal
+    itself, NOT from edtf_bounds' widened midpoint (edtf_bounds' own
+    docstring warns against using them for display), so a `~`/`?` marker or
+    an open range would drift the section. '1920-01~' -> 1920, '192X' -> 1920.
+    views._decade_from_edtf takes the same literal-not-midpoint approach for
+    a plain date, but is not this function's twin for the open/set forms
+    below - it has no matching guard for them yet, a separate gap.
 
     Open-ended and set forms - '[..1900]' (before 1900), '[1900..]' (1900
     onward), '1870/..'/'../1875' (open slash interval), and EDTF sets - name a
@@ -1370,8 +1373,11 @@ def _decade_of(edtf: str | None) -> int | None:
         s = start
     else:
         s = raw
-    # Bracket/set forms carry no single confident year - route to Undated.
-    if s.startswith('[') or s.startswith('{'):
+    # Bracket/brace-wrapped and bare comma-separated set forms ('1912,1913' -
+    # see _edtf_slug's identical set/choice handling) carry no single
+    # confident year - route to Undated rather than reading only the first
+    # choice's digits.
+    if s.startswith('[') or s.startswith('{') or ',' in s:
         return None
     s = s.rstrip('~?')
     # EDTF decade form '192X': century+decade digits explicit, units 'X' literal.
@@ -1508,7 +1514,10 @@ def _filter_phrase(keyword: str | None, edtf: str | None, text: str | None) -> s
     if keyword:
         bits.append(f'keyword "{keyword}"')
     if edtf:
-        bits.append(f'dated {edtf}')
+        # Humanized the same way each row's own date_label is (F1's fix) - a
+        # decade/range/bracket filter reads "dated 1920s" here too, not the
+        # raw EDTF syntax the per-row label no longer shows.
+        bits.append(f'dated {_humanize_edtf(edtf)}')
     if text:
         bits.append(f'text "{text}"')
     if not bits:
@@ -1888,13 +1897,24 @@ def run_gallery(
             archive_root, person_id, person_name, keyword, edtf, text, out
         )
         try:
-            # generated/gallery/ is a disposable top-level folder that may not
-            # exist yet on a fresh archive - unlike a views companion, there is
-            # no "should already exist" folder to protect here.
-            write_generated_file(out_path, html, _GALLERY_GEN_PREFIX, create_parents=True)
+            # The default landing folder (generated/gallery/) is disposable
+            # and may not exist yet on a fresh archive, so it's fine to
+            # create - but an explicit --out is human-typed input; a typo
+            # there should be caught, not silently turned into a new folder
+            # tree anywhere under the archive root. Only the default landing
+            # spot opts in to create_parents.
+            write_generated_file(
+                out_path, html, _GALLERY_GEN_PREFIX, create_parents=(out is None),
+            )
         except GeneratedFileRefused as refused:
             return Result(ok=False, exit_code=EXIT_FAILURE,
                           data={'status': status, 'refused': str(refused)})
+        except GeneratedFileParentMissing as missing_parent:
+            raise RuntimeError(
+                f'the folder for --out ({missing_parent}) does not exist. '
+                f'Create it first, or pass a path under a folder that already '
+                f'exists, then re-run.'
+            ) from missing_parent
         except OSError as e:
             raise RuntimeError(
                 f'could not write the gallery to {out_path} ({e.strerror or e}). '
@@ -1979,14 +1999,19 @@ def _render_gallery_html(
 
     verify = None
     if verify_groups:
-        example = verify_groups[0]['alias_path']
+        # Sort once and take the example from the SAME sorted list the rows
+        # render from, so the printed command's --paths is always the first
+        # row a reader actually sees in this section (not an arbitrary,
+        # run-to-run-unstable member of the unsorted group-key set).
+        sorted_verify = sorted(verify_groups, key=lambda r: r['sort_key'])
+        example = sorted_verify[0]['alias_path']
         verify = {
             'heading': 'Verify these - matched by name, not yet tagged',
             'tag_cmd': (
                 f'fha photoindex tag-person {fmt_id_display(person)} '
                 f'--paths {shlex.quote(example)}'
             ),
-            'rows': sorted(verify_groups, key=lambda r: r['sort_key']),
+            'rows': sorted_verify,
         }
 
     title = f'Photos of {subject}' if subject else 'Photos'
@@ -2210,6 +2235,56 @@ def _move_cached_path(conn: sqlite3.Connection, old_path: str, new_path: str) ->
     )
 
 
+def _recompute_group_dates(conn: sqlite3.Connection, group_ids: set[str]) -> None:
+    """Recompute edtf_resolved/date_conflict for the given groups from only
+    their still-on-disk (non-MISSING:) members.
+
+    _move_cached_path renames path text as cache maintenance and never
+    touches photo_groups' resolved-date fields (only its own docstring),
+    so a group whose most-confident date - or a conflicting one - lived on
+    a variant that reconcile just flagged MISSING: would otherwise keep
+    reporting a date, or a date_conflict badge, contributed by a file no
+    longer on disk. Called for every group a rematch or a mark-missing
+    touched, right before commit.
+
+    Group membership, primary_path, and file_count are reconcile's usual
+    bookkeeping and are intentionally left alone here: _gallery_group_dict
+    already treats a MISSING: primary_path as absent and falls back to a
+    live member, and _group_photos (the full-rebuild path used by an
+    ordinary scan) is the only writer of group membership itself - this is
+    a narrower, reconcile-specific patch of just the two fields its own
+    mutation can silently stale.
+    """
+    for group_id in group_ids:
+        rows = conn.execute(
+            'SELECT path, edtf FROM photos WHERE group_id = ?', (group_id,)
+        ).fetchall()
+        live = sorted(
+            (
+                (edtf, path) for path, edtf in rows
+                if edtf and not path.startswith(_MISSING_PREFIX)
+            ),
+            key=lambda pair: pair[1],
+        )
+        best_edtf = max(live, key=lambda pair: _edtf_confidence(pair[0]))[0] if live else None
+        bounds = [edtf_bounds(e) for e, _ in live]
+        date_conflict = 0
+        for i in range(len(bounds)):
+            for j in range(i + 1, len(bounds)):
+                if bounds[i][1] < bounds[j][0] or bounds[j][1] < bounds[i][0]:
+                    date_conflict = 1
+        conn.execute(
+            'UPDATE photo_groups SET edtf_resolved=?, date_conflict=? WHERE group_id=?',
+            (best_edtf, date_conflict, group_id),
+        )
+
+
+def _group_id_of(conn: sqlite3.Connection, path: str) -> str | None:
+    """The group_id of the photos row currently at `path`, or None."""
+    row = conn.execute('SELECT group_id FROM photos WHERE path=?', (path,)).fetchone()
+    return row[0] if row and row[0] else None
+
+
 def _on_disk_aliases(photos_root: Path, fha_config: dict, archive_root: Path) -> dict[str, Path]:
     """Map alias-form path -> absolute Path for every photo file currently on disk."""
     out: dict[str, Path] = {}
@@ -2278,7 +2353,10 @@ def run_reconcile(
         naive cache-removal pass would erase it instead of resolving it) -
         only reconcile itself ever removes or transforms one, so the row's
         source_id/path history survives until a later --with-exif retry
-        heals it.
+        heals it. Either mutation also recomputes that row's group's
+        edtf_resolved/date_conflict from its still-live members
+        (_recompute_group_dates), so a group's resolved date or conflict
+        badge can never keep reflecting a variant that just vanished.
       - left untracked: a file with no claimed missing row is reported as new.
         With --with-exif, its SOURCE: keyword (if any) is read so it can be
         attached to that source's inventory in the report rather than being
@@ -2355,6 +2433,10 @@ def run_reconcile(
 
             rematched: list[tuple[str, str]] = []
             rematched_paths: list[Path] = []
+            # Groups touched by a rematch or a mark-missing below: their
+            # edtf_resolved/date_conflict need recomputing from surviving
+            # members before commit (_recompute_group_dates).
+            affected_group_ids: set[str] = set()
             if missing and candidate_source_ids:
                 claimed: set[str] = set()
                 for old_path, source_id in missing.items():
@@ -2369,6 +2451,9 @@ def run_reconcile(
                         claimed.add(new_path)
                         if not dry_run:
                             _move_cached_path(conn, old_path, new_path)
+                            gid = _group_id_of(conn, new_path)
+                            if gid:
+                                affected_group_ids.add(gid)
                         rematched.append((old_path, new_path))
                         rematched_paths.append(untracked[new_path])
                 rematched_old = {old for old, _new in rematched}
@@ -2383,6 +2468,9 @@ def run_reconcile(
                 new_key = f'{_MISSING_PREFIX}{old_path}'
                 if not dry_run:
                     _move_cached_path(conn, old_path, new_key)
+                    gid = _group_id_of(conn, new_key)
+                    if gid:
+                        affected_group_ids.add(gid)
                 now_missing.append(new_key)
 
             new_sourced: dict[str, list[str]] = {}
@@ -2400,6 +2488,8 @@ def run_reconcile(
             if dry_run:
                 conn.rollback()
             else:
+                if affected_group_ids:
+                    _recompute_group_dates(conn, affected_group_ids)
                 conn.commit()
             result = {
                 'status': status,
@@ -3433,6 +3523,7 @@ Make your photo library searchable without opening Lightroom.
 
   fha photoindex                       Scan the photos root into the catalog
   fha photoindex find --person <P-id>  Every photo of someone
+  fha photoindex gallery --person <P-id>  A clickable HTML page of the same photos
   fha photoindex triage --top 20       Un-filed photos worth processing next
   fha photoindex tag-person <P-id>     Tag a face across every copy
   fha photoindex set-summary <path> --text "..."   Update a photo's AI summary

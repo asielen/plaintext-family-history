@@ -53,8 +53,15 @@ and never runs over a whole folder or triage list.
    fha photoindex find --text "…"        # or --person P-… / --keyword …
    ```
    Read the printed path, date, and current caption straight from the catalog — never open the
-   file itself. If the index warns it's stale, freshen it first (the write verb hard-blocks on a
-   stale index anyway, so catching it here saves a round trip):
+   file itself. `find`'s printed "caption" is the human-authored field
+   (`Caption-Abstract`/`Description`) only — it never shows an AI summary a previous
+   `set-summary` run already wrote (that lives in a separate embedded field `find` doesn't print).
+   Step 4's `--dry-run` preview is where that field actually surfaces (its "old → new" comparison);
+   if it reveals a prior AI note that materially conflicts with the draft the human already
+   approved in step 3, stop and get a fresh yes/edit/no on the updated picture before writing for
+   real, rather than treating step 3's approval as covering text the human never saw. If the index
+   warns it's stale, freshen it first (the write verb hard-blocks on a stale index anyway, so
+   catching it here saves a round trip):
    ```
    fha photoindex
    ```

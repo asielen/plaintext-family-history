@@ -1,6 +1,6 @@
 # Skill-authoring standard
 
-**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so eight skills
+**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so twelve skills
 written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they
 record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) — the
 reference skill — and obey the rules below. Design lives in

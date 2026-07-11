@@ -10,9 +10,14 @@ private/
 .cache/
 generated/
 # ...except the EXAMPLE archive ships its standalone site as a browsable showcase
-# (the deterministic, redacted build). Never the unredacted linked preview.
+# (the deterministic, redacted build). Never the unredacted linked preview, and
+# never the private single-file artifacts (gallery/views) - those are meant to
+# stay disposable and un-tracked even for the example fixture, and a committed
+# one would embed whoever built it locally into every file:// href.
 !example-archive/generated/
 example-archive/generated/site-linked/
+example-archive/generated/gallery/
+example-archive/generated/views/
 *.sqlite
 *.sqlite-journal
 
@@ -20,6 +25,10 @@ example-archive/generated/site-linked/
 # Anchored to root only - a record tree's own 'out' subdirectory (sources/out/,
 # …) is real archive content and must stay trackable.
 /out/
+# ...same disposable-output reasoning applies to the example-archive fixture's
+# own packet exports (BUILD.md's acceptance-test step writes to
+# example-archive/out/ by the packet command's own default).
+example-archive/out/
 
 # fha install / update-tools footprints - these belong inside a *real archive*,
 # never in the public spec repo. Ignored so a stray local test of `fha install`
