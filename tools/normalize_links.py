@@ -103,6 +103,7 @@ def _scan_records(archive_root: Path) -> list[dict]:
                     'name': meta.get('name'),
                     'name_variants': meta.get('name_variants') or [],
                     'aliases': meta.get('aliases') or [],
+                    'status': meta.get('status'),
                 })
 
     sources_root = archive_root / 'sources'

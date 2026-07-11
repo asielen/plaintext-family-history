@@ -132,6 +132,21 @@ A fresh archive prints **`✓ No issues found.`** - that's a green light. (`--ro
 tools which archive folder to look at. `check` is the friendly name for the command also called
 `lint`.)
 
+### Coming from Ancestry (or another genealogy program)?
+
+You don't re-type anything. Every genealogy program can export your tree as a **GEDCOM** file
+(on Ancestry: Trees → your tree → Tree Settings → "Export tree" - you get a `.ged` file in your
+Downloads). Then ask your assistant:
+
+> "Import my GEDCOM file" (or run
+> `python tools/fha.py gedcom import family-tree.ged --root my-family-archive`)
+
+First it shows you a **plan** - how many people, families, and statements it found - and writes
+nothing. Add `--apply` and every person in your tree becomes a record, every assertion becomes a
+*suggested* fact citing the GEDCOM file (which is filed as a source, your original untouched).
+Nothing imported is treated as proven: your tree's statements wait in the same review queue as
+everything else, and you review them family by family, whenever you like - never all at once.
+
 ---
 
 ## Part 3 - File your first document (five minutes)
@@ -211,6 +226,31 @@ Every working session is the same five beats:
 
 You'll learn the handful of phrases you actually use within a week. You never need the command
 names - the assistant translates.
+
+---
+
+## Back it up (one command)
+
+Your archive is plain files, so a backup is just a copy - and one command makes a good one.
+Ask the assistant to "back up my archive," or run it yourself:
+
+```
+python tools/fha.py backup --root my-family-archive
+```
+
+That writes a dated zip file into a folder **beside** your archive (named
+`my-family-archive-backups`), checks every file inside it, and tells you where it landed. Copy
+that zip somewhere that isn't this computer - a USB stick, an external drive, a cloud folder.
+
+Two things worth knowing:
+
+- **Your photos and documents are not in that zip** unless you add `--include-assets` - they're
+  often huge and often live on another drive with its own backup. The command names them every
+  time so nothing is skipped silently, and `fha doctor` lists every folder a full backup must
+  cover (and tells you when you last actually made one).
+- **To restore: unzip the file.** That's the whole procedure. A backup is just your files.
+
+Do this at the end of any session where you added something you'd hate to lose.
 
 ---
 

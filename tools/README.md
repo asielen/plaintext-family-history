@@ -31,12 +31,12 @@ read the same structured result (TOOLING §1).
 
 | Tool | File | Status |
 |---|---|---|
-| `fha views timeline` | `views.py` | ✓ per-person and --all-curated |
-| `fha views sources-index` | `views.py` | ✓ per-person, --all-curated, --couple-folders |
-| `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
+| `fha views timeline` | `views.py` | ✓ per-person and --all-curated; `--format md\|html` - html writes a standalone single-file page under `generated/views/` (TOOLING §7 D11) |
+| `fha views sources-index` | `views.py` | ✓ per-person, --all-curated, --couple-folders; `--format md\|html` (couple-folder html is `{folder}_sources-index.html` - the shared `.md` stem would collide) |
+| `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated; `--format md\|html` |
 | `fha views brackets` | `views.py` | ✓ W103 bracket refresh, W110 Ahnentafel placement; `--fix` applies, `--dry-run` previews |
-| `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; `--format html` deferred (D6) |
-| `fha doctor` | `doctor.py` | ✓ all 12 checks; D5 applied (absent index/photoindex = warning, not error); restricted-source counts use the open-marker predicate on both the index and scan paths; a failing staged-captures check degrades to a warning line instead of killing the report |
+| `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; ⚑ `--format html` refused with a pointer to `fha site` - the HTML tree ships with the site's full-tree feature (D6) |
+| `fha doctor` | `doctor.py` | ✓ all 12 checks; D5 applied (absent index/photoindex = warning, not error); restricted-source counts use the open-marker predicate on both the index and scan paths; a failing staged-captures check degrades to a warning line instead of killing the report; the backup reminder reads the `fha backup` stamp (`.cache/last_backup.json`) and reports the real last-backup date, info-level |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent; `[restricted]` label covers typed values (`dna`, `by-request`, …); `--root` without fha.yaml is refused (exit 3, the shared `_lib.resolve_root_arg` guard) |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated - transcript search deferred (D7) |
 | `fha search <words>` | `find.py` | ✓ alias for `fha find --text`; positional phrase joined with spaces (`fha search rose hartley`), same engine/output |
@@ -46,6 +46,7 @@ read the same structured result (TOOLING §1).
 
 Views require a fresh `.cache/index.sqlite` (run `fha index` first). The per-person timeline/sources-index/draft-queue forms skip a stub person with a plain note and exit 1 - companion views are curated-person files (SPEC §16); covered by `tests/test_views_stub_guard.py`. `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches. Both `.cache/index.sqlite` and `.cache/photos.sqlite` carry a `meta.schema_version` row plus `PRAGMA user_version`; missing, old, corrupt, or unreadable caches are treated as disposable and rebuilt by `fha index` / `fha photoindex`.
 Generated files carry the `<!-- GENERATED … -->` header and must not be hand-edited.
+`--format html` renders any content view as a standalone single-file page under `generated/views/` (same queries and lines as the `.md` twin; marker on line 1 before the doctype; inline `design/view.css`; visible not-for-publication banner; `[[ID]]` tokens as plain styled text; exits 0 because `generated/` is never indexed). `views refresh --format md|html|both` selects the set(s); `views clean` sweeps `generated/views/` by the same marker-per-file rule (a hand-written file there survives, and an html-only sweep exits 0). Conventions: TOOLING §7 D11; covered by `tests/test_views_html.py`.
 
 ## Implemented tools (milestone 3)
 
@@ -160,12 +161,13 @@ malformed/unknown-C-id refusals, a `--dry-run`-writes-nothing case, and an end-t
 
 ## fha confirm - implementation status
 
-The deterministic write-back layer for the detection tools and the report's confirm/dismiss
-prompts (TOOLING §14a/§14a2/§15a, AGENTS.md). Every verb is a *human-directed* write: the
-detection tools propose, `fha confirm` writes back the human's pick. Source/registry edits
-are surgical text edits (sibling claims, key order, comments preserved), records are located
-by scanning `sources/`/`people/` directly (works when `.cache/index.sqlite` is stale or
-absent), every verb ships `--dry-run`, and each returns a `_lib.Result` with `changed[]`.
+The deterministic write-back layer for the detection tools, the report's confirm/dismiss
+prompts, and the merge-identities skill's confirmed decision (TOOLING §14a/§14a2/§14a3/§15a,
+AGENTS.md). Every verb is a *human-directed* write: the detection tools (or the skill) propose,
+`fha confirm` writes back the human's pick. Source/registry edits are surgical text edits
+(sibling claims, key order, comments preserved), records are located by scanning
+`sources/`/`people/` directly (works when `.cache/index.sqlite` is stale or absent), every verb
+ships `--dry-run`, and each returns a `_lib.Result` with `changed[]`.
 
 | Subcommand | Flags | Status | Notes |
 |---|---|---|---|
@@ -175,13 +177,44 @@ absent), every verb ships `--dry-run`, and each returns a `_lib.Result` with `ch
 | `fha confirm place <C-id> [<C-id> …]` | `--name NAME`, `--hierarchy TEXT`, `--into L-id`, `--root`, `--dry-run` | ✓ | Registers a place-text cluster: mints a new `L-id` place block in `places/places.yaml` (or merges into an existing one via `--into`) **and** relinks the named claims' `place:` to it, so the cluster stops surfacing as an unlinked `fha places candidates` group. Claims are located by their OWN `id:` key line with a parse-back cross-check (a quoted `id: C-…` inside a block scalar never gets the relink); a pre-existing duplicate C-id refuses with the E001 repair path (`fha id mint C`). A missing C-id aborts before any write |
 | `fha confirm discovery "<text>"` | `--refs IDS` (comma-separated S-/P-/C-/L-/H-), `--root`, `--dry-run` | ✓ | Appends `- YYYY-MM-DD: <text> [refs]` to `notes/discoveries.md` (the research-wins log `fha report` §0 leads with) |
 | `fha confirm draft <P-id>` | `--root`, `--dry-run` | ✓ | Flips a curated profile's `<!-- AI-DRAFT … -->` markers to `<!-- AI-ACCEPTED … (accepted DATE) -->`, preserving the original date/model (provenance kept, §20). No marker found → exit 1/`none` |
+| `fha confirm merge <P-merged>` | `--into P-survivor` (req), `--reason TEXT` (req), `--root`, `--dry-run` | ✓ | Enacts a human-confirmed identity merge - the full SPEC §9 write, planned entirely in memory then applied with an undo journal (any failure rolls everything back; the rename happens last). Folds `name`/`name_variants` (restricted `{value:, restricted: true}` mapping forms preserved as mappings; a restricted value never enters the survivor's plain `aliases:`), `external_ids:` (**same-key conflict: survivor's value kept, warning names both values, exit 1, tombstone keeps the losing value - never silent**), and `relationships:` entries (deduped by to+type+subtype; survivor-self edges skipped + warned) into the survivor. The tombstone gets the four §9 fields (`status: merged`, `merged_into:`, `merge_reason:`, `merged_date:`), is stripped of what folded, has `aliases:` reduced to the bare P-id, and is renamed `MERGED-INTO-P-survivor__<original>` (kept forever, never deleted). Relinks claims' `persons:`/`roles:` across **all** statuses (E016 has no status filter) in every taught form (bare `P-x`, `[[P-x]]`, `[[P-x\|Name]]`, a resolving name alias) with survivor-already-listed dedupe; other profiles' `relationships:` targets; source frontmatter `people:` lists. Prose mentions are deliberately left for W107 (counted in `data.prose_refs_remaining`). The merged person's generated companion views (timeline/sources-index/draft-queue) are deleted (GENERATED-header-verified; hand-written lookalikes kept + warned; counted in `data.deleted_views`) and the tombstone's `tier:` is stripped so `views refresh` regenerates nothing for it; alias resolution registers a tombstone by bare P-id only (its folded name belongs to the survivor). Per-file re-parse guard: a file it cannot rewrite safely (a broken or unfenced claims block naming the merged person, an exotic form) is a refusal naming the file, with zero writes anywhere. Idempotent: re-running the same merge → no-op `already`, exit 0. Refusals (exit 3): self-merge, unknown ids, a tombstone `--into` target (message names the chain's final survivor), a different-survivor re-merge, a rename collision, an empty reason. Evidence warnings (an existing relationship edge between the two, a W115 heads-up) never block - that judgment stays with the merge-identities skill and the human. The split (`confirm separate`) stays hand-guided per SPEC §9 |
 
 Automated tests: `tests/test_confirm.py` (stdlib `unittest`) covers the pure-text edit helpers
 (link append/idempotence, scalar set, claim append, AI-DRAFT flip) and each verb against a copy
 of `example-archive/`: confirm-xref → `claim_links` present after re-index; contradiction → no
 E009; accepted cooccur → derived `friend` edge (suggested → none); dismiss → pair excluded from
 the next `fha cooccur`; place mint/relink + `--into`; discovery append; draft flip - each with a
-`--dry-run`-writes-nothing and an invalid/not-found case.
+`--dry-run`-writes-nothing and an invalid/not-found case. `tests/test_confirm_merge.py` covers
+the merge verb: tombstone (four fields, rename grammar checked against lint's own filename
+regex, aliases reduced to the bare P-id); every fold including the restricted-mapping
+round-trip and the external-id conflict → exit 1; claim relink across all six statuses and
+every person form with sibling claims byte-untouched; other-record relinks; prose counted, not
+touched; idempotent `already`; the full refusal matrix; a byte-identical `--dry-run` (tree
+hashed before/after, previewed set = live write set); rollback on injected write and rename
+failures; and an end-to-end example-archive pass proving post-merge lint shows no E016 and no
+new W107/W115.
+
+## fha person - implementation status
+
+The deterministic person-field write-back group (TOOLING §3c). One verb ships: `set-living`,
+the surgical edit of the `living:` flag every export redaction follows (SPEC §9/§19; `unknown`
+is treated as living). The record is located by scanning `people/` directly
+(`_lib.find_person_record_path`, shared with `fha confirm draft`), so a stale or absent index
+never blocks the write. Nothing flips the flag automatically - accepting a `death` claim only
+makes the `review-claims` skill *offer* this command.
+
+| Command | Flags | Status | Notes |
+|---|---|---|---|
+| `fha person set-living <P-id> true\|false\|unknown` | `--root`, `--dry-run` | ✓ | Surgical one-line frontmatter edit: only the top-level `living:` value changes (trailing hand comment preserved, CRLF endings byte-faithful); a missing key is inserted after `name:` in stub field order. Pre-write guard re-parses the rewritten frontmatter (must parse; `living` = target; `id` unchanged; every other field present and value-identical) - any failure refuses with nothing written. Merged tombstone (`status: merged`) refuses and names the survivor (`merged_into`). Idempotent `already` no-op, exit 0. Success exits 0 with the `fha index` reminder as advice text; output states the privacy consequence in plain words. Exit 1 = P-id not found (+ `fha find` next step); exit 2 = argparse (bad value literal / bare `fha person`); exit 3 = invalid id shape, merged tombstone, guard refusal, unreadable/unwritable file |
+
+Automated tests: `tests/test_person.py` (stdlib `unittest`) covers each flip direction on a stub
+and a curated profile (full-text one-line-diff assertions, trailing-comment survival), a CRLF
+fixture (endings byte-identical outside the edited line), missing-key insertion (record parses,
+lint gains no new errors), the `already` no-op, every refusal arm (invalid id, unknown P-id +
+next step, merged tombstone naming the survivor, lookalike/broken-YAML frontmatter left
+byte-identical), `--dry-run` (diff shown, nothing written), the argparse choices error, bare
+`fha person`, a write under the WORKING_COPY banner, and a flip → `fha index` round-trip on a
+copy of `example-archive/` (persons.living reflects the new value).
 
 ## fha photoindex - implementation status
 
@@ -198,10 +231,11 @@ the next `fha cooccur`; place mint/relink + `--into`; discovery append; draft fl
 | `fha photoindex report` | ✓ (BUILD.md M3.3) | Lists every `photo_groups` row with `date_conflict=1`, plus each member photo's `edtf` and `caption` - a front/back date disagreement is a research finding, not something to average away. Same absent/unreadable/stale handling as `find` |
 | `fha photoindex reconcile` | ✓ (BUILD.md M3.4) | Compares cached paths to what's on disk. A stored path missing on disk is, with `--with-exif`, re-matched against untracked files by their embedded `SOURCE:` keyword (silent path update, including dependent `photo_keywords`/`photo_face_regions`/`photo_people`/`photo_fts` rows - `_RECONCILE_TABLES`); without `--with-exif`, or when no source_id/no unique match exists, the row's path (and its `photo_fts` row) is prefixed `MISSING:` and reported. Already-`MISSING:`-prefixed rows are left alone on later runs (a human is expected to act, or the next ordinary scan's cache-removal pass clears a resolved one). New on-disk files with no claimed missing row are counted (`new_count`) but never scraped - that stays `fha photoindex`'s job. Exit: `EXIT_WARNINGS` when any row is left `MISSING:`, else `EXIT_CLEAN` |
 | `fha photoindex tag-person` | ✓ (BUILD.md M3.4) | `<P-id>` plus exactly one of `--from-face-tag TAG` (every photo whose cached `photo_face_regions.name` equals TAG) or `--paths PATH...` (resolved against cataloged alias-form paths). Already-tagged candidates (`via='pid-keyword'` for that P-id) are reported separately and excluded from the write list. Preview is always printed; `--dry-run` stops there, otherwise an interactive `Tag these photos? [y/N]` confirm gates the write. On `y`: one `exiftool -keywords+=P-id -overwrite_original_in_place` call **per candidate** (not batched - a locked/unwritable file's failure must not hide a sibling's successful write), then `photo_keywords`/`photo_people` (`via='pid-keyword'`)/`photo_fts.keywords` are updated immediately for every path that wrote successfully - no rescan required to see the new match. Any per-path failures are returned alongside the successes and reported as a non-zero exit without touching the cache for the failed paths |
+| `fha photoindex set-summary (<path> \| --group GROUP-ID) --text TEXT [--append] [--dry-run]` | ✓ (BUILD.md M3.5) | Writes a photo's embedded AI summary (`UserComment`). `<path>` writes one catalog file; `--group` writes every member of the variation group (forgiving lookup: exact group id, bare S-id, or a case-variant `SOURCE:` spelling). Compose rule fails toward preservation: new text is always AI-marked (`AI: <text>`); an existing AI-marked comment is replaced (`--append` keeps it and adds the new block below); an existing unmarked (human) comment is preserved **verbatim** with the AI block appended below, flag or no flag. Never touches `Caption-Abstract`/`XMP-dc:Description`. Old → new preview always printed; `--dry-run` stops there, otherwise a `Write these summaries? [y/N]` confirm (EOF declines) gates the write. Per-file `exiftool -j -UserComment` read then `-UserComment= -overwrite_original_in_place` write (composition uses the file's own current comment, never the cache); `photos.user_comment` + `photo_fts.user_comment` are patched for the paths that wrote - no rescan required. Requires a **fresh** photoindex (stale hard-blocks - a stale cache could address the wrong file for a mutating write); refuses in working-copy mode. Exit 0, or 3 when any per-file read/write fails |
 
 Test fixture: `tests/fixtures/photo-fixture/` - 4 placeholder JPEGs with real embedded metadata (written via exiftool, not a code-level stub): a front/back variation pair with disagreeing `DATE:` keywords (exercises `date_conflict`), a photo carrying a `SOURCE:` keyword (exercises source-id grouping), and one ungrouped photo.
 
-Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependency) monkeypatches `photoindex._run_exiftool` (and, for tag-person, `_run_exiftool_write`/`builtins.input`) to inject canned JSON rows or simulated confirm answers over a copy of the fixture, covering grouping/date-conflict/pid-keyword resolution, face-region caching, stale-index-disables-weak-resolution behavior, fresh-index weak-resolution refresh from cached regions, `--full` vs. incremental scan equivalence, reconcile's rematch/missing/untracked outcomes (including `photo_fts` re-keying), and tag-person's plan/confirm/dry-run/write paths (including `photo_fts` refresh and per-candidate partial-failure handling). Run with `python -m unittest tests.test_photoindex -v` from the repo root. This is the first `.py` test file in the repo; no test runner is wired into CI yet.
+Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependency) monkeypatches `photoindex._run_exiftool` (and, for tag-person and set-summary, `_run_exiftool_write`/`_run_exiftool_read_comments`/`_run_exiftool_write_comment`/`builtins.input`) to inject canned JSON rows or simulated confirm answers over a copy of the fixture, covering grouping/date-conflict/pid-keyword resolution, face-region caching, stale-index-disables-weak-resolution behavior, fresh-index weak-resolution refresh from cached regions, `--full` vs. incremental scan equivalence, reconcile's rematch/missing/untracked outcomes (including `photo_fts` re-keying), tag-person's plan/confirm/dry-run/write paths (including `photo_fts` refresh and per-candidate partial-failure handling), and set-summary's compose rule (AI replace / append / human-text preservation), group-vs-path addressing, cache+FTS mirror, stale-index block, dry-run/decline safety, and per-file partial failure. Run with `python -m unittest tests.test_photoindex -v` from the repo root.
 
 ## Implemented tools (milestone 6)
 
@@ -210,6 +244,7 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `fha packet <P-id> [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]` | `packet.py` | ✓ M6.1 - see "fha packet - implementation status" below |
 | `fha places lint` / `fha places candidates [--threshold N]` / `fha places geocode [--place L-id] [--all] [--offline]` | `places.py` | ✓ M6.2-M6.3 - see "fha places - implementation status" below |
 | `fha gedcom [<P-id>] [--mode descendants\|ancestors\|connected] [--generations N] [--all] [--include-living] [--out FILE]` | `gedcom.py` | ✓ M6.4 - see "fha gedcom - implementation status" below |
+| `fha gedcom import <file.ged> [--apply] [--plan-out FILE]` | `gedcom_import.py` (dispatcher-intercepted in `fha.py`) | ✓ M6.6 - see "fha gedcom import - implementation status" below |
 | `fha wikitree <P-id> [--out FILE]` | `wikitree.py` | ✓ M6.5 - see "fha wikitree - implementation status" below |
 
 ## Implemented tools (milestone 7)
@@ -255,7 +290,7 @@ is machine-local and never syncs back. When active:
   prune or rewrite the photo cache; read-only photoindex commands (find, triage,
   report) work against any pre-existing `.cache/photos.sqlite`.
 - **process**, **packet**, and **site** refuse with "do this on your main archive".
-- **photoindex tag-person** refuses (asset-mutating).
+- **photoindex tag-person** and **photoindex set-summary** refuse (asset-mutating).
 - **doctor** headlines the mode, shows absent asset roots as informational (not
   errors), and shows photoindex as paused.
 - **fha** (all commands) prints a one-line mode banner before running.
@@ -269,6 +304,12 @@ gives every new archive the guarantee for free.
 
 Test fixture: `tests/fixtures/working-copy/` - records present, asset roots
 pointing to absent directories, WORKING_COPY marker present. Lints clean.
+
+## Implemented tools (phase 1 - 2026-07 usability review)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha backup [--to PATH] [--include-assets] [--dry-run]` | `backup.py` | ✓ plan 04 - dated zip snapshot outside the archive, doctor stamp, restore = unzip; see "fha backup - implementation status" below |
 
 ## Implemented tools (milestone 9)
 
@@ -522,6 +563,54 @@ Automated tests: `tests/test_places.py` builds a synthetic `.cache/index.sqlite`
 
 Automated tests: `tests/test_gedcom.py` (synthetic `.cache/index.sqlite`, relationships inserted directly) covers descendant/ancestor traversal and the generations cap, living-redaction default vs. `--include-living`, restricted/DNA fact exclusion, marriage role handling with witnesses, vitals/marriage/source emission, `--all`, the EDTF→GEDCOM and name-formatting helpers, and the not-found/bad-id/no-index paths. `tests/test_privacy_restricted.py` additionally covers a `restricted` person redacted as `/Restricted/` with no `--include-living` override and a free-text `by-request` source dropped as a fact source.
 
+## fha gedcom import - implementation status
+
+The Ancestry on-ramp (TOOLING §13a2): file a *foreign* GEDCOM as one source record + person
+stubs + suggested claims, plan-then-apply. Routed by a dispatcher intercept in `fha.py`
+(the `fha id check` mechanism) so the exporter's positional `P-id` surface is untouched;
+`tools/gedcom_import.py` also runs standalone. Scaffolds directly from `_lib` primitives
+(tools never import tools).
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Dry-run plan (default) | ✓ | Parses + plans + prints, writes nothing (byte-for-byte). Headline counts first (persons/families/claims/cited databases/duplicates + the living-flag split), then detail capped at 20 with a `--plan-out` pointer |
+| `--apply` | ✓ | Copies the `.ged` to `documents/gedcom/{slug}_{S-id}.ged` (original untouched; documents root resolved through `fha.yaml` roots), writes one stub per INDI into `people/stubs/` (progress line per 100), one source record `sources/other/{slug}_{S-id}.md`, and the audit CSV **last**. Closing output states the review posture (imported ≠ reviewed; edges materialize as claims are accepted) |
+| Parser (in-module, no new dependency) | ✓ | GEDCOM 5.5/5.5.1 line grammar `LEVEL [@XREF@] TAG [VALUE]`; CONC (no space)/CONT (newline) folded; malformed lines counted + warned, never fatal. Unread tags tallied honestly in the plan (`N lines carried tags this importer does not read`) - the filed copy preserves 100% of the file |
+| Encoding guards (UTF-8-only v1) | ✓ | UTF-8 BOM stripped; UTF-16 BOM, undecodable bytes, and a `HEAD CHAR ANSEL` declaration each refuse (exit 2) naming the re-export-as-UTF-8 fix. ⚑ ANSEL translation table deferred (explicitly not v1) |
+| Self-import guard | ✓ | `HEAD SOUR fha` (our exporter's stamp) refuses: the archive is the source of record; GEDCOM is a one-way bridge out |
+| INDI → person stub | ✓ | `{surname}__{given}_{P-id}.md` grammar (no NAME → `unknown__unknown_…`; surname-less leads with `__`); primary NAME → `name:`, extra NAMEs → `name_variants:`; `sex:` kept only for M/F; provisional `birth:`/`death:` EDTF from BIRT/DEAT; `tier: stub`, `aliases: [P-id]`. No `relationships:` blocks (the suggested claims are the durable home). GEDCOM xrefs live in the audit CSV only, not `external_ids:` |
+| `living:` heuristic | ✓ | The one privacy-relevant default, isolated in `living_flag_for_import`: DEAT present (even dateless `DEAT Y`) or latest-plausible birth year >110 years back → `living: false`; else `unknown`. Counts printed in every plan. Owner-approved 2026-07-10 (plan 06 open question 1 - the recommended rule over all-`unknown`) |
+| Events → suggested claims | ✓ | BIRT/DEAT/CHR/BAPM/BURI/OCCU/RESI/CENS/EDUC/IMMI/EMIG/NATU/`_MILT` → the §8.2 vocabulary; `EVEN`/any dated unknown tag → `event` + `subtype` (administrative CHAN/CREA excluded - they count as unread); INDI NOTE → `note` claim (first line = value). All `status: suggested`, `confidence: low` (`medium` with a GEDCOM SOUR citation), `anchor: "line N"` into the filed copy, values lead with the assertion and name the xref, dates as-written kept in the value |
+| FAM → couple + parent-child claims | ✓ | MARR → `marriage` (roles `{spouse: […]}`), DIV → `divorce`; one `relationship` claim per child (`roles: {child, parent}`, E015-satisfying); `FAMC…PEDI adopted/foster` → `subtype: adoptive`/`foster` (biological default stays unwritten). Dangling HUSB/WIFE/CHIL pointers warned + skipped |
+| DATE → EDTF table | ✓ | `12 JAN 1850`→`1850-01-12` · `JAN 1850`→`1850-01` · `1850`→`1850` · ABT/EST/CAL→`~` at precision · `BEF X`→`[..X]` · `BET A AND B`/`FROM A TO B`→`A/B` (a reversed range - left later than right - omits `date:`, wording kept, counted with the untranslated dates) · `AFT X`→ runtime probe of the `[X..]` after-form (today's `_lib` suite rejects it, so AFT omits `date:` and keeps the wording in the value) · INT/phrase/unparseable → omit `date:`, wording kept. Every emitted date validated with `is_valid_edtf`; failures downgrade to omit-date with one summarized warning |
+| GEDCOM SOUR records | ✓ | Titles ride as research leads: claim `notes:` gains `GEDCOM cites: …`, the record's `## Notes` lists every cited database with its citation count and the honest "find the original records" framing. No S-records minted for them (we do not hold that evidence) |
+| PLAC handling | ✓ | `place_text:` only, never an L-id; the existing `fha places candidates` flow harvests them later |
+| Dedupe report | ✓ | Tree-scan of `people/**/*.md` (templates/companions skipped; the index may be stale on a first-import machine): normalized name-token match + birth year ±2 (or exact-name when a year is absent) → listed as possible matches, **still imported as new stubs, never auto-merged** |
+| Re-run guard + audit CSV | ✓ | `.cache/gedcom_import/{sha12}.csv` (sha12 = first 12 hex of the file's SHA-256): `#` header rows carry file name/full hash/date/S-id; body rows map every xref → minted id. Same-hash re-import refused naming the date + S-id; a different export (different hash) imports cleanly |
+| Rollback | ✓ | Every write registers its undo before executing; any failure unwinds in reverse and the message says everything was rolled back and no cleanup is needed. The audit CSV is the final write, so a failed run leaves no sentinel |
+| `--plan-out FILE` | ✓ | Writes the FULL (uncapped) plan text; refused inside the archive root except top-level `out/` (packet's guard). An explicit flag so dry-run stays side-effect-free by default. With `--apply` the plan file is written BEFORE any archive write (an unwritable plan-out is an honest exit-2 refusal with nothing imported), then refreshed with the applied header afterward (a refresh failure is warning-level, real `changed[]` kept) |
+| Working-copy mode | ✓ | Dry-run plan runs read-only under a one-line `[working copy]` banner; `--apply` refuses per the §13d asset-mutating class (`ok=True`, exit 0, `data.status='working-copy'`) - the .ged copy and sentinel must land on the main machine |
+| Malformed-file refusals | ✓ | A duplicate level-0 xref (INDI/FAM/SOUR defined twice) refuses exit 2 naming the xref - a malformed GEDCOM is refused, never guessed; a rendered source record whose frontmatter fails a pre-write YAML parse refuses exit 2 with zero writes; an unreachable documents root (unmounted drive) refuses exit 3 naming the root and the fix |
+| Scale | ✓ | Exactly three `mint_ids` batches (S, P, C) - one tree scan each; apply prints one progress line per 100 stubs; one big `## Claims` block by design (SPEC §14 - reviewed in filtered passes, never read linearly) |
+| Exit codes | ✓ | 0 clean plan/apply, or the WC `--apply` refusal · 1 completed with warnings (downgraded dates, skipped malformed lines, dangling pointers, plan-out refresh failure) · 2 refusals before/without writes (missing/not-GEDCOM file, encoding, self-import, duplicate xref, unparseable rendered record, already-imported sentinel, destination collision, bad/unwritable `--plan-out`) · 3 root unresolvable or unreachable (unmounted drive), or a write failure during apply (everything rolled back, message says so) |
+| `run_import(...) -> Result` | ✓ | `data = {'applied','persons','families','claims','cited_sources','duplicates','warnings','source_id','audit_csv'}`; `changed` lists every written file on apply, empty on dry-run |
+
+Automated tests: `tests/test_gedcom_import.py` over crafted fixtures in
+`tests/fixtures/gedcom/` (`small.ged` with ABT/BEF/AFT/BET/FROM-TO/phrase dates, CONC/CONT,
+an adoptive PEDI, a dateless `DEAT Y`, a dangling CHIL pointer, and two SOUR records;
+`ansel.ged`; `utf16.ged`; `self-export.ged`): the full DATE table incl. the AFT probe, the
+living heuristic (dateless-DEAT false / 1850 false / 1990 unknown / conservative upper-bound
+reading), dry-run byte-for-byte no-op + counts, `--plan-out` full text + inside-archive
+refusal + `out/` exemption, stub grammar/fields/variants, source-record shape (no `people:`,
+`subtype: gedcom`, role `original`), claim completeness (required fields, roles, PEDI subtype,
+confidence lift, unparseable-date wording preserved), anchors verified against the filed
+copy's lines, post-apply `fha index` + `fha lint` (0 E-codes) + accepted-relationship edge
+materialization, re-run guard (refusal naming date + S-id; modified copy imports + dedupe
+flags), dedupe report-but-still-import, injected-failure rollback (byte-identical tree, no
+sentinel, clean re-run), encoding/self-import/missing/not-GEDCOM/collision refusals,
+dispatcher routing (both `--root` positions; exporter surface untouched), and a
+1,000-person scale smoke (exactly 3 mint scans, progress lines, capped plan).
+
 ## fha wikitree - implementation status
 
 | Feature | Status | Notes |
@@ -554,7 +643,37 @@ Automated tests: `tests/test_wikitree.py` builds a small on-disk archive (profil
 | Counts | ✓ | from index when fresh, else quick scan |
 | E018 findings detail | ✓ | lists findings when present |
 | Tools version (M9) | ✓ | reads `.plaintext-version` (present/absent/unreadable) + counts pending `.plaintext-backup/` files; unreadable stamp → exit 1, else informational. Self-contained read (no import of scaffold.py) |
-| Backup reminder | ✓ | always printed |
+| Backup recency (plan 04) | ✓ | always printed; reads `.cache/last_backup.json` (the `fha backup` stamp) as a plain artifact - real last-backup date/age/zip when present, an honest "none recorded - run `fha backup`" when absent, unreadable treated as absent with the cause shown. Info-level, CLEAN exit contribution in every state (a reminder that turns a fresh archive's doctor red trains alarm-blindness); followed by the always-printed archive-root + asset-roots list a full backup must cover |
+
+## fha backup - implementation status
+
+One dated zip of the whole archive, written outside it; restore = unzip, by design
+no restore verb exists (TOOLING §13e). The archive tree is only ever read; the one
+in-tree mutation is the `.cache/last_backup.json` stamp `fha doctor` reports.
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Default destination | ✓ | Sibling folder `{root-folder-name}-backups/` beside the archive root, created on first live run; zip named `{root-folder-name}-backup_{YYYY-MM-DD}.zip`, a same-day re-run appending `_2`, `_3`, … (never overwrites) |
+| `--to PATH` / `backup: path:` | ✓ | `--to` (a normal CLI path) beats the optional fha.yaml `backup: {path:}` key (absolute as-is, relative joined to the archive root - the `roots:` tolerance) beats the sibling default. A `backup:` key whose shape is not understood is refused with the expected shape shown, never silently ignored |
+| Destination guard | ✓ | A destination resolving (symlinks resolved first) inside the archive root or any mapped asset root is refused, exit 3, message naming the conflicting folder, the setting it came from, and the fix - a zip inside the tree would be swept into the next backup or an asset scan |
+| Records-only default | ✓ | Walk-and-subtract over the archive root (a hand-added folder is never silently skipped): excludes `.cache/` (rebuildable), `generated/` + `out/` (rebuildable), `.git/` (its own history), the `WORKING_COPY` marker (machine-local), and the resolved photos/documents roots wherever they live - even alias roots inside the archive root (one predictable rule). An `inbox/` resolving inside the root is always included (staged material is irreplaceable); an inbox mapped outside is treated like the other asset roots. Every exclusion prints with its reason; every records-only run prints the NOT-in-this-backup note with real estimated sizes |
+| `--include-assets` | ✓ | Zips each *external* mapped root under its alias name (`photos/…`, `documents/…`); a root mapped *inside* the archive at a different path keeps its real relative path, so an unzip restores exactly the layout the zipped fha.yaml describes; nested roots (e.g. an inbox inside the photo library) are deduplicated by absolute path; duplicate member names (an archive folder colliding with a root alias) refuse exit 3 before any write; an unreachable root is named, never silently empty; external roots get the one-wrinkle restore note (move back and keep fha.yaml, or keep inside and drop the `roots:` mapping). Refused warning-level in working-copy mode (`ok=True`, exit 0, `data.status='working-copy'`) - an asset backup with no assets in it must not exist |
+| Integrity | ✓ | Every member CRC-verified after writing (`zipfile.testzip`); reports `backup verified: N file(s), SIZE`. Any write/verify failure deletes the partial zip and exits 3 with "nothing to clean up" |
+| Doctor stamp | ✓ | `.cache/last_backup.json` (`date`, `zip`, `files`, `bytes`, `assets_included`) written after verification; machine-local by the TOOLING §13d rationale and excluded from the zip itself, so a restored archive honestly reports "no backup recorded". A stamp-write failure after a verified zip warns (doctor will over-remind) but stays exit 0 - the backup the human asked for exists |
+| Working-copy mode | ✓ | Records-only backup runs (reads the tree, writes outside it) with the honest main-archive note and still stamps; `--include-assets` refused as above |
+| `--dry-run` | ✓ | Prints the full plan (destination, per-top-folder file counts and sizes computed at plan time, exclusions with reasons, the assets note) and is byte-for-byte side-effect-free - the destination folder is not even created |
+| Exit codes | ✓ | 0 written+verified / dry-run / WC `--include-assets` refusal; 2 argparse-level bad invocation only; 3 unresolvable root, refused destination, duplicate-member-name refusal, malformed fha.yaml (strict load - wrong roots would exclude the wrong things), write/verify failure. No exit-1 arm: a partial or suspect backup is never a warning, it is a failure |
+
+Automated tests: `tests/test_backup.py` (stdlib `unittest`, synthetic tmp archives)
+covers the records-only sibling-folder default (contents in, exclusions out, stamp
+fields), `--include-assets` alias-path packing for internal and external roots, the
+external-root NOT-in-this-backup note, every destination-guard arm (`--to` inside the
+archive/asset root, the `backup: path:` key, `--to` precedence, an unrecognized
+`backup:` shape), the same-day `_2` suffix with the first zip untouched, dry-run
+byte-for-byte no-op, write- and verify-failure partial-zip cleanup, both working-copy
+arms, and the restore smoke test (extract the zip, `fha lint` the result: zero errors).
+`tests/test_doctor.py` covers the stamp-present/absent/unreadable doctor states and
+their CLEAN exit contribution.
 
 ## fha install / fha update-tools - implementation status
 

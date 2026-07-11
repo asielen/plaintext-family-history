@@ -98,6 +98,7 @@ report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
 - **migration** - bulk intake of existing material into the structure. The highest-risk
 mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → human approval → execute in bounded batches (≤200 files) → report.
 Never deletes anything; photos are never renamed even here; only staged files move.
+(A GEDCOM tree has its own deterministic path - `fha gedcom import`, plan-then-apply with rollback - prefer it over hand-migrating one.)
 - **spec-refinement** - edits SPEC.md/TOOLING.md (changes tracked in git history), and MUST update
 README.md whenever a change affects how a human reads the archive (the README rule).
 
@@ -183,11 +184,12 @@ fha id mint P|S|C|L|H        mint verified IDs
 fha stubs                    create stubs for unresolved person references
 fha claim <C-id> --status …  the review write-back: move a claim's status and stamp
                             reviewed: (only the human moves a claim to accepted)
-fha confirm <verb> …         act on a detection candidate or report prompt the human
-                            picked (xref/cooccur/dismiss/place/discovery/draft)
+fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
+                            decision (xref/cooccur/dismiss/place/discovery/draft/merge)
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
-fha views timeline|sources-index|brackets     regenerate views
+fha views timeline|sources-index|brackets     regenerate views (--format html for a
+                            printable standalone page under generated/views/)
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default)
 fha photoindex find ...      query the photo library (never bulk-read photos/)
 fha find <ID|text>           locate anything: record + assets + citations for an ID;
@@ -196,6 +198,10 @@ fha find --related <ID>      neighborhood of any ID - people/places/sources/clai
                             adjacent to a person, place, source, claim, or hypothesis
 fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
 fha packet <P-id>            person export packet
+fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
+                            person stubs + suggested claims; plan first, --apply to write
+fha backup                   dated zip of the records, written outside the archive
+                            (--include-assets adds the photo/document roots; restore = unzip)
 ```
 
 Execution rules (all tools): run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.

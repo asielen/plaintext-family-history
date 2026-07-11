@@ -49,7 +49,10 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
 3. **Summarize the working state, briefly and in plain language.** Pull the few things that matter and
    skip the rest:
    - **§1 Review queue** — suggested claims waiting on the human, oldest source first. *"Three sources
-     have drafted facts waiting for your yes/no — the oldest is the 1880 census."*
+     have drafted facts waiting for your yes/no — the oldest is the 1880 census."* A GEDCOM-import
+     source can carry thousands of suggested claims — frame that count as normal, not alarming: it is
+     reviewed person-by-person or family-by-family, gradually, never front-to-back, and nothing about
+     it is urgent.
    - **§3 Vitals gaps** — people missing a birth/marriage/death. *"Thomas Hartley still has no death
      record."* (This is the archive's one known gap; don't alarm him with it.)
    - **§8 Possible connections** — co-occurrence leads, clearly flagged as *leads, never facts*.

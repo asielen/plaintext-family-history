@@ -1,50 +1,27 @@
-# Core-tool gap — `fha merge` (spec-discovery from `merge-identities`)
+# Core-tool gap — `fha confirm merge` (CLOSED: the verb shipped)
 
 **Surfaced by:** building the `merge-identities` skill (interface-skills step 07).
-**Type:** missing deterministic tool verb. **Not a SPEC change** — SPEC §9 already defines the merge/split
-mechanics fully; the tool that *enacts* them was never built.
+**Type:** missing deterministic tool verb — **resolved**. This file is kept as the historical record of
+the spec-discovery; there is no live gap and no interim path.
 
-## The gap
+## What the gap was
 
 The design (TOOLING_INTERFACE.md §2.2, BUILD_INTERFACE.md MI3.1) says the mechanical merge write is "the
-deterministic tool's job — never the skill's silent action." **No such verb exists.** Verified against the
-shipped suite:
+deterministic tool's job — never the skill's silent action," but no `fha` verb enacted SPEC §9's merge
+write (tombstone fields, `MERGED-INTO-P-survivor__` rename, folds, reference relinks). By the owner's
+decision the skill enacted a human-confirmed merge by a careful SPEC §9 hand-edit in the interim, with
+this note tracking the wanted verb.
 
-- `fha claim` writes a claim's `status:` only; `fha confirm` verbs are `xref`, `cooccur`, `dismiss`,
-  `place`, `discovery`, `draft` — none merge persons.
-- Tools *read through* `merged_into` (`packet`, `index`, `site`) and *warn* on it (lint **E016** new claim
-  on a merged person, **W107** direct references to a merged person), but nothing *performs* the merge.
+## How it closed
 
-So the SPEC §9 merge write — set `status: merged` / `merged_into` / `merge_reason` / `merged_date`, rename
-the tombstone to `MERGED-INTO-P-survivor__…`, fold name-variants/external-IDs into the survivor, relink
-direct references — has no deterministic owner.
+`fha confirm merge <P-merged> --into <P-survivor> --reason "<why>" [--dry-run]` shipped as the seventh
+`fha confirm` verb (2026-07, audit Wave 3 / plan 16): the full SPEC §9 enactment in one plan-then-apply
+pass with rollback — tombstone + rename, name-variant/external-id/relationship folds, claim relinks
+across **all** statuses, other-record `relationships:`/`people:` relinks, prose mentions left to lint
+W107 by design. It is surgical, scans `people/`/`sources/` directly (stale-index-proof), previews with
+`--dry-run`, and returns a `Result` whose `changed[]` lists every file — matching the other confirm
+verbs (TOOLING §14a3; implementation status in `tools/README.md`).
 
-## Interim path (in use now)
-
-Per the owner's decision (and AGENTS.md §"Tools": *"if a tool does not exist yet, do the task by hand
-following SPEC and say so"*), `merge-identities/SKILL.md` enacts a **human-confirmed** merge by a careful
-SPEC §9 hand-edit, and this note records that the hand-edit is **temporary** — to be replaced by the verb
-below. The split (conflation) case is already a guided human task in SPEC §9, so it stays hand-guided
-regardless.
-
-## Proposed core work (BUILD.md / TOOLING.md)
-
-A deterministic merge verb in the `fha confirm` family (the write floor under the read-only detectors),
-e.g.:
-
-```
-fha confirm merge <P-merged> --into <P-survivor> --reason "<why>" --dry-run
-```
-
-- writes `status: merged` / `merged_into` / `merge_reason` / `merged_date:` onto `<P-merged>`;
-- renames the tombstone file to the `MERGED-INTO-P-survivor__…` grammar (SPEC §9);
-- folds `<P-merged>`'s `name_variants`/external IDs into `<P-survivor>`;
-- relinks direct references it can (claims' `persons:`/`roles:`, frontmatter `people:`), leaving the rest
-  for the W107 gradual-cleanup list;
-- is **surgical** (sibling data/keys/comments survive), locates records by scanning `people/` directly
-  (works when the index is stale), ships `--dry-run`, and returns a `Result` whose `changed[]` lists every
-  file written — matching the other `fha confirm` verbs (TOOLING §14a3).
-
-A sibling `fha confirm separate` (or leaving split hand-guided) can follow. This is a **core PR**, not skill
-work; when it lands, update `merge-identities/SKILL.md` to direct the verb instead of hand-editing, and
-delete this note's "interim path."
+`merge-identities/SKILL.md` now directs the verb; the interim hand-edit language was retired everywhere
+in the same change. The split (`fha confirm separate`) remains hand-guided by design — dividing an
+identity is research judgment (SPEC §9), not a mechanical write.

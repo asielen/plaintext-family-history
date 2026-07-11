@@ -112,6 +112,8 @@ The operating loop is simple: **capture → file → process → review → repo
 
 **Opens in Obsidian.** The archive is a Markdown-plus-frontmatter-plus-`[[wikilink]]` vault: point Obsidian (or another Markdown app) at the folder and it opens as-is, no import. An optional [Templater pack](obsidian-templater/) and the generated site's interactive family tree make it native to plaintext-PKM workflows; see [docs/USING_WITH_OBSIDIAN.md](docs/USING_WITH_OBSIDIAN.md).
 
+**Back it up with one command.** `fha backup` copies the archive into a dated zip in a folder *beside* it (`my-family-archive-backups/`) and verifies every file. Photos and documents are not included by default - they are often huge and often live on another drive - and the output says so every time; add `--include-assets` to pack them too, or back those folders up separately (`fha doctor` lists every path a full backup must cover, and reports when you last actually ran a backup). To restore: unzip the file. That's the whole procedure - a backup is just your files.
+
 ## Repository layout
 
 ```
@@ -146,6 +148,7 @@ plaintext-family-history/
 2. **Open the folder in your agent.** It will read `CLAUDE.md` → `AGENTS.md` and know the rules before you say anything.
 3. **Use or extend the tools.** Milestones 1-10 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
 4. **Start your own archive.** Copy the structure, drop your first scan or note into `inbox/`, and ask the agent to process it.
+5. **Coming from Ancestry (or any app)?** You don't start over. Download your tree as a GEDCOM file and run `fha gedcom import family-tree.ged` - every person arrives as a record and every assertion as a reviewable suggestion, with your original file kept untouched.
 
 See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthrough.
 
@@ -182,7 +185,8 @@ candidate-finding tools (contradiction/corroboration detection, person and
 place co-occurrence, and `fha find --related`'s neighborhood queries), the
 deterministic review write-backs (`fha claim` for claim status, `fha confirm`
 for the detectors' confirm/dismiss), the
-`fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export,
+`fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export
+and the GEDCOM import on-ramp (`fha gedcom import`),
 the milestone 7 intake tools (`fha process`, `fha capture`, `fha convert-mining`),
 the milestone 8 static-site generator (`fha site`), the milestone 9
 scaffolding tools (`fha install`/`fha update-tools`), and the milestone 10 working-copy mode (`fha working-copy`). See `BUILD.md` for the detailed
@@ -191,26 +195,28 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
 - [x] `fha id`, `fha index`, `fha lint`, `fha stubs` - the substrate (milestone 1: lint clean on the example archive)
 - [x] `fha claim` - the claim-review write-back: move a claim's status and stamp `reviewed:` (the human gate, as a deterministic command) (milestone 1)
-- [x] `fha views timeline`, `fha views sources-index`, `fha views draft-queue` - view generators (milestone 2)
+- [x] `fha views timeline`, `fha views sources-index`, `fha views draft-queue` - view generators (milestone 2); `--format md|html` standalone printable pages under `generated/views/` (2026-07 usability wave)
 - [x] `fha views brackets` - folder maintenance: W103 bracket refresh, W110 Ahnentafel placement (milestone 2)
-- [x] `fha views tree` - relationship tree traversal, neutral JSON + DOT output (milestone 2)
-- [x] `fha views clean`, `fha views refresh` - generated-file lifecycle management (milestone 2)
+- [x] `fha views tree` - relationship tree traversal, neutral JSON + DOT output (milestone 2; HTML arrives with the site-wide family tree)
+- [x] `fha views clean`, `fha views refresh` - generated-file lifecycle management, both formats (milestone 2)
 - [x] `fha find` - universal ID locator and full-text search across records, notes, transcripts (milestone 2)
 - [x] `fha doctor` - archive health report: index freshness, file integrity, privacy flags (milestone 2)
-- [x] `fha photoindex` - photo catalog: scan/grouping, find, triage/report, reconcile/tag-person (milestone 3)
+- [x] `fha photoindex` - photo catalog: scan/grouping, find, triage/report, reconcile/tag-person, set-summary (milestone 3)
 - [x] `fha xref`, `fha cooccur` - corroboration/contradiction and co-occurrence candidate detection (milestone 4)
-- [x] `fha confirm` - the write-back floor under the read-only detectors and report prompts: confirm/dismiss a candidate, register a place cluster, log a discovery, accept a draft (milestone 4)
+- [x] `fha confirm` - the write-back floor under the read-only detectors and report prompts: confirm/dismiss a candidate, register a place cluster, log a discovery, accept a draft, enact a human-confirmed identity merge (`confirm merge`, the SPEC §9 write) (milestone 4)
 - [x] `fha find --related` - the neighborhood query: people, places, sources, and time slices (milestone 4)
 - [x] `fha report` - the session research feed: discoveries, review queue, vitals gaps, contradictions, search-log awareness, answerable questions, photo triage, hypotheses, possible connections (milestone 5)
 - [x] `fha packet` - person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)
 - [x] `fha places` - place registry lint, recurring unlinked place/GPS candidate detection, and offline GeoNames coordinate backfill (milestone 6.2-6.3)
 - [x] `fha gedcom` - GEDCOM 5.5.1 relationship export (living-redacted by default); `fha wikitree` - curated-profile export in the WikiTree dialect (milestone 6.4-6.5)
+- [x] `fha gedcom import` - the Ancestry on-ramp: file a GEDCOM download as one source, a person stub per individual, and every assertion as a suggested claim with a line anchor - plan first, `--apply` to write, full rollback, one-shot re-run guard (milestone 6.6)
 - [x] `fha process` - asset intake: single-file documents/photos, `--more`, folder triage, variation grouping, and bundle dissolution (milestone 7.1-7.4)
 - [x] `fha capture` - paste-fallback web capture, generic recipe, and Ancestry/FamilySearch/Newspapers.com/FindAGrave recipes (milestone 7.5-7.7)
 - [x] `fha convert-mining` - one-time legacy transcript-mining migration (milestone 7.8)
 - [x] `fha site` - static-site generator: source/person/place/discoveries/home pages, standalone (redacted, self-contained) vs linked preview, and vendored interactive descendant/ancestor trees (milestone 8.1-8.5)
 - [x] `fha install` / `fha update-tools` - archive scaffolding and updating: bootstrap a private archive's operating layer from a clone or unzipped download, then refresh it later, backing up your edits and never deleting or touching your `fha.yaml`/places data (milestone 9.1-9.2)
 - [x] working-copy mode - asset-less plain-text working copies synced to a second machine (toggle with `fha working-copy on/off`, which sets a git-ignored `WORKING_COPY` marker so the mode never syncs back): tools treat absent photos/documents as present-elsewhere (never "missing", never pruned), so you can write narratives and research against existing records anywhere (milestone 10 - SPEC §12.4 / TOOLING §13d)
+- [x] `fha backup` - one-command dated zip snapshot written outside the archive (records-only by default; `--include-assets` packs the mapped photo/document roots), verified after writing, with `fha doctor` reporting the real last-backup date; restore = unzip (2026-07 usability review, plan 04 - TOOLING §13e)
 
 ## A complementary project
 

@@ -49,7 +49,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ### 2.1 Initial skills (build alongside linter v1)
 
-- `review-claims` - Stage C: walk a source's `suggested` backlog (guided one-by-one, or open the source file for self-serve skimming - human's choice); capture accept/dispute/edit and manual claim additions; set `reviewed`; finish with incremental reindex, `fha xref`, a timeline/draft-queue refresh for the touched curated persons (a `views brackets` check too when a relationship claim was accepted), and lint. The human gate from the engine side: the skill assesses and presents; the human's decision is written with `fha claim`.
+- `review-claims` - Stage C: walk a source's `suggested` backlog (guided one-by-one, or open the source file for self-serve skimming - human's choice); capture accept/dispute/edit and manual claim additions; set `reviewed`; finish with incremental reindex, `fha xref`, a timeline/draft-queue refresh for the touched curated persons (a `views brackets` check too when a relationship claim was accepted), and lint. The human gate from the engine side: the skill assesses and presents; the human's decision is written with `fha claim`. After the human accepts a `death` claim for a person whose `living:` is `true` or `unknown`, the close-out *offers* the flag flip - "mark them as no longer living? → `fha person set-living <P-id> false`" - and runs it only on his explicit yes; nothing ever flips `living:` automatically (TOOLING §3c).
 - `process-source` - the pipeline driver. If the inbox item is a **source stub** (a `*.notes.md` sidecar or a bundle folder, SPEC §12.1), its frontmatter + notes seed Stage A (pre-filling §14 frontmatter) and its parsed-person/vital hints seed Stage B's draft; otherwise Stage A starts from the bare file. Stage A `fha process`; Stage B AI draft (file reading incl. vision, entity resolution with candidate proposals against the index, `suggested` claims + stories); hand-off to `review-claims` for Stage C, whose close-out (reindex, xref, view refresh, lint) finishes the pipeline. The stub is consumed - promoted into the source record, not left behind.
 - `mine-transcript` - the invoked extraction pass: selective claim drafting (`suggested` + `anchor:`), name→P-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), stories to `## Stories`, the pass recorded in the source's `## AI Passes` block (model, date). Never runs unrequested.
 - `today` - run `fha report`, narrate it discoveries-first, offer to start the top item (e.g. a `review-claims` session). Surfaced as the `/today` slash wrapper.
@@ -63,7 +63,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ### 2.3 Skill backlog
 
-`photo-context` (below) now has a settled design - it is **blocked** on a core-tool gap, not undesigned; see [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) Layer I4 for the authoritative status.
+`photo-context` (below) has a settled design and its core-tool gap is closed (`fha photoindex set-summary` shipped, BUILD.md M3.5) - the SKILL.md itself is still pending; see [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) Layer I4 for the authoritative status.
 
 | Idea | Sketch |
 |---|---|
@@ -73,6 +73,6 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ## 3. Build status & milestones
 
-The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus the SKILL.md files, with `photo-context` designed but blocked on a core-tool gap. Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
+The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus the SKILL.md files, with `photo-context` designed and its core verb shipped (`fha photoindex set-summary`, BUILD.md M3.5) but its SKILL.md still pending. Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
 
 The workbench harness configuration (§1) is not "built" in the tool-suite sense - it is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script). Its "build" is keeping those conventions accurate as the harness landscape changes.

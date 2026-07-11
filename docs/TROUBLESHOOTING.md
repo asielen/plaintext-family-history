@@ -98,6 +98,25 @@ assistant drive it rather than hand-editing two files.)
 
 ---
 
+## My GEDCOM won't import, or the imported tree "isn't showing up"
+
+**What happened - it refuses the file.** `fha gedcom import` reads modern (UTF-8) GEDCOM files.
+If it says the file is **ANSEL** or **UTF-16** encoded, it's an export from an older program:
+open the file in your genealogy program and re-export/save it as UTF-8 (Ancestry's downloads
+already are), then re-run. If it says the file was **already imported**, that's the guard doing
+its job - importing the same file twice would duplicate every person. Downloaded a *newer* export
+since? Import that file; it's different and goes through cleanly.
+
+**What happened - it imported, but trees and timelines look empty.** That's by design, not a
+failure. Everything from a GEDCOM arrives as *suggested* facts - leads, not proven facts - and
+the family tree, timelines, and exports only show facts you've accepted. Your people are all
+there (look in `people/stubs/`, each with the birth/death dates your tree carried), and the
+statements wait in the review queue (`fha report` shows them). Review them a family at a time -
+*"review the claims about Grandma Rose"* - and the tree fills in as you accept. You never need
+to review them all at once, or ever.
+
+---
+
 ## My photos/documents drive is offline
 
 **What happened.** Your `fha.yaml` points the archive at an external drive (or a network folder)
@@ -171,10 +190,42 @@ folder.
 still undo, because your archive is plain files and you keep backups.
 
 **Fix.** Restore the affected file (or the whole folder) from your most recent backup zip - the one
-[SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-still-no-git) recommends you keep on a
-separate drive or cloud folder. Copy the good version back over the broken one. *This is the whole
-reason for the backup habit:* a plain copy of plain files is a complete undo. Going forward, zip
-your archive folder before any big editing session and you'll always have a point to fall back to.
+`fha backup` writes into the folder beside your archive (and that
+[SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-still-no-git) recommends you also keep on a
+separate drive or cloud folder). Unzip it somewhere handy and copy the good version back over the
+broken one. *This is the whole reason for the backup habit:* a plain copy of plain files is a
+complete undo. Going forward, run `fha backup` before any big editing session and you'll always
+have a point to fall back to - `fha doctor` tells you how long it's been.
+
+---
+
+## "fha backup" refused the folder I pointed it at
+
+**What happened.** The backup was aimed at a folder *inside* your archive (or inside your photo or
+document folders). A zip stored inside the archive would be swept into the next backup - backups
+of backups, growing forever - so the command refuses rather than quietly doing that.
+
+**Fix.** Point it somewhere outside: `fha backup --to D:/ArchiveBackups`, or just drop `--to` and
+let it use the default folder it creates beside your archive. To make a choice permanent, put it in
+`fha.yaml`:
+
+```yaml
+backup:
+  path: D:/ArchiveBackups
+```
+
+---
+
+## A backup failed partway
+
+**What happened.** `fha backup` couldn't finish writing the zip, or the finished zip failed its
+integrity check (a full disk and a locked file are the usual causes). The half-written file was
+already deleted for you - a backup that might be corrupt is worse than no backup - so there is
+nothing to clean up.
+
+**Fix.** Read the message: it names the cause. Free up disk space (or close the program holding a
+file open, or pick a different `--to` folder), then run `fha backup` again. Your archive itself was
+never touched - backup only reads it.
 
 > **If you *do* use git:** ask the assistant to "show me what changed and undo my last edit," or
 > run `git restore <file>` to drop uncommitted changes (or `git revert` a bad commit). Git keeps a

@@ -160,6 +160,13 @@ class WorkingCopyTests(unittest.TestCase):
                 EXIT_CLEAN,
             )
             self.assertEqual(
+                photoindex._cmd_set_summary(type('Args', (), {
+                    'root': str(archive), 'path': 'photos/x.jpg', 'group': None,
+                    'text': 'a summary', 'append': False, 'dry_run': False,
+                })()),
+                EXIT_CLEAN,
+            )
+            self.assertEqual(
                 site._cmd_site(type('Args', (), {
                     'root': str(archive), 'out': None, 'linked': False, 'dry_run': False,
                 })()),
@@ -167,7 +174,7 @@ class WorkingCopyTests(unittest.TestCase):
             )
 
     def test_asset_refusals_report_ok_true_with_status(self) -> None:
-        # The four asset-mutating commands, refused in working-copy mode, are a
+        # The asset-mutating commands, refused in working-copy mode, are a
         # warning-level Result: ok is True, exit is clean, and the machine
         # discriminator is data.status == 'working-copy' (Flag 7 / TOOLING §13d).
         with tempfile.TemporaryDirectory() as d:
@@ -180,10 +187,13 @@ class WorkingCopyTests(unittest.TestCase):
             r_site = site.run_site(archive, out_dir)
             r_photo = photoindex.apply_tag_person(
                 archive, {'roots': {'photos': 'photos'}}, 'P-wc00000001', ['photos/x.jpg'])
+            r_summary = photoindex.run_set_summary(
+                archive, {'roots': {'photos': 'photos'}}, 'a summary', ['photos/x.jpg'])
 
             for name, result in (
                 ('process', r_process), ('packet', r_packet),
                 ('site', r_site), ('tag-person', r_photo),
+                ('set-summary', r_summary),
             ):
                 self.assertIs(result.ok, True, name)
                 self.assertEqual(result.exit_code, EXIT_CLEAN, name)

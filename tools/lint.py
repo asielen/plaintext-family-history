@@ -1448,7 +1448,13 @@ def _alias_records(registry: Registry) -> list[dict]:
     everything Pass 1 collected: persons (id + name + variants + stems), sources
     (id + stems), and the bare IDs of places/hypotheses (so a stem colliding with
     one is caught). Place names are not available to lint's on-disk registry, so
-    place-name clashes are out of scope here (the index carries those)."""
+    place-name clashes are out of scope here (the index carries those).
+
+    `status` rides along so `_lib._record_alias_strings` can hold a merged
+    tombstone to its bare P-id: the tombstone keeps its `name:` for human
+    readability, but the merge folded that name into the survivor, and
+    registering it here too would clash the folded name out of the resolve
+    map (and mint a fresh W112 for every completed merge)."""
     records: list[dict] = []
     for pid, meta in registry.person_meta.items():
         records.append({
@@ -1456,6 +1462,7 @@ def _alias_records(registry: Registry) -> list[dict]:
             'name': meta.get('name'),
             'name_variants': _variant_values(meta.get('name_variants')),
             'aliases': meta.get('aliases') or [],
+            'status': meta.get('status'),
         })
     for sid, meta in registry.source_meta.items():
         records.append({'id': sid, 'aliases': meta.get('aliases') or []})

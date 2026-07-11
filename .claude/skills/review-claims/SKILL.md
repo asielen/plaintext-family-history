@@ -22,7 +22,10 @@ quickly, and turning his stated decision into the right tool call. Every skill t
 
 "Review the census claims", "review this source", "let's go through the Hartley notes", or automatically
 as the last stage of `process-source` / `mine-transcript`. Always scoped to **one source at a time** — a
-source's claims are reviewed together because they share evidence.
+source's claims are reviewed together because they share evidence. The one exception to
+whole-source scope: a GEDCOM-import source (`fha gedcom import`) can hold thousands of claims and is
+reviewed **person-by-person or family-by-family** ("review the Hartleys"), never front-to-back — filter
+its claims to the people asked about and leave the rest for later sessions.
 
 ## The contract for this skill (state it before you start)
 
@@ -87,6 +90,11 @@ source's claims are reviewed together because they share evidence.
      straight to `accepted`.
 
 5. **Close out the batch.**
+   If a **`death` claim was accepted** this session for a person whose `living:` is still `true` or
+   `unknown`, offer the flag flip before anything else — "mark them as no longer living, so exports can
+   include them? → `fha person set-living <P-id> false`" — and run it **only on his explicit yes**. The
+   flag is a privacy judgment and nothing ever flips it automatically; the tool's own output states the
+   export consequence.
    ```
    fha index                      # full rebuild — if this pass minted new people/places (a
                                   # process-source / mine-transcript hand-off usually does), `--source`

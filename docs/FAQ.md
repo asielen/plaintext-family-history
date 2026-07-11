@@ -21,6 +21,7 @@ Those are genealogy *applications* - excellent, but database- or service-first: 
 Plaintext inverts that.
 The archive is plain files you own; a genealogy app can be *fed* from it (via GEDCOM export) but never owns it.
 If you love an app's tree view, generate a GEDCOM and use it - the truth stays in your files.
+And it works in the other direction too: coming *from* Ancestry (or any app), download your tree as a GEDCOM file and `fha gedcom import` files it - every person becomes a record and every assertion a reviewable suggestion, so years of clicking arrive as leads, not lost work.
 
 ### What happens to my photos?
 They're never renamed or moved by the system (so your catalog stays intact).
@@ -67,6 +68,7 @@ Yes - a Plaintext archive *is* an Obsidian vault: Markdown files with YAML front
 Yes - that's built into the export tools.
 The static-site generator produces a self-contained snapshot containing only publication-eligible material: living (and possibly-living) people are redacted, sensitive material (including all DNA) is excluded by default.
 Anything you mark *restricted* - a person, a single sensitive fact, a source, or a former name - is kept out of public output the same way, and out of family packets unless you choose to include it; a relative who asks to be left out entirely (`by-request`) is honored everywhere with no override.
+Changing someone's living status later - a relative passes away, or a record turns out to describe someone long gone - is one command: `fha person set-living <P-id> false` (the assistant can run it for you, and it always tells you what the change means for your exports).
 
 ### Does this manage my DNA matches and triangulation?
 No, and on purpose. Plaintext stores DNA *conclusions* - "these two people are related, and here's the proof" - as ordinary claims and proof-argument sources, always kept private. It is deliberately not a match workbench: manage your raw matches, shared-cM, and triangulation in the tools built for that (Ancestry, GEDmatch, DNA Painter), then bring the conclusion back here as a claim. The durable archive holds what you concluded, not the scratch work that got you there.

@@ -1063,7 +1063,9 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                            help='Preview proposed changes without writing.')
     geocode_p.set_defaults(func=_cmd_places_geocode)
 
-    p.set_defaults(func=lambda a: p.print_help() or EXIT_FAILURE)
+    # Bare `fha places` (no verb) is a usage error, not a tool failure: exit 2,
+    # matching `fha person`/`fha confirm` (audit flag 15).
+    p.set_defaults(func=lambda a: p.print_help() or EXIT_ERRORS)
     return p
 
 
@@ -1095,7 +1097,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not getattr(args, 'func', None):
         parser.print_help()
-        return EXIT_FAILURE
+        return EXIT_ERRORS
     return args.func(args)
 
 

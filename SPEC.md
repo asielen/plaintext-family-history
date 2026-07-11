@@ -485,6 +485,10 @@ roots:
   photos: C:/Photos          # absolute path (external library), or "photos" to keep it internal
   documents: documents       # relative → under the archive root
   inbox: C:/Photos/_inbox    # staging may sit inside the photo library's own workflow
+backup:                      # optional: where `fha backup` writes its dated zips (absolute, or
+  path: D:/ArchiveBackups    # relative to the archive root - same tolerance as roots: values).
+                              # Default: a "{root-folder-name}-backups" folder beside the archive.
+                              # Must resolve outside the archive and its asset roots (TOOLING §13e).
 ```
 
 Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name).
@@ -781,6 +785,7 @@ Generated output that leaves the archive falls into two categories with differen
 
 **View maintenance (`fha views clean` / `fha views refresh`):**
 - Generated `.md` views carry the `<!-- GENERATED … -->` header. This header is the sole signal for deletion by `fha views clean` - files without it are never touched, even if they match a view filename pattern.
+- Views rendered as standalone HTML (`--format html`) are single-file documents under `generated/views/`, carrying the same header as their **first line, before the doctype**; `fha views clean` sweeps them by the same marker-per-file signal (a hand-written file in that folder is never touched). They render the same content as their `.md` twins and remain private, unredacted research artifacts - not public output (TOOLING §7 D11).
 - `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step for bulk regeneration (a fresh copy, a reset after `views clean`); a review session instead refreshes just the touched persons' views (TOOLING §17), so untouched views keep their generation dates.
 - Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
 
@@ -802,6 +807,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **View generators** | Per-person timelines; per-person and per-couple-folder sources-indexes; refreshed folder bracket lists; **relationship views** - ancestor / descendant / FAN trees for any person - all derived from accepted claims, never stored. |
 | **Relationship calculator** | For any two persons, derive both the **blood relationship** (the cousin/removal/great-grandparent name, via lowest common ancestor over genetic edges) and the **shortest social path** (a readable chain of role-named hops over all relationship edges) - at query time, from accepted `relationship` claims, never stored. Returns a structured result; the text form renders the sentence. |
 | **GEDCOM exporter** | Derive a standard GEDCOM (relationships + vitals) for a person or the whole tree, at export time, from relationship/vital claims. For exchange with genealogy apps only - never the corpus, never re-imported as truth. |
+| **GEDCOM importer** | File a *foreign* GEDCOM (an Ancestry download, another program's export) as ONE source record whose every assertion enters as a `suggested` claim with a line anchor, plus a person stub per individual (provisional vitals, safe `living:` defaults). Plan-then-apply with a one-shot re-run guard and full rollback; the archive's own export is refused (one-way bridge, no round-trip); duplicates are reported, never auto-merged. Writes only forms §8/§9/§14 already define - no schema additions. |
 | **Person packet** | Gather everything about a person - profile, claims, sources, files, *and all photos of them* (bare `P-id` keywords + `face_tags:` resolution) - into a zip of copies, clearly labeled as a derived export, honoring `living`/`restricted`. |
 | **Photo metadata index** | Scrape embedded metadata of the entire photo library into a fast, disposable search catalog (so finding photos never requires opening Lightroom); incremental rescan; powers the packet's photo gathering. **Variation-aware:** versions of one physical photo (fronts/backs/copies/negatives) are grouped as one logical photo, returned once; per-variant date tags are resolved to one best-confidence group date, and cross-variant date disagreements are surfaced as a report. |
 | **Place geocoder** | Backfill `coords` and `alt_names` in `places.yaml` from an offline gazetteer, with human confirmation. |
