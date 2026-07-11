@@ -2492,6 +2492,145 @@ def is_generated_file(path: str | Path, prefix: str = GENERATED_PREFIX) -> bool:
     return is_generated_text(text, prefix)
 
 
+class GeneratedFileRefused(Exception):
+    """Raised when a generated-file write would clobber a file it does not own.
+
+    A file already at the target whose first non-blank line is not the writer's
+    GENERATED marker is treated as human-authored and must never be overwritten
+    (the archive contract, AGENTS.md). Carries the offending path - `str(exc)`
+    is that path - so each tool's CLI can format its own plain-language refusal
+    and next step (views points at "move or delete it"; the gallery also offers
+    `--out`), which is why the message is NOT baked in here.
+    """
+
+    def __init__(self, path: str | Path):
+        super().__init__(str(path))
+        self.path = Path(path)
+
+
+def write_generated_file(out_path: Path, content: str, marker_prefix: str) -> Path:
+    """Write a GENERATED file, refusing to clobber a file it does not own.
+
+    The one guard shared by every fha single-file writer (views companions and
+    the photoindex gallery): a file already at `out_path` whose first non-blank
+    line is not `marker_prefix` is human-authored and raises
+    GeneratedFileRefused rather than being overwritten. A marker-owned or absent
+    target is (over)written silently, so every run regenerates in place with no
+    --overwrite flag. Parent folders are created as needed. Returns out_path.
+
+    Lifted from the byte-identical guards that used to live in views.py and
+    photoindex.py; keeping one copy here (tools never import tools, so _lib is
+    the only legal shared home) means the ownership rule can never drift between
+    the two writers.
+    """
+    if out_path.exists():
+        try:
+            existing = out_path.read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            existing = ''
+        # Ownership = the writer's marker on the first non-blank line, via the
+        # shared predicate (which also tolerates a leading blank line or UTF-8
+        # BOM from an editor re-save). The per-tool prefix keeps one tool's
+        # GENERATED file protected from another tool's overwrite.
+        if not is_generated_text(existing, prefix=marker_prefix):
+            raise GeneratedFileRefused(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(content, encoding='utf-8')
+    return out_path
+
+
+# ── Single-file HTML rendering (views companions + photoindex gallery) ─────────
+# The standalone-page shell is shared by `fha views --format html` and `fha
+# photoindex gallery`: both inline the same design/view.css subset, both load a
+# Jinja2 template from tools/templates/ with autoescape on, and both title their
+# masthead from fha.yaml. These three helpers are the one parameterized copy of
+# that infra so the two writers cannot drift.
+
+# Per-process caches: the CSS text and each template are identical for every
+# file rendered in one process (a bulk `views refresh --format both`, or any
+# gallery build), and re-reading them per file would dominate render time.
+# _VIEW_CSS_CACHE holds (css_text, missing_bool); None means "not read yet".
+_VIEW_CSS_CACHE: tuple[str, bool] | None = None
+_JINJA_ENV = None
+_TEMPLATE_CACHE: dict[str, object] = {}
+
+
+def load_view_css(artifact_label: str) -> tuple[str, str | None]:
+    """Return (design/view.css text, warning_or_None) for inlining.
+
+    Resolved exactly as `fha site` resolves its design package: design/ sits
+    beside tools/ in both this repo and an installed archive (the manifest ships
+    it), so a tools-relative path works in both. Styling is never load-bearing,
+    so a missing file degrades to ('' , warning) - the page is still complete,
+    just unstyled - and the warning names the fix. `artifact_label` fills the
+    one word that differs between callers ('the HTML view' vs 'the gallery') so
+    each keeps its exact wording.
+
+    The warning is RETURNED, not printed: this is engine-layer code, and the
+    engine/interface split (AGENTS_TOOLING) puts all human-facing output in the
+    _cmd_* layer. The caller threads it into its Result or prints it there.
+    """
+    global _VIEW_CSS_CACHE
+    if _VIEW_CSS_CACHE is None:
+        css_path = Path(__file__).resolve().parent.parent / 'design' / 'view.css'
+        try:
+            _VIEW_CSS_CACHE = (css_path.read_text(encoding='utf-8'), False)
+        except OSError:
+            _VIEW_CSS_CACHE = ('', True)
+    css, missing = _VIEW_CSS_CACHE
+    if not missing:
+        return css, None
+    warning = (
+        f'WARNING: design/view.css is missing - {artifact_label} will be '
+        f'unstyled (its content is still complete). Restore the design/ '
+        f'folder next to tools/ (re-run your tools install/update) for '
+        f'the styled version.'
+    )
+    return css, warning
+
+
+def load_template(template_name: str):
+    """Return a cached Jinja2 template from tools/templates/, autoescape ON.
+
+    Autoescape escapes every piece of record text a template interpolates
+    (paths, captions, labels, file:// hrefs); only pre-built fragments the
+    caller has already made safe pass through `| safe`. Raises ImportError when
+    Jinja2 is unavailable - callers translate that into a plain install hint
+    (Jinja2 is already a suite dependency via `fha site` / `fha views`). Cached
+    by template name so a bulk render reads each template from disk once.
+    """
+    global _JINJA_ENV
+    if template_name not in _TEMPLATE_CACHE:
+        import jinja2
+        if _JINJA_ENV is None:
+            _JINJA_ENV = jinja2.Environment(
+                loader=jinja2.FileSystemLoader(
+                    str(Path(__file__).resolve().parent / 'templates')
+                ),
+                autoescape=True,
+            )
+        _TEMPLATE_CACHE[template_name] = _JINJA_ENV.get_template(template_name)
+    return _TEMPLATE_CACHE[template_name]
+
+
+def archive_title(cfg: dict) -> str:
+    """The archive's display name for a masthead/page title, from fha.yaml.
+
+    Reads `site: archive_name:` (the `fha site` key) with a legacy top-level
+    `archive_name:` fallback, then a plain default. A hand-edited scalar `site:`
+    (a string, not a mapping) must not crash a render, so a non-dict `site` is
+    ignored. Takes the already-loaded config dict rather than re-reading the
+    file, since every caller has just loaded it.
+    """
+    site_cfg = cfg.get('site')
+    if not isinstance(site_cfg, dict):
+        site_cfg = {}
+    return (
+        str(site_cfg.get('archive_name') or cfg.get('archive_name') or '').strip()
+        or 'Family History Archive'
+    )
+
+
 # ── Archive freshness ─────────────────────────────────────────────────────────
 
 def newest_record_mtime(archive_root: Path) -> float:

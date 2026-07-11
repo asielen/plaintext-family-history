@@ -73,9 +73,10 @@ answering a photo question never requires a write.
    ```
    fha photoindex gallery --person P-… [--edtf …] [--keyword …] [--text …] [--out FILE]
    ```
-   It lands at `generated/gallery/{slug}_{P-id}.html`. Tell the human **exactly where it is** —
-   the absolute path and the printed `file://` link — and offer to open it (the command itself
-   never auto-opens anything). If the gallery calls out a "verify these" section, mention it
+   It lands under `generated/gallery/` — the exact filename depends on the filters, so relay the
+   absolute path and the `file://` link the command **prints** rather than predicting the name.
+   Tell the human **exactly where it is** — that printed path and link — and offer to open it (the
+   command itself never auto-opens anything). If the gallery calls out a "verify these" section, mention it
    plainly: "9 of these matched by name only — the page lists them at the bottom if you want to
    confirm they're really her."
 

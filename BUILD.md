@@ -856,10 +856,13 @@ find can never disagree about what matches.
 **`fha photoindex gallery --person P-… | --keyword … | --edtf 192X | --text "…" [--out FILE]`.**
 Same filters as `find` (≥1 required, AND at the group level, same P-id/EDTF validation) →
 one throwaway self-contained HTML page under `generated/gallery/` (default
-`{slug}_{P-id}.html` or `gallery_{filters}.html`; `--out` overrides). One row per logical
+`{slug}_{P-id}.html` for a bare person, with the filter tokens appended when `--person` carries
+extra filters, `gallery_{filter tokens}.html` otherwise; `--out` overrides; the exact filename
+is filter-dependent, so relay the printed path rather than predicting it). One row per logical
 photo (group `primary_path`) with variants as zero-JS `<details>` chips, decade sections
-newest-first + an "Undated" tail + a count strip; with `--person`, weak `face-tag`/`name-match`
-groups collect into a "Verify these" tail. Inherits the plan-13 single-file-HTML conventions
+newest-first (decade taken from the EDTF literal, not a widened bounds midpoint) + an "Undated"
+tail + a count strip (confirmed matches only in the headline); with `--person`, weak
+`face-tag`/`name-match` groups collect into a "Verify these" tail. Inherits the plan-13 single-file-HTML conventions
 verbatim (TOOLING §7 D11): GENERATED marker on line 1 before the doctype (overwrite-by-default,
 refuse a marker-less target), inlined `design/view.css`, the private-artifact banner, `file://`
 hrefs + lazy `<img>` for renderable `.jpg/.jpeg/.png/.webp/.gif` (a placeholder tile that still

@@ -85,18 +85,23 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    GeneratedFileRefused,    # shared refusal when a write would clobber a non-generated file
     Result,               # the structured-result contract every run_* returns
     SOCIAL_PARENT_SUBTYPES,   # parent natures shown but NOT numbered (SPEC §12.2)
+    archive_title,        # masthead/page title from fha.yaml site.archive_name
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
     format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103
     is_generated_text,    # GENERATED-header ownership test (first non-blank line)
     is_genetic_parent_subtype,
     load_fha_yaml,
+    load_template,        # cached Jinja2 template loader (shared single-file HTML infra)
+    load_view_css,        # cached design/view.css loader -> (css, warning_or_None)
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child
     normalize_id,         # lower-cases IDs for consistent set/dict keying
     open_index_db,        # open .cache/index.sqlite with freshness check + table probe
     read_record,          # parses YAML front-matter + body from a .md file
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message
+    write_generated_file,    # marker-guarded write shared with photoindex gallery
 )
 
 
@@ -222,39 +227,19 @@ def _gen_header(subcommand: str) -> str:
     )
 
 
-class _ManualFileRefused(Exception):
-    """Raised when a view writer would overwrite a hand-written (non-generated) file.
-
-    The archive contract (AGENTS.md) forbids overwriting human-written text: a
-    file at a generated view's path that does not carry the GENERATED marker as
-    its first non-blank line is treated as human-owned and never clobbered.
-    """
-
-
 def _write_view_file(out_path: Path, content: str) -> Path:
     """Write a generated view file, refusing to clobber hand-written content.
 
-    Raises _ManualFileRefused if a file already exists at out_path whose first
-    non-blank line is not the GENERATED marker (i.e. a human-written file).
-    Returns out_path on success.
+    Thin wrapper over the shared _lib.write_generated_file guard (the ownership
+    rule lives there so views and the photoindex gallery cannot drift): raises
+    GeneratedFileRefused if a file already exists at out_path whose first
+    non-blank line is not the views GENERATED marker. The narrower views prefix
+    keeps another tool's GENERATED file protected from a views overwrite.
     """
-    if out_path.exists():
-        try:
-            existing = out_path.read_text(encoding='utf-8', errors='ignore')
-        except OSError:
-            existing = ''
-        # Ownership = the views marker on the first non-blank line, via the
-        # shared _lib predicate (which also tolerates a UTF-8 BOM: an editor
-        # re-save must not turn a generated file into a "hand-written" one
-        # this refuses to refresh). The narrower views prefix keeps another
-        # tool's GENERATED file protected from a views overwrite.
-        if not is_generated_text(existing, prefix=_GEN_MARKER):
-            raise _ManualFileRefused(out_path)
-    out_path.write_text(content, encoding='utf-8')
-    return out_path
+    return write_generated_file(out_path, content, _GEN_MARKER)
 
 
-def _refused_exit(e: _ManualFileRefused) -> int:
+def _refused_exit(e: GeneratedFileRefused) -> int:
     """Report a refused overwrite and return the failure exit code."""
     print(
         f'ERROR: refusing to overwrite hand-written file (no GENERATED header): '
@@ -356,57 +341,39 @@ def _format_precheck(fmt: str, allowed: tuple[str, ...]) -> Result | None:
     return None
 
 
-# Both caches are per-process: the CSS and template are the same for every
-# file in a bulk `views refresh --format both`, and re-reading them per file
-# would dominate the render time for no benefit.
-_VIEW_CSS_CACHE: str | None = None
-_VIEW_TEMPLATE_CACHE = None
+# The CSS read and template load are cached per process inside _lib (the shared
+# single-file HTML infra); this flag preserves views' own contract of printing
+# the "css missing" warning at most ONCE per process even across a bulk
+# `views refresh --format both` that renders many files.
+_VIEW_CSS_WARNED = False
 
 
 def _view_css() -> str:
-    """Return design/view.css for inlining (cached; '' when missing).
+    """Return design/view.css for inlining ('' when missing), warning once.
 
-    Resolved as `fha site` resolves its design package: the design/ folder
-    sits beside tools/ both in this repo and in an installed archive (the
-    manifest ships it), so a tools-relative path works in both.  A missing
-    file degrades to an unstyled-but-complete page with a warning naming the
-    fix - styling is never load-bearing.
+    Delegates the (cached) read and the warning text to the shared loader; the
+    warning is printed here - the interface layer - once per process, exactly
+    as before, since re-reading is what the cache prevents, not re-warning.
+    A missing file degrades to an unstyled-but-complete page.
     """
-    global _VIEW_CSS_CACHE
-    if _VIEW_CSS_CACHE is None:
-        css_path = Path(__file__).resolve().parent.parent / 'design' / 'view.css'
-        try:
-            _VIEW_CSS_CACHE = css_path.read_text(encoding='utf-8')
-        except OSError:
-            print(
-                'WARNING: design/view.css is missing - the HTML view will be '
-                'unstyled (its content is still complete). Restore the design/ '
-                'folder next to tools/ (re-run your tools install/update) for '
-                'the styled version.',
-                file=sys.stderr,
-            )
-            _VIEW_CSS_CACHE = ''
-    return _VIEW_CSS_CACHE
+    global _VIEW_CSS_WARNED
+    css, warning = load_view_css('the HTML view')
+    if warning and not _VIEW_CSS_WARNED:
+        print(warning, file=sys.stderr)
+        _VIEW_CSS_WARNED = True
+    return css
 
 
 def _view_template():
-    """Return the cached Jinja2 view.html template.
+    """Return the cached Jinja2 view.html template (autoescape ON).
 
-    Autoescape is ON: the template escapes title/masthead/date itself, and the
+    Delegates to the shared loader. Autoescape escapes title/masthead/date; the
     pre-rendered fragments (marker, css, body) pass through `| safe` in the
     template - the body is built exclusively by the serializers below, which
-    escape every piece of record text they interpolate.
-    Callers reach this only after _format_precheck proved Jinja2 importable.
+    escape every piece of record text they interpolate. Callers reach this only
+    after _format_precheck proved Jinja2 importable.
     """
-    global _VIEW_TEMPLATE_CACHE
-    if _VIEW_TEMPLATE_CACHE is None:
-        import jinja2
-        env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(str(Path(__file__).parent / 'templates')),
-            autoescape=True,
-        )
-        _VIEW_TEMPLATE_CACHE = env.get_template('view.html')
-    return _VIEW_TEMPLATE_CACHE
+    return load_template('view.html')
 
 
 def _render_view_html(archive_root: Path, subcommand: str, title: str, body_html: str) -> str:
@@ -419,21 +386,13 @@ def _render_view_html(archive_root: Path, subcommand: str, title: str, body_html
     from fha.yaml `site: archive_name:` (the `fha site` key, with the legacy
     top-level fallback) so the printed page names the archive it came from.
     """
-    cfg = load_fha_yaml(archive_root)
-    site_cfg = cfg.get('site')
-    if not isinstance(site_cfg, dict):   # a hand-edited scalar `site:` must not crash a view
-        site_cfg = {}
-    archive_title = (
-        str(site_cfg.get('archive_name') or cfg.get('archive_name') or '').strip()
-        or 'Family History Archive'
-    )
     marker = _gen_header(subcommand).rstrip('\n')
     return _view_template().render(
         marker=marker,
         title=title,
         subcommand=subcommand,
         date=_today(),
-        archive_title=archive_title,
+        archive_title=archive_title(load_fha_yaml(archive_root)),
         css=_view_css(),
         body=body_html,
     ) + '\n'
@@ -2422,7 +2381,7 @@ def run_timeline(
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
     finally:
         conn.close()
@@ -2514,7 +2473,7 @@ def run_sources_index(
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
     finally:
         conn.close()
@@ -2591,7 +2550,7 @@ def run_draft_queue(
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
     finally:
         conn.close()
@@ -2753,7 +2712,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
             print('Run `fha index` when convenient to update the search index with the new view files.')
         return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
-    except _ManualFileRefused as e:
+    except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
     finally:
         conn.close()

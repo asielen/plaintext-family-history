@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-10",
+  "generated": "2026-07-11",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -18,7 +18,7 @@
     {
       "path": ".claude/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "cd61389940f06f6df5e816ceb7137d8eff3c528e4a419b1b9b02481dd1f7334f",
+      "sha256": "60f0c6583481216dbe93188fc5a8cca7eacbd9eb81572d822f5f84169d4340de",
       "spec_version": "1.2"
     },
     {
@@ -121,7 +121,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "6f01e9f46041640a5d32bb6fdad8432781211ea5279e086760344d3ce771ec81",
+      "sha256": "58faf181d2dc6cdd3e12c2b07ad7a2db0f4c5abc85c0506c8fffbfd30563d9ce",
       "spec_version": "1.2"
     },
     {
@@ -157,7 +157,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "4f6675e1daa81a2bd53e0ef5cf99a0a1fc174fc0767e4663c1322ac8e691a711",
+      "sha256": "73efd0f5fdbd8b91b8f56ff6d99515e068cacfb0a93e81bb9543bef500309f3a",
       "spec_version": "1.2"
     },
     {
@@ -449,13 +449,13 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "5ce94d553c620a30a182203ec34803267896f412c0905ac4c702a603bd5fee15",
+      "sha256": "ecc2ffd4d0012004cd7a4bfc8de5b0ea41f9168c5ee61da3d0041d463cae7044",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "cbf2e82ff618a31acbe824343a720bd704eb494da447ad102cd8c703f15d453a",
+      "sha256": "6790040a1de62582edbef859e5314bd52b0a41bbb346bfb4b2216d09f7a4a134",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "a86aaefcd8920ae1d2843dfed7c05136c517a09c62485c9397945377a8108dfd",
+      "sha256": "12be8c39a6c8777b4aa9b77dfe8e0ccbb4d575e3fb6889afa113ddbdd184f398",
       "spec_version": "1.2"
     },
     {
@@ -719,7 +719,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "ca0ef2ae5342e56cb3dba4f04a5f5fcd5c0e1922afe2f3cb9b6078cf2d2df146",
+      "sha256": "a789483db05c88140f676bff9827b6658e4227d7755f35c9b9ed5dd6215bc512",
       "spec_version": "1.2"
     },
     {
