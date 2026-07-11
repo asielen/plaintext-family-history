@@ -2508,7 +2508,29 @@ class GeneratedFileRefused(Exception):
         self.path = Path(path)
 
 
-def write_generated_file(out_path: Path, content: str, marker_prefix: str) -> Path:
+class GeneratedFileParentMissing(Exception):
+    """Raised when a generated file's parent folder does not exist and the
+    caller has not opted into creating it.
+
+    A views companion (.md timeline/sources-index/draft-queue) lives beside an
+    existing person profile - its parent folder must already be there, because
+    it is the profile's own folder. If it is missing, the index is pointing at
+    a folder that moved or was deleted since the last `fha index`; silently
+    `mkdir`-ing it back into existence would resurrect a stray folder built
+    from stale cache state instead of failing safely (AGENTS.md: never leave
+    the archive in an inconsistent state). Only artifact writers whose parent
+    is allowed to not exist yet (generated/gallery/, generated/views/) pass
+    `create_parents=True` to `write_generated_file` and never hit this path.
+    """
+
+    def __init__(self, path: str | Path):
+        super().__init__(str(path))
+        self.path = Path(path)
+
+
+def write_generated_file(
+    out_path: Path, content: str, marker_prefix: str, create_parents: bool = False,
+) -> Path:
     """Write a GENERATED file, refusing to clobber a file it does not own.
 
     The one guard shared by every fha single-file writer (views companions and
@@ -2516,7 +2538,15 @@ def write_generated_file(out_path: Path, content: str, marker_prefix: str) -> Pa
     line is not `marker_prefix` is human-authored and raises
     GeneratedFileRefused rather than being overwritten. A marker-owned or absent
     target is (over)written silently, so every run regenerates in place with no
-    --overwrite flag. Parent folders are created as needed. Returns out_path.
+    --overwrite flag. Returns out_path.
+
+    `create_parents` defaults to False: a companion file's parent is the
+    person's own folder, which must already exist, so a missing parent raises
+    GeneratedFileParentMissing rather than being silently recreated from a
+    stale index. Callers whose target lives under a disposable top-level
+    folder that may legitimately not exist yet (generated/gallery/) pass
+    create_parents=True; generated/views/ callers never need it - _html_out_path
+    already creates that folder before this runs.
 
     Lifted from the byte-identical guards that used to live in views.py and
     photoindex.py; keeping one copy here (tools never import tools, so _lib is
@@ -2534,7 +2564,10 @@ def write_generated_file(out_path: Path, content: str, marker_prefix: str) -> Pa
         # GENERATED file protected from another tool's overwrite.
         if not is_generated_text(existing, prefix=marker_prefix):
             raise GeneratedFileRefused(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not out_path.parent.is_dir():
+        if not create_parents:
+            raise GeneratedFileParentMissing(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(content, encoding='utf-8')
     return out_path
 
@@ -2611,6 +2644,30 @@ def load_template(template_name: str):
             )
         _TEMPLATE_CACHE[template_name] = _JINJA_ENV.get_template(template_name)
     return _TEMPLATE_CACHE[template_name]
+
+
+def render_template(template_name: str, **context) -> str:
+    """Load and render a tools/templates/ Jinja2 template, returning the text.
+
+    Both loading (a missing template file) and rendering (a bad expression, an
+    undefined variable) can raise a jinja2.TemplateError subclass; translated
+    here into a plain RuntimeError naming the exact folder to restore, so
+    neither `fha views --format html` nor `fha photoindex gallery` ever leaks a
+    raw Jinja traceback for a broken or reinstalled tools/templates/ folder.
+    ImportError (Jinja2 itself not installed) is deliberately left to propagate
+    unchanged, matching load_template's contract - callers already translate
+    that into their own install hint.
+    """
+    import jinja2
+    try:
+        return load_template(template_name).render(**context)
+    except jinja2.TemplateError as e:
+        raise RuntimeError(
+            f'the {template_name} template is missing or broken (expected at '
+            f'tools/templates/{template_name}) - {e}. Restore the tools/templates '
+            f'folder (reinstall the tools package or restore it from git), then '
+            f're-run.'
+        ) from e
 
 
 def archive_title(cfg: dict) -> str:

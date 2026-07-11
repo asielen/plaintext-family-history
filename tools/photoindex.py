@@ -96,7 +96,7 @@ CODE MAP
     _render_gallery_html      - assemble decade sections + verify tail into the shell
     _today_iso                - today's date (YYYY-MM-DD) for the GENERATED marker
     (page-shell infra - css, template, marker-guarded write, archive title - is
-     shared with views via _lib: load_view_css / load_template /
+     shared with views via _lib: load_view_css / render_template /
      write_generated_file / archive_title)
 
   Triage (fha photoindex triage - M3.3)
@@ -160,6 +160,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -191,8 +192,8 @@ from _lib import (
     is_valid_edtf,
     is_valid_id,
     load_fha_yaml,
-    load_template,
     load_view_css,
+    render_template,
     newest_person_record_mtime,
     normalize_date,
     normalize_id,
@@ -1264,23 +1265,19 @@ def _file_uri(alias_path: str, fha_config: dict, archive_root: Path) -> str:
     return p.as_uri()
 
 
-def _humanize_edtf(edtf: str | None) -> str:
-    """Turn an EDTF date into a plain reading date for one gallery row.
+def _humanize_edtf_bound(s: str) -> str:
+    """Humanize one EDTF date token with no interval or bracket wrapper.
 
-    Genealogy dates are EDTF (SPEC §20); a non-technical reader should see
-    "1920s" not "192X" and "about 1912" not "1912~". Decades render as "Nx0s",
-    a trailing/leading `~` or `?` becomes an "about " prefix, and a plain
-    year / year-month / full date reads naturally ("May 1912", "3 May 1912").
-    Anything this does not recognise falls back to the raw core string rather
-    than guessing. None/empty yields "Undated".
+    Shared by _humanize_edtf for a plain date and for each side of a range or
+    a bracket-qualified bound, so 'about 1912' and the '1912' half of a
+    '1912/1915' range go through the same month/day/decade logic. Decades
+    render as "Nx0s", a leading/trailing `~` or `?` becomes an "about "
+    prefix, and a plain year / year-month / full date reads naturally ("May
+    1912", "3 May 1912"). Anything this does not recognise falls back to the
+    raw core string rather than guessing.
     """
-    if not edtf:
-        return 'Undated'
-    s = str(edtf).split('/')[0].strip()
-    if not s:
-        return 'Undated'
     prefix = 'about ' if ('~' in s or '?' in s) else ''
-    core = s.lstrip('[.').rstrip('~?]')
+    core = s.strip('~?')
 
     decade = re.match(r'^(\d{3})[Xx]$', core)
     if decade:
@@ -1297,6 +1294,54 @@ def _humanize_edtf(edtf: str | None) -> str:
             return f'{prefix}{month_label} {year}'
         return f'{prefix}{year}'
     return f'{prefix}{core}'
+
+
+_EDTF_BEFORE_RE = re.compile(r'^\[\.\.(.+)\]$')
+_EDTF_AFTER_RE = re.compile(r'^\[(.+)\.\.\]$')
+
+
+def _humanize_edtf(edtf: str | None) -> str:
+    """Turn an EDTF date into a plain reading date for one gallery row.
+
+    Genealogy dates are EDTF (SPEC §20). Three shapes beyond a plain date need
+    their own reading, or the qualifier they carry silently vanishes and an
+    uncertain span reads as a specific-looking date (a real gallery bug: a
+    '1912/1915' row used to show bare "1912", and a '[..1900]' before-date
+    used to show bare "1900"):
+      - a slash interval ('1870/1875') reads as "1870 to 1875"; an open side
+        ('1870/..', '../1875') reads as "after 1870" / "before 1875";
+      - a bracket-qualified bound ('[..1900]' on/before, '[1900..]' on/after)
+        reads as "before 1900" / "after 1900";
+      - anything else goes through _humanize_edtf_bound for the decade/date
+        formatting a plain reader expects ("1920s", "about 1912", "May 1912").
+    None/empty yields "Undated".
+    """
+    if not edtf:
+        return 'Undated'
+    raw = str(edtf).strip()
+    if not raw:
+        return 'Undated'
+
+    if '/' in raw:
+        start, end = (part.strip() for part in raw.split('/', 1))
+        start_label = _humanize_edtf_bound(start) if start and start != '..' else None
+        end_label = _humanize_edtf_bound(end) if end and end != '..' else None
+        if start_label and end_label:
+            return f'{start_label} to {end_label}'
+        if start_label:
+            return f'after {start_label}'
+        if end_label:
+            return f'before {end_label}'
+        return 'Undated'
+
+    before = _EDTF_BEFORE_RE.match(raw)
+    if before:
+        return f'before {_humanize_edtf_bound(before.group(1))}'
+    after = _EDTF_AFTER_RE.match(raw)
+    if after:
+        return f'after {_humanize_edtf_bound(after.group(1))}'
+
+    return _humanize_edtf_bound(raw)
 
 
 def _decade_of(edtf: str | None) -> int | None:
@@ -1346,7 +1391,7 @@ def _chip_label(variant_role: str | None, variant_copy: str | None) -> str:
 
 # The gallery's CSS (design/view.css), its Jinja2 template, and its marker-
 # guarded write all come from the shared single-file HTML infra in _lib
-# (load_view_css / load_template / write_generated_file), the one home views and
+# (load_view_css / render_template / write_generated_file), the one home views and
 # the gallery share so the page-shell rules cannot drift between them. The
 # gallery's own tile rules live inline in tools/templates/gallery.html, so
 # view.css stays a lean views subset.
@@ -1486,10 +1531,22 @@ def _gallery_group_dict(
     fallback) rather than being silently dropped - a matched group always has at
     least one member row even when its photo_groups row is gone. Returns None
     only when there is genuinely no row to render.
+
+    Reconcile keeps a vanished file's row queryable but prefixes its path
+    'MISSING:' (a synthetic, never-on-disk key - see run_reconcile) so its
+    caption/date history stays searchable. A gallery page exists to be
+    clicked, so a MISSING: member can never be its primary tile or a chip
+    here: `members` is filtered to on-disk paths before a primary is chosen,
+    and a MISSING: group_meta primary_path is treated as absent, same as a
+    torn photo_groups row. A group left with no on-disk member (every variant
+    vanished) falls through to "no row to render", exactly like a torn cache
+    with no members at all - it is dropped, never shown as a broken link.
     """
     if isinstance(key, str):
-        if group_meta is not None and group_meta['primary_path']:
-            primary_path = group_meta['primary_path']
+        members = [m for m in members if not m['path'].startswith(_MISSING_PREFIX)]
+        meta_primary = group_meta['primary_path'] if group_meta is not None else None
+        if meta_primary and not meta_primary.startswith(_MISSING_PREFIX):
+            primary_path = meta_primary
             edtf_resolved = group_meta['edtf_resolved']
             date_conflict = bool(group_meta['date_conflict'])
         elif members:
@@ -1502,7 +1559,7 @@ def _gallery_group_dict(
         primary_row = next((m for m in members if m['path'] == primary_path), None)
         member_rows = members
     else:
-        if singleton_row is None:
+        if singleton_row is None or key[1].startswith(_MISSING_PREFIX):
             return None
         primary_path = key[1]
         edtf_resolved = singleton_row['edtf']
@@ -1813,10 +1870,19 @@ def run_gallery(
             archive_root, person_id, person_name, keyword, edtf, text, out
         )
         try:
-            write_generated_file(out_path, html, _GALLERY_GEN_PREFIX)
+            # generated/gallery/ is a disposable top-level folder that may not
+            # exist yet on a fresh archive - unlike a views companion, there is
+            # no "should already exist" folder to protect here.
+            write_generated_file(out_path, html, _GALLERY_GEN_PREFIX, create_parents=True)
         except GeneratedFileRefused as refused:
             return Result(ok=False, exit_code=EXIT_FAILURE,
                           data={'status': status, 'refused': str(refused)})
+        except OSError as e:
+            raise RuntimeError(
+                f'could not write the gallery to {out_path} ({e.strerror or e}). '
+                f'Check that the folder exists and is writable (or that the disk '
+                f'has room), or pass --out to write it somewhere else, then re-run.'
+            ) from e
 
         return Result(ok=True, exit_code=EXIT_CLEAN, data={
             'status': status,
@@ -1900,7 +1966,7 @@ def _render_gallery_html(
             'heading': 'Verify these - matched by name, not yet tagged',
             'tag_cmd': (
                 f'fha photoindex tag-person {fmt_id_display(person)} '
-                f'--paths {example}'
+                f'--paths {shlex.quote(example)}'
             ),
             'rows': sorted(verify_groups, key=lambda r: r['sort_key']),
         }
@@ -1908,7 +1974,8 @@ def _render_gallery_html(
     title = f'Photos of {subject}' if subject else 'Photos'
     marker = f'{_GALLERY_GEN_PREFIX} on {_today_iso()} - disposable; regenerate anytime -->'
 
-    return load_template('gallery.html').render(
+    return render_template(
+        'gallery.html',
         marker=marker,
         title=title,
         archive_title=archive_title(load_fha_yaml(archive_root)),

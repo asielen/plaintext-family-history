@@ -3328,6 +3328,22 @@ class GalleryTests(unittest.TestCase):
         self.assertIsNone(photoindex._decade_of('[1900..]'))
         self.assertIsNone(photoindex._decade_of(None))
 
+    def test_humanize_edtf_preserves_ranges_and_bracket_qualifiers(self) -> None:
+        # Codex P2: a slash range or a bracket-qualified bound used to render as
+        # only its first/boundary year, turning an uncertain span into a
+        # specific-looking date in the gallery label ('1912/1915' -> '1912';
+        # '[..1900]' -> '1900'). Both must keep their range/qualifier in the
+        # plain-language label instead of silently narrowing to one year.
+        h = photoindex._humanize_edtf
+        self.assertEqual(h('1912/1915'), '1912 to 1915')
+        self.assertEqual(h('1912~/1915'), 'about 1912 to 1915')
+        self.assertEqual(h('[..1900]'), 'before 1900')
+        self.assertEqual(h('[1900..]'), 'after 1900')
+        # Unchanged behavior for a plain (non-interval, non-bracket) date.
+        self.assertEqual(h('1920-01~'), 'about January 1920')
+        self.assertEqual(h('192X'), '1920s')
+        self.assertEqual(h(None), 'Undated')
+
     def test_gallery_decade_from_edtf_literal_and_open_range_undated(self) -> None:
         # End to end: a month-approximate 1920 date lands in the 1920s section
         # (never the 1910s the old midpoint gave); a "[..1900]" open range has no
@@ -3380,6 +3396,80 @@ class GalleryTests(unittest.TestCase):
             html = self._read(result['written'])
             self.assertEqual(html.count('<article class="photo-row">'), 1)
             self.assertIn('portrait_1880.jpg', html)
+
+    def test_gallery_excludes_reconciled_missing_rows(self) -> None:
+        # Codex P2: reconcile keeps a vanished file's row queryable (caption/
+        # keyword history) but prefixes its path 'MISSING:' - a synthetic key
+        # that was never a real file. A gallery page exists to be clicked, so
+        # a group whose every variant has vanished must drop out of the page
+        # entirely, while a still-present sibling match still renders.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {
+                'family_reunion.jpg': {'Keywords': ['gone']},
+                'wedding_1902.jpg': {'Keywords': ['gone']},
+            }, cfg)
+
+            (archive / 'photos' / 'family_reunion.jpg').unlink()
+            reconcile_result = photoindex.run_reconcile(archive, cfg, with_exif=False)
+            self.assertEqual(reconcile_result['missing'], ['MISSING:photos/family_reunion.jpg'])
+
+            result = photoindex.run_gallery(archive, cfg, keyword='gone')
+            html = self._read(result['written'])
+
+            self.assertEqual(result['matched'], 1)
+            self.assertIn('wedding_1902.jpg', html)
+            self.assertNotIn('family_reunion.jpg', html)
+            self.assertNotIn('MISSING:', html)
+
+    def test_gallery_group_with_some_missing_variants_renders_from_present_ones(self) -> None:
+        # A logical photo whose front scan vanished but whose back scan is
+        # still on disk (family_reunion above has no back; portrait_1880's
+        # fixture pair does) must still render - from the still-present
+        # variant - rather than exposing the vanished front as a tile/chip or
+        # dropping the whole group just because one variant is gone.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['gone']}}, cfg)
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg, with_exif=False)
+
+            result = photoindex.run_gallery(archive, cfg, keyword='gone')
+            html = self._read(result['written'])
+
+            self.assertEqual(result['matched'], 1)
+            self.assertIn('portrait_1880-back.jpg', html)
+            self.assertNotIn('MISSING:', html)
+            self.assertNotIn('portrait_1880.jpg', html)  # the vanished front, exactly
+
+    def test_gallery_verify_tag_command_quotes_paths_with_spaces(self) -> None:
+        # Codex P2: the generated tag-person command must stay copy-pasteable
+        # even when the weak match's catalog path has a space (or other shell
+        # punctuation) - an unquoted --paths value would split into two shell
+        # arguments when pasted into a terminal.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._make_index(
+                archive,
+                persons=[('p-de957bcda1', 'Margaret Hartley')],
+                face_tags=[('p-de957bcda1', 'Maggie')],
+            )
+            self._stage(archive, {
+                'family reunion.jpg': {
+                    'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
+                },
+            }, cfg, extra_files=('family reunion.jpg',))
+
+            result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
+            html = self._read(result['written'])
+
+            self.assertIn('Verify these', html)
+            # Autoescape renders the shell-quoting single-quotes as &#39;.
+            self.assertIn('--paths &#39;photos/family reunion.jpg&#39;', html)
 
     def test_gallery_verify_label_excludes_unrelated_face_region(self) -> None:
         # F3: a face-tag Verify row labels only the region name that maps to the
@@ -3566,6 +3656,34 @@ class GalleryTests(unittest.TestCase):
                 self.assertIn('design/view.css is missing', err.getvalue())
             finally:
                 photoindex.load_view_css = orig
+
+    def test_gallery_write_oserror_reports_plain_error_not_traceback(self) -> None:
+        # Codex P2: a filesystem failure during the marker-guarded write
+        # (permission denied, disk full, a bad --out target) must not leak a
+        # raw OSError - run_gallery translates it to a RuntimeError _cmd_gallery
+        # already knows how to report in plain language.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+
+            orig = photoindex.write_generated_file
+
+            def boom(*args, **kwargs):
+                raise OSError(28, 'No space left on device')
+
+            photoindex.write_generated_file = boom
+            try:
+                with self.assertRaises(RuntimeError):
+                    photoindex.run_gallery(archive, cfg, edtf='188X')
+
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code = photoindex._cmd_gallery(self._args(archive, edtf='188X'))
+                self.assertEqual(code, EXIT_FAILURE)
+                self.assertIn('ERROR:', err.getvalue())
+            finally:
+                photoindex.write_generated_file = orig
 
 
 class SetSummaryTests(unittest.TestCase):

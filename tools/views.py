@@ -85,6 +85,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    GeneratedFileParentMissing,  # a companion's parent folder is missing (stale index)
     GeneratedFileRefused,    # shared refusal when a write would clobber a non-generated file
     Result,               # the structured-result contract every run_* returns
     SOCIAL_PARENT_SUBTYPES,   # parent natures shown but NOT numbered (SPEC §12.2)
@@ -94,8 +95,8 @@ from _lib import (
     is_generated_text,    # GENERATED-header ownership test (first non-blank line)
     is_genetic_parent_subtype,
     load_fha_yaml,
-    load_template,        # cached Jinja2 template loader (shared single-file HTML infra)
     load_view_css,        # cached design/view.css loader -> (css, warning_or_None)
+    render_template,      # load + render a tools/templates/ Jinja2 template (shared)
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child
     normalize_id,         # lower-cases IDs for consistent set/dict keying
     open_index_db,        # open .cache/index.sqlite with freshness check + table probe
@@ -142,7 +143,7 @@ def _views_result(
 #    _md_inline_to_html           - escape + [[ID]] tokens → styled <span> text
 #    _html_out_path               - generated/views/{stem}.html target path
 #    _format_precheck             - engine-level fmt validation + Jinja2 probe
-#    _view_css, _view_template    - cached design/view.css + view.html template
+#    _view_css                    - cached design/view.css for inlining
 #    _render_view_html            - wrap a body in the standalone page shell
 #    _timeline_body_html          - timeline sections → HTML body
 #
@@ -246,6 +247,41 @@ def _refused_exit(e: GeneratedFileRefused) -> int:
         f'{e} - move or delete it, then re-run.',
         file=sys.stderr,
     )
+    return EXIT_FAILURE
+
+
+def _missing_parent_exit(e: GeneratedFileParentMissing) -> int:
+    """Report a companion write whose person folder no longer exists.
+
+    write_generated_file raises this instead of recreating the folder (a
+    stale .cache/index.sqlite can point at a folder that moved or was
+    deleted) - never silently rebuild archive structure from cache state.
+    """
+    print(
+        f'ERROR: the folder for {e} no longer exists on disk - it may have '
+        f'moved or been deleted since the index was last built. Run `fha index` '
+        f'to refresh the index, then try again (or restore the folder).',
+        file=sys.stderr,
+    )
+    return EXIT_FAILURE
+
+
+def _write_os_error_exit(e: OSError) -> int:
+    """Report a failed view write (permission denied, disk full, a bad --out
+    target) and return the failure exit code, instead of a raw traceback."""
+    print(
+        f'ERROR: could not write the view file ({e.strerror or e}). Check that '
+        f'the destination folder exists and is writable (or that the disk has '
+        f'room), then re-run.',
+        file=sys.stderr,
+    )
+    return EXIT_FAILURE
+
+
+def _runtime_error_exit(e: RuntimeError) -> int:
+    """Report an engine-layer RuntimeError (e.g. _lib.render_template's
+    translated broken-template message) and return the failure exit code."""
+    print(f'ERROR: {e}', file=sys.stderr)
     return EXIT_FAILURE
 
 
@@ -364,18 +400,6 @@ def _view_css() -> str:
     return css
 
 
-def _view_template():
-    """Return the cached Jinja2 view.html template (autoescape ON).
-
-    Delegates to the shared loader. Autoescape escapes title/masthead/date; the
-    pre-rendered fragments (marker, css, body) pass through `| safe` in the
-    template - the body is built exclusively by the serializers below, which
-    escape every piece of record text they interpolate. Callers reach this only
-    after _format_precheck proved Jinja2 importable.
-    """
-    return load_template('view.html')
-
-
 def _render_view_html(archive_root: Path, subcommand: str, title: str, body_html: str) -> str:
     """Wrap a rendered body in the standalone single-file page shell.
 
@@ -385,9 +409,16 @@ def _render_view_html(archive_root: Path, subcommand: str, title: str, body_html
     and `views clean` need no format-specific logic.  The masthead title comes
     from fha.yaml `site: archive_name:` (the `fha site` key, with the legacy
     top-level fallback) so the printed page names the archive it came from.
+    Autoescape (view.html, ON) escapes title/masthead/date; the pre-rendered
+    fragments (marker, css, body) pass through `| safe` in the template - the
+    body is built exclusively by the serializers below, which escape every
+    piece of record text they interpolate. Callers reach this only after
+    _format_precheck proved Jinja2 importable; render_template translates a
+    missing/broken template file into a plain RuntimeError.
     """
     marker = _gen_header(subcommand).rstrip('\n')
-    return _view_template().render(
+    return render_template(
+        'view.html',
         marker=marker,
         title=title,
         subcommand=subcommand,
@@ -2383,6 +2414,12 @@ def run_timeline(
 
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 
@@ -2475,6 +2512,12 @@ def run_sources_index(
 
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 
@@ -2552,6 +2595,12 @@ def run_draft_queue(
 
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 
@@ -2714,6 +2763,12 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
 
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
+    except GeneratedFileParentMissing as e:
+        return _views_result(_missing_parent_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
     finally:
         conn.close()
 

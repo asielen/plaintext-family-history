@@ -21,6 +21,7 @@ fha artifacts inherit (TOOLING §7 D11):
 """
 
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -232,6 +233,47 @@ class MarkerGuardTests(_ViewsHtmlBase):
         self.assertFalse(res.changed)
         self.assertEqual(target.read_text(encoding='utf-8'),
                          '<p>my hand-made page</p>')
+
+
+class WriteErrorHandlingTests(_ViewsHtmlBase):
+    """Codex P2 findings on the shared _lib write/render infra (tools/_lib.py):
+    a companion write must never recreate a person folder that moved or was
+    deleted since the index was last built, and a filesystem or template
+    failure must report a plain error instead of leaking a raw traceback."""
+
+    def test_stale_index_does_not_recreate_deleted_person_folder(self):
+        folder = self.profile.parent
+        shutil.rmtree(folder)
+        for runner, kind in self._runners():
+            res = runner(self.root, person_id=PID)
+            self.assertEqual(res.exit_code, EXIT_FAILURE, kind)
+            self.assertFalse(folder.exists(), kind)
+
+    def test_write_oserror_reports_plain_error_not_traceback(self):
+        orig = views.write_generated_file
+
+        def boom(*args, **kwargs):
+            raise OSError(28, 'No space left on device')
+
+        views.write_generated_file = boom
+        try:
+            res = views.run_timeline(self.root, person_id=PID)
+        finally:
+            views.write_generated_file = orig
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+
+    def test_broken_template_reports_plain_error_not_traceback(self):
+        orig = views.render_template
+
+        def boom(name, **context):
+            raise RuntimeError(f'the {name} template is missing or broken - boom')
+
+        views.render_template = boom
+        try:
+            res = views.run_timeline(self.root, person_id=PID, fmt='html')
+        finally:
+            views.render_template = orig
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
 
 
 class ExitCodeTests(_ViewsHtmlBase):
