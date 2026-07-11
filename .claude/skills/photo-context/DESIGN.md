@@ -1,11 +1,11 @@
 # `photo-context` — design note (step 09)
 
-**Status: core verb shipped — SKILL.md pending.** The design below is settled, and the deterministic
-write path it requires now exists (`fha photoindex set-summary`, BUILD.md M3.5). The `SKILL.md` is still
-intentionally **not** written — that is a separate, later skill-mode PR against this design. Per the
-interface-skills index and [`../_STANDARD.md`](../_STANDARD.md) §6 (the stop-don't-improvise rule), this
-step originally halted and surfaced the gap as core (BUILD.md) work rather than hand-rolling the write in
-skill prose; that core work has since landed.
+**Status: shipped.** The design below is settled, the deterministic write path it requires shipped
+(`fha photoindex set-summary`, BUILD.md M3.5), and the skill itself is now written against this design:
+[`SKILL.md`](SKILL.md). Per the interface-skills index and [`../_STANDARD.md`](../_STANDARD.md) §6 (the
+stop-don't-improvise rule), this step originally halted and surfaced the gap as core (BUILD.md) work
+rather than hand-rolling the write in skill prose; that core work landed, and the skill-mode PR that
+follows it is this one. The design text below is kept as the historical record of that gap and its close.
 
 This note satisfies step 09's first job: name the trigger, inputs, the deterministic write verb, and the
 provenance/AI-marking rule — and explicitly confirm whether a tool gap exists. It did; the gap is now closed.
@@ -81,9 +81,9 @@ SPEC §20 already permitted the write, so no SPEC amendment was required — onl
 - [x] Tool gap explicitly confirmed: **yes** — at design time no `UserComment`-write verb existed;
       `photoindex tag-person` writes keywords only.
 - [x] Core verb shipped: `fha photoindex set-summary` (BUILD.md M3.5) — the write path exists.
-- [ ] **Pending the SKILL.md:** write `photo-context/SKILL.md` against this design (a separate skill-mode
-      PR). BUILD_INTERFACE.md Layer I4 stays "**designed; core verb shipped — SKILL.md pending**"; it
-      flips to shipped only when the SKILL.md lands.
+- [x] **SKILL.md written:** [`photo-context/SKILL.md`](SKILL.md) is authored against this design,
+      conforming to [`../_STANDARD.md`](../_STANDARD.md). BUILD_INTERFACE.md Layer I4 flips to **shipped**
+      alongside this note.
 
-The write verb has landed. Write `photo-context/SKILL.md` against this design, conforming to
-[`../_STANDARD.md`](../_STANDARD.md), and flip BUILD_INTERFACE.md Layer I4 to shipped.
+The write verb landed, and `photo-context/SKILL.md` has been written against this design, conforming to
+[`../_STANDARD.md`](../_STANDARD.md).
