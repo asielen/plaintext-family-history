@@ -2,6 +2,8 @@
 """
 person.py - fha person: deterministic person-field write-backs (TOOLING §3c).
 
+  fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
+                 [--birth DATE] [--death DATE] [--dry-run] [--root PATH]
   fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
   fha person relate <P-id> (--parent|--child|--sibling|--spouse) <P-id2>
                      [--subtype WORD] [--reciprocal] [--dry-run]
@@ -19,15 +21,32 @@ flag could only be changed by hand-editing a person record's YAML frontmatter.
 the human's explicit yes) flips the flag with one command.
 
 This module opens the `fha person` namespace for every deterministic
-person-record write-back that used to require a hand edit: `set-living` (the
-privacy flag), `relate` (an unsourced relationships: belief), `estimate` (the
-provisional birth:/death: fields), and `edit`/`note` (the curated profile's
-prose sections). All five share one shape: an engine (`run_*`) that validates,
+person-record write-back that used to require a hand edit: `new` (mint a
+brand-new person from nothing), `set-living` (the privacy flag), `relate` (an
+unsourced relationships: belief), `estimate` (the provisional birth:/death:
+fields), and `edit`/`note` (the curated profile's prose sections). The five
+verbs below `new` share one shape: an engine (`run_*`) that validates,
 locates the record by scanning `people/` (never the index), performs surgical
-text edits, and returns a `_lib.Result`; a thin `_cmd_*` renders it.
+text edits, and returns a `_lib.Result`; a thin `_cmd_*` renders it. `new` is
+the one exception to "locate": there is no existing record to find, so it
+mints a fresh P-id and writes a brand-new stub instead of editing one - see
+its own design-rule bullet below.
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
+- **`new` mints, it never locates.** Every verb below it resolves an EXISTING
+  record through `_locate_person`; `new` is the one entry point that creates
+  a record from nothing, and it is the parity command behind every "+ add
+  person" button (plan 17 BUILD §3.3 option b). It shares
+  `_lib.render_stub_content`/`stub_filename`/`mint_ids` with `fha stubs`, so
+  a human deliberately typing a name here and an automatic scan finding an
+  unresolved reference in `fha stubs` produce byte-identical stub records -
+  this module invents no parallel rendering logic. Every input (name, sex,
+  birth/death) is validated BEFORE `mint_ids` draws an ID, so a bad flag
+  never burns one; `--dry-run` still draws a real ID via `mint_ids` (the same
+  contract `fha stubs --from-names --dry-run` uses) so the preview's filename
+  and content match a live run exactly, even though nothing is persisted -
+  the ID is simply never referenced by any file, so it is as good as unminted.
 - **Locate by scanning, never the index.** Every verb resolves a P-id through
   `_locate_person`, which wraps `_lib.find_person_record_path` (a `people/`
   walk for the `_{P-id}.md` filename suffix), so a stale or absent
@@ -108,6 +127,11 @@ CODE MAP
                                  verb returns, factored so they cannot drift
   _locate_person               - id-shape check + scan lookup + merged-tombstone
                                  refusal; the one prelude relate/estimate/edit/note share
+  -- new --
+  _normalize_sex_input        - case-fold a --sex value onto its canonical
+                                 PERSON_SEX_VALUES spelling ('m' -> 'M')
+  run_new                      - validate, mint a P-id, render + write the
+                                 stub; the one verb that mints instead of locating
   -- relate --
   RELATION_TYPES, _RECIPROCAL_RELATION, KIN_SUBTYPES - the closed vocabularies
   _relationship_entry_exists  - idempotency test: same target id + type already there?
@@ -148,24 +172,29 @@ from _lib import (
     EXIT_WARNINGS,
     FRONT_RE,
     INDEX_SCHEMA_VERSION,
+    PERSON_SEX_VALUES,
     Result,
     configure_utf8_stdout,
     extract_bare_ids,
     find_person_record_path,
     fmt_id_display,
     format_edtf_error,
+    format_person_sex_error,
     frontmatter_edit_problem,
     frontmatter_fence_span,
     id_type_of,
     is_merged_meta,
     is_valid_edtf,
     is_valid_id,
+    mint_ids,
     normalize_date,
     normalize_id,
     read_text_exact,
     reapply_newline,
+    render_stub_content,
     resolve_root_arg,
     sqlite_cache_schema_status,
+    stub_filename,
     write_text_exact,
 )
 
@@ -589,6 +618,173 @@ def _locate_person(
         return None
 
     return path, text, before_meta, pid
+
+
+# ── new ──────────────────────────────────────────────────────────────────────
+
+def _normalize_sex_input(value: str | None) -> str | None:
+    """Case-fold a --sex value onto its exact PERSON_SEX_VALUES spelling.
+
+    `PERSON_SEX_VALUES` is the small closed set {'M', 'F', 'intersex',
+    'unknown'} - a human (or a "+ add person" form) most often reaches for the
+    single-letter values in lowercase ('m'/'f'), so this folds any
+    case-insensitive match against the whole vocabulary onto its canonical
+    spelling ('m' -> 'M', 'Unknown' -> 'unknown'). A value that matches
+    NOTHING in the vocabulary (a typo, 'Male', a blank) passes through
+    UNCHANGED, so `run_new`'s vocabulary check can quote exactly what the
+    human typed in the refusal instead of silently rewriting it into
+    something they didn't ask for.
+    """
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    for canonical in PERSON_SEX_VALUES:
+        if stripped.lower() == canonical.lower():
+            return canonical
+    return stripped
+
+
+def run_new(
+    archive_root: Path, name: str, sex: str | None = None, gender: str | None = None,
+    birth: str | None = None, death: str | None = None, dry_run: bool = False,
+) -> Result:
+    """Mint one P-id, render its stub, and write it under people/stubs/;
+    return a Result.
+
+    The one-command mint for a brand-new person - the parity command behind
+    every "+ add person" button (plan 17 BUILD §3.3 option b), and the
+    deliberate counterpart to `fha stubs`: that tool mints stubs FOR
+    references already sitting unresolved in claims or a `--from-names` list;
+    this one mints a stub a human is DELIBERATELY starting from nothing, with
+    whatever they already know. Both end up calling the exact same
+    `_lib.render_stub_content`/`stub_filename` renderers, so a stub reads
+    identically no matter which tool wrote it.
+
+    Every input is validated BEFORE `mint_ids` is ever called - a bad `--sex`
+    or an unreadable date must never burn a freshly-drawn ID on a write that
+    was always going to be refused. `--sex` is checked against
+    `PERSON_SEX_VALUES` (via `_normalize_sex_input`'s case fold) and
+    `--gender` is passed straight through as free text (SPEC §9: "identity,
+    free text; omit unless there is something to record") - neither
+    `render_stub_content` validation is re-derived here, only relied on.
+    `--birth`/`--death` follow `estimate`'s exact date rule: strict EDTF is
+    accepted as-is, loose human wording is translated by `normalize_date`
+    with a plain gloss of what was recorded, and anything neither reads
+    refuses with the two-example date error - nothing is written or minted
+    on that path either. The written vitals are PROVISIONAL, unsourced
+    estimates (SPEC §9), exactly like a stub `fha stubs` would mint - never
+    confused with a sourced claim.
+
+    `data` is {'status': 'ok'|'dry-run'|'refused', 'person_id', 'path',
+    'name'}; `changed` names the new file on a live write. `--dry-run` still
+    draws a real ID from `mint_ids` (matching the "preview shows a real
+    minted-but-unwritten id" contract `fha stubs --from-names --dry-run`
+    already uses) so the preview's filename and content are exactly what a
+    live run would produce; the ID is simply never written to any file, so it
+    is as good as never minted. The never-overwrite guard below `mint_ids` is
+    a belt-and-braces check: `mint_ids` collision-scans the whole tree before
+    handing back an ID, so reaching an existing file at the fresh ID's target
+    path should be next to impossible - but "next to impossible" still gets a
+    plain refusal instead of a silent overwrite.
+    """
+    result = Result(data={'status': None, 'person_id': None, 'path': None, 'name': None})
+
+    clean_name = str(name or '').strip()
+    if not clean_name:
+        return _refuse_result(
+            result, 'refused',
+            'a name is required to mint a new person - e.g. '
+            '`fha person new "Jane Doe"`. Nothing was minted.')
+    result.data['name'] = clean_name
+
+    sex_clean = _normalize_sex_input(sex)
+    if sex_clean is not None and sex_clean not in PERSON_SEX_VALUES:
+        return _refuse_result(result, 'refused', format_person_sex_error(sex))
+
+    fields: dict[str, str] = {}   # field -> target EDTF ('birth'/'death' only ever added)
+    gloss: dict[str, str] = {}    # field -> plain-language note (only when normalized)
+    for field, raw in (('birth', birth), ('death', death)):
+        if raw is None:
+            continue
+        raw_str = str(raw).strip()
+        if not raw_str:
+            continue   # a blank flag value is the same as not giving the flag
+        if is_valid_edtf(raw_str):
+            fields[field] = raw_str
+            continue
+        normalized = normalize_date(raw_str)
+        if normalized is None:
+            return _refuse_result(result, 'refused', format_edtf_error(raw_str, field=field))
+        fields[field] = normalized
+        if normalized != raw_str:
+            gloss[field] = _edtf_gloss(normalized)
+
+    stubs_dir = archive_root / 'people' / 'stubs'
+    pid = mint_ids('P', 1, archive_root)[0].lower()
+    filename = stub_filename(clean_name, pid)
+    path = stubs_dir / filename
+    result.data['person_id'] = fmt_id_display(pid)
+    result.data['path'] = str(path)
+
+    if path.exists():
+        return _refuse_result(
+            result, 'refused',
+            f'{filename} already exists at {path}, and a freshly minted id '
+            'should never collide with an existing file. Run '
+            f'`fha find {fmt_id_display(pid)}` to see what is there, then '
+            'try again. Nothing was written.')
+
+    content = render_stub_content(
+        pid, clean_name, sex=sex_clean, gender=gender,
+        birth=fields.get('birth'), death=fields.get('death'))
+
+    def _add_new_messages() -> None:
+        for field, note in gloss.items():
+            result.add('info', f'recorded {field} as {fields[field]} - {note}.')
+        if fields:
+            described = ' and '.join(f'{f}: {fields[f]}' for f in fields)
+            result.add('info',
+                       f'{described} - recorded as unsourced family knowledge '
+                       'until a record backs it up; `fha lint` will keep '
+                       'listing it as needing a source until an accepted '
+                       'birth/death claim supersedes it.')
+        result.add('info',
+                   f'Next: `fha person relate {fmt_id_display(pid)} '
+                   '--parent|--child|--sibling|--spouse <P-id2>` to tie '
+                   f'{clean_name} to family.')
+        result.add('info',
+                   f'Next: `fha find {fmt_id_display(pid)}` to confirm the new record.',
+                   next_step=f'fha find {fmt_id_display(pid)}')
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info',
+                   f'[dry-run] Would create {fmt_id_display(pid)} ({clean_name}) '
+                   f'- people/stubs/{filename}.')
+        _add_new_messages()
+        for dline in difflib.unified_diff(
+            [], content.splitlines(), fromfile='(new file)',
+            tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        stubs_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8')
+    except OSError as e:
+        return _refuse_result(
+            result, 'refused',
+            f'cannot write {path}: {e}. Check the folder is writable, then retry.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info',
+               f'Created {fmt_id_display(pid)} ({clean_name}) - people/stubs/{filename}.',
+               path=path)
+    _add_new_messages()
+    return result
 
 
 # ── relate ───────────────────────────────────────────────────────────────────
@@ -1523,6 +1719,16 @@ def _emit(result: Result) -> int:
     return result.exit_code
 
 
+def _cmd_new(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person new')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_new(
+        archive_root, name=args.name, sex=args.sex, gender=args.gender,
+        birth=args.birth, death=args.death,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _cmd_set_living(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha person set-living')
     if archive_root is None:
@@ -1595,16 +1801,34 @@ def _make_group_help(parser: argparse.ArgumentParser):
 _CLI_DESCRIPTION = """\
 Update a person's record directly - the deterministic person-field write-backs.
 
+  fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
   fha person set-living <P-id> true|false|unknown
   fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>
   fha person estimate <P-id> --birth DATE --death DATE
   fha person edit <P-id> --section biography|stories|research --text TEXT
   fha person note <P-id> --section stories|research --text TEXT
 
-set-living marks a person as living, passed away, or unknown (drives export
-privacy). relate jots an unsourced family-tie belief. estimate writes a
-provisional, unsourced birth/death date. edit and note add or replace prose
-in the curated profile's Biography, Stories, and Research Notes sections."""
+new mints a brand-new person and writes their stub record. set-living marks
+a person as living, passed away, or unknown (drives export privacy). relate
+jots an unsourced family-tie belief. estimate writes a provisional, unsourced
+birth/death date. edit and note add or replace prose in the curated
+profile's Biography, Stories, and Research Notes sections."""
+
+_NEW_DESCRIPTION = """\
+Mint a brand-new person - the one-command "+ add person" mint.
+
+  fha person new "Jane Doe"
+  fha person new "Jane Doe" --sex F --birth 1870 --death 1940
+  fha person new "Cortez" --gender "two-spirit"
+
+Mints one P-id, writes a stub under people/stubs/, and reports where it
+landed. --sex accepts M, F, intersex, or unknown (case-insensitive for M/F).
+--gender is free text - omit it unless there is something to record.
+--birth/--death record PROVISIONAL, unsourced estimates: the archive's exact
+date form (1870, 1870-06) or plain words ("circa 1870", "before 1940") -
+loose wording is translated for you. A sourced birth/death claim always
+supersedes these later (`fha claim`). Use `fha person relate` next to tie
+the new person to family, and `fha find` to confirm the record."""
 
 _SET_LIVING_DESCRIPTION = """\
 Mark one person as living, passed away, or unknown - the privacy switch.
@@ -1615,6 +1839,34 @@ Mark one person as living, passed away, or unknown - the privacy switch.
 
 Changes exactly one line of the person's record and touches nothing else.
 Preview the change first with --dry-run."""
+
+
+def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the new verb on a group subparser (shared by both mains)."""
+    nw = sub.add_parser(
+        'new',
+        help='Mint a brand-new person and write their stub record.',
+        description=_NEW_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nw.add_argument('name', metavar='NAME',
+                    help='The person\'s full name, e.g. "Jane Doe".')
+    # No choices= here (unlike set-living's `value`): an unrecognised sex
+    # should refuse with run_new's plain, gender-glossed message
+    # (_lib.format_person_sex_error), not argparse's bare "invalid choice" text.
+    nw.add_argument('--sex', metavar='M|F|intersex|unknown',
+                    help='Birth-assigned sex, if known (case-insensitive for M/F).')
+    nw.add_argument('--gender', metavar='TEXT',
+                    help='Free-text gender/identity - omit unless there is something to record.')
+    nw.add_argument('--birth', metavar='DATE',
+                    help='A provisional, unsourced birth date or estimate.')
+    nw.add_argument('--death', metavar='DATE',
+                    help='A provisional, unsourced death date or estimate.')
+    nw.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    nw.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the new record; write and mint nothing persistent.')
+    nw.set_defaults(func=_cmd_new)
 
 
 def _add_set_living_arguments(sub: argparse._SubParsersAction) -> None:
@@ -1799,6 +2051,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = p.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
+    _add_new_arguments(sub)
     _add_set_living_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
@@ -1816,6 +2069,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = parser.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
+    _add_new_arguments(sub)
     _add_set_living_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)

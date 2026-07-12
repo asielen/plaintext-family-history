@@ -23,6 +23,20 @@ the same five-way check: happy path, --dry-run writes nothing, a missing
 person exits 1 with a `fha find` next step, a merged tombstone refuses, and a
 CRLF-authored record round-trips with its line endings intact.
 
+Also covers `new` (plan 17 BUILD §3.3 option b, the "+ add person" parity
+command): the one-command mint of a brand-new stub. Unlike every verb above,
+`new` never locates an existing record - it mints a fresh P-id and writes a
+stub via the same `_lib.render_stub_content`/`stub_filename` renderers `fha
+stubs` uses. Covered: happy path frontmatter (tier: stub, living: unknown),
+each of sex/gender/birth/death individually and combined, the m -> M sex
+case fold, the plain refusal for an unrecognised sex (naming the valid
+values, no traceback), loose birth wording normalized with a plain gloss,
+a nonsense date refused with nothing written or minted, --dry-run writing
+nothing (but still drawing a real, unwritten id - matching `fha stubs
+--from-names --dry-run`), the mononym filename form the shared slug helper
+produces, the never-overwrite guard (forced via a monkeypatched `mint_ids`),
+and CLI wiring through `fha.main(['person', 'new', ...])`.
+
 Fixtures only (AGENTS_TOOLING §5): everything runs against temp trees or a
 copy of example-archive; the real archive is never touched.
 """
@@ -35,6 +49,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -46,9 +61,11 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     INDEX_SCHEMA_VERSION,
+    PERSON_SEX_VALUES,
     find_person_record_path,
     load_fha_yaml,
     read_record,
+    stub_filename,
 )
 
 EXAMPLE = ROOT / 'example-archive'
@@ -538,6 +555,169 @@ class FindPersonRecordPathTests(unittest.TestCase):
 
     def test_missing_returns_none(self) -> None:
         self.assertIsNone(find_person_record_path(self.root, 'P-zzzzzzzzzz'))
+
+
+class NewTests(unittest.TestCase):
+    """fha person new: mint one P-id, write its stub under people/stubs/.
+
+    Unlike every other verb in this module, `new` never locates an existing
+    record - there is nothing to find yet - so these tests do not reuse the
+    merged-tombstone/missing-person fixtures the other verbs share.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.stubs_dir = self.root / 'people' / 'stubs'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _existing_stub_names(self) -> set[str]:
+        return {p.name for p in self.stubs_dir.iterdir()}
+
+    def test_happy_path_writes_stub_with_expected_frontmatter(self) -> None:
+        before = self._existing_stub_names()
+        result = person.run_new(self.root, 'Jane Doe')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'ok')
+        self.assertEqual(result.data['name'], 'Jane Doe')
+        path = Path(result.data['path'])
+        self.assertTrue(path.exists())
+        self.assertEqual(self._existing_stub_names() - before, {path.name})
+        self.assertEqual(result.changed, [str(path)])
+        rec = read_record(path)
+        self.assertEqual(rec['parse_errors'], [])
+        meta = rec['meta']
+        self.assertEqual(meta['name'], 'Jane Doe')
+        self.assertEqual(meta['tier'], 'stub')
+        self.assertEqual(str(meta['living']), 'unknown')
+        self.assertEqual(str(meta['id']).lower(), result.data['person_id'].lower())
+
+    def test_each_option_individually(self) -> None:
+        cases = [
+            ({'sex': 'F'}, {'sex': 'F'}),
+            ({'gender': 'non-binary'}, {'gender': 'non-binary'}),
+            ({'birth': '1870'}, {'birth': '1870'}),
+            ({'death': '1940'}, {'death': '1940'}),
+        ]
+        for kwargs, expect in cases:
+            with self.subTest(kwargs=kwargs):
+                result = person.run_new(self.root, 'Option Test', **kwargs)
+                self.assertEqual(result.exit_code, EXIT_CLEAN)
+                meta = read_record(Path(result.data['path']))['meta']
+                for key, value in expect.items():
+                    self.assertEqual(str(meta[key]), value)
+
+    def test_all_options_combined(self) -> None:
+        result = person.run_new(
+            self.root, 'Jordan Rivers', sex='intersex', gender='non-binary',
+            birth='1870', death='1940')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        meta = read_record(Path(result.data['path']))['meta']
+        self.assertEqual(meta['sex'], 'intersex')
+        self.assertEqual(meta['gender'], 'non-binary')
+        self.assertEqual(str(meta['birth']), '1870')
+        self.assertEqual(str(meta['death']), '1940')
+
+    def test_sex_case_folded_lowercase_m_to_uppercase(self) -> None:
+        result = person.run_new(self.root, 'Alex Smith', sex='m')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        meta = read_record(Path(result.data['path']))['meta']
+        self.assertEqual(meta['sex'], 'M')
+
+    def test_invalid_sex_refused_plainly_with_no_write(self) -> None:
+        before = self._existing_stub_names()
+        result = person.run_new(self.root, 'Pat Doe', sex='female')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        text = result.messages[0].text
+        self.assertIn('gender', text)   # the sex-vs-gender gloss
+        for value in sorted(PERSON_SEX_VALUES):
+            self.assertIn(value, text)
+        self.assertEqual(self._existing_stub_names(), before)   # nothing minted or written
+
+    def test_loose_birth_normalized_with_message(self) -> None:
+        result = person.run_new(self.root, 'Rose Cole', birth='circa 1870')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        meta = read_record(Path(result.data['path']))['meta']
+        self.assertEqual(str(meta['birth']), '1870~')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('recorded birth as 1870~ - about 1870', text)
+
+    def test_nonsense_date_refused_without_write(self) -> None:
+        before = self._existing_stub_names()
+        result = person.run_new(self.root, 'Nonsense Person', birth='blorptown')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('1880', result.messages[0].text)
+        self.assertIn('about 1880', result.messages[0].text)
+        self.assertEqual(self._existing_stub_names(), before)
+
+    def test_second_date_invalid_writes_nothing(self) -> None:
+        # Mirrors estimate's rule: both dates are validated before anything
+        # is minted, so a bad second date never leaves a half-written stub.
+        before = self._existing_stub_names()
+        result = person.run_new(self.root, 'Two Dates', birth='1870', death='nonsense-date')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(self._existing_stub_names(), before)
+
+    def test_dry_run_writes_nothing_but_previews_content(self) -> None:
+        before = self._existing_stub_names()
+        result = person.run_new(self.root, 'Preview Person', birth='1870', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self._existing_stub_names(), before)
+        text = '\n'.join(m.text for m in result.messages)
+        self.assertIn('+id:', text)
+        self.assertIn('+name: Preview Person', text)
+        self.assertIn('+tier: stub', text)
+        self.assertIn('+birth: 1870', text)
+        self.assertIn('[dry-run] No file written', text)
+        # A real (but unwritten) id is still reported in the preview - the
+        # same "minted-but-unwritten id" contract stubs.py's dry-run uses.
+        self.assertIsNotNone(result.data['person_id'])
+
+    def test_mononym_filename_form(self) -> None:
+        result = person.run_new(self.root, 'Cher')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        path = Path(result.data['path'])
+        # `fha person new` passes the name straight through the SHARED
+        # `_lib.stub_filename` helper rather than inventing its own mononym
+        # logic (task contract): a single-word name currently slugs to an
+        # 'unknown' surname component (`_lib.stub_slug_name`), giving
+        # unknown__cher_{P-id}.md - not the SPEC §13 leading-double-underscore
+        # form a hand-filed mononym (e.g. __caesar_P-....md) uses. That is
+        # existing, out-of-scope `_lib.py` behavior this test pins down.
+        self.assertTrue(path.name.startswith('unknown__cher_'))
+        self.assertTrue(path.name.endswith('.md'))
+
+    def test_never_overwrites_an_existing_target(self) -> None:
+        # mint_ids' own collision scan makes a REAL collision astronomically
+        # unlikely, so the guard is exercised directly: monkeypatch mint_ids
+        # to hand back an id whose target stub file already exists.
+        pid = 'P-eeeeeeeeee'
+        filename = stub_filename('Taken Name', pid.lower())
+        target = self.stubs_dir / filename
+        target.write_text('pre-existing content\n', encoding='utf-8')
+        with mock.patch.object(person, 'mint_ids', return_value=[pid]):
+            result = person.run_new(self.root, 'Taken Name')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertEqual(target.read_text(encoding='utf-8'), 'pre-existing content\n')
+
+    def test_blank_name_refused(self) -> None:
+        before = self._existing_stub_names()
+        result = person.run_new(self.root, '   ')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertEqual(self._existing_stub_names(), before)
+
+    def test_gender_passed_through_verbatim(self) -> None:
+        result = person.run_new(self.root, 'Sam Rivers', gender='two-spirit')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = Path(result.data['path']).read_text(encoding='utf-8')
+        self.assertIn('gender: two-spirit\n', text)
 
 
 class RelateTests(unittest.TestCase):
@@ -1120,7 +1300,7 @@ class NoteTests(unittest.TestCase):
 
 
 class PersonNewVerbsCliTests(unittest.TestCase):
-    """CLI wiring smoke tests for relate/estimate/edit/note via fha.main."""
+    """CLI wiring smoke tests for new/relate/estimate/edit/note via fha.main."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -1137,6 +1317,47 @@ class PersonNewVerbsCliTests(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = fha.main(argv)
         return rc, out.getvalue(), err.getvalue()
+
+    def test_new_cli_writes(self) -> None:
+        stubs_dir = self.root / 'people' / 'stubs'
+        before = {p.name for p in stubs_dir.iterdir()}
+        rc, out, _ = self._run(
+            ['person', 'new', 'Jamie Fox', '--sex', 'f', '--birth', '1870',
+             '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        self.assertIn('Created', out)
+        new_files = {p.name for p in stubs_dir.iterdir()} - before
+        self.assertEqual(len(new_files), 1)
+        text = (stubs_dir / new_files.pop()).read_text(encoding='utf-8')
+        self.assertIn('name: Jamie Fox', text)
+        self.assertIn('sex: F', text)
+        self.assertIn('birth: 1870', text)
+
+    def test_new_requires_name_at_cli(self) -> None:
+        import fha
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                fha.main(['person', 'new', '--root', str(self.root)])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_new_dry_run_cli_writes_nothing(self) -> None:
+        stubs_dir = self.root / 'people' / 'stubs'
+        before = {p.name for p in stubs_dir.iterdir()}
+        rc, out, _ = self._run(
+            ['person', 'new', 'Preview Person', '--dry-run', '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        self.assertIn('[dry-run]', out)
+        self.assertEqual({p.name for p in stubs_dir.iterdir()}, before)
+
+    def test_new_invalid_sex_at_cli_is_a_plain_refusal_not_argparse_error(self) -> None:
+        # --sex has no argparse choices= (the plain-language, gender-glossed
+        # refusal comes from run_new instead) - this is a normal exit 3, not
+        # an argparse exit 2.
+        rc, out, err = self._run(
+            ['person', 'new', 'Pat Doe', '--sex', 'female', '--root', str(self.root)])
+        self.assertEqual(rc, 3)
+        self.assertIn('gender', err)
 
     def test_relate_cli_writes(self) -> None:
         rc, out, _ = self._run(
@@ -1225,10 +1446,10 @@ class PersonNewVerbsCliTests(unittest.TestCase):
                 fha.main(['person', 'note', PID, '--section', 'research', '--root', str(self.root)])
         self.assertEqual(cm.exception.code, 2)
 
-    def test_group_help_lists_all_five_verbs(self) -> None:
+    def test_group_help_lists_all_six_verbs(self) -> None:
         rc, out, _ = self._run(['person', '--root', str(self.root)])
         self.assertEqual(rc, 2)
-        for verb in ('set-living', 'relate', 'estimate', 'edit', 'note'):
+        for verb in ('new', 'set-living', 'relate', 'estimate', 'edit', 'note'):
             self.assertIn(verb, out)
 
 
