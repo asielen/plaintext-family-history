@@ -984,6 +984,61 @@ class SearchJsonHitShapeTests(unittest.TestCase):
         self.assertEqual(hit['detail'], 'Kansas, USA')
 
 
+class SearchJsonPlaceAltNameTests(unittest.TestCase):
+    """The place_names alt-name match in `_ranked_search` used to run one
+    extra `SELECT ... FROM places WHERE id = ?` per matching row - an N+1
+    now replaced by a single JOIN. Covers the case the old per-row code was
+    most likely to get wrong: MULTIPLE alt-name hits resolving to their own
+    (different) place, plus a stale alt_name row whose place no longer
+    exists."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        self.conn.execute(
+            "INSERT INTO places(id, name, hierarchy) VALUES "
+            "('l-1111111111', 'Fairview', 'Kansas, USA')"
+        )
+        self.conn.execute(
+            "INSERT INTO places(id, name, hierarchy) VALUES "
+            "('l-2222222222', 'Fairview Township', 'Brown County, Kansas, USA')"
+        )
+        self.conn.execute(
+            "INSERT INTO place_names(place_id, alt_name) VALUES "
+            "('l-1111111111', 'Fairview Corners')"
+        )
+        self.conn.execute(
+            "INSERT INTO place_names(place_id, alt_name) VALUES "
+            "('l-2222222222', 'Fairview Corners Township')"
+        )
+        # A stale alt_name row for a place that no longer exists - the JOIN
+        # must silently drop it, exactly like the old per-row lookup's
+        # `if place_row is None: continue`.
+        self.conn.execute(
+            "INSERT INTO place_names(place_id, alt_name) VALUES "
+            "('l-9999999999', 'Fairview Corners Ghost')"
+        )
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_multiple_alt_name_matches_resolve_to_their_own_place(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Fairview Corners')
+        by_id = {r['id']: r for r in results}
+        self.assertEqual(set(by_id), {'l-1111111111', 'l-2222222222'})
+        self.assertEqual(by_id['l-1111111111']['label'], 'Fairview')
+        self.assertEqual(by_id['l-1111111111']['detail'], 'Kansas, USA')
+        self.assertEqual(by_id['l-2222222222']['label'], 'Fairview Township')
+        self.assertEqual(by_id['l-2222222222']['detail'], 'Brown County, Kansas, USA')
+
+    def test_alt_name_row_for_a_deleted_place_is_dropped_not_crashed(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Fairview Corners Ghost')
+        self.assertEqual(results, [])
+
+
 class SearchJsonIdLookupTests(unittest.TestCase):
     """A bare valid ID short-circuits straight to that record - the
     reference-resolver's 'I already have an ID' path (plan-17 point 1)."""

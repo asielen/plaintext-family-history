@@ -41,7 +41,11 @@ Code map:
   _load_site_module         - import tools/site.py under a private name
   run_serve_preflight       - engine: archive/jinja/index/port checks -> Result
   ServeState                - shared per-process state (config, token, lock, dirs)
+  _memoized / _MEMO_TTL     - generic short-TTL cache for the three render-time
+                              memos below, guarded by state._memo_lock (NOT the
+                              mutation lock - see _memoized's docstring)
   snapshot_is_stale / ensure_snapshot / invalidate_snapshot - refresh-on-use
+  _cached_review_count / _cached_inbox_count / _counts - memoized queue counts
   _workbench_context        - the bar/CSRF/counts baked into every page
   gather_review / gather_inbox - the two serve-rendered pages' data
   VERBS + _verb_*           - the /api/run parity table (the one mutation door)
@@ -62,6 +66,7 @@ import json
 import mimetypes
 import os
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -75,10 +80,12 @@ from urllib.parse import parse_qs, unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (  # noqa: E402
+    ASSET_ROOT_ALIASES,
     EXIT_CLEAN,
     EXIT_FAILURE,
     FhaConfigError,
     Result,
+    load_site_module,
     fmt_id_display,
     id_type_of,
     is_valid_id,
@@ -111,29 +118,20 @@ except ImportError:  # pragma: no cover - preflight reports this plainly
     jinja2 = None
 
 DEFAULT_PORT = 8765
-_ASSET_ALIASES = ('photos', 'documents', 'inbox')
+_ASSET_ALIASES = ASSET_ROOT_ALIASES   # one shared constant with site.py's href writer
 _MAX_UPLOAD_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB
 _TEMPLATES_DIR = Path(__file__).parent / 'templates'
+_STREAM_CHUNK_SIZE = 64 * 1024   # 64 KiB - amortizes syscall overhead without
+                                 # holding a large per-request buffer in RAM.
 
 
 def _load_site_module():
     """Import tools/site.py under a private module name.
 
-    site.py's command is `fha site`, so its file must be tools/site.py, but the
-    stem `site` collides with Python's stdlib `site` (already in sys.modules from
-    interpreter startup). Load the file by path under the alias `fha_site`, the
-    same trick fha.py uses; do not import fha from serve."""
-    import importlib.util
-
-    mod = sys.modules.get('fha_site')
-    if mod is not None:
-        return mod
-    path = Path(__file__).parent / 'site.py'
-    spec = importlib.util.spec_from_file_location('fha_site', path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules['fha_site'] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    Thin wrapper over the one canonical loader (`_lib.load_site_module`, which
+    documents the stdlib `site` name-collision quirk); fha.py delegates to the
+    same helper, so the workaround has exactly one home."""
+    return load_site_module()
 
 
 # ── Preflight ────────────────────────────────────────────────────────────────
@@ -222,7 +220,13 @@ class ServeState:
     The single `lock` serializes every mutation: a write, its reindex, and the
     snapshot invalidation all happen while one thread holds it, and the snapshot
     rebuild takes the same lock, so a rebuild can never interleave with a write
-    (contract SS5.6)."""
+    (contract SS5.6).
+
+    `_memo_lock` is a SEPARATE, smaller lock guarding three short-TTL caches
+    read on every page GET: the record-tree staleness probe (`_mtime_memo`)
+    and the review/inbox queue counts (`_review_count_memo`,
+    `_inbox_count_memo`) - see `_memoized`'s docstring for why these are not
+    just folded into `lock`. Each memo slot is `(monotonic_ts, value) | None`."""
 
     def __init__(self, archive_root: Path, fha_config: dict, port: int):
         self.archive_root = archive_root
@@ -237,6 +241,10 @@ class ServeState:
             loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
             autoescape=jinja2.select_autoescape(['html']),
         )
+        self._memo_lock = threading.Lock()
+        self._mtime_memo: tuple[float, float] | None = None
+        self._review_count_memo: tuple[float, int] | None = None
+        self._inbox_count_memo: tuple[float, int] | None = None
 
     @property
     def site_title(self) -> str:
@@ -299,6 +307,59 @@ def _newest_input_mtime(state: ServeState) -> float:
     return newest
 
 
+# TTL for the small render-time memos below (staleness probe + both queue
+# counts). A page GET can land seconds after a hand-edit made outside serve
+# (a text editor save, a git checkout) - the memo trades that gap for
+# collapsing every request within the window onto one real recompute. 1.0s
+# was picked to sit comfortably under a human's click-to-click cadence: a
+# reload right after your own edit still shows it (that path also goes
+# through `invalidate_snapshot`, which drops the memo immediately and does
+# not wait out the TTL at all - see below); the TTL only covers an edit made
+# by something OTHER than this serve session.
+_MEMO_TTL = 1.0
+
+
+def _memoized(state: ServeState, attr: str, compute) -> object:
+    """Generic TTL memo shared by the staleness probe and the review/inbox
+    counts (`_newest_input_mtime_cached`, `_cached_review_count`,
+    `_cached_inbox_count`). `attr` names one of ServeState's `_*_memo` slots
+    (each `(monotonic_ts, value) | None`); `compute` is called with no
+    arguments on a cache miss.
+
+    Why `state._memo_lock` and not `state.lock`: `state.lock` is held for an
+    entire mutate -> reindex -> snapshot-invalidate sequence (an engine call,
+    a full index rebuild - potentially seconds). These memos are read on
+    EVERY GET, including ones that never touch a mutation; routing them
+    through `state.lock` would stall every concurrent page render behind
+    whatever POST happens to be mid-write, for no benefit (nothing here
+    conflicts with a write - the memo is read-mostly derived data, not the
+    write path itself). `_memo_lock` is only ever held for the length of one
+    dict/tuple read or one write-back, NEVER around `compute()` - so the
+    worst a race at the exact TTL boundary can cost is a duplicate
+    recompute (two threads both miss the cache and both walk/query), never a
+    torn read of a half-written memo tuple."""
+    with state._memo_lock:
+        cached = getattr(state, attr)
+        now = time.monotonic()
+        if cached is not None and (now - cached[0]) < _MEMO_TTL:
+            return cached[1]
+    value = compute()
+    with state._memo_lock:
+        setattr(state, attr, (time.monotonic(), value))
+    return value
+
+
+def _newest_input_mtime_cached(state: ServeState) -> float:
+    """Memoized `_newest_input_mtime` (see `_memoized`/`_MEMO_TTL`).
+
+    Without this, `snapshot_is_stale` walks the full record tree on EVERY
+    page GET, and TWICE on a stale hit (`ensure_snapshot` calls it once
+    before taking the lock, then again just inside the lock for the
+    double-check). The memo collapses that to at most one real walk per TTL
+    window, shared by every thread and both call sites."""
+    return _memoized(state, '_mtime_memo', lambda: _newest_input_mtime(state))
+
+
 def snapshot_is_stale(state: ServeState) -> bool:
     """True when the snapshot is missing, older than the newest record input,
     or built by a DIFFERENT serve process. The last check matters because the
@@ -315,15 +376,27 @@ def snapshot_is_stale(state: ServeState) -> bool:
         return True
     if marker_session != state.csrf_token:
         return True
-    return _newest_input_mtime(state) > built
+    return _newest_input_mtime_cached(state) > built
 
 
 def invalidate_snapshot(state: ServeState) -> None:
-    """Delete the build marker so the next page GET rebuilds. Caller holds the lock."""
+    """Delete the build marker so the next page GET rebuilds, and drop every
+    render-time memo (the staleness probe + both queue counts). Caller holds
+    the lock.
+
+    Dropping the memos here (rather than letting the TTL expire on its own)
+    matters for a write SERVE ITSELF just made: the record is already on disk
+    by the time this runs, and the human who just clicked Apply expects the
+    very next page load to reflect it - not up to `_MEMO_TTL` seconds of
+    staleness on top of a change they just watched happen."""
     try:
         state.marker.unlink()
     except FileNotFoundError:
         pass
+    with state._memo_lock:
+        state._mtime_memo = None
+        state._review_count_memo = None
+        state._inbox_count_memo = None
 
 
 def ensure_snapshot(state: ServeState) -> None:
@@ -355,22 +428,54 @@ def ensure_snapshot(state: ServeState) -> None:
 
 # ── Page context + counts ───────────────────────────────────────────────────────
 
+def _cached_review_count(state: ServeState) -> int:
+    """Memoized review-queue count (see `_memoized`). `gather_review` runs a
+    full index query plus xref/cooccur detection - expensive enough that
+    paying for it on every GET (the servebar count) on top of a page that
+    already gathered the same items (the /review route itself) was 2-3x the
+    real cost of one page load. A caller that already has the items in hand
+    should pass its own count straight into `_workbench_context` instead of
+    coming through here - see that function's `review_count` parameter."""
+    def compute() -> int:
+        try:
+            return len(gather_review(state)['items'])
+        except Exception:
+            return 0
+    return _memoized(state, '_review_count_memo', compute)
+
+
+def _cached_inbox_count(state: ServeState) -> int:
+    """Memoized inbox count - the `gather_inbox` counterpart of
+    `_cached_review_count` (see its docstring)."""
+    def compute() -> int:
+        try:
+            return len(gather_inbox(state)['items'])
+        except Exception:
+            return 0
+    return _memoized(state, '_inbox_count_memo', compute)
+
+
 def _counts(state: ServeState) -> tuple[int, int]:
-    """(review_count, inbox_count) for the bar. Best-effort - a failure yields 0
-    rather than blocking a render."""
-    try:
-        review = len(gather_review(state)['items'])
-    except Exception:
-        review = 0
-    try:
-        inbox = len(gather_inbox(state)['items'])
-    except Exception:
-        inbox = 0
-    return review, inbox
+    """(review_count, inbox_count) for the bar - each memoized independently
+    so a caller that already has one half in hand (see `_workbench_context`)
+    can skip just that half's recompute rather than pay for both again."""
+    return _cached_review_count(state), _cached_inbox_count(state)
 
 
-def _workbench_context(state: ServeState) -> dict:
-    review_count, inbox_count = _counts(state)
+def _workbench_context(state: ServeState, *, review_count: int | None = None,
+                       inbox_count: int | None = None) -> dict:
+    """The bar/CSRF/counts baked into every rendered page.
+
+    `review_count`/`inbox_count` let a caller that already gathered one
+    queue's items this request (the /review and /inbox routes themselves,
+    which need the full item list anyway to render their own content) pass
+    that count straight through instead of triggering a second
+    gather_review/gather_inbox via the cache - only the OTHER, not-already-
+    in-hand half still goes through `_cached_review_count`/`_cached_inbox_count`."""
+    if review_count is None:
+        review_count = _cached_review_count(state)
+    if inbox_count is None:
+        inbox_count = _cached_inbox_count(state)
     return {
         'workbench': True,
         'csrf_token': state.csrf_token,
@@ -1517,6 +1622,15 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
+        if self.close_connection:
+            # A caller (currently only `_read_body`'s over-cap/unparseable
+            # path) already decided this socket must not be reused for
+            # keep-alive - setting the flag alone stops THIS server's loop
+            # from reading another request off it (see BaseHTTPRequestHandler
+            # .handle), but the client also needs the header to know not to
+            # try. Sending it here, once, covers every 4xx/5xx this method
+            # renders rather than repeating the header at each call site.
+            self.send_header('Connection', 'close')
         self.end_headers()
         if self.command != 'HEAD':
             self.wfile.write(body)
@@ -1558,11 +1672,18 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if path == '/review':
                 ensure_snapshot(self.state)
-                self._render_page('review.html', gather_review(self.state), title='Review')
+                # This gather IS the servebar's review count - thread it
+                # through instead of letting _workbench_context trigger a
+                # second gather_review via the cache (see _render_page).
+                review_data = gather_review(self.state)
+                self._render_page('review.html', review_data, title='Review',
+                                  review_count=len(review_data['items']))
                 return
             if path == '/inbox':
                 ensure_snapshot(self.state)
-                self._render_page('inbox.html', gather_inbox(self.state), title='Inbox')
+                inbox_data = gather_inbox(self.state)
+                self._render_page('inbox.html', inbox_data, title='Inbox',
+                                  inbox_count=len(inbox_data['items']))
                 return
             if path.startswith('/api/'):
                 self._not_found()
@@ -1606,11 +1727,27 @@ class _Handler(BaseHTTPRequestHandler):
     # -- handlers --
 
     def _read_body(self, cap: int = _MAX_UPLOAD_BYTES) -> bytes | None:
+        """Read exactly Content-Length bytes, or None when the declared
+        length is unusable (unparseable) or over `cap`.
+
+        A `None` return is always followed by the caller sending a 4xx with
+        NOTHING drained from the socket. On HTTP/1.1 keep-alive that is a
+        desync bug: the next request `handle_one_request` reads off this same
+        connection would start mid-body of the one just refused, and every
+        request after that misreads too. Actually draining an over-cap body
+        (which this cap exists precisely to avoid reading - up to a GiB) is
+        worse than the fix: `self.close_connection = True` tells
+        `BaseHTTPRequestHandler.handle`'s loop to close the socket after this
+        response instead of waiting for another request on it, and `_send`
+        mirrors that with a `Connection: close` header so the CLIENT also
+        knows not to reuse it."""
         try:
             length = int(self.headers.get('Content-Length') or 0)
         except ValueError:
+            self.close_connection = True
             return None
         if length < 0 or length > cap:
+            self.close_connection = True
             return None
         return self.rfile.read(length) if length else b''
 
@@ -1664,6 +1801,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(code, payload)
 
     def _handle_reindex(self) -> None:
+        # This route reads no fields from a body - but unlike the other POST
+        # handlers it never called `_read_body` at all, so any body the
+        # caller sent (a stray Content-Length from a generic fetch()
+        # wrapper) was left undrained on the socket, desyncing the next
+        # request on the same keep-alive connection (see `_read_body`'s
+        # docstring). A small bound is enough since none is ever expected.
+        body = self._read_body(cap=64 * 1024)
+        if body is None:
+            self._send_json(413, _msg_payload(False, 'request too large.'))
+            return
         with self.state.lock:
             index_mod.build_index(self.state.archive_root, self.state.fha_config)
             invalidate_snapshot(self.state)
@@ -1692,16 +1839,42 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_file(resolved)
 
     def _send_file(self, path: Path) -> None:
+        """Stream `path` to the client in `_STREAM_CHUNK_SIZE` chunks instead
+        of reading it whole into memory first - a large scan/video used to be
+        fully buffered in RAM (and off the socket) before a single byte went
+        out. Content-Length still comes from a `stat()`, so the client gets
+        an accurate length up front exactly as before; HEAD still sends
+        headers only, no chunks. No Range/206 support this pass - a
+        seek-based partial-content responder is its own feature, not a
+        one-line addition to a chunked GET."""
         ctype, _ = mimetypes.guess_type(str(path))
         try:
-            data = path.read_bytes()
+            size = path.stat().st_size
+            f = path.open('rb')
         except OSError:
             self._not_found()
             return
-        self._send(200, data, ctype or 'application/octet-stream')
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', ctype or 'application/octet-stream')
+            self.send_header('Content-Length', str(size))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            if self.command != 'HEAD':
+                try:
+                    shutil.copyfileobj(f, self.wfile, _STREAM_CHUNK_SIZE)
+                except (ConnectionAbortedError, BrokenPipeError):
+                    # The client went away mid-download (closed tab,
+                    # cancelled fetch) - not a server error, nothing to log
+                    # or retry.
+                    pass
+        finally:
+            f.close()
 
-    def _render_page(self, template: str, data: dict, *, title: str) -> None:
-        ctx = _workbench_context(self.state)
+    def _render_page(self, template: str, data: dict, *, title: str,
+                     review_count: int | None = None, inbox_count: int | None = None) -> None:
+        ctx = _workbench_context(self.state, review_count=review_count, inbox_count=inbox_count)
         ctx.update(data)
         ctx['page_title'] = title
         try:

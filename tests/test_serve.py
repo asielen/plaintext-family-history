@@ -139,12 +139,25 @@ class HomeAndChromeTests(_ServeCase):
         self.assertNotIn('src="..\\', txt)
 
     def test_review_and_inbox_render(self):
+        # 'Review'/'Inbox' appear in the servebar nav on every page, so those
+        # words alone cannot tell a working queue render from a broken one -
+        # assert the actual queue-item markup and a real fixture claim's
+        # value/inbox item name instead.
+        review_data = serve.gather_review(self.state)
+        self.assertTrue(review_data['items'], 'fixture must have a suggested claim for this to prove anything')
         s, d, _h = self.req('GET', '/review')
         self.assertEqual(s, 200)
-        self.assertIn('Review', d.decode('utf-8'))
+        txt = d.decode('utf-8')
+        self.assertIn('class="queue-item"', txt)
+        self.assertIn(review_data['items'][0]['headline'], txt)
+
+        inbox_data = serve.gather_inbox(self.state)
+        self.assertTrue(inbox_data['items'], 'fixture must have inbox contents for this to prove anything')
         s, d, _h = self.req('GET', '/inbox')
         self.assertEqual(s, 200)
-        self.assertIn('Inbox', d.decode('utf-8'))
+        txt = d.decode('utf-8')
+        self.assertIn('class="wb-inbox-list"', txt)
+        self.assertIn(inbox_data['items'][0]['name'], txt)
 
 
 class SecurityTests(_ServeCase):
@@ -636,6 +649,13 @@ class DesignStalenessTests(_ServeCase):
         # not flake on how fast the two statements above ran.
         future = time.time() + 5
         os.utime(css, (future, future))
+        # The assertFalse above primed the staleness memo (cleanup task 1) -
+        # reset it so this check does a real walk instead of reusing that
+        # now-stale-in-fact-but-still-within-TTL cached answer. A real editor
+        # save and the next page load are rarely under a second apart; the
+        # test collapses that gap deliberately rather than sleeping.
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
         self.assertTrue(serve.snapshot_is_stale(self.state))
 
 
@@ -757,6 +777,178 @@ class EchoTests(unittest.TestCase):
     def test_echo_capture_path_omits_title_when_absent(self):
         echo = serve._echo_capture_path({'path': '/library/grandma.jpg'})
         self.assertNotIn('--title', echo)
+
+
+class StalenessMemoTests(_ServeCase):
+    """Cleanup task 1: `snapshot_is_stale`'s record-tree walk used to run on
+    EVERY page GET, and twice on a stale hit (once before `ensure_snapshot`
+    takes the lock, again just inside it). `_newest_input_mtime_cached` memos
+    the walk for `_MEMO_TTL` seconds; `invalidate_snapshot` drops the memo
+    immediately so a serve-side write is never masked by the TTL."""
+
+    def test_memo_prevents_a_second_walk_within_the_ttl(self):
+        # Force a cold memo regardless of what setUp's own ensure_snapshot
+        # already primed, so the first call below is a guaranteed real walk.
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+        calls = {'n': 0}
+        orig = serve._newest_mtime_under
+
+        def counting(base):
+            calls['n'] += 1
+            return orig(base)
+
+        serve._newest_mtime_under = counting
+        try:
+            serve.snapshot_is_stale(self.state)
+            first = calls['n']
+            self.assertGreater(first, 0, 'the first call after a cold memo must walk the tree')
+            serve.snapshot_is_stale(self.state)
+            self.assertEqual(calls['n'], first, 'a second call within the TTL must reuse the memo')
+        finally:
+            serve._newest_mtime_under = orig
+
+    def test_staleness_still_detected_after_a_record_edit(self):
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        target = next((self.root / 'sources').rglob('*.md'))
+        text = target.read_text(encoding='utf-8')
+        target.write_text(text, encoding='utf-8')
+        # Force the new mtime strictly past the snapshot's build time - some
+        # filesystems have coarse mtime resolution and this must not flake.
+        future = time.time() + 5
+        os.utime(target, (future, future))
+        # The memo from the assertFalse above is still within its TTL - reset
+        # it explicitly (matching the human-timescale gap a real edit-then-
+        # reload would have) rather than sleep in a test.
+        with self.state._memo_lock:
+            self.state._mtime_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+    def test_invalidate_snapshot_drops_the_mtime_memo(self):
+        serve.snapshot_is_stale(self.state)   # primes the memo
+        self.assertIsNotNone(self.state._mtime_memo)
+        serve.invalidate_snapshot(self.state)
+        self.assertIsNone(self.state._mtime_memo)
+
+
+class CountsPipelineTests(_ServeCase):
+    """Cleanup task 2: gather_review/gather_inbox (full index queries plus
+    xref/cooccur detection) used to run 2-3x per /review or /inbox request -
+    once for the page's own items, again for the servebar count, again
+    inside a snapshot rebuild. Counts are now memoized on ServeState, and the
+    /review and /inbox routes thread their own already-gathered item count
+    straight into the servebar instead of triggering a second gather."""
+
+    def test_review_request_calls_gather_review_exactly_once(self):
+        calls = {'n': 0}
+        orig = serve.gather_review
+
+        def counting(state):
+            calls['n'] += 1
+            return orig(state)
+
+        serve.gather_review = counting
+        try:
+            s, _d, _h = self.req('GET', '/review')
+        finally:
+            serve.gather_review = orig
+        self.assertEqual(s, 200)
+        self.assertEqual(calls['n'], 1)
+
+    def test_inbox_request_calls_gather_inbox_exactly_once(self):
+        calls = {'n': 0}
+        orig = serve.gather_inbox
+
+        def counting(state):
+            calls['n'] += 1
+            return orig(state)
+
+        serve.gather_inbox = counting
+        try:
+            s, _d, _h = self.req('GET', '/inbox')
+        finally:
+            serve.gather_inbox = orig
+        self.assertEqual(s, 200)
+        self.assertEqual(calls['n'], 1)
+
+    def test_invalidate_snapshot_drops_both_count_memos(self):
+        serve._counts(self.state)   # primes both
+        self.assertIsNotNone(self.state._review_count_memo)
+        self.assertIsNotNone(self.state._inbox_count_memo)
+        serve.invalidate_snapshot(self.state)
+        self.assertIsNone(self.state._review_count_memo)
+        self.assertIsNone(self.state._inbox_count_memo)
+
+
+class StreamedFileTests(_ServeCase):
+    """Cleanup task 3: `_send_file` now streams via `shutil.copyfileobj`
+    instead of reading the whole file into memory first. Byte-identity and
+    HEAD-is-headers-only are the observable contract; the streaming itself is
+    an implementation detail behind that contract."""
+
+    def test_large_file_served_byte_identical(self):
+        photos = self.root / 'photos'
+        photos.mkdir(parents=True, exist_ok=True)
+        # Several multiples of the 64 KiB stream chunk size so the copy loop
+        # actually iterates more than once.
+        data = os.urandom(5 * serve._STREAM_CHUNK_SIZE + 1234)
+        target = photos / 'big-test-file.bin'
+        target.write_bytes(data)
+        s, d, h = self.req('GET', '/root/photos/big-test-file.bin')
+        self.assertEqual(s, 200)
+        self.assertEqual(d, data)
+        self.assertEqual(h.get('Content-Length'), str(len(data)))
+
+    def test_head_request_on_a_streamed_file_sends_no_body(self):
+        photos = self.root / 'photos'
+        photos.mkdir(parents=True, exist_ok=True)
+        target = photos / 'head-test-file.bin'
+        target.write_bytes(os.urandom(4096))
+        s, d, h = self.req('HEAD', '/root/photos/head-test-file.bin')
+        self.assertEqual(s, 200)
+        self.assertEqual(d, b'')
+        self.assertEqual(h.get('Content-Length'), '4096')
+
+
+class KeepAliveHygieneTests(_ServeCase):
+    """Cleanup task 4: two undrained-body paths used to desync HTTP/1.1
+    keep-alive - `/api/reindex` never read its body at all, and `_read_body`
+    returned None over the cap with nothing drained. Both are exercised here
+    by reusing ONE http.client connection across two requests, which is how a
+    real browser/fetch keep-alive connection behaves."""
+
+    def test_reindex_drains_its_body_and_the_connection_stays_reusable(self):
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        try:
+            headers = {'Host': f'127.0.0.1:{self.port}', 'Content-Type': 'application/json',
+                      'X-FHA-CSRF': self.state.csrf_token}
+            conn.request('POST', '/api/reindex', body=b'{}', headers=headers)
+            r1 = conn.getresponse()
+            self.assertEqual(r1.status, 200)
+            r1.read()
+            # If the small body above were left undrained, this second
+            # request on the SAME connection would desync - either hang
+            # waiting on stray bytes or read garbage as its status line.
+            conn.request('GET', '/', headers={'Host': f'127.0.0.1:{self.port}'})
+            r2 = conn.getresponse()
+            self.assertEqual(r2.status, 200)
+            r2.read()
+        finally:
+            conn.close()
+
+    def test_over_cap_post_gets_413_with_connection_close(self):
+        big = b'x' * (64 * 1024 + 1)
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        try:
+            headers = {'Host': f'127.0.0.1:{self.port}', 'Content-Type': 'application/json',
+                      'X-FHA-CSRF': self.state.csrf_token}
+            conn.request('POST', '/api/reindex', body=big, headers=headers)
+            r = conn.getresponse()
+            self.assertEqual(r.status, 413)
+            self.assertEqual((r.getheader('Connection') or '').lower(), 'close')
+            r.read()
+        finally:
+            conn.close()
 
 
 if __name__ == '__main__':

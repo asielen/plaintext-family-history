@@ -2046,16 +2046,19 @@ def _ranked_search(
         ):
             label, detail = _place_label_detail(row)
             consider(row['id'], 'place', label, detail, row['name'])
+        # A single JOIN, not one `SELECT ... WHERE id = ?` per matching
+        # alt_name row (that was an N+1 - one extra query per hit). The
+        # INNER JOIN drops any alt_name row whose place_id no longer matches
+        # a place - the same "skip it" the old `if place_row is None`
+        # check gave, just done by the join instead of a follow-up query.
         for row in conn.execute(
-            "SELECT place_id, alt_name FROM place_names WHERE alt_name LIKE ? ESCAPE '\\'",
+            "SELECT place_names.place_id AS place_id, place_names.alt_name AS alt_name, "
+            "places.name AS name, places.hierarchy AS hierarchy "
+            "FROM place_names JOIN places ON place_names.place_id = places.id "
+            "WHERE place_names.alt_name LIKE ? ESCAPE '\\'",
             (pattern,),
         ):
-            place_row = conn.execute(
-                'SELECT name, hierarchy FROM places WHERE id = ?', (row['place_id'],)
-            ).fetchone()
-            if place_row is None:
-                continue   # alt_name row survives a place that no longer exists
-            label, detail = _place_label_detail(place_row)
+            label, detail = _place_label_detail(row)
             consider(row['place_id'], 'place', label, detail, row['alt_name'])
 
     if kind_set is None or 'text' in kind_set:
