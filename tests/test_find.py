@@ -1,17 +1,18 @@
 import argparse
 import io
+import json
 import sqlite3
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import find
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS
+from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, EXIT_WARNINGS
 from index import _DDL
 
 
@@ -49,6 +50,13 @@ def _add_claim(conn, cid, sid, ctype, value, persons, *, status='accepted',
             'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
             (cid, pid, pos, None),
         )
+
+
+def _add_alias(conn, alias, canonical_id, kind='name'):
+    conn.execute(
+        'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+        (alias.lower(), canonical_id, kind),
+    )
 
 
 def _run(func, *args, **kwargs):
@@ -910,6 +918,357 @@ class RunFindRootGuardTests(unittest.TestCase):
             rc, out = _run(find._standalone_main, ['p-aaaaaaaaaa', '--root', tmp])
             self.assertEqual(rc, EXIT_CLEAN)
             self.assertIn('p-aaaaaaaaaa  [Alice]', out)
+
+
+# ── --json (plan 17): the reference-resolver backend ────────────────────────
+
+class SearchJsonHitShapeTests(unittest.TestCase):
+    """search_json's per-hit shape and per-type label/detail formatting."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Thomas Hartley')
+        self.conn.execute(
+            "UPDATE persons SET surname='Hartley', birth='1840~', death='1923', tier='stub' "
+            "WHERE id='p-aaaaaaaaaa'"
+        )
+        _add_alias(self.conn, 'p-aaaaaaaaaa', 'p-aaaaaaaaaa', 'id')
+        _add_alias(self.conn, 'Thomas Hartley', 'p-aaaaaaaaaa', 'name')
+
+        _add_source(self.conn, 's-1111111111', 'Hartley Census', source_type='census')
+        self.conn.execute("UPDATE sources SET date_edtf='1900' WHERE id='s-1111111111'")
+        _add_alias(self.conn, 's-1111111111', 's-1111111111', 'id')
+
+        self.conn.execute(
+            "INSERT INTO places(id, name, hierarchy) VALUES "
+            "('l-1111111111', 'Fairview', 'Kansas, USA')"
+        )
+        _add_alias(self.conn, 'l-1111111111', 'l-1111111111', 'id')
+        _add_alias(self.conn, 'Fairview', 'l-1111111111', 'name')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_every_hit_has_the_four_documented_keys(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Hartley')
+        self.assertTrue(results)
+        for r in results:
+            self.assertEqual(set(r.keys()), {'id', 'type', 'label', 'detail'})
+
+    def test_person_detail_carries_vitals_and_tier(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'P-aaaaaaaaaa')
+        self.assertEqual(len(results), 1)
+        hit = results[0]
+        self.assertEqual(hit['type'], 'person')
+        self.assertEqual(hit['label'], 'Thomas Hartley')
+        self.assertEqual(hit['detail'], '1840~ - 1923 · stub')
+
+    def test_source_detail_carries_type_and_date(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'S-1111111111')
+        self.assertEqual(len(results), 1)
+        hit = results[0]
+        self.assertEqual(hit['type'], 'source')
+        self.assertEqual(hit['label'], 'Hartley Census')
+        self.assertEqual(hit['detail'], 'census · 1900')
+
+    def test_place_detail_carries_hierarchy(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'L-1111111111')
+        self.assertEqual(len(results), 1)
+        hit = results[0]
+        self.assertEqual(hit['type'], 'place')
+        self.assertEqual(hit['label'], 'Fairview')
+        self.assertEqual(hit['detail'], 'Kansas, USA')
+
+
+class SearchJsonIdLookupTests(unittest.TestCase):
+    """A bare valid ID short-circuits straight to that record - the
+    reference-resolver's 'I already have an ID' path (plan-17 point 1)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice Hartley')
+        _add_source(self.conn, 's-1111111111', 'Alice Hartley Census')
+        _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'birth', 'born 1900',
+                    ['p-aaaaaaaaaa'], status='accepted')
+        self.conn.execute(
+            "INSERT INTO hypotheses(id, person_id, hypothesis, status) VALUES "
+            "('h-1111111111', 'p-aaaaaaaaaa', 'maybe born in Fairview', 'open')"
+        )
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_person_id_returns_one_result(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'p-aaaaaaaaaa')
+        self.assertEqual([r['id'] for r in results], ['p-aaaaaaaaaa'])
+        self.assertEqual(results[0]['type'], 'person')
+
+    def test_id_lookup_is_case_insensitive(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'P-AAAAAAAAAA')
+        self.assertEqual([r['id'] for r in results], ['p-aaaaaaaaaa'])
+
+    def test_claim_id_resolves_to_the_claim_itself_not_its_source(self) -> None:
+        # A cited C-id's only ALIAS row points at its owning source (see
+        # index.py's _register_cited_claim_aliases) - the bare-ID lookup must
+        # still resolve to the claim, not silently redirect to the source.
+        results = find.search_json(self.archive_root, {}, 'c-1111111111')
+        self.assertEqual([r['id'] for r in results], ['c-1111111111'])
+        self.assertEqual(results[0]['type'], 'claim')
+        self.assertIn('born 1900', results[0]['label'])
+
+    def test_hypothesis_id_resolves(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'h-1111111111')
+        self.assertEqual([r['id'] for r in results], ['h-1111111111'])
+        self.assertEqual(results[0]['type'], 'hypothesis')
+
+    def test_unknown_id_returns_empty(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'p-zzzzzzzzzz')
+        self.assertEqual(results, [])
+
+    def test_id_lookup_respects_kind_filter(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'p-aaaaaaaaaa', kinds=['source'])
+        self.assertEqual(results, [])
+
+
+class SearchJsonRankingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        # Exact, prefix, and substring title matches for the same query -
+        # deliberately all sources, so the tier ladder is isolated from any
+        # cross-type tie-break.
+        _add_source(self.conn, 's-1111111111', 'Kansas', source_type='book')
+        _add_source(self.conn, 's-2222222222', 'Kansas City Directory', source_type='directory')
+        _add_source(self.conn, 's-3333333333', 'State of Kansas Records', source_type='book')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_exact_ranks_before_prefix_before_substring(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Kansas')
+        ids = [r['id'] for r in results]
+        self.assertEqual(ids, ['s-1111111111', 's-2222222222', 's-3333333333'])
+
+    def test_no_match_returns_empty_list(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'zzzznotfound')
+        self.assertEqual(results, [])
+
+    def test_blank_query_returns_empty_list(self) -> None:
+        self.assertEqual(find.search_json(self.archive_root, {}, ''), [])
+        self.assertEqual(find.search_json(self.archive_root, {}, '   '), [])
+
+
+class SearchJsonDedupeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Margaret Cole')
+        self.conn.execute("UPDATE persons SET surname='Cole' WHERE id='p-aaaaaaaaaa'")
+        # Registered as an alias (name) AND directly matchable via
+        # persons.surname - both paths must collapse to one hit.
+        _add_alias(self.conn, 'Margaret Cole', 'p-aaaaaaaaaa', 'name')
+        _add_alias(self.conn, 'p-aaaaaaaaaa', 'p-aaaaaaaaaa', 'id')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_alias_and_direct_field_match_collapse_to_one_hit(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Cole')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['id'], 'p-aaaaaaaaaa')
+
+
+class SearchJsonKindAndLimitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Topeka Smith')
+        _add_source(self.conn, 's-1111111111', 'Topeka Directory', source_type='directory')
+        self.conn.execute("INSERT INTO places(id, name) VALUES ('l-1111111111', 'Topeka')")
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_unfiltered_search_spans_multiple_kinds(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Topeka')
+        types = {r['type'] for r in results}
+        self.assertTrue({'person', 'source', 'place'} <= types)
+
+    def test_kind_filter_restricts_to_one_type(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Topeka', kinds=['place'])
+        self.assertTrue(results)
+        self.assertTrue(all(r['type'] == 'place' for r in results))
+
+    def test_limit_caps_result_count(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Topeka', limit=1)
+        self.assertEqual(len(results), 1)
+
+    def test_zero_limit_returns_empty(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Topeka', limit=0)
+        self.assertEqual(results, [])
+
+
+class SearchJsonTextHitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        self.conn.execute(
+            "INSERT INTO notes_fts(path, content) VALUES "
+            "('notes/questions.md', 'Was Grandpa Hartley really born in Fairview?')"
+        )
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_fts_hit_is_typed_text_with_path_as_id_and_detail(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Fairview')
+        text_hits = [r for r in results if r['type'] == 'text']
+        self.assertEqual(len(text_hits), 1)
+        hit = text_hits[0]
+        self.assertEqual(hit['id'], 'notes/questions.md')
+        self.assertEqual(hit['detail'], 'notes/questions.md')
+        self.assertIn('Fairview', hit['label'])
+
+    def test_malformed_fts_query_degrades_instead_of_raising(self) -> None:
+        # An unbalanced quote is not valid FTS5 MATCH syntax - the search
+        # must degrade to no text hits, not raise out of search_json.
+        results = find.search_json(self.archive_root, {}, '"unterminated')
+        self.assertEqual(results, [])
+
+
+class RunFindJsonResultTests(unittest.TestCase):
+    """run_find_json's Result contract, and its missing-index behavior -
+    plan-17 point 2 requires the exact same plain message + exit code
+    _related_dispatch's open_index_db call already gives --related."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_result_carries_results_key_and_clean_exit(self) -> None:
+        result = find.run_find_json(self.archive_root, {}, query='Alice')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.ok)
+        self.assertIn('results', result.data)
+        self.assertEqual(result.data['results'][0]['id'], 'p-aaaaaaaaaa')
+
+    def test_missing_index_matches_related_contract(self) -> None:
+        empty_root = Path(tempfile.mkdtemp())
+        try:
+            related_result = find.run_related('p-aaaaaaaaaa', None, empty_root, {})
+            json_result = find.run_find_json(empty_root, {}, query='Alice')
+            self.assertEqual(json_result.exit_code, related_result.exit_code)
+            self.assertEqual(json_result.exit_code, EXIT_FAILURE)
+            self.assertFalse(json_result.ok)
+            self.assertNotIn('results', json_result.data)
+        finally:
+            import shutil
+            shutil.rmtree(empty_root, ignore_errors=True)
+
+
+class JsonCliTests(unittest.TestCase):
+    """The CLI layer: `fha find --json` prints exactly one JSON document and
+    nothing else on stdout, and the --json/--related/--kind guard rails."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _parse(self, argv: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers()
+        find.register(subs)
+        args = parser.parse_args(['find', *argv])
+        args.root = str(self.archive_root)
+        return args
+
+    def test_json_emits_one_parseable_document_and_nothing_else(self) -> None:
+        args = self._parse(['Alice', '--json'])
+        rc, out = _run(find._run_find, args)
+        self.assertEqual(rc, EXIT_CLEAN)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1)
+        payload = json.loads(lines[0])
+        self.assertEqual(payload['results'][0]['id'], 'p-aaaaaaaaaa')
+
+    def test_json_with_text_flag(self) -> None:
+        args = self._parse(['--text', 'Alice', '--json'])
+        rc, out = _run(find._run_find, args)
+        self.assertEqual(rc, EXIT_CLEAN)
+        payload = json.loads(out.strip())
+        self.assertTrue(payload['results'])
+
+    def test_json_with_kind_and_limit(self) -> None:
+        args = self._parse(['Alice', '--json', '--kind', 'person', '--limit', '5'])
+        rc, out = _run(find._run_find, args)
+        self.assertEqual(rc, EXIT_CLEAN)
+        payload = json.loads(out.strip())
+        self.assertTrue(payload['results'])
+        self.assertTrue(all(r['type'] == 'person' for r in payload['results']))
+
+    def test_json_with_unrecognised_kind_is_rejected(self) -> None:
+        args = self._parse(['Alice', '--json', '--kind', 'nonsense'])
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('nonsense', err.getvalue())
+
+    def test_json_with_related_is_refused_naming_alternatives(self) -> None:
+        args = self._parse(['--related', 'p-aaaaaaaaaa', '--json'])
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--related', err.getvalue())
+        self.assertIn('--text', err.getvalue())
+
+    def test_json_on_missing_index_prints_plain_message_not_json(self) -> None:
+        self.conn.close()
+        (self.archive_root / '.cache' / 'index.sqlite').unlink()
+        args = self._parse(['Alice', '--json'])
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertEqual(out.getvalue(), '')
+        self.assertIn('fha index', err.getvalue())
 
 
 if __name__ == '__main__':

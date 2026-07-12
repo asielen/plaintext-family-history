@@ -152,6 +152,7 @@ from _lib import (
     select_variation_primary,
     is_working_copy,
     variant_role,
+    yaml_inline,
 )
 
 configure_utf8_stdout()
@@ -361,24 +362,11 @@ def _read_source_keyword(file_path: Path) -> str | None:
 
 # ── Record scaffolding ────────────────────────────────────────────────────────
 
-def _yaml_inline(value: str) -> str:
-    """Render a string as a single-line YAML scalar, quoting only when needed.
-
-    The scaffold is built as text (not `yaml.safe_dump` on the whole record) to
-    keep the SPEC §14 field order and the literal ```yaml fence a human reads.
-    But free-form values - a `--title`, a filename preserved as
-    `original_filename`, a `--more` role, an alias path - can carry
-    YAML-significant characters (`: `, a leading `-`, ` #`) that would make the
-    frontmatter unparseable, so each is round-tripped through the YAML emitter
-    and quoted exactly when the parser needs it. Without this, a title like
-    `Letter: Home` silently produces a record `read_record` cannot load.
-    """
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):
-        rendered = rendered[:-3].strip()
-    return rendered
+# Thin alias: the quoting rule itself lives in `_lib.yaml_inline` (shared by
+# every surgical claim/frontmatter writer - see its docstring for the why).
+# Kept as a module-level name here so existing call sites in this file (and
+# any test importing `process._yaml_inline`) do not need to change.
+_yaml_inline = yaml_inline
 
 
 def _render_scaffold_file_entry(entry: dict) -> list[str]:

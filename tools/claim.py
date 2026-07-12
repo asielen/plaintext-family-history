@@ -75,6 +75,7 @@ from _lib import (
     reapply_newline,
     resolve_root_arg,
     write_text_exact,
+    yaml_inline,
 )
 
 configure_utf8_stdout()
@@ -365,21 +366,11 @@ def _apply_claim_review(
     return '\n'.join(new_lines) + trailing_nl, True
 
 
-def _yaml_inline(value: str) -> str:
-    """Render a string as a single-line YAML scalar, quoting only when needed.
-
-    The claims block is edited as text (not round-tripped through the YAML
-    emitter) to preserve key order and comments, so a free-form `--value` that
-    carries YAML-significant characters (`: `, a leading `-`, ` #`) must be
-    quoted exactly when the parser needs it - the same discipline `fha process`
-    uses for scaffold scalars.
-    """
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):
-        rendered = rendered[:-3].strip()
-    return rendered
+# Thin alias: the quoting rule itself lives in `_lib.yaml_inline` (shared by
+# every surgical claim/frontmatter writer - see its docstring for the why).
+# Kept as a module-level name here so existing call sites in this file (and
+# any test importing `claim._yaml_inline`) do not need to change.
+_yaml_inline = yaml_inline
 
 
 # ── Top-level operation ───────────────────────────────────────────────────────

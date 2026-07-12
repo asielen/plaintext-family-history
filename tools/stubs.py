@@ -14,7 +14,6 @@ TOOLING §5.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -32,64 +31,28 @@ from _lib import (
     mint_ids,
     normalize_id,
     read_record,
+    render_stub_content,
+    stub_filename,
+    stub_slug_name,
 )
 
-import datetime
 
-
-def _today() -> str:
-    return datetime.date.today().isoformat()
-
-
+# The slugging/filename/content rendering below now lives in `_lib.py`
+# (`stub_slug_name` / `stub_filename` / `render_stub_content`) so `fha person
+# new` can share it. These thin wrappers keep this module's private names
+# (and every existing call site/test that imports `stubs._slug_name` etc.)
+# working unchanged; note `_stub_filename` keeps ITS historical (pid, name)
+# argument order even though the shared `stub_filename` takes (name, pid).
 def _slug_name(name: str) -> tuple[str, str]:
-    """
-    Parse a display name into (surname_slug, given_slug) for the filename.
-    Best effort: last word = surname, rest = given.
-    """
-    parts = name.strip().split()
-    if not parts:
-        return ('unknown', 'unknown')
-    if len(parts) == 1:
-        return ('unknown', parts[0].lower())
-    surname = parts[-1].lower().replace(' ', '_')
-    given = '_'.join(p.lower() for p in parts[:-1])
-    # Sanitize: only a-z, digits, underscores
-    surname = re.sub(r'[^a-z0-9_]', '', surname)
-    given = re.sub(r'[^a-z0-9_]', '', given)
-    return (surname or 'unknown', given or 'unknown')
+    return stub_slug_name(name)
 
 
 def _stub_filename(pid: str, name: str | None) -> str:
-    """Generate a stub filename."""
-    if name and name.lower() not in ('unknown', ''):
-        surname, given = _slug_name(name)
-    else:
-        surname, given = 'unknown', 'unknown'
-    return f'{surname}__{given}_{pid}.md'
+    return stub_filename(name, pid)
 
 
 def _stub_content(pid: str, name: str | None) -> str:
-    display_name = name if name and name.lower() != 'unknown' else 'unknown'
-    # `aliases:` carries the P-id from birth - the line that makes a bare
-    # `[[P-…]]` cite click through in Obsidian. The display name registers as an
-    # alias automatically (the index reads it from `name:`), so a hand-typed
-    # `[[Name]]` resolves once the stub is promoted to a real name.
-    # Provisional birth/death are offered as commented placeholders: an honest
-    # estimate of current knowledge is a legitimate starting state (a tool will
-    # later nudge for a source), so the field is discoverable without being
-    # required and without faking an unsourced fact until the human fills it in.
-    return (
-        f'---\n'
-        f'id: {pid}\n'
-        f'aliases: [{pid}]\n'
-        f'name: {display_name}\n'
-        f'living: unknown\n'
-        f'# birth:   # an honest guess is fine - a tool will remind you to add a source later\n'
-        f'# death:   # same here; leave commented until you know\n'
-        f'created: {_today()}\n'
-        f'tier: stub\n'
-        f'---\n'
-    )
+    return render_stub_content(pid, name)
 
 
 def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:

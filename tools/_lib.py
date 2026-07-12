@@ -72,6 +72,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    SIGNIFICANCE              - claim type → 'vital'/'substantive'/'incidental'
 #    CLAIM_TYPES, VITAL_TYPES  - frozensets derived from SIGNIFICANCE
 #    SOURCE_TYPES              - controlled vocabulary for source_type field
+#    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
 #    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
 #
@@ -95,6 +96,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #  Record parsing
 #    read_text_exact / write_text_exact - newline-exact record IO (no CRLF/LF translation)
+#    reapply_newline           - restore a record's CRLF/LF convention after a text edit
+#    yaml_inline                - single-line quoted YAML scalar (every surgical writer's rule)
 #    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
 #    read_record               - parse frontmatter + claims + body from a .md file
 #    claim_item_key_indent     - one claim item's real mapping-key column (surgical edits)
@@ -125,6 +128,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_working_copy           - WORKING_COPY marker present at archive root?
 #    is_fixture_path           - path under example-archive/ or tests/fixtures/?
 #    find_person_record_path   - scan people/ for one P-id's record file (never the index)
+#    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
+#    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
+#    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
 #    extract_bare_ids          - all bare IDs from a text block
@@ -332,6 +338,27 @@ def format_source_type_error(value: object, *, where: str = 'source_type') -> st
     return (
         f'unknown {where} {value!r}. source_type means the source category, '
         f'for example census or photo. Use one of: {source_type_list()}.'
+    )
+
+
+# A person's birth-assigned sex (SPEC §9): optional, and distinct from the
+# free-text `gender` field beside it. Kept as a small controlled vocabulary
+# (like SOURCE_TYPES) rather than free text so `fha person new` and any future
+# validator can catch a typo ("m" vs "M", "male") before it lands in a record.
+PERSON_SEX_VALUES: frozenset[str] = frozenset({'M', 'F', 'intersex', 'unknown'})
+
+
+def format_person_sex_error(value: object) -> str:
+    """Explain an unrecognised `sex` value with the valid list and a plain gloss.
+
+    `sex` is optional and easy to confuse with `gender` (the free-text identity
+    field beside it, SPEC §9), so the refusal spells out the distinction rather
+    than just naming the field.
+    """
+    return (
+        f'unrecognised sex {value!r}. sex records birth-assigned sex where a '
+        f"record states it (separate from gender, which is free text) - use one "
+        f'of: {", ".join(sorted(PERSON_SEX_VALUES))}.'
     )
 
 
@@ -971,6 +998,34 @@ def reapply_newline(text: str, like: str) -> str:
     if '\r\n' in like and '\r\n' not in text:
         return text.replace('\n', '\r\n')
     return text
+
+
+def yaml_inline(value: str) -> str:
+    """Render a value as a single-line YAML scalar, quoting only when needed.
+
+    Every surgical writer that edits a record as text (not round-tripped
+    through the YAML emitter, so key order, comments, and the fenced ```yaml
+    block survive untouched) shares this one quoting rule: `fha claim`'s
+    `--value` edits, `fha confirm`'s `places.yaml` writes, `fha process`'s
+    scaffold scalars, and `fha stubs`' record scaffold all pass free-form
+    strings (a source title, a place hierarchy entry, a filename) that may
+    carry YAML-significant characters (`: `, a leading `-`, a ` #` comment
+    marker) - unquoted, those would corrupt the surrounding hand-edited
+    document or make `read_record` fail to parse it back. Routing every one
+    of those values through `yaml.safe_dump`'s flow style gets exactly the
+    quoting a plain `yaml.safe_load` needs, with no line breaks, and
+    `width=10**9` keeps a long string on one line rather than folded.
+
+    `safe_dump` also always terminates a bare scalar document with `...`
+    (the YAML end-of-document marker) - harmless in a full document, but
+    wrong to splice into the middle of a line the caller is building, so it
+    is stripped here once, in the one place every caller relies on."""
+    rendered = yaml.safe_dump(
+        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
+    ).strip()
+    if rendered.endswith('...'):          # safe_dump tags a bare scalar document
+        rendered = rendered[:-3].strip()
+    return rendered
 
 
 def _coerce_yaml(obj: Any) -> Any:
@@ -2827,6 +2882,115 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
         if parsed.get('id_type') == 'P' and not parsed.get('is_companion'):
             return path
     return None
+
+
+def stub_slug_name(name: str) -> tuple[str, str]:
+    """Parse a display name into (surname_slug, given_slug) for a stub filename.
+
+    Best effort, not a real name-parsing engine: the last word is taken as the
+    surname and everything before it as given names, because that is right
+    often enough for the filename to be recognisable, and a stub filename is
+    provisional anyway (renamed by hand once a human files the person
+    properly). Sanitised to `[a-z0-9_]` so the slug is always a safe filename
+    component regardless of what punctuation the display name carries.
+    """
+    parts = name.strip().split()
+    if not parts:
+        return ('unknown', 'unknown')
+    if len(parts) == 1:
+        return ('unknown', parts[0].lower())
+    surname = parts[-1].lower().replace(' ', '_')
+    given = '_'.join(p.lower() for p in parts[:-1])
+    surname = re.sub(r'[^a-z0-9_]', '', surname)
+    given = re.sub(r'[^a-z0-9_]', '', given)
+    return (surname or 'unknown', given or 'unknown')
+
+
+def stub_filename(name: str | None, pid: str) -> str:
+    """Return the `{surname}__{given}_{P-id}.md` stub filename (SPEC §13).
+
+    A blank or literal "unknown" name falls back to the surname-less
+    `unknown__unknown_{P-id}` form rather than calling `stub_slug_name` on a
+    name with nothing to slug - the double underscore is the same convention
+    §13 uses for surname-less people (mononyms, enslaved ancestors named only
+    by a given name), so an unresolved reference reads the same way on disk.
+    """
+    if name and name.lower() not in ('unknown', ''):
+        surname, given = stub_slug_name(name)
+    else:
+        surname, given = 'unknown', 'unknown'
+    return f'{surname}__{given}_{pid}.md'
+
+
+def render_stub_content(
+    pid: str,
+    name: str | None,
+    *,
+    sex: str | None = None,
+    gender: str | None = None,
+    birth: str | None = None,
+    death: str | None = None,
+) -> str:
+    """Render a §9 person-stub record's frontmatter text (id/aliases/name/…/tier).
+
+    Shared by `fha stubs` (unresolved-reference and `--from-names` minting) and
+    `fha person new` (a human deliberately starting a stub with what they
+    already know). The field order - id, aliases, name, [sex], [gender],
+    living, birth/death, created, tier - is fixed so every stub reads the same
+    way regardless of which tool wrote it; `tests/test_templates.py` checks it
+    against `archive-template/people/stubs/_TEMPLATE.stub.md`.
+
+    `aliases:` carries the P-id from birth - the line that makes a bare
+    `[[P-…]]` cite click through in Obsidian. The display name registers as an
+    alias automatically (the index reads it from `name:`), so a hand-typed
+    `[[Name]]` resolves once the stub is promoted to a real name.
+
+    `sex`/`gender` are omitted entirely (not written as blank/null) when not
+    given - most stubs never carry either, and an absent key is friendlier to
+    a hand reader than `sex: null`. `sex` is validated against
+    `PERSON_SEX_VALUES` (SPEC §9); `gender` is free text, so it is trusted
+    as-is.
+
+    `birth`/`death` are PROVISIONAL, unsourced EDTF estimates (see
+    `PROVISIONAL_VITAL_FIELDS`) - the honest "I know roughly when" a human or a
+    tool may have before any source is filed. Given, they are written as real
+    `birth: value` / `death: value` lines carrying the same reassuring inline
+    comment a human reads before a source shows up; omitted, the field is
+    offered instead as a commented-out hint (`# birth:   # …`) so it stays
+    discoverable without faking an unsourced fact. Each of the two is decided
+    independently - a stub can carry a real `birth:` and a still-commented
+    `# death:`. Values are written verbatim: this function renders text, it
+    does not validate EDTF shape (the caller - the CLI layer - normalises and
+    validates the date before it ever reaches here, the same division of
+    labor `process.py`'s scaffold renderer uses).
+    """
+    if sex is not None and sex not in PERSON_SEX_VALUES:
+        raise ValueError(format_person_sex_error(sex))
+
+    display_name = name if name and name.lower() != 'unknown' else 'unknown'
+    lines = [
+        '---',
+        f'id: {pid}',
+        f'aliases: [{pid}]',
+        f'name: {display_name}',
+    ]
+    if sex is not None:
+        lines.append(f'sex: {sex}')
+    if gender is not None:
+        lines.append(f'gender: {gender}')
+    lines.append('living: unknown')
+    if birth is not None:
+        lines.append(f'birth: {birth}   # unsourced estimate - a tool will remind you to add a source')
+    else:
+        lines.append('# birth:   # an honest guess is fine - a tool will remind you to add a source later')
+    if death is not None:
+        lines.append(f'death: {death}   # unsourced estimate - a tool will remind you to add a source')
+    else:
+        lines.append('# death:   # same here; leave commented until you know')
+    lines.append(f'created: {datetime.date.today().isoformat()}')
+    lines.append('tier: stub')
+    lines.append('---')
+    return '\n'.join(lines) + '\n'
 
 
 # Matches the `_{S-id}.md` suffix in a source record filename; used by

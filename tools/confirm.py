@@ -169,6 +169,7 @@ from _lib import (
     write_text_exact,
     scan_ids_in_tree,
     scan_person_record_ids,
+    yaml_inline,
 )
 
 configure_utf8_stdout()
@@ -370,21 +371,11 @@ def _item_span_for(
     return None
 
 
-def _yaml_inline(value: str) -> str:
-    """Render a string as a single-line YAML scalar, quoting only when needed.
-
-    `places.yaml` and the claims block are edited as text (not round-tripped
-    through the YAML emitter) to preserve key order and comments, so a free-form
-    place name/hierarchy that carries YAML-significant characters (`: `, a leading
-    `-`, ` #`) must be quoted exactly when the parser needs it - the same
-    discipline `fha claim`/`fha process` use for scaffold scalars.
-    """
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):          # safe_dump tags a bare scalar document
-        rendered = rendered[:-3].strip()
-    return rendered
+# Thin alias: the quoting rule itself lives in `_lib.yaml_inline` (shared by
+# every surgical claim/frontmatter writer - see its docstring for the why).
+# Kept as a module-level name here so existing call sites in this file (and
+# any test importing `confirm._yaml_inline`) do not need to change.
+_yaml_inline = yaml_inline
 
 
 def _split_inline_comment(raw: str) -> tuple[str, str]:
