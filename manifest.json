@@ -247,7 +247,7 @@
     {
       "path": "design/styles.css",
       "category": "operating",
-      "sha256": "010ac2aec2879b54ba8c1d2165c8f560874db951e9d1f92d1a943637f45a8b69",
+      "sha256": "9285576b46dd734cf92af9422e38db02293ebd78c4e202a84a4ab322c78834e3",
       "spec_version": "1.2"
     },
     {
@@ -455,7 +455,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "c8fc992ebf76a1a1cb42c2366838354b3cf2d8f7f5f7227e9ecf40c1afaac896",
+      "sha256": "c254fa9f04adeb482b0e1d86209181c06abb1d87998f16a13bbb2fc51589dc66",
       "spec_version": "1.2"
     },
     {
@@ -509,13 +509,13 @@
     {
       "path": "tools/claim.py",
       "category": "operating",
-      "sha256": "b80a662648e1b99793c9bacc4c112936517f4ab019262259cf2058bd4b74eeea",
+      "sha256": "eb33c9b8631a14dacb944fe49a0946f6f7f8599f1d4f03a5dd788bf2a82f8d71",
       "spec_version": "1.2"
     },
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "e57367d3e78ecdd7d405ad5ced4a7c8906bfda220d6d0a7d38961565b0668889",
+      "sha256": "e5c308495c40539defc7304fc6e6eb1057f08bf007feb35637a66ccde85a210f",
       "spec_version": "1.2"
     },
     {
@@ -539,7 +539,7 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "78750dc470ee091dc50c5ddb3ef7cf1c4e94c6a83e3625398c0f9b88c9814b09",
+      "sha256": "5fce7c8242e2f2e2948e580392d455588aea36bb6868c0e8f48b0793f35ceeb7",
       "spec_version": "1.2"
     },
     {
@@ -593,7 +593,7 @@
     {
       "path": "tools/person.py",
       "category": "operating",
-      "sha256": "2e50c915a9b9093f5efeb8f5fb1a478f6cedcb18024b75ad23c2f7e97670919b",
+      "sha256": "9abee2a3326eae18e0466ee441a985ca8fd1c5493913812f79deb3631aed29e0",
       "spec_version": "1.2"
     },
     {
@@ -641,7 +641,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "b61900a36b68fb4e7ee695e9a231373fd3a33ee47d8a0413ef265581cb4a7a73",
+      "sha256": "8d02edbd2b46e5d0e805ad6512a537c3d1b8be28cb707cfa88e93465de9654f6",
       "spec_version": "1.2"
     },
     {
@@ -689,7 +689,7 @@
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "d5872cfba3ef96d83b1884007c5df7f8a028b87f4231be9783e72ad36e5b4b01",
+      "sha256": "9bb4065c2653a817b38f3ba4128d92741d72ebc274696472d7176d1bb5b3a115",
       "spec_version": "1.2"
     },
     {
@@ -701,7 +701,7 @@
     {
       "path": "tools/templates/source.html",
       "category": "operating",
-      "sha256": "83ea9fcfdf2a703723f59868b02664b758a308336eaa41baae2ae6be666776e8",
+      "sha256": "f50602f8550c74ea72d636624d2d53ebe1e7c089381d079569738f07ca5e3f57",
       "spec_version": "1.2"
     },
     {

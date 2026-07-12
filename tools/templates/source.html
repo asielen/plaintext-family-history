@@ -2,6 +2,12 @@
 {% block title %}{{ source.title }} - {{ site_title }}{% endblock %}
 {% block content %}
 <article class="source">
+  {% if source.portrait %}
+  <figure class="source-portrait">
+    <a href="{{ source.portrait.full_href }}"><img src="{{ source.portrait.href }}" alt="Scan of {{ source.title }}"></a>
+    <figcaption><a href="{{ source.portrait.full_href }}">{{ source.portrait.caption }}</a></figcaption>
+  </figure>
+  {% endif %}
   <h1>{{ source.title }}</h1>
   {% if source.source_type %}<p class="ids">{{ source.source_type }}</p>{% endif %}
 
@@ -39,7 +45,9 @@
   <ul class="files">
     {% for f in source.files %}
     <li>
-      {% if f.thumb_href %}<a href="{{ f.link_href }}"><img class="thumb" src="{{ f.thumb_href }}" alt="{{ f.label }}"></a>
+      {% if f.thumb_href %}
+      <a href="{{ f.link_href }}"><img class="thumb" src="{{ f.thumb_href }}" alt="{{ f.label }}"></a>
+      <a class="full-size-link" href="{{ f.link_href }}">full size</a>
       {% elif f.link_href %}<a href="{{ f.link_href }}">{{ f.label }}</a>
       {% else %}{{ f.label }}{% endif %}
       {% if f.note %}<span class="note">{{ f.note }}</span>{% endif %}

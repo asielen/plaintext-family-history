@@ -263,6 +263,34 @@ class PersonPageTests(_Base):
         self.assertNotIn('<h3>census</h3>', html)                # no longer grouped by type
         self.assertNotIn('class="ids"', html)                    # person id line removed
 
+    def test_summary_vitals_are_separate_dt_dd_pairs(self):
+        # Win 3: Born / Married / Died must each read on its own line. The
+        # `.summary` block has no dt/dd display override in design/styles.css
+        # (dl/dt/dd default to block), so this is a markup check - one dt/dd
+        # PAIR per vital, never two labels or two values sharing an element -
+        # which is what actually makes each line separate on the page.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', 'Born',
+                         status='accepted', date_edtf='1840', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'marriage', 'Married',
+                         status='accepted', date_edtf='1871', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'death', 'Died',
+                         status='accepted', date_edtf='1910', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<dt>Born</dt>', html)
+        self.assertIn('<dt>Married</dt>', html)
+        self.assertIn('<dt>Died</dt>', html)
+        born_idx = html.index('<dt>Born</dt>')
+        married_idx = html.index('<dt>Married</dt>')
+        died_idx = html.index('<dt>Died</dt>')
+        self.assertTrue(born_idx < married_idx < died_idx)
+        # Each <dd> holds exactly its own vital's value - the next label never
+        # bleeds into the previous value, which would read as one run-on line.
+        self.assertIn('1840', html[born_idx:married_idx])
+        self.assertNotIn('1871', html[born_idx:married_idx])
+
     def test_alt_names_and_tags_in_header(self):
         self._seed_person(
             'p-aaaaaaaaaa', 'Margaret Hartley', surname='Hartley',
@@ -505,6 +533,153 @@ class AssetTests(_Base):
         self._run(linked=False)
         html = self._read('sources/s-1111111111.html')
         self.assertIn('original kept in the archive', html)      # not copied out of the archive
+
+    def test_source_portrait_honors_living_tagged_gate(self):
+        # Win 2's record-head thumbnail reuses the Files section's own file
+        # entry, so it must inherit the same living-tagged-photo gate rather
+        # than re-resolving (and re-publishing) the image on its own.
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/pic.jpg', 'g1', 1, ''))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/pic.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        # The living-tagged gate is a standalone-only redaction (linked is an
+        # unredacted developer preview, like every other asset rule here).
+        self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+        self.assertIn('image omitted - tagged to a living person', html)
+
+
+class SourcePortraitTests(_Base):
+    """Win 2 (plan 17): a right-floated scan thumbnail at the head of a source
+    record, linking to the full-size image (private/wireframes/source.html's
+    `.person-portrait` pattern, reused as `.source-portrait` so the image can
+    sit inside one floated <figure> with its caption instead of two competing
+    right floats). The Files section gets a matching 'full size' text link on
+    every image it already lists."""
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_standalone_portrait_uses_media_derivative(self):
+        from PIL import Image
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (2000, 1500), (120, 90, 60)).save(img)
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('class="source-portrait"', html)
+        self.assertIn('Open the scan full size', html)
+        self.assertIn('media/', html)                    # a derivative, not the archive original
+        self.assertIn('full-size-link', html)             # the Files entry also links "full size"
+
+    def test_linked_portrait_uses_real_path(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('class="source-portrait"', html)
+        self.assertIn('pic.jpg', html)                    # the real archive path, no derivative
+
+    def test_portrait_prefers_front_role_over_first(self):
+        self._seed_source('s-1111111111', 'Multi Image', source_type='photo')
+        for name in ('first.jpg', 'second.jpg'):
+            img = self.archive_root / 'photos' / '1880' / name
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/first.jpg', 'page-1'))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/second.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        start = html.index('class="source-portrait"')
+        block = html[start:start + 400]
+        self.assertIn('second.jpg', block)
+        self.assertNotIn('first.jpg', block)
+
+    def test_portrait_falls_back_to_first_image_without_front_role(self):
+        self._seed_source('s-1111111111', 'Multi Image', source_type='photo')
+        for name in ('first.jpg', 'second.jpg'):
+            img = self.archive_root / 'photos' / '1880' / name
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/first.jpg', 'page-1'))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/second.jpg', 'page-2'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        start = html.index('class="source-portrait"')
+        block = html[start:start + 400]
+        self.assertIn('first.jpg', block)
+        self.assertNotIn('second.jpg', block)
+
+    def test_portrait_absent_without_image_asset(self):
+        self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'documents/letters/note_s-1111111111.txt', 'transcript'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+
+    def test_portrait_absent_when_no_files_at_all(self):
+        self._seed_source('s-1111111111', 'No Files Source')
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+
+    def test_no_pillow_degrades_gracefully_no_portrait(self):
+        # Standalone with Pillow unavailable: the page still builds, the
+        # image is omitted (never the original, which would leak EXIF), and
+        # the head thumbnail simply does not appear rather than breaking.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        original = site._PIL_AVAILABLE
+        site._PIL_AVAILABLE = False
+        try:
+            res = self._run(linked=False)
+        finally:
+            site._PIL_AVAILABLE = original
+        self.assertEqual(res['status'], 'ok')
+        self.assertTrue((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+        self.assertIn('Pillow not installed', html)
 
 
 class PlacePageTests(_Base):
@@ -854,6 +1029,105 @@ class TreeTests(_Base):
         res = self._run(linked=True)
         self.assertTrue(any('root_person' in m and 'not in the index' in m for m in res['messages']))
         self.assertNotIn('fha-tree-data', self._read('index.html'))
+
+
+class FamilyChartTests(_Base):
+    """Win 1 (plan 17): the person-page pedigree grows spouse + children
+    columns (children left, subject + spouse(s), parents, grandparents right -
+    see private/wireframes/person.html for the illustrative layout). `_seed_rel`
+    mirrors index.py's derived edge directions: `child` is written on the
+    PARENT's row pointing at the child (`person_id`=parent, `other_id`=child);
+    `spouse` is reciprocal but a single direction is enough for a page built
+    from that person's own point of view."""
+
+    def test_family_chart_shows_spouse_and_children(self):
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', surname='Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole', surname='Cole')
+        self._seed_person('p-cccccccccc', 'Ethel Hartley', surname='Hartley')
+        self._seed_person('p-dddddddddd', 'Calvin Hartley', surname='Hartley')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-dddddddddd')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        # A children column pushes the chart to 4 columns - the compact variant.
+        self.assertIn('class="pedigree pedigree-family"', page)
+        self.assertIn('Margaret Cole', page)
+        self.assertIn('Ethel Hartley', page)
+        self.assertIn('Calvin Hartley', page)
+        self.assertIn('Family</summary>', page)          # chart heading, no longer "Ancestors"
+
+    def test_ancestor_only_pedigree_unchanged_without_family(self):
+        # No spouse/children at all: today's ancestor-only shape is preserved
+        # exactly - plain `pedigree` class, no compact family variant.
+        self._seed_person('p-aaaaaaaaaa', 'Child Carl', surname='Carl')
+        self._seed_person('p-bbbbbbbbbb', 'Parent Pat', surname='Pat')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="pedigree"', page)
+        self.assertNotIn('pedigree-family', page)
+
+    def test_family_chart_renders_with_no_known_ancestors(self):
+        # Win 1 drops the old "only if >=1 known ancestor" gate: a subject
+        # with zero recorded parents but a spouse still gets a family chart.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="pedigree"', page)
+        self.assertIn('Margaret Cole', page)
+
+    def test_family_chart_multiple_spouses_stack(self):
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'First Wife')
+        self._seed_person('p-cccccccccc', 'Second Wife')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-cccccccccc')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('First Wife', page)
+        self.assertIn('Second Wife', page)
+
+    def test_family_chart_redacts_living_spouse_and_child_standalone(self):
+        # The non-negotiable case: a living spouse/child must never leak a
+        # name or date into the standalone SVG, and (since there is no
+        # 'Unknown' placeholder a child/spouse column can fall back to,
+        # unlike an ancestor slot) they are omitted outright rather than
+        # shown as a redaction chip.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Living Spouse', living='true')
+        self._seed_person('p-cccccccccc', 'Living Child', living='true')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+        self._run(linked=False)
+        standalone = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Living Spouse', standalone)
+        self.assertNotIn('Living Child', standalone)
+        # Everything that would have appeared was redacted, and there are no
+        # ancestors either - the whole chart is correctly absent, not shown
+        # empty (matches the pre-win-1 "no ancestors -> no chart" behavior).
+        self.assertNotIn('class="pedigree"', standalone)
+
+        self._run(linked=True)
+        linked = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Living Spouse', linked)
+        self.assertIn('Living Child', linked)
+
+    def test_family_chart_redacted_child_omitted_deceased_sibling_kept(self):
+        # A mixed household: one living child is dropped, one deceased child
+        # still shows - proves the redaction is per-child, not all-or-nothing.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Living Child', living='true')
+        self._seed_person('p-cccccccccc', 'Deceased Child', living='false')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+        self._run(linked=False)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Living Child', page)
+        self.assertIn('Deceased Child', page)
 
 
 class DraftExclusionTests(_Base):
