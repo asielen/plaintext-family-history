@@ -455,7 +455,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "d54cf09fe87c12251938147f134a30e75454f2b9d9c60e4148fbcf88707999e7",
+      "sha256": "c8fc992ebf76a1a1cb42c2366838354b3cf2d8f7f5f7227e9ecf40c1afaac896",
       "spec_version": "1.2"
     },
     {
@@ -467,7 +467,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "2fc04fead16d5b400b07aae3bf7f55958db7422a7c32cb98f961f7e674612401",
+      "sha256": "c01b6d45aeaa581a0fc3300a46b667c03a7d13c3c44ad19d6103f4f4b763051c",
       "spec_version": "1.2"
     },
     {
@@ -509,13 +509,13 @@
     {
       "path": "tools/claim.py",
       "category": "operating",
-      "sha256": "6837caee6ecdc8a4efff96fcfab084cd527ec369e34b305d6ea59743a41c3bd2",
+      "sha256": "b80a662648e1b99793c9bacc4c112936517f4ab019262259cf2058bd4b74eeea",
       "spec_version": "1.2"
     },
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "b15492a81f9a90190e029cf5fcb7c9c961ab693c8bcee5b9e7efe3712fdbeaec",
+      "sha256": "e57367d3e78ecdd7d405ad5ced4a7c8906bfda220d6d0a7d38961565b0668889",
       "spec_version": "1.2"
     },
     {
@@ -539,13 +539,13 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "7bf5b8718439dc315ae48606c13b60e3a6ec53516d7253047a7365da0d020ed4",
+      "sha256": "78750dc470ee091dc50c5ddb3ef7cf1c4e94c6a83e3625398c0f9b88c9814b09",
       "spec_version": "1.2"
     },
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "b515c95ce09bbf54403bb165bd079ca028bb136c0ff44654693f491d0ee1ef03",
+      "sha256": "daf8dbd71a627afe79dc456aaa8e90476f80d48109fe4188ed14c41cd7d827f5",
       "spec_version": "1.2"
     },
     {
@@ -593,7 +593,7 @@
     {
       "path": "tools/person.py",
       "category": "operating",
-      "sha256": "2887050f50b1c1f21e7698e9f3a65b5df1ff23864560391813f30a5fa9ca993f",
+      "sha256": "2e50c915a9b9093f5efeb8f5fb1a478f6cedcb18024b75ad23c2f7e97670919b",
       "spec_version": "1.2"
     },
     {
@@ -611,7 +611,7 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "1b736fa2ba517f0cfd30567e366a924e618730b2a00cc474677b2fd84fa1315f",
+      "sha256": "0ba2e5141676c8771b39bfe1db5b773c9ee201473ed3da83314c3eb6b793c6f1",
       "spec_version": "1.2"
     },
     {
@@ -645,9 +645,15 @@
       "spec_version": "1.2"
     },
     {
+      "path": "tools/source.py",
+      "category": "operating",
+      "sha256": "9c943904ba1e6b134b1e7fa0d3c263bbaf8dba91a42366a14033df1f1dba3edd",
+      "spec_version": "1.2"
+    },
+    {
       "path": "tools/stubs.py",
       "category": "operating",
-      "sha256": "18376dccdad3b208d403be7bfe3f75bd33f454dc87430f9db5becfa3533bc95f",
+      "sha256": "9f9290e65e5b0a464e23bdf32c5f45c5ce9bff82062e916e9f8d589f149d5a11",
       "spec_version": "1.2"
     },
     {

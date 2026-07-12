@@ -23,7 +23,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import capture
-from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, load_fha_yaml, read_record
+from _lib import (
+    EXIT_CLEAN,
+    EXIT_ERRORS,
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    load_fha_yaml,
+    read_record,
+)
 
 SAMPLES = ROOT / 'tests' / 'fixtures' / 'capture-samples'
 
@@ -188,6 +195,43 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertIn('--ingest', err)
         self.assertIn('--host', err)
+
+    def test_path_with_url_refuses_and_writes_nothing(self) -> None:
+        # --path is mutually exclusive with the capture-from-page flow.
+        rc, err = self._mode_conflict_rc(path='C:/photos/x.jpg', url='https://x.test/p')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--path', err)
+        self.assertIn('--url', err)
+        self.assertIn('two separate commands', err)
+        self.assertFalse((self.archive / 'inbox').exists())
+
+    def test_path_with_asset_refuses(self) -> None:
+        rc, err = self._mode_conflict_rc(path='C:/photos/x.jpg', asset='scan.html')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--path', err)
+        self.assertIn('--asset', err)
+
+    def test_note_without_path_refuses(self) -> None:
+        # --note only means something alongside --path.
+        rc, err = self._mode_conflict_rc(note='a note with nowhere to go')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--note', err)
+
+    def test_path_with_title_is_allowed(self) -> None:
+        # --title is shared between page capture and --path (it labels either).
+        rc, err = self._mode_conflict_rc(ingest=True, path='C:/photos/x.jpg')
+        self.assertEqual(rc, EXIT_ERRORS)  # path vs ingest still conflicts...
+        self.assertIn('--path', err)
+        # ...but --title alongside --path alone is NOT a mode conflict.
+        args = SimpleNamespace(
+            root=str(self.archive), path=str(self.tmp / 'missing.jpg'),
+            title='My Photo', note=None, dry_run=True,
+        )
+        err2 = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err2):
+            rc2 = capture._run_capture(args)
+        self.assertEqual(rc2, EXIT_CLEAN)
+        self.assertNotIn('--title', err2.getvalue())
 
     def test_asset_copied_with_matching_stem(self) -> None:
         asset = self.tmp / 'scan.jpg'
@@ -540,6 +584,135 @@ class CaptureRootGuardTestCase(unittest.TestCase):
                 ))
             self.assertEqual(rc, EXIT_CLEAN)
             self.assertTrue(list((root / 'inbox').glob('*.notes.md')))
+
+
+class CapturePathTestCase(unittest.TestCase):
+    """`fha capture --path` - register a must-never-move asset (TOOLING §13b's
+    "the photo library is never reorganized" case). No HTML, no stdin, no
+    asset copy - exactly one pointer stub in the inbox."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.archive = self.tmp / 'archive'
+        self.archive.mkdir()
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.config = load_fha_yaml(self.archive, strict=True)
+        self.target = self.tmp / 'library' / 'grandma-wedding.jpg'
+        self.target.parent.mkdir(parents=True)
+        self.target.write_bytes(b'not-a-real-jpeg')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _only_stub(self) -> Path:
+        stubs = list((self.archive / 'inbox').glob('*.notes.md'))
+        self.assertEqual(len(stubs), 1, f'expected exactly one stub, got {stubs}')
+        return stubs[0]
+
+    def test_writes_one_pointer_stub_and_never_touches_target(self) -> None:
+        before = self.target.read_bytes()
+        rc = capture.run_capture_path(
+            self.archive, self.config, path=str(self.target)).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        inbox_files = list((self.archive / 'inbox').iterdir())
+        self.assertEqual(len(inbox_files), 1)          # ONE file only
+        stub = self._only_stub()
+        self.assertEqual(stub.name, 'grandma-wedding.notes.md')
+
+        rec = read_record(stub)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertTrue(rec['meta']['asset_elsewhere'])
+        self.assertEqual(
+            rec['meta']['asset_path'], str(self.target).replace('\\', '/'))
+        self.assertEqual(
+            rec['meta']['asset_path_absolute'],
+            str(self.target.resolve()).replace('\\', '/'))
+
+        # The target itself is completely untouched.
+        self.assertTrue(self.target.is_file())
+        self.assertEqual(self.target.read_bytes(), before)
+
+    def test_note_and_title_land_in_the_stub(self) -> None:
+        rc = capture.run_capture_path(
+            self.archive, self.config, path=str(self.target),
+            note='Found in the cedar chest.', title='Grandma\'s Wedding',
+        ).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        self.assertEqual(rec['meta']['title'], "Grandma's Wedding")
+        self.assertIn('Found in the cedar chest.', rec['body'])
+
+    def test_no_note_gets_a_placeholder_body(self) -> None:
+        rc = capture.run_capture_path(
+            self.archive, self.config, path=str(self.target)).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        self.assertIn('no note given', rec['body'])
+
+    def test_stem_collision_gets_dash_two(self) -> None:
+        inbox = self.archive / 'inbox'
+        inbox.mkdir()
+        (inbox / 'grandma-wedding.notes.md').write_text(
+            '---\nasset_elsewhere: true\n---\n\nan older registration\n',
+            encoding='utf-8')
+        rc = capture.run_capture_path(
+            self.archive, self.config, path=str(self.target)).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((inbox / 'grandma-wedding-2.notes.md').exists())
+        # The original stub is untouched.
+        self.assertIn('an older registration',
+                      (inbox / 'grandma-wedding.notes.md').read_text(encoding='utf-8'))
+
+    def test_missing_target_warns_but_still_writes(self) -> None:
+        missing = self.tmp / 'library' / 'does-not-exist.jpg'
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = capture.run_capture_path(
+                self.archive, self.config, path=str(missing)).exit_code
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('not found right now', err.getvalue())
+        self.assertIn('may be unplugged', err.getvalue())
+        # Forgiving: the stub is still written despite the warning.
+        stub = self._only_stub()
+        self.assertTrue(stub.read_text(encoding='utf-8'))
+
+    def test_dry_run_writes_nothing(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = capture.run_capture_path(
+                self.archive, self.config, path=str(self.target), dry_run=True).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse((self.archive / 'inbox').exists())
+        self.assertIn('grandma-wedding.notes.md', out.getvalue())
+        self.assertIn('asset_path', out.getvalue())
+
+    def test_dry_run_on_missing_target_still_exits_clean_but_warns(self) -> None:
+        # Every other dry-run branch in this module reports a clean preview
+        # regardless of what a live run would warn about; --path matches.
+        missing = self.tmp / 'library' / 'does-not-exist.jpg'
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = capture.run_capture_path(
+                self.archive, self.config, path=str(missing), dry_run=True).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('not found right now', err.getvalue())
+        self.assertFalse((self.archive / 'inbox').exists())
+
+    def test_cli_end_to_end(self) -> None:
+        args = SimpleNamespace(
+            root=str(self.archive), path=str(self.target), note='via CLI',
+            title=None, dry_run=False,
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = capture._run_capture(args)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Registered', out.getvalue())
+        rec = read_record(self._only_stub())
+        self.assertIn('via CLI', rec['body'])
 
 
 class LabelGuardTestCase(unittest.TestCase):

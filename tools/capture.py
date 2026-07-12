@@ -33,6 +33,13 @@ research-log entry (capture is itself a logged search, closing the §16 loop):
 into the live index's `search_log` when an index exists, else appended to
 `.cache/capture_log.jsonl`.
 
+A third mode, `fha capture --path PATH`, has nothing to do with web pages: it
+registers a file (most often a photo) that must stay exactly where it is - the
+photo library is never reorganized. It reads no HTML and stages no asset copy;
+it writes one pointer stub (`asset_elsewhere: true` + the path, both as given
+and resolved) so the item enters the inbox processing queue without ever being
+moved, renamed, or opened.
+
 Stdlib only - the page is parsed with `html.parser`, never a third-party HTML
 library (the project adds no dependency before Jinja2 in M8).
 """
@@ -64,6 +71,8 @@ library (the project adds no dependency before Jinja2 in M8).
 #    run_ingest                - sweep staged bundles (§6) → run_capture per bundle
 #    _resolve_staging_dir / _iter_bundles / _read_bundle / _read_scrape_source
 #    _park_ingested
+#    _render_pointer_stub      - the --path mode's stub text (no recipe, no HTML)
+#    run_capture_path          - register a must-never-move asset by path
 #    register / _run_capture / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,6 +105,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
+    EXIT_WARNINGS,
     SOURCE_TYPES,
     FhaConfigError,
     Result,
@@ -947,6 +957,123 @@ def _rel(path: Path, archive_root: Path) -> str:
         return path.resolve().relative_to(archive_root.resolve()).as_posix()
     except (ValueError, OSError):
         return path.as_posix()
+
+
+# ── --path: register an asset that must never move ──────────────────────────
+
+def _render_pointer_stub(
+    *, title: str | None, note: str | None, given_path: str, absolute_path: str,
+) -> str:
+    """Render the `--path` pointer stub: no recipe, no HTML, just a location.
+
+    `asset_elsewhere: true` reuses the existing TOOLING §13b case-(c) flag - a
+    stub with no same-stem companion asset sitting beside it in the inbox -
+    so a later `fha process` does not treat the missing local file as a
+    mistake (`_companion_for_sidecar` in process.py already treats that flag
+    as deliberate). `asset_path` / `asset_path_absolute` are new fields: no
+    existing stub key names an elsewhere-asset's actual location (the case-c
+    flag only ever says THAT one is missing, never WHERE it lives), so this
+    build adds them rather than overload a boolean. Both carry forward
+    slashes for a stable cross-platform read; `asset_path` is the path
+    exactly as the human typed it (their own shorthand may be meaningful to
+    them - a mapped drive letter, a relative note-to-self), `asset_path_absolute`
+    is the resolved, unambiguous form a future `fha process` pass can act on
+    regardless of the working directory it runs from.
+    """
+    lines = ['---']
+    if title:
+        lines.append(f'title: {_yaml_inline(title)}')
+    lines.append('asset_elsewhere: true')
+    lines.append(f'asset_path: {_yaml_inline(given_path)}')
+    lines.append(f'asset_path_absolute: {_yaml_inline(absolute_path)}')
+    lines.append('---')
+    lines.append('')
+    body = (note or '').strip()
+    lines.append(body if body else '*(registered by path - no note given)*')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def run_capture_path(
+    archive_root: Path,
+    fha_config: dict,
+    *,
+    path: str,
+    note: str | None = None,
+    title: str | None = None,
+    dry_run: bool = False,
+) -> Result:
+    """Register a must-never-move asset: write ONE pointer stub, touch nothing else.
+
+    Some assets (a photo still living in a family member's own library, a
+    document in someone else's archive folder) can never be copied, moved, or
+    renamed - but the human still wants it on the processing queue. This mode
+    reads no HTML and stages no asset copy; the pointed-at file is only ever
+    `.exists()`-checked, never opened, moved, or renamed. Durable identity
+    (an embedded `SOURCE:` keyword, per TOOLING §13b's photos-are-never-
+    renamed rule) is a later `fha process` pass's job - this tool only gets
+    the item into the queue.
+
+    `slug` comes from the target FILE's own stem (there is no page title to
+    borrow), so the stub is named after what it points at, not a generic
+    placeholder; `_unique_stub_stem` still guards against a same-named stub
+    already sitting in the inbox.
+
+    A missing target (an unplugged external drive, a typo'd path) is not a
+    hard refusal - the human may be capturing before reconnecting the drive -
+    so the stub is still written and the warning is printed either way; only
+    the LIVE write's exit code reflects it (1, warnings), matching the
+    module's other dry-run branches, which always report a clean preview
+    (exit 0) regardless of what a real run would warn about.
+    """
+    target = Path(path)
+    given_path = str(path).replace('\\', '/')
+    absolute_path = str(target.resolve()).replace('\\', '/')
+    exists = target.exists()
+
+    slug = _slugify(target.stem)
+    inbox = resolve_path('inbox', fha_config, archive_root)
+    stem = _unique_stub_stem(inbox, slug)
+    stub_path = inbox / f'{stem}.notes.md'
+    stub_text = _render_pointer_stub(
+        title=title, note=note, given_path=given_path, absolute_path=absolute_path)
+
+    missing_warning = (
+        f'WARNING: {given_path} not found right now - recorded anyway; '
+        'the drive may be unplugged.'
+    )
+
+    if dry_run:
+        print(f'[dry-run] Would register {given_path}')
+        if not exists:
+            print(missing_warning, file=sys.stderr)
+        print(f'[dry-run] Would stage stub {_rel(stub_path, archive_root)}')
+        print('[dry-run] --- stub contents ---')
+        for line in stub_text.splitlines():
+            print(f'[dry-run] {line}')
+        print('[dry-run] --- end stub contents ---')
+        print('[dry-run] No file written. Re-run without --dry-run to apply.')
+        return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'exists': exists})
+
+    if not exists:
+        print(missing_warning, file=sys.stderr)
+
+    try:
+        inbox.mkdir(parents=True, exist_ok=True)
+        stub_path.write_text(stub_text, encoding='utf-8')
+    except OSError as e:
+        raise CaptureWriteError(
+            f'could not stage stub {_rel(stub_path, archive_root)}: {e}'
+        ) from e
+
+    print(f'Registered {given_path}')
+    print(f'Staged stub {_rel(stub_path, archive_root)}')
+
+    return Result(
+        exit_code=(EXIT_CLEAN if exists else EXIT_WARNINGS),
+        data={'status': 'ok', 'exists': exists, 'stub': _rel(stub_path, archive_root)},
+        changed=[str(stub_path)],
+    )
 
 
 # ── Multi-asset ingest: the §12.1 inbox bundle folder (the "both" case) ─────────
@@ -1878,10 +2005,13 @@ Clip an open web-record page into your inbox to process later.
 
   fha capture --url URL              Capture a page (HTML piped on stdin)
   fha capture --asset saved.html     Capture from a saved page file
+  fha capture --path PATH            Register a file that must never move
   fha capture --ingest               Sweep staged capture bundles into the inbox
 
 Writes a stub in inbox/, never a finished source; a later `fha process` turns it
-into a real record. It reads only the page you already have - never logs in."""
+into a real record. It reads only the page you already have - never logs in.
+--path is different: it never reads anything, it just remembers where a file
+(often a photo) already lives, so it enters the queue without being moved."""
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -1905,6 +2035,12 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help="Override the source's own date, e.g. 1880 or 'about 1880'")
     p.add_argument('--asset', metavar='FILE',
                    help='Asset to stage alongside the stub (an image, or the saved page HTML)')
+    p.add_argument('--path', metavar='PATH',
+                   help='Register a file that must stay exactly where it is (a photo '
+                        'library is never reorganized) - writes a pointer stub only, '
+                        'never moves, renames, or reads the file itself')
+    p.add_argument('--note', metavar='TEXT',
+                   help='A note to record with --path (goes in the stub body)')
     p.add_argument('--ingest', nargs='?', const=True, default=False, metavar='DIR',
                    help='Sweep staged capture bundles from DIR (default: the '
                         'capture_staging folder or ~/Downloads/fha-inbox) into the inbox')
@@ -1924,33 +2060,55 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 # Each capture mode owns a set of flags. Mode precedence (highest first):
-# --install-host, --host, --ingest, then the default page capture. Mixing
-# flags from two modes is almost always a copy-paste mistake (a stray --url
-# left on an --ingest command line); the old code silently ran the winning
-# mode and dropped the loser's flags without a word. Refuse the combination up
-# front instead, naming both sides so the fix is obvious. --browser (defaulted,
-# only read by --install-host) and --dry-run (cross-mode; --host keeps its own
-# refusal) are deliberately not mode-owned here.
+# --install-host, --host, --ingest, --path, then the default page capture.
+# Mixing flags from two modes is almost always a copy-paste mistake (a stray
+# --url left on an --ingest command line); the old code silently ran the
+# winning mode and dropped the loser's flags without a word. Refuse the
+# combination up front instead, naming both sides so the fix is obvious.
+# --browser (defaulted, only read by --install-host) and --dry-run
+# (cross-mode; --host keeps its own refusal) are deliberately not mode-owned
+# here.
 _CAPTURE_MODE_NOUN = {
     'install-host': 'the host installer',
     'host': 'the native-messaging host',
     'ingest': 'the staging sweep',
+    'path': 'registering a file that must never move',
     'page capture': 'a page capture',
 }
 
-# (attr, display flag, owning mode) in a stable reporting order.
+# (attr, display flag, owning mode) in a stable reporting order. `mode` names
+# the noun used in the conflict message; a flag legitimately shared by more
+# than one mode (only --title so far: it labels both a captured page and a
+# --path pointer stub) is widened via _SHARED_FLAG_MODES below rather than
+# duplicated here, so its message wording stays exactly what it was before
+# --path existed whenever the OTHER mode (page capture) is the one refusing.
 _CAPTURE_FLAG_MODES = [
     ('install_host', '--install-host', 'install-host'),
     ('extension_id', '--extension-id', 'install-host'),
     ('host_manifest_dir', '--host-manifest-dir', 'install-host'),
     ('host', '--host', 'host'),
     ('ingest', '--ingest', 'ingest'),
+    ('path', '--path', 'path'),
+    ('note', '--note', 'path'),
     ('url', '--url', 'page capture'),
     ('title', '--title', 'page capture'),
     ('source_type', '--type', 'page capture'),
     ('source_date', '--date', 'page capture'),
     ('asset', '--asset', 'page capture'),
 ]
+
+# Flags allowed in more than one mode without tripping the conflict check.
+# --title overrides a captured page's title AND labels a --path pointer stub
+# (TOOLING §13b: "optional title:") - the same human intent ("call this...")
+# either way, so it is not page-capture-exclusive the way --url/--asset are.
+_SHARED_FLAG_MODES: dict[str, frozenset[str]] = {
+    'title': frozenset({'page capture', 'path'}),
+}
+
+
+def _flag_owning_modes(attr: str, primary_mode: str) -> frozenset[str]:
+    """The set of modes `attr` is allowed in - usually just its primary mode."""
+    return _SHARED_FLAG_MODES.get(attr, frozenset({primary_mode}))
 
 
 def _flag_given(args: argparse.Namespace, attr: str) -> bool:
@@ -1964,9 +2122,10 @@ def _mode_conflict_error(args: argparse.Namespace) -> str | None:
     """Return a plain refusal if flags from two capture modes were mixed, else None.
 
     The winning mode is whichever the dispatch would actually run (precedence
-    order above). Any explicitly-given flag owned by a different mode is a
-    conflict: report the first such flag, naming both the losing flag's mode and
-    the winning mode, and tell the human to run the two as separate commands.
+    order above). Any explicitly-given flag not ALLOWED in the winning mode
+    (see `_flag_owning_modes`) is a conflict: report the first such flag,
+    naming both the losing flag's mode and the winning mode, and tell the
+    human to run the two as separate commands.
     """
     if _flag_given(args, 'install_host'):
         winner, trigger = 'install-host', '--install-host'
@@ -1974,11 +2133,13 @@ def _mode_conflict_error(args: argparse.Namespace) -> str | None:
         winner, trigger = 'host', '--host'
     elif _flag_given(args, 'ingest'):
         winner, trigger = 'ingest', '--ingest'
+    elif _flag_given(args, 'path'):
+        winner, trigger = 'path', '--path'
     else:
         winner, trigger = 'page capture', None
 
     for attr, display, mode in _CAPTURE_FLAG_MODES:
-        if mode == winner:
+        if winner in _flag_owning_modes(attr, mode):
             continue
         if _flag_given(args, attr):
             trigger_note = f' ({trigger})' if trigger else ''
@@ -2043,6 +2204,21 @@ def _run_capture(args: argparse.Namespace) -> int:
             return run_ingest(
                 archive_root, fha_config,
                 staging_dir=staging_dir,
+                dry_run=bool(getattr(args, 'dry_run', False)),
+            ).exit_code
+        except CaptureWriteError as e:
+            print(f'ERROR: {e}', file=sys.stderr)
+            return EXIT_FAILURE
+
+    # --path is a distinct mode: no stdin/HTML read at all, just a pointer
+    # stub recording where an asset that must never move already lives.
+    path_arg = getattr(args, 'path', None)
+    if path_arg:
+        try:
+            return run_capture_path(
+                archive_root, fha_config,
+                path=path_arg, note=getattr(args, 'note', None),
+                title=getattr(args, 'title', None),
                 dry_run=bool(getattr(args, 'dry_run', False)),
             ).exit_code
         except CaptureWriteError as e:

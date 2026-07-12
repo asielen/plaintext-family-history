@@ -26,8 +26,8 @@ COMMANDS = (
     'id', 'index', 'lint', 'check', 'stubs', 'views', 'doctor', 'find', 'search',
     'relate', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
     'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
-    'person', 'site', 'install', 'update-tools', 'working-copy', 'normalize-links',
-    'backup',
+    'person', 'source', 'site', 'install', 'update-tools', 'working-copy',
+    'normalize-links', 'backup',
 )
 
 
@@ -461,6 +461,7 @@ def main(argv: list[str] | None = None) -> int:
         from claim import register as claim_register
         from confirm import register as confirm_register
         from person import register as person_register
+        from source import register as source_register
         from scaffold import register as scaffold_register
         from working_copy import register as working_copy_register
         from normalize_links import register as normalize_links_register
@@ -495,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         claim_register(subs)
         confirm_register(subs)
         person_register(subs)
+        source_register(subs)
         site_register(subs)
         scaffold_register(subs)  # adds both 'install' and 'update-tools'
         working_copy_register(subs)
