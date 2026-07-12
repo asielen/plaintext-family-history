@@ -367,6 +367,33 @@ def format_person_sex_error(value: object) -> str:
     )
 
 
+# Claim confidence (SPEC §8.5): evidence quality, required on every claim and
+# distinct from status (review state). Kept here as the one canonical
+# vocabulary + defaulting rubric so every claim-minting path (fha claim new
+# today, any future drafting pass) defaults identically. lint.py's
+# VALID_CONFIDENCE mirrors the same three values for validation.
+CONFIDENCE_VALUES: tuple[str, ...] = ('high', 'medium', 'low')
+
+_CONFIDENCE_BY_SOURCE_TYPE: dict[str, str] = {
+    'vital-record': 'high',
+    'interview': 'low',
+}
+
+
+def default_confidence(source_type: object) -> str:
+    """Default a new claim's confidence from its source's source_type.
+
+    SPEC §8.5 (locked): "Tooling defaults confidence from source_type
+    (vital-record -> high, census/newspaper -> medium, interview hearsay ->
+    low) and only asks the human when the source class is ambiguous." The
+    rubric's named anchors are mapped explicitly; every other source type
+    lands on 'medium' ("single source with moderate specificity") - the
+    conservative middle, never silently wrong in the dangerous direction.
+    The human always overrides with --confidence.
+    """
+    return _CONFIDENCE_BY_SOURCE_TYPE.get(str(source_type or ''), 'medium')
+
+
 def format_edtf_error(value: object, *, field: str = 'date') -> str:
     """Explain an unreadable date with examples the human can copy.
 

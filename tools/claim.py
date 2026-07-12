@@ -5,12 +5,13 @@ claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8
   fha claim <C-id> --status accepted|disputed|rejected|needs-review|superseded
                    [--reviewed DATE] [--value "…"] [--date EDTF]
                    [--type TYPE] [--place L-id | --place-text TEXT]
-                   [--persons P-id[,P-id...]] [--root PATH] [--dry-run]
+                   [--persons P-id[,P-id...]] [--confidence high|medium|low]
+                   [--root PATH] [--dry-run]
 
   fha claim new --source S-id --type TYPE --value TEXT [--date DATE]
                 [--place L-id | --place-text TEXT] [--persons P-id[,P-id...]]
                 [--subtype WORD] [--status suggested|accepted]
-                [--dry-run] [--root PATH]
+                [--confidence high|medium|low] [--dry-run] [--root PATH]
 
 Two verbs share one file because both are surgical `## Claims` block writers on
 an existing source record, and the second (`new`) was built by lifting the
@@ -114,10 +115,12 @@ import yaml
 
 from _lib import (
     CLAIM_TYPES,
+    CONFIDENCE_VALUES,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     ClaimEditRefused,
+    default_confidence,
     INDEX_SCHEMA_VERSION,
     Result,
     append_claim_to_source,
@@ -374,6 +377,7 @@ def _apply_claim_review(
     place: str | None = None,
     place_text: str | None = None,
     persons: list[str] | None = None,
+    confidence: str | None = None,
 ) -> tuple[str, bool]:
     """Surgically set any of status/reviewed/value/date/type/place/persons on one claim.
 
@@ -594,6 +598,12 @@ def _apply_claim_review(
             set_scalar('persons', rendered_persons, insert_after=persons_idx)
         else:
             anchor = set_scalar('persons', rendered_persons, insert_after=anchor)
+    if confidence is not None:
+        conf_idx, _conf_kind, _ = find_key('confidence')
+        if conf_idx is not None:
+            set_scalar('confidence', confidence, insert_after=conf_idx)
+        else:
+            anchor = set_scalar('confidence', confidence, insert_after=anchor)
 
     new_lines = lines[:start] + item + lines[end:]
     trailing_nl = '\n' if text.endswith('\n') else ''
@@ -621,6 +631,7 @@ def run_claim(
     place: str | None = None,
     place_text: str | None = None,
     persons: list[str] | None = None,
+    confidence: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Edit one claim (status move and/or field corrections); return a Result.
@@ -669,10 +680,17 @@ def run_claim(
     result.data['claim_id'] = fmt_id_display(cid)
 
     if (status is None and value is None and date is None and claim_type is None
-            and place is None and place_text is None and persons is None):
+            and place is None and place_text is None and persons is None
+            and confidence is None):
         return _fail(result, 'no-op',
                      'Nothing to change - pass at least one of --status, --value, --date, '
-                     '--type, --place, --place-text, or --persons.')
+                     '--type, --place, --place-text, --persons, or --confidence.')
+
+    if confidence is not None and confidence not in CONFIDENCE_VALUES:
+        return _fail(result, 'failed',
+                     f'{confidence!r} is not a confidence level. confidence records evidence '
+                     'quality (separate from status, the review state) - use one of: '
+                     f'{", ".join(CONFIDENCE_VALUES)} (SPEC §8.5).')
 
     if status is not None and status not in REVIEW_STATUSES:
         result.ok = False
@@ -783,6 +801,7 @@ def run_claim(
             text, cid, status=status, reviewed=reviewed,
             value=value, date=normalized_date, type_=claim_type,
             place=place_display, place_text=place_text, persons=persons_norm,
+            confidence=confidence,
         )
     except _ClaimEditRefused as e:
         result.ok = False
@@ -848,6 +867,8 @@ def run_claim(
         changed_bits.append('place_text updated')
     if persons_norm is not None:
         changed_bits.append('persons -> [' + ', '.join(fmt_id_display(p) for p in persons_norm) + ']')
+    if confidence is not None:
+        changed_bits.append(f'confidence -> {confidence}')
     summary = f'{fmt_id_display(cid)}: ' + '; '.join(changed_bits)
 
     if dry_run:
@@ -885,25 +906,25 @@ def run_claim(
 def _render_new_claim_lines(
     cid: str, claim_type: str, value: str, *,
     persons: list[str], date: str | None, place: str | None, place_text: str | None,
-    subtype: str | None, status: str, reviewed: str | None,
+    subtype: str | None, status: str, reviewed: str | None, confidence: str,
 ) -> list[str]:
     """Build the YAML lines for one brand-new claim item (SPEC §8.4 field order).
 
     Field order mirrors SPEC §8.4's illustrative block (value, id, type,
-    persons, date, place, status, reviewed, notes), with `subtype` moved into
-    its natural slot right after `type` - SPEC lists subtype among the "other
-    optional fields" at the end of the block, but it qualifies type, so a
-    human skimming the item reads it more naturally there.
+    persons, date, place, status, confidence, reviewed, notes), with `subtype`
+    moved into its natural slot right after `type` - SPEC lists subtype among
+    the "other optional fields" at the end of the block, but it qualifies
+    type, so a human skimming the item reads it more naturally there.
 
-    `confidence`/`information`/`evidence`/`notes` are SPEC-legal claim fields
-    this verb deliberately leaves unset - there is no CLI flag for any of them
-    yet, a scope line kept tight to what `run_claim_new`'s signature actually
-    takes. `information`/`evidence` are genuinely optional (lint only pings
-    them informationally). `confidence`, though, is in lint's hard-required
-    set right alongside `persons` (E010, SPEC §8.5) - so `run_claim_new`
-    warns about it every time, the same way it warns about a missing
-    `persons:` (see its docstring), rather than let a required field vanish
-    silently.
+    `confidence` is always written: SPEC §8.5 marks it required on every claim
+    (lint E010, the same required set as `persons`), and the same section
+    directs tooling to DEFAULT it from source_type rather than leave it
+    missing - `run_claim_new` resolves the default (`_lib.default_confidence`)
+    or takes the human's --confidence override, so by the time this renderer
+    runs the value is settled. `information`/`evidence`/`notes` are the
+    SPEC-legal fields this verb deliberately leaves unset (lint only pings
+    them informationally); a scope line kept tight to what `run_claim_new`'s
+    signature actually takes.
     """
     lines = [
         f'- value: {_yaml_inline(value)}',
@@ -921,6 +942,7 @@ def _render_new_claim_lines(
     elif place_text:
         lines.append(f'  place_text: {_yaml_inline(place_text)}')
     lines.append(f'  status: {status}')
+    lines.append(f'  confidence: {confidence}')
     if status == 'accepted' and reviewed:
         lines.append(f'  reviewed: {reviewed}')
     return lines
@@ -938,6 +960,7 @@ def run_claim_new(
     persons: list[str] | None = None,
     subtype: str | None = None,
     status: str = 'accepted',
+    confidence: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Mint a brand-new claim onto an existing source's `## Claims` block.
@@ -962,9 +985,10 @@ def run_claim_new(
     is OPTIONAL: a claim may legitimately be minted before its persons are
     linked (a source often names one, then more get attached during review),
     but the result carries a warning naming the follow-up command so the gap
-    does not go unnoticed. `confidence:` is likewise required by lint (E010,
-    same required-field set as `persons`) but this verb has no `--confidence`
-    flag yet, so every mint carries that same class of warning too.
+    does not go unnoticed. `confidence` (required on every claim, SPEC §8.5)
+    is defaulted from the source's `source_type` when not given - the
+    spec-directed behavior ("Tooling defaults confidence from source_type") -
+    with a message saying what was chosen and how to override.
 
     Every write funnels through `_lib.append_claim_to_source`, which raises
     `ClaimEditRefused` (caught here as `_ClaimEditRefused`) rather than ever
@@ -998,6 +1022,12 @@ def run_claim_new(
     if place is not None and place_text is not None:
         return _fail(result, 'failed',
                      '--place and --place-text are mutually exclusive - use one or the other.')
+
+    if confidence is not None and confidence not in CONFIDENCE_VALUES:
+        return _fail(result, 'failed',
+                     f'{confidence!r} is not a confidence level. confidence records evidence '
+                     'quality (separate from status, the review state) - use one of: '
+                     f'{", ".join(CONFIDENCE_VALUES)} (SPEC §8.5).')
 
     normalized_date = None
     if date is not None:
@@ -1038,10 +1068,28 @@ def run_claim_new(
     cid = mint_ids('C', 1, archive_root)[0]
     result.data['claim_id'] = fmt_id_display(cid)
 
+    # Confidence is required on every claim (SPEC §8.5) and the same section
+    # directs tooling to default it from the source's type rather than leave
+    # the field missing. Read the source's own record for its source_type; a
+    # record that will not parse still gets the conservative 'medium'.
+    if confidence is None:
+        try:
+            source_meta = read_record(source_path).get('meta') or {}
+        except Exception:
+            source_meta = {}
+        source_type = source_meta.get('source_type')
+        confidence = default_confidence(source_type)
+        described = f'from source type {source_type!r}' if source_type else \
+            'no source_type on the record, so the conservative middle'
+        result.add('info',
+                   f'confidence defaulted to {confidence} ({described} - SPEC §8.5 rubric). '
+                   'Pass --confidence high|medium|low to override.')
+
     reviewed = _today() if status == 'accepted' else None
     item_lines = _render_new_claim_lines(
         cid, claim_type, value, persons=persons_norm, date=normalized_date,
         place=place, place_text=place_text, subtype=subtype, status=status, reviewed=reviewed,
+        confidence=confidence,
     )
 
     try:
@@ -1065,16 +1113,6 @@ def run_claim_new(
         result.add('warning',
                    f'{fmt_id_display(cid)} has no persons: yet - `fha lint` will flag it until '
                    f'you link one: `fha claim {fmt_id_display(cid)} --persons P-id[,P-id...]`.')
-    # confidence: is required by the SAME lint check (E010) that persons: is -
-    # SPEC §8.5 marks it required on every claim, and unlike information/
-    # evidence (the Mills fields lint only pings informationally), a missing
-    # confidence is a hard lint error. This verb has no --confidence flag yet,
-    # so every claim it mints needs this same nudge; it degrades to a plain
-    # hand-edit pointer rather than a fictitious command, since neither verb
-    # in this file writes confidence: today.
-    result.add('warning',
-               f'{fmt_id_display(cid)} has no confidence: yet (high | medium | low, SPEC §8.5) - '
-               '`fha lint` will flag it (E010) until you add one by hand under ## Claims.')
     if place is not None and not _place_known_in_index(archive_root, place):
         result.add('warning',
                    f'--place {fmt_id_display(normalize_id(place))} was not found in the place '
@@ -1135,6 +1173,7 @@ def _cmd_claim(args: argparse.Namespace) -> int:
         place=getattr(args, 'place', None),
         place_text=getattr(args, 'place_text', None),
         persons=persons,
+        confidence=getattr(args, 'confidence', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
     )
     for msg in result.messages:
@@ -1164,6 +1203,7 @@ def _cmd_claim_new(args: argparse.Namespace) -> int:
         persons=persons,
         subtype=getattr(args, 'subtype', None),
         status=args.status,
+        confidence=getattr(args, 'confidence', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
     )
     for msg in result.messages:
@@ -1177,7 +1217,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('claim_id', metavar='C-id', help='The claim to review (e.g. C-fd0000001a).')
     p.add_argument('--status', choices=REVIEW_STATUSES,
                    help='The review status to set. At least one of --status/--value/--date/'
-                        '--type/--place/--place-text/--persons is required.')
+                        '--type/--place/--place-text/--persons/--confidence is required.')
     p.add_argument('--reviewed', metavar='DATE',
                    help='Review date (YYYY-MM-DD); defaults to today. Only takes effect '
                         'together with --status.')
@@ -1198,6 +1238,9 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--persons', metavar='P-id[,P-id...]',
                    help='Optionally REPLACE the whole persons: list, comma-separated P-ids '
                         '(every id must already have a person record).')
+    p.add_argument('--confidence', choices=CONFIDENCE_VALUES,
+                   help='Optionally set the evidence-quality level (SPEC §8.5; separate '
+                        'from --status, the review state).')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p.add_argument('--dry-run', action='store_true', dest='dry_run',
                    help='Preview the YAML change without writing.')
@@ -1226,6 +1269,9 @@ def _add_new_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--status', choices=NEW_CLAIM_STATUSES, default='accepted',
                    help='Review state to mint at (default: accepted - a human directing this '
                         'IS the review; AI callers must pass --status suggested).')
+    p.add_argument('--confidence', choices=CONFIDENCE_VALUES,
+                   help='Evidence-quality level (SPEC §8.5). Defaults from the source\'s '
+                        'source_type (vital-record: high, interview: low, else medium).')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p.add_argument('--dry-run', action='store_true', dest='dry_run',
                    help='Preview the claim block that would be appended, without writing.')
@@ -1240,8 +1286,8 @@ Record your verdict on a suggested fact - the human decision point.
   fha claim <C-id> --place L-baba9801fa   Correct a field without touching status
 
 Only you move a claim to accepted. Nothing becomes a fact until you decide here.
-At least one of --status/--value/--date/--type/--place/--place-text/--persons
-is required. Preview any change first with --dry-run.
+At least one of --status/--value/--date/--type/--place/--place-text/--persons/
+--confidence is required. Preview any change first with --dry-run.
 
 To mint a brand-new claim onto a source, use `fha claim new` (`fha claim new --help`)."""
 

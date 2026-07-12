@@ -868,16 +868,59 @@ class RunClaimNewTests(unittest.TestCase):
         self.assertTrue(any('persons:' in m.text for m in result.messages))
         self.assertIn(result['claim_id'], self._claims())
 
-    def test_missing_confidence_always_warns(self) -> None:
-        # confidence: is in lint's REQUIRED_CLAIM_FIELDS (E010) right beside
-        # persons, but this verb has no --confidence flag - every mint must
-        # warn, not silently drop a field lint will call an error.
+    def test_confidence_defaults_from_source_type(self) -> None:
+        # confidence: is required on every claim (SPEC §8.5, lint E010), and
+        # §8.5 directs tooling to DEFAULT it from source_type rather than
+        # leave it missing. The fixture source is source_type: other, which
+        # the rubric maps to the conservative 'medium'.
         result = claim.run_claim_new(
             self.root, source_id='S-1111111111', claim_type='occupation',
             value='Bookkeeper', persons=['P-aaaaaaaaaa'])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertTrue(any('confidence' in m.text for m in result.messages))
-        self.assertNotIn('confidence', self._claims()[result['claim_id']])
+        self.assertEqual(self._claims()[result['claim_id']].get('confidence'), 'medium')
+        self.assertTrue(any('defaulted to medium' in m.text for m in result.messages))
+
+    def test_confidence_override_wins_and_skips_default_message(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], confidence='high')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()[result['claim_id']].get('confidence'), 'high')
+        self.assertFalse(any('defaulted' in m.text for m in result.messages))
+
+    def test_confidence_invalid_refused_without_write(self) -> None:
+        before = (self.root / 'sources' / 'other'
+                  / 'test-source_S-1111111111.md').read_text(encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', confidence='certain')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(any('high, medium, low' in m.text for m in result.messages))
+        after = (self.root / 'sources' / 'other'
+                 / 'test-source_S-1111111111.md').read_text(encoding='utf-8')
+        self.assertEqual(before, after)
+
+    def test_default_confidence_rubric_anchors(self) -> None:
+        # The SPEC §8.5 anchors, pinned: vital-record -> high, interview ->
+        # low, everything else (census included) -> medium.
+        from _lib import default_confidence
+        self.assertEqual(default_confidence('vital-record'), 'high')
+        self.assertEqual(default_confidence('interview'), 'low')
+        self.assertEqual(default_confidence('census'), 'medium')
+        self.assertEqual(default_confidence(None), 'medium')
+
+    def test_edit_verb_confidence_field_only(self) -> None:
+        # Field-only --confidence edit: replaces the existing confidence: line
+        # in place, leaves status and reviewed untouched.
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', confidence='low')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = (self.root / 'sources' / 'other'
+                / 'test-source_S-1111111111.md').read_text(encoding='utf-8')
+        self.assertIn('confidence: low', text)
+        self.assertNotIn('confidence: high', text)
+        self.assertIn('status: suggested', text)
+        self.assertNotIn('reviewed:', text.split('C-aa11bb22cc')[1].split('- value:')[0])
 
 
 # ── fha claim new: CLI routing (fha.main and the standalone parser) ─────────────
