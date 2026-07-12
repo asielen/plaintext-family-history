@@ -19,19 +19,19 @@ person.py's `set-living`-only opening).
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
 - **Locate by scanning, never the index.** The record is found by walking
-  `sources/` for the `_{S-id}.md` filename suffix (`_find_source_record_path`,
-  a local sibling of `_lib.find_person_record_path` - `_lib.py` has no source
-  equivalent of that helper yet, and this build is scoped to leave `_lib.py`
-  untouched, so the scan lives here rather than being lifted). A stale or
-  absent `.cache/index.sqlite` can never block or misdirect the write - the
-  same rule `fha claim` and `fha person set-living` follow.
+  `sources/` for the `_{S-id}.md` filename suffix (the shared
+  `_lib.find_source_record_path`, sibling of `find_person_record_path`). A
+  stale or absent `.cache/index.sqlite` can never block or misdirect the
+  write - the same rule `fha claim` and `fha person set-living` follow.
 - **The edit is text surgery, bounded to one section.** Only lines strictly
   between the `## Notes` heading and the next `##` heading (or end of file)
   ever change; the frontmatter, the `## Claims` fence, and any later section
   (`## Stories`, etc.) are never touched by construction - the insertion point
-  is always inside those bounds, never outside them. Reading and writing go
-  through `read_text_exact`/`write_text_exact` so a CRLF-authored record
-  churns only the lines the edit adds.
+  is always inside those bounds, never outside them. The locate/append itself
+  is the shared `_lib.append_paragraph_to_section` engine (the same one
+  `fha person edit`/`note` uses); reading and writing go through
+  `read_text_exact`/`write_text_exact` so a CRLF-authored record churns only
+  the lines the edit adds.
 - **Append-only, always.** The new text always lands as a new blank-line-
   separated paragraph at the END of the section; an existing note is never
   edited, reordered, or removed - this is a human-written audit trail, and
@@ -63,15 +63,9 @@ DESIGN RULES (why the code looks the way it does)
 
 CODE MAP
 --------
-  _find_source_record_path   - scan sources/ for one S-id's record (local
-                                sibling of _lib.find_person_record_path)
+  (locate + append are the shared _lib helpers: find_source_record_path finds
+   the record; append_paragraph_to_section performs the bounded '## Notes' edit)
   _source_label               - "S-xxxx (title)" for human-facing messages
-  _is_blank_line / _strip_trailing_blank_lines - blank-line helpers shared by
-                                the two insertion branches below
-  _notes_section_bounds       - locate the '## Notes' heading and its section
-                                end (next '##' heading, or end of file)
-  _append_note_lines          - build the edited line list (both branches:
-                                heading present / heading missing)
   run_source_note             - validate, locate, edit; returns a _lib.Result
   _emit / _cmd_source_note / _make_group_help / register / _standalone_main
 """
@@ -93,50 +87,29 @@ from _lib import (
     EXIT_WARNINGS,
     FRONT_RE,
     Result,
+    append_paragraph_to_section,
     claims_edit_problem,
     configure_utf8_stdout,
+    find_source_record_path,
     fmt_id_display,
     frontmatter_fence_span,
     id_type_of,
     is_valid_id,
     normalize_id,
-    parse_filename,
     read_text_exact,
     reapply_newline,
     resolve_root_arg,
+    result_fail,
     write_text_exact,
 )
 
 configure_utf8_stdout()
 
-# One '## Notes' (or any '## Heading') line, matched after stripping a
-# CRLF file's trailing '\r' (lines come from text.split('\n'), which leaves
-# '\r' attached to the previous line - see run_source_note).
+# One '## Notes' line, matched after stripping a CRLF file's trailing '\r'
+# (lines come from text.split('\n'), which leaves '\r' attached to the previous
+# line - see run_source_note). Used only for the duplicate-heading safety check;
+# the actual locate/append goes through the shared _lib section helpers.
 _NOTES_HEADING_RE = re.compile(r'^##\s+Notes\s*$')
-_HEADING_LINE_RE = re.compile(r'^##\s+\S')
-
-
-def _find_source_record_path(archive_root: Path, source_id: str) -> Path | None:
-    """Scan `sources/` for one S-id's record file, or None.
-
-    The source sibling of `_lib.find_person_record_path`: identity is the
-    `_{S-id}.md` filename suffix (via the shared `_lib.parse_filename`), so a
-    stale or absent index never blocks or misdirects a write. Kept local
-    (rather than lifted into `_lib.py`) only because this build is scoped to
-    leave `_lib.py` untouched - a natural follow-up would move it next to
-    `find_person_record_path` for `fha find`/`fha claim` to share too.
-    """
-    target = normalize_id(source_id)
-    sources_dir = Path(archive_root) / 'sources'
-    if not sources_dir.is_dir():
-        return None
-    for path in sorted(sources_dir.rglob('*.md')):
-        parsed = parse_filename(path)
-        if not parsed or parsed.get('id_str') != target:
-            continue
-        if parsed.get('id_type') == 'S' and not parsed.get('is_companion'):
-            return path
-    return None
 
 
 def _source_label(text: str, sid: str) -> str:
@@ -160,106 +133,6 @@ def _source_label(text: str, sid: str) -> str:
     return fmt_id_display(sid)
 
 
-def _is_blank_line(line: str) -> bool:
-    """True for an empty line, or a CRLF file's carriage-return-only line."""
-    return line.rstrip('\r').strip() == ''
-
-
-def _strip_trailing_blank_lines(lines: list[str]) -> list[str]:
-    """Drop trailing blank lines from a copy of `lines`."""
-    out = list(lines)
-    while out and _is_blank_line(out[-1]):
-        out.pop()
-    return out
-
-
-def _notes_section_bounds(
-    lines: list[str], body_start: int,
-) -> tuple[int, int] | None:
-    """Return (heading_index, section_end_index) for the '## Notes' heading.
-
-    `body_start` is the first line after the frontmatter fence (0 when there
-    is none - a malformed record still gets its notes appended, per the
-    forgiving-input rule). `section_end_index` is the first line at or after
-    `heading_index + 1` that starts a NEW '##' heading (so a following
-    `## Stories` section is never touched), or `len(lines)` when '## Notes'
-    runs to the end of the file. Returns None when no top-level '## Notes'
-    heading exists in the body at all - the caller then creates one.
-    """
-    heading_idx = None
-    for i in range(body_start, len(lines)):
-        if _NOTES_HEADING_RE.match(lines[i].rstrip('\r')):
-            heading_idx = i
-            break
-    if heading_idx is None:
-        return None
-    end = len(lines)
-    for j in range(heading_idx + 1, len(lines)):
-        if _HEADING_LINE_RE.match(lines[j].rstrip('\r')):
-            end = j
-            break
-    return heading_idx, end
-
-
-def _append_note_lines(
-    lines: list[str], body_start: int, note_lines: list[str], cr: str,
-) -> list[str]:
-    """Return the full edited line list with `note_lines` appended.
-
-    Two branches, both bounded so nothing outside the '## Notes' section (or,
-    when absent, nothing before a brand-new one at end of file) ever changes:
-
-      1. **Heading present** - the new paragraph lands after any existing
-         section content (one blank line separating them, matching the
-         file's other section-break style), with a trailing blank line kept
-         before whatever follows ('## Stories', or end of file).
-      2. **Heading absent** - a malformed record (or a very old scaffold)
-         gets '## Notes' created at the end of the file, one blank line
-         after the existing content, with the new paragraph directly under
-         the fresh heading (matching `process.py`'s own scaffold style: the
-         heading is immediately followed by its first paragraph, no blank
-         line between the two).
-
-    `cr` is `'\\r'` for a CRLF-authored record, else `''` - appended to every
-    NEWLY inserted line (blank separators included) so `reapply_newline`'s
-    "already carries CRLF" no-op does not leave the new lines as stray bare
-    LF inside an otherwise CRLF file (existing lines from `lines` already
-    carry their own `\\r` from the `text.split('\\n')` that produced them).
-
-    One wrinkle `cr` alone does not cover: a blank line that lands as the
-    VERY LAST element of the returned list must be `''`, never `cr`. Every
-    other blank line is followed by more list elements, so joining with
-    `'\\n'` gives it its own trailing `\\n` (turning a bare `cr` into a
-    correct `\\r\\n`); the last element gets no such newline after it, so a
-    bare trailing `'\\r'` would sit dangling with nothing after it - and a
-    plain `.read_text()` (universal newlines) reads a lone `\\r` as its OWN
-    line break, silently adding a phantom blank line the next time the file
-    is read the ordinary way. `''` as the true last element reproduces the
-    same "file ends with one newline" shape `text.split('\\n')` always
-    produces, CRLF or not.
-    """
-    bounds = _notes_section_bounds(lines, body_start)
-    if bounds is not None:
-        heading_idx, end = bounds
-        section = lines[heading_idx + 1:end]
-        kept = _strip_trailing_blank_lines(section)
-        tail = lines[end:]
-        if kept:
-            new_section = kept + [cr] + note_lines
-        else:
-            new_section = list(note_lines)
-        # A blank line before a following heading is a real mid-file line
-        # (more elements - the tail - follow it); at true end of file the
-        # trailing element must be '' (see the dangling-`\r` note above).
-        new_section = new_section + ([cr] if tail else [''])
-        return lines[:heading_idx + 1] + new_section + tail
-
-    body = _strip_trailing_blank_lines(lines)
-    if body:
-        body = body + [cr]   # blank line before the new heading - more follows it
-    return body + [f'## Notes{cr}'] + note_lines + ['']   # true end of file
-
-
 # ── The engine ────────────────────────────────────────────────────────────────
 
 def run_source_note(
@@ -279,12 +152,10 @@ def run_source_note(
     """
     result = Result(data={'status': None, 'source_id': None, 'path': None})
 
-    def _refuse(status: str, message: str) -> Result:
-        result.ok = False
-        result.exit_code = EXIT_FAILURE
-        result.data['status'] = status
-        result.add('error', message)
-        return result
+    def _refuse(status: str, message: str, *, next_step: str | None = None) -> Result:
+        # Delegates to the shared _lib.result_fail (exit 3 / error-level) so the
+        # refusal shape stays identical to confirm/claim/person's builders.
+        return result_fail(result, status, message, next_step=next_step)
 
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return _refuse(
@@ -303,23 +174,23 @@ def run_source_note(
             f'add. Run `fha source note {fmt_id_display(sid)} --text '
             '"your note here"`.')
 
-    path = _find_source_record_path(archive_root, sid)
+    path = find_source_record_path(archive_root, sid)
     if path is None:
-        result.ok = False
-        result.exit_code = EXIT_WARNINGS
-        result.data['status'] = 'not-found'
-        result.add('warning',
-                   f'No source record found for {fmt_id_display(sid)} under '
-                   f'{archive_root / "sources"} - check the id with '
-                   f'`fha find {fmt_id_display(sid)}`.',
-                   next_step='fha find ' + fmt_id_display(sid))
-        return result
+        return result_fail(
+            result, 'not-found',
+            f'No source record found for {fmt_id_display(sid)} under '
+            f'{archive_root / "sources"} - check the id with '
+            f'`fha find {fmt_id_display(sid)}`.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha find ' + fmt_id_display(sid))
     result.data['path'] = str(path)
 
     try:
         text_in = read_text_exact(path)
     except OSError as e:
-        return _refuse('refused', f'cannot read {path}: {e}')
+        return _refuse(
+            'refused', f'cannot read {path}: {e}',
+            next_step='Check the file is not open in another program and try again.')
 
     label = _source_label(text_in, sid)
 
@@ -339,9 +210,12 @@ def run_source_note(
             'the extra heading by hand, then run `fha lint`. Nothing was written.')
 
     cr = '\r' if '\r\n' in text_in else ''
-    note_lines = [ln.rstrip('\r') + cr for ln in note_body.split('\n')]
+    # Strip any stray CR from the incoming --text so the shared appender (which
+    # re-applies the record's own line ending) never doubles it into '\r\r'.
+    paragraph = '\n'.join(ln.rstrip('\r') for ln in note_body.split('\n'))
 
-    new_lines = _append_note_lines(lines, body_start, note_lines, cr)
+    new_lines, _created, _old_content = append_paragraph_to_section(
+        lines, body_start, 'Notes', paragraph, cr)
     new_text = '\n'.join(new_lines)
 
     # Belt-and-braces (see module docstring): the insertion is bounded to the

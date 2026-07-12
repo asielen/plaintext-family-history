@@ -72,7 +72,10 @@ class StubSlugNameTests(unittest.TestCase):
         self.assertEqual(stub_slug_name('Mary Ann Smith'), ('smith', 'mary_ann'))
 
     def test_single_word_name_has_no_surname(self) -> None:
-        self.assertEqual(stub_slug_name('Cher'), ('unknown', 'cher'))
+        # SPEC §13: a surname-less person (a mononym) leaves the sort-name slot
+        # EMPTY, so the filename leads with the double underscore
+        # (`__cher_P-….md`) - hence the empty surname slug, not 'unknown'.
+        self.assertEqual(stub_slug_name('Cher'), ('', 'cher'))
 
     def test_empty_string_falls_back_to_unknown(self) -> None:
         self.assertEqual(stub_slug_name(''), ('unknown', 'unknown'))
@@ -92,6 +95,16 @@ class StubFilenameTests(unittest.TestCase):
         self.assertEqual(
             stub_filename('Jane Doe', 'P-aaaaaaaaaa'),
             'doe__jane_P-aaaaaaaaaa.md',
+        )
+
+    def test_mononym_leads_with_double_underscore(self) -> None:
+        # SPEC §13: a real single-token name (a mononym, an enslaved ancestor
+        # recorded only by a given name) has an EMPTY sort-name slot, so the
+        # filename leads with the double underscore - `__cher_P-….md`, NOT the
+        # `unknown__cher_…` a genuinely nameless fallback would use.
+        self.assertEqual(
+            stub_filename('Cher', 'P-ffffffffff'),
+            '__cher_P-ffffffffff.md',
         )
 
     def test_none_name_uses_surname_less_unknown_form(self) -> None:

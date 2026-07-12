@@ -155,6 +155,7 @@ from _lib import (
     claims_edit_problem,
     configure_utf8_stdout,
     find_person_record_path,
+    find_source_record_path,
     fmt_id_display,
     frontmatter_edit_problem,
     frontmatter_fence_span,
@@ -172,6 +173,7 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     resolve_root_arg,
+    result_fail,
     resolve_typed_ref,
     strip_link_wrapper,
     write_text_exact,
@@ -225,16 +227,16 @@ def _find_source_path_for_claim(archive_root: Path, claim_id: str) -> Path | Non
 
 
 def _find_source_path_by_id(archive_root: Path, source_id: str) -> Path | None:
-    """Scan `sources/` for the record file whose `_{S-id}.md` suffix matches."""
-    target = normalize_id(source_id)
-    sources_dir = archive_root / 'sources'
-    if not sources_dir.is_dir():
-        return None
-    for path in sorted(sources_dir.rglob('*.md')):
-        parsed = parse_filename(path)
-        if parsed and parsed.get('id_str') == target:
-            return path
-    return None
+    """Scan `sources/` for the record file whose `_{S-id}.md` suffix matches.
+
+    Thin wrapper over the shared `_lib.find_source_record_path` (the same scan
+    `fha source note` and `fha claim new` use). The shared version additionally
+    requires the matched file's id_type to be `S`; that is a no-op tightening
+    here - `parse_filename` only sets a non-`S` id_type for a differently-typed
+    id in the suffix, and the sole caller has already validated `source_id` as
+    an S-id - so the semantics are identical for every input this receives.
+    """
+    return find_source_record_path(archive_root, source_id)
 
 
 # ── Surgical claim-block editing ───────────────────────────────────────────────
@@ -3050,19 +3052,14 @@ def run_confirm_merge(
 # ── Result helpers ──────────────────────────────────────────────────────────────
 
 def _fail(result: Result, status: str, message: str) -> Result:
-    result.ok = False
-    result.exit_code = EXIT_FAILURE
-    result.data['status'] = status
-    result.add('error', message)
-    return result
+    """A plain hard refusal (exit 3, error-level) - delegates to _lib.result_fail."""
+    return result_fail(result, status, message)
 
 
 def _notfound(result: Result, message: str, next_step: str | None = None) -> Result:
-    result.ok = False
-    result.exit_code = EXIT_WARNINGS
-    result.data['status'] = 'not-found'
-    result.add('warning', message, next_step=next_step)
-    return result
+    """A not-found warning (exit 1) - delegates to _lib.result_fail."""
+    return result_fail(result, 'not-found', message,
+                       exit_code=EXIT_WARNINGS, level='warning', next_step=next_step)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────

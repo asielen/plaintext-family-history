@@ -76,11 +76,13 @@ CODE MAP
   Shared
     _today                    - review-stamp default (overridable in tests)
     _ClaimEditRefused         - alias of _lib.ClaimEditRefused (shared with fha confirm)
-    _fail / _notfound         - small Result-builders (mirrors confirm.py's helpers)
+    _fail / _notfound         - thin delegators to the shared _lib.result_fail builder
     _claim_type_problem       - unknown-type / relationship-refusal gate (shared by both verbs)
     _invalid_person_ids       - which --persons entries are not P-id shaped
     _unresolvable_person_ids  - which (shape-valid) P-ids have no person record
     _place_known_in_index     - best-effort L-id existence check (warns, never refuses)
+    _validate_field_args      - the place/place_text/confidence/date/persons checks
+                                both verbs share verbatim (identical wording)
 
   fha claim <C-id> (review + field edit)
     _find_claim_record        - scan sources/ for the .md holding one C-id
@@ -140,6 +142,7 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     resolve_root_arg,
+    result_fail,
     scan_person_record_ids,
     sqlite_cache_schema_status,
     write_text_exact,
@@ -174,25 +177,18 @@ def _today() -> str:
 
 
 def _fail(result: Result, status: str, message: str, *, next_step: str | None = None) -> Result:
-    """Build a plain EXIT_FAILURE refusal onto `result` (mirrors confirm.py's `_fail`).
+    """A plain EXIT_FAILURE refusal - delegates to the shared `_lib.result_fail`.
 
-    Small enough, and needed by both `run_claim` and `run_claim_new`, that it
-    is worth a local copy rather than reaching into confirm.py - tools never
-    import tools (AGENTS_TOOLING.md)."""
-    result.ok = False
-    result.exit_code = EXIT_FAILURE
-    result.data['status'] = status
-    result.add('error', message, next_step=next_step)
-    return result
+    Both `run_claim` and `run_claim_new` refuse from many call sites; the one
+    shared builder (also used by confirm/person/source) keeps the shape from
+    drifting. `next_step` carries the exact recovery command when there is one."""
+    return result_fail(result, status, message, next_step=next_step)
 
 
 def _notfound(result: Result, message: str, *, next_step: str | None = None) -> Result:
-    """Build a plain EXIT_WARNINGS not-found onto `result` (mirrors confirm.py's `_notfound`)."""
-    result.ok = False
-    result.exit_code = EXIT_WARNINGS
-    result.data['status'] = 'not-found'
-    result.add('warning', message, next_step=next_step)
-    return result
+    """A plain EXIT_WARNINGS not-found - delegates to the shared `_lib.result_fail`."""
+    return result_fail(result, 'not-found', message,
+                       exit_code=EXIT_WARNINGS, level='warning', next_step=next_step)
 
 
 def _claim_type_problem(claim_type: str) -> str | None:
@@ -264,6 +260,80 @@ def _place_known_in_index(archive_root: Path, place_id: str) -> bool:
         return False
     finally:
         conn.close()
+
+
+def _validate_field_args(
+    result: Result,
+    archive_root: Path,
+    *,
+    place: str | None,
+    place_text: str | None,
+    persons: list[str] | None,
+    confidence: str | None,
+    date: str | None,
+) -> tuple[Result | None, str | None, list[str] | None]:
+    """Validate the claim field-arguments common to both verbs of `fha claim`.
+
+    `run_claim` (edit) and `run_claim_new` (mint) accept the same
+    `--place`/`--place-text`/`--persons`/`--confidence`/`--date` arguments and
+    refuse each malformed value with byte-identical wording; this is the one
+    copy of those five checks so the strings cannot drift. The checks run in a
+    fixed order - place/place_text exclusivity, confidence vocabulary, date
+    shape, place L-id shape, persons shape + resolvability - matching the order
+    `run_claim_new` already used; `run_claim` calls this after its own
+    status/type checks, which nudges (only) where its confidence refusal fires
+    relative to a status refusal when more than one argument is malformed at
+    once, but changes no message text.
+
+    Returns `(refusal, normalized_date, persons_norm)`:
+      - `refusal` - a completed refusal `Result` the caller returns as-is, or
+        None when every check passed.
+      - `normalized_date` - `normalize_date(date)` when `date` was given (and
+        readable), else None.
+      - `persons_norm` - the normalized P-id list when `persons` was given
+        (possibly empty), else None. `run_claim` keeps None as "leave the
+        list alone"; `run_claim_new` treats None as the empty list.
+    """
+    if place is not None and place_text is not None:
+        return _fail(result, 'failed',
+                     '--place and --place-text are mutually exclusive - use one or the other.'), None, None
+
+    if confidence is not None and confidence not in CONFIDENCE_VALUES:
+        return _fail(result, 'failed',
+                     f'{confidence!r} is not a confidence level. confidence records evidence '
+                     'quality (separate from status, the review state) - use one of: '
+                     f'{", ".join(CONFIDENCE_VALUES)} (SPEC §8.5).'), None, None
+
+    normalized_date = None
+    if date is not None:
+        normalized_date = normalize_date(date)
+        if normalized_date is None:
+            return _fail(result, 'failed', '--date ' + format_edtf_error(date)), None, None
+
+    if place is not None and not (is_valid_id(place) and id_type_of(place) == 'L'):
+        return _fail(result, 'failed',
+                     f'--place {place!r} is not a valid place ID. L-ids look like '
+                     'L-baba9801fa. For a place written a different way, use --place-text '
+                     'instead.'), None, None
+
+    persons_norm: list[str] | None = None
+    if persons is not None:
+        bad_shape = _invalid_person_ids(persons)
+        if bad_shape:
+            return _fail(result, 'failed',
+                         'Not a valid person ID: ' + ', '.join(repr(p) for p in bad_shape)
+                         + '. P-ids look like P-de957bcda1.'), None, None
+        missing = _unresolvable_person_ids(archive_root, persons)
+        if missing:
+            return _notfound(
+                result,
+                'No person record for: ' + ', '.join(missing) + '. Mint a stub first with '
+                '`fha person new "Name"`, or run `fha stubs --from-names` to create one for '
+                'every unresolved name, then retry.',
+                next_step='fha person new "Name"'), None, None
+        persons_norm = [normalize_id(p) for p in persons]
+
+    return None, normalized_date, persons_norm
 
 
 # Thin alias: the exception type itself lives in `_lib.ClaimEditRefused` -
@@ -713,12 +783,6 @@ def run_claim(
                      'Nothing to change - pass at least one of --status, --value, --date, '
                      '--type, --place, --place-text, --persons, or --confidence.')
 
-    if confidence is not None and confidence not in CONFIDENCE_VALUES:
-        return _fail(result, 'failed',
-                     f'{confidence!r} is not a confidence level. confidence records evidence '
-                     'quality (separate from status, the review state) - use one of: '
-                     f'{", ".join(CONFIDENCE_VALUES)} (SPEC §8.5).')
-
     if status is not None and status not in REVIEW_STATUSES:
         result.ok = False
         result.exit_code = EXIT_FAILURE
@@ -733,38 +797,19 @@ def run_claim(
                      'review date on the status you are setting). Add --status, or drop '
                      '--reviewed if you are only editing another field.')
 
-    if place is not None and place_text is not None:
-        return _fail(result, 'failed',
-                     '--place and --place-text are mutually exclusive - use one or the other.')
-
     if claim_type is not None:
         problem = _claim_type_problem(claim_type)
         if problem is not None:
             return _fail(result, 'refused' if claim_type == 'relationship' else 'invalid-type',
                          problem)
 
-    if place is not None and not (is_valid_id(place) and id_type_of(place) == 'L'):
-        return _fail(result, 'failed',
-                     f'--place {place!r} is not a valid place ID. L-ids look like '
-                     'L-baba9801fa. For a place written a different way, use --place-text '
-                     'instead.')
-
-    persons_norm: list[str] | None = None
-    if persons is not None:
-        bad_shape = _invalid_person_ids(persons)
-        if bad_shape:
-            return _fail(result, 'failed',
-                         'Not a valid person ID: ' + ', '.join(repr(p) for p in bad_shape)
-                         + '. P-ids look like P-de957bcda1.')
-        missing = _unresolvable_person_ids(archive_root, persons)
-        if missing:
-            return _notfound(
-                result,
-                'No person record for: ' + ', '.join(missing) + '. Mint a stub first with '
-                '`fha person new "Name"`, or run `fha stubs --from-names` to create one for '
-                'every unresolved name, then retry.',
-                next_step='fha person new "Name"')
-        persons_norm = [normalize_id(p) for p in persons]
+    # The place/place_text/confidence/date/persons checks are shared verbatim
+    # with `run_claim_new` - one helper, identical wording (SPEC §8.4/§8.5).
+    refusal, normalized_date, persons_norm = _validate_field_args(
+        result, archive_root, place=place, place_text=place_text,
+        persons=persons, confidence=confidence, date=date)
+    if refusal is not None:
+        return refusal
 
     # `reviewed:` is the human-review stamp, stamped only together with a
     # --status move (the combination without --status was already refused
@@ -782,16 +827,6 @@ def run_claim(
                              f'--reviewed {reviewed!r} is not a calendar date. Use YYYY-MM-DD, '
                              f'e.g. {_today()}.')
     result.data['reviewed'] = reviewed
-
-    normalized_date = None
-    if date is not None:
-        normalized_date = normalize_date(date)
-        if normalized_date is None:
-            result.ok = False
-            result.exit_code = EXIT_FAILURE
-            result.data['status'] = 'failed'
-            result.add('error', '--date ' + format_edtf_error(date))
-            return result
 
     found = _find_claim_record(archive_root, cid)
     if found is None:
@@ -1057,44 +1092,17 @@ def run_claim_new(
                      f'{", ".join(NEW_CLAIM_STATUSES)}. (Review moves a claim on to disputed/'
                      'rejected/needs-review/superseded later, with `fha claim <C-id> --status …`.)')
 
-    if place is not None and place_text is not None:
-        return _fail(result, 'failed',
-                     '--place and --place-text are mutually exclusive - use one or the other.')
-
-    if confidence is not None and confidence not in CONFIDENCE_VALUES:
-        return _fail(result, 'failed',
-                     f'{confidence!r} is not a confidence level. confidence records evidence '
-                     'quality (separate from status, the review state) - use one of: '
-                     f'{", ".join(CONFIDENCE_VALUES)} (SPEC §8.5).')
-
-    normalized_date = None
-    if date is not None:
-        normalized_date = normalize_date(date)
-        if normalized_date is None:
-            return _fail(result, 'failed', '--date ' + format_edtf_error(date))
-
-    if place is not None and not (is_valid_id(place) and id_type_of(place) == 'L'):
-        return _fail(result, 'failed',
-                     f'--place {place!r} is not a valid place ID. L-ids look like '
-                     'L-baba9801fa. For a place written a different way, use --place-text '
-                     'instead.')
-
-    persons_norm: list[str] = []
-    if persons:
-        bad_shape = _invalid_person_ids(persons)
-        if bad_shape:
-            return _fail(result, 'failed',
-                         'Not a valid person ID: ' + ', '.join(repr(p) for p in bad_shape)
-                         + '. P-ids look like P-de957bcda1.')
-        missing = _unresolvable_person_ids(archive_root, persons)
-        if missing:
-            return _notfound(
-                result,
-                'No person record for: ' + ', '.join(missing) + '. Mint a stub first with '
-                '`fha person new "Name"`, or run `fha stubs --from-names` to create one for '
-                'every unresolved name, then retry.',
-                next_step='fha person new "Name"')
-        persons_norm = [normalize_id(p) for p in persons]
+    # The place/place_text/confidence/date/persons checks are shared verbatim
+    # with `run_claim`'s edit verb - one helper, identical wording (SPEC §8.4/§8.5).
+    refusal, normalized_date, persons_norm = _validate_field_args(
+        result, archive_root, place=place, place_text=place_text,
+        persons=persons, confidence=confidence, date=date)
+    if refusal is not None:
+        return refusal
+    # This verb builds a fresh claim, so an unset persons list is the empty
+    # list (a claim minted before its people are linked), not "leave it alone".
+    if persons_norm is None:
+        persons_norm = []
 
     source_path = find_source_record_path(archive_root, sid)
     if source_path is None:
@@ -1133,7 +1141,8 @@ def run_claim_new(
     try:
         before = read_text_exact(source_path)
     except OSError as e:
-        return _fail(result, 'failed', f'cannot read {source_path}: {e}')
+        return _fail(result, 'failed', f'cannot read {source_path}: {e}',
+                     next_step='Check the file is not open in another program and try again.')
 
     try:
         after, changed = append_claim_to_source(before, item_lines)
@@ -1174,7 +1183,8 @@ def run_claim_new(
     try:
         write_text_exact(source_path, reapply_newline(after, before))
     except OSError as e:
-        return _fail(result, 'failed', f'cannot write {source_path}: {e}')
+        return _fail(result, 'failed', f'cannot write {source_path}: {e}',
+                     next_step='Check the file is not open elsewhere and the folder is writable, then retry.')
 
     result.data['status'] = 'ok'
     result.note_changed(source_path)

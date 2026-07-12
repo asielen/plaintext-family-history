@@ -166,6 +166,39 @@ class SourceNoteEditTests(unittest.TestCase):
             'Found in the attic in 1998.\n\nNew note text.\n\n## Stories\n', after)
         self.assertIn('Grandma kept it on the mantel.\n', after)
 
+    def test_placeholder_notes_section_is_replaced_not_kept(self) -> None:
+        # DIVERGENCE adopted when the two ## Heading append implementations were
+        # unified into `_lib.append_paragraph_to_section`: a `## Notes` holding
+        # only the `*(none yet)*` placeholder is treated as empty, so the new
+        # note REPLACES it rather than sitting awkwardly beside it. `fha source
+        # note`'s old private appender kept the placeholder; the shared engine
+        # (from `fha person edit`/`note`) does not. Source's real scaffold uses
+        # a different placeholder string, so this only ever affects a hand-typed
+        # person-style placeholder - pure improvement, no real-world regression.
+        placeholder_src = (
+            '---\n'
+            f'id: {SID}\n'
+            f'aliases: [{SID}]\n'
+            'title: Hartley Family Bible\n'
+            'source_type: other\n'
+            'created: 2026-01-01\n'
+            '---\n'
+            '\n'
+            '## Claims\n'
+            '```yaml\n'
+            '```\n'
+            '\n'
+            '## Notes\n'
+            '*(none yet)*\n'
+        )
+        root = _mk_archive(Path(tempfile.mkdtemp()), placeholder_src)
+        record = root / 'sources' / 'other' / f'hartley-bible_{SID}.md'
+        result = source.run_source_note(root, SID, text='A real note.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        after = record.read_text(encoding='utf-8')
+        self.assertNotIn('*(none yet)*', after)
+        self.assertTrue(after.endswith('## Notes\nA real note.\n'))
+
     def test_superseded_source_still_accepts_notes(self) -> None:
         root = _mk_archive(Path(tempfile.mkdtemp()), SOURCE_SUPERSEDED)
         record = root / 'sources' / 'other' / f'hartley-bible_{SID}.md'

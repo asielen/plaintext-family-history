@@ -87,27 +87,15 @@ def _first_command_token(argv: list[str]) -> str | None:
 
 
 def _load_site_module():
-    """Import tools/site.py under a private module name.
+    """Import tools/site.py under the private `fha_site` name.
 
-    The tool's command is `fha site`, so its file must be `tools/site.py`
-    (BUILD.md M8.1) - but the stem `site` collides with Python's stdlib `site`
-    module, which is already in sys.modules from interpreter startup. A plain
-    `import site` therefore returns the stdlib module, not ours. Loading the
-    file by path under the alias `fha_site` sidesteps the collision without
-    disturbing the cached stdlib module the way replacing sys.modules['site']
-    would.
+    Thin wrapper over the shared `_lib.load_site_module` (see its docstring for
+    the stdlib-`site`-shadow quirk this works around). The importlib loader used
+    to live here in full, byte-for-byte duplicated in serve.py; it moved to
+    `_lib` so the two front doors cannot drift.
     """
-    import importlib.util
-
-    mod = sys.modules.get('fha_site')
-    if mod is not None:
-        return mod
-    path = Path(__file__).parent / 'site.py'
-    spec = importlib.util.spec_from_file_location('fha_site', path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules['fha_site'] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    from _lib import load_site_module
+    return load_site_module()
 
 
 def _unknown_command_exit(command: str) -> int:

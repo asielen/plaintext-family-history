@@ -47,15 +47,25 @@ DESIGN RULES (why the code looks the way it does)
   contract `fha stubs --from-names --dry-run` uses) so the preview's filename
   and content match a live run exactly, even though nothing is persisted -
   the ID is simply never referenced by any file, so it is as good as unminted.
-- **Locate by scanning, never the index.** Every verb resolves a P-id through
-  `_locate_person`, which wraps `_lib.find_person_record_path` (a `people/`
-  walk for the `_{P-id}.md` filename suffix), so a stale or absent
-  `.cache/index.sqlite` can never block or misdirect a write - the same rule
-  `fha claim` follows. Stubs and curated profiles are both editable; generated
-  companion files are never candidates. (`estimate`'s optional "a sourced
-  claim already covers this" warning is the one place a verb *reads* the
-  index - and only as a soft, best-effort note; a missing or stale index never
-  blocks the write, it just means the warning cannot be offered.)
+- **Locate by scanning, never the index.** Every verb resolves a P-id by
+  scanning `people/` for the `_{P-id}.md` filename suffix
+  (`_lib.find_person_record_path`), so a stale or absent `.cache/index.sqlite`
+  can never block or misdirect a write - the same rule `fha claim` follows.
+  The four verbs below set-living (relate/estimate/edit/note) share one
+  `_locate_person` prelude for the id-shape check, the scan, and the
+  merged-tombstone refusal. `set-living` is the one exception: it predates
+  that helper and keeps its OWN inline prelude, because its refusals name the
+  flag specifically - the merged-tombstone message points at
+  `fha person set-living <survivor> <value>` (pinned by test), and the
+  no-frontmatter message says "nowhere safe to write the flag" - wording the
+  shared, verb-agnostic `_locate_person` cannot produce. Folding set-living in
+  would either lose that wording or push a flag-specific callback into the
+  shared helper, so the duplication is kept deliberately here. Stubs and
+  curated profiles are both editable; generated companion files are never
+  candidates. (`estimate`'s optional "a sourced claim already covers this"
+  warning is the one place a verb *reads* the index - and only as a soft,
+  best-effort note; a missing or stale index never blocks the write, it just
+  means the warning cannot be offered.)
 - **The edit is text surgery, not a YAML round-trip.** Only the touched
   line(s) change; key order, hand comments, and every other byte survive.
   Reading and writing go through `read_text_exact`/`write_text_exact` so a
@@ -144,11 +154,12 @@ CODE MAP
   run_estimate                 - validate dates, locate, edit birth:/death:, Result
   -- edit / note (curated prose sections) --
   SECTION_HEADINGS, _PRIVATE_OPEN/_PRIVATE_CLOSE - section keys and redaction markers
-  _locate_section               - find one `## Heading`'s (start, end) line span
-  _ends_with_newline            - does a split('\n') list end in the EOF-newline sentinel?
-  _create_section_at_eof        - shared "heading missing, append it at EOF" tail
-  _replace_section               - swap a section's whole content
-  _append_to_section             - add a paragraph at a section's end (creates if absent)
+  (the '## Heading' locate/append primitives are the shared _lib helpers:
+   section_bounds + lines_end_with_newline + create_section_at_eof +
+   append_paragraph_to_section, also used by fha source note)
+  _locate_section / _ends_with_newline / _create_section_at_eof / _append_to_section
+                                 - thin local wrappers over those _lib helpers
+  _replace_section               - swap a section's whole content (replace mode)
   run_edit                      - replace/append one section; Result
   run_note                      - append-only note; refuses on an unclosed private fence
   _emit / _cmd_* / _add_*_arguments / register / _standalone_main
@@ -174,7 +185,9 @@ from _lib import (
     INDEX_SCHEMA_VERSION,
     PERSON_SEX_VALUES,
     Result,
+    append_paragraph_to_section,
     configure_utf8_stdout,
+    create_section_at_eof,
     extract_bare_ids,
     find_person_record_path,
     fmt_id_display,
@@ -186,6 +199,7 @@ from _lib import (
     is_merged_meta,
     is_valid_edtf,
     is_valid_id,
+    lines_end_with_newline,
     mint_ids,
     normalize_date,
     normalize_id,
@@ -193,6 +207,8 @@ from _lib import (
     reapply_newline,
     render_stub_content,
     resolve_root_arg,
+    result_fail,
+    section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
     write_text_exact,
@@ -349,7 +365,8 @@ def run_set_living(
     try:
         text = read_text_exact(path)
     except OSError as e:
-        return _refuse('refused', f'cannot read {path}: {e}')
+        return _refuse('refused', f'cannot read {path}: {e}. Check the file is '
+                       'not open in another program and try again.')
 
     fm = FRONT_RE.match(text)
     if fm is None:
@@ -507,34 +524,31 @@ def run_set_living(
 
 # ── Shared prelude for every verb below set-living ─────────────────────────────
 
-def _refuse_result(result: Result, status: str, message: str) -> Result:
+def _refuse_result(
+    result: Result, status: str, message: str, *, next_step: str | None = None,
+) -> Result:
     """Mark `result` a hard refusal (exit 3): nothing was written.
 
-    The refusal shape set-living builds inline (its local `_refuse` closure);
-    lifted to module level so relate/estimate/edit/note - which each refuse
-    from more than one call site - share exactly one version instead of four
-    near-copies drifting apart (AGENTS_TOOLING's symmetry rule).
+    A thin alias over the shared `_lib.result_fail` (exit 3 / error-level) so
+    relate/estimate/edit/note - which each refuse from more than one call
+    site - share exactly one builder with confirm/claim/source instead of
+    each carrying a near-copy that could drift (AGENTS_TOOLING's symmetry
+    rule). `next_step` carries a plain recovery action when there is one.
     """
-    result.ok = False
-    result.exit_code = EXIT_FAILURE
-    result.data['status'] = status
-    result.add('error', message)
-    return result
+    return result_fail(result, status, message, next_step=next_step)
 
 
 def _not_found_result(result: Result, archive_root: Path, pid: str) -> Result:
     """Mark `result` the standard not-found warning (exit 1) with a `fha find`
     next step - the same shape set-living uses, shared here across the four
-    verbs below it."""
-    result.ok = False
-    result.exit_code = EXIT_WARNINGS
-    result.data['status'] = 'not-found'
-    result.add('warning',
-               f'No person record found for {fmt_id_display(pid)} under '
-               f'{archive_root / "people"} - check the id with '
-               f'`fha find {fmt_id_display(pid)}`.',
-               next_step='fha find ' + fmt_id_display(pid))
-    return result
+    verbs below it (delegates to `_lib.result_fail`)."""
+    return result_fail(
+        result, 'not-found',
+        f'No person record found for {fmt_id_display(pid)} under '
+        f'{archive_root / "people"} - check the id with '
+        f'`fha find {fmt_id_display(pid)}`.',
+        exit_code=EXIT_WARNINGS, level='warning',
+        next_step='fha find ' + fmt_id_display(pid))
 
 
 def _locate_person(
@@ -570,7 +584,9 @@ def _locate_person(
     try:
         text = read_text_exact(path)
     except OSError as e:
-        _refuse_result(result, 'refused', f'cannot read {path}: {e}')
+        _refuse_result(
+            result, 'refused', f'cannot read {path}: {e}',
+            next_step='Check the file is not open in another program and try again.')
         return None
 
     fm = FRONT_RE.match(text)
@@ -884,9 +900,28 @@ def _insert_relationship_entry(text: str, item_lines: list[str]) -> str | None:
         if rest and not rest.startswith('#'):
             return None   # flow/inline form - refuse rather than risk corrupting it
         block_end = idx + 1
-        while block_end < end and (lines[block_end].startswith(' ')
-                                    or lines[block_end].startswith('\t')):
-            block_end += 1
+        while block_end < end:
+            line = lines[block_end]
+            if line.startswith(' ') or line.startswith('\t'):
+                block_end += 1
+                continue
+            if line.strip() == '':
+                # A blank line is part of the list ONLY if the list continues
+                # after it - a later still-indented entry. A blank run followed
+                # by a non-indented line (or the closing --- fence at `end`) is
+                # the TRUE end of the block. Without this lookahead the scan
+                # stopped at the first in-list blank line and spliced the new
+                # entry mid-list (two entries separated by a blank line got the
+                # third wedged between them). A blank in CRLF frontmatter is a
+                # lone '\r', which `.strip()` also reads as empty.
+                look = block_end + 1
+                while look < end and lines[look].strip() == '':
+                    look += 1
+                if look < end and (lines[look].startswith(' ')
+                                   or lines[look].startswith('\t')):
+                    block_end = look
+                    continue
+            break
         indent = '  '
         for ln in lines[idx + 1:block_end]:
             m = re.match(r'^(\s*)-', ln)
@@ -1329,70 +1364,29 @@ SECTION_HEADINGS = {
 _PRIVATE_OPEN = '<!-- private -->'
 _PRIVATE_CLOSE = '<!-- /private -->'
 
-_NEXT_HEADING_RE = re.compile(r'^##\s+\S')
-
+# The prose-section locate/append machinery moved to _lib.py (`section_bounds`,
+# `lines_end_with_newline`, `create_section_at_eof`, `append_paragraph_to_section`)
+# when `fha source note` needed the same CRLF-safe bounded '## Heading' edit and
+# had grown its own copy of it. These stay as thin local wrappers so this file's
+# own readers, and `_replace_section` below, keep their historic names.
 
 def _locate_section(
     lines: list[str], body_start: int, heading_text: str,
 ) -> tuple[int, int, int] | None:
-    """Find one `## {heading_text}` section's bounds, or None if absent.
-
-    Returns `(heading_idx, content_start, content_end)`: the section's prose
-    spans `lines[content_start:content_end]` - everything from just after the
-    heading line up to the next level-2 (`## `) heading, or EOF. Searching
-    only from `body_start` (just past the frontmatter's closing fence) means
-    a `## Biography`-shaped line could never be mistaken for one written
-    inside the frontmatter (which cannot happen anyway, but the boundary is
-    explicit rather than assumed).
-    """
-    heading_re = re.compile(rf'^##\s+{re.escape(heading_text)}\s*\r?$')
-    for i in range(body_start, len(lines)):
-        if heading_re.match(lines[i]):
-            content_end = len(lines)
-            for j in range(i + 1, len(lines)):
-                if _NEXT_HEADING_RE.match(lines[j]):
-                    content_end = j
-                    break
-            return i, i + 1, content_end
-    return None
+    """Thin wrapper over `_lib.section_bounds` (kept for this file's callers)."""
+    return section_bounds(lines, body_start, heading_text)
 
 
 def _ends_with_newline(lines: list[str]) -> bool:
-    """True when `lines` (from `text.split('\\n')`) came from text ending in a
-    trailing newline - `split` leaves a trailing empty element in that case.
-    Checked whenever a section edit touches EOF (the section is the last one,
-    or is being newly created) so the file's own convention is restored
-    afterward instead of silently losing its final newline."""
-    return bool(lines) and lines[-1] == ''
+    """Thin wrapper over `_lib.lines_end_with_newline`."""
+    return lines_end_with_newline(lines)
 
 
 def _create_section_at_eof(
     lines: list[str], heading_text: str, body_text: str, cr: str,
 ) -> list[str]:
-    """The shared "heading does not exist yet" tail for `_replace_section`
-    and `_append_to_section`: append `## {heading_text}` plus `body_text` at
-    EOF, with exactly one blank-line separator from whatever came before.
-
-    A file's trailing element from `text.split('\\n')` (when the text ends in
-    a newline) is a bare `''` SENTINEL - split attaches `\\r` to the line
-    BEFORE a newline, never to this final placeholder - so it means "nothing
-    after the last newline," not a real blank line. Reusing it as a mid-file
-    separator is exactly what produced two real CRLF bugs during this
-    function's own tests: a stray bare `\\n` appearing mid-file, and a
-    dangling `\\r` at EOF with no following `\\n`. The fix: strip that
-    sentinel BEFORE deciding on spacing, add a genuine (`cr`-valued)
-    separator only if one is actually needed, then restore exactly one
-    proper end-of-file sentinel (a bare `''`, never `cr`) afterward.
-    """
-    ends_nl = _ends_with_newline(lines)
-    base = list(lines[:-1]) if ends_nl else list(lines)
-    if base and base[-1].strip() != '':
-        base.append(cr)
-    base.append(f'## {heading_text}{cr}')
-    base.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
-    if ends_nl:
-        base.append('')
-    return base
+    """Thin wrapper over `_lib.create_section_at_eof`."""
+    return create_section_at_eof(lines, heading_text, body_text, cr)
 
 
 def _replace_section(
@@ -1430,41 +1424,15 @@ def _replace_section(
 def _append_to_section(
     lines: list[str], body_start: int, heading_text: str, new_text: str, cr: str,
 ) -> tuple[list[str], bool, str]:
-    """Return `(new_lines, created, old_content)` - append mode.
+    """Thin wrapper over `_lib.append_paragraph_to_section` (append mode).
 
     Adds `new_text` as a new, blank-line-separated paragraph at the END of
     the section, never touching what was already there (the contract `note`
-    depends on: it is the human-written, nothing-ever-lost path). A section
-    holding only the archive-template placeholder (`*(none yet)*`) is
-    treated as empty - the placeholder is replaced outright rather than kept
-    alongside real prose, since it means exactly "nothing here yet" and
-    leaving it in would read as a second, contradictory sentence.
+    depends on: it is the human-written, nothing-ever-lost path). The shared
+    engine also treats a lone `*(none yet)*` placeholder as empty and creates
+    the heading at EOF when absent - see its docstring in `_lib.py`.
     """
-    located = _locate_section(lines, body_start, heading_text)
-    body_text = new_text.strip('\n')
-    if located is None:
-        return _create_section_at_eof(lines, heading_text, body_text, cr), True, ''
-
-    _, content_start, content_end = located
-    old_content_lines = lines[content_start:content_end]
-    old_content = '\n'.join(old_content_lines)
-    trimmed = list(old_content_lines)
-    while trimmed and trimmed[-1].strip() == '':
-        trimmed.pop()
-    is_placeholder = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
-    has_next = content_end < len(lines)
-
-    new_lines = list(lines[:content_start])
-    if trimmed and not is_placeholder:
-        new_lines.extend(trimmed)
-        new_lines.append(cr)
-    new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
-    if has_next:
-        new_lines.append(cr)             # a real blank-line separator - more follows
-    elif _ends_with_newline(lines):
-        new_lines.append('')             # the file's own end-of-file sentinel, restored
-    new_lines.extend(lines[content_end:])
-    return new_lines, False, old_content
+    return append_paragraph_to_section(lines, body_start, heading_text, new_text, cr)
 
 
 def run_edit(

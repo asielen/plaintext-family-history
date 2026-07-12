@@ -683,13 +683,11 @@ class NewTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         path = Path(result.data['path'])
         # `fha person new` passes the name straight through the SHARED
-        # `_lib.stub_filename` helper rather than inventing its own mononym
-        # logic (task contract): a single-word name currently slugs to an
-        # 'unknown' surname component (`_lib.stub_slug_name`), giving
-        # unknown__cher_{P-id}.md - not the SPEC §13 leading-double-underscore
-        # form a hand-filed mononym (e.g. __caesar_P-....md) uses. That is
-        # existing, out-of-scope `_lib.py` behavior this test pins down.
-        self.assertTrue(path.name.startswith('unknown__cher_'))
+        # `_lib.stub_filename` helper. A single-word name is a surname-less
+        # mononym, which SPEC §13 files with an EMPTY sort-name slot - the
+        # filename leads with the double underscore (`__cher_P-….md`), the
+        # same form a hand-filed mononym (e.g. `__caesar_P-….md`) uses.
+        self.assertTrue(path.name.startswith('__cher_'))
         self.assertTrue(path.name.endswith('.md'))
 
     def test_never_overwrites_an_existing_target(self) -> None:
@@ -753,6 +751,45 @@ class RelateTests(unittest.TestCase):
         self.assertEqual(text.count('  - to:'), 2)
         self.assertIn('type: spouse', text)
         self.assertIn('type: parent', text)
+
+    def test_new_entry_appends_past_a_blank_line_between_entries(self) -> None:
+        # A relationships: list whose two existing entries are separated by a
+        # blank line: the new entry must land at the TRUE end of the list
+        # (after the second entry), never wedged into the blank gap mid-list.
+        # The block-end scan advances past a blank run only when the list
+        # continues (a later still-indented entry follows).
+        text = (
+            '---\n'
+            f'id: {CURATED_PID}\n'
+            'name: Thomas Hartley\n'
+            'living: false\n'
+            'relationships:\n'
+            '  - to: "[[P-1111111111|A One]]"\n'
+            '    type: parent\n'
+            '    status: hypothesis\n'
+            '\n'
+            '  - to: "[[P-2222222222|B Two]]"\n'
+            '    type: sibling\n'
+            '    status: hypothesis\n'
+            'created: 2026-01-01\n'
+            '---\n'
+        )
+        item = person._relationship_item_lines('P-3333333333', 'C Three', 'spouse', None)
+        new_text = person._insert_relationship_entry(text, item)
+        self.assertIsNotNone(new_text)
+        lines = new_text.split('\n')
+        idx_first = next(i for i, l in enumerate(lines) if 'P-1111111111' in l)
+        idx_second = next(i for i, l in enumerate(lines) if 'P-2222222222' in l)
+        idx_new = next(i for i, l in enumerate(lines) if 'P-3333333333' in l)
+        idx_created = next(i for i, l in enumerate(lines) if l.startswith('created:'))
+        # The new entry lands after BOTH existing entries and before created:.
+        self.assertLess(idx_first, idx_second)
+        self.assertLess(idx_second, idx_new)
+        self.assertLess(idx_new, idx_created)
+        # All three entries present; the blank line between the first two is
+        # left in place (nothing outside the true append point is disturbed).
+        self.assertEqual(new_text.count('  - to:'), 3)
+        self.assertIn('    status: hypothesis\n\n  - to: "[[P-2222222222|B Two]]"', new_text)
 
     def test_idempotent_duplicate(self) -> None:
         person.run_relate(self.root, CURATED_PID, 'parent', TARGET_PID)
