@@ -120,6 +120,34 @@ def _indented_block(pad: int, *, place: str | None = None, place_text: str | Non
     return '\n'.join(lines) + '\n'
 
 
+def _notes_repro_block(pad: int, *, place: str | None = None,
+                       place_text: str | None = None) -> str:
+    """A claim item with a place/place_text key sitting ABOVE a trailing
+    `notes: |` block - the exact 2026-07 stale-anchor repro shape - at a given
+    dash-to-key spacing (pad=1 -> 2-space, pad=3 -> 4-space). The two
+    continuation lines are indented deeper than `notes:`, as YAML requires."""
+    dash = '-' + ' ' * pad
+    ki = ' ' * (1 + pad)
+    cont = ki + '  '            # block-scalar continuation, deeper than notes:
+    lines = [
+        '## Claims', '```yaml',
+        f'{dash}value: "Anna Smith born 1880"',
+        f'{ki}id: C-aa11bb22cc',
+        f'{ki}type: birth',
+        f'{ki}persons: [P-aaaaaaaaaa]',
+    ]
+    if place is not None:
+        lines.append(f'{ki}place: {place}')
+    if place_text is not None:
+        lines.append(f'{ki}place_text: "{place_text}"')
+    lines.append(f'{ki}status: suggested')
+    lines.append(f'{ki}notes: |')
+    lines.append(f'{cont}First note line.')
+    lines.append(f'{cont}Second note line.')
+    lines.append('```')
+    return '\n'.join(lines) + '\n'
+
+
 # ── Surgical edit (pure text) ──────────────────────────────────────────────────
 
 class ApplyClaimReviewTests(unittest.TestCase):
@@ -346,6 +374,15 @@ class RunClaimTests(unittest.TestCase):
         rec = {c['id']: c for c in read_record(self.source)['claims']}
         self.assertEqual(str(rec['C-aa11bb22cc']['reviewed']), '2026-06-24')
         self.assertIn(str(self.source), result.changed)
+
+    def test_publishes_canonical_source_id(self) -> None:
+        # data['source_id'] carries the canonical S-id (S- + 10 chars) the
+        # holding source is filed under, alongside the kept-for-compat path.
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['source_id'], 'S-1111111111')
+        self.assertRegex(result['source_id'], r'^S-[0-9a-hjkmnp-tv-z]{10}$')
+        self.assertEqual(result['source'], str(self.source))
 
     def test_accept_defaults_reviewed_to_today_not_refused(self) -> None:
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
@@ -1046,6 +1083,73 @@ class FieldExtensionApplyTests(unittest.TestCase):
         self.assertEqual(str(rec['C-aa11bb22cc']['place']), 'L-baba9801fa')
         # sibling untouched
         self.assertNotIn('place', rec['C-bb22cc33dd'])
+
+
+# ── The 2026-07 stale-anchor corruption (place/place_text over a notes block) ───
+
+class StaleAnchorRegressionTests(unittest.TestCase):
+    """A place_text/place key sitting above a `notes: |` block. The switch to
+    the other place kind deletes that key, but the pre-fix code fixed
+    status_idx/anchor BEFORE the deletion, so every line below shifted up one
+    and the new place key was spliced between `notes:` and its continuation -
+    silently emptying the note, folding its text into the place value, while
+    the block still parsed (the guard let it through). Removing the old place
+    key up front, before any index is computed, keeps the notes block intact."""
+
+    NOTES = ['First note line.', 'Second note line.']
+
+    def test_place_over_notes_does_not_corrupt_the_notes_block(self) -> None:
+        # The EXACT repro: place_text above a two-line `notes: |`, switched to
+        # --place while accepting. Rounds-trip at 2-space (pad=1) and 4-space
+        # (pad=3) dash indents.
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                text = _notes_repro_block(pad, place_text='Fairview, as written')
+                new, changed = claim._apply_claim_review(
+                    text, 'C-aa11bb22cc',
+                    status='accepted', reviewed='2026-07-12', place='L-baba9801fa')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                c = claims[0]
+                # The note survived: both lines, in order, nothing folded away.
+                self.assertEqual(c['notes'].splitlines(), self.NOTES)
+                # The place switched cleanly - the L-id, and no place_text left.
+                self.assertEqual(str(c['place']), 'L-baba9801fa')
+                self.assertNotIn('place_text', c)
+                self.assertEqual(c['status'], 'accepted')
+                self.assertEqual(str(c['reviewed']), '2026-07-12')
+                # The `place:` line sits BEFORE the `notes:` line in the text.
+                new_lines = new.splitlines()
+                place_line = next(i for i, ln in enumerate(new_lines)
+                                  if ln.strip().startswith('place:'))
+                notes_line = next(i for i, ln in enumerate(new_lines)
+                                  if ln.strip().startswith('notes:'))
+                self.assertLess(place_line, notes_line)
+
+    def test_place_text_over_notes_mirror(self) -> None:
+        # The mirror: an existing place above a notes block, switched to
+        # --place-text while accepting. Same two-indent round-trip.
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                text = _notes_repro_block(pad, place='L-1234567890')
+                new, changed = claim._apply_claim_review(
+                    text, 'C-aa11bb22cc',
+                    status='accepted', reviewed='2026-07-12',
+                    place_text='Fairview, Kansas')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                c = claims[0]
+                self.assertEqual(c['notes'].splitlines(), self.NOTES)
+                self.assertEqual(c['place_text'], 'Fairview, Kansas')
+                self.assertNotIn('place', c)
+                new_lines = new.splitlines()
+                pt_line = next(i for i, ln in enumerate(new_lines)
+                               if ln.strip().startswith('place_text:'))
+                notes_line = next(i for i, ln in enumerate(new_lines)
+                                  if ln.strip().startswith('notes:'))
+                self.assertLess(pt_line, notes_line)
 
 
 # ── Field extension (Task 3): run_claim contract ─────────────────────────────────

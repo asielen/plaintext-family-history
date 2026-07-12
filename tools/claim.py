@@ -135,6 +135,7 @@ from _lib import (
     mint_ids,
     normalize_date,
     normalize_id,
+    parse_filename,
     read_record,
     read_text_exact,
     reapply_newline,
@@ -399,8 +400,12 @@ def _apply_claim_review(
     `place`/`place_text` are mutually exclusive in a well-formed claim (the
     caller validates that); setting one here removes the other if present, so
     `--place` after an existing `place_text:` leaves the block with exactly
-    one place key, never both. `persons` REPLACES the whole `persons:` list
-    (not append) - the caller pre-validates every P-id resolves to a record.
+    one place key, never both. That removal is done UP FRONT, before any line
+    index (status_idx/anchor) is computed - a deletion shifts every following
+    line, so removing after the anchors were fixed would leave a later
+    `insert_after` splicing a key into the wrong place (see the removal block
+    for the corruption this prevents). `persons` REPLACES the whole `persons:`
+    list (not append) - the caller pre-validates every P-id resolves to a record.
 
     Edits land at the item's OWN key column, derived from its lines
     (`claim_item_key_indent`): a claim legally written `-   value: farmer` keeps
@@ -533,15 +538,33 @@ def _apply_claim_review(
 
     def remove_key(key: str) -> None:
         """Delete one top-level item key entirely (dash or indented form), if
-        present. Used only for the place/place_text switch below; a claim
-        legally has `value:` (never place/place_text) as its first/dash key,
-        so this never removes the dash line in practice - and if a hand-edited
-        claim somehow did put place/place_text there, the pre-write guard
+        present. Used for the place/place_text switch below; a claim legally
+        has `value:` (never place/place_text) as its first/dash key, so this
+        never removes the dash line in practice - and if a hand-edited claim
+        somehow did put place/place_text there, the pre-write guard
         (`claims_edit_problem`, run by the caller) would catch the resulting
         malformed block and refuse rather than save it."""
         idx, _kind, _ = find_key(key)
         if idx is not None:
             del item[idx]
+
+    # Drop the mutually-exclusive place key FIRST, before any index is
+    # computed. A deletion shifts every following line up by one, so a
+    # remove_key run after status_idx/anchor were fixed would leave those
+    # indices pointing one line too low, and a later insert_after would then
+    # splice a key into the wrong place. That was the 2026-07 stale-anchor
+    # corruption: `--place` against a claim whose `place_text:` sat above a
+    # `notes: |` block spliced `place:` between `notes:` and its continuation
+    # lines - the note silently emptied, its text folded into the place value,
+    # and the block still parsed, so the pre-write guard let it through.
+    # Removing up front, before status_idx/anchor exist, keeps every index
+    # below consistent with the item list the inserts actually mutate.
+    # `place`/`place_text` are mutually exclusive in a well-formed claim, so at
+    # most one of these two removals ever touches a line.
+    if place is not None:
+        remove_key('place_text')
+    if place_text is not None:
+        remove_key('place')
 
     # 3. status (required on every valid claim). status is now OPTIONAL here
     # (2026-07 compat change: a field-only edit is legal on its own) - when
@@ -578,14 +601,14 @@ def _apply_claim_review(
         else:
             anchor = set_scalar('type', type_, insert_after=anchor)
     if place is not None:
-        remove_key('place_text')
+        # The mutually-exclusive place_text was already removed up front.
         place_idx, _place_kind, _ = find_key('place')
         if place_idx is not None:
             set_scalar('place', place, insert_after=place_idx)
         else:
             anchor = set_scalar('place', place, insert_after=anchor)
     if place_text is not None:
-        remove_key('place')
+        # The mutually-exclusive place was already removed up front.
         pt_idx, _pt_kind, _ = find_key('place_text')
         if pt_idx is not None:
             set_scalar('place_text', _yaml_inline(place_text), insert_after=pt_idx)
@@ -638,7 +661,10 @@ def run_claim(
 
     `data` is {'status': 'ok'|'invalid-id'|'invalid-status'|'invalid-type'|
     'no-op'|'not-found'|'refused'|'failed', 'claim_id', 'before_status',
-    'after_status', 'reviewed', 'source'}. On a real write the source `.md` is
+    'after_status', 'reviewed', 'source', 'source_id'}. `source` is the record
+    path (kept for backward compat); `source_id` is the canonical `S-…` id of
+    the holding source, the field a downstream reindexer (`fha serve`) reads to
+    know which source to refresh. On a real write the source `.md` is
     listed in `changed`; `--dry-run` previews the YAML change (a unified diff
     in the messages) and writes nothing. Before any write (or preview) the
     rewritten block is re-parsed (`claims_edit_problem`); a rewrite that would
@@ -663,6 +689,7 @@ def run_claim(
     result = Result(data={
         'status': None, 'claim_id': None, 'before_status': None,
         'after_status': status, 'reviewed': None, 'source': None,
+        'source_id': None,
     })
 
     # Validate the C-id shape before touching the archive - a malformed id is a
@@ -781,6 +808,17 @@ def run_claim(
     before_status = str(claim.get('status') or '')
     result.data['before_status'] = before_status
     result.data['source'] = str(record_path)
+    # Publish the canonical `S-…` id of the holding source alongside its path.
+    # A downstream reindexer (`fha serve`) reads `data['source_id']` to know
+    # which source to refresh. Derived from the record's `_{S-id}.md` filename
+    # suffix (`parse_filename`) rather than a second `read_record` parse of the
+    # frontmatter: the suffix is the same identity convention
+    # `find_source_record_path` locates the file by, so it is both cheaper (pure
+    # string work, no re-parse) and reliable for any file that lives under
+    # `sources/` at all. A record with no S-id suffix leaves the field None.
+    parsed_name = parse_filename(record_path)
+    if parsed_name and parsed_name.get('id_type') == 'S':
+        result.data['source_id'] = fmt_id_display(parsed_name['id_str'])
 
     try:
         # Exact read/write so a one-line status edit doesn't churn every line

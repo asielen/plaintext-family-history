@@ -751,7 +751,11 @@ def run_confirm_cooccur(
     """Mint a social `relationship` claim into the confirming source's record.
 
     `data` is {'status', 'claim_id', 'person_a', 'person_b', 'subtype',
-    'source', 'claim_status'}. Minted `suggested` by default (the human's
+    'source', 'source_id', 'claim_status'}. `source` is the record path (kept
+    for backward compat); `source_id` is the canonical `S-…` id this confirm
+    already knows from its `source_id` argument - the field a downstream
+    reindexer (`fha serve`) reads to know which source to refresh. Minted
+    `suggested` by default (the human's
     confirm proposes; accepting into a graph edge is the step-05 review). With
     `--accept` the claim is minted `accepted` and stamped `reviewed:` (today
     unless given), treating this confirm as the review - the only way it becomes
@@ -764,7 +768,7 @@ def run_confirm_cooccur(
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'person_a': None, 'person_b': None,
-        'subtype': subtype, 'source': None, 'claim_status': None,
+        'subtype': subtype, 'source': None, 'source_id': None, 'claim_status': None,
     })
 
     # --reviewed only stamps the review date onto an *accepted* claim; a
@@ -813,6 +817,11 @@ def run_confirm_cooccur(
                          f'{archive_root / "sources"}.',
                          next_step='fha find ' + fmt_id_display(source_id))
     result.data['source'] = str(source_path)
+    # Publish the canonical `S-…` id (path kept above for backward compat) so a
+    # downstream reindexer reads one field. This confirm already validated the
+    # `source_id` argument as an S-id, so the display form is authoritative -
+    # no filename parse needed, unlike claim.py which had only the record path.
+    result.data['source_id'] = fmt_id_display(normalize_id(source_id))
 
     # Idempotency gate: never mint a second claim for a pair + subtype this
     # source already covers with a live claim (see _existing_pair_claim).
