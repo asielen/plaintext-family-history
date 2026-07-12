@@ -204,7 +204,8 @@
     <div class="wb-field">
       <label>Status</label>
       <select name="status">
-        <option value="accepted" selected>accepted</option>
+        <option value="" selected>- leave unchanged -</option>
+        <option value="accepted">accepted</option>
         <option value="needs-review">needs-review</option>
         <option value="disputed">disputed</option>
         <option value="rejected">rejected</option>
@@ -342,8 +343,10 @@
       <label>Source</label>
       <select name="msource">
         <option value="" selected>- unsourced (family knowledge) -</option>
+        
+        <option value="__paste__">paste an S-id&hellip;</option>
       </select>
-      <p class="wb-hint">Fill the source list from this person's cited sources, or paste an S-id.
+      <p class="wb-hint">Pick one of this person's cited sources, or paste an S-id.
         A <strong>sourced</strong> milestone also becomes a claim - so it shows in the Timeline,
         with a footnote. An <strong>unsourced</strong> Born/Died is just the summary line
         (family knowledge, no footnote); an unsourced Married is recorded as the spouse hypothesis.</p>

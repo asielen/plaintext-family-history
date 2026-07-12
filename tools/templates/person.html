@@ -26,12 +26,12 @@
     {% for row in person.summary %}
     <dt>{{ row.label }}</dt>
     <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% endif %}{% if workbench %}
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' data-wb-fill="mtype={{ row.label }}">edit</a>{% endif %}</dd>
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-fill="mtype={{ row.label }}">edit</a>{% endif %}</dd>
     {% endfor %}
   </dl>
   {% endif %}
   {% if workbench %}
-  <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id} | tojson }}'>Add a milestone&hellip;</button>
+  <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}'>Add a milestone&hellip;</button>
     <span class="wb-later">Born &middot; Died &middot; Married &middot; Baptized &middot; Buried - each becomes a summary line, and (when sourced) a Timeline entry too.</span></p>
   {% endif %}
 
@@ -42,7 +42,7 @@
     {% if fs[grp] or workbench %}
     <div class="fs-group"><span class="fs-label">{{ label }}</span>
       <ul>{% for m in (fs[grp] or []) %}<li>{{ m }}</li>{% endfor %}</ul>
-      {% if workbench %}<a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{{ {"person_id": person.display_id, "relation_type": rel} | tojson }}'>+ add</a>{% endif %}</div>
+      {% if workbench %}<a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{{ {"person_id": person.display_id, "relation_type": rel} | tojson }}' data-wb-fill="relation_type={{ rel }}">+ add</a>{% endif %}</div>
     {% endif %}
     {% endfor %}
   </nav>

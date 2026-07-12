@@ -17,6 +17,7 @@
       {% if item.actions == 'claim' %}
       <div class="wb-actions">
         <button class="btn btn-primary btn-sm" data-wb-open="tpl-claim-edit"
+                data-wb-fill="status=accepted"
                 data-wb-args='{{ {"claim_id": item.claim_id} | tojson }}'>Edit &amp; accept&hellip;</button>
         <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct
                 data-wb-args='{{ {"claim_id": item.claim_id, "status": "accepted"} | tojson }}'>Accept as-is</button>

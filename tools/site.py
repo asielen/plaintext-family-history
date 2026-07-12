@@ -1569,6 +1569,7 @@ class _SiteBuilder:
             # "open file" button and living value for the "change..." affordance.
             'record_relpath': row['path'],
             'living': (row['living'] or 'unknown'),
+            'milestone_sources': self._person_milestone_sources(pid) if self.workbench else [],
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
@@ -1850,6 +1851,32 @@ class _SiteBuilder:
             out.append({'num': self._footnotes[sid], 'html': self._markup(title)})
         return out
 
+    def _person_milestone_sources(self, pid: str) -> list[dict]:
+        """id/title pairs for the workbench milestone modal's Source picker -
+        every source that already cites this person, so 'Add a milestone' can
+        point at real evidence instead of the person composing a raw S-id from
+        memory. Workbench mode always runs --linked (redaction is moot: the
+        combination workbench+standalone is refused in run_site), so this skips
+        the footnote numbering and redacted-source placeholder `_person_sources`
+        needs for the public page and just lists id + title, sorted by title."""
+        rows = self.conn.execute(
+            'SELECT DISTINCT c.source_id FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
+            'WHERE cp.person_id = ? '
+            'UNION SELECT DISTINCT source_id FROM source_people WHERE person_id = ?',
+            (pid, pid),
+        ).fetchall()
+        out: list[dict] = []
+        seen: set[str] = set()
+        for r in rows:
+            sid = normalize_id(str(r[0])) if r[0] else None
+            if not sid or sid in seen or sid not in self.source_meta:
+                continue
+            seen.add(sid)
+            title = self.source_meta[sid]['title'] or fmt_id_display(sid)
+            out.append({'id': fmt_id_display(sid), 'title': title})
+        out.sort(key=lambda e: e['title'].lower())
+        return out
+
     def _has_public_claim(self, pid1: str, pid2: str) -> bool:
         """Return True if the relationship between two persons may be shown.
 
@@ -1923,10 +1950,12 @@ class _SiteBuilder:
         return groups
 
     def _person_family_strip(self, pid: str, page_dir: Path) -> dict | None:
-        """A compact parents / siblings / children map for the head of a person
-        page - one hop up and down, plus siblings, and nothing deeper. Redaction +
-        public-claim gates match Friends & Family; siblings are reached only
-        through a public, non-redacted parent."""
+        """A compact parents / spouses / siblings / children map for the head of
+        a person page - one hop up, sideways, and down, plus siblings, and
+        nothing deeper. Redaction + public-claim gates match Friends & Family
+        (and the same gate `_build_family_wings` applies to the pedigree's
+        spouse/child columns); siblings are reached only through a public,
+        non-redacted parent."""
         def edge(person: str, rel: str) -> list[str]:
             return [r['other_id'] for r in self.conn.execute(
                 'SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = ?',
@@ -1954,6 +1983,7 @@ class _SiteBuilder:
         parent_ids = edge(pid, 'parent')
         parents = links([(p, pid) for p in parent_ids], None)
         children = links([(c, pid) for c in edge(pid, 'child')], None)
+        spouses = links([(s, pid) for s in edge(pid, 'spouse')], None)
 
         sib_pairs, sib_seen = [], set()
         for par in parent_ids:
@@ -1967,9 +1997,9 @@ class _SiteBuilder:
                     sib_pairs.append((k, par))     # evidence is the shared parent
         siblings = links(sib_pairs, None)
 
-        if not (parents or siblings or children):
+        if not (parents or spouses or siblings or children):
             return None
-        return {'parents': parents, 'siblings': siblings, 'children': children}
+        return {'parents': parents, 'spouses': spouses, 'siblings': siblings, 'children': children}
 
     def _person_photos(self, pid: str, page_dir: Path) -> list[dict]:
         """Photo strip from `.cache/photos.sqlite` (`photo_people`), one entry

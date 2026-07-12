@@ -145,11 +145,19 @@
 
   /* --- the two-step /api/run flow ------------------------------------------ */
 
-  /* Gather {verb, args} from a modal. Fixed args (from data-wb-args JSON) win
-     over form fields; blank fields are dropped so an optional flag is omitted. */
+  /* Gather {verb, args} from a modal. Fixed args (from data-wb-args JSON) seed
+     args FIRST; named form fields are read after and OVERRIDE them when the
+     field has a non-blank value, so a form control that shares a fixed arg's
+     name (e.g. relation_type on tpl-add-family, prefilled by the opener but
+     still a live <select> the human can change) reflects what is actually on
+     screen. A blank field never overrides a fixed arg - it is simply dropped,
+     same as before - so person_id/claim_id/source_id/path style fixed args
+     (which have no same-named form control) are unaffected either way. */
   function collect(modal) {
     var verb = modal.getAttribute('data-wb-verb');
     var args = {};
+    var fixed = modal.getAttribute('data-wb-args');
+    if (fixed) { try { var f = JSON.parse(fixed); for (var k in f) args[k] = f[k]; } catch (e) {} }
     $all('[name]', modal).forEach(function (c) {
       var name = c.getAttribute('name');
       if (!name) return;
@@ -158,8 +166,6 @@
       var v = c.value;
       if (v !== null && String(v).trim() !== '') args[name] = v;
     });
-    var fixed = modal.getAttribute('data-wb-args');
-    if (fixed) { try { var f = JSON.parse(fixed); for (var k in f) args[k] = f[k]; } catch (e) {} }
     /* A per-modal builder can rewrite (verb, args) - milestone routing, the
        sex/gender selector, the multi-field name lists. */
     var build = modal.getAttribute('data-wb-build');
@@ -171,12 +177,32 @@
     return { verb: verb, args: args };
   }
 
+  /* A non-2xx JSON payload (the normal "engine refused this" shape) still
+     flows through as a resolved result - callers already check result.ok /
+     result._http. But a non-2xx response that is NOT JSON (a CSRF or Host-
+     header check failing before the request ever reaches the engine, which
+     answers with a plain-text or HTML refusal) used to hit r.json()'s parse
+     failure and get swallowed by the generic "Could not reach fha serve"
+     catch-all - hiding the one message ("reload the page you opened") that
+     would actually get the human unstuck. Read that body as text instead and
+     reject with it tagged, so the .catch handlers below can tell a real
+     network failure from a readable server refusal and show the right one. */
   function apiRun(verb, args, dryRun) {
     return fetch('/api/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
       body: JSON.stringify({ verb: verb, args: args, dry_run: dryRun })
-    }).then(function (r) { return r.json().then(function (j) { j._http = r.status; return j; }); });
+    }).then(function (r) {
+      var ctype = r.headers.get('content-type') || '';
+      if (!r.ok && ctype.indexOf('application/json') === -1) {
+        return r.text().then(function (text) {
+          var err = new Error(text.trim() || ('The server refused this request (status ' + r.status + ').'));
+          err.wbServerText = true;
+          throw err;
+        });
+      }
+      return r.json().then(function (j) { j._http = r.status; return j; });
+    });
   }
 
   function renderMessages(result) {
@@ -229,7 +255,10 @@
         (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>Apply</button>' : '') +
         '</div>';
       showStepEl(modal, host);
-    }).catch(function () { setBusy(modal, false); showError(modal, 'Could not reach fha serve - is it still running?'); });
+    }).catch(function (e) {
+      setBusy(modal, false);
+      showError(modal, (e && e.wbServerText && e.message) || 'Could not reach fha serve - is it still running?');
+    });
   }
 
   function runApply(modal) {
@@ -249,7 +278,10 @@
         '</div>';
       showStepEl(modal, host);
       if (ok) setTimeout(function () { location.reload(); }, 700);
-    }).catch(function () { setBusy(modal, false); showError(modal, 'Could not reach fha serve - is it still running?'); });
+    }).catch(function (e) {
+      setBusy(modal, false);
+      showError(modal, (e && e.wbServerText && e.message) || 'Could not reach fha serve - is it still running?');
+    });
   }
 
   function ensurePreviewStep(modal) {
@@ -307,6 +339,8 @@
     milestone: function (args) {
       var mtype = (args.mtype || '').toLowerCase(); delete args.mtype;
       var source = args.msource; delete args.msource;
+      var pastedId = args.msource_id; delete args.msource_id;
+      if (source === '__paste__') source = (pastedId || '').trim();
       var date = args.mdate; delete args.mdate;
       var place = args.mplace; delete args.mplace;
       var spouse = args.mspouse; delete args.mspouse;

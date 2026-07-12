@@ -60,20 +60,20 @@
     
     <dt>Born</dt>
     <dd>1955-03-15 - <a href="../places/l-7c1a9f4e22.html">Fairview, Breton County, Kansas</a> <sup class="fn-ref"><a href="#fn-1">1</a></sup>
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f"}' data-wb-fill="mtype=Born">edit</a></dd>
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f", "subject_name": "James Robert Bradford"}' data-wb-fill="mtype=Born">edit</a></dd>
     
     <dt>Married</dt>
     <dd>1979-06-14 - <a href="../places/l-7c1a9f4e22.html">Fairview, Breton County, Kansas</a> <sup class="fn-ref"><a href="#fn-2">2</a></sup>
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f"}' data-wb-fill="mtype=Married">edit</a></dd>
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f", "subject_name": "James Robert Bradford"}' data-wb-fill="mtype=Married">edit</a></dd>
     
     <dt>Died</dt>
     <dd>2015-11-03 - Topeka, Kansas <sup class="fn-ref"><a href="#fn-3">3</a></sup>
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f"}' data-wb-fill="mtype=Died">edit</a></dd>
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f", "subject_name": "James Robert Bradford"}' data-wb-fill="mtype=Died">edit</a></dd>
     
   </dl>
   
   
-  <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f"}'>Add a milestone&hellip;</button>
+  <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-2b3c4d5e6f", "subject_name": "James Robert Bradford"}'>Add a milestone&hellip;</button>
     <span class="wb-later">Born &middot; Died &middot; Married &middot; Baptized &middot; Buried - each becomes a summary line, and (when sourced) a Timeline entry too.</span></p>
   
 
@@ -84,25 +84,25 @@
     
     <div class="fs-group"><span class="fs-label">Parents</span>
       <ul><li><span class="stub-ref">George Arthur Bradford</span></li><li><span class="stub-ref">Edith Louise Hartley</span></li></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "parent"}'>+ add</a></div>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "parent"}' data-wb-fill="relation_type=parent">+ add</a></div>
     
     
     
     <div class="fs-group"><span class="fs-label">Spouse</span>
-      <ul></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "spouse"}'>+ add</a></div>
+      <ul><li><span class="stub-ref">Carol Anne Simmons</span></li></ul>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "spouse"}' data-wb-fill="relation_type=spouse">+ add</a></div>
     
     
     
     <div class="fs-group"><span class="fs-label">Siblings</span>
       <ul></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "sibling"}'>+ add</a></div>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "sibling"}' data-wb-fill="relation_type=sibling">+ add</a></div>
     
     
     
     <div class="fs-group"><span class="fs-label">Children</span>
       <ul><li><span class="stub-ref">Alex James Bradford</span></li></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "child"}'>+ add</a></div>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-2b3c4d5e6f", "relation_type": "child"}' data-wb-fill="relation_type=child">+ add</a></div>
     
     
   </nav>
@@ -308,7 +308,8 @@
     <div class="wb-field">
       <label>Status</label>
       <select name="status">
-        <option value="accepted" selected>accepted</option>
+        <option value="" selected>- leave unchanged -</option>
+        <option value="accepted">accepted</option>
         <option value="needs-review">needs-review</option>
         <option value="disputed">disputed</option>
         <option value="rejected">rejected</option>
@@ -446,8 +447,16 @@
       <label>Source</label>
       <select name="msource">
         <option value="" selected>- unsourced (family knowledge) -</option>
+        
+        <option value="S-fd4567890e">S-fd4567890e - Birth certificate - James Robert Bradford, 1955</option>
+        
+        <option value="S-fc3456789d">S-fc3456789d - Bradford family genealogy notes - handwritten, undated</option>
+        
+        <option value="S-fe5678901f">S-fe5678901f - Obituary - James Robert Bradford, Fairview Gazette, November 2015</option>
+        
+        <option value="__paste__">paste an S-id&hellip;</option>
       </select>
-      <p class="wb-hint">Fill the source list from this person's cited sources, or paste an S-id.
+      <p class="wb-hint">Pick one of this person's cited sources, or paste an S-id.
         A <strong>sourced</strong> milestone also becomes a claim - so it shows in the Timeline,
         with a footnote. An <strong>unsourced</strong> Born/Died is just the summary line
         (family knowledge, no footnote); an unsourced Married is recorded as the spouse hypothesis.</p>

@@ -62,16 +62,16 @@
     
     <dt>Born</dt>
     <dd>1840~ - New York <sup class="fn-ref"><a href="#fn-1">1</a></sup>
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-de957bcda1"}' data-wb-fill="mtype=Born">edit</a></dd>
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-de957bcda1", "subject_name": "Thomas Edward Hartley"}' data-wb-fill="mtype=Born">edit</a></dd>
     
     <dt>Married</dt>
     <dd>1871-02/1871-03 - <a href="../places/l-7c1a9f4e22.html">Fairview</a> <sup class="fn-ref"><a href="#fn-2">2</a></sup>
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-de957bcda1"}' data-wb-fill="mtype=Married">edit</a></dd>
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-de957bcda1", "subject_name": "Thomas Edward Hartley"}' data-wb-fill="mtype=Married">edit</a></dd>
     
   </dl>
   
   
-  <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-de957bcda1"}'>Add a milestone&hellip;</button>
+  <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "P-de957bcda1", "subject_name": "Thomas Edward Hartley"}'>Add a milestone&hellip;</button>
     <span class="wb-later">Born &middot; Died &middot; Married &middot; Baptized &middot; Buried - each becomes a summary line, and (when sourced) a Timeline entry too.</span></p>
   
 
@@ -82,25 +82,25 @@
     
     <div class="fs-group"><span class="fs-label">Parents</span>
       <ul><li><span class="stub-ref">Caleb Comstock Hartley</span></li><li><span class="stub-ref">Chastina Augusta Reed</span></li></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "parent"}'>+ add</a></div>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "parent"}' data-wb-fill="relation_type=parent">+ add</a></div>
     
     
     
     <div class="fs-group"><span class="fs-label">Spouse</span>
-      <ul></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "spouse"}'>+ add</a></div>
+      <ul><li><span class="stub-ref">Margaret A. Cole</span></li></ul>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "spouse"}' data-wb-fill="relation_type=spouse">+ add</a></div>
     
     
     
     <div class="fs-group"><span class="fs-label">Siblings</span>
       <ul></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "sibling"}'>+ add</a></div>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "sibling"}' data-wb-fill="relation_type=sibling">+ add</a></div>
     
     
     
     <div class="fs-group"><span class="fs-label">Children</span>
       <ul><li><span class="stub-ref">Frances Hartley</span></li><li><span class="stub-ref">Ethel Hartley</span></li><li><span class="stub-ref">Calvin George Hartley</span></li></ul>
-      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "child"}'>+ add</a></div>
+      <a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{"person_id": "P-de957bcda1", "relation_type": "child"}' data-wb-fill="relation_type=child">+ add</a></div>
     
     
   </nav>
@@ -308,7 +308,8 @@
     <div class="wb-field">
       <label>Status</label>
       <select name="status">
-        <option value="accepted" selected>accepted</option>
+        <option value="" selected>- leave unchanged -</option>
+        <option value="accepted">accepted</option>
         <option value="needs-review">needs-review</option>
         <option value="disputed">disputed</option>
         <option value="rejected">rejected</option>
@@ -446,8 +447,20 @@
       <label>Source</label>
       <select name="msource">
         <option value="" selected>- unsourced (family knowledge) -</option>
+        
+        <option value="S-4f5f215e60">S-4f5f215e60 - 1880 U.S. Census - Hartley household, Fairview, Kansas</option>
+        
+        <option value="S-3m7k9n2p4q">S-3m7k9n2p4q - Fairview Masonic Lodge roster, 1882</option>
+        
+        <option value="S-fa1234567b">S-fa1234567b - Hartley family notes - typescript, circa 1940</option>
+        
+        <option value="S-a4pr5tpsmt">S-a4pr5tpsmt - Hartley family portrait, circa 1895</option>
+        
+        <option value="S-ea61339378">S-ea61339378 - Marriage notice - Thomas Hartley &amp; Margaret Cole, 1871</option>
+        
+        <option value="__paste__">paste an S-id&hellip;</option>
       </select>
-      <p class="wb-hint">Fill the source list from this person's cited sources, or paste an S-id.
+      <p class="wb-hint">Pick one of this person's cited sources, or paste an S-id.
         A <strong>sourced</strong> milestone also becomes a claim - so it shows in the Timeline,
         with a footnote. An <strong>unsourced</strong> Born/Died is just the summary line
         (family knowledge, no footnote); an unsourced Married is recorded as the spouse hypothesis.</p>

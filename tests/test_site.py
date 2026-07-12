@@ -360,6 +360,61 @@ class PersonRedactionTests(_Base):
         self.assertNotIn(site._LIVING_LABEL, dan)
 
 
+class FamilyStripTests(_Base):
+    """The compact parents/spouses/siblings/children nav at the top of a person
+    page (`_person_family_strip`). Redaction here must mirror what the other
+    strip groups (and `_build_family_wings`'s pedigree columns) already do -
+    this is the fix-1 regression: a `spouse` edge from `relationships` was
+    never surfaced into the strip's `spouses` key at all."""
+
+    def test_family_strip_shows_spouse_linked_and_standalone(self):
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', surname='Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole', surname='Cole', living='false')
+        self._seed_source('s-1111111111', 'Marriage Record', source_type='vital-record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'marriage', 'Married Margaret Cole',
+                         status='accepted', date_edtf='1871',
+                         persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+
+        self._run(linked=True)
+        linked = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="family-strip"', linked)
+        self.assertIn('<span class="fs-label">Spouse</span>', linked)
+        strip = linked[linked.index('class="family-strip"'):]
+        self.assertIn('Margaret Cole', strip[:strip.index('</nav>')])
+
+        self._run(linked=False)
+        standalone = self._read('persons/p-aaaaaaaaaa.html')
+        strip = standalone[standalone.index('class="family-strip"'):]
+        self.assertIn('Margaret Cole', strip[:strip.index('</nav>')])
+
+    def test_family_strip_redacts_living_spouse_same_as_living_child(self):
+        # The non-negotiable case (mirrors FamilyChartTests' pedigree-column
+        # version of this same rule): a living spouse must be redacted from
+        # the standalone strip exactly as a living child already is - both
+        # omitted outright, both restored in --linked.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Living Spouse', living='true')
+        self._seed_person('p-cccccccccc', 'Living Child', living='true')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+
+        self._run(linked=False)
+        standalone = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Living Spouse', standalone)
+        self.assertNotIn('Living Child', standalone)
+        # No parent/spouse/sibling/child survives redaction, so the strip
+        # itself is correctly absent (not shown empty) - same as the pedigree
+        # chart's all-redacted case.
+        self.assertNotIn('class="family-strip"', standalone)
+
+        self._run(linked=True)
+        linked = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Living Spouse', linked)
+        self.assertIn('Living Child', linked)
+
+
 class ResilienceTests(_Base):
     def test_malformed_source_yaml_warns_and_continues(self):
         # Broken frontmatter YAML in one source; another source is fine.
@@ -1492,6 +1547,30 @@ class WorkbenchModeTests(_Base):
             for leak in ('fha serve', 'name="fha-csrf"', 'estimate - unsourced',
                          'workbench.js', 'data-wb-open', '/root/'):
                 self.assertNotIn(leak, out, f'{leak!r} leaked into standalone {rel}')
+
+    def test_milestone_modal_lists_cited_sources_and_paste_option(self):
+        # Fix 4: the milestone modal's Source picker must offer this person's
+        # own cited sources (never a raw S-id the human has to type from
+        # memory) plus the paste-an-S-id escape hatch; and the milestone
+        # openers must carry the person's display name so a sourced claim
+        # composes as "birth of Jane Doe", never a bare P-id.
+        self._seed_person('p-aaaaaaaaaa', name='Milestone Person', living='false')
+        self._seed_source('s-1111111111', title='1900 Census', people=('p-aaaaaaaaaa',))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<option value="S-1111111111">S-1111111111 - 1900 Census</option>', wb)
+        self.assertIn('<option value="__paste__">paste an S-id&hellip;</option>', wb)
+        self.assertIn('"subject_name": "Milestone Person"', wb)
+
+    def test_milestone_modal_omits_uncited_source(self):
+        # A source that does not cite this person must not appear in their
+        # picker - the list is scoped per person, not archive-wide.
+        self._seed_person('p-aaaaaaaaaa', name='Milestone Person', living='false')
+        self._seed_person('p-bbbbbbbbbb', name='Other Person', living='false')
+        self._seed_source('s-1111111111', title='Someone Else Census', people=('p-bbbbbbbbbb',))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Someone Else Census', wb)
 
 
 if __name__ == '__main__':

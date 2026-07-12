@@ -42,7 +42,7 @@
         {% if workbench %}
         <td class="wb-actions">
           {% if c.status == 'suggested' %}
-          <button class="btn btn-primary btn-sm" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}'>Edit &amp; accept&hellip;</button>
+          <button class="btn btn-primary btn-sm" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}' data-wb-fill="status=accepted">Edit &amp; accept&hellip;</button>
           <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct data-wb-args='{{ {"claim_id": c.claim_id, "status": "accepted"} | tojson }}'>Accept as-is</button>
           <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct data-wb-args='{{ {"claim_id": c.claim_id, "status": "disputed"} | tojson }}'>Dispute</button>
           {% else %}
