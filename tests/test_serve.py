@@ -14,9 +14,12 @@ serve.py imports site.py under the private name `fha_site`; this test imports
 serve.py directly (its own import wiring handles the site load).
 """
 
+import argparse
 import hashlib
 import http.client
+import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -33,7 +36,8 @@ EXAMPLE = ROOT / 'example-archive'
 
 import serve  # noqa: E402
 import index as index_mod  # noqa: E402
-from _lib import load_fha_yaml  # noqa: E402
+import process  # noqa: E402
+from _lib import load_fha_yaml, read_record  # noqa: E402
 
 
 def _tree_hash(root: Path) -> str:
@@ -284,7 +288,57 @@ class UploadTests(_ServeCase):
         inbox = self.root / 'inbox'
         self.assertTrue((inbox / 'evil.txt').is_file())         # basename only
         self.assertFalse((self.root / 'evil.txt').exists())     # no escape
-        self.assertTrue((inbox / 'evil.txt.notes.md').is_file())  # sidecar written
+        # The sidecar is named after the ASSET's stem (`evil`), never the full
+        # `evil.txt` name - that is the form process.py's _find_sidecar looks
+        # for (SPEC §12.1); the old `evil.txt.notes.md` form was never found.
+        self.assertTrue((inbox / 'evil.notes.md').is_file())
+        self.assertFalse((inbox / 'evil.txt.notes.md').exists())
+
+    def test_upload_with_note_sidecar_is_found_by_fha_process(self):
+        # End-to-end proof of fix 1: an uploaded note is not just SHAPED like
+        # a sidecar, `fha process` must actually consume it.
+        boundary, body = self._multipart(
+            'grandpa-letter.txt', b'payload',
+            fields={'what': 'A letter grandpa wrote in 1945.', 'who': 'Grandpa Joe'})
+        s, d, _h = self.req('POST', '/api/upload', body=body,
+                            headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                                     'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        inbox = self.root / 'inbox'
+        asset = inbox / 'grandpa-letter.txt'
+        sidecar = inbox / 'grandpa-letter.notes.md'
+        self.assertTrue(asset.is_file())
+        self.assertTrue(sidecar.is_file())
+        found = process._find_sidecar(asset)
+        self.assertEqual(found, sidecar)
+        meta, note_body = process._read_sidecar(sidecar)
+        # The "what" text is prose body (-> ## Notes); the "who" hint is under
+        # `people:`, the field _read_sidecar actually reads for names, so it
+        # is folded into that same body rather than silently dropped.
+        self.assertIn('A letter grandpa wrote in 1945.', note_body)
+        self.assertIn('Grandpa Joe', note_body)
+
+    def test_upload_note_bumps_stem_when_only_the_sidecar_collides(self):
+        # The asset name `photo.jpg` has no collision, but an unrelated OLDER
+        # stub already holds its sidecar's stem (`photo.notes.md`) - both the
+        # asset and its new sidecar must bump together, not just the sidecar,
+        # or the new note would end up split from the file it describes.
+        inbox = self.root / 'inbox'
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / 'photo.notes.md').write_text(
+            '---\nnoted: 2020-01-01\n---\n\nan older stub\n', encoding='utf-8')
+        boundary, body = self._multipart('photo.jpg', b'bytes', fields={'what': 'a new note'})
+        s, d, _h = self.req('POST', '/api/upload', body=body,
+                            headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                                     'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        self.assertTrue((inbox / 'photo -2.jpg').is_file())
+        self.assertTrue((inbox / 'photo -2.notes.md').is_file())
+        self.assertFalse((inbox / 'photo.jpg').exists())
+        # The pre-existing, unrelated stub is untouched.
+        self.assertIn('an older stub', (inbox / 'photo.notes.md').read_text(encoding='utf-8'))
 
     def test_upload_without_csrf_403(self):
         boundary, body = self._multipart('x.txt', b'x')
@@ -313,15 +367,23 @@ class UploadTests(_ServeCase):
         self.assertTrue((self.root / 'inbox' / 'evil').is_file())
 
     def test_upload_note_newlines_cannot_inject_frontmatter_keys(self):
-        boundary, body = self._multipart('note-inject.txt', b'x',
-                                         fields={'what': 'a scan\nliving: hacked'})
+        # 'what' lands in the prose body now, not frontmatter, but 'who' still
+        # writes a `people:` frontmatter value - an embedded newline there
+        # must still collapse to one line rather than splice a second key in.
+        boundary, body = self._multipart(
+            'note-inject.txt', b'x',
+            fields={'what': 'a scan\nliving: hacked', 'who': 'Grandma\nliving: hacked'})
         s, _d, _h = self.req('POST', '/api/upload', body=body,
                              headers={'Content-Type':
                                       f'multipart/form-data; boundary={boundary}',
                                       'X-FHA-CSRF': self.state.csrf_token})
         self.assertEqual(s, 200)
-        sidecar = (self.root / 'inbox' / 'note-inject.txt.notes.md').read_text(encoding='utf-8')
+        sidecar_path = self.root / 'inbox' / 'note-inject.notes.md'
+        sidecar = sidecar_path.read_text(encoding='utf-8')
         self.assertNotIn('\nliving:', sidecar)
+        # The sidecar still parses cleanly as one frontmatter block + body.
+        rec = read_record(sidecar_path)
+        self.assertEqual(rec['parse_errors'], [])
 
 
 class OpenTests(_ServeCase):
@@ -379,6 +441,322 @@ class PreflightTests(_ServeCase):
         self.assertFalse(r.ok)
         self.assertEqual(r.data['status'], 'port-busy')
         self.assertTrue(any('busy' in m.text for m in r.messages))
+
+
+class CapturePathVerbTests(_ServeCase):
+    """Fix 2: `capture.path` registers a file OUTSIDE the archive on purpose -
+    no `_confine_asset_path` gate - but a RELATIVE path must resolve against
+    the archive root, not this test process's own working directory."""
+
+    def test_out_of_archive_path_is_not_confined(self):
+        outside = Path(self._tmp.name) / 'elsewhere' / 'grandma.jpg'
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_bytes(b'not-a-real-jpeg')
+        s, d, _h = self.post_run('capture.path', {'path': str(outside)}, True)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        texts = ' '.join(m['text'] for m in payload['messages'])
+        self.assertNotIn('outside the archive', texts)
+
+    def test_relative_path_resolves_against_archive_root_not_cwd(self):
+        target = self.root / 'some-scan.jpg'
+        target.write_bytes(b'bytes')
+        # The fixture's inbox/ already holds an unrelated stub - name the new
+        # one by the slug `run_capture_path` mints from the target's own
+        # stem, rather than assume it is the only *.notes.md in the folder.
+        stub_path = self.root / 'inbox' / 'some-scan.notes.md'
+        self.assertFalse(stub_path.exists())
+        s, d, _h = self.post_run('capture.path', {'path': 'some-scan.jpg'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertTrue(stub_path.is_file())
+        rec = read_record(stub_path)
+        self.assertEqual(rec['meta']['asset_path_absolute'],
+                         str(target.resolve()).replace('\\', '/'))
+
+
+class ThreadTeeTests(unittest.TestCase):
+    """Fix 4: a plain `contextlib.redirect_stdout` is process-global and races
+    when two request threads both drive engines that print. `_ThreadTee`
+    routes each write by the CALLING thread instead, so a concurrent thread
+    with no buffer of its own installed always reaches the real stream."""
+
+    def test_write_from_another_thread_reaches_real_stream_not_the_buffer(self):
+        real = io.StringIO()
+        tee = serve._ThreadTee(real)
+        # A "slow verb" on the main thread holds its own capture buffer...
+        held_buffer = io.StringIO()
+        tee.set_buffer(held_buffer)
+        try:
+            done = threading.Event()
+
+            def other_thread_write():
+                # ...while a concurrent GET on ANOTHER thread writes with no
+                # buffer of its own - it must land in the real stream, never
+                # in the buffer the main thread is holding.
+                tee.write('from another thread\n')
+                done.set()
+
+            t = threading.Thread(target=other_thread_write)
+            t.start()
+            t.join(timeout=5)
+        finally:
+            tee.set_buffer(None)
+        self.assertTrue(done.is_set(), 'the other thread never finished writing')
+        self.assertIn('from another thread', real.getvalue())
+        self.assertNotIn('from another thread', held_buffer.getvalue())
+
+    def test_write_goes_to_own_buffer_when_installed(self):
+        real = io.StringIO()
+        tee = serve._ThreadTee(real)
+        buf = io.StringIO()
+        tee.set_buffer(buf)
+        tee.write('captured line\n')
+        tee.set_buffer(None)
+        self.assertEqual(buf.getvalue(), 'captured line\n')
+        self.assertEqual(real.getvalue(), '')
+
+
+class ProcessVerbCaptureTests(_ServeCase):
+    """Fix 5: `_verb_process` classifies each captured line by its own
+    ERROR:/WARNING: prefix (process.py's plain-print convention, no
+    structured level to read) - anything else is 'info'. Needs a `_ThreadTee`
+    installed on sys.stdout/stderr (as `_cmd_serve` does at startup) for
+    `_verb_process` to have anything to capture at all."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_stdout, self._orig_stderr = sys.stdout, sys.stderr
+        sys.stdout = serve._ThreadTee(self._orig_stdout)
+        sys.stderr = serve._ThreadTee(self._orig_stderr)
+
+    def tearDown(self) -> None:
+        sys.stdout, sys.stderr = self._orig_stdout, self._orig_stderr
+        super().tearDown()
+
+    def test_captured_lines_classified_by_prefix(self):
+        def fake_run_process(ns):
+            print('ERROR: boom')
+            print('WARNING: careful')
+            print('a plain info line')
+            return serve.Result(ok=True, exit_code=serve.EXIT_CLEAN)
+
+        orig = serve.process_mod.run_process
+        serve.process_mod.run_process = fake_run_process
+        try:
+            result = serve._verb_process(self.state, {'file': 'fha.yaml'}, dry_run=True)
+        finally:
+            serve.process_mod.run_process = orig
+        levels = {m.text: m.level for m in result.messages}
+        self.assertEqual(levels.get('ERROR: boom'), 'error')
+        self.assertEqual(levels.get('WARNING: careful'), 'warning')
+        self.assertEqual(levels.get('a plain info line'), 'info')
+
+
+class ReindexAfterTests(_ServeCase):
+    """Fix 6: `_reindex_after` reads ONLY `data['source_id']` (no `'source'`
+    key guess, which held a file PATH, not an id) - a source-scoped verb
+    upserts the one source it named; otherwise a full rebuild. `run_claim`
+    now publishes `source_id` (confirmed in this working tree's claim.py), so
+    this exercises the real verb end-to-end rather than a synthetic Result."""
+
+    def test_claim_review_upserts_the_named_source_not_a_full_rebuild(self):
+        row = self.a_suggested_claim()
+        self.assertIsNotNone(row)
+        cid = row[0]
+        calls = {'upsert': [], 'full': 0}
+        orig_upsert, orig_build = index_mod.upsert_source, index_mod.build_index
+
+        def counting_upsert(archive_root, fha_config, sid):
+            calls['upsert'].append(sid)
+            return orig_upsert(archive_root, fha_config, sid)
+
+        def counting_build(archive_root, fha_config):
+            calls['full'] += 1
+            return orig_build(archive_root, fha_config)
+
+        serve.index_mod.upsert_source = counting_upsert
+        serve.index_mod.build_index = counting_build
+        try:
+            s, d, _h = self.post_run('claim.review', {'claim_id': cid, 'status': 'accepted'}, False)
+        finally:
+            serve.index_mod.upsert_source = orig_upsert
+            serve.index_mod.build_index = orig_build
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        self.assertEqual(len(calls['upsert']), 1)
+        self.assertEqual(calls['full'], 0)
+
+    def test_missing_source_id_falls_back_to_full_rebuild(self):
+        # A synthetic Result with no source_id (e.g. an engine that has not
+        # been updated to publish it yet) must still reindex - just the slow
+        # way - rather than leave the index stale.
+        calls = {'upsert': 0, 'full': 0}
+        orig_upsert, orig_build = index_mod.upsert_source, index_mod.build_index
+        orig_run_claim = serve.claim.run_claim
+
+        def counting_upsert(archive_root, fha_config, sid):
+            calls['upsert'] += 1
+            return orig_upsert(archive_root, fha_config, sid)
+
+        def counting_build(archive_root, fha_config):
+            calls['full'] += 1
+            return orig_build(archive_root, fha_config)
+
+        def fake_run_claim(*a, **kw):
+            return serve.Result(ok=True, exit_code=serve.EXIT_CLEAN, data={'status': 'ok'})
+
+        serve.index_mod.upsert_source = counting_upsert
+        serve.index_mod.build_index = counting_build
+        serve.claim.run_claim = fake_run_claim
+        try:
+            s, d, _h = self.post_run(
+                'claim.review', {'claim_id': 'C-0000000000', 'status': 'accepted'}, False)
+        finally:
+            serve.index_mod.upsert_source = orig_upsert
+            serve.index_mod.build_index = orig_build
+            serve.claim.run_claim = orig_run_claim
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        self.assertEqual(calls['upsert'], 0)
+        self.assertEqual(calls['full'], 1)
+
+
+class DesignStalenessTests(_ServeCase):
+    def test_editing_design_custom_css_marks_snapshot_stale(self):
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        design = self.root / 'design'
+        design.mkdir(parents=True, exist_ok=True)
+        css = design / 'custom.css'
+        css.write_text('body { color: red; }', encoding='utf-8')
+        # Force the new file's mtime strictly past the snapshot's build time -
+        # some filesystems have coarse mtime resolution, and this test must
+        # not flake on how fast the two statements above ran.
+        future = time.time() + 5
+        os.utime(css, (future, future))
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+
+class HomeEditNewlineTests(_ServeCase):
+    """Fix 8: `home.edit` preserves notes/home.md's existing newline style."""
+
+    def test_crlf_authored_home_md_keeps_crlf_after_edit(self):
+        home = self.root / 'notes' / 'home.md'
+        home.parent.mkdir(parents=True, exist_ok=True)
+        home.write_bytes(b'Old intro line.\r\nSecond line.\r\n')
+        s, d, _h = self.post_run('home.edit', {'text': 'A brand new intro paragraph.'}, False)
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        raw = home.read_bytes()
+        self.assertIn(b'\r\n', raw)
+        # Every LF must be part of a CRLF pair - no bare LF snuck in.
+        self.assertEqual(raw.count(b'\n'), raw.count(b'\r\n'))
+
+    def test_new_home_md_gets_plain_lf(self):
+        home = self.root / 'notes' / 'home.md'
+        if home.exists():
+            home.unlink()
+        s, d, _h = self.post_run('home.edit', {'text': 'First ever intro.'}, False)
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        raw = home.read_bytes()
+        self.assertNotIn(b'\r\n', raw)
+        self.assertIn(b'\n', raw)
+
+
+class InboxPairingTests(_ServeCase):
+    """Fix 9: `gather_inbox` pairs a sidecar with the ONE other file whose
+    stem matches exactly (process.py's own rule) - never a prefix match, and
+    never a guess when more than one file shares that stem."""
+
+    def _reset_inbox(self):
+        inbox = self.root / 'inbox'
+        inbox.mkdir(parents=True, exist_ok=True)
+        for p in list(inbox.iterdir()):
+            if p.is_file():
+                p.unlink()
+            else:
+                shutil.rmtree(p)
+        return inbox
+
+    def test_stem_exact_match_pairs_deterministically(self):
+        inbox = self._reset_inbox()
+        # `photo.raw.jpg` starts with the same "photo." prefix as the sidecar
+        # but has a DIFFERENT stem (`photo.raw`) - only `photo.jpg` (stem
+        # `photo`) may pair with `photo.notes.md`.
+        (inbox / 'photo.jpg').write_bytes(b'a')
+        (inbox / 'photo.raw.jpg').write_bytes(b'b')
+        (inbox / 'photo.notes.md').write_text(
+            '---\nnoted: 2020-01-01\n---\n\nan old note\n', encoding='utf-8')
+        result = serve.gather_inbox(self.state)
+        by_name = {item['name']: item for item in result['items']}
+        self.assertEqual(len(result['items']), 2)
+        self.assertEqual(by_name['photo.jpg']['kind'], 'asset+note')
+        self.assertEqual(by_name['photo.jpg']['sidecar'], 'inbox/photo.notes.md')
+        self.assertEqual(by_name['photo.raw.jpg']['kind'], 'asset')
+        self.assertNotIn('photo.notes.md', by_name)  # folded into the pair above
+
+    def test_ambiguous_stem_lists_sidecar_alone(self):
+        inbox = self._reset_inbox()
+        (inbox / 'letter.txt').write_bytes(b'a')
+        (inbox / 'letter.pdf').write_bytes(b'b')
+        (inbox / 'letter.notes.md').write_text(
+            '---\nnoted: 2020-01-01\n---\n\nan old note\n', encoding='utf-8')
+        result = serve.gather_inbox(self.state)
+        by_name = {item['name']: item for item in result['items']}
+        self.assertEqual(len(result['items']), 3)
+        self.assertEqual(by_name['letter.notes.md']['kind'], 'note')
+        self.assertEqual(by_name['letter.txt']['kind'], 'asset')
+        self.assertEqual(by_name['letter.pdf']['kind'], 'asset')
+
+
+class PortZeroTests(unittest.TestCase):
+    """Fix 10: an explicit `--port 0` must reach preflight/bind, not be
+    silently replaced by DEFAULT_PORT (`0 or DEFAULT_PORT` is the bug - 0 is
+    falsy). Cheap unit test of the extracted `_resolved_port` helper."""
+
+    def test_explicit_port_zero_is_not_replaced(self):
+        args = argparse.Namespace(port=0)
+        self.assertEqual(serve._resolved_port(args), 0)
+
+    def test_absent_port_falls_back_to_default(self):
+        args = argparse.Namespace()
+        self.assertEqual(serve._resolved_port(args), serve.DEFAULT_PORT)
+
+    def test_explicit_nonzero_port_passes_through(self):
+        args = argparse.Namespace(port=9001)
+        self.assertEqual(serve._resolved_port(args), 9001)
+
+
+class EchoTests(unittest.TestCase):
+    """Fix 11: the `--confidence`/`--title` CLI-echo parity additions.
+    `_echo_*` are pure string-building functions of the coerced kwargs - no
+    server fixture needed."""
+
+    def test_echo_claim_new_includes_confidence_when_given(self):
+        echo = serve._echo_claim_new({
+            'source_id': 'S-fa1234567b', 'claim_type': 'birth', 'value': '1870',
+            'confidence': 'direct',
+        })
+        self.assertIn('--confidence direct', echo)
+
+    def test_echo_claim_new_omits_confidence_when_absent(self):
+        echo = serve._echo_claim_new({
+            'source_id': 'S-fa1234567b', 'claim_type': 'birth', 'value': '1870',
+        })
+        self.assertNotIn('--confidence', echo)
+
+    def test_echo_capture_path_includes_title_when_given(self):
+        echo = serve._echo_capture_path(
+            {'path': '/library/grandma.jpg', 'title': "Grandma's Wedding"})
+        self.assertIn('--title', echo)
+        self.assertIn("Grandma's Wedding", echo)
+
+    def test_echo_capture_path_omits_title_when_absent(self):
+        echo = serve._echo_capture_path({'path': '/library/grandma.jpg'})
+        self.assertNotIn('--title', echo)
 
 
 if __name__ == '__main__':

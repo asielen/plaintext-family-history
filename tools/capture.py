@@ -1021,10 +1021,16 @@ def run_capture_path(
 
     A missing target (an unplugged external drive, a typo'd path) is not a
     hard refusal - the human may be capturing before reconnecting the drive -
-    so the stub is still written and the warning is printed either way; only
+    so the stub is still written and the warning is recorded either way; only
     the LIVE write's exit code reflects it (1, warnings), matching the
     module's other dry-run branches, which always report a clean preview
     (exit 0) regardless of what a real run would warn about.
+
+    House engine contract: this returns a Result and never prints - every line
+    a terminal run shows lives in `Result.messages` instead, in the same order
+    and wording, for `_run_capture` (the CLI layer) to render. That is what
+    lets `fha serve` read this function's output as structured messages
+    instead of scraping captured stdout/stderr.
     """
     target = Path(path)
     given_path = str(path).replace('\\', '/')
@@ -1044,19 +1050,25 @@ def run_capture_path(
     )
 
     if dry_run:
-        print(f'[dry-run] Would register {given_path}')
+        result = Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'exists': exists})
+        result.add('info', f'[dry-run] Would register {given_path}')
         if not exists:
-            print(missing_warning, file=sys.stderr)
-        print(f'[dry-run] Would stage stub {_rel(stub_path, archive_root)}')
-        print('[dry-run] --- stub contents ---')
+            result.add('warning', missing_warning)
+        result.add('info', f'[dry-run] Would stage stub {_rel(stub_path, archive_root)}')
+        result.add('info', '[dry-run] --- stub contents ---')
         for line in stub_text.splitlines():
-            print(f'[dry-run] {line}')
-        print('[dry-run] --- end stub contents ---')
-        print('[dry-run] No file written. Re-run without --dry-run to apply.')
-        return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'exists': exists})
+            result.add('info', f'[dry-run] {line}')
+        result.add('info', '[dry-run] --- end stub contents ---')
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
 
+    result = Result(
+        exit_code=(EXIT_CLEAN if exists else EXIT_WARNINGS),
+        data={'status': 'ok', 'exists': exists, 'stub': _rel(stub_path, archive_root)},
+        changed=[str(stub_path)],
+    )
     if not exists:
-        print(missing_warning, file=sys.stderr)
+        result.add('warning', missing_warning)
 
     try:
         inbox.mkdir(parents=True, exist_ok=True)
@@ -1066,14 +1078,10 @@ def run_capture_path(
             f'could not stage stub {_rel(stub_path, archive_root)}: {e}'
         ) from e
 
-    print(f'Registered {given_path}')
-    print(f'Staged stub {_rel(stub_path, archive_root)}')
+    result.add('info', f'Registered {given_path}')
+    result.add('info', f'Staged stub {_rel(stub_path, archive_root)}')
 
-    return Result(
-        exit_code=(EXIT_CLEAN if exists else EXIT_WARNINGS),
-        data={'status': 'ok', 'exists': exists, 'stub': _rel(stub_path, archive_root)},
-        changed=[str(stub_path)],
-    )
+    return result
 
 
 # ── Multi-asset ingest: the §12.1 inbox bundle folder (the "both" case) ─────────
@@ -2215,15 +2223,22 @@ def _run_capture(args: argparse.Namespace) -> int:
     path_arg = getattr(args, 'path', None)
     if path_arg:
         try:
-            return run_capture_path(
+            path_result = run_capture_path(
                 archive_root, fha_config,
                 path=path_arg, note=getattr(args, 'note', None),
                 title=getattr(args, 'title', None),
                 dry_run=bool(getattr(args, 'dry_run', False)),
-            ).exit_code
+            )
         except CaptureWriteError as e:
             print(f'ERROR: {e}', file=sys.stderr)
             return EXIT_FAILURE
+        # run_capture_path follows the house engine contract (Result, never a
+        # print) - render its messages here so the terminal output is exactly
+        # what it always was, just sourced from Result.messages now.
+        for msg in path_result.messages:
+            stream = sys.stdout if msg.level == 'info' else sys.stderr
+            print(msg.text, file=stream)
+        return path_result.exit_code
 
     asset: Path | None = None
     if args.asset:

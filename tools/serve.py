@@ -32,7 +32,8 @@ Security is the whole trust boundary (there is no auth by design). See
   1. bind 127.0.0.1 only;  2. Host-header allowlist on every request;
   3. per-process CSRF token compared with hmac.compare_digest on every POST;
   4. canonical-path confinement (resolve + is_relative_to) on snapshot files,
-     /root/ aliases, /api/open, /api/upload, and path-shaped /api/run args;
+     /root/ aliases, /api/open, /api/upload, and the `process.file` /api/run
+     arg (`capture.path` is deliberately UNconfined - see _verb_capture_path);
   5. no-store + nosniff headers;  6. one global mutation lock held across
      mutate -> reindex -> snapshot-invalidate;  7. no state outside .cache/serve/.
 
@@ -45,6 +46,8 @@ Code map:
   gather_review / gather_inbox - the two serve-rendered pages' data
   VERBS + _verb_*           - the /api/run parity table (the one mutation door)
   _reindex_after            - post-write reindex policy (upsert vs full)
+  _ThreadTee                - per-thread stdout/stderr router (process.py's
+                              prints, captured without racing concurrent GETs)
   _Handler                  - the http.server request handler (routes + security)
   _cmd_serve / register     - the serving loop and CLI wiring
 """
@@ -82,8 +85,11 @@ from _lib import (  # noqa: E402
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    read_text_exact,
+    reapply_newline,
     resolve_path,
     resolve_root_arg,
+    write_text_exact,
     yaml_inline,
 )
 
@@ -248,27 +254,44 @@ class ServeState:
 _SNAPSHOT_INPUTS = ('sources', 'people', 'places', 'notes')
 
 
+def _newest_mtime_under(base: Path) -> float:
+    """Newest mtime of every file/dir under `base` (0.0 if `base` is absent).
+
+    A directory's OWN mtime does not change when a file inside it is edited
+    (only when an entry is added/removed/renamed) - so a single `os.stat` on
+    a folder misses an in-place edit to a file it contains. Walking the small
+    tree and taking the max over every file (and dir, to still catch a rename)
+    is the only cheap way to answer "did anything in here change." Shared by
+    the record-tree walk and the design/ walk in `_newest_input_mtime`."""
+    newest = 0.0
+    if not base.exists():
+        return newest
+    for dirpath, _dirs, files in os.walk(base):
+        try:
+            newest = max(newest, os.stat(dirpath).st_mtime)
+        except OSError:
+            pass
+        for f in files:
+            try:
+                newest = max(newest, os.stat(os.path.join(dirpath, f)).st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
 def _newest_input_mtime(state: ServeState) -> float:
-    """Newest mtime across the record trees + fha.yaml + the index. A cheap
-    scandir walk of the record trees only (contract SS2) - photos/documents are
-    never walked."""
+    """Newest mtime across the record trees + design/ + fha.yaml + the index.
+    A cheap scandir walk of these small trees only (contract SS2) - photos/
+    documents are never walked. `design/` is walked file-by-file like the
+    record trees (see `_newest_mtime_under`), not single-`os.stat`'d on the
+    directory: editing `design/custom.css` must mark the snapshot stale, and a
+    directory-level stat would miss that edit."""
     newest = 0.0
     root = state.archive_root
     for name in _SNAPSHOT_INPUTS:
-        base = root / name
-        if not base.exists():
-            continue
-        for dirpath, _dirs, files in os.walk(base):
-            try:
-                newest = max(newest, os.stat(dirpath).st_mtime)
-            except OSError:
-                pass
-            for f in files:
-                try:
-                    newest = max(newest, os.stat(os.path.join(dirpath, f)).st_mtime)
-                except OSError:
-                    pass
-    for extra in (root / 'fha.yaml', root / 'design', root / '.cache' / 'index.sqlite'):
+        newest = max(newest, _newest_mtime_under(root / name))
+    newest = max(newest, _newest_mtime_under(root / 'design'))
+    for extra in (root / 'fha.yaml', root / '.cache' / 'index.sqlite'):
         try:
             newest = max(newest, os.stat(extra).st_mtime)
         except OSError:
@@ -495,7 +518,20 @@ def gather_inbox(state: ServeState) -> dict:
     """Group top-level inbox entries (contract SS10): an asset + its `.notes.md`
     sidecar is one item, a bundle folder is one item, a lone stub is one item.
     Returns {'items': [...]}, each with the paths for the open-file and
-    file-as-a-source buttons."""
+    file-as-a-source buttons.
+
+    Pairing uses `fha process`'s own rule (`_find_sidecar`/`_companion_for_sidecar`
+    in process.py, SPEC §12.1): a sidecar `{stem}.notes.md` pairs with the ONE
+    other file whose stem equals `stem` exactly - never a prefix/startswith
+    match, which would wrongly pair `photo.notes.md` with `photo.raw.jpg` too
+    (both start with `photo.`, only one has stem `photo`). Precomputed into
+    `companion_of_sidecar`/`sidecar_of_companion` before the display pass below
+    so the pairing is independent of iteration order (the old code scanned a
+    `set`, whose iteration order is not the display order, and so could pick a
+    different "companion" from one run to the next). When more than one file
+    shares the sidecar's exact stem, that is the same ambiguity
+    `_companion_for_sidecar` refuses on - list the sidecar on its own rather
+    than guess which asset it belongs to."""
     try:
         inbox = resolve_path('inbox', state.fha_config, state.archive_root)
     except Exception:
@@ -504,11 +540,21 @@ def gather_inbox(state: ServeState) -> dict:
         return {'items': []}
 
     entries = sorted(inbox.iterdir(), key=lambda p: p.name.lower())
+    files_only = [p for p in entries if p.is_file() and not p.name.startswith('.')]
+    sidecar_files = [p for p in files_only if p.name.endswith('.notes.md')]
+    asset_files = [p for p in files_only if not p.name.endswith('.notes.md')]
+
+    companion_of_sidecar: dict[str, str] = {}
+    sidecar_of_companion: dict[str, str] = {}
+    for s in sidecar_files:
+        base = s.name[:-len('.notes.md')]
+        candidates = sorted(a.name for a in asset_files if a.stem == base)
+        if len(candidates) == 1:
+            companion_of_sidecar[s.name] = candidates[0]
+            sidecar_of_companion[candidates[0]] = s.name
+
     items: list[dict] = []
     consumed: set[str] = set()
-
-    # First pass: pair each asset with its <name>.notes.md sidecar.
-    names = {p.name for p in entries}
     for p in entries:
         if p.name in consumed or p.name.startswith('.'):
             continue
@@ -523,10 +569,8 @@ def gather_inbox(state: ServeState) -> dict:
             consumed.add(p.name)
             continue
         if p.name.endswith('.notes.md'):
-            base = p.name[:-len('.notes.md')]
-            companion = next((n for n in names if n != p.name and n.startswith(base + '.')
-                              and not n.endswith('.notes.md')), None)
-            if companion:
+            companion = companion_of_sidecar.get(p.name)
+            if companion is not None:
                 consumed.add(companion)
                 consumed.add(p.name)
                 items.append({
@@ -542,9 +586,9 @@ def gather_inbox(state: ServeState) -> dict:
                     'files': [p.name], 'open_path': rel, 'process_path': rel, 'sidecar': None,
                 })
             continue
-        # A bare asset: look for its sidecar.
-        sidecar = p.name + '.notes.md'
-        if sidecar in names:
+        # A bare asset: look for its sidecar (the precomputed exact-stem match).
+        sidecar = sidecar_of_companion.get(p.name)
+        if sidecar is not None:
             consumed.add(sidecar)
             items.append({
                 'name': p.name, 'kind': 'asset+note',
@@ -668,6 +712,8 @@ def _echo_claim_new(kw):
         parts += ['--subtype', kw['subtype']]
     if kw.get('status'):
         parts += ['--status', kw['status']]
+    if kw.get('confidence'):
+        parts += ['--confidence', kw['confidence']]
     return ' '.join(parts)
 
 
@@ -796,11 +842,75 @@ def _echo_source_note(kw):
     return f'fha source note {kw.get("source_id", "?")} --text {_q(_short(kw.get("text", "")))}'
 
 
+# ── Per-thread stdout/stderr routing (process.py's own prints) ────────────────
+
+class _ThreadTee(io.TextIOBase):
+    """A stdout/stderr stand-in that routes each write by the CALLING thread.
+
+    `fha serve` runs every HTTP request on its own thread (ThreadingHTTPServer).
+    `_verb_process` drives `process.py`'s `run_process`, which still legitimately
+    prints (refactoring it to the Result contract is its own project - out of
+    scope here) - that output has to be folded into THIS request's Result
+    without swallowing, or being swallowed by, whatever any OTHER thread prints
+    at the same moment (a concurrent GET rebuilding the snapshot, a traceback
+    logged by the request handler). `contextlib.redirect_stdout` swaps
+    `sys.stdout` for the whole PROCESS, so two concurrent `process.file` calls
+    would race on the same buffer - each could capture (or lose) lines the
+    other thread printed. A `threading.local` override fixes that: a write
+    goes to the CALLING thread's buffer if one was installed with
+    `set_buffer`, else straight through to the real stream underneath - so an
+    unrelated thread with no buffer set is completely unaffected.
+
+    Installed ONCE, over `sys.stdout`/`sys.stderr`, at server startup
+    (`_cmd_serve`, before `serve_forever`) and restored in `finally` on exit."""
+
+    def __init__(self, real: io.TextIOBase) -> None:
+        super().__init__()
+        self._real = real
+        self._local = threading.local()
+
+    def set_buffer(self, buf: io.StringIO | None) -> None:
+        """Install (`buf`) or clear (`None`) the CALLING thread's capture buffer."""
+        self._local.buf = buf
+
+    def write(self, s: str) -> int:
+        buf = getattr(self._local, 'buf', None)
+        return (buf if buf is not None else self._real).write(s)
+
+    def flush(self) -> None:
+        buf = getattr(self._local, 'buf', None)
+        (buf if buf is not None else self._real).flush()
+
+    @property
+    def encoding(self) -> str:  # some libraries probe this before writing
+        return getattr(self._real, 'encoding', 'utf-8')
+
+
+def _classify_captured_line(line: str) -> str:
+    """process.py's own message-level convention: an `ERROR:`/`WARNING:` prefix
+    on a printed line IS its severity (there is no structured level to read
+    since these are plain prints, not a Result); anything else is 'info'."""
+    if line.startswith('ERROR'):
+        return 'error'
+    if line.startswith('WARNING'):
+        return 'warning'
+    return 'info'
+
+
 def _verb_process(state, kw, dry_run):
     """Stage A filing. Confine the path, then drive run_process with an explicit
-    --type so it never prompts. stdin is swapped to EOF and stdout/stderr are
-    captured, so an unexpected prompt fails cleanly (a plain message) instead of
-    hanging a request thread."""
+    --type so it never prompts. stdin is swapped to EOF so an unexpected prompt
+    fails cleanly (a plain message) instead of hanging a request thread - it is
+    scoped to this one call because nothing else in serve ever reads stdin.
+    stdout/stderr are captured through THIS thread's `_ThreadTee` buffer
+    (installed once at server startup, see `_cmd_serve`) rather than a
+    process-global `contextlib.redirect_stdout` - a concurrent GET on another
+    thread can never write into, or lose output to, this request's buffer. If
+    no tee is installed (serve not started through `_cmd_serve`, e.g. a test
+    driving this function directly) the buffer simply captures nothing and the
+    generic 'filed'/'preview complete' message is used instead - a graceful
+    fallback, not a silent bug, since process.py's own exit code still governs
+    the Result either way."""
     raw = kw.get('file', '')
     confined, err = _confine_asset_path(state, raw)
     if err:
@@ -810,12 +920,17 @@ def _verb_process(state, kw, dry_run):
         slug=kw.get('slug'), source_date=None, more=None, people=None,
         dry_run=dry_run, root=str(state.archive_root),
     )
-    buf_out, buf_err = io.StringIO(), io.StringIO()
+    buf = io.StringIO()
+    out_tee = sys.stdout if isinstance(sys.stdout, _ThreadTee) else None
+    err_tee = sys.stderr if isinstance(sys.stderr, _ThreadTee) else None
+    if out_tee is not None:
+        out_tee.set_buffer(buf)
+    if err_tee is not None:
+        err_tee.set_buffer(buf)
     old_stdin = sys.stdin
     sys.stdin = io.StringIO('')
     try:
-        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-            res = process_mod.run_process(ns)
+        res = process_mod.run_process(ns)
     except EOFError:
         return Result(ok=False, exit_code=EXIT_FAILURE).add(
             'error', 'this item needs the command line (it has variations or a bundle '
@@ -825,10 +940,14 @@ def _verb_process(state, kw, dry_run):
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not file: {e}')
     finally:
         sys.stdin = old_stdin
+        if out_tee is not None:
+            out_tee.set_buffer(None)
+        if err_tee is not None:
+            err_tee.set_buffer(None)
     out = Result(ok=res.ok, exit_code=res.exit_code)
-    for line in (buf_out.getvalue() + buf_err.getvalue()).splitlines():
+    for line in buf.getvalue().splitlines():
         if line.strip():
-            out.add('error' if line.startswith('ERROR') else 'info', line)
+            out.add(_classify_captured_line(line), line)
     if not out.messages:
         out.add('info', 'filed' if not dry_run else 'preview complete')
     return out
@@ -846,27 +965,45 @@ def _echo_process(kw):
 
 
 def _verb_capture_path(state, kw, dry_run):
-    confined, err = _confine_asset_path(state, kw.get('path', ''), must_exist=False)
-    if err:
-        return Result(ok=False, exit_code=EXIT_FAILURE).add('error', err)
-    buf_out, buf_err = io.StringIO(), io.StringIO()
+    """Register a must-never-move asset via `fha capture --path` (TOOLING §13b).
+
+    Deliberately has NO `_confine_asset_path` gate (unlike `_verb_process`):
+    pointing at a file OUTSIDE the archive tree is the whole point of this
+    verb - a photo still living in someone else's library, registered without
+    ever being moved, renamed, or opened. The engine only ever
+    `.exists()`-checks the target path; it never reads or writes it. CSRF
+    already gates the POST, so confinement would protect nothing here that
+    isn't already protected - the write this verb performs is the pointer
+    stub in inbox/, which `run_capture_path` itself confines.
+
+    A RELATIVE path is resolved against `state.archive_root` before it reaches
+    the engine: `run_capture_path` resolves a bare relative path against this
+    PROCESS's own current directory, which is the server's launch directory,
+    not the browser's - meaningless for a value a human typed into a form. An
+    absolute path (the common case, since the point of `--path` is a file
+    living elsewhere) passes through untouched.
+
+    Reads `Result.messages` straight from the engine with no redirect: since
+    `run_capture_path` follows the house engine contract (returns a Result,
+    never prints), there is nothing here to capture."""
+    raw = kw.get('path', '')
+    path_value = raw
+    if raw and not Path(raw).is_absolute():
+        path_value = str(state.archive_root / raw)
     try:
-        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-            res = capture.run_capture_path(
-                state.archive_root, state.fha_config, path=kw.get('path', ''),
-                note=kw.get('note'), title=kw.get('title'), dry_run=dry_run)
+        return capture.run_capture_path(
+            state.archive_root, state.fha_config, path=path_value,
+            note=kw.get('note'), title=kw.get('title'), dry_run=dry_run)
     except Exception as e:  # noqa: BLE001
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not register: {e}')
-    for line in (buf_out.getvalue() + buf_err.getvalue()).splitlines():
-        if line.strip():
-            res.add('info', line)
-    return res
 
 
 def _echo_capture_path(kw):
     parts = ['fha capture', '--path', _q(kw.get('path', ''))]
     if kw.get('note'):
         parts += ['--note', _q(_short(kw['note']))]
+    if kw.get('title'):
+        parts += ['--title', _q(kw['title'])]
     return ' '.join(parts)
 
 
@@ -892,7 +1029,15 @@ def _echo_index(kw):
 
 def _verb_home_edit(state, kw, dry_run):
     """Bounded write of notes/home.md - parity with editing the file directly.
-    Dry-run shows a unified diff (contract SS6)."""
+    Dry-run shows a unified diff (contract SS6).
+
+    Reads/writes through `read_text_exact`/`write_text_exact` and reapplies the
+    file's own newline convention with `reapply_newline` (the same byte-faithful
+    pattern the surgical claim/profile editors use) - a plain `Path.read_text`/
+    `write_text` round-trip would silently convert every line of a CRLF-authored
+    notes/home.md to LF, churning the whole file instead of just the human's
+    edit. A brand-new file has no existing convention to match, so it gets the
+    plain '\\n' the caller already builds `new` with."""
     import difflib
     text = kw.get('text')
     if text is None or not str(text).strip():
@@ -902,7 +1047,8 @@ def _verb_home_edit(state, kw, dry_run):
     new = str(text)
     if not new.endswith('\n'):
         new += '\n'
-    old = path.read_text(encoding='utf-8') if path.exists() else ''
+    old = read_text_exact(path) if path.exists() else ''
+    new = reapply_newline(new, old)
     if old == new:
         return Result(ok=True, exit_code=EXIT_CLEAN).add('info', 'no change - notes/home.md already matches.')
     result = Result(data={'status': 'dry-run' if dry_run else 'ok'})
@@ -915,7 +1061,7 @@ def _verb_home_edit(state, kw, dry_run):
         return result
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new, encoding='utf-8')
+        write_text_exact(path, new)
     except OSError as e:
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not write notes/home.md: {e}')
     result.note_changed(path)
@@ -976,17 +1122,20 @@ VERBS: dict[str, dict] = {
 def _reindex_after(state: ServeState, verb: str, result: Result) -> None:
     """Post-write reindex policy (contract SS6). Caller holds the lock.
     A source-scoped verb upserts the one source it named; else a full rebuild.
-    publish/index.rebuild need no extra reindex."""
+    publish/index.rebuild need no extra reindex.
+
+    Reads ONLY `data['source_id']` - the canonical `S-…` id `run_claim` and
+    `run_confirm_cooccur` publish specifically for this reindexer to read.
+    (An earlier version also guessed at `data['source']`, but that key holds
+    the source record's file PATH, not an id - it never validated as an ID
+    and always fell through to a full rebuild anyway, so checking it bought
+    nothing but confusion. Keep this single-key read the day any other
+    'source'-scoped verb is added.)"""
     policy = VERBS[verb]['reindex']
     if policy == 'none':
         return
     if policy == 'source':
-        sid = None
-        for key in ('source_id', 'source'):
-            v = result.get(key) if hasattr(result, 'get') else None
-            if v:
-                sid = v
-                break
+        sid = result.get('source_id')
         if sid and is_valid_id(sid) and id_type_of(normalize_id(sid)) == 'S':
             outcome = index_mod.upsert_source(state.archive_root, state.fha_config, normalize_id(sid))
             if outcome == 'indexed':
@@ -1037,9 +1186,13 @@ def run_api_run(state: ServeState, verb: str, args: dict, dry_run: bool) -> tupl
 
 def _confine_asset_path(state: ServeState, raw: str, must_exist: bool = True
                         ) -> tuple[Path | None, str | None]:
-    """Confine a path-shaped /api/run arg (process file, capture path) to the
+    """Confine a path-shaped /api/run arg (`process.file`'s `file`) to the
     archive tree or an allowed asset root before the engine ever sees it
-    (defense in depth). Returns (resolved, error)."""
+    (defense in depth). Returns (resolved, error).
+
+    NOT used by `capture.path`: registering a file OUTSIDE the archive tree
+    is that verb's whole purpose (see `_verb_capture_path`'s docstring), so
+    confining it here would refuse the feature it exists to provide."""
     if not raw or '\x00' in raw:
         return None, 'no path was given.'
     root = state.archive_root.resolve()
@@ -1192,7 +1345,18 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
                    what: str = '', who: str = '') -> tuple[int, dict]:
     """Write uploaded bytes into inbox/<basename> (collision -> ` -2` stem) plus
     an optional `.notes.md` sidecar. Basename-only, sanitized, confined to the
-    resolved inbox root."""
+    resolved inbox root.
+
+    The sidecar is named `<stem>.notes.md` (process.py's `_find_sidecar` rule,
+    SPEC §12.1 - `photo.jpg` <-> `photo.notes.md`), never `<full name>.notes.md`,
+    or `fha process` would never find it. Its content follows what
+    `_read_sidecar` actually consumes: the "what" text becomes the PROSE BODY
+    (that is what lands in the scaffolded record's `## Notes`), and the "who"
+    hint is written under `people:` - the one frontmatter key `_read_sidecar`
+    reads for unresolved names, which it folds into that same body as an
+    "unreconciled" line. A sidecar written any other way would sit in the
+    inbox looking filed but silently never feed the fields it looks like it
+    should."""
     base = _sanitize_basename(filename)
     if base is None:
         return 400, _msg_payload(False, 'that file name is not allowed. Give a plain file name.')
@@ -1201,12 +1365,28 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
     except Exception:
         return 500, _msg_payload(False, 'could not find the inbox folder.')
 
+    # One line per field, collapsed before it goes anywhere near YAML or a
+    # record body: a raw newline in a browser-typed note would otherwise
+    # inject extra keys into the sidecar's frontmatter.
+    what_line = ' '.join(what.split())
+    who_line = ' '.join(who.split())
+    has_note = bool(what_line or who_line)
+
+    def _sidecar_name(dest_name: str) -> str:
+        return os.path.splitext(dest_name)[0] + '.notes.md'
+
     with state.lock:
         inbox.mkdir(parents=True, exist_ok=True)
         dest = inbox / base
         stem, ext = os.path.splitext(base)
         n = 2
-        while dest.exists():
+        # A note's sidecar shares the ASSET's stem, not its full name (same
+        # rule as above) - so when a note is given, a collision on the stem's
+        # sidecar must bump the destination exactly like a collision on the
+        # asset name itself, or this upload's note would collide with (and
+        # get shadowed by, or silently overwrite) an unrelated older item's
+        # sidecar of the same stem.
+        while dest.exists() or (has_note and (inbox / _sidecar_name(dest.name)).exists()):
             dest = inbox / f'{stem} -{n}{ext}'
             n += 1
         # Confirm the final destination is still inside the inbox (belt + braces).
@@ -1221,20 +1401,20 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
                 tmp.unlink()
             return 500, _msg_payload(False, f'could not write the file: {e}')
         written = [str(dest)]
-        if what.strip() or who.strip():
-            sidecar = inbox / (dest.name + '.notes.md')
-            # One line per field: a newline inside the note would otherwise
-            # inject extra keys into the sidecar's frontmatter.
-            what_line = ' '.join(what.split())
-            who_line = ' '.join(who.split())
-            body = '---\n'
-            if what_line:
-                body += f'what: {yaml_inline(what_line)}\n'
+        if has_note:
+            sidecar = inbox / _sidecar_name(dest.name)
+            lines = ['---', f'noted: {time.strftime("%Y-%m-%d")}']
             if who_line:
-                body += f'people-hint: {yaml_inline(who_line)}\n'
-            body += f'noted: {time.strftime("%Y-%m-%d")}\n---\n'
+                # A list, not a bare scalar: `_read_sidecar` reads `people:`
+                # as `meta.get('people') or []` and iterates it - a plain
+                # string value would iterate its characters, not its name(s).
+                lines.append(f'people: {yaml_inline([who_line])}')
+            lines.append('---')
+            lines.append('')
+            lines.append(what_line if what_line else '*(uploaded with a name hint - no note given)*')
+            lines.append('')
             try:
-                sidecar.write_text(body, encoding='utf-8')
+                sidecar.write_text('\n'.join(lines), encoding='utf-8')
                 written.append(str(sidecar))
             except OSError:
                 pass
@@ -1539,11 +1719,25 @@ class _Handler(BaseHTTPRequestHandler):
 
 # ── Serving loop + CLI ──────────────────────────────────────────────────────────
 
+def _resolved_port(args: argparse.Namespace) -> int:
+    """The bind port `_cmd_serve` uses: `--port`'s value, or DEFAULT_PORT when
+    `--port` is genuinely ABSENT.
+
+    `int(getattr(args, 'port', None) or DEFAULT_PORT)` looks equivalent but is
+    not: `0 or DEFAULT_PORT` evaluates to `DEFAULT_PORT` because `0` is falsy,
+    so an explicit `--port 0` (a legal bind request - "any free port," what the
+    test suite passes) silently became 8765 and never reached preflight/bind.
+    Only `None` (the argument truly not given) should fall back; any int the
+    user typed, including 0, must pass through untouched."""
+    port = getattr(args, 'port', None)
+    return DEFAULT_PORT if port is None else int(port)
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
-    port = int(getattr(args, 'port', None) or DEFAULT_PORT)
+    port = _resolved_port(args)
 
     pre = run_serve_preflight(archive_root, port=port)
     for m in pre.messages:
@@ -1588,12 +1782,22 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         except Exception:  # noqa: BLE001 - a headless box just skips this
             pass
 
+    # Install the per-thread stdout/stderr router ONCE, for the life of the
+    # serve loop (see _ThreadTee's docstring): every request runs on its own
+    # thread, and _verb_process needs to capture process.py's prints into
+    # THAT thread's Result without racing a concurrent GET on another thread.
+    # Restored in `finally` so a crash or Ctrl-C never leaves the real
+    # terminal streams wrapped.
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    sys.stdout = _ThreadTee(real_stdout)
+    sys.stderr = _ThreadTee(real_stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print('\nfha serve stopped. Nothing was lost.', file=sys.stderr)
     finally:
         httpd.server_close()
+        sys.stdout, sys.stderr = real_stdout, real_stderr
     return EXIT_CLEAN
 
 

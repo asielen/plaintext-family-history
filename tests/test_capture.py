@@ -667,38 +667,37 @@ class CapturePathTestCase(unittest.TestCase):
                       (inbox / 'grandma-wedding.notes.md').read_text(encoding='utf-8'))
 
     def test_missing_target_warns_but_still_writes(self) -> None:
+        # The house engine contract: run_capture_path returns a Result and
+        # never prints - the warning lives in Result.messages, not stderr.
         missing = self.tmp / 'library' / 'does-not-exist.jpg'
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            rc = capture.run_capture_path(
-                self.archive, self.config, path=str(missing)).exit_code
-        self.assertEqual(rc, EXIT_WARNINGS)
-        self.assertIn('not found right now', err.getvalue())
-        self.assertIn('may be unplugged', err.getvalue())
+        result = capture.run_capture_path(self.archive, self.config, path=str(missing))
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        texts = ' '.join(m.text for m in result.messages)
+        self.assertIn('not found right now', texts)
+        self.assertIn('may be unplugged', texts)
+        self.assertTrue(any(m.level == 'warning' for m in result.messages))
         # Forgiving: the stub is still written despite the warning.
         stub = self._only_stub()
         self.assertTrue(stub.read_text(encoding='utf-8'))
 
     def test_dry_run_writes_nothing(self) -> None:
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            rc = capture.run_capture_path(
-                self.archive, self.config, path=str(self.target), dry_run=True).exit_code
-        self.assertEqual(rc, EXIT_CLEAN)
+        result = capture.run_capture_path(
+            self.archive, self.config, path=str(self.target), dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertFalse((self.archive / 'inbox').exists())
-        self.assertIn('grandma-wedding.notes.md', out.getvalue())
-        self.assertIn('asset_path', out.getvalue())
+        texts = ' '.join(m.text for m in result.messages)
+        self.assertIn('grandma-wedding.notes.md', texts)
+        self.assertIn('asset_path', texts)
 
     def test_dry_run_on_missing_target_still_exits_clean_but_warns(self) -> None:
         # Every other dry-run branch in this module reports a clean preview
         # regardless of what a live run would warn about; --path matches.
         missing = self.tmp / 'library' / 'does-not-exist.jpg'
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = capture.run_capture_path(
-                self.archive, self.config, path=str(missing), dry_run=True).exit_code
-        self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('not found right now', err.getvalue())
+        result = capture.run_capture_path(
+            self.archive, self.config, path=str(missing), dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        texts = ' '.join(m.text for m in result.messages)
+        self.assertIn('not found right now', texts)
         self.assertFalse((self.archive / 'inbox').exists())
 
     def test_cli_end_to_end(self) -> None:
