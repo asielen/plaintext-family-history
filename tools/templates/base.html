@@ -4,13 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ site_title }}{% endblock %}</title>
+{% if workbench %}<meta name="fha-csrf" content="{{ csrf_token }}">{% endif %}
 {# Design system (see docs/DESIGN.md). styles.css is the source of truth;
    custom.css is linked last so local overrides win. Both are copied into
    the site's assets/ by fha site (_copy_assets), so pages stay offline. #}
 <link rel="stylesheet" href="{{ root_prefix }}/assets/styles.css">
 <link rel="stylesheet" href="{{ root_prefix }}/assets/custom.css">
+{% if workbench %}<link rel="stylesheet" href="{{ root_prefix }}/assets/workbench.css">{% endif %}
 </head>
 <body>
+{% if workbench %}{% include "workbench/_servebar.html" %}{% endif %}
 <header class="site-header">
   <a class="home-link" href="{{ root_prefix }}/index.html">{{ site_title }}</a>
   <nav class="site-nav" aria-label="Primary">
@@ -24,7 +27,19 @@
 {% block content %}{% endblock %}
 </main>
 <footer class="site-footer">
+{% if workbench %}
+  <p><strong>fha serve</strong> - a window onto the files, never a home for them. It owns no
+  data and keeps no state; stop it (Ctrl-C) and nothing is lost.</p>
+  <p>Linked preview - unredacted. Sharing still goes through <code>fha site --standalone</code>
+  or <code>fha packet</code>. Every button is an <code>fha</code> command; the equivalent is
+  echoed after each apply, and anything a button can't do yet comes with the manual recipe.</p>
+{% else %}
   <p>{{ footer_note }}</p>
+{% endif %}
 </footer>
+{% if workbench %}
+{% include "workbench/_modals.html" %}
+<script src="{{ root_prefix }}/assets/workbench.js"></script>
+{% endif %}
 </body>
 </html>

@@ -1,0 +1,19 @@
+{# The one piece of chrome serve adds to every page (contract SS4). Counts are
+   baked at render time - correct under refresh-on-use (serve rebuilds the
+   snapshot after any write, so the next page load carries fresh counts). The
+   search box drives GET /api/find; the reload control re-reads the index and
+   re-renders. `root_prefix` keeps every link correct from any page depth. #}
+<div class="wb-bar" role="status">
+  <span><span class="wb-live"></span><strong>fha serve</strong></span>
+  <span class="wb-sep">&middot;</span><span>127.0.0.1:{{ port }} - this machine only &middot; unredacted, private</span>
+  <span class="wb-bar-right">
+    <form class="wb-search" role="search" action="{{ root_prefix }}/index.html">
+      <input name="wbq" placeholder="Find a person, place, source&hellip;" aria-label="Search the archive" autocomplete="off">
+      <div class="wb-lookup wb-search-results" hidden><ul class="wb-lookup-results"></ul></div>
+    </form>
+    <a href="{{ root_prefix }}/review">Review <span class="wb-count" data-wb-counts="review">{{ review_count }}</span></a>
+    <a href="{{ root_prefix }}/inbox">Inbox <span class="wb-count" data-wb-counts="inbox">{{ inbox_count }}</span></a>
+    <a href="#" data-wb-open="tpl-publish" title="Rebuild the shareable static site">Publish&hellip;</a>
+    <a href="#" data-wb-reindex title="Re-read the index and re-render (serve renders fresh on every page load)">&#8635;</a>
+  </span>
+</div>

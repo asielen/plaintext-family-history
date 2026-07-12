@@ -16,7 +16,8 @@
   <div class="site-hero site-hero-default" aria-hidden="true"></div>
   {% endif %}
 
-  <h1>{{ site_title }}</h1>
+  <h1>{{ site_title }}{% if workbench %}
+    <a class="wb-fix" href="#" data-wb-open="tpl-edit-home" style="font-size:1rem;font-weight:400">edit intro&hellip;</a>{% endif %}</h1>
   <div class="home-intro">{{ intro }}</div>
 
   {% if tree %}
@@ -32,7 +33,8 @@
   <p><a href="discoveries.html">All discoveries →</a></p>
   {% endif %}
 
-  <h2 id="people">People</h2>
+  <h2 id="people">People{% if workbench %}
+    <a class="wb-add" href="#" data-wb-open="tpl-mint">Add a person&hellip;</a>{% endif %}</h2>
   {% if surnames %}
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>

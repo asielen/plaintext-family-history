@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Review - {{ site_title }}{% endblock %}
+
+{% macro queue_item(item) %}
+    <div class="queue-item"
+         data-group-source="#slot-src-{{ item.group_source|lower }}"
+         {% if item.group_persons %}data-group-person="#slot-per-{{ item.group_persons[0]|lower }}"{% endif %}>
+      <p class="queue-meta"><span class="wb-kind">{{ item.kind }}</span></p>
+      <p class="queue-claim">{{ item.headline }}</p>
+      {% if item.pair_a %}
+      <dl class="meta">
+        <dt>Claim A</dt><dd>{{ item.pair_a }}</dd>
+        <dt>Claim B</dt><dd>{{ item.pair_b }}</dd>
+      </dl>
+      {% endif %}
+      <p class="queue-meta">{{ item.meta }}</p>
+      {% if item.actions == 'claim' %}
+      <div class="wb-actions">
+        <button class="btn btn-primary btn-sm" data-wb-open="tpl-claim-edit"
+                data-wb-args='{{ {"claim_id": item.claim_id} | tojson }}'>Edit &amp; accept&hellip;</button>
+        <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct
+                data-wb-args='{{ {"claim_id": item.claim_id, "status": "accepted"} | tojson }}'>Accept as-is</button>
+        <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct
+                data-wb-args='{{ {"claim_id": item.claim_id, "status": "disputed"} | tojson }}'>Dispute</button>
+        <span class="wb-later">&hellip;or leave it - the queue keeps it.</span>
+      </div>
+      {% elif item.actions == 'xref' %}
+      <div class="wb-actions">
+        <button class="btn btn-primary btn-sm" data-wb-open="tpl-confirm" data-wb-verb="confirm.xref" data-wb-direct
+                data-wb-args='{{ {"claim_a": item.claim_a, "claim_b": item.claim_b, "relation": "corroborates"} | tojson }}'>Corroborates</button>
+        <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="confirm.xref" data-wb-direct
+                data-wb-args='{{ {"claim_a": item.claim_a, "claim_b": item.claim_b, "relation": "contradicts"} | tojson }}'>Contradicts</button>
+        <span class="wb-later">&hellip;or leave it for later.</span>
+      </div>
+      {% elif item.actions == 'cooccur' %}
+      <div class="wb-actions">
+        <button class="btn btn-primary btn-sm" data-wb-open="tpl-cooccur"
+                data-wb-args='{{ {"person_a": item.person_a, "person_b": item.person_b, "source_id": item.source_id, "accept": true} | tojson }}'>Record relationship&hellip;</button>
+        <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="confirm.dismiss" data-wb-direct
+                data-wb-args='{{ {"person_a": item.person_a, "person_b": item.person_b} | tojson }}'>Dismiss pair</button>
+      </div>
+      {% endif %}
+    </div>
+{% endmacro %}
+
+{% block content %}
+<article class="review">
+  <h1>Review</h1>
+  <p class="ids">Waiting on your judgment - <span class="wb-count" data-wb-counts="review">{{ items|length }}</span> items,
+  read straight from the index. Nothing applies itself; every decision previews as a dry run
+  first. Grouped by the record it belongs to - flip the toggle to see the same items by person.</p>
+
+  {% if items %}
+  <div class="wb-toggle" role="tablist" aria-label="Group review items">
+    <button type="button" data-wb-view="source" class="active">By source</button>
+    <button type="button" data-wb-view="person">By person</button>
+  </div>
+
+  {# ---- BY SOURCE (default): items rendered directly into their source slot ---- #}
+  {% for src in sources %}
+  {% set group_items = items | selectattr('group_source', 'equalto', src.id) | list %}
+  {% if group_items %}
+  <section class="wb-group" data-wb-groupview="source">
+    <h3>{{ src.title }} <span class="u-muted">&middot; <a href="{{ root_prefix }}/sources/{{ src.id|lower }}.html">open source</a></span></h3>
+    <div id="slot-src-{{ src.id|lower }}">
+      {% for item in group_items %}{{ queue_item(item) }}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+  {% endfor %}
+  {% set orphan_items = items | selectattr('group_source', 'equalto', 'unsourced') | list %}
+  {% if orphan_items %}
+  <section class="wb-group" data-wb-groupview="source">
+    <h3>Unsourced candidates</h3>
+    <div id="slot-src-unsourced">
+      {% for item in orphan_items %}{{ queue_item(item) }}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {# ---- BY PERSON (empty until toggled; JS re-parents the same items) ---- #}
+  {% for p in persons %}
+  <section class="wb-group" data-wb-groupview="person" hidden>
+    <h3>{{ p.name }}</h3>
+    <div id="slot-per-{{ p.id|lower }}"></div>
+  </section>
+  {% endfor %}
+  {% else %}
+  <p class="empty">Nothing waiting - the queue is clear. New suggestions land here as sources are
+    processed and claims drafted.</p>
+  {% endif %}
+</article>
+{% endblock %}

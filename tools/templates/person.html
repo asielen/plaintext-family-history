@@ -4,6 +4,16 @@
 <article class="person">
   {% if person.portrait %}<img class="person-portrait" src="{{ person.portrait }}" alt="Portrait of {{ person.name }}">{% endif %}
   <h1>{{ person.name }}</h1>
+  {% if workbench %}
+  <div class="wb-record">
+    <span>record:</span>
+    <code>{{ person.record_relpath }}</code>
+    <a href="#" data-wb-open-file="{{ person.record_relpath }}">open file</a>
+    <span class="wb-sep">&middot;</span>
+    <span>living: <strong>{{ person.living }}</strong></span>
+    <a href="#" data-wb-open="tpl-living" data-wb-args='{{ {"person_id": person.display_id} | tojson }}'>change&hellip;</a>
+  </div>
+  {% endif %}
   {% if person.alt_names %}
   <p class="alt-names">{% for a in person.alt_names %}{{ a }}{% if not loop.last %} <span class="alt-sep">·</span> {% endif %}{% endfor %}</p>
   {% endif %}
@@ -15,25 +25,26 @@
   <dl class="summary">
     {% for row in person.summary %}
     <dt>{{ row.label }}</dt>
-    <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}</dd>
+    <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% endif %}{% if workbench %}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' data-wb-fill="mtype={{ row.label }}">edit</a>{% endif %}</dd>
     {% endfor %}
   </dl>
   {% endif %}
+  {% if workbench %}
+  <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id} | tojson }}'>Add a milestone&hellip;</button>
+    <span class="wb-later">Born &middot; Died &middot; Married &middot; Baptized &middot; Buried - each becomes a summary line, and (when sourced) a Timeline entry too.</span></p>
+  {% endif %}
 
-  {% if person.family_strip %}
+  {% if person.family_strip or workbench %}
   <nav class="family-strip" aria-label="Immediate family">
-    {% if person.family_strip.parents %}
-    <div class="fs-group"><span class="fs-label">Parents</span>
-      <ul>{% for m in person.family_strip.parents %}<li>{{ m }}</li>{% endfor %}</ul></div>
+    {% set fs = person.family_strip or {} %}
+    {% for grp, label, rel in [('parents','Parents','parent'), ('spouses','Spouse','spouse'), ('siblings','Siblings','sibling'), ('children','Children','child')] %}
+    {% if fs[grp] or workbench %}
+    <div class="fs-group"><span class="fs-label">{{ label }}</span>
+      <ul>{% for m in (fs[grp] or []) %}<li>{{ m }}</li>{% endfor %}</ul>
+      {% if workbench %}<a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{{ {"person_id": person.display_id, "relation_type": rel} | tojson }}'>+ add</a>{% endif %}</div>
     {% endif %}
-    {% if person.family_strip.siblings %}
-    <div class="fs-group"><span class="fs-label">Siblings</span>
-      <ul>{% for m in person.family_strip.siblings %}<li>{{ m }}</li>{% endfor %}</ul></div>
-    {% endif %}
-    {% if person.family_strip.children %}
-    <div class="fs-group"><span class="fs-label">Children</span>
-      <ul>{% for m in person.family_strip.children %}<li>{{ m }}</li>{% endfor %}</ul></div>
-    {% endif %}
+    {% endfor %}
   </nav>
   {% endif %}
 
@@ -51,9 +62,10 @@
   </details>
   {% endif %}
 
-  {% if person.biography_html %}
-  <h2>Biography</h2>
-  {{ person.biography_html }}
+  {% if person.biography_html or workbench %}
+  <h2>Biography{% if workbench %}
+    <a class="wb-fix" href="#" data-wb-open="tpl-edit-bio" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' style="font-weight:400">edit&hellip;</a>{% endif %}</h2>
+  {% if person.biography_html %}{{ person.biography_html }}{% endif %}
   {% endif %}
 
   <h2>Timeline</h2>
@@ -71,6 +83,9 @@
   {% else %}
   <p class="empty">No dated events recorded yet.</p>
   {% endif %}
+  {% if workbench %}
+  <p><button class="btn btn-sm" data-wb-open="tpl-add-event" data-wb-args='{{ {"persons": person.display_id} | tojson }}'>Add a timeline event&hellip;</button></p>
+  {% endif %}
 
   {% if person.photos %}
   <h2>Photographs</h2>
@@ -84,14 +99,16 @@
   </div>
   {% endif %}
 
-  {% if person.stories_html %}
-  <h2>Stories</h2>
-  {{ person.stories_html }}
+  {% if person.stories_html or workbench %}
+  <h2>Stories{% if workbench %}
+    <a class="wb-fix" href="#" data-wb-open="tpl-note" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' style="font-weight:400">add&hellip;</a>{% endif %}</h2>
+  {% if person.stories_html %}{{ person.stories_html }}{% endif %}
   {% endif %}
 
-  {% if person.research_html %}
-  <h2>Research Notes</h2>
-  {{ person.research_html }}
+  {% if person.research_html or workbench %}
+  <h2>Research Notes{% if workbench %}
+    <a class="wb-fix" href="#" data-wb-open="tpl-add-research" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' style="font-weight:400">add&hellip;</a>{% endif %}</h2>
+  {% if person.research_html %}{{ person.research_html }}{% endif %}
   {% endif %}
 
   {% if person.family %}

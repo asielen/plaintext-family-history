@@ -1444,5 +1444,55 @@ class ProseConverterTests(unittest.TestCase):
         self.assertIn('<a>S-1111111111</a>', out)
 
 
+class WorkbenchModeTests(_Base):
+    """Workbench mode (serve-only) adds editing chrome and provisional vitals,
+    and NONE of it may leak into a standalone or plain-linked build (the plan-17
+    symmetry rule). Also: workbench requires linked."""
+
+    _CTX = {'port': 8765, 'csrf_token': 'abc123', 'review_count': 2, 'inbox_count': 1}
+
+    def _run_wb(self, *, workbench=True, linked=True):
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        return site.run_site(self.archive_root, self.out_dir, linked=linked,
+                             workbench=workbench, workbench_context=self._CTX)
+
+    def test_workbench_requires_linked(self):
+        self.conn.commit()
+        r = site.run_site(self.archive_root, self.out_dir, linked=False, workbench=True)
+        self.assertFalse(r.ok)
+
+    def test_provisional_vital_shows_in_workbench_only(self):
+        # A curated person with an unsourced birth: estimate and no birth claim.
+        self._seed_person('p-bbbbbbbbbb', name='Prov Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1923')
+        # Workbench: the estimate appears, marked.
+        self._run_wb()
+        wb = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('estimate - unsourced', wb)
+        self.assertIn('fha serve', wb)          # serve bar
+        self.assertIn('name="fha-csrf"', wb)     # CSRF meta
+        # Standalone build of the SAME archive: none of it.
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        self._run(linked=False)
+        std = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('estimate - unsourced', std)
+        self.assertNotIn('fha serve', std)
+        self.assertNotIn('name="fha-csrf"', std)
+
+    def test_no_workbench_chrome_leaks_into_standalone(self):
+        self._seed_person('p-cccccccccc', name='Plain Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1900')
+        self._seed_source('s-1111111111', title='S1')
+        self._run(linked=False)
+        for rel in ('index.html', 'persons/p-cccccccccc.html', 'sources/s-1111111111.html'):
+            out = self._read(rel)
+            for leak in ('fha serve', 'name="fha-csrf"', 'estimate - unsourced',
+                         'workbench.js', 'data-wb-open', '/root/'):
+                self.assertNotIn(leak, out, f'{leak!r} leaked into standalone {rel}')
+
+
 if __name__ == '__main__':
     unittest.main()

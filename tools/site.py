@@ -807,12 +807,24 @@ class _SiteBuilder:
         out_dir: Path,
         *,
         linked: bool,
+        workbench: bool = False,
+        workbench_context: dict | None = None,
     ) -> None:
         self.conn = conn
         self.archive_root = archive_root
         self.fha_config = fha_config
         self.out_dir = out_dir
         self.linked = linked          # False = standalone (default, redacted)
+        # Workbench mode is serve-only (never a CLI surface): it turns on the
+        # editing chrome in the templates (`{% if workbench %}`) and rewrites
+        # asset hrefs to serve's /root/<alias>/ URLs so photos/documents that
+        # live outside the snapshot resolve over HTTP instead of escaping it
+        # with ../../ relative links. It REQUIRES linked mode (unredacted) - the
+        # combination workbench+standalone is refused in run_site. Nothing here
+        # ever leaks into a standalone build: every branch is guarded on
+        # self.workbench, which is False for both `fha site` modes.
+        self.workbench = workbench
+        self.workbench_context = workbench_context or {}
         self.messages: list[str] = []
 
         self.persons_dir = out_dir / 'persons'
@@ -1269,6 +1281,52 @@ class _SiteBuilder:
 
     # - assets -
 
+    def _asset_href(self, resolved: Path, page_dir: Path) -> str:
+        """Href for an on-disk ASSET file (a photo/document/inbox scan), honoring
+        workbench mode.
+
+        In plain linked mode this is exactly `_rel_href` - a `../../` relative
+        path from the page directory to the real file, which works when the site
+        is opened from a file browser. But serve delivers the snapshot over HTTP
+        from `.cache/serve/site/`, and a `../../photos/...` link would climb out
+        of the snapshot root and 404 (or worse, escape confinement). So in
+        workbench mode any asset that lives under an allowed asset root
+        (photos/documents/inbox) is rewritten to serve's read-only
+        `/root/<alias>/<relpath>` URL; anything else (an asset root configured
+        somewhere exotic) falls back to the relative href rather than emitting a
+        broken link. The rewrite is applied ONLY in workbench mode, so `fha site
+        --linked` keeps its file-browser-relative behavior untouched."""
+        if self.workbench:
+            alias_url = self._root_alias_url(resolved)
+            if alias_url is not None:
+                return alias_url
+        return _rel_href(resolved, page_dir)
+
+    def _root_alias_url(self, resolved: Path) -> str | None:
+        """Map an absolute asset path to serve's `/root/<alias>/<relpath>` URL, or
+        None when it is not under any allowed asset root.
+
+        Mirrors serve's own `_resolve_root_request` confinement (photos,
+        documents, inbox only) so a href serve emits is one serve will also
+        serve: resolve each allowed root, and if `resolved` sits under it, build
+        a forward-slash URL from the relative remainder."""
+        try:
+            target = resolved.resolve()
+        except OSError:
+            return None
+        for alias in ('photos', 'documents', 'inbox'):
+            try:
+                base = resolve_path(alias, self.fha_config, self.archive_root).resolve()
+            except Exception:
+                continue
+            try:
+                rel = target.relative_to(base)
+            except ValueError:
+                continue
+            rel_posix = rel.as_posix()
+            return f'/root/{alias}/{rel_posix}' if rel_posix != '.' else f'/root/{alias}'
+        return None
+
     def _file_entry(self, asset_rel: str, role: str | None, page_dir: Path) -> dict | None:
         """Build one source-page file entry (thumbnail + link) for an asset.
 
@@ -1297,7 +1355,7 @@ class _SiteBuilder:
             return {'label': label, 'note': 'file not available in this build', 'link_href': None, 'thumb_href': None}
 
         if self.linked:
-            href = _rel_href(resolved, page_dir)
+            href = self._asset_href(resolved, page_dir)
             return {
                 'label': label, 'note': role_note,
                 'link_href': href,
@@ -1395,6 +1453,9 @@ class _SiteBuilder:
                 'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
+                # Workbench-only: the C-id drives the inline claim actions. Never
+                # used in standalone output (the template gates on `workbench`).
+                'claim_id': fmt_id_display(c['id']),
             })
 
         files, portrait_entry = self._source_file_entries(sid, page_dir)
@@ -1410,6 +1471,8 @@ class _SiteBuilder:
             'date': row['date_edtf'] or '', 'repository': row['repository'] or '',
             'source_class': row['source_class'] or '', 'claims': claims, 'files': files,
             'portrait': portrait,
+            # Workbench-only (template gates on `workbench`): S-id + record path.
+            'source_id': fmt_id_display(sid), 'record_relpath': row['path'],
         }
         self._write_page(self.sources_dir / _page_filename(sid), 'source.html',
                          {'source': ctx, 'root_prefix': '..'})
@@ -1501,6 +1564,11 @@ class _SiteBuilder:
             'stories_html': self._markup(stories_html) if stories_html else None,
             'research_html': self._markup(research_html) if research_html else None,
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
+            # Workbench-only fields (harmless in standalone - the template gates
+            # every use on `workbench`): the record's on-disk relpath for the
+            # "open file" button and living value for the "change..." affordance.
+            'record_relpath': row['path'],
+            'living': (row['living'] or 'unknown'),
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
@@ -1594,8 +1662,48 @@ class _SiteBuilder:
                     'value': r['date_edtf'] or r['value'] or '',
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
+                    'provisional': False,
                 })
+        # Workbench only (owner decision 2026-07-10, plan 17 BUILD §2.2/§8.3): a
+        # provisional birth/death - the unsourced `birth:`/`death:` frontmatter
+        # estimate a human knows before the record exists - is surfaced marked
+        # "estimate - unsourced", but ONLY for a vital that has no accepted claim
+        # yet (a sourced claim supersedes the estimate everywhere). This never
+        # runs in standalone or plain --linked: the published site stays
+        # claims-only, so an unsourced estimate never leaves the machine.
+        if self.workbench:
+            for t in ('birth', 'death'):
+                if t in by_type:
+                    continue   # a sourced claim wins - the estimate is superseded
+                est = self._provisional_vital(pid, t)
+                if est:
+                    summary.append({
+                        'label': _VITAL_LABELS[t],
+                        'value': est,
+                        'place': '',
+                        'source_html': '',
+                        'provisional': True,
+                    })
+            # Keep the summary in the canonical vital order even after appending.
+            order = {label: i for i, label in enumerate(
+                _VITAL_LABELS[t] for t in _VITAL_ORDER)}
+            summary.sort(key=lambda row: order.get(row['label'], 99))
         return summary
+
+    def _provisional_vital(self, pid: str, field: str) -> str | None:
+        """Read one provisional (unsourced) `birth:`/`death:` estimate from a
+        person's frontmatter, or None. Non-load-bearing family knowledge
+        (SPEC §9, `PROVISIONAL_VITAL_FIELDS`); the index does not carry it, so it
+        is read from the record file on demand and only in workbench mode."""
+        row = self.person_meta.get(pid)
+        if not row:
+            return None
+        try:
+            meta = read_record(self.archive_root / row['path'])['meta']
+        except Exception:
+            return None
+        val = meta.get(field)
+        return str(val).strip() if val not in (None, '') else None
 
     def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str, str]:
         """Biography, Stories and Research Notes HTML, read from the person `.md` body.
@@ -1937,7 +2045,7 @@ class _SiteBuilder:
         if not resolved.exists():
             return None
         if self.linked:
-            href = _rel_href(resolved, page_dir)
+            href = self._asset_href(resolved, page_dir)
             return {'href': href, 'full_href': href, 'caption': caption}
         if not _PIL_AVAILABLE:
             return None
@@ -1961,7 +2069,7 @@ class _SiteBuilder:
 
     def _profile_photo_href(self, pid: str, page_dir: Path) -> str | None:
         f = self._profile_photo_file(pid)
-        return _rel_href(f, page_dir) if f else None
+        return self._asset_href(f, page_dir) if f else None
 
     def _resolve_asset_path(self, ref: str) -> Path | None:
         """Best-effort resolve a human-written photo reference to a file on disk:
@@ -2228,7 +2336,7 @@ class _SiteBuilder:
         if resolved is None:
             return None
         if self.linked:
-            return _rel_href(resolved, page_dir)
+            return self._asset_href(resolved, page_dir)
         if not _PIL_AVAILABLE:
             return None
         dest = self._media_dest(ref, subdir)
@@ -2717,6 +2825,17 @@ class _SiteBuilder:
             fonts = src / 'fonts'
             if fonts.is_dir():
                 shutil.copytree(fonts, self.assets_dir / 'fonts', dirs_exist_ok=True)
+            # Workbench mode ships the serve chrome's own stylesheet + script
+            # into assets/ so the served pages (built here, plus serve's own
+            # /review and /inbox which reference the same assets/ dir) stay
+            # self-contained under the snapshot root. These files never exist in
+            # a standalone/linked build - they are only copied when workbench.
+            if self.workbench:
+                wb_src = Path(__file__).resolve().parent / 'templates' / 'workbench'
+                for name in ('workbench.css', 'workbench.js'):
+                    f = wb_src / name
+                    if f.is_file():
+                        shutil.copy2(f, self.assets_dir / name)
         except OSError as e:
             self.messages.append(f'WARNING: could not copy the design assets into the site ({e}).')
 
@@ -2871,6 +2990,15 @@ class _SiteBuilder:
                     'Generated by fha site (linked preview - unredacted; do not publish).'
                 ),
             }
+            # Workbench chrome (serve only). base.html gates the serve bar, the
+            # CSRF meta tag, the workbench assets, and the modal templates on
+            # `workbench`; the runtime values it needs (port, per-process CSRF
+            # token, review/inbox counts) are supplied by serve as
+            # workbench_context. Both stay absent (falsy) in every `fha site`
+            # build, so no chrome can leak into a shared snapshot.
+            if self.workbench:
+                full['workbench'] = True
+                full.update(self.workbench_context)
             full.update(ctx)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(tmpl.render(**full), encoding='utf-8')
@@ -2975,6 +3103,8 @@ def _site_payload(
     *,
     linked: bool = False,
     dry_run: bool = False,
+    workbench: bool = False,
+    workbench_context: dict | None = None,
 ) -> dict:
     """Build the site and return a result dict.
 
@@ -3028,7 +3158,8 @@ def _site_payload(
     if conn is None:
         return {'status': 'no-index', 'messages': [], 'out_dir': out_dir, 'pages': 0}
 
-    builder = _SiteBuilder(conn, archive_root, fha_config, out_dir, linked=linked)
+    builder = _SiteBuilder(conn, archive_root, fha_config, out_dir, linked=linked,
+                           workbench=workbench, workbench_context=workbench_context)
     try:
         builder.prepare()
         if dry_run:
@@ -3062,6 +3193,8 @@ def run_site(
     *,
     linked: bool = False,
     dry_run: bool = False,
+    workbench: bool = False,
+    workbench_context: dict | None = None,
 ) -> Result:
     """Library entry point. Build the site and return a Result.
 
@@ -3070,7 +3203,21 @@ def run_site(
     reading `result['status']` / `result['pages']` unchanged.  A real build lists
     the written output directory in `changed`; a --dry-run (status 'dry-run')
     writes nothing and leaves `changed` empty.
+
+    `workbench` (serve only - never exposed on the `fha site` CLI) turns on the
+    editing chrome and the /root/ asset-href rewrite. It REQUIRES `linked`:
+    workbench+standalone is refused here, because the workbench is the private,
+    unredacted local view by definition. `workbench_context` carries serve's
+    runtime values (port, CSRF token, review/inbox counts) baked into the bar.
     """
+    if workbench and not linked:
+        return Result(
+            ok=False, exit_code=EXIT_FAILURE,
+            data={'status': 'bad-config', 'out_dir': str(out_dir), 'pages': 0,
+                  'messages': ['workbench mode requires linked mode (it is the '
+                               'unredacted local view). This is an internal serve '
+                               'call - report it as a bug.']},
+        ).add('error', 'workbench mode requires linked mode.')
     if is_working_copy(archive_root):
         # Warning-level refusal, not a failure: ok stays True, exit stays clean,
         # data.status='working-copy' is the machine discriminator (TOOLING §13d).
@@ -3091,7 +3238,8 @@ def run_site(
             'warning',
             warning_text,
         )
-    payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run)
+    payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run,
+                            workbench=workbench, workbench_context=workbench_context)
     status = payload['status']
     changed = [str(payload['out_dir'])] if status == 'ok' else []
     # Mirror _cmd_site's per-status exit codes so headless callers returning

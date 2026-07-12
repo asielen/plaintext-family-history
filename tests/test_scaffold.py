@@ -95,6 +95,15 @@ class ManifestSyncTest(unittest.TestCase):
         # but the spec-repo's own agent config does not.
         self.assertNotIn('.claude/settings.json', paths)
 
+    def test_manifest_includes_serve_launcher(self):
+        # plan 17: the double-clickable workbench launcher ships into every
+        # archive and calls tools\fha.py serve.
+        entries = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
+        self.assertIn('serve.cmd', entries)
+        self.assertEqual(entries['serve.cmd']['category'], 'operating')
+        content = (ROOT / 'serve.cmd').read_text(encoding='utf-8')
+        self.assertIn(r'tools\fha.py serve', content)
+
     def test_skeleton_and_operating_categories(self):
         files = scaffold.generate_manifest(ROOT)['files']
         by_path = {e['path']: e for e in files}

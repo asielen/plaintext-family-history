@@ -1,0 +1,1633 @@
+#!/usr/bin/env python3
+"""
+fha serve - the localhost workbench (plan 17, Wave 3).
+
+A human-started, foreground, 127.0.0.1-only web front door onto a family
+archive. It serves the linked (unredacted) `fha site` build over HTTP and adds
+an editing layer whose every button is a documented `fha` command, run
+in-process and echoed after each apply (the parity rule made visible).
+
+Guardrails restated (plan 17):
+  - Parity: every button = one `fha` command; the CLI equivalent is echoed.
+  - Front door: serve owns no state; `fha site` never depends on it; kill it and
+    the archive is unchanged. The ONLY thing serve writes outside the record
+    tree it mutates through the engines is its disposable snapshot under
+    `.cache/serve/` (SPEC 5.6 disposability).
+  - Not a daemon: foreground, 127.0.0.1 only, no auth, no network, no watching.
+  - Human gate: every write is dry-run-preview -> explicit confirm, through the
+    Result engines. The server defaults dry_run to true unless a POST explicitly
+    says {"dry_run": false} (defense in depth behind the JS two-step).
+  - Mechanical/generative boundary: serve never reads evidence to draft anything.
+    Stage B stays with the AI skills.
+
+Import exception (the tools-never-import-tools rule): serve.py is a FRONT DOOR
+like fha.py, NOT an engine module. It is sanctioned to import the tool engines
+(person, claim, source, confirm, process, capture, find, index, cooccur, xref)
+and drive their run_* functions in-process. The rule that binds engine modules
+does not bind dispatchers. site.py is loaded by path under a private name
+(`fha_site`) exactly as fha.py does, because its stem shadows stdlib `site`.
+
+Security is the whole trust boundary (there is no auth by design). See
+`run_serve_preflight` and the `_Handler` methods; the invariants are:
+  1. bind 127.0.0.1 only;  2. Host-header allowlist on every request;
+  3. per-process CSRF token compared with hmac.compare_digest on every POST;
+  4. canonical-path confinement (resolve + is_relative_to) on snapshot files,
+     /root/ aliases, /api/open, /api/upload, and path-shaped /api/run args;
+  5. no-store + nosniff headers;  6. one global mutation lock held across
+     mutate -> reindex -> snapshot-invalidate;  7. no state outside .cache/serve/.
+
+Code map:
+  _load_site_module         - import tools/site.py under a private name
+  run_serve_preflight       - engine: archive/jinja/index/port checks -> Result
+  ServeState                - shared per-process state (config, token, lock, dirs)
+  snapshot_is_stale / ensure_snapshot / invalidate_snapshot - refresh-on-use
+  _workbench_context        - the bar/CSRF/counts baked into every page
+  gather_review / gather_inbox - the two serve-rendered pages' data
+  VERBS + _verb_*           - the /api/run parity table (the one mutation door)
+  _reindex_after            - post-write reindex policy (upsert vs full)
+  _Handler                  - the http.server request handler (routes + security)
+  _cmd_serve / register     - the serving loop and CLI wiring
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hmac
+import io
+import json
+import mimetypes
+import os
+import secrets
+import socket
+import sys
+import threading
+import time
+import traceback
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from _lib import (  # noqa: E402
+    EXIT_CLEAN,
+    EXIT_FAILURE,
+    FhaConfigError,
+    Result,
+    fmt_id_display,
+    id_type_of,
+    is_valid_id,
+    load_fha_yaml,
+    normalize_id,
+    open_index_db,
+    resolve_path,
+    resolve_root_arg,
+    yaml_inline,
+)
+
+# The engines serve drives in-process. Front-door imports (see module docstring).
+import capture  # noqa: E402
+import claim  # noqa: E402
+import confirm  # noqa: E402
+import cooccur  # noqa: E402
+import find as find_mod  # noqa: E402
+import index as index_mod  # noqa: E402
+import person  # noqa: E402
+import process as process_mod  # noqa: E402
+import source as source_mod  # noqa: E402
+import xref as xref_mod  # noqa: E402
+
+try:
+    import jinja2
+except ImportError:  # pragma: no cover - preflight reports this plainly
+    jinja2 = None
+
+DEFAULT_PORT = 8765
+_ASSET_ALIASES = ('photos', 'documents', 'inbox')
+_MAX_UPLOAD_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB
+_TEMPLATES_DIR = Path(__file__).parent / 'templates'
+
+
+def _load_site_module():
+    """Import tools/site.py under a private module name.
+
+    site.py's command is `fha site`, so its file must be tools/site.py, but the
+    stem `site` collides with Python's stdlib `site` (already in sys.modules from
+    interpreter startup). Load the file by path under the alias `fha_site`, the
+    same trick fha.py uses; do not import fha from serve."""
+    import importlib.util
+
+    mod = sys.modules.get('fha_site')
+    if mod is not None:
+        return mod
+    path = Path(__file__).parent / 'site.py'
+    spec = importlib.util.spec_from_file_location('fha_site', path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules['fha_site'] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+
+def run_serve_preflight(archive_root: Path, *, port: int = DEFAULT_PORT) -> Result:
+    """Check everything serve needs before binding a socket; return a Result.
+
+    Testable engine half of `fha serve` (the serving loop is in `_cmd_serve`).
+    `data` carries {'status', 'archive_root', 'port', 'fha_config',
+    'index_built'}. Refusals name the fix (AGENTS.md next-step rule): missing
+    jinja2, a busy port (EADDRINUSE), an unreadable config. A missing/stale index
+    is not a refusal - it is rebuilt here and reported in `index_built`, so the
+    first page render is never blocked on it."""
+    result = Result(data={'status': None, 'archive_root': str(archive_root),
+                          'port': port, 'fha_config': None, 'index_built': False})
+    if jinja2 is None:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = 'no-jinja'
+        result.add('error',
+                   'fha serve needs Jinja2 to render pages. Install it with '
+                   '`python -m pip install jinja2`, then run `fha serve` again.',
+                   next_step='python -m pip install jinja2')
+        return result
+
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = 'bad-config'
+        result.add('error', str(e))
+        return result
+    result.data['fha_config'] = fha_config
+
+    # Rebuild the index when absent/stale so the first render and the review page
+    # have a query surface. open_index_db with strict=True returns None on a
+    # missing or stale db.
+    conn = open_index_db(archive_root, ('persons', 'sources', 'claims'), strict=True)
+    if conn is None:
+        build = index_mod.build_index(archive_root, fha_config)
+        result.data['index_built'] = True
+        if not build.ok:
+            result.ok = False
+            result.exit_code = EXIT_FAILURE
+            result.data['status'] = 'index-failed'
+            result.add('error',
+                       'could not build the search index. Run `fha index` and read '
+                       'its message, then try `fha serve` again.',
+                       next_step='fha index')
+            return result
+    else:
+        conn.close()
+
+    # Is the port bindable? Probe on 127.0.0.1 only (never 0.0.0.0). Deliberately
+    # WITHOUT SO_REUSEADDR: http.server's ThreadingHTTPServer binds with
+    # allow_reuse_address=True, and on Windows a second SO_REUSEADDR socket can
+    # bind a port another SO_REUSEADDR socket already holds - so a probe that set
+    # it would fail to notice a serve window already listening. Port 0 means "any
+    # free port" (tests), which always binds.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(('127.0.0.1', port))
+    except OSError:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = 'port-busy'
+        result.add('error',
+                   f'port {port} is busy - close the other serve window or pass '
+                   f'`--port {port + 1}`.',
+                   next_step=f'fha serve --port {port + 1}')
+        return result
+    finally:
+        probe.close()
+
+    result.data['status'] = 'ok'
+    result.add('info', f'serve preflight ok on 127.0.0.1:{port}')
+    return result
+
+
+# ── Shared per-process state ───────────────────────────────────────────────────
+
+class ServeState:
+    """Everything one serve process shares across request threads.
+
+    The single `lock` serializes every mutation: a write, its reindex, and the
+    snapshot invalidation all happen while one thread holds it, and the snapshot
+    rebuild takes the same lock, so a rebuild can never interleave with a write
+    (contract SS5.6)."""
+
+    def __init__(self, archive_root: Path, fha_config: dict, port: int):
+        self.archive_root = archive_root
+        self.fha_config = fha_config
+        self.port = port
+        self.csrf_token = secrets.token_hex(16)
+        self.lock = threading.Lock()
+        self.site_mod = _load_site_module()
+        self.snapshot_dir = archive_root / '.cache' / 'serve' / 'site'
+        self.marker = self.snapshot_dir / '.built'
+        self.env = jinja2.Environment(
+            loader=jinja2.FileSystemLoader(str(_TEMPLATES_DIR)),
+            autoescape=jinja2.select_autoescape(['html']),
+        )
+
+    @property
+    def site_title(self) -> str:
+        site_cfg = self.fha_config.get('site') if isinstance(self.fha_config.get('site'), dict) else {}
+        return (str(site_cfg.get('archive_name')
+                    or self.fha_config.get('archive_name') or '').strip()
+                or 'Family History Archive')
+
+
+# ── Snapshot: refresh-on-use, no watcher ───────────────────────────────────────
+
+# Record trees whose mtimes decide snapshot staleness. Never the photos/documents
+# roots (those can be huge and never change the rendered HTML structure enough to
+# matter for a private preview).
+_SNAPSHOT_INPUTS = ('sources', 'people', 'places', 'notes')
+
+
+def _newest_input_mtime(state: ServeState) -> float:
+    """Newest mtime across the record trees + fha.yaml + the index. A cheap
+    scandir walk of the record trees only (contract SS2) - photos/documents are
+    never walked."""
+    newest = 0.0
+    root = state.archive_root
+    for name in _SNAPSHOT_INPUTS:
+        base = root / name
+        if not base.exists():
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            try:
+                newest = max(newest, os.stat(dirpath).st_mtime)
+            except OSError:
+                pass
+            for f in files:
+                try:
+                    newest = max(newest, os.stat(os.path.join(dirpath, f)).st_mtime)
+                except OSError:
+                    pass
+    for extra in (root / 'fha.yaml', root / 'design', root / '.cache' / 'index.sqlite'):
+        try:
+            newest = max(newest, os.stat(extra).st_mtime)
+        except OSError:
+            pass
+    return newest
+
+
+def snapshot_is_stale(state: ServeState) -> bool:
+    """True when the snapshot is missing, older than the newest record input,
+    or built by a DIFFERENT serve process. The last check matters because the
+    per-process CSRF token is baked into the snapshot's pages: a restarted
+    serve mints a new token, so a snapshot left by the previous session would
+    403 every Apply until something else invalidated it. The marker records
+    which session built it; a marker from another session is always stale."""
+    if not state.marker.exists():
+        return True
+    try:
+        built = state.marker.stat().st_mtime
+        marker_session = state.marker.read_text(encoding='utf-8').splitlines()[0].strip()
+    except (OSError, IndexError):
+        return True
+    if marker_session != state.csrf_token:
+        return True
+    return _newest_input_mtime(state) > built
+
+
+def invalidate_snapshot(state: ServeState) -> None:
+    """Delete the build marker so the next page GET rebuilds. Caller holds the lock."""
+    try:
+        state.marker.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def ensure_snapshot(state: ServeState) -> None:
+    """Rebuild the workbench snapshot if stale, holding the global lock so no
+    write interleaves the rebuild. Idempotent and cheap when fresh (a scandir
+    staleness probe, then return)."""
+    if not snapshot_is_stale(state):
+        return
+    with state.lock:
+        if not snapshot_is_stale(state):
+            return   # another thread rebuilt while we waited
+        review_count, inbox_count = _counts(state)
+        ctx = {
+            'port': state.port,
+            'csrf_token': state.csrf_token,
+            'review_count': review_count,
+            'inbox_count': inbox_count,
+        }
+        result = state.site_mod.run_site(
+            state.archive_root, state.snapshot_dir,
+            linked=True, workbench=True, workbench_context=ctx,
+        )
+        if result.ok:
+            state.snapshot_dir.mkdir(parents=True, exist_ok=True)
+            # First line: the building session's token (see snapshot_is_stale);
+            # second: a human-readable build time for anyone poking at .cache.
+            state.marker.write_text(f'{state.csrf_token}\n{time.time()}\n', encoding='utf-8')
+
+
+# ── Page context + counts ───────────────────────────────────────────────────────
+
+def _counts(state: ServeState) -> tuple[int, int]:
+    """(review_count, inbox_count) for the bar. Best-effort - a failure yields 0
+    rather than blocking a render."""
+    try:
+        review = len(gather_review(state)['items'])
+    except Exception:
+        review = 0
+    try:
+        inbox = len(gather_inbox(state)['items'])
+    except Exception:
+        inbox = 0
+    return review, inbox
+
+
+def _workbench_context(state: ServeState) -> dict:
+    review_count, inbox_count = _counts(state)
+    return {
+        'workbench': True,
+        'csrf_token': state.csrf_token,
+        'port': state.port,
+        'review_count': review_count,
+        'inbox_count': inbox_count,
+        'site_title': state.site_title,
+        'footer_note': '',
+        'root_prefix': '.',
+    }
+
+
+# ── Review page data ─────────────────────────────────────────────────────────────
+
+def gather_review(state: ServeState) -> dict:
+    """Freshly query the review queue: suggested claims, xref candidates, and
+    co-occurrence candidates (contract SS9). Reuses the same engines `fha report`
+    reads - xref.run_xref and cooccur.run_cooccur - so detection is never
+    reinvented. Returns {'items': [...], 'sources': [...], 'persons': [...]} where
+    each item is a self-contained dict the template renders and whose action
+    buttons carry the /api/run verb + fixed args."""
+    root = state.archive_root
+    items: list[dict] = []
+    sources: dict[str, str] = {}
+    persons: dict[str, str] = {}
+
+    conn = open_index_db(root, ('persons', 'sources', 'claims'), strict=False)
+    if conn is not None:
+        try:
+            rows = conn.execute(
+                "SELECT c.id, c.type, c.value, c.date_edtf, c.place_text, c.confidence, "
+                "c.source_id, s.title AS source_title "
+                "FROM claims c LEFT JOIN sources s ON c.source_id = s.id "
+                "WHERE c.status = 'suggested' ORDER BY c.source_id, c.id"
+            ).fetchall()
+            for r in rows:
+                cid = r['id']
+                people = [
+                    pr['person_id'] for pr in conn.execute(
+                        'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,))
+                ]
+                pnames = []
+                for pid in people:
+                    nm = conn.execute('SELECT name FROM persons WHERE id = ?', (pid,)).fetchone()
+                    label = (nm['name'] if nm and nm['name'] else fmt_id_display(pid))
+                    pnames.append(label)
+                    persons[pid] = label
+                sid = r['source_id']
+                stitle = r['source_title'] or (fmt_id_display(sid) if sid else 'no source')
+                if sid:
+                    sources[sid] = stitle
+                items.append({
+                    'kind': 'suggested claim',
+                    'group_source': sid or 'unsourced',
+                    'group_source_title': stitle,
+                    'group_persons': people[:1],
+                    'claim_id': fmt_id_display(cid),
+                    'headline': r['value'] or f'{r["type"]} claim',
+                    'meta': ' - '.join(x for x in (
+                        r['type'],
+                        f'date {r["date_edtf"]}' if r['date_edtf'] else None,
+                        r['place_text'] or None,
+                        ', '.join(pnames) if pnames else None,
+                        f'confidence {r["confidence"]}' if r['confidence'] else None,
+                    ) if x),
+                    'person_labels': pnames,
+                    'actions': 'claim',
+                })
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    # Corroboration / contradiction candidates (xref).
+    try:
+        xr = xref_mod.run_xref(root)
+        if xr.get('status') == 'ok':
+            for grp in xr.get('groups', []):
+                pid = grp.get('person_id')
+                pname = grp.get('person_name') or (fmt_id_display(pid) if pid else '')
+                if pid:
+                    persons[pid] = pname
+                for pair in grp.get('pairs', []):
+                    ca = pair['claim_a']
+                    cb = pair['claim_b']
+                    kind = pair.get('kind', 'corroboration')
+                    ca_src = ca.get('source_id')
+                    if ca_src:
+                        # Register the source so the review page has a slot to
+                        # render this item into (its group_source below).
+                        sources.setdefault(ca_src, ca.get('source_title') or fmt_id_display(ca_src))
+                    items.append({
+                        'kind': kind,
+                        'group_source': ca_src or 'unsourced',
+                        'group_source_title': ca.get('source_title') or '',
+                        'group_persons': [pid] if pid else [],
+                        'claim_a': fmt_id_display(ca['id']),
+                        'claim_b': fmt_id_display(cb['id']),
+                        'headline': 'Do these two claims relate?',
+                        'pair_a': f'{ca.get("value") or ca.get("type")} ({fmt_id_display(ca["id"])})',
+                        'pair_b': f'{cb.get("value") or cb.get("type")} ({fmt_id_display(cb["id"])})',
+                        'meta': f'proposed by fha xref - {kind} candidate for {pname}',
+                        'actions': 'xref',
+                    })
+    except Exception:
+        pass
+
+    # Co-occurrence candidates.
+    try:
+        co = cooccur.run_cooccur(root, threshold=2)
+        if co.get('status') == 'ok':
+            for c in co.get('person_pairs', [])[:25]:
+                pa, pb = c['person_a'], c['person_b']
+                persons[pa] = c.get('name_a') or fmt_id_display(pa)
+                persons[pb] = c.get('name_b') or fmt_id_display(pb)
+                src_ids = c.get('source_ids') or []
+                src_id = src_ids[0] if src_ids else None
+                if src_id:
+                    sources.setdefault(src_id, fmt_id_display(src_id))
+                items.append({
+                    'kind': 'co-occurrence',
+                    'group_source': src_id or 'unsourced',
+                    'group_source_title': sources.get(src_id, '') if src_id else '',
+                    'group_persons': [pa],
+                    'person_a': fmt_id_display(pa),
+                    'person_b': fmt_id_display(pb),
+                    'source_id': fmt_id_display(src_id) if src_id else '',
+                    'headline': f'{persons[pa]} & {persons[pb]} appear together',
+                    'meta': f'{c.get("source_count", 0)} source(s)',
+                    'actions': 'cooccur',
+                })
+    except Exception:
+        pass
+
+    return {
+        'items': items,
+        'sources': [{'id': sid, 'title': t} for sid, t in sources.items()],
+        'persons': [{'id': pid, 'name': n} for pid, n in persons.items()],
+    }
+
+
+# ── Inbox page data ─────────────────────────────────────────────────────────────
+
+def gather_inbox(state: ServeState) -> dict:
+    """Group top-level inbox entries (contract SS10): an asset + its `.notes.md`
+    sidecar is one item, a bundle folder is one item, a lone stub is one item.
+    Returns {'items': [...]}, each with the paths for the open-file and
+    file-as-a-source buttons."""
+    try:
+        inbox = resolve_path('inbox', state.fha_config, state.archive_root)
+    except Exception:
+        return {'items': []}
+    if not inbox.is_dir():
+        return {'items': []}
+
+    entries = sorted(inbox.iterdir(), key=lambda p: p.name.lower())
+    items: list[dict] = []
+    consumed: set[str] = set()
+
+    # First pass: pair each asset with its <name>.notes.md sidecar.
+    names = {p.name for p in entries}
+    for p in entries:
+        if p.name in consumed or p.name.startswith('.'):
+            continue
+        rel = _inbox_rel(p, inbox)
+        if p.is_dir():
+            files = [f.name for f in sorted(p.iterdir()) if f.is_file()][:8]
+            items.append({
+                'name': p.name + '/', 'kind': 'bundle',
+                'files': files, 'open_path': rel,
+                'process_path': rel, 'sidecar': None,
+            })
+            consumed.add(p.name)
+            continue
+        if p.name.endswith('.notes.md'):
+            base = p.name[:-len('.notes.md')]
+            companion = next((n for n in names if n != p.name and n.startswith(base + '.')
+                              and not n.endswith('.notes.md')), None)
+            if companion:
+                consumed.add(companion)
+                consumed.add(p.name)
+                items.append({
+                    'name': companion, 'kind': 'asset+note',
+                    'files': [companion, p.name], 'open_path': _inbox_rel(inbox / companion, inbox),
+                    'process_path': _inbox_rel(inbox / companion, inbox),
+                    'sidecar': _inbox_rel(p, inbox),
+                })
+            else:
+                consumed.add(p.name)
+                items.append({
+                    'name': p.name, 'kind': 'note',
+                    'files': [p.name], 'open_path': rel, 'process_path': rel, 'sidecar': None,
+                })
+            continue
+        # A bare asset: look for its sidecar.
+        sidecar = p.name + '.notes.md'
+        if sidecar in names:
+            consumed.add(sidecar)
+            items.append({
+                'name': p.name, 'kind': 'asset+note',
+                'files': [p.name, sidecar], 'open_path': rel, 'process_path': rel,
+                'sidecar': _inbox_rel(inbox / sidecar, inbox),
+            })
+        else:
+            items.append({
+                'name': p.name, 'kind': 'asset',
+                'files': [p.name], 'open_path': rel, 'process_path': rel, 'sidecar': None,
+            })
+        consumed.add(p.name)
+
+    return {'items': items}
+
+
+def _inbox_rel(p: Path, inbox: Path) -> str:
+    """Forward-slash inbox-relative path (`inbox/foo.md`) for process/open args."""
+    try:
+        return 'inbox/' + p.relative_to(inbox).as_posix()
+    except ValueError:
+        return 'inbox/' + p.name
+
+
+# ── /api/run - the parity table (whitelist) ─────────────────────────────────────
+
+def _q(value: str) -> str:
+    """Quote a CLI echo argument if it contains spaces or quotes."""
+    s = str(value)
+    if s == '' or any(ch in s for ch in ' "\t'):
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
+
+
+def _short(text: str, n: int = 60) -> str:
+    s = ' '.join(str(text).split())
+    return s if len(s) <= n else s[:n] + '...'
+
+
+def _as_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [v.strip() for v in str(value).split(',') if v.strip()]
+
+
+def _coerce(schema: dict, args: dict) -> tuple[dict, str | None]:
+    """Validate `args` against a verb's schema (whitelist). Unknown keys are a
+    plain refusal (the /api/run 400). Returns (clean_kwargs, error)."""
+    extra = [k for k in args if k not in schema]
+    if extra:
+        return {}, ('unexpected field(s): ' + ', '.join(sorted(extra))
+                    + '. Allowed: ' + ', '.join(sorted(schema)) + '.')
+    out: dict = {}
+    for name, kind in schema.items():
+        if name not in args:
+            continue
+        v = args[name]
+        if kind == 'bool':
+            out[name] = (v is True or str(v).strip().lower() in ('true', '1', 'yes', 'on'))
+        elif kind == 'list':
+            out[name] = _as_list(v)
+        else:
+            out[name] = None if v is None else str(v)
+    return out, None
+
+
+def _verb_claim_review(state, kw, dry_run):
+    return claim.run_claim(
+        state.archive_root, claim_id=kw.get('claim_id', ''),
+        status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
+        claim_type=kw.get('claim_type'), place=kw.get('place'),
+        place_text=kw.get('place_text'), persons=kw.get('persons'),
+        confidence=kw.get('confidence'), dry_run=dry_run)
+
+
+def _echo_claim_review(kw):
+    parts = ['fha claim', kw.get('claim_id', '?')]
+    if kw.get('status'):
+        parts += ['--status', kw['status']]
+    if kw.get('value'):
+        parts += ['--value', _q(_short(kw['value']))]
+    if kw.get('date'):
+        parts += ['--date', kw['date']]
+    if kw.get('claim_type'):
+        parts += ['--type', kw['claim_type']]
+    if kw.get('place'):
+        parts += ['--place', kw['place']]
+    if kw.get('place_text'):
+        parts += ['--place-text', _q(kw['place_text'])]
+    if kw.get('persons'):
+        parts += ['--persons', ','.join(kw['persons'])]
+    if kw.get('confidence'):
+        parts += ['--confidence', kw['confidence']]
+    return ' '.join(parts)
+
+
+def _verb_claim_new(state, kw, dry_run):
+    return claim.run_claim_new(
+        state.archive_root, source_id=kw.get('source_id', ''),
+        claim_type=kw.get('claim_type', ''), value=kw.get('value', ''),
+        date=kw.get('date'), place=kw.get('place'), place_text=kw.get('place_text'),
+        persons=kw.get('persons'), subtype=kw.get('subtype'),
+        status=kw.get('status') or 'accepted', confidence=kw.get('confidence'),
+        dry_run=dry_run)
+
+
+def _echo_claim_new(kw):
+    parts = ['fha claim new', '--source', kw.get('source_id', '?'),
+             '--type', kw.get('claim_type', '?'), '--value', _q(_short(kw.get('value', '')))]
+    if kw.get('date'):
+        parts += ['--date', kw['date']]
+    if kw.get('place'):
+        parts += ['--place', kw['place']]
+    if kw.get('place_text'):
+        parts += ['--place-text', _q(kw['place_text'])]
+    if kw.get('persons'):
+        parts += ['--persons', ','.join(kw['persons'])]
+    if kw.get('subtype'):
+        parts += ['--subtype', kw['subtype']]
+    if kw.get('status'):
+        parts += ['--status', kw['status']]
+    return ' '.join(parts)
+
+
+def _verb_xref(state, kw, dry_run):
+    return confirm.run_confirm_xref(
+        state.archive_root, claim_a=kw.get('claim_a', ''), claim_b=kw.get('claim_b', ''),
+        relation=kw.get('relation', ''), dry_run=dry_run)
+
+
+def _echo_xref(kw):
+    return (f'fha confirm xref {kw.get("claim_a", "?")} {kw.get("claim_b", "?")} '
+            f'--as {kw.get("relation", "?")}')
+
+
+def _verb_cooccur(state, kw, dry_run):
+    return confirm.run_confirm_cooccur(
+        state.archive_root, person_a=kw.get('person_a', ''), person_b=kw.get('person_b', ''),
+        source_id=kw.get('source_id', ''), subtype=kw.get('subtype', ''),
+        accept=bool(kw.get('accept', True)), dry_run=dry_run)
+
+
+def _echo_cooccur(kw):
+    parts = ['fha confirm cooccur', kw.get('person_a', '?'), kw.get('person_b', '?'),
+             '--source', kw.get('source_id', '?'), '--subtype', kw.get('subtype', '?')]
+    if kw.get('accept', True):
+        parts.append('--accept')
+    return ' '.join(parts)
+
+
+def _verb_dismiss(state, kw, dry_run):
+    return confirm.run_dismiss(
+        state.archive_root, person_a=kw.get('person_a', ''),
+        person_b=kw.get('person_b', ''), dry_run=dry_run)
+
+
+def _echo_dismiss(kw):
+    return f'fha confirm dismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}'
+
+
+def _verb_set_living(state, kw, dry_run):
+    return person.run_set_living(
+        state.archive_root, kw.get('person_id', ''), kw.get('value', ''), dry_run=dry_run)
+
+
+def _echo_set_living(kw):
+    return f'fha person set-living {kw.get("person_id", "?")} {kw.get("value", "?")}'
+
+
+def _verb_person_new(state, kw, dry_run):
+    return person.run_new(
+        state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
+        birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run)
+
+
+def _echo_person_new(kw):
+    parts = ['fha person new', _q(kw.get('name', ''))]
+    for flag in ('sex', 'gender', 'birth', 'death'):
+        if kw.get(flag):
+            parts += [f'--{flag}', _q(kw[flag])]
+    return ' '.join(parts)
+
+
+def _verb_relate(state, kw, dry_run):
+    return person.run_relate(
+        state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
+        kw.get('target_id', ''), subtype=kw.get('subtype'),
+        reciprocal=bool(kw.get('reciprocal', False)), dry_run=dry_run)
+
+
+def _echo_relate(kw):
+    parts = ['fha person relate', kw.get('person_id', '?'),
+             f'--{kw.get("relation_type", "spouse")}', kw.get('target_id', '?')]
+    if kw.get('subtype'):
+        parts += ['--subtype', kw['subtype']]
+    if kw.get('reciprocal'):
+        parts.append('--reciprocal')
+    return ' '.join(parts)
+
+
+def _verb_estimate(state, kw, dry_run):
+    return person.run_estimate(
+        state.archive_root, kw.get('person_id', ''),
+        birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run)
+
+
+def _echo_estimate(kw):
+    parts = ['fha person estimate', kw.get('person_id', '?')]
+    if kw.get('birth'):
+        parts += ['--birth', kw['birth']]
+    if kw.get('death'):
+        parts += ['--death', kw['death']]
+    return ' '.join(parts)
+
+
+def _verb_person_edit(state, kw, dry_run):
+    return person.run_edit(
+        state.archive_root, kw.get('person_id', ''), kw.get('section', ''),
+        text=kw.get('text'), append=bool(kw.get('append', False)), dry_run=dry_run)
+
+
+def _echo_person_edit(kw):
+    parts = ['fha person edit', kw.get('person_id', '?'), '--section', kw.get('section', '?'),
+             '--text', _q(_short(kw.get('text', '')))]
+    if kw.get('append'):
+        parts.append('--append')
+    return ' '.join(parts)
+
+
+def _verb_person_note(state, kw, dry_run):
+    return person.run_note(
+        state.archive_root, kw.get('person_id', ''), kw.get('section', ''),
+        kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_person_note(kw):
+    return (f'fha person note {kw.get("person_id", "?")} --section '
+            f'{kw.get("section", "?")} --text {_q(_short(kw.get("text", "")))}')
+
+
+def _verb_source_note(state, kw, dry_run):
+    return source_mod.run_source_note(
+        state.archive_root, kw.get('source_id', ''), text=kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_source_note(kw):
+    return f'fha source note {kw.get("source_id", "?")} --text {_q(_short(kw.get("text", "")))}'
+
+
+def _verb_process(state, kw, dry_run):
+    """Stage A filing. Confine the path, then drive run_process with an explicit
+    --type so it never prompts. stdin is swapped to EOF and stdout/stderr are
+    captured, so an unexpected prompt fails cleanly (a plain message) instead of
+    hanging a request thread."""
+    raw = kw.get('file', '')
+    confined, err = _confine_asset_path(state, raw)
+    if err:
+        return Result(ok=False, exit_code=EXIT_FAILURE).add('error', err)
+    ns = argparse.Namespace(
+        file=raw, source_type=kw.get('source_type'), title=kw.get('title'),
+        slug=kw.get('slug'), source_date=None, more=None, people=None,
+        dry_run=dry_run, root=str(state.archive_root),
+    )
+    buf_out, buf_err = io.StringIO(), io.StringIO()
+    old_stdin = sys.stdin
+    sys.stdin = io.StringIO('')
+    try:
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            res = process_mod.run_process(ns)
+    except EOFError:
+        return Result(ok=False, exit_code=EXIT_FAILURE).add(
+            'error', 'this item needs the command line (it has variations or a bundle '
+                     'that must be chosen interactively). Run it in a terminal.',
+            next_step=f'fha process {_q(raw)} --type {kw.get("source_type", "other")}')
+    except Exception as e:  # noqa: BLE001 - a filing failure becomes a plain message
+        return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not file: {e}')
+    finally:
+        sys.stdin = old_stdin
+    out = Result(ok=res.ok, exit_code=res.exit_code)
+    for line in (buf_out.getvalue() + buf_err.getvalue()).splitlines():
+        if line.strip():
+            out.add('error' if line.startswith('ERROR') else 'info', line)
+    if not out.messages:
+        out.add('info', 'filed' if not dry_run else 'preview complete')
+    return out
+
+
+def _echo_process(kw):
+    parts = ['fha process', _q(kw.get('file', ''))]
+    if kw.get('source_type'):
+        parts += ['--type', kw['source_type']]
+    if kw.get('title'):
+        parts += ['--title', _q(kw['title'])]
+    if kw.get('slug'):
+        parts += ['--slug', kw['slug']]
+    return ' '.join(parts)
+
+
+def _verb_capture_path(state, kw, dry_run):
+    confined, err = _confine_asset_path(state, kw.get('path', ''), must_exist=False)
+    if err:
+        return Result(ok=False, exit_code=EXIT_FAILURE).add('error', err)
+    buf_out, buf_err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            res = capture.run_capture_path(
+                state.archive_root, state.fha_config, path=kw.get('path', ''),
+                note=kw.get('note'), title=kw.get('title'), dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001
+        return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not register: {e}')
+    for line in (buf_out.getvalue() + buf_err.getvalue()).splitlines():
+        if line.strip():
+            res.add('info', line)
+    return res
+
+
+def _echo_capture_path(kw):
+    parts = ['fha capture', '--path', _q(kw.get('path', ''))]
+    if kw.get('note'):
+        parts += ['--note', _q(_short(kw['note']))]
+    return ' '.join(parts)
+
+
+def _verb_publish(state, kw, dry_run):
+    out_dir = state.archive_root / 'generated' / 'site'
+    return state.site_mod.run_site(state.archive_root, out_dir, linked=False, dry_run=dry_run)
+
+
+def _echo_publish(kw):
+    return 'fha site --standalone'
+
+
+def _verb_index(state, kw, dry_run):
+    if dry_run:
+        return Result(ok=True, exit_code=EXIT_CLEAN).add(
+            'info', 'would rebuild the search index (.cache/index.sqlite).')
+    return index_mod.build_index(state.archive_root, state.fha_config)
+
+
+def _echo_index(kw):
+    return 'fha index'
+
+
+def _verb_home_edit(state, kw, dry_run):
+    """Bounded write of notes/home.md - parity with editing the file directly.
+    Dry-run shows a unified diff (contract SS6)."""
+    import difflib
+    text = kw.get('text')
+    if text is None or not str(text).strip():
+        return Result(ok=False, exit_code=EXIT_FAILURE).add(
+            'error', 'the homepage intro was empty - nothing to write.')
+    path = state.archive_root / 'notes' / 'home.md'
+    new = str(text)
+    if not new.endswith('\n'):
+        new += '\n'
+    old = path.read_text(encoding='utf-8') if path.exists() else ''
+    if old == new:
+        return Result(ok=True, exit_code=EXIT_CLEAN).add('info', 'no change - notes/home.md already matches.')
+    result = Result(data={'status': 'dry-run' if dry_run else 'ok'})
+    diff = list(difflib.unified_diff(
+        old.splitlines(), new.splitlines(),
+        fromfile='notes/home.md (before)', tofile='notes/home.md (after)', lineterm=''))
+    for line in diff[:60]:
+        result.add('info', line)
+    if dry_run:
+        return result
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new, encoding='utf-8')
+    except OSError as e:
+        return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not write notes/home.md: {e}')
+    result.note_changed(path)
+    result.add('info', 'notes/home.md updated.')
+    return result
+
+
+def _echo_home_edit(kw):
+    return '# notes/home.md is yours - same as editing it in any text editor'
+
+
+# key -> (schema, run, echo, reindex-policy). reindex: 'source' (upsert the
+# source named in Result.data, else full), 'full', or 'none'.
+VERBS: dict[str, dict] = {
+    'claim.review': {'schema': {'claim_id': 'str', 'status': 'str', 'value': 'str',
+                               'date': 'str', 'claim_type': 'str', 'place': 'str',
+                               'place_text': 'str', 'persons': 'list', 'confidence': 'str'},
+                     'run': _verb_claim_review, 'echo': _echo_claim_review, 'reindex': 'source'},
+    'claim.new': {'schema': {'source_id': 'str', 'claim_type': 'str', 'value': 'str',
+                            'date': 'str', 'place': 'str', 'place_text': 'str',
+                            'persons': 'list', 'subtype': 'str', 'status': 'str',
+                            'confidence': 'str'},
+                  'run': _verb_claim_new, 'echo': _echo_claim_new, 'reindex': 'source'},
+    'confirm.xref': {'schema': {'claim_a': 'str', 'claim_b': 'str', 'relation': 'str'},
+                     'run': _verb_xref, 'echo': _echo_xref, 'reindex': 'full'},
+    'confirm.cooccur': {'schema': {'person_a': 'str', 'person_b': 'str', 'source_id': 'str',
+                                  'subtype': 'str', 'accept': 'bool'},
+                        'run': _verb_cooccur, 'echo': _echo_cooccur, 'reindex': 'source'},
+    'confirm.dismiss': {'schema': {'person_a': 'str', 'person_b': 'str'},
+                        'run': _verb_dismiss, 'echo': _echo_dismiss, 'reindex': 'none'},
+    'person.set-living': {'schema': {'person_id': 'str', 'value': 'str'},
+                          'run': _verb_set_living, 'echo': _echo_set_living, 'reindex': 'full'},
+    'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
+                             'birth': 'str', 'death': 'str'},
+                   'run': _verb_person_new, 'echo': _echo_person_new, 'reindex': 'full'},
+    'person.relate': {'schema': {'person_id': 'str', 'relation_type': 'str', 'target_id': 'str',
+                                'subtype': 'str', 'reciprocal': 'bool'},
+                      'run': _verb_relate, 'echo': _echo_relate, 'reindex': 'full'},
+    'person.estimate': {'schema': {'person_id': 'str', 'birth': 'str', 'death': 'str'},
+                        'run': _verb_estimate, 'echo': _echo_estimate, 'reindex': 'full'},
+    'person.edit': {'schema': {'person_id': 'str', 'section': 'str', 'text': 'str', 'append': 'bool'},
+                    'run': _verb_person_edit, 'echo': _echo_person_edit, 'reindex': 'full'},
+    'person.note': {'schema': {'person_id': 'str', 'section': 'str', 'text': 'str'},
+                    'run': _verb_person_note, 'echo': _echo_person_note, 'reindex': 'full'},
+    'source.note': {'schema': {'source_id': 'str', 'text': 'str'},
+                    'run': _verb_source_note, 'echo': _echo_source_note, 'reindex': 'source'},
+    'process.file': {'schema': {'file': 'str', 'source_type': 'str', 'title': 'str', 'slug': 'str'},
+                     'run': _verb_process, 'echo': _echo_process, 'reindex': 'full'},
+    'capture.path': {'schema': {'path': 'str', 'note': 'str', 'title': 'str'},
+                     'run': _verb_capture_path, 'echo': _echo_capture_path, 'reindex': 'full'},
+    'site.publish': {'schema': {}, 'run': _verb_publish, 'echo': _echo_publish, 'reindex': 'none'},
+    'index.rebuild': {'schema': {}, 'run': _verb_index, 'echo': _echo_index, 'reindex': 'none'},
+    'home.edit': {'schema': {'text': 'str'}, 'run': _verb_home_edit, 'echo': _echo_home_edit,
+                  'reindex': 'full'},
+}
+
+
+def _reindex_after(state: ServeState, verb: str, result: Result) -> None:
+    """Post-write reindex policy (contract SS6). Caller holds the lock.
+    A source-scoped verb upserts the one source it named; else a full rebuild.
+    publish/index.rebuild need no extra reindex."""
+    policy = VERBS[verb]['reindex']
+    if policy == 'none':
+        return
+    if policy == 'source':
+        sid = None
+        for key in ('source_id', 'source'):
+            v = result.get(key) if hasattr(result, 'get') else None
+            if v:
+                sid = v
+                break
+        if sid and is_valid_id(sid) and id_type_of(normalize_id(sid)) == 'S':
+            outcome = index_mod.upsert_source(state.archive_root, state.fha_config, normalize_id(sid))
+            if outcome == 'indexed':
+                return
+        # Fall through to a full rebuild when we could not target a source.
+    index_mod.build_index(state.archive_root, state.fha_config)
+
+
+def run_api_run(state: ServeState, verb: str, args: dict, dry_run: bool) -> tuple[int, dict]:
+    """Execute one /api/run request. Returns (http_status, payload). The whole
+    mutate -> reindex -> invalidate sequence is under the global lock so a
+    rebuild can never interleave a write."""
+    spec = VERBS.get(verb)
+    if spec is None:
+        return 400, {'ok': False, 'exit_code': EXIT_FAILURE,
+                     'messages': [{'level': 'error',
+                                   'text': f'unknown verb {verb!r}. This build allows: '
+                                           + ', '.join(sorted(VERBS)) + '.',
+                                   'next_step': None}],
+                     'changed': [], 'data': {}, 'cli_echo': ''}
+    kw, err = _coerce(spec['schema'], args)
+    if err:
+        return 400, {'ok': False, 'exit_code': EXIT_FAILURE,
+                     'messages': [{'level': 'error', 'text': err, 'next_step': None}],
+                     'changed': [], 'data': {}, 'cli_echo': ''}
+
+    with state.lock:
+        try:
+            result = spec['run'](state, kw, dry_run)
+        except Exception as e:  # noqa: BLE001 - never leak a traceback to the browser
+            traceback.print_exc()
+            return 500, {'ok': False, 'exit_code': EXIT_FAILURE,
+                         'messages': [{'level': 'error',
+                                       'text': f'the {verb} engine failed: {e}',
+                                       'next_step': None}],
+                         'changed': [], 'data': {}, 'cli_echo': spec['echo'](kw)}
+        if not dry_run and result.ok:
+            _reindex_after(state, verb, result)
+            if verb != 'site.publish':
+                invalidate_snapshot(state)
+
+    payload = result.as_dict()
+    payload['cli_echo'] = spec['echo'](kw)
+    return 200, payload
+
+
+# ── Path confinement ─────────────────────────────────────────────────────────────
+
+def _confine_asset_path(state: ServeState, raw: str, must_exist: bool = True
+                        ) -> tuple[Path | None, str | None]:
+    """Confine a path-shaped /api/run arg (process file, capture path) to the
+    archive tree or an allowed asset root before the engine ever sees it
+    (defense in depth). Returns (resolved, error)."""
+    if not raw or '\x00' in raw:
+        return None, 'no path was given.'
+    root = state.archive_root.resolve()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = state.archive_root / raw
+    try:
+        resolved = candidate.resolve()
+    except OSError as e:
+        return None, f'that path could not be resolved ({e}).'
+    bases = [root]
+    for alias in _ASSET_ALIASES:
+        try:
+            bases.append(resolve_path(alias, state.fha_config, state.archive_root).resolve())
+        except Exception:
+            pass
+    if not any(_within(resolved, b) for b in bases):
+        return None, ('that path is outside the archive and its asset folders - '
+                      'serve only files things from inside the archive.')
+    if must_exist and not resolved.exists():
+        return None, f'no file at {raw} (checked under the archive).'
+    return resolved, None
+
+
+def _within(path: Path, base: Path) -> bool:
+    try:
+        return path == base or path.is_relative_to(base)
+    except (ValueError, OSError):
+        return False
+
+
+def _resolve_root_request(state: ServeState, alias: str, relpath: str) -> Path | None:
+    """Resolve a GET /root/<alias>/<relpath> to a confined, existing FILE, or
+    None. Only photos/documents/inbox aliases; canonical-path confinement to the
+    alias's resolved base; no directory listings."""
+    if alias not in _ASSET_ALIASES:
+        return None
+    if '\x00' in relpath or '\\' in relpath:
+        return None
+    try:
+        base = resolve_path(alias, state.fha_config, state.archive_root).resolve()
+    except Exception:
+        return None
+    candidate = (base / relpath)
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if not _within(resolved, base):
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
+
+
+def _resolve_snapshot_request(state: ServeState, url_path: str) -> Path | None:
+    """Resolve a static GET to a file under the snapshot site dir, or None. `/`
+    maps to index.html. Canonical-path confinement rejects .., encoded dots,
+    backslashes, drive letters, NUL."""
+    rel = unquote(url_path.lstrip('/'))
+    if rel == '' or rel.endswith('/'):
+        rel = rel + 'index.html'
+    if '\x00' in rel or '\\' in rel:
+        return None
+    site_dir = state.snapshot_dir.resolve()
+    candidate = site_dir / rel
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if not _within(resolved, site_dir):
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
+
+
+# ── Multipart upload parsing ───────────────────────────────────────────────────
+
+def _parse_multipart(content_type: str, body: bytes) -> dict:
+    """Minimal multipart/form-data parser (the cgi module is gone in 3.13+).
+    Returns {'file': (filename, bytes) | None, 'text': {name: value}}."""
+    out = {'file': None, 'text': {}}
+    marker = 'boundary='
+    idx = content_type.find(marker)
+    if idx < 0:
+        return out
+    boundary = content_type[idx + len(marker):].strip().strip('"')
+    if not boundary:
+        return out
+    delim = ('--' + boundary).encode('latin-1')
+    parts = body.split(delim)
+    for part in parts:
+        if part in (b'', b'--', b'--\r\n', b'\r\n'):
+            continue
+        part = part.lstrip(b'\r\n')
+        if part.startswith(b'--'):
+            continue
+        header_blob, _, content = part.partition(b'\r\n\r\n')
+        if not _:
+            continue
+        content = content[:-2] if content.endswith(b'\r\n') else content
+        headers = header_blob.decode('latin-1', 'replace')
+        name = _header_param(headers, 'name')
+        filename = _header_param(headers, 'filename')
+        if name is None:
+            continue
+        if filename is not None:
+            out['file'] = (filename, content)
+        else:
+            out['text'][name] = content.decode('utf-8', 'replace')
+    return out
+
+
+def _header_param(headers: str, key: str) -> str | None:
+    token = key + '="'
+    i = headers.find(token)
+    if i < 0:
+        return None
+    i += len(token)
+    j = headers.find('"', i)
+    return headers[i:j] if j > i - 1 else None
+
+
+# Win32 reserved device names: writing to `CON.part` (any extension) hits the
+# console device on classic Windows semantics, not a file. Self-inflicted at
+# worst (uploads are CSRF-gated), but a plain refusal beats a hung write.
+_WIN_RESERVED_NAMES = frozenset(
+    {'CON', 'PRN', 'AUX', 'NUL'}
+    | {f'COM{i}' for i in range(1, 10)} | {f'LPT{i}' for i in range(1, 10)}
+)
+
+
+def _sanitize_basename(name: str) -> str | None:
+    """Basename only, path separators + NUL stripped; reject empty/dot names,
+    Windows reserved device names, and trailing dots (Win32 silently strips
+    them, which would make the name collide with its dotless sibling)."""
+    if not name or '\x00' in name:
+        return None
+    base = os.path.basename(name.replace('\\', '/'))
+    base = base.strip().rstrip('.')
+    if base in ('', '.', '..'):
+        return None
+    if base.split('.')[0].upper() in _WIN_RESERVED_NAMES:
+        return None
+    return base
+
+
+def run_api_upload(state: ServeState, filename: str, data: bytes,
+                   what: str = '', who: str = '') -> tuple[int, dict]:
+    """Write uploaded bytes into inbox/<basename> (collision -> ` -2` stem) plus
+    an optional `.notes.md` sidecar. Basename-only, sanitized, confined to the
+    resolved inbox root."""
+    base = _sanitize_basename(filename)
+    if base is None:
+        return 400, _msg_payload(False, 'that file name is not allowed. Give a plain file name.')
+    try:
+        inbox = resolve_path('inbox', state.fha_config, state.archive_root).resolve()
+    except Exception:
+        return 500, _msg_payload(False, 'could not find the inbox folder.')
+
+    with state.lock:
+        inbox.mkdir(parents=True, exist_ok=True)
+        dest = inbox / base
+        stem, ext = os.path.splitext(base)
+        n = 2
+        while dest.exists():
+            dest = inbox / f'{stem} -{n}{ext}'
+            n += 1
+        # Confirm the final destination is still inside the inbox (belt + braces).
+        if not _within(dest.resolve() if dest.exists() else dest, inbox):
+            return 400, _msg_payload(False, 'refused - the destination escaped the inbox.')
+        tmp = inbox / (dest.name + '.part')
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(dest)
+        except OSError as e:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            return 500, _msg_payload(False, f'could not write the file: {e}')
+        written = [str(dest)]
+        if what.strip() or who.strip():
+            sidecar = inbox / (dest.name + '.notes.md')
+            # One line per field: a newline inside the note would otherwise
+            # inject extra keys into the sidecar's frontmatter.
+            what_line = ' '.join(what.split())
+            who_line = ' '.join(who.split())
+            body = '---\n'
+            if what_line:
+                body += f'what: {yaml_inline(what_line)}\n'
+            if who_line:
+                body += f'people-hint: {yaml_inline(who_line)}\n'
+            body += f'noted: {time.strftime("%Y-%m-%d")}\n---\n'
+            try:
+                sidecar.write_text(body, encoding='utf-8')
+                written.append(str(sidecar))
+            except OSError:
+                pass
+        invalidate_snapshot(state)
+
+    payload = _msg_payload(True, f'added inbox/{dest.name}'
+                           + (' with a note beside it' if len(written) > 1 else ''))
+    payload['changed'] = written
+    return 200, payload
+
+
+def run_api_open(state: ServeState, path: str) -> tuple[int, dict]:
+    """OS-open a record/asset file after confinement (contract SS8). The target
+    must resolve under the archive root or an allowed asset root."""
+    if not path or '\x00' in path:
+        return 400, _msg_payload(False, 'no path was given.')
+    root = state.archive_root.resolve()
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = state.archive_root / path
+    try:
+        resolved = candidate.resolve()
+    except OSError as e:
+        return 400, _msg_payload(False, f'that path could not be resolved ({e}).')
+    bases = [root]
+    for alias in _ASSET_ALIASES:
+        try:
+            bases.append(resolve_path(alias, state.fha_config, state.archive_root).resolve())
+        except Exception:
+            pass
+    if not any(_within(resolved, b) for b in bases):
+        return 403, _msg_payload(False, 'that file is outside the archive - serve will not open it.')
+    if not resolved.exists():
+        return 404, _msg_payload(False, f'no file at {path}.')
+    try:
+        _os_open(resolved)
+    except Exception as e:  # noqa: BLE001
+        return 500, _msg_payload(False, f'could not open the file ({e}). Open it from Explorer instead.')
+    return 200, _msg_payload(True, f'opened {resolved.name} in your usual editor.')
+
+
+def _os_open(path: Path) -> None:
+    """Open a file with the OS default handler. Windows is the target
+    (os.startfile); other platforms fall back to open/xdg-open."""
+    if sys.platform.startswith('win'):
+        os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606 - Windows default handler
+    elif sys.platform == 'darwin':
+        import subprocess
+        subprocess.Popen(['open', str(path)])
+    else:
+        import subprocess
+        subprocess.Popen(['xdg-open', str(path)])
+
+
+def _msg_payload(ok: bool, text: str) -> dict:
+    return {'ok': ok, 'exit_code': EXIT_CLEAN if ok else EXIT_FAILURE,
+            'messages': [{'level': 'info' if ok else 'error', 'text': text, 'next_step': None}],
+            'changed': [], 'data': {}}
+
+
+# ── The HTTP handler ────────────────────────────────────────────────────────────
+
+class _Handler(BaseHTTPRequestHandler):
+    server_version = 'fha-serve'
+    protocol_version = 'HTTP/1.1'
+
+    @property
+    def state(self) -> ServeState:
+        return self.server.state  # type: ignore[attr-defined]
+
+    # -- security gates --
+
+    def _host_ok(self) -> bool:
+        """Host header hostname must be 127.0.0.1 or localhost (DNS-rebinding
+        defense). The port part (if present) is whatever port actually reached
+        this 127.0.0.1-bound socket, so the hostname is the real check: a page on
+        evil.com that rebinds DNS to 127.0.0.1 still sends `Host: evil.com` and is
+        refused here."""
+        host = (self.headers.get('Host') or '').strip().lower()
+        if not host:
+            return False
+        # Strip the optional :port (rsplit so an IPv6 literal would not be
+        # mangled; only bracketless localhost/127.0.0.1 are allowed anyway).
+        hostname = host.rsplit(':', 1)[0] if ':' in host and not host.endswith(':') else host
+        hostname = hostname.strip('[]')
+        return hostname in ('127.0.0.1', 'localhost')
+
+    def _csrf_ok(self) -> bool:
+        token = self.headers.get('X-FHA-CSRF') or ''
+        # Compare as bytes: compare_digest on str raises TypeError for
+        # non-ASCII, and a garbage header must be a plain 403, not an error.
+        return hmac.compare_digest(token.encode('utf-8', 'replace'),
+                                   self.state.csrf_token.encode('utf-8'))
+
+    # -- response helpers --
+
+    def _send(self, code: int, body: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        if self.command != 'HEAD':
+            self.wfile.write(body)
+
+    def _send_json(self, code: int, payload: dict) -> None:
+        self._send(code, json.dumps(payload).encode('utf-8'), 'application/json; charset=utf-8')
+
+    def _send_text(self, code: int, text: str) -> None:
+        self._send(code, text.encode('utf-8'), 'text/plain; charset=utf-8')
+
+    def _reject(self, code: int, text: str) -> None:
+        self._send_text(code, text)
+
+    def _not_found(self) -> None:
+        self._send_text(404, 'Not found.\n\nfha serve serves this archive at:\n'
+                        '  /            the home page\n'
+                        '  /persons/... /sources/... /places/...   record pages\n'
+                        '  /review      the review queue\n'
+                        '  /inbox       the inbox\n'
+                        '  /root/{photos,documents,inbox}/...   asset files\n')
+
+    # -- routing --
+
+    def do_HEAD(self) -> None:
+        self.do_GET()
+
+    def do_GET(self) -> None:
+        if not self._host_ok():
+            self._reject(403, 'Refused: unexpected Host header (fha serve is 127.0.0.1 only).')
+            return
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        try:
+            if path == '/api/find':
+                self._handle_find(parse_qs(parsed.query))
+                return
+            if path.startswith('/root/'):
+                self._handle_root_asset(path)
+                return
+            if path == '/review':
+                ensure_snapshot(self.state)
+                self._render_page('review.html', gather_review(self.state), title='Review')
+                return
+            if path == '/inbox':
+                ensure_snapshot(self.state)
+                self._render_page('inbox.html', gather_inbox(self.state), title='Inbox')
+                return
+            if path.startswith('/api/'):
+                self._not_found()
+                return
+            # Static snapshot file.
+            ensure_snapshot(self.state)
+            resolved = _resolve_snapshot_request(self.state, path)
+            if resolved is None:
+                self._not_found()
+                return
+            self._send_file(resolved)
+        except Exception:  # noqa: BLE001 - never leak a traceback to the browser
+            traceback.print_exc()
+            self._reject(500, 'fha serve hit an internal error - see the terminal it runs in.')
+
+    def do_POST(self) -> None:
+        if not self._host_ok():
+            self._reject(403, 'Refused: unexpected Host header (fha serve is 127.0.0.1 only).')
+            return
+        if not self._csrf_ok():
+            self._reject(403, 'Refused: missing or wrong security token. Restart the page you '
+                              'opened from fha serve (reload it) and try again.')
+            return
+        parsed = urlsplit(self.path)
+        path = parsed.path
+        try:
+            if path == '/api/run':
+                self._handle_run()
+            elif path == '/api/upload':
+                self._handle_upload()
+            elif path == '/api/open':
+                self._handle_open()
+            elif path == '/api/reindex':
+                self._handle_reindex()
+            else:
+                self._not_found()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            self._send_json(500, _msg_payload(False, 'fha serve hit an internal error - see the terminal.'))
+
+    # -- handlers --
+
+    def _read_body(self, cap: int = _MAX_UPLOAD_BYTES) -> bytes | None:
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            return None
+        if length < 0 or length > cap:
+            return None
+        return self.rfile.read(length) if length else b''
+
+    def _handle_run(self) -> None:
+        body = self._read_body(cap=32 * 1024 * 1024)
+        if body is None:
+            self._send_json(413, _msg_payload(False, 'request too large.'))
+            return
+        try:
+            req = json.loads(body or b'{}')
+        except json.JSONDecodeError:
+            self._send_json(400, _msg_payload(False, 'the request body was not valid JSON.'))
+            return
+        verb = req.get('verb')
+        args = req.get('args') or {}
+        # Defense in depth: dry_run defaults to TRUE. Only an explicit false runs.
+        dry_run = not (req.get('dry_run') is False)
+        if not isinstance(args, dict):
+            self._send_json(400, _msg_payload(False, '"args" must be an object.'))
+            return
+        code, payload = run_api_run(self.state, verb, args, dry_run)
+        self._send_json(code, payload)
+
+    def _handle_upload(self) -> None:
+        ctype = self.headers.get('Content-Type') or ''
+        if 'multipart/form-data' not in ctype:
+            self._send_json(400, _msg_payload(False, 'upload must be multipart/form-data.'))
+            return
+        body = self._read_body()
+        if body is None:
+            self._send_json(413, _msg_payload(False, 'that file is too large (limit 1 GiB).'))
+            return
+        parsed = _parse_multipart(ctype, body)
+        if not parsed['file']:
+            self._send_json(400, _msg_payload(False, 'no file was in the upload.'))
+            return
+        filename, data = parsed['file']
+        text = parsed['text']
+        code, payload = run_api_upload(self.state, filename, data,
+                                       what=text.get('what', ''), who=text.get('who', ''))
+        self._send_json(code, payload)
+
+    def _handle_open(self) -> None:
+        body = self._read_body(cap=64 * 1024)
+        try:
+            req = json.loads(body or b'{}')
+        except json.JSONDecodeError:
+            self._send_json(400, _msg_payload(False, 'the request body was not valid JSON.'))
+            return
+        code, payload = run_api_open(self.state, req.get('path', ''))
+        self._send_json(code, payload)
+
+    def _handle_reindex(self) -> None:
+        with self.state.lock:
+            index_mod.build_index(self.state.archive_root, self.state.fha_config)
+            invalidate_snapshot(self.state)
+        self._send_json(200, _msg_payload(True, 'index rebuilt; pages will refresh.'))
+
+    def _handle_find(self, query: dict) -> None:
+        q = (query.get('q', [''])[0] or '').strip()
+        kind_raw = query.get('kind', [None])[0]
+        try:
+            limit = int(query.get('limit', ['20'])[0])
+        except ValueError:
+            limit = 20
+        limit = max(1, min(limit, 50))
+        kinds = [k.strip() for k in kind_raw.split(',')] if kind_raw else None
+        results = find_mod.search_json(self.state.archive_root, self.state.fha_config,
+                                       q, kinds=kinds, limit=limit)
+        self._send_json(200, {'results': results})
+
+    def _handle_root_asset(self, path: str) -> None:
+        rest = unquote(path[len('/root/'):])
+        alias, _, relpath = rest.partition('/')
+        resolved = _resolve_root_request(self.state, alias, relpath)
+        if resolved is None:
+            self._reject(404, 'Not found or not allowed.')
+            return
+        self._send_file(resolved)
+
+    def _send_file(self, path: Path) -> None:
+        ctype, _ = mimetypes.guess_type(str(path))
+        try:
+            data = path.read_bytes()
+        except OSError:
+            self._not_found()
+            return
+        self._send(200, data, ctype or 'application/octet-stream')
+
+    def _render_page(self, template: str, data: dict, *, title: str) -> None:
+        ctx = _workbench_context(self.state)
+        ctx.update(data)
+        ctx['page_title'] = title
+        try:
+            tmpl = self.state.env.get_template(template)
+            html_out = tmpl.render(**ctx)
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            self._reject(500, f'could not render {template}: {e}')
+            return
+        self._send(200, html_out.encode('utf-8'), 'text/html; charset=utf-8')
+
+    def log_message(self, fmt, *args):  # noqa: A003 - quiet the default stderr spam
+        pass
+
+
+# ── Serving loop + CLI ──────────────────────────────────────────────────────────
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    port = int(getattr(args, 'port', None) or DEFAULT_PORT)
+
+    pre = run_serve_preflight(archive_root, port=port)
+    for m in pre.messages:
+        if m.level in ('error', 'warning'):
+            prefix = 'ERROR' if m.level == 'error' else 'WARNING'
+            print(f'{prefix}: {m.text}', file=sys.stderr)
+    if not pre.ok:
+        return pre.exit_code
+
+    fha_config = pre.data['fha_config']
+    state = ServeState(archive_root, fha_config, port)
+
+    # Build the first snapshot up front so the first page render is instant.
+    ensure_snapshot(state)
+    review_count, inbox_count = _counts(state)
+
+    try:
+        httpd = ThreadingHTTPServer(('127.0.0.1', port), _Handler)
+    except OSError:
+        print(f'ERROR: port {port} is busy - close the other serve window or pass '
+              f'`--port {port + 1}`.', file=sys.stderr)
+        return EXIT_FAILURE
+    httpd.state = state  # type: ignore[attr-defined]
+
+    url = f'http://127.0.0.1:{port}/'
+    print('')
+    print(f'  {state.site_title}')
+    print(f'  serving at  {url}')
+    print('  this machine only - no network, no auth')
+    print('  linked view (unredacted - private; sharing still goes through '
+          '`fha site --standalone`)')
+    print(f'  Review: {review_count}   Inbox: {inbox_count}')
+    if pre.data.get('index_built'):
+        print('  (rebuilt the search index first)')
+    print('  stop: Ctrl-C (nothing is lost)')
+    print('')
+    sys.stdout.flush()   # block-buffered when piped; show the banner at once
+
+    if not getattr(args, 'no_browser', False):
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - a headless box just skips this
+            pass
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print('\nfha serve stopped. Nothing was lost.', file=sys.stderr)
+    finally:
+        httpd.server_close()
+    return EXIT_CLEAN
+
+
+def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subs.add_parser(
+        'serve',
+        help='Open the localhost workbench - a private, editable view of the archive.',
+        description=(
+            'Start a local, private web workbench for this archive.\n\n'
+            '  fha serve                 open it in your browser on 127.0.0.1:8765\n'
+            '  fha serve --port 8766     use a different port\n'
+            '  fha serve --no-browser    start it but do not open a browser\n\n'
+            'It runs on this machine only - no network, no login. Every button is an '
+            'fha command, previewed before it writes. Stop it with Ctrl-C; nothing is lost.'),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument('--port', type=int, default=DEFAULT_PORT,
+                   help=f'Port to listen on (default {DEFAULT_PORT}).')
+    p.add_argument('--no-browser', action='store_true', dest='no_browser',
+                   help='Do not open a web browser on startup.')
+    p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    p.set_defaults(func=_cmd_serve)
+    return p
+
+
+def _standalone_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog='fha serve')
+    parser.add_argument('--port', type=int, default=DEFAULT_PORT)
+    parser.add_argument('--no-browser', action='store_true', dest='no_browser')
+    parser.add_argument('--root', metavar='PATH')
+    parser.set_defaults(func=_cmd_serve)
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == '__main__':
+    sys.exit(_standalone_main())

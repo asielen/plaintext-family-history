@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-11",
+  "generated": "2026-07-12",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -433,6 +433,12 @@
       "src": "archive-template/places/places.yaml"
     },
     {
+      "path": "serve.cmd",
+      "category": "operating",
+      "sha256": "e256a4c74bc6a97a719009b68a8c8010c4d772131cf817c7f1689f81df05b1e1",
+      "spec_version": "1.2"
+    },
+    {
       "path": "sources/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -455,7 +461,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "c254fa9f04adeb482b0e1d86209181c06abb1d87998f16a13bbb2fc51589dc66",
+      "sha256": "3377f0202f6f11932f8ae711aba330334b5d90a3649ef6cba70e42d4a72ae684",
       "spec_version": "1.2"
     },
     {
@@ -509,7 +515,7 @@
     {
       "path": "tools/claim.py",
       "category": "operating",
-      "sha256": "eb33c9b8631a14dacb944fe49a0946f6f7f8599f1d4f03a5dd788bf2a82f8d71",
+      "sha256": "38c630b0a5b71f0e5421ed9836fc55f213ebe988b878d4e295f270972ededd22",
       "spec_version": "1.2"
     },
     {
@@ -539,7 +545,7 @@
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "5fce7c8242e2f2e2948e580392d455588aea36bb6868c0e8f48b0793f35ceeb7",
+      "sha256": "531f0286b82dce1cfb0e9887cc10085447f005c7601aa73f716402cf77f0ecaf",
       "spec_version": "1.2"
     },
     {
@@ -635,13 +641,19 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "4091e9b892015571fdd95e520271e4911efc6529e24c64efda1ad89c125b0a0f",
+      "sha256": "5aca5de17f7a2bae77e0e15f0728f0966cf22f364f0f8fe3b2675c6a9caeafb6",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/serve.py",
+      "category": "operating",
+      "sha256": "56279bc746f9dcb2a86e0dba944f9b50e9f6f65d00f2406363dd31ebace6a3e8",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "8d02edbd2b46e5d0e805ad6512a537c3d1b8be28cb707cfa88e93465de9654f6",
+      "sha256": "d7203a5f2a5083b37fd674824345a3a6ef544f759c4feebaf77a1817414467f7",
       "spec_version": "1.2"
     },
     {
@@ -665,7 +677,7 @@
     {
       "path": "tools/templates/base.html",
       "category": "operating",
-      "sha256": "a8507b6c033b564e1e26bcf57c603ec68575b1a271f802962fe38d53e428e3ee",
+      "sha256": "1083b7760ffa5a56d9d140a01f7e84b6f7aa3cfa716e33bb446b6c605a73de85",
       "spec_version": "1.2"
     },
     {
@@ -681,15 +693,21 @@
       "spec_version": "1.2"
     },
     {
+      "path": "tools/templates/inbox.html",
+      "category": "operating",
+      "sha256": "1506c9b1f18fff7a2fbc86ca71a1cf9a90267be63cc60470beeeb46d74e8b03c",
+      "spec_version": "1.2"
+    },
+    {
       "path": "tools/templates/index.html",
       "category": "operating",
-      "sha256": "8e8bc821e4b320d1647daf08976d025e2137279798fe494c56a65c0418270c66",
+      "sha256": "6b6b71eaf5b8b4fb855f3107330d39d087ad40075f8a8456416e0d20b3dbb67f",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "9bb4065c2653a817b38f3ba4128d92741d72ebc274696472d7176d1bb5b3a115",
+      "sha256": "c40ec8d03c1c96de409b0fb056e1207fabf86274a6d5ee685d59c85aa1df9482",
       "spec_version": "1.2"
     },
     {
@@ -699,9 +717,15 @@
       "spec_version": "1.2"
     },
     {
+      "path": "tools/templates/review.html",
+      "category": "operating",
+      "sha256": "d9503478ce2db58a7e3270aa1cb3171e570949ae29df673248635cc4b7afd2ed",
+      "spec_version": "1.2"
+    },
+    {
       "path": "tools/templates/source.html",
       "category": "operating",
-      "sha256": "f50602f8550c74ea72d636624d2d53ebe1e7c089381d079569738f07ca5e3f57",
+      "sha256": "903d48b806d631fca2b040a6190341e25aec9220f2a339b1c8745d9d4531e5dd",
       "spec_version": "1.2"
     },
     {
@@ -720,6 +744,30 @@
       "path": "tools/templates/view.html",
       "category": "operating",
       "sha256": "468cf1423403c6fb0d97c38941de0f90700041e5109b2a9276b31b483d5b47f8",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/templates/workbench/_modals.html",
+      "category": "operating",
+      "sha256": "b14a4b0bf453a7a411ed3f13267179be6bad55e6b5df5b429b5a51ef276327b1",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/templates/workbench/_servebar.html",
+      "category": "operating",
+      "sha256": "1e9a44e1d1e07c8b66c10f367253a97590c1e29f23fbd3c7dd577941b5c014e3",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/templates/workbench/workbench.css",
+      "category": "operating",
+      "sha256": "ff4151a6837c882af0ad0472e95dff97832e0073388e780dcb0c7830f3c3f800",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/templates/workbench/workbench.js",
+      "category": "operating",
+      "sha256": "a9550bd0edd8b4934c9d5bbb4040fb0e86ca267556c71e00830ca319cee98845",
       "spec_version": "1.2"
     },
     {
