@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ site_title }}{% endblock %}</title>
 {% if workbench %}<meta name="fha-csrf" content="{{ csrf_token }}">{% endif %}
+{% if workbench %}<meta name="fha-provisional" content="{{ provisional_vital_fields }}">{% endif %}
 {# Design system (see docs/DESIGN.md). styles.css is the source of truth;
    custom.css is linked last so local overrides win. Both are copied into
    the site's assets/ by fha site (_copy_assets), so pages stay offline. #}

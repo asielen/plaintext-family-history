@@ -27,6 +27,19 @@
     return m ? m.getAttribute('content') : '';
   }
 
+  /* Which vitals get a provisional (unsourced) slot - read once at startup
+     from the <meta name="fha-provisional"> tag site.py renders from
+     _lib.PROVISIONAL_VITAL_FIELDS, so this list cannot drift from the
+     server's copy. Falls back to the historical birth/death pair when the
+     meta tag is missing (a non-workbench page, or an older build) so the
+     milestone router still degrades safely. */
+  var PROVISIONAL_FIELDS = (function () {
+    var m = document.querySelector('meta[name="fha-provisional"]');
+    var content = m ? m.getAttribute('content') : '';
+    var fields = (content || '').trim().split(/\s+/).filter(function (s) { return s; });
+    return fields.length ? fields : ['birth', 'death'];
+  })();
+
   function $all(sel, root) {
     return Array.prototype.slice.call((root || document).querySelectorAll(sel));
   }
@@ -61,8 +74,14 @@
     });
   }
 
-  function showStep(modal, idx) {
-    $all('.wb-step', modal).forEach(function (s, i) { s.hidden = (i !== idx); });
+  /* Show one `.wb-step` and hide the rest. `target` is either a zero-based
+     wizard-step index (the static form steps) or the step element itself
+     (the server-rendered preview/apply/error result, built on the fly by
+     ensurePreviewStep - it has no fixed index to name). */
+  function showStep(modal, target) {
+    $all('.wb-step', modal).forEach(function (s, i) {
+      s.hidden = (typeof target === 'number') ? (i !== target) : (s !== target);
+    });
     modal.scrollIntoView({ block: 'nearest' });
   }
 
@@ -223,66 +242,66 @@
       '<button type="button" class="btn btn-sm" data-wb-copy>copy</button></div>';
   }
 
-  function runPreview(modal) {
-    var c = collect(modal);
-    if (!c.verb) return;
-    if (c.verb === '__unwritable__') {
-      var host0 = ensurePreviewStep(modal);
-      host0.innerHTML = '<p class="wb-kicker">No provisional slot</p>' +
-        '<h3>This one needs a source</h3>' +
-        '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
-        'Record it with a source (it becomes a claim), or leave it as a research note ' +
-        'until a record backs it.</span></pre>' +
-        '<div class="wb-modal-foot"><button type="button" class="btn" data-wb-back>&larr; Back</button>' +
-        '<button type="button" class="btn btn-primary" data-wb-close>Close</button></div>';
-      showStepEl(modal, host0);
-      return;
+  /* The shared body of the two-step /api/run flow. `dryRun` picks which of
+     the two calls this is and, since the two calls differ only in wording
+     and which buttons/follow-up appear (never in the request/response
+     handling), also picks the right copy and footer for the result:
+       preview (dryRun=true)  - collects fresh args every time, refuses a
+         blank or '__unwritable__' verb before ever calling the server, and
+         stashes the collected {verb, args} on the modal (`modal._run`) so
+         the apply step reuses exactly what was previewed rather than
+         re-reading the form (which may have changed under the human's
+         cursor while the request was in flight).
+       apply (dryRun=false)   - reuses `modal._run` when present (falling
+         back to a fresh collect only if apply is somehow invoked without a
+         prior preview), and reloads the page on success so the rebuilt
+         snapshot (serve invalidates it after any write) is what the human
+         sees next. */
+  function runVerb(modal, dryRun) {
+    var c = dryRun ? collect(modal) : (modal._run || collect(modal));
+    if (dryRun) {
+      if (!c.verb) return;
+      if (c.verb === '__unwritable__') {
+        var host0 = ensurePreviewStep(modal);
+        host0.innerHTML = '<p class="wb-kicker">No provisional slot</p>' +
+          '<h3>This one needs a source</h3>' +
+          '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
+          'Record it with a source (it becomes a claim), or leave it as a research note ' +
+          'until a record backs it.</span></pre>' +
+          '<div class="wb-modal-foot"><button type="button" class="btn" data-wb-back>&larr; Back</button>' +
+          '<button type="button" class="btn btn-primary" data-wb-close>Close</button></div>';
+        showStep(modal, host0);
+        return;
+      }
     }
     setBusy(modal, true);
-    apiRun(c.verb, c.args, true).then(function (result) {
+    apiRun(c.verb, c.args, dryRun).then(function (result) {
       setBusy(modal, false);
-      modal._run = c;
+      if (dryRun) modal._run = c;
       var host = ensurePreviewStep(modal);
       var ok = result.ok !== false && (result._http === 200);
       host.innerHTML =
-        '<p class="wb-kicker">Dry run - nothing written yet</p>' +
-        '<h3>' + (ok ? 'Preview' : 'Cannot apply yet') + '</h3>' +
+        '<p class="wb-kicker">' + (dryRun ? 'Dry run - nothing written yet' : (ok ? 'Applied' : 'Not applied')) + '</p>' +
+        '<h3>' + (dryRun ? (ok ? 'Preview' : 'Cannot apply yet') : (ok ? 'Done' : 'Nothing was written')) + '</h3>' +
         '<pre class="wb-diff">' + renderMessages(result) + '</pre>' +
         cliBlock(result) +
         '<div class="wb-modal-foot">' +
-        '<button type="button" class="btn" data-wb-back>&larr; Back</button>' +
-        '<button type="button" class="btn" data-wb-close>Cancel</button>' +
-        (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>Apply</button>' : '') +
+        (dryRun
+          ? ('<button type="button" class="btn" data-wb-back>&larr; Back</button>' +
+             '<button type="button" class="btn" data-wb-close>Cancel</button>' +
+             (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>Apply</button>' : ''))
+          : ('<button type="button" class="btn btn-primary" data-wb-close>' + (ok ? 'Done' : 'Close') + '</button>')) +
         '</div>';
-      showStepEl(modal, host);
+      showStep(modal, host);
+      if (!dryRun && ok) setTimeout(function () { location.reload(); }, 700);
     }).catch(function (e) {
       setBusy(modal, false);
       showError(modal, (e && e.wbServerText && e.message) || 'Could not reach fha serve - is it still running?');
     });
   }
 
-  function runApply(modal) {
-    var c = modal._run || collect(modal);
-    setBusy(modal, true);
-    apiRun(c.verb, c.args, false).then(function (result) {
-      setBusy(modal, false);
-      var host = ensurePreviewStep(modal);
-      var ok = result.ok !== false && (result._http === 200);
-      host.innerHTML =
-        '<p class="wb-kicker">' + (ok ? 'Applied' : 'Not applied') + '</p>' +
-        '<h3>' + (ok ? 'Done' : 'Nothing was written') + '</h3>' +
-        '<pre class="wb-diff">' + renderMessages(result) + '</pre>' +
-        cliBlock(result) +
-        '<div class="wb-modal-foot">' +
-        '<button type="button" class="btn btn-primary" data-wb-close>' + (ok ? 'Done' : 'Close') + '</button>' +
-        '</div>';
-      showStepEl(modal, host);
-      if (ok) setTimeout(function () { location.reload(); }, 700);
-    }).catch(function (e) {
-      setBusy(modal, false);
-      showError(modal, (e && e.wbServerText && e.message) || 'Could not reach fha serve - is it still running?');
-    });
-  }
+  function runPreview(modal) { runVerb(modal, true); }
+  function runApply(modal) { runVerb(modal, false); }
 
   function ensurePreviewStep(modal) {
     var host = modal.querySelector('.wb-step-dynamic');
@@ -293,10 +312,6 @@
     }
     return host;
   }
-  function showStepEl(modal, el) {
-    $all('.wb-step', modal).forEach(function (s) { s.hidden = (s !== el); });
-    modal.scrollIntoView({ block: 'nearest' });
-  }
   function setBusy(modal, busy) {
     $all('button', modal).forEach(function (b) { b.disabled = busy; });
   }
@@ -305,7 +320,7 @@
     host.innerHTML = '<p class="wb-kicker">Error</p><h3>Something went wrong</h3>' +
       '<pre class="wb-diff"><span class="del">' + esc(msg) + '</span></pre>' +
       '<div class="wb-modal-foot"><button type="button" class="btn btn-primary" data-wb-close>Close</button></div>';
-    showStepEl(modal, host);
+    showStep(modal, host);
   }
 
   /* --- per-modal (verb, args) builders ------------------------------------ */
@@ -347,21 +362,25 @@
       var subject = args.person_id;
       var typeMap = { born: 'birth', died: 'death', married: 'marriage',
                       baptized: 'baptism', buried: 'burial' };
+      var claimType = typeMap[mtype] || mtype;
       if (source) {
         var people = [subject];
         if (mtype === 'married' && spouse) people.push(spouse);
-        var out = { source_id: source, claim_type: (typeMap[mtype] || mtype),
-                    value: (args.mvalue || (typeMap[mtype] || mtype) + ' of ' + (args.subject_name || subject)),
+        var out = { source_id: source, claim_type: claimType,
+                    value: (args.mvalue || claimType + ' of ' + (args.subject_name || subject)),
                     status: 'accepted' };
         if (date) out.date = date;
         if (place) { if (/^L-/.test(place)) out.place = place; else out.place_text = place; }
         out.persons = people.join(',');
         return { verb: 'claim.new', args: out };
       }
-      if (mtype === 'born' || mtype === 'died') {
+      /* Provisional (unsourced) slot: driven by PROVISIONAL_FIELDS (the meta
+         tag mirroring _lib.PROVISIONAL_VITAL_FIELDS), not a hardcoded
+         born/died literal - a policy change on the server side (e.g. adding
+         a provisional field some day) needs no matching edit here. */
+      if (PROVISIONAL_FIELDS.indexOf(claimType) !== -1) {
         var e = { person_id: subject };
-        if (mtype === 'born' && date) e.birth = date;
-        if (mtype === 'died' && date) e.death = date;
+        if (date) e[claimType] = date;
         return { verb: 'person.estimate', args: e };
       }
       if (mtype === 'married') {
@@ -581,7 +600,7 @@
             '<h3>' + (ok ? 'Added' : 'Upload refused') + '</h3>' +
             '<pre class="wb-diff">' + renderMessages(result) + '</pre>' +
             '<div class="wb-modal-foot"><button type="button" class="btn btn-primary" data-wb-close>Done</button></div>';
-          showStepEl(modal, host);
+          showStep(modal, host);
           if (ok) setTimeout(function () { location.reload(); }, 700);
         }).catch(function () { setBusy(modal, false); showError(modal, 'Upload failed - is fha serve still running?'); });
     });

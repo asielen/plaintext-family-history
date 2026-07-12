@@ -1110,11 +1110,15 @@ class FamilyChartTests(_Base):
         self.assertIn('Margaret Cole', page)
         self.assertIn('Ethel Hartley', page)
         self.assertIn('Calvin Hartley', page)
-        self.assertIn('Family</summary>', page)          # chart heading, no longer "Ancestors"
+        # Chart heading tracks the same spouse-or-children test the SVG
+        # aria-label uses (site.py chart_title): a family chart says "Family".
+        self.assertIn('Family</summary>', page)
 
     def test_ancestor_only_pedigree_unchanged_without_family(self):
         # No spouse/children at all: today's ancestor-only shape is preserved
-        # exactly - plain `pedigree` class, no compact family variant.
+        # exactly - plain `pedigree` class, no compact family variant, and the
+        # heading reads "Ancestors" (chart honesty: no spouse/child column
+        # means it isn't a family chart).
         self._seed_person('p-aaaaaaaaaa', 'Child Carl', surname='Carl')
         self._seed_person('p-bbbbbbbbbb', 'Parent Pat', surname='Pat')
         self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
@@ -1123,6 +1127,7 @@ class FamilyChartTests(_Base):
         page = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('class="pedigree"', page)
         self.assertNotIn('pedigree-family', page)
+        self.assertIn('Ancestors</summary>', page)
 
     def test_family_chart_renders_with_no_known_ancestors(self):
         # Win 1 drops the old "only if >=1 known ancestor" gate: a subject
@@ -1528,6 +1533,10 @@ class WorkbenchModeTests(_Base):
         self.assertIn('estimate - unsourced', wb)
         self.assertIn('fha serve', wb)          # serve bar
         self.assertIn('name="fha-csrf"', wb)     # CSRF meta
+        # One source of truth (_lib.PROVISIONAL_VITAL_FIELDS): the same set that
+        # decides which vitals get a provisional slot is handed to workbench.js
+        # as a meta tag, sorted so the content is deterministic across runs.
+        self.assertIn('<meta name="fha-provisional" content="birth death">', wb)
         # Standalone build of the SAME archive: none of it.
         import shutil as _sh
         _sh.rmtree(self.out_dir, ignore_errors=True)
@@ -1536,6 +1545,7 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('estimate - unsourced', std)
         self.assertNotIn('fha serve', std)
         self.assertNotIn('name="fha-csrf"', std)
+        self.assertNotIn('name="fha-provisional"', std)
 
     def test_no_workbench_chrome_leaks_into_standalone(self):
         self._seed_person('p-cccccccccc', name='Plain Person', living='false',
@@ -1545,7 +1555,7 @@ class WorkbenchModeTests(_Base):
         for rel in ('index.html', 'persons/p-cccccccccc.html', 'sources/s-1111111111.html'):
             out = self._read(rel)
             for leak in ('fha serve', 'name="fha-csrf"', 'estimate - unsourced',
-                         'workbench.js', 'data-wb-open', '/root/'):
+                         'workbench.js', 'data-wb-open', '/root/', 'name="fha-provisional"'):
                 self.assertNotIn(leak, out, f'{leak!r} leaked into standalone {rel}')
 
     def test_milestone_modal_lists_cited_sources_and_paste_option(self):

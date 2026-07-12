@@ -33,8 +33,6 @@
 .wb-search input::placeholder { color: var(--muted); }
 .wb-search-results { position: absolute; top: 100%; right: 0; width: 24rem; max-width: 80vw;
   z-index: 50; margin-top: 2px; }
-ul.wb-results { list-style: none; padding: 0; margin: var(--space-3) 0; }
-ul.wb-results li { border-top: 1px solid var(--rule); padding: var(--space-2) 0; margin: 0; }
 
 /* ---- kind chip ---- */
 .wb-kind { font-family: var(--font-sans); font-size: 10px; font-weight: 600;
@@ -57,11 +55,6 @@ a.wb-add { font-family: var(--font-sans); font-size: var(--text-xs); color: var(
   border-radius: 999px; white-space: nowrap; }
 a.wb-add:hover { border-color: var(--accent); }
 
-/* clickable empty pedigree node */
-.ped-empty[data-wb-open] { cursor: pointer; }
-.ped-empty[data-wb-open]:hover { border-color: var(--accent); }
-.ped-empty[data-wb-open]:hover .ped-name { color: var(--accent); }
-
 /* ---- how-to hint ---- */
 .wb-hint { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
   border-left: 2px solid var(--rule-strong); padding: var(--space-1) 0 var(--space-1) var(--space-3);
@@ -76,11 +69,6 @@ a.wb-add:hover { border-color: var(--accent); }
 .wb-record code { font-size: 0.95em; word-break: break-all; }
 .wb-record a { color: var(--accent); }
 
-.wb-pointer { font-family: var(--font-sans); font-size: var(--text-xs);
-  border: 1px solid var(--rule-strong); background: var(--surface);
-  padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-5);
-  max-width: var(--measure); }
-
 /* ---- review queue ---- */
 .queue-item { border-top: 1px solid var(--rule); padding: var(--space-4) 0 var(--space-5); }
 .queue-item:last-of-type { border-bottom: 1px solid var(--rule); }
@@ -93,7 +81,6 @@ a.wb-add:hover { border-color: var(--accent); }
 .btn-sm { padding: 4px 12px; font-size: var(--text-xs); }
 .wb-later { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
   margin-left: var(--space-2); }
-.wb-result { font-family: var(--font-sans); font-size: var(--text-sm); }
 
 tr.wb-suggested td { background: color-mix(in srgb, var(--ochre) 8%, transparent); }
 tr.wb-row-actions td { padding-top: var(--space-2); }
@@ -176,12 +163,6 @@ ul.wb-lookup-results li:first-child { border-top: none; }
 .wb-milestone-add { margin: calc(-1 * var(--space-3)) 0 var(--space-5); }
 .wb-estimate { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
   font-style: italic; margin-left: var(--space-2); }
-
-/* ---- family chart ---- */
-.wb-famchart .ped-node { padding: 2px 8px; }
-.wb-famchart .ped-name { font-size: 12px; line-height: 1.1; -webkit-line-clamp: 2; }
-.wb-famchart .ped-dates { font-size: 10px; }
-.pedigree-note { color: var(--muted); font-size: var(--text-sm); margin-top: var(--space-2); }
 
 /* ---- inbox ---- */
 .wb-drop { border: 2px dashed var(--rule-strong); background: var(--surface);

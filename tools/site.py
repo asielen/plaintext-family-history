@@ -130,9 +130,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    ASSET_ROOT_ALIASES,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    PROVISIONAL_VITAL_FIELDS,
     Result,
     FhaConfigError,
     apply_private_fence,
@@ -1314,7 +1316,7 @@ class _SiteBuilder:
             target = resolved.resolve()
         except OSError:
             return None
-        for alias in ('photos', 'documents', 'inbox'):
+        for alias in ASSET_ROOT_ALIASES:
             try:
                 base = resolve_path(alias, self.fha_config, self.archive_root).resolve()
             except Exception:
@@ -1550,6 +1552,13 @@ class _SiteBuilder:
         has_pedigree = len(ped_labels) > 1 or wings['spouses'] or wings['children']
         pedigree = (self._markup(_render_pedigree_svg(ped_labels, wings['spouses'], wings['children']))
                    if has_pedigree else None)
+        # Same condition _render_pedigree_svg uses for its SVG aria-label (a
+        # sighted reader on the page and a screen-reader user on the SVG must
+        # be told the same truth about what the chart contains): a subject
+        # with a recorded spouse or child gets the family-chart heading, an
+        # ancestors-only chart gets the honest 'Ancestors' heading instead of
+        # the old unconditional 'Family'.
+        chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
         fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
 
         ctx = {
@@ -1558,6 +1567,7 @@ class _SiteBuilder:
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
             'pedigree': pedigree,
+            'chart_title': chart_title,
             'fan': fan,
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
@@ -1673,7 +1683,11 @@ class _SiteBuilder:
         # runs in standalone or plain --linked: the published site stays
         # claims-only, so an unsourced estimate never leaves the machine.
         if self.workbench:
-            for t in ('birth', 'death'):
+            # One source of truth (AGENTS_TOOLING.md symmetry rule): which vitals
+            # get a provisional slot is `_lib.PROVISIONAL_VITAL_FIELDS`, not a
+            # literal repeated here. Sorted for determinism - a frozenset's
+            # iteration order is not guaranteed stable across runs.
+            for t in sorted(PROVISIONAL_VITAL_FIELDS):
                 if t in by_type:
                     continue   # a sourced claim wins - the estimate is superseded
                 est = self._provisional_vital(pid, t)
@@ -3028,6 +3042,12 @@ class _SiteBuilder:
             # build, so no chrome can leak into a shared snapshot.
             if self.workbench:
                 full['workbench'] = True
+                # Which vitals get a provisional (unsourced) slot, computed once
+                # from _lib.PROVISIONAL_VITAL_FIELDS and handed to workbench.js
+                # via a meta tag - the client-side milestone router reads this
+                # instead of hardcoding its own birth/death literal, so the two
+                # halves of the milestone feature cannot drift apart.
+                full['provisional_vital_fields'] = ' '.join(sorted(PROVISIONAL_VITAL_FIELDS))
                 full.update(self.workbench_context)
             full.update(ctx)
             path.parent.mkdir(parents=True, exist_ok=True)
