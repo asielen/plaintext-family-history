@@ -41,6 +41,28 @@ Switch per session (`/model`); the tiers are roles, not vendors - any harness's 
 
 ---
 
+## 1b. `fha serve` - the localhost workbench front door (plan 17)
+
+The agentic CLI harness (§1) is one front door onto the archive. `fha serve` is a second, deliberately narrow one: a **non-load-bearing front door onto the same headless engines** every CLI command drives (SPEC §5's "the tools are a headless core" principle - the engine/interface split TOOLING §1 specifies as `run_*`/`_cmd_*`). It adds no new capability and owns no truth of its own; it is a browser window over the exact same `fha` commands a human or an agent would otherwise type.
+
+**Not a daemon.** Human-started, foreground, 127.0.0.1-only, no login, no network beyond the loopback socket, no file watcher. It does not run unattended, does not accept connections from any other machine, and an AI agent never starts it on its own - a person double-clicks `serve.cmd` or types `fha serve` because *they* want the browser view open.
+
+**The parity rule.** Every button in the workbench is exactly one documented `fha` command - the same command this document and TOOLING.md §17 already specify, run in-process through its `run_*` engine. Every apply echoes the literal CLI command it just ran, so nothing the workbench does is a hidden or undocumented capability; a human reading the echo can reproduce the action verbatim at a terminal, and a skill or another harness never needs to learn a second interface.
+
+**The human gate is a click, not a method (SPEC §6).** SPEC §6 is explicit that the review gate is the human's *decision*, not any one editing method - "a typed instruction today, a click later." The workbench honors that literally: every mutating action is dry-run-previewed first, in plain English, and only a second, explicit confirmation applies it (the server itself defaults every request to preview unless the confirm step says otherwise, defense in depth behind the UI). A `suggested` → `accepted` claim review through the workbench still stamps `reviewed:` exactly as the CLI does - the click *is* the human decision, carrying the same weight as directing the CLI.
+
+**The mechanical/generative boundary.** `fha serve` never reads evidence and never drafts anything from it - there is no button that mints a `suggested` claim by reading a source's text or an image. Stage B drafting (entity resolution, claim extraction, biography prose) stays exactly where TOOLING_INTERFACE.md §2 puts it: with the AI skills, run from the agentic harness. The workbench only ever runs deterministic engines a human (or a skill acting on the human's explicit say-so) already decided to invoke - it is Stage A/C infrastructure with a browser skin, never Stage B.
+
+**Refresh-on-use, not a watcher.** The workbench's read-side view is a linked, unredacted snapshot of `fha site`'s own generator, rebuilt only when a page is requested AND the record trees have changed since the last build (a cheap mtime probe) - never on a background timer or filesystem watch. This keeps the implementation simple and the guarantee simple: what you see is never older than your last click, and there is no daemon polling the disk between sessions.
+
+**Disposability - killing it loses nothing.** The only thing `fha serve` writes outside the record tree its engines mutate is its own snapshot cache under `.cache/serve/` - a rebuildable artifact, same as `.cache/index.sqlite` (the archive test's disposability criterion, SPEC §5). `fha site` never depends on `fha serve` having run; deleting `serve.py` and `.cache/serve/` changes nothing about the archive. Stopping the process (Ctrl-C, or closing the window) is always safe - there is no shutdown sequence to get wrong, because there is no state to lose.
+
+**Privacy is unchanged.** The workbench's read side is the **linked** view (real archive paths, unredacted - a local developer/owner preview, per TOOLING §12) and never leaves the machine it runs on (127.0.0.1 only, no network). Sharing anything outward still goes through the one sanctioned path, `fha site --standalone` (or the `share-and-export` skill), exactly as it did before `fha serve` existed; the workbench adds a convenient front end onto that command, not a second export surface.
+
+Full command surface, security model, and flag reference: TOOLING §17 and `tools/README.md`'s "fha serve - implementation status".
+
+---
+
 ## 2. The skills (the working surface)
 
 Skills are the layer a genealogist actually touches - most `fha` commands are what skills shell into (TOOLING.md §17). Each skill is a `.claude/skills/{name}/SKILL.md`: portable instructions plus `fha` invocations, no harness APIs. A skill's job is the *judgment* around a deterministic tool - which claim to draft, which name resolves to which person, where to look next - never the bookkeeping the tool already owns.
@@ -76,3 +98,5 @@ The 2026-07 usability review added three skills and the `today` connection-react
 The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all twelve SKILL.md files, including the 2026-07 usability-review wave (`find-photos`, `share-and-export`, `photo-context` - the last closing the one-entry backlog). Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
 
 The workbench harness configuration (§1) is not "built" in the tool-suite sense - it is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script). Its "build" is keeping those conventions accurate as the harness landscape changes.
+
+`fha serve` (§1b, plan 17 Wave 3) IS built in the tool-suite sense - a real tool with real tests (`tools/serve.py`, `tests/test_serve.py`), not a convention. Status: ✓ - the localhost workbench, `serve.cmd` shipped by `fha install`/`fha update-tools`. Full flag/security/verb reference: `tools/README.md`'s "fha serve - implementation status".

@@ -190,6 +190,12 @@ suggestion into a fact** - the assistant can never do it on its own.
 
 That's a filed record. You just did the core loop of the whole system.
 
+**Prefer clicking to typing?** Run `fha serve` (or double-click `serve.cmd` in your archive
+folder) to open the same review queue and inbox in a private browser tab on your own machine -
+every button there is the same command you'd otherwise ask the assistant for, shown to you
+before it writes anything. Nothing about the archive changes because you used it; close the
+window and pick up in the assistant exactly where you left off.
+
 ---
 
 ## Doing it by hand (no tools, no IDs)

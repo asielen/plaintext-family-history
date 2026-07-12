@@ -109,7 +109,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "50b262fd8857c76b844f8a739da53d002662b57867c32b44ec969d691f8beb96",
+      "sha256": "50a5bc222723df6924293302e757d4f68dcdf461b8fa4ee06a259ee8b621eefd",
       "spec_version": "1.2"
     },
     {
@@ -145,31 +145,31 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "a1e7f475ea5857d4d5ad4ee17ed98aeafa3b2786bde393b8cfde651145eb6df5",
+      "sha256": "c41c7014d3af27a79d4f237e6f4b643936dfe8147d770b8559f576124a5cc2c3",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "f516353dbdcc1571973add3909cadd85aa656810706ad27f4e20621bcdc96e9c",
+      "sha256": "73142efef18aee9aa375a32511e5029e526c6d8bbd290ca9c8f7fefc49ae0a32",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "d4b80d4608ae762e6eefc46ef7a402f741273e25664706966655f0e8a155fa1c",
+      "sha256": "1b59acbb3680d91b68a0a333fcc2e04af0ab6cf805f953b48856cd34d3cddc8b",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "dc68e9c8fd099af68da25ccc7008b0c67e552c762c2ea0d4e3a34a996dcad87c",
+      "sha256": "2add03cb5f1f36818a05f9569a3f0ec79b0e7955588cab8993a102e926806095",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "848bc8f18493a79f0c6d710f7f4513991cc5bcc42adab2eb6e13d13ee8b6b7e3",
+      "sha256": "652ce93e0dfa69568ec9e4b18a37b57b6b069edabf53cfa7262f6e79b1477179",
       "spec_version": "1.2"
     },
     {
@@ -295,7 +295,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "e025770c849742d7e5f5015b3676a0bf87e7b6a7b9d49493f7eb8cc07a88174b",
+      "sha256": "36fc2e9ced5e91006190fbf11b257431a69d022a59d644edc217a65cad752df2",
       "spec_version": "1.2"
     },
     {
@@ -455,7 +455,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "050bcf32eff9d33952f27d8d00f2ed0481a3d083811e118dbf751713bcad6f45",
+      "sha256": "cf14c44c89f4aaf5f99a6a242f541fafc8e4283bc57aee4df97e7f69148c5532",
       "spec_version": "1.2"
     },
     {
@@ -551,7 +551,7 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "daf8dbd71a627afe79dc456aaa8e90476f80d48109fe4188ed14c41cd7d827f5",
+      "sha256": "0e4022810d76c6304c7af06daf7017755d98db706e2b8a69e112e91bc97da612",
       "spec_version": "1.2"
     },
     {
@@ -629,7 +629,7 @@
     {
       "path": "tools/report.py",
       "category": "operating",
-      "sha256": "6f718f7653edabc40b2f4840df9c7534e3cb2e2a54faceeadd01f5d9bbca3049",
+      "sha256": "84889c17cff4cce868bff5b42bf97b7c40581246e9dbb75a1b98cb1e723da457",
       "spec_version": "1.2"
     },
     {

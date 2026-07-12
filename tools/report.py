@@ -771,12 +771,14 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
     try:
         import places as _places_tool   # noqa: PLC0415 - optional embed, see docstring
     except ImportError:
-        return ['`fha places candidates` is not yet built (BUILD.md M6.2) - section deferred.']
+        return ['`fha places` could not be loaded (tools/places.py missing or damaged) - '
+                'section skipped. Run `fha update-tools` to restore it.']
 
     try:
         result = _places_tool.run_candidates(archive_root, fha_config)
     except AttributeError:
-        return ['`fha places candidates` is not yet built (BUILD.md M6.2) - section deferred.']
+        return ['`fha places` is out of date (no candidates engine) - section skipped. '
+                'Run `fha update-tools` to refresh the tools.']
 
     groups = result.get('groups') or []
     if not groups:

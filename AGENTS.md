@@ -178,14 +178,26 @@ source, a single claim, a person, or a `name_variants` entry (a private prior na
 Prefer `fha` tools over manual operations; if a tool does not exist yet, do the task by hand following SPEC and say so.
 
 ```
+fha serve [--port N]         human-started localhost workbench - a browser front door onto
+                            these same commands (dry-run -> confirm, CLI echoed). Agents do
+                            not start it unasked; killing it loses nothing.
 fha lint                     verify archive against spec - run after any batch of edits
 fha index                    rebuild the SQLite query surface (.cache/index.sqlite)
 fha id mint P|S|C|L|H        mint verified IDs
 fha stubs                    create stubs for unresolved person references
-fha claim <C-id> --status …  the review write-back: move a claim's status and stamp
-                            reviewed: (only the human moves a claim to accepted)
+fha claim <C-id> …           the review write-back: move a claim's status and/or correct
+                            a field, stamp reviewed: (only the human moves a claim to accepted)
+fha claim new --source S-id --type … --value …    mint a brand-new claim onto a source by hand
+                            (defaults --status accepted; AI callers pass --status suggested)
 fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
                             decision (xref/cooccur/dismiss/place/discovery/draft/merge)
+fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
+fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>   unsourced family-tie
+                            belief (always status: hypothesis)
+fha person estimate <P-id> --birth|--death …      provisional, unsourced vitals estimate
+fha person edit|note <P-id> --section … --text …  bounded prose write to Biography/Stories/
+                            Research Notes (edit replaces/appends; note is append-only)
+fha source note <S-id> --text …                   append a note to a source's ## Notes
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
 fha views timeline|sources-index|brackets     regenerate views (--format html for a
@@ -198,6 +210,8 @@ fha find <ID|text>           locate anything: record + assets + citations for an
                             FTS across records, notes, transcripts, photo captions
 fha find --related <ID>      neighborhood of any ID - people/places/sources/claims
                             adjacent to a person, place, source, claim, or hypothesis
+fha find --json <ID|text>    machine-readable result list ([{id,type,label,detail}]);
+                            --kind/--limit narrow it
 fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
 fha packet <P-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +

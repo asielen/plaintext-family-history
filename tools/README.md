@@ -41,6 +41,7 @@ read the same structured result (TOOLING §1).
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated - transcript search deferred (D7) |
 | `fha search <words>` | `find.py` | ✓ alias for `fha find --text`; positional phrase joined with spaces (`fha search rose hartley`), same engine/output |
 | `fha find --related <ID> [--date EDTF]` | `find.py` | ✓ BUILD.md M4.3 (D4) - neighborhood query for all five ID types, plus a standalone `--related --date EDTF` time slice. Requires a real index (exit 3 if absent/unreadable - no tree-scan fallback, unlike find_by_id) |
+| `fha find --json <ID\|text> [--kind K,K…] [--limit N]` | `find.py` | ✓ plan 17 - machine-readable result list (`[{id, type, label, detail}]`) instead of a human report; a ranked search over aliases/persons/sources/places/notes_fts, deduped by id (exact > prefix > substring tiers). `--kind` narrows to `person,source,place,hypothesis,claim,text` (comma list; default every kind); `--limit` caps the count (default 20). Same absent/unreadable-index hard-error contract as `--related` (no tree-scan fallback); not yet combinable with `--related` (refused with a plain message naming the supported combinations) |
 | `fha relate <P-A> <P-B>` | `relate.py` | ✓ blood relationship (LCA over genetic edges: cousin/removal/lineal/aunt-uncle) + shortest social path (BFS over all edges); `--json`; structured `Result`. Requires a real index (exit 3 if absent/unreadable). ⚑ `--include-hypotheses` deferred (index derives only accepted edges) |
 | `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher; root resolves through the shared `_lib.resolve_root_arg` guard (`--root` without fha.yaml is refused, exit 3, nothing created) |
 
@@ -138,27 +139,40 @@ and org-recurrence grouping - without needing a full archive fixture or `exiftoo
 `tests/test_find.py` follows the same synthetic-index pattern for `fha find --related`:
 all five ID-type neighborhoods, the standalone and combined `--date` forms, the
 `--related` dispatch sentinel (typed-with-no-value vs. not-typed-at-all), and the
-absent-index/invalid-ID/invalid-EDTF failure paths.
+absent-index/invalid-ID/invalid-EDTF failure paths. The same file's `--json` classes
+(`SearchJson*`, `RunFindJsonResultTests`, `JsonCliTests`) cover hit shape, bare-ID
+lookup, match-tier ranking, cross-source dedupe, `--kind`/`--limit` filtering, a
+text-query hit, the `Result` wrapper, and the CLI plumbing (including the
+`--json --related` refusal message).
 
 ## fha claim - implementation status
 
-The single deterministic claim-review write-back (TOOLING §3b, SPEC §8.2, AGENTS.md): move one
-claim's `status:` and stamp `reviewed:`. The human gate from the engine side - `review-claims`
-and the report's prompts drive it, but the accept decision is always the human's. The edit is a
-surgical text edit of the one named claim's entry inside its source `.md` `## Claims` block
-(sibling claims, key order, comments preserved); the claim is located by scanning `sources/`
-directly, so it works when `.cache/index.sqlite` is stale or absent. `run_claim` returns a
-`_lib.Result` with `changed[]`.
+The deterministic claim write-back pair (TOOLING §3b, SPEC §8.2/§8.4/§8.5, AGENTS.md): review an
+existing claim (`fha claim <C-id>`), or mint a brand-new one onto a source (`fha claim new`). The
+human gate from the engine side - `review-claims` and the report's prompts drive the review verb,
+but the accept decision is always the human's. Both verbs edit a source's `.md` `## Claims` block
+by surgical text edit (sibling claims, key order, comments preserved) and locate the source by
+scanning `sources/` directly, so they work when `.cache/index.sqlite` is stale or absent.
+`run_claim`/`run_claim_new` return a `_lib.Result` with `changed[]`.
 
 | Command | Flags | Status | Notes |
 |---|---|---|---|
-| `fha claim <C-id> --status accepted\|disputed\|rejected\|needs-review\|superseded` | `--reviewed DATE`, `--value "…"`, `--date EDTF`, `--root`, `--dry-run` | ✓ | The five `--status` choices are the SPEC §8.1 review outcomes. `--status accepted` always stamps `reviewed:` (the given `--reviewed`, else today) - only the human moves a claim to `accepted` (lint E006), and directing this tool *is* the human's decision; the tool never accepts on its own. `disputed`/`rejected`/`superseded` change status rather than delete (trail preserved; `disputed` = actively contested vs. a ruled-out `rejected`). `--value`/`--date` correct the claim in the same surgical edit; a YAML block-scalar `value:` is refused, not corrupted. The claim is located by its OWN `id:` key line with a parse-back cross-check, so an `id: C-…` quoted inside another claim's block scalar (`notes: \|`) never draws the edit onto the quoting claim. A pre-existing duplicate C-id refuses with the E001 repair path (`fha id mint C`), not the corruption warning. Missing C-id → exit 1; re-run `fha index` after a write |
+| `fha claim <C-id>` | `--status accepted\|disputed\|rejected\|needs-review\|superseded`, `--value "…"`, `--date EDTF`, `--type TYPE`, `--place L-id` \| `--place-text TEXT` (mutually exclusive), `--persons P-id[,P-id…]`, `--confidence high\|medium\|low`, `--reviewed DATE`, `--root`, `--dry-run` | ✓ | `--status` is now OPTIONAL - at least one of `--status`/`--value`/`--date`/`--type`/`--place`/`--place-text`/`--persons`/`--confidence` is required, so a field-only correction (fixing a typo'd `--value`, attaching `--persons`) needs no status move. The five `--status` choices are the SPEC §8.1 review outcomes; `--status accepted` still always stamps `reviewed:` (the given `--reviewed`, else today) - only the human moves a claim to `accepted` (lint E006), and directing this tool *is* the human's decision. `disputed`/`rejected`/`superseded` change status rather than delete (trail preserved). `--type` corrects the claim type (SPEC §8.2 vocabulary); changing TO `relationship` is refused (it needs a `roles:` map this command does not build - see `fha person relate`/`fha confirm cooccur`). `--place`/`--place-text` replace whichever of the pair is set. `--persons` REPLACES the whole `persons:` list (every id must already have a person record). `--confidence` sets the evidence-quality level (SPEC §8.5), independent of `--status`. A YAML block-scalar `value:` is refused, not corrupted. The claim is located by its OWN `id:` key line with a parse-back cross-check, so an `id: C-…` quoted inside another claim's block scalar (`notes: \|`) never draws the edit onto the quoting claim. A pre-existing duplicate C-id refuses with the E001 repair path (`fha id mint C`), not the corruption warning. Missing C-id → exit 1; re-run `fha index` after a write |
+| `fha claim new` | `--source S-id` (req), `--type TYPE` (req), `--value "…"` (req), `--date DATE`, `--place L-id` \| `--place-text TEXT`, `--persons P-id[,P-id…]`, `--subtype WORD`, `--status suggested\|accepted` (default `accepted`), `--confidence high\|medium\|low`, `--root`, `--dry-run` | ✓ plan 17 | Mints a brand-new claim onto an existing source's `## Claims` block. Not reachable through the ordinary `claim` subparser (its positional C-id shape would misparse `new` as a claim id) - `fha.py` intercepts `fha claim new …` before the flat parser ever sees it, the same early-interception pattern `fha gedcom import` uses. `--type relationship` is refused - it needs a `roles:` map this command does not build; use `fha person relate` (hypothesis) or `fha confirm cooccur` (sourced) instead. `--persons` is optional (a claim may legitimately be minted before its persons are linked; the result warns naming the follow-up). `--confidence`, when omitted, defaults from the source's `source_type` per SPEC §8.5 (`vital-record` → high, `interview` → low, everything else → medium), with a message naming what was chosen. Defaults to `--status accepted` - typing this command IS the review (`reviewed:` stamped to today automatically); an AI caller must pass `--status suggested` explicitly. `--date` accepts EDTF or clear plain words ("about 1880"). Every write funnels through the same claim-append helper `fha confirm cooccur` uses, so a rewrite that would corrupt the block is refused, never saved |
 
 Automated tests: `tests/test_claim.py` (stdlib `unittest`) covers the surgical-edit helpers and
 each status transition (the only target claim touched, comments preserved), plus the
 `accepted`-stamps-`reviewed` rule (explicit date and today-default), the block-scalar refusal,
 malformed/unknown-C-id refusals, a `--dry-run`-writes-nothing case, and an end-to-end
 `fha index` + `fha lint` integration check that the status change is reflected on a real archive.
+The field-extension classes (`FieldExtensionApplyTests`, `RunClaimFieldEditTests`) cover the
+now-optional `--status` (at least-one-flag-required refusal, each field edited alone and in
+combination, `--persons` list replacement, `--place`/`--place-text` mutual exclusion, and the
+relationship-type refusal). `RunClaimNewTests` and `ClaimNewCliRoutingTests` cover the mint path:
+each required/optional flag, the `--status` default and the `suggested` override, the
+source_type-based `--confidence` default (vital-record/interview/other), the relationship-type
+refusal, missing-source and empty-`--value` refusals, `--dry-run` writing nothing, and the
+`fha claim new` interception routing (including `python tools/claim.py new …`).
 
 ## fha confirm - implementation status
 
@@ -197,25 +211,87 @@ new W107/W115.
 
 ## fha person - implementation status
 
-The deterministic person-field write-back group (TOOLING §3c). One verb ships: `set-living`,
-the surgical edit of the `living:` flag every export redaction follows (SPEC §9/§19; `unknown`
-is treated as living). The record is located by scanning `people/` directly
-(`_lib.find_person_record_path`, shared with `fha confirm draft`), so a stale or absent index
-never blocks the write. Nothing flips the flag automatically - accepting a `death` claim only
-makes the `review-claims` skill *offer* this command.
+The deterministic person-field write-back group (TOOLING §3c). Six verbs ship:
+`set-living` (the `living:` flag every export redaction follows, SPEC §9/§19; `unknown`
+is treated as living); `new` (mint a stub for a person starting from nothing, plan 17);
+`relate` (jot an unsourced family-tie belief); `estimate` (provisional birth/death
+vitals); `edit` (replace/append a curated-profile prose section); and `note` (append-only
+Stories/Research Notes). Every verb locates its record by scanning `people/` directly
+(`_lib.find_person_record_path`, shared with `fha confirm draft`), so a stale or absent
+index never blocks a write. Nothing flips `living:` automatically - accepting a `death`
+claim only makes the `review-claims` skill *offer* the `set-living` command.
 
 | Command | Flags | Status | Notes |
 |---|---|---|---|
 | `fha person set-living <P-id> true\|false\|unknown` | `--root`, `--dry-run` | ✓ | Surgical one-line frontmatter edit: only the top-level `living:` value changes (trailing hand comment preserved, CRLF endings byte-faithful); a missing key is inserted after `name:` in stub field order. Pre-write guard re-parses the rewritten frontmatter (must parse; `living` = target; `id` unchanged; every other field present and value-identical) - any failure refuses with nothing written. Merged tombstone (`status: merged`) refuses and names the survivor (`merged_into`). Idempotent `already` no-op, exit 0. Success exits 0 with the `fha index` reminder as advice text; output states the privacy consequence in plain words. Exit 1 = P-id not found (+ `fha find` next step); exit 2 = argparse (bad value literal / bare `fha person`); exit 3 = invalid id shape, merged tombstone, guard refusal, unreadable/unwritable file |
+| `fha person new "Name"` | `--sex M\|F\|intersex\|unknown`, `--gender TEXT`, `--birth DATE`, `--death DATE`, `--root`, `--dry-run` | ✓ plan 17 | Mints one P-id and writes its stub under `people/stubs/` - the parity command behind every "+ add person" workbench button, and the deliberate counterpart to `fha stubs` (that tool mints stubs FOR references already unresolved in claims; this one mints a stub a human deliberately starts from nothing). `--sex` has no argparse `choices=` so an unrecognised value gets the plain, gender-glossed refusal message instead of argparse's bare "invalid choice" text (case-folded, so `m`/`M` both work). `--gender` is free text, omitted unless there is something to record. `--birth`/`--death` are PROVISIONAL, unsourced estimates (SPEC §9) - strict EDTF as-is, loose wording normalized with a plain gloss ("about 1870" → "recorded as 1870~"), anything unreadable refused with the two-example date error before anything is minted. Every input is validated BEFORE `mint_ids` draws an id, so a bad flag never burns a fresh P-id. `--dry-run` still draws a real id (so the preview's filename/content match a live run exactly) but never writes it to any file. Never overwrites an existing target (next-to-impossible after `mint_ids`'s own collision scan, but still a plain refusal, not a silent clobber) |
+| `fha person relate <P-id> (--parent\|--child\|--sibling\|--spouse) <P-id2>` | `--subtype WORD`, `--reciprocal`, `--root`, `--dry-run` | ✓ plan 17 | Appends one entry to the first person's `relationships:` list naming the second person and the role. Always writes `status: hypothesis` - there is no `--status` flag, because a sourced tie comes from an accepted `relationship` claim (`fha claim`/`fha confirm cooccur`), never from this command. `--subtype` names the nature of the bond (SPEC §8.2 kin vocabulary; `biological` is the default); an unrecognised word is a warning, not a refusal (free text is allowed, just flagged). `--reciprocal` also writes the mirrored entry on `P-id2` (parent↔child flips; sibling/spouse mirror as themselves); idempotency and the reciprocal write are checked independently per side, so re-running with `--reciprocal` after a plain call fills in just the missing mirror rather than refusing or duplicating. Self-relation refused. Exit 1 = either P-id not found (+ `fha find` next step); exit 3 = invalid relation/id shape, merged tombstone on either side |
+| `fha person estimate <P-id>` | `--birth DATE\|-`, `--death DATE\|-`, `--root`, `--dry-run` | ✓ plan 17 | Writes the provisional, unsourced `birth:`/`death:` estimate SPEC §9 documents as a normal starting state - superseded by an accepted vital claim once one exists. At least one of `--birth`/`--death` is required. `-` by itself clears a field (removes the line). Strict EDTF or loose human wording (`normalize_date`) accepted for either; both dates are validated BEFORE any file is touched, so a bad second date leaves the first one unwritten too. A field already recording the requested value (or already absent, for a clear) is a silent per-field no-op - the same idempotence rule as `set-living` |
+| `fha person edit <P-id> --section biography\|stories\|research (--text TEXT \| --file PATH)` | `--append`, `--root`, `--dry-run` | ✓ plan 17 | Replaces (default) or appends to one curated-profile prose section, creating it if missing; frontmatter and every other section are left byte-for-byte alone. Exactly one of `--text`/`--file` is required (no stdin mode). Replacing a section whose OLD text had a balanced `<!-- private -->` fence with new text that has none still writes, but warns and raises the exit code to `EXIT_WARNINGS` - dropping someone's redaction is easy to miss, so this is the one place the group escalates a warning past a plain message. Writing onto a `tier: stub` record is a gentle informational note, not a warning - a stub gaining its first prose is normal progress |
+| `fha person note <P-id> --section stories\|research --text TEXT` | `--root`, `--dry-run` | ✓ plan 17 | Append-only: adds `--text` as a new paragraph at the end of the section (creating it if missing); existing text is never rewritten or removed, and there is no `--append` flag to turn off (unlike `edit`, this command IS the append-only path). Refuses outright, before writing anything, when the section's existing text has an unclosed `<!-- private -->` fence - an unequal open/close count means the tool cannot tell which side of the redaction boundary the new paragraph belongs on |
 
-Automated tests: `tests/test_person.py` (stdlib `unittest`) covers each flip direction on a stub
-and a curated profile (full-text one-line-diff assertions, trailing-comment survival), a CRLF
-fixture (endings byte-identical outside the edited line), missing-key insertion (record parses,
-lint gains no new errors), the `already` no-op, every refusal arm (invalid id, unknown P-id +
-next step, merged tombstone naming the survivor, lookalike/broken-YAML frontmatter left
-byte-identical), `--dry-run` (diff shown, nothing written), the argparse choices error, bare
-`fha person`, a write under the WORKING_COPY banner, and a flip → `fha index` round-trip on a
-copy of `example-archive/` (persons.living reflects the new value).
+Automated tests: `tests/test_person.py` (stdlib `unittest`) covers each `set-living` flip
+direction on a stub and a curated profile (full-text one-line-diff assertions,
+trailing-comment survival), a CRLF fixture (endings byte-identical outside the edited
+line), missing-key insertion (record parses, lint gains no new errors), the `already`
+no-op, every refusal arm (invalid id, unknown P-id + next step, merged tombstone naming
+the survivor, lookalike/broken-YAML frontmatter left byte-identical), `--dry-run` (diff
+shown, nothing written), the argparse choices error, bare `fha person`, a write under the
+WORKING_COPY banner, and a flip → `fha index` round-trip on a copy of `example-archive/`
+(persons.living reflects the new value). `NewTests` covers `new`: the happy path's
+frontmatter shape, each option alone and combined, sex case-folding, the invalid-sex
+refusal (no write), loose-date normalization and its message, a bad second date writing
+nothing, `--dry-run` previewing content without writing, the mononym filename form, the
+never-overwrite guard, a blank name refusal, and gender passed through verbatim.
+`RelateTests` covers `relate`: creating vs. appending to an existing `relationships:` key,
+idempotent duplicates, `--reciprocal` (both files written, flipped mirror type, a rerun
+filling in only the missing side), `--subtype` written and mirrored, the default-to-
+hypothesis rule (no `--status` flag exists), unknown-subtype-warns-not-refuses, self-
+relation refusal, `--dry-run`, missing-person/missing-target exits, merged-tombstone
+refusals on either side, and CRLF round-tripping. `EstimateTests` covers `estimate`:
+inserting after `living:`, loose-date normalization, clearing with `-`, a no-op clear on
+an absent field, refusing plainly on nonsense without writing, requiring at least one
+flag, both fields together, a bad second date writing nothing, the already-recorded
+no-op, replacing a commented template placeholder, an accepted-claim warning that still
+writes, `--dry-run`, missing-person/merged-tombstone refusals, and CRLF round-tripping.
+`EditTests` and `NoteTests` cover `edit`/`note`: section replace vs. append, the private-
+fence-drop warning (`edit`) and the unclosed-fence refusal (`note`), `--text`/`--file`
+mutual requirement, empty-text refusal, the stub-gains-prose informational note, and the
+usual not-found/merged/`--dry-run` arms. `PersonNewVerbsCliTests` covers the CLI wiring
+for all five new verbs (argparse registration, help text, `--dry-run` plumbing).
+`tests/test_stubs.py` covers the shared `_lib.py` stub renderers (`stub_slug_name`,
+`stub_filename`, `render_stub_content`) `fha stubs` and `fha person new` both call - moved
+out of `stubs.py` so neither tool imports the other - proving every existing `fha stubs`
+call site still gets byte-identical output when the new sex/gender/birth/death keywords
+are omitted, the new keywords extend the record correctly in SPEC §9 field order when
+given, `sex` validates against the controlled vocabulary, and `stubs.py`'s thin wrappers
+(including the historical `(pid, name)` argument order) still work. Run with `python -m
+unittest tests.test_person -v` and `python -m unittest tests.test_stubs -v` from the
+repo root.
+
+## fha source - implementation status
+
+The deterministic source-record write-back group (TOOLING §3c sibling, plan 17). One verb
+ships: `note`, an append-only addition to a source's `## Notes` section - the safe one-line
+way to jot something down (from the phone, on the porch, mid-research-session) without
+risking the `## Claims` fence or the frontmatter above it. This module deliberately opens
+the `fha source` namespace for future source-field verbs, but only `note` ships now
+(mirrors `fha person`'s `set-living`-only opening at milestone 2). The record is located by
+scanning `sources/` directly (`_find_source_record_path`, a local sibling of
+`_lib.find_person_record_path`), so a stale or absent index never blocks the write.
+
+| Command | Flags | Status | Notes |
+|---|---|---|---|
+| `fha source note <S-id> --text TEXT` | `--root`, `--dry-run` | ✓ plan 17 | Appends TEXT as a new blank-line-separated paragraph at the END of `## Notes`, creating the heading at the end of the file if a hand-made record does not have one yet. Always append-only - an existing note is never edited, reordered, or removed, and no AI marker is written (a human types these words). Bounded to the Notes section by construction (only lines strictly between the `## Notes` heading and the next `##` heading, or end of file, ever change); a belt-and-braces regression guard re-checks the `## Claims` block before and after the edit and refuses if the edit somehow broke a previously-sound block (a Claims-less record - SPEC §14's "just taking notes? DELETE this whole ## Claims block" - is never penalized for staying Claims-less). `status: superseded` is not a reason to refuse - a superseded source still gets its audit trail. Reading/writing goes through `read_text_exact`/`write_text_exact`, so a CRLF-authored record churns only the lines the edit adds. More than one `## Notes` heading is refused (ambiguous insertion point) rather than guessed. Exit 0 = written/dry-run (the `fha index` reminder is advice text, never a warning); exit 1 = S-id not found (+ `fha find` next step); exit 3 = invalid id shape, blank `--text`, unreadable/unwritable file, duplicate heading, or the Claims-regression refusal |
+
+Automated tests: `tests/test_source.py` (stdlib `unittest`) covers the append contract (new
+paragraph, missing-heading creation at end of file, frontmatter/`## Claims` left
+byte-identical, CRLF byte-faithfulness, a `status: superseded` source still accepting
+notes) and every refusal arm (invalid id shape, blank `--text`, unknown S-id with the
+`fha find` next step, a duplicate `## Notes` heading); CLI-level checks ride `fha.main`
+(bare `fha source` prints help and exits 2, `--text` required at argparse, a live write
+through the dispatcher). Run with `python -m unittest tests.test_source -v` from the
+repo root.
 
 ## fha photoindex - implementation status
 
@@ -254,7 +330,7 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | Tool | File | Status |
 |---|---|---|
 | `fha process FILE|FOLDER [--type TYPE] [--title …] [--date DATE] [--slug SLUG] [--people P-IDS] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1-M7.4 - single-file documents and photos + `--more`; `--people` records known P-ids on photos at intake; folder triage + tier-1 variation detection (M7.3); `notes.md` bundle dissolution (M7.4); see "fha process - implementation status" below |
-| `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--ingest [DIR]] [--host] [--install-host [--extension-id ID] [--host-manifest-dir DIR] [--browser chrome\|edge]] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ MG1.1-MG1.3 - paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; MG2.1 `--ingest` sweeps browser-staged bundles into the inbox; MG2.3 `--host`/`--install-host` are the native-messaging host (§5.7); see "fha capture - implementation status" below |
+| `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--path PATH [--note TEXT]] [--ingest [DIR]] [--host] [--install-host [--extension-id ID] [--host-manifest-dir DIR] [--browser chrome\|edge]] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ MG1.1-MG1.3 - paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; MG2.1 `--ingest` sweeps browser-staged bundles into the inbox; MG2.3 `--host`/`--install-host` are the native-messaging host (§5.7); plan 17 `--path` registers a must-never-move asset; see "fha capture - implementation status" below |
 | `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.5 - one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; **hidden from the top-level `fha --help` listing** (no `help=` on its `add_parser`) as a one-owner migration, but fully runnable; see "fha convert-mining - implementation status" below |
 
 ## Implemented tools (milestone 8)
@@ -312,6 +388,72 @@ pointing to absent directories, WORKING_COPY marker present. Lints clean.
 | Tool | File | Status |
 |---|---|---|
 | `fha backup [--to PATH] [--include-assets] [--dry-run]` | `backup.py` | ✓ plan 04 - dated zip snapshot outside the archive, doctor stamp, restore = unzip; see "fha backup - implementation status" below |
+
+## Implemented tools (plan 17 - the `fha serve` workbench)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha serve [--port N] [--no-browser] [--root PATH]` | `serve.py` | ✓ Wave 3 - the localhost workbench: a linked+workbench site snapshot under `.cache/serve/`, Review + Inbox pages, every button one `fha` command through `/api/run` (dry-run preview -> confirm -> live apply, CLI echoed); see "fha serve - implementation status" below |
+
+`fha serve` is a **non-load-bearing front door** (TOOLING_INTERFACE.md §1b): it drives the
+same headless engines every other tool drives (the `run_*`/`_cmd_*` split, TOOLING §1), owns
+no state of its own beyond its disposable `.cache/serve/` snapshot, and `fha site` never
+depends on it - delete `serve.py` and `.cache/serve/` and nothing about the archive changes.
+It is not a daemon: human-started, foreground, 127.0.0.1-only, no login, no watcher
+(refresh-on-use instead of a file watcher). `serve.cmd` (shipped at the archive root by
+`fha install`/`fha update-tools`, alongside the operating layer's other root files) is a
+double-clickable launcher for a non-technical owner: `cd` to the archive, run
+`py -3 tools\fha.py serve`, pause on error so the window doesn't vanish before it's read.
+
+## fha serve - implementation status
+
+The localhost workbench (TOOLING_INTERFACE.md §1b, SPEC §5.5). Security is the whole trust
+boundary (there is no login by design), so every gate below is an acceptance criterion, not
+a nice-to-have.
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| `--port N` | ✓ | Listens on 127.0.0.1 only (never 0.0.0.0), default 8765. A busy port is a plain refusal naming `--port {N+1}` as the fix (probed WITHOUT `SO_REUSEADDR` deliberately, so a second serve window on Windows is actually detected) |
+| `--no-browser` | ✓ | Skips the `webbrowser.open()` call on startup; a headless box that has no browser to open just skips it silently either way |
+| `--root PATH` | ✓ | Archive root (auto-detected if omitted); the shared `_lib.resolve_root_arg` guard |
+| Preflight | ✓ | `run_serve_preflight`: Jinja2 present (else a plain install-it message); `fha.yaml` loads (strict); the index is built on the spot if missing/stale (`index_built` reported, never blocks the first render); the port is bindable. Every refusal names the fix |
+| Host-header allowlist | ✓ | Every request (GET and POST) is refused 403 unless the `Host` header's hostname is `127.0.0.1` or `localhost` (DNS-rebinding defense: a page on `evil.com` that rebinds DNS to 127.0.0.1 still sends `Host: evil.com`) |
+| CSRF token | ✓ | A per-process token (`secrets.token_hex(16)`), baked into every rendered page and compared with `hmac.compare_digest` on every POST; a missing/wrong token is 403, and a non-ASCII header is caught before `compare_digest` would raise, so garbage input is always a plain 403, never a 500 |
+| Path confinement | ✓ | Canonical-path confinement (`resolve()` + `is_relative_to`) on snapshot files, `/root/{photos,documents,inbox}/…` asset aliases, `/api/open`, `/api/upload`, and every path-shaped `/api/run` argument (`process.file`, `capture.path`) - traversal variants (`../`, `%2e%2e`, encoded slashes, backslashes, drive letters, NUL) are all rejected before the filesystem is ever touched |
+| Response headers | ✓ | Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` |
+| One mutation lock | ✓ | A single process-wide lock serializes every mutate -> reindex -> snapshot-invalidate sequence, so a snapshot rebuild can never interleave a write |
+| Refresh-on-use snapshot | ✓ | No file watcher. `ensure_snapshot` rebuilds the linked+workbench site snapshot under `.cache/serve/site/` only when a scandir staleness probe (newest mtime across `sources/`, `people/`, `places/`, `notes/`, `fha.yaml`, `design/`, `.cache/index.sqlite` - never the photos/documents roots) says it is older than the newest input, or the marker was built by a DIFFERENT serve process (the per-process CSRF token is baked into snapshot pages, so a stale marker from a prior session would 403 every Apply otherwise) |
+| `/api/run` parity table | ✓ | A whitelist of 17 verbs (`claim.review`, `claim.new`, `confirm.xref`, `confirm.cooccur`, `confirm.dismiss`, `person.set-living`, `person.new`, `person.relate`, `person.estimate`, `person.edit`, `person.note`, `source.note`, `process.file`, `capture.path`, `site.publish`, `index.rebuild`, `home.edit`), each mapped to (schema, engine call, CLI-echo formatter, reindex policy). An unknown verb or an argument outside the verb's schema is a plain 400, never a silent drop. Every verb drives the SAME `run_*` engine the CLI uses, and every apply response's `cli_echo` field is the literal `fha …` command that would do the same thing (the parity rule made visible) |
+| Human gate as a click | ✓ | The server defaults `dry_run` to `true` unless a POST body explicitly says `{"dry_run": false}` (defense in depth behind the JS two-step: preview, then a second confirmed click). A `suggested`→`accepted` claim review through the workbench still stamps `reviewed:` exactly like the CLI - the click IS the human decision, same as directing the CLI is |
+| Mechanical/generative boundary | ✓ | `serve` never reads evidence to draft anything - there is no verb that mints a `suggested` claim from a source's text. Stage B drafting stays with the AI skills (`process-source`, `mine-transcript`); serve only ever runs deterministic engines a human (or a skill acting on the human's behalf) already decided to invoke |
+| Post-write reindex policy | ✓ | A source-scoped verb (`claim.review`, `claim.new`, `confirm.cooccur`, `source.note`) upserts the one source named in the `Result`; everything else that mutates does a full rebuild; `confirm.dismiss`/`site.publish`/`index.rebuild` need no extra reindex. The snapshot is invalidated after every non-dry-run write except `site.publish` (which writes to `generated/site/`, not the workbench snapshot) |
+| Review page | ✓ | `/review` - freshly queries `suggested` claims (grouped by source), `fha xref` corroboration/contradiction candidates, and `fha cooccur` person-pair candidates - reuses the exact engines `fha report` reads, never reinvented. Each item's action buttons carry the `/api/run` verb + fixed args |
+| Inbox page | ✓ | `/inbox` - groups top-level `inbox/` entries: an asset + its `.notes.md` sidecar is one item, a bundle folder is one item, a lone stub or lone asset is one item each |
+| `/api/find?q=…` | ✓ | Thin wrapper over `find.search_json` - the same `fha find --json` engine, so the workbench's search box and the CLI agree by construction |
+| `/api/upload` | ✓ | `multipart/form-data` only; writes into `inbox/<sanitized-basename>` (collision → ` -2` stem), plus an optional `.notes.md` sidecar when `what`/`who` fields are given (one field per YAML line - a newline in the note can never inject extra frontmatter keys). Filenames are sanitized to a basename (no path separators, no NUL), Windows-reserved device names (`CON`, `NUL`, `COM1`, …) refused with a plain 400, trailing dots stripped (Win32 silently strips them, which would otherwise collide with the dotless sibling). Written via a `.part` temp file + atomic replace |
+| `/api/open` | ✓ | OS-opens a record/asset file (`os.startfile` on Windows, `open`/`xdg-open` elsewhere) after the same path confinement as everything else; 403 outside the archive/asset roots, 404 if missing |
+| `/api/reindex` | ✓ | Full `index.build_index` + snapshot invalidation under the lock, for a manual "something looks stale" refresh |
+| Multipart parser | ✓ | A minimal stdlib `multipart/form-data` parser (the `cgi` module is gone in 3.13+) - no third-party dependency added |
+| Exit codes | ✓ | 0 clean serve session (`Ctrl-C` stop, "nothing was lost"); 3 (`EXIT_FAILURE`) for every preflight refusal (no Jinja2, bad config, index-build failure, busy port) |
+
+Automated tests: `tests/test_serve.py` (stdlib `unittest`) runs a REAL server on
+`127.0.0.1:0` against a tempdir copy of `example-archive/` and tests the security
+invariants as hard acceptance criteria: traversal variants (multiple encodings) all
+4xx and never leak `fha.yaml` contents, a spoofed `Host` header 403s (bare and with a
+port), `localhost` is accepted, a POST with no/wrong/non-ASCII CSRF is a plain 403 (never
+a 500), and a snapshot built by a different serve process reads as stale. Functional
+coverage proves the two-step flow: a dry run leaves the whole record tree byte-identical
+(SHA-256 over `sources/`/`people/`/`places/`/`notes/`) and still returns a `cli_echo`; a
+POST with no `dry_run` key at all defaults to preview (writes nothing); a live
+`claim.review` flips a fixture claim, stamps `reviewed:`, echoes the exact CLI command,
+and invalidates the snapshot so the next GET rebuilds it. Also covered: `/api/find`
+result shape, unknown-verb and extra-argument 400s, upload sanitization (path escape,
+Windows reserved names, trailing-dot stripping, newline-injection resistance) writing
+only into `inbox/`, `/api/open` confinement (in-archive allowed, outside refused, the OS
+open call never invoked on refusal), that deleting `.cache/serve/` entirely leaves a
+fresh `fha site --standalone` build byte-for-byte unchanged (disposability), and
+preflight's ok/port-busy paths. Run with `python -m unittest tests.test_serve -v` from
+the repo root.
 
 ## Implemented tools (milestone 9)
 
@@ -476,6 +618,7 @@ S-id. Stdlib only (HTML parsed with `html.parser` - no third-party library).
 | stdin encoding | ✓ | stdin is read as raw bytes and decoded UTF-8 (not the locale codec), so a piped page's en-dashes/accents survive into the stub |
 | Native-messaging host `--host` (§5.7) | ✓ backend | `fha capture --host` serves the browser companion over length-prefixed stdin/stdout JSON (launched on demand, no daemon): files a framed bundle straight into the configured `inbox/` via `run_ingest` (byte-identical to `--ingest`), plus two read-only queries - `suggestNames` (person name/alias autocomplete) and `checkUrl` (already-captured check by normalized host+path, durable query ids like `clipping_id` preserved). `--install-host [--extension-id ID] [--host-manifest-dir DIR] [--browser chrome\|edge]` writes the per-OS native-messaging manifest + launcher (absolute paths, as Chrome/Edge require; `--browser` selects the Chrome vs Edge location/registry key; `--dry-run` previews; on Windows it prints the `REG ADD` registry command). The **extension front-end** that consumes this host (IIIF/empty-detail panel wiring + the opt-in `nativeMessaging` permission request) is wired in `native-host.js`/`panel.js`, OFF by default behind a "file straight into my archive" toggle (the MV3 UI flows want a real-browser verification pass) |
 | Site recipes (MG1.2/MG1.3) | ✓ | `tools/capture_recipes/` plug-in modules (`detect`/`extract`, discovered at runtime, tried in ascending `PRIORITY`, generic fallback last): **Ancestry** (collection title, date, household/index persons, image URL), **FamilySearch** (title, date, collection, fact-table persons), **Newspapers.com** (publication, date, page, snippet, citation; `source_type: newspaper`), **FindAGrave** (memorial name, birth/death, cemetery as a place hint, family members). Each detects its own page by host (with an `og:site_name` fallback) and rejects the others'. A broken or failing recipe is skipped with a warning - the page still captures generically |
+| `--path PATH [--note TEXT]` (plan 17) | ✓ | A distinct mode, nothing to do with web pages: registers a file (most often a photo still living in someone else's library) that must stay exactly where it is. Reads no HTML, stages no asset copy, never opens/moves/renames the target - just `.exists()`-checks it - and writes one pointer stub (`asset_elsewhere: true` reusing the existing case-(c) flag, plus new `asset_path`/`asset_path_absolute` frontmatter keys: the path as typed and the resolved absolute form, both forward-slashed) so the item enters the inbox processing queue. `slug` comes from the target file's own stem, not a generic placeholder; the usual stub/asset collision uniquify (`-2`, `-3`) still applies. `--title` is shared with page capture (labels either a captured page or a `--path` stub); `--note` is `--path`-only (goes in the stub body; no note gets a `*(registered by path - no note given)*` placeholder). A missing target (unplugged drive, typo'd path) is not a hard refusal - the stub is still written and a warning printed either way, but only the LIVE write's exit code reflects it (`EXIT_WARNINGS`); `--dry-run` always reports a clean preview regardless. Mixing `--path`/`--note` with another mode's flags (`--url`, `--asset`, `--ingest`, …) is refused up front naming both sides, per the mode-conflict table every capture mode shares |
 
 Automated tests: `tests/test_capture.py` (stdlib `unittest`, no network) drives
 `run_capture` over the anonymized `tests/fixtures/capture-samples/*.html`,
@@ -483,8 +626,13 @@ covering generic frontmatter + jsonl fallback + the `search_log` write path,
 flag overrides + unknown-type/unclear-date refusal, `--dry-run` no-op,
 write-failure exit status, `--asset` stem pairing, slug/asset collision, the
 UTF-8 stdin path, each recipe's extraction, mutually-exclusive recipe detection,
-and the truncation/domain helpers. Run with `python -m unittest
-tests.test_capture -v` from the repo root. The `--ingest` sweep is covered
+and the truncation/domain helpers. `CapturePathTestCase` covers `--path`: the
+one-pointer-stub-only write with the target completely untouched, `asset_path`/
+`asset_path_absolute` recorded correctly, `--note`/`--title` landing in the
+stub, the no-note placeholder body, stem-collision uniquify, a missing target
+warning but still writing (`EXIT_WARNINGS`), `--dry-run` writing nothing (clean
+exit even for a missing target), and the CLI end-to-end path. Run with `python
+-m unittest tests.test_capture -v` from the repo root. The `--ingest` sweep is covered
 separately by `tests/test_capture_ingest.py` (clean sweep + parking, the
 byte-identical-to-paste-path guarantee, dry-run no-op, idempotency, malformed-bundle
 resilience, pointer-only `asset_elsewhere`, and config/default staging resolution).
@@ -736,6 +884,10 @@ Run with `python -m unittest tests.test_scaffold -v` from the repo root.
 | `--related <ID> --date <EDTF>` (combined) | ✓ | P-id, L-id, and S-id neighborhoods accept `--date` as an additional AND filter (e.g. a person's relationships/places, or a source's claims by status, narrowed to a decade); C/H neighborhoods ignore it (a single claim's own `date_edtf` already pins it, and a hypothesis isn't meaningfully time-sliced) |
 | `--related` index requirement | ✓ | absent/unreadable `.cache/index.sqlite` → exit 3 (no tree-scan fallback - unlike find_by_id, the relational joins have no scan equivalent); stale → warns, still queries |
 | Index fallback (ID lookup, `--text`) | ✓ | stale index warns but remains structured; absent/unreadable index tree-scans with "WARNING: index not fresh" header |
+| `--json` (plan 17) | ✓ | The reference-resolver backend (`search_json`): a pure ranked search over aliases + `persons` + `sources` + `places`/place names + `notes_fts`, deduped by id, sorted by match tier (0 exact / 1 prefix / 2 substring) then label. Each hit is `{id, type, label, detail}` (SPEC §9/§14 field shapes) printed as one `json.dumps` document, or nothing on zero matches. Valid with a bare ID/text query or `--text`; same absent/unreadable-index hard-error contract `--related` established (exit 3, no tree-scan fallback - the ranking has no scan equivalent) |
+| `--json --kind K,K…` | ✓ | Narrows results to `person`, `source`, `place`, `hypothesis`, `claim`, `text` (comma list; unrecognised value refused with the valid list). Default (no `--kind`) is every kind |
+| `--json --limit N` | ✓ | Caps the result count (default 20) |
+| `--json` + `--related` | ✓ refused by design | No defined meaning for "the neighborhood of X, as ranked search results" - refused with a plain message naming the combinations that do work (exit 2), checked in `_run_find` rather than by argparse |
 
 ## Implemented tools (milestone 1)
 

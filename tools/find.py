@@ -29,10 +29,9 @@ Design decisions in TOOLING §4a:
       transcripts_fts table exists but is not yet populated - transcript
       search is deferred to a later milestone.
 
-  --json (plan 17, pending a TOOLING §4a write-up - flagged as a proposed
-  amendment, not yet spec-approved text): a pure, machine-readable ranked
-  search over the index - the backend a future reference-resolver skill or
-  UI autocomplete calls to turn a typed name/ID fragment into candidates.
+  --json (plan 17; documented in TOOLING §4a): a pure, machine-readable ranked
+  search over the index - the backend the fha serve reference resolver (and
+  any autocomplete UI) calls to turn a typed name/ID fragment into candidates.
   Like --related, an absent/incompatible index is a hard error (no tree-scan
   fallback - the alias/name/title ranking has no meaningful equivalent
   outside the index) using the exact same open_index_db plain-message +
