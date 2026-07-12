@@ -1,0 +1,513 @@
+/* ============================================================================
+   Family History Archive — stylesheet
+   ----------------------------------------------------------------------------
+   Reference: the printed family register / county record book. Every choice
+   traces to that — a text serif set for reading, oldstyle figures for dates,
+   tabular figures and horizontal-ruled tables like a ledger, a thick-thin
+   double rule under the masthead, square corners, ink-brown accents.
+
+   Overrides go in custom.css (linked after this file — it wins). In most cases
+   you only need to change a few tokens in the ":root — TOKENS" block below.
+
+   Sections:  1 Fonts · 2 Tokens · 3 Base · 4 Masthead & layout ·
+              5 Components · 6 Ledger table & statuses · 7 Family tree ·
+              8 Register patterns · 9 Utilities
+   ============================================================================ */
+
+
+/* 1. FONTS — self-hosted, offline. Fraunces (display: masthead & names only),
+      Literata (text serif: everything else). Latin + Latin-Ext for diacritics. */
+
+@font-face { font-family:'Fraunces'; font-style:normal; font-weight:400; font-display:swap;
+  src:url(fonts/fraunces-400-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'Fraunces'; font-style:normal; font-weight:400; font-display:swap;
+  src:url(fonts/fraunces-400-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'Fraunces'; font-style:normal; font-weight:600; font-display:swap;
+  src:url(fonts/fraunces-600-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'Fraunces'; font-style:normal; font-weight:600; font-display:swap;
+  src:url(fonts/fraunces-600-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+
+@font-face { font-family:'Literata'; font-style:italic; font-weight:400; font-display:swap;
+  src:url(fonts/literata-400i-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'Literata'; font-style:italic; font-weight:400; font-display:swap;
+  src:url(fonts/literata-400i-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'Literata'; font-style:normal; font-weight:400; font-display:swap;
+  src:url(fonts/literata-400-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'Literata'; font-style:normal; font-weight:400; font-display:swap;
+  src:url(fonts/literata-400-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family:'Literata'; font-style:normal; font-weight:600; font-display:swap;
+  src:url(fonts/literata-600-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+@font-face { font-family:'Literata'; font-style:normal; font-weight:600; font-display:swap;
+  src:url(fonts/literata-600-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+
+
+/* 2. :root — TOKENS  (override these in custom.css) */
+
+:root {
+  /* — Paper & ink — */
+  --paper:          #F2EDE2;  /* page ground (toned register paper)     */
+  --surface:        #F8F5EE;  /* faintly raised areas                   */
+  --surface-sunken: #E8E0D0;  /* wells                                  */
+  --ink:            #2A2420;  /* primary text (iron-gall near-black)     */
+  --ink-soft:       #574E42;  /* secondary text, heavy rules            */
+  --muted:          #6E6656;  /* meta text (AA on paper)                */
+  --rule:           #D8D0BF;  /* hairlines                              */
+  --rule-strong:    #B9AD98;  /* emphasized hairlines                   */
+
+  /* — Accent: one warm ink, used sparingly (links, emphasis, marginalia) — */
+  --accent:         #6E3A26;  /* deep sienna/oxblood (AA ~7.8 on paper) */
+  --link:           var(--accent);
+  --link-hover:     #8A4A30;
+  --focus-ring:     #33475B;
+
+  /* — Earth family: reserved for the tree's categories; sparing elsewhere — */
+  --clay: #B0603B;  --sage: #6F7B58;  --ochre: #B98A34;  --rose: #B57A6E;
+  --navy: #33475B;  --crimson: #8F3A3F;  --warm-grey: #9C9284;
+
+  /* — Claim / review status (text only — no fills) — */
+  --status-accepted-fg:  #3F5130;
+  --status-review-fg:    #6F5214;
+  --status-suggested-fg: #2F4256;
+  --status-rejected-fg:  var(--muted);
+
+  /* — Tree branch categories (name-underline color) — */
+  --branch-1: var(--clay);  --branch-2: var(--sage);   --branch-3: var(--ochre);
+  --branch-4: var(--navy);  --branch-5: var(--rose);   --branch-6: var(--crimson);
+  --branch-7: var(--warm-grey);
+
+  /* — Type — */
+  --font-serif:   'Literata', Georgia, 'Times New Roman', serif;  /* body + headings */
+  --font-display: 'Fraunces', Georgia, serif;                     /* masthead + names */
+  --font-sans:    system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; /* labels/chrome */
+  --font-mono:    ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --text-xs:   0.8rem;
+  --text-sm:   0.9rem;
+  --text-base: 1.05rem;
+  --text-lg:   1.1rem;
+  --text-xl:   1.2rem;
+  --text-2xl:  1.5rem;
+  --text-3xl:  2.6rem;   /* the masthead / page title — the one loud size */
+
+  --leading-body:  1.6;
+  --leading-tight: 1.15;
+  --tracking-caps: 0.08em;   /* only for small structural labels, never names */
+
+  /* — Spacing (4px base) — */
+  --space-1: 0.25rem;  --space-2: 0.5rem;  --space-3: 0.75rem;  --space-4: 1rem;
+  --space-5: 1.5rem;   --space-6: 2rem;    --space-8: 3rem;
+
+  /* — Shape: square, flat. Paper does not float above paper. — */
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --border:    1px solid var(--rule);
+  /* Photographs lift slightly off the paper (the one place a shadow is used);
+     not the hero band or the flat tree squares. */
+  --shadow-photo: 0 1px 2px rgba(42, 37, 33, 0.13), 0 6px 16px -8px rgba(42, 37, 33, 0.22);
+
+  /* — Layout — */
+  --measure:     68ch;
+  --content-max: 54rem;
+  --page-pad:    var(--space-5);
+
+  /* Optional register-paper grain — enable in custom.css:
+     body { background-image:
+       repeating-radial-gradient(circle at 0 0, transparent 0 6px, rgba(0,0,0,.008) 6px 7px); } */
+}
+
+/* Dark mode goes here when wanted — override the tokens above inside
+   @media (prefers-color-scheme: dark){ :root { --paper:#1f1b18; --ink:#ece4d6; ... } }
+   Left off by default (light-first). */
+
+
+/* 3. BASE */
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-base);
+  line-height: var(--leading-body);
+  font-variant-numeric: oldstyle-nums;   /* dates in running prose */
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 { font-weight: 600; line-height: var(--leading-tight); color: var(--ink); margin: 0 0 var(--space-3); }
+h1 { font-family: var(--font-display); font-size: var(--text-3xl); letter-spacing: -0.01em; line-height: 1.08; margin-bottom: var(--space-4); font-optical-sizing: auto; }
+h2 { font-family: var(--font-serif); font-size: var(--text-2xl); margin-top: var(--space-8);
+     border-bottom: 2px solid var(--ink-soft); padding-bottom: var(--space-2); }
+h3 { font-family: var(--font-serif); font-size: var(--text-xl); margin-top: var(--space-6); }
+h4 { font-family: var(--font-serif); font-size: var(--text-lg); margin-top: var(--space-5); }
+
+p { margin: 0 0 var(--space-4); max-width: var(--measure); }
+
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { color: var(--link-hover); }
+
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+hr { border: none; border-top: 1px solid var(--rule); margin: var(--space-6) 0; }
+
+em, i { font-style: italic; }
+strong, b { font-weight: 600; }
+small { font-size: var(--text-sm); }
+
+code, kbd, samp { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--surface-sunken); padding: 0.1em 0.35em; border-radius: var(--radius-sm); }
+kbd  { background: var(--surface); border: 1px solid var(--rule-strong); border-bottom-width: 2px;
+       border-radius: var(--radius-sm); padding: 0.05em 0.4em; font-size: 0.8em; color: var(--ink-soft); }
+pre  { background: var(--surface-sunken); border: 1px solid var(--rule); border-radius: var(--radius-sm);
+       padding: var(--space-3) var(--space-4); overflow-x: auto; font-family: var(--font-mono);
+       font-size: var(--text-sm); line-height: 1.5; }
+pre code { background: none; padding: 0; }
+
+ul, ol { padding-left: 1.3em; }
+li { margin: 0.15em 0; }
+img { max-width: 100%; height: auto; }
+::selection { background: color-mix(in srgb, var(--ochre) 30%, transparent); }
+
+
+/* 4. MASTHEAD & LAYOUT
+      The signature element: a thick-thin double rule under the archive name,
+      straight off a record-book title page. Every generated page carries it. */
+
+.site-header { position: relative; background: var(--paper);
+               display: flex; align-items: baseline; justify-content: space-between;
+               flex-wrap: wrap; gap: var(--space-2) var(--space-5);
+               padding: var(--space-5) var(--page-pad) calc(var(--space-4) + 8px); }
+.site-header .home-link { font-family: var(--font-display); font-size: var(--text-xl); font-weight: 600;
+                          color: var(--ink); text-decoration: none; letter-spacing: 0.01em; }
+.site-header .home-link:hover { color: var(--accent); }
+/* Persistent primary navigation - present on every page so "home" is always one click. */
+.site-nav { display: flex; flex-wrap: wrap; gap: var(--space-4);
+            font-family: var(--font-sans); font-size: var(--text-sm); }
+.site-nav a { color: var(--ink-soft); text-decoration: none; }
+.site-nav a:hover { color: var(--accent); }
+.site-header::after {                       /* the double rule */
+  content: ""; position: absolute; left: var(--page-pad); right: var(--page-pad); bottom: var(--space-4);
+  height: 8px; border-top: 3px solid var(--ink); border-bottom: 1px solid var(--ink);
+}
+
+main { max-width: var(--content-max); margin: 0 auto; padding: var(--space-6) var(--page-pad); }
+
+.site-footer { max-width: var(--content-max); margin: var(--space-8) auto 0;
+               padding: var(--space-5) var(--page-pad); border-top: 1px solid var(--rule);
+               color: var(--muted); font-size: var(--text-sm); }
+
+.ids { color: var(--muted); font-size: var(--text-sm); margin: 0 0 var(--space-5); }
+
+/* Alternate names under the H1: birth/maiden (né/née), married (later), and any
+   nicknames - small and quiet so the display name still leads. */
+.alt-names { margin: calc(-1 * var(--space-2)) 0 var(--space-3); color: var(--muted);
+             font-family: var(--font-serif); font-style: italic; font-size: var(--text-sm); }
+.alt-names .alt-sep { color: var(--rule-strong); font-style: normal; }
+
+/* Editorial tag pills (record labels: research status, projects). Not facts. */
+ul.tag-pills { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-2);
+               padding: 0; margin: 0 0 var(--space-5); }
+.tag-pill { font-family: var(--font-sans); font-size: var(--text-xs); line-height: 1;
+            color: var(--muted); background: var(--surface-sunken);
+            border: 1px solid var(--rule); border-radius: 999px; padding: 4px 10px;
+            letter-spacing: var(--tracking-caps); text-transform: lowercase; }
+
+/* Homepage hero. A configured image (site.hero) fills the band; with none, a
+   default earth-toned band over faint ledger rules gives a fresh archive a
+   designed masthead without needing an asset. */
+.site-hero { margin: 0 0 var(--space-6); }
+.site-hero img { display: block; width: 100%; height: 240px; object-fit: cover;
+                 border: 1px solid var(--rule); }
+.site-hero-default { height: 200px; border: 1px solid var(--rule);
+  background:
+    repeating-linear-gradient(90deg, transparent 0 21px,
+      color-mix(in srgb, var(--ink) 4%, transparent) 21px 22px),
+    linear-gradient(115deg,
+      color-mix(in srgb, var(--sage) 24%, var(--paper)),
+      color-mix(in srgb, var(--clay) 22%, var(--paper)) 48%,
+      color-mix(in srgb, var(--navy) 20%, var(--paper))); }
+
+/* Homepage intro (notes/home.md). First paragraph reads as a lead. */
+.home-intro { max-width: var(--measure); }
+.home-intro > p:first-child { font-size: var(--text-lg); color: var(--ink-soft); }
+
+/* Photo embed in prose: `![[S-id|Caption]]`. Height-capped so a big scan never
+   blows up the page; caption in the register italic. */
+figure.embed { margin: var(--space-5) auto; text-align: center; }
+figure.embed .embed-img { display: block; max-width: 100%; max-height: 30rem; height: auto;
+                          margin-inline: auto; border: 1px solid var(--rule);
+                          background: var(--surface-sunken); box-shadow: var(--shadow-photo); }
+figure.embed figcaption { font-family: var(--font-serif); font-style: italic;
+                          font-size: var(--text-sm); color: var(--muted); margin-top: var(--space-2); }
+
+/* Mini family map at the head of a person page: parents / siblings / children. */
+.family-strip { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-6);
+                border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+                padding: var(--space-3) 0; margin: var(--space-4) 0 var(--space-5); }
+.family-strip .fs-group { min-width: 8rem; }
+.family-strip .fs-label { display: block; font-family: var(--font-sans); font-size: var(--text-xs);
+                          font-weight: 600; text-transform: uppercase; letter-spacing: var(--tracking-caps);
+                          color: var(--muted); margin-bottom: var(--space-1); }
+.family-strip ul { list-style: none; padding: 0; margin: 0; }
+.family-strip li { margin: 0.1em 0; }
+
+
+/* 5. COMPONENTS  (flat, document-like — no cards, no shadows, no pills) */
+
+/* Metadata list — label / value */
+dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-5); margin: var(--space-5) 0; }
+dl.meta dt { color: var(--muted); font-style: italic; }
+dl.meta dd { margin: 0; }
+
+/* Record summary — ruled top and bottom, not a card */
+.summary { background: none; border: none; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+           padding: var(--space-3) 0; margin: var(--space-5) 0; }
+.summary dt { font-weight: 600; }
+.summary dd { margin: 0 0 var(--space-2); }
+
+/* Citation — hanging italic quote, no box */
+blockquote.citation { border: none; background: none; margin: var(--space-4) 0; padding-left: var(--space-4);
+                      font-style: italic; color: var(--ink-soft); }
+blockquote.citation cite { display: block; font-style: normal; font-size: var(--text-sm); color: var(--muted); margin-top: var(--space-1); }
+
+/* Research note — a margin note: hairline top rule + quiet label */
+.callout { background: none; border: none; border-top: 1px solid var(--ink-soft); border-radius: 0;
+           padding: var(--space-2) 0 0; margin: var(--space-5) 0; }
+.callout-title { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600;
+                 text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--muted);
+                 margin-bottom: var(--space-1); }
+
+/* Subjects / keyword terms — index terms, middot-separated, not lozenges */
+.tag { color: var(--ink-soft); font-style: italic; white-space: nowrap; }
+.tag + .tag::before { content: " · "; color: var(--muted); font-style: normal; }
+
+/* Buttons — the one place app vocabulary survives; kept square and quiet */
+.btn { font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500;
+       display: inline-flex; align-items: center; gap: var(--space-2);
+       padding: var(--space-2) var(--space-4); border: 1px solid var(--rule-strong);
+       border-radius: var(--radius-sm); background: none; color: var(--ink); cursor: pointer; text-decoration: none; }
+.btn:hover { background: var(--surface-sunken); }
+.btn-primary { background: var(--ink-soft); border-color: var(--ink-soft); color: var(--paper); }
+.btn-primary:hover { background: var(--ink); color: var(--paper); }
+
+/* Files & photos */
+ul.files { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-4); }
+ul.files li { width: 10rem; }
+img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); border-radius: 0;
+            background: var(--surface); box-shadow: var(--shadow-photo); }
+.full-size-link { display: block; font-family: var(--font-sans); font-size: var(--text-xs);
+                   margin-top: var(--space-1); }
+.photo-strip { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.photo-strip figure { margin: 0; width: 9rem; }
+.photo-strip figcaption { font-size: var(--text-xs); color: var(--muted); font-style: italic; margin-top: var(--space-1); }
+
+/* Source scan thumbnail at the head of a record - same floated-plate visual
+   language as .person-portrait (sizing, border, shadow), but its own class:
+   this one wraps an <img> + <figcaption> so both stack inside a single float
+   instead of two same-direction floats fighting for position. */
+.source-portrait { float: right; width: 9rem; margin: 0 0 var(--space-4) var(--space-5); text-align: center; }
+.source-portrait img { display: block; width: 100%; height: 11rem; object-fit: cover;
+                        border: 1px solid var(--rule-strong); background: var(--surface-sunken);
+                        box-shadow: var(--shadow-photo); }
+.source-portrait figcaption { font-size: var(--text-xs); color: var(--muted); font-style: italic;
+                               margin-top: var(--space-1); }
+@media (max-width: 32rem) { .source-portrait { width: 7rem; } .source-portrait img { height: 8.5rem; } }
+
+/* Inline states */
+.note     { display: block; color: var(--muted); font-size: var(--text-sm); }
+.empty    { color: var(--muted); font-style: italic; }
+.redacted { color: var(--muted); font-style: italic; }
+mark      { background: color-mix(in srgb, var(--ochre) 32%, transparent); color: var(--ink); padding: 0 0.12em; }
+
+.timeline ul { margin: var(--space-1) 0 var(--space-4); }
+
+/* A person named but without a page of their own - dotted underline, no link
+   (mirrors the tree's stub-node convention). */
+.stub-ref { border-bottom: 1px dotted var(--rule-strong); }
+
+/* Source citations: a small superscript number inline, jumping to the numbered
+   Sources list at the foot of the page. IDs never appear in the reading view. */
+.fn-ref { font-weight: 600; }
+.fn-ref a { text-decoration: none; }
+ol.footnotes { font-size: var(--text-sm); color: var(--ink-soft); padding-left: 1.6em; }
+ol.footnotes li { margin: 0.25em 0; }
+ol.footnotes li:target { background: color-mix(in srgb, var(--ochre) 26%, transparent); }
+
+
+/* 6. LEDGER TABLE & TYPOGRAPHIC STATUSES */
+
+table.claims { border-collapse: collapse; width: 100%; font-size: var(--text-sm);
+               font-variant-numeric: tabular-nums lining-nums; margin-top: var(--space-3); }
+table.claims th, table.claims td { border: none; border-bottom: 1px solid var(--rule);
+               padding: var(--space-2) var(--space-4) var(--space-2) 0; text-align: left; vertical-align: baseline; }
+table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-soft);
+               font-family: var(--font-sans); font-weight: 600; font-size: var(--text-xs);
+               text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--muted); }
+
+/* Statuses read as words in the status ink, not tinted pills */
+.status { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+.status::before { content: "\2022\00a0"; font-size: 0.8em; }
+.status-accepted     { color: var(--status-accepted-fg); }
+.status-needs-review { color: var(--status-review-fg); }
+.status-suggested    { color: var(--status-suggested-fg); }
+.status-rejected, .status-superseded { color: var(--status-rejected-fg); text-decoration: line-through; }
+.status-rejected::before, .status-superseded::before { content: ""; }
+
+
+/* 7. FAMILY TREE — index-entry nodes; branch color as a name underline (not a card) */
+
+.fha-tree { overflow: hidden; border: none; background: none; border-radius: 0; padding: 0; }
+/* Pan/zoom viewport (large trees). The renderer draws into a fixed-height window
+   you drag and zoom; controls sit top-right. */
+.fha-tree-viewport { position: relative; overflow: hidden; width: 100%; }
+.fha-tree-controls { position: absolute; top: var(--space-2); right: var(--space-2);
+                     display: flex; gap: var(--space-2); z-index: 2; }
+.fha-tree-btn { padding: 2px 8px; line-height: 1.4; background: var(--surface); }
+.fha-tree-svg { display: block; cursor: grab; touch-action: none; user-select: none; }
+.fha-tree-svg:active { cursor: grabbing; }
+/* Edge kinds are told apart by dash pattern (reads in print and for colorblind
+   viewers), not color alone:
+     genetic — solid    · parent–child by blood
+     legal   — long dash · adoptive / step / foster / guardian / in-law  (SPEC 12.2)
+     other   — dotted    · friend / coworker / associate  (from affiliations)      */
+.fha-tree-edge        { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; }
+.fha-tree-edge-legal  { stroke: var(--accent); stroke-dasharray: 6 3; }
+.fha-tree-edge-other  { stroke: var(--muted);  stroke-dasharray: 1 3; stroke-linecap: round; }
+.fha-tree-edge-social { stroke: var(--accent); stroke-dasharray: 6 3; }  /* back-compat alias → legal */
+
+.fha-node { box-sizing: border-box; width: 200px; min-height: 64px;
+            display: flex; align-items: center; gap: var(--space-2);
+            border: none; border-bottom: 1px solid var(--rule); border-radius: 0; background: none;
+            padding: var(--space-1) var(--space-3) var(--space-1) 0;
+            position: relative; font-size: var(--text-xs); line-height: 1.25; }
+.fha-node-text { min-width: 0; }   /* let the name wrap/clamp instead of overflowing */
+
+/* Fixed-size portrait square (or a monogram placeholder). Size is locked so it
+   never disturbs the node's card geometry. */
+.fha-portrait { flex: none; width: 38px; height: 38px; object-fit: cover;
+                border: 1px solid var(--rule-strong); background: var(--surface-sunken); }
+.fha-portrait-empty { display: inline-flex; align-items: center; justify-content: center;
+                      font-family: var(--font-display); font-size: 1.05rem; color: var(--muted); }
+.fha-node[data-branch="1"] { --node-accent: var(--branch-1); }
+.fha-node[data-branch="2"] { --node-accent: var(--branch-2); }
+.fha-node[data-branch="3"] { --node-accent: var(--branch-3); }
+.fha-node[data-branch="4"] { --node-accent: var(--branch-4); }
+.fha-node[data-branch="5"] { --node-accent: var(--branch-5); }
+.fha-node[data-branch="6"] { --node-accent: var(--branch-6); }
+.fha-node[data-branch="7"] { --node-accent: var(--branch-7); }
+
+.fha-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-clamp: 2;
+            font-family: var(--font-display); font-weight: 600; font-size: var(--text-sm); line-height: 1.15;
+            max-width: 100%; overflow: hidden;
+            border-bottom: 2px solid var(--node-accent, var(--rule-strong)); padding-bottom: 1px; }
+a.fha-name { color: var(--ink); text-decoration: none; }
+a.fha-name:hover { color: var(--accent); }
+.fha-node-nolink .fha-name { border-bottom-style: dotted; color: var(--muted); }
+.fha-dates { display: block; color: var(--muted); font-variant-numeric: oldstyle-nums; }
+
+.fha-toggle { position: absolute; top: 0; right: 0; border: none; background: none; color: var(--muted);
+              cursor: pointer; font-size: var(--text-sm); line-height: 1; padding: 0; }
+.fha-toggle:hover { color: var(--accent); }
+.fha-tree-note { color: var(--muted); font-size: var(--text-sm); }
+
+
+/* 8. REGISTER PATTERNS — the genealogy-native details */
+
+/* Generation / Ahnentafel numeral, set large in the margin like a register entry */
+.gen-num { font-family: var(--font-display); font-weight: 400; font-size: 2.4rem; line-height: 0.85;
+           color: var(--accent); font-variant-numeric: oldstyle-nums; }
+
+/* Profile portrait — a photographic plate at the head of a person record. */
+.person-portrait { float: right; width: 9rem; height: 11rem; object-fit: cover;
+                   border: 1px solid var(--rule-strong); background: var(--surface-sunken);
+                   box-shadow: var(--shadow-photo); margin: 0 0 var(--space-4) var(--space-5); }
+@media (max-width: 32rem) { .person-portrait { width: 7rem; height: 8.5rem; } }
+
+/* Index with dotted leaders — surname & place indexes, finding-aid style */
+ul.leaders, .index-list.leaders { list-style: none; padding: 0; max-width: var(--measure); }
+ul.leaders li { display: flex; align-items: baseline; gap: 0.4rem; margin: 0.2em 0; }
+ul.leaders .nm  { white-space: nowrap; }
+ul.leaders .dots { flex: 1 1 auto; border-bottom: 1px dotted var(--rule-strong); position: relative; top: -0.28em; }
+ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--muted); white-space: nowrap; }
+
+.index-list { columns: 2; column-gap: var(--space-6); }
+
+/* Ancestor fan chart (static, print-friendly). Each segment's fill is a branch
+   colour lightened by generation - both set inline as --seg-color / --gen-fade,
+   composed here, so custom.css can retint the whole chart by changing tokens. */
+.fan-chart { display: block; max-width: 100%; height: auto; margin: var(--space-5) auto; }
+.fan-seg { fill: color-mix(in srgb, var(--seg-color, var(--surface-sunken))
+                 calc(100% - var(--gen-fade, 0%)), var(--paper));
+           stroke: var(--paper); stroke-width: 1; }
+.fan-seg-subject { fill: var(--surface-sunken); stroke: var(--rule-strong); }
+.fan-label { font-family: var(--font-serif); font-size: 11px; fill: var(--ink);
+             text-anchor: middle; dominant-baseline: middle; }
+.fan-label-subject { font-family: var(--font-display); font-weight: 600; font-size: 15px;
+             fill: var(--ink); text-anchor: middle; dominant-baseline: middle; }
+a.fan-link, a.fan-link:hover { text-decoration: none; }
+
+/* 8. PEDIGREE — horizontal family chart: children (left) - subject + spouse(s)
+   - parents - grandparents (right); ancestors step right (genealogical
+   convention). Cards are HTML in a <foreignObject> so names wrap/ellipsize and
+   links work; connectors are SVG. */
+.pedigree { display: block; width: 100%; max-width: 620px; height: auto; margin: var(--space-3) auto; }
+/* Size-reduced variant: only added when a children column is present (4
+   columns total). The extra column needs more width than the ancestors-only
+   cap, so it gets a wider ceiling here rather than shrinking illegibly small
+   to fit 620px - the chart itself already tightens its card/row spacing to
+   compensate (site.py `_render_pedigree_svg`). */
+.pedigree.pedigree-family { max-width: 760px; }
+.ped-link { fill: none; stroke: var(--rule-strong); stroke-width: 1.25; }
+.ped-node { box-sizing: border-box; height: 100%; display: flex; flex-direction: column;
+            justify-content: center; gap: 1px; padding: 3px 9px; overflow: hidden;
+            border: 1px solid var(--rule); background: var(--surface);
+            box-shadow: var(--shadow-photo); }
+.ped-node.ped-self { border-color: var(--rule-strong); border-left: 3px solid var(--branch-1);
+                     background: var(--surface-sunken); }
+.ped-node.ped-empty { border-style: dashed; background: none; box-shadow: none;
+                      justify-content: center; align-items: center; }
+.ped-name { font-family: var(--font-serif); font-size: var(--text-sm); line-height: 1.1;
+            color: var(--ink); text-decoration: none;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+a.ped-name:hover { text-decoration: underline; }
+.ped-empty .ped-name { font-style: italic; color: var(--muted); }
+.ped-dates { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted); }
+
+/* Collapsible chart sections (native <details>, no script). */
+details.chart { margin: var(--space-6) 0; }
+details.chart > summary.chart-title {
+    font-family: var(--font-serif); font-size: var(--text-2xl); font-weight: 600; color: var(--ink);
+    line-height: var(--leading-tight); cursor: pointer; list-style: none; padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--rule); display: flex; align-items: baseline; gap: var(--space-3); }
+details.chart > summary.chart-title::-webkit-details-marker { display: none; }
+details.chart > summary.chart-title::before {
+    content: "\25B8"; font-size: 0.65em; color: var(--muted); transition: transform 0.15s ease; }
+details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
+.chart-body { margin-top: var(--space-4); }
+
+
+/* 9. UTILITIES */
+
+.u-muted  { color: var(--muted); }
+.u-serif  { font-family: var(--font-serif); }
+.u-display{ font-family: var(--font-display); }
+/* Small structural label (finding-aid style). Not for names. */
+.u-label  { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600;
+            text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--muted); }
+.u-center { text-align: center; }
+.u-stack > * + * { margin-top: var(--space-4); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+                   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
