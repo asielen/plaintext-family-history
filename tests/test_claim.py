@@ -19,6 +19,8 @@ claim), and a pre-existing duplicate claim id refuses with the E001 repair
 path, not the "would hide every claim" corruption wording (finding 15).
 """
 
+import contextlib
+import io
 import shutil
 import sqlite3
 import sys
@@ -82,6 +84,40 @@ def _write_source(archive_root: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_CLAIM_BLOCK, encoding='utf-8')
     return path
+
+
+def _write_person(archive_root: Path, pid: str, name: str) -> Path:
+    """A minimal stub person record `claim new`'s --persons check can resolve."""
+    slug = name.lower().replace(' ', '_')
+    path = archive_root / 'people' / 'stubs' / f'{slug}__{pid}.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'---\nid: {pid}\nname: {name}\nliving: false\ntier: stub\ncreated: 2026-07-01\n---\n',
+        encoding='utf-8',
+    )
+    return path
+
+
+def _indented_block(pad: int, *, place: str | None = None, place_text: str | None = None) -> str:
+    """One claim item at a given dash-to-key spacing (SPEC-legal, see
+    KeyIndentVariantTests) - used to round-trip the new type/place/persons
+    fields at both the 2-space (pad=1) and 4-space (pad=3) conventions."""
+    dash = '-' + ' ' * pad
+    ki = ' ' * (1 + pad)
+    lines = [
+        '## Claims', '```yaml',
+        f'{dash}value: "Born 1880"',
+        f'{ki}id: C-aa11bb22cc',
+        f'{ki}type: birth',
+        f'{ki}persons: [P-aaaaaaaaaa]',
+    ]
+    if place is not None:
+        lines.append(f'{ki}place: {place}')
+    if place_text is not None:
+        lines.append(f'{ki}place_text: "{place_text}"')
+    lines.append(f'{ki}status: suggested')
+    lines.append('```')
+    return '\n'.join(lines) + '\n'
 
 
 # ── Surgical edit (pure text) ──────────────────────────────────────────────────
@@ -698,6 +734,356 @@ class ClaimIndexLintIntegrationTests(unittest.TestCase):
         self.assertEqual(accept.exit_code, EXIT_CLEAN)
         self.assertEqual(self._claim_status_in_index(self.BIRTH_CLAIM), 'accepted')
         self.assertFalse(self._w101_birth_for_person())
+
+
+# ── fha claim new: run_claim_new contract ────────────────────────────────────────
+
+class RunClaimNewTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_accepted_happy_path_writes_block_and_stamps_reviewed(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper, Plains Junction Railroad', persons=['P-aaaaaaaaaa'],
+            date='1874', status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn(str(self.source), result.changed)
+        cid = result['claim_id']
+        self.assertTrue(cid)
+        rec = self._claims()[cid]
+        self.assertEqual(rec['type'], 'occupation')
+        self.assertEqual(rec['value'], 'Bookkeeper, Plains Junction Railroad')
+        self.assertEqual(rec['persons'], ['P-aaaaaaaaaa'])
+        self.assertEqual(str(rec['date']), '1874')
+        self.assertEqual(rec['status'], 'accepted')
+        self.assertEqual(str(rec['reviewed']), claim._today())
+
+    def test_suggested_has_no_reviewed_stamp(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], status='suggested')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(rec['status'], 'suggested')
+        self.assertNotIn('reviewed', rec)
+
+    def test_dry_run_writes_nothing(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        self.assertTrue(any('Bookkeeper' in m.text for m in result.messages))
+
+    def test_missing_source_is_not_found_with_next_step(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-0000000000', claim_type='occupation', value='Bookkeeper')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        self.assertTrue(any(m.next_step and 'fha find' in m.next_step for m in result.messages))
+
+    def test_relationship_type_refused_names_sanctioned_paths(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='relationship', value='Friends')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('fha person relate', text)
+        self.assertIn('fha confirm cooccur', text)
+        self.assertIn('roles:', text)
+        # nothing written
+        self.assertEqual(len(read_record(self.source)['claims']), 2)
+
+    def test_unresolvable_person_refused_naming_id_and_fix(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-zzzzzzzzzz'])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('P-zzzzzzzzzz', text)
+        self.assertIn('fha person new', text)
+        self.assertIn('fha stubs --from-names', text)
+        self.assertEqual(len(read_record(self.source)['claims']), 2)
+
+    def test_loose_date_normalized(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka', date='circa 1880')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(str(rec['date']), '1880~')
+
+    def test_nonsense_date_gets_plain_error(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived somewhere', date='sometime maybe idk')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('1880', text)   # a concrete example, not a bare EDTF error
+
+    def test_place_and_place_text_mutually_exclusive(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived somewhere', place='L-baba9801fa', place_text='Topeka')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('mutually exclusive', ' '.join(m.text for m in result.messages))
+
+    def test_appends_after_existing_claims_with_one_blank_line(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='note', value='A late addition')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        lines = self.source.read_text(encoding='utf-8').splitlines()
+        idx = next(i for i, ln in enumerate(lines) if 'A late addition' in ln)
+        self.assertEqual(lines[idx - 1].strip(), '')
+        self.assertEqual(len(read_record(self.source)['claims']), 3)
+
+    def test_crlf_round_trip(self) -> None:
+        crlf = _CLAIM_BLOCK.replace('\n', '\r\n')
+        self.source.write_bytes(crlf.encode('utf-8'))
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='note', value='CRLF test')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        after = self.source.read_bytes()
+        self.assertNotIn(b'\r\r\n', after)
+        self.assertEqual(after.count(b'\n'), after.count(b'\r\n'))
+
+    def test_missing_persons_warns_but_still_mints(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='note', value='No persons yet')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(any('persons:' in m.text for m in result.messages))
+        self.assertIn(result['claim_id'], self._claims())
+
+    def test_missing_confidence_always_warns(self) -> None:
+        # confidence: is in lint's REQUIRED_CLAIM_FIELDS (E010) right beside
+        # persons, but this verb has no --confidence flag - every mint must
+        # warn, not silently drop a field lint will call an error.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(any('confidence' in m.text for m in result.messages))
+        self.assertNotIn('confidence', self._claims()[result['claim_id']])
+
+
+# ── fha claim new: CLI routing (fha.main and the standalone parser) ─────────────
+
+class ClaimNewCliRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        # resolve_root_arg (the CLI-layer path _cmd_claim/_cmd_claim_new use,
+        # unlike run_claim/run_claim_new called directly) requires fha.yaml.
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_fha_main_routes_claim_new(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'new', '--source', 'S-1111111111', '--type', 'note',
+                          '--value', 'via fha.main', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Minted', out.getvalue())
+        claims = read_record(self.source)['claims']
+        self.assertTrue(any(c['value'] == 'via fha.main' for c in claims))
+
+    def test_fha_main_flat_claim_verb_still_works(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'C-aa11bb22cc', '--status', 'accepted',
+                          '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = {c['id']: c for c in read_record(self.source)['claims']}
+        self.assertEqual(claims['C-aa11bb22cc']['status'], 'accepted')
+
+    def test_standalone_new_subcommand(self) -> None:
+        rc = claim._standalone_main(['new', '--source', 'S-1111111111', '--type', 'note',
+                                     '--value', 'via standalone', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = read_record(self.source)['claims']
+        self.assertTrue(any(c['value'] == 'via standalone' for c in claims))
+
+    def test_standalone_flat_verb_still_works(self) -> None:
+        rc = claim._standalone_main(['C-aa11bb22cc', '--status', 'accepted', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = {c['id']: c for c in read_record(self.source)['claims']}
+        self.assertEqual(claims['C-aa11bb22cc']['status'], 'accepted')
+
+
+# ── Field extension (Task 3): _apply_claim_review unit-level round-trips ────────
+
+class FieldExtensionApplyTests(unittest.TestCase):
+    """Each new field (type/place/place_text/persons) round-trips at both the
+    2-space (pad=1) and 4-space (pad=3) dash-to-key conventions - the same
+    discipline KeyIndentVariantTests exercises for status/value/date."""
+
+    def test_type_round_trips_both_indents(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc', type_='occupation')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(claims[0]['type'], 'occupation')
+                self.assertEqual(claims[0]['status'], 'suggested')  # untouched
+
+    def test_place_round_trips_both_indents(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc', place='L-baba9801fa')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(str(claims[0]['place']), 'L-baba9801fa')
+
+    def test_place_text_round_trips_both_indents(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc', place_text='Topeka, Kansas')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(claims[0]['place_text'], 'Topeka, Kansas')
+
+    def test_persons_round_trips_both_indents_and_replaces(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc',
+                    persons=['P-bbbbbbbbbb', 'P-cccccccccc'])
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(claims[0]['persons'], ['P-bbbbbbbbbb', 'P-cccccccccc'])
+
+    def test_place_switches_to_place_text_removing_place(self) -> None:
+        new, changed = claim._apply_claim_review(
+            _indented_block(1, place='L-baba9801fa'), 'C-aa11bb22cc',
+            place_text='Fairview City')
+        self.assertTrue(changed)
+        claims = read_record_from_text(new)
+        self.assertEqual(claims[0]['place_text'], 'Fairview City')
+        self.assertNotIn('place', claims[0])
+
+    def test_place_text_switches_to_place_removing_place_text(self) -> None:
+        new, changed = claim._apply_claim_review(
+            _indented_block(1, place_text='Fairview City'), 'C-aa11bb22cc',
+            place='L-baba9801fa')
+        self.assertTrue(changed)
+        claims = read_record_from_text(new)
+        self.assertEqual(str(claims[0]['place']), 'L-baba9801fa')
+        self.assertNotIn('place_text', claims[0])
+
+    def test_status_optional_field_only_edit_leaves_status_and_reviewed_untouched(self) -> None:
+        new, changed = claim._apply_claim_review(
+            _CLAIM_BLOCK, 'C-aa11bb22cc', place='L-baba9801fa')
+        self.assertTrue(changed)
+        rec = {c['id']: c for c in read_record_from_text(new)}
+        self.assertEqual(rec['C-aa11bb22cc']['status'], 'suggested')
+        self.assertNotIn('reviewed', rec['C-aa11bb22cc'])
+        self.assertEqual(str(rec['C-aa11bb22cc']['place']), 'L-baba9801fa')
+        # sibling untouched
+        self.assertNotIn('place', rec['C-bb22cc33dd'])
+
+
+# ── Field extension (Task 3): run_claim contract ─────────────────────────────────
+
+class RunClaimFieldEditTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        _write_person(self.root, 'P-bbbbbbbbbb', 'Ben Smith')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_status_now_optional_field_only_edit(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', place_text='Topeka')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertEqual(rec['status'], 'suggested')       # untouched
+        self.assertNotIn('reviewed', rec)                  # untouched
+        self.assertEqual(rec['place_text'], 'Topeka')
+
+    def test_no_mutation_flag_is_plainly_refused(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'no-op')
+        self.assertTrue(result.messages)
+        self.assertIn('--status', result.messages[0].text)
+
+    def test_persons_replaces_the_whole_list(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['persons'], ['P-bbbbbbbbbb'])
+
+    def test_unresolvable_person_refused(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', persons=['P-zzzzzzzzzz'])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_type_relationship_refused(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', claim_type='relationship')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        self.assertIn('fha confirm cooccur', ' '.join(m.text for m in result.messages))
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_type_change_round_trips(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', claim_type='baptism')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['type'], 'baptism')
+
+    def test_place_and_place_text_mutually_exclusive(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 place='L-baba9801fa', place_text='Topeka')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+
+    def test_reviewed_without_status_refused(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 reviewed='2026-07-11', value='corrected value')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('--status', ' '.join(m.text for m in result.messages))
+
+    def test_status_move_still_stamps_reviewed_as_before(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertEqual(rec['status'], 'accepted')
+        self.assertEqual(str(rec['reviewed']), claim._today())
+
+    def test_existing_status_only_call_unaffected(self) -> None:
+        # The pre-Task-3 call shape (status only) must behave exactly as before.
+        result = claim.run_claim(self.root, claim_id='C-bb22cc33dd', status='rejected')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-bb22cc33dd']['status'], 'rejected')
 
 
 if __name__ == '__main__':

@@ -391,6 +391,82 @@ def _intercept_gedcom_import(argv: list[str]) -> int | None:
     return gedcom_import_main(subargv)
 
 
+def _intercept_claim_new(argv: list[str]) -> int | None:
+    """
+    Early interception for `fha claim new …` (SPEC §8.4).
+
+    claim.py's main parser is flat (a positional C-id, plus --status/--value/…
+    for the review/field-edit verb). `new` is not a C-id, so letting the flat
+    parser see it would misread 'new' as the positional claim_id and fail with
+    a confusing "not a valid claim ID" instead of running the mint verb.
+    Routed here first instead, the same mechanism `fha gedcom import` and
+    `fha id check` use (TOOLING §13a2 / §4a).
+
+    Returns an exit code when the first two command tokens are `claim new`, or
+    None to let normal argparse handling proceed - so `fha claim <C-id> …` is
+    unaffected and still reaches claim.py's registered subparser below.
+    """
+    global_root: str | None = None
+    command_idx: int | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--debug':
+            i += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and i + 1 < len(argv):
+                global_root = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            i += 1
+            continue
+        if tok.startswith('--spec-root='):
+            i += 1
+            continue
+        command_idx = i
+        break
+
+    if command_idx is None or argv[command_idx] != 'claim':
+        return None
+
+    # Skip any flags between 'claim' and the next positional (mirrors
+    # _intercept_gedcom_import's dual-position --root convention).
+    j = command_idx + 1
+    while j < len(argv):
+        tok = argv[j]
+        if tok == '--debug':
+            j += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and j + 1 < len(argv):
+                global_root = argv[j + 1]
+            j += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            j += 1
+            continue
+        if tok.startswith('--spec-root='):
+            j += 1
+            continue
+        break
+    if j >= len(argv) or argv[j] != 'new':
+        return None
+
+    from claim import build_claim_new_parser
+    subargv = [tok for tok in argv[j + 1:] if tok != '--debug']
+    # Honor a --root supplied before the 'new' word when the subcommand
+    # didn't set its own.
+    if global_root and '--root' not in subargv \
+            and not any(t.startswith('--root=') for t in subargv):
+        subargv += ['--root', global_root]
+    args = build_claim_new_parser().parse_args(subargv)
+    return args.func(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for `fha` (or `python tools/fha.py`).
@@ -435,6 +511,12 @@ def main(argv: list[str] | None = None) -> int:
         # Intercept 'gedcom import' before argparse: the exporter's parser takes
         # a positional P-id and must stay unchanged (TOOLING §13a/§13a2).
         result = _intercept_gedcom_import(argv_list)
+        if result is not None:
+            return result
+
+        # Intercept 'claim new' before argparse: the review/field-edit parser
+        # takes a positional C-id and must stay unchanged (SPEC §8.4).
+        result = _intercept_claim_new(argv_list)
         if result is not None:
             return result
 

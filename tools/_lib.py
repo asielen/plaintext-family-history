@@ -102,6 +102,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    read_record               - parse frontmatter + claims + body from a .md file
 #    claim_item_key_indent     - one claim item's real mapping-key column (surgical edits)
 #    claims_edit_problem       - pre-write re-parse guard for surgical claims-block edits
+#    ClaimEditRefused          - shared "surgical claims edit unsafe" exception
+#    _find_claims_block        - locate the ## Claims ```yaml fence (line indices)
+#    guard_claims_rewrite      - claims_edit_problem wrapped as a raise-on-problem guard
+#    append_claim_to_source    - append a whole new claim item to a source's ## Claims block
 #    is_merged_meta            - normalized SPEC §9 tombstone test (status: merged)
 #    frontmatter_fence_span    - the ONE `---` fence grammar (exact, FRONT_RE-matched)
 #    parse_frontmatter_strict  - frontmatter mapping via plain yaml.safe_load (no coercion)
@@ -128,6 +132,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_working_copy           - WORKING_COPY marker present at archive root?
 #    is_fixture_path           - path under example-archive/ or tests/fixtures/?
 #    find_person_record_path   - scan people/ for one P-id's record file (never the index)
+#    find_source_record_path   - scan sources/ for one S-id's record file (never the index)
 #    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
 #    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
@@ -1285,6 +1290,160 @@ def claims_edit_problem(
             return (f'the claim status would read {actual!r} '
                     f'instead of {expect_status!r}')
     return None
+
+
+class ClaimEditRefused(Exception):
+    """A surgical ``## Claims`` edit cannot be performed safely.
+
+    Every claims-block writer across `fha claim` and `fha confirm` raises this
+    one exception when a rewrite would corrupt the block's YAML or land on
+    the wrong claim; the caller turns it into a plain refusal `Result` with
+    nothing written (AGENTS_TOOLING's "no traceback ever reaches the user"
+    rule). Before `fha claim new` needed the same append machinery as
+    `fha confirm cooccur`, claim.py and confirm.py each carried their own
+    same-shaped class (`_ClaimEditRefused` / `_EditRefused`) - tools never
+    import tools, so the moment a SECOND tool needed `append_claim_to_source`
+    and `guard_claims_rewrite`, those private types had to become one shared
+    type here. Both files keep their historic private name as a plain alias
+    (`_ClaimEditRefused = ClaimEditRefused`, `_EditRefused = ClaimEditRefused`)
+    so every existing `except` site - and the tests that assert on those
+    names - keep working unchanged.
+    """
+
+
+def _find_claims_block(lines: list[str]) -> tuple[int, int] | None:
+    """Return (open_fence, close_fence) line indices of the ``## Claims`` block.
+
+    A line-precise counterpart to `CLAIMS_RE`: that regex reads the block's
+    text for parsing, but a surgical writer needs the exact line indices to
+    splice new lines into, and a whole-text regex match cannot hand those
+    back cleanly (the fence text can repeat, and mapping a character offset
+    back to a line index invites off-by-one bugs). Returns None when the file
+    has no `## Claims` heading, or the heading is not followed by a
+    ` ```yaml ` / `` ``` `` fence pair before the next `##` heading.
+
+    Shared by every text-splicing claims writer: `append_claim_to_source`
+    below, and confirm.py's `_add_link_to_claim`/`_set_scalar_on_claim`
+    (which import this rather than keep their own copy - it moved here
+    alongside `append_claim_to_source` since both need it).
+    """
+    heading = None
+    for i, ln in enumerate(lines):
+        if re.match(r'^##\s+Claims\b', ln):
+            heading = i
+            break
+    if heading is None:
+        return None
+
+    open_fence = None
+    for i in range(heading + 1, len(lines)):
+        if lines[i].strip() == '```yaml':
+            open_fence = i
+            break
+        if lines[i].startswith('## '):  # next section before any fence
+            return None
+    if open_fence is None:
+        return None
+
+    for i in range(open_fence + 1, len(lines)):
+        if lines[i].strip() == '```':
+            return open_fence, i
+    return None
+
+
+def guard_claims_rewrite(
+    new_text: str, claim_id: str | None, *, expect_status: str | None = None,
+    before_text: str | None = None,
+) -> str:
+    """Re-parse a rewritten claims block; raise `ClaimEditRefused` on any problem.
+
+    Moved here from confirm.py alongside `append_claim_to_source`: every
+    claims-block writer (confirm.py's `_add_link_to_claim`/
+    `_set_scalar_on_claim`, this module's `append_claim_to_source`, and any
+    future one - including a second tool file) funnels its rewrite through
+    here before returning it, because a rewrite that breaks the block's YAML
+    hides EVERY claim in that source from lint/index/report - a false
+    success far worse than a refusal. The check itself is
+    `claims_edit_problem`; this wrapper just turns a problem into the
+    refusal exception every caller already handles, keeping each writer's
+    happy path readable.
+
+    `before_text` (the text the writer started from) keeps the refusal
+    honest about whose fault the problem is. When the same check already
+    fails on that starting text, this edit did not cause the problem - and
+    the only pre-existing state that can reach this guard is a duplicate of
+    `claim_id` (locating the claim required the block to parse and the id to
+    be present, so parse failures and absences are ruled out). That case is
+    the human's duplicate-id repair (lint E001), so the refusal says so
+    instead of accusing this edit of hiding claims. Writers that mint a
+    brand-new id (`append_claim_to_source`) must NOT pass `before_text`: the
+    new id is legitimately absent from the starting text, which would trip
+    this probe.
+    """
+    problem = claims_edit_problem(new_text, claim_id, expect_status=expect_status)
+    if problem is None:
+        return new_text
+    if (before_text is not None and claim_id is not None
+            and claims_edit_problem(before_text, claim_id) is not None):
+        raise ClaimEditRefused(
+            f'claim id {fmt_id_display(normalize_id(claim_id))} appears more than once '
+            'in this file - a duplicate-id problem (lint E001) that predates this edit. '
+            'Fix the duplicate first: open the file, give one of those claims a fresh '
+            'id (mint one with `fha id mint C`), then retry.'
+        )
+    raise ClaimEditRefused(
+        f'{problem}, so saving this edit would hide every claim in the file '
+        'from the tools. Open the claim under ## Claims in the source file, '
+        'make the change by hand, then run `fha lint` to check it.'
+    )
+
+
+# The SHAPE of a claim's `id:` key line (optionally after the list dash), used
+# only to pull the newly-minted claim's own id out of `append_claim_to_source`'s
+# `item_lines` for the pre-write guard's `claim_id` argument. claim.py and
+# confirm.py keep their own copies of this same pattern for their line-ownership
+# checks (`_own_id_key_line`, a stricter test than this shape match alone) -
+# KEEP IN SYNC if the id grammar ever changes.
+_CLAIM_ID_KEY_RE = re.compile(
+    r'^\s*(?:-\s+)?id:\s*(C-[0-9a-hjkmnp-tv-z]{10})\b', re.I
+)
+
+
+def append_claim_to_source(text: str, item_lines: list[str]) -> tuple[str, bool]:
+    """Append one new claim item (its full YAML lines) to the ## Claims block.
+
+    Moved here from confirm.py: `fha confirm cooccur` and `fha claim new`
+    both mint a brand-new claim and append it to an existing source's block,
+    and tools never import tools, so the moment a second tool needed this
+    exact append it could no longer stay confirm.py-private. The appended
+    item is templated at column 0; against a hand-indented block (items at a
+    deeper column) that would break the block's YAML, so the result passes
+    through `guard_claims_rewrite` (keyed on the new item's own C-id) - a
+    mismatch raises `ClaimEditRefused` instead of writing a block no tool can
+    read.
+    """
+    lines = text.splitlines()
+    block = _find_claims_block(lines)
+    if block is None:
+        return text, False
+    open_fence, close_fence = block
+
+    new = lines[:close_fence]
+    # Separate from any preceding claim with one blank line, matching the
+    # readable spacing the example records use between claim items.
+    if close_fence > open_fence + 1 and new and new[-1].strip() != '':
+        new.append('')
+    new.extend(item_lines)
+    new.extend(lines[close_fence:])
+    trailing = '\n' if text.endswith('\n') else ''
+
+    new_cid = None
+    for ln in item_lines:
+        m = _CLAIM_ID_KEY_RE.match(ln)
+        if m:
+            new_cid = m.group(1)
+            break
+    return guard_claims_rewrite('\n'.join(new) + trailing, new_cid), True
 
 
 def is_merged_meta(meta: dict | None) -> bool:
@@ -2880,6 +3039,37 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
         if not parsed or parsed.get('id_str') != target:
             continue
         if parsed.get('id_type') == 'P' and not parsed.get('is_companion'):
+            return path
+    return None
+
+
+def find_source_record_path(archive_root: str | Path, source_id: str) -> Path | None:
+    """Scan `sources/` for one S-id's record file, or None.
+
+    The source sibling of `find_person_record_path`: identity is the
+    `_{S-id}.md` filename suffix (`parse_filename`), so a stale or absent
+    index never blocks or misdirects a write aimed at a source record. Source
+    filenames carry no companion-kind suffix the way person profiles do
+    (`parse_filename` only ever sets `is_companion` for `P`-typed `.md`
+    files), so every `_{S-id}.md` match under `sources/` is the record itself.
+
+    Two tools had already re-implemented this exact scan privately
+    (`fha confirm`'s `_find_source_path_by_id`, `fha source`'s
+    `_find_source_record_path`) before `fha claim new` needed it too; this is
+    the shared home going forward - the same shared-infrastructure rationale
+    as `mint_ids` and `find_person_record_path`. The two existing private
+    copies are left as-is (out of scope for this change) rather than churned
+    just to call through here.
+    """
+    target = normalize_id(source_id)
+    sources_dir = Path(archive_root) / 'sources'
+    if not sources_dir.is_dir():
+        return None
+    for path in sorted(sources_dir.rglob('*.md')):
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('id_str') != target:
+            continue
+        if parsed.get('id_type') == 'S':
             return path
     return None
 
