@@ -860,7 +860,14 @@ def _verb_claim_new(state, kw, dry_run):
         date=kw.get('date'), place=kw.get('place'), place_text=kw.get('place_text'),
         persons=kw.get('persons'), subtype=kw.get('subtype'),
         status=kw.get('status') or 'accepted', confidence=kw.get('confidence'),
-        dry_run=dry_run)
+        dry_run=dry_run,
+        # Threaded back in by the workbench's Apply step from the id its own
+        # earlier dry-run preview minted and showed the human, so Apply
+        # commits exactly that claim instead of `run_claim_new` minting a
+        # second, different C-id (P2 codex finding, round 5, PR #30). The
+        # CLI (`fha claim new`) never sends this - the schema key exists
+        # only for this verb's own round-trip.
+        claim_id=kw.get('claim_id'))
 
 
 def _echo_claim_new(kw):
@@ -931,7 +938,14 @@ def _echo_set_living(kw):
 def _verb_person_new(state, kw, dry_run):
     return person.run_new(
         state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
-        birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run)
+        birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run,
+        # Threaded back in by the workbench's Apply step from the id its own
+        # earlier dry-run preview minted and showed the human, so Apply
+        # commits exactly that person instead of `run_new` minting a second,
+        # different P-id (P2 codex finding, round 5, PR #30). The CLI
+        # (`fha person new`) never sends this - the schema key exists only
+        # for this verb's own round-trip.
+        person_id=kw.get('person_id'))
 
 
 def _echo_person_new(kw):
@@ -1249,7 +1263,7 @@ VERBS: dict[str, dict] = {
     'claim.new': {'schema': {'source_id': 'str', 'claim_type': 'str', 'value': 'str',
                             'date': 'str', 'place': 'str', 'place_text': 'str',
                             'persons': 'list', 'subtype': 'str', 'status': 'str',
-                            'confidence': 'str'},
+                            'confidence': 'str', 'claim_id': 'str'},
                   'run': _verb_claim_new, 'echo': _echo_claim_new, 'reindex': 'source'},
     'confirm.xref': {'schema': {'claim_a': 'str', 'claim_b': 'str', 'relation': 'str'},
                      'run': _verb_xref, 'echo': _echo_xref, 'reindex': 'full'},
@@ -1261,7 +1275,7 @@ VERBS: dict[str, dict] = {
     'person.set-living': {'schema': {'person_id': 'str', 'value': 'str'},
                           'run': _verb_set_living, 'echo': _echo_set_living, 'reindex': 'full'},
     'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
-                             'birth': 'str', 'death': 'str'},
+                             'birth': 'str', 'death': 'str', 'person_id': 'str'},
                    'run': _verb_person_new, 'echo': _echo_person_new, 'reindex': 'full'},
     'person.relate': {'schema': {'person_id': 'str', 'relation_type': 'str', 'target_id': 'str',
                                 'subtype': 'str', 'reciprocal': 'bool'},
@@ -1339,9 +1353,27 @@ def run_api_run(state: ServeState, verb: str, args: dict, dry_run: bool) -> tupl
                                        'next_step': None}],
                          'changed': [], 'data': {}, 'cli_echo': spec['echo'](kw)}
         if not dry_run and result.ok:
-            _reindex_after(state, verb, result)
-            if verb != 'site.publish':
-                invalidate_snapshot(state)
+            try:
+                _reindex_after(state, verb, result)
+                if verb != 'site.publish':
+                    invalidate_snapshot(state)
+            except Exception as e:  # noqa: BLE001 - the engine write already
+                # landed on disk by this point; letting this escape (like the
+                # engine-call except above does) would answer 500/'internal
+                # error' and the do_POST wrapper's generic message, so the
+                # browser reports "Nothing was written" for a change that
+                # already happened - inviting a human to retry it. Surface
+                # this as a warning on the still-successful result instead:
+                # `changed` below already lists what the engine wrote: only
+                # the follow-up refresh failed, and the human needs to know
+                # to run it by hand.
+                traceback.print_exc()
+                result.add(
+                    'warning',
+                    f'saved, but the search index/snapshot could not refresh '
+                    f'automatically ({e}). Run `fha index`, or restart fha serve, '
+                    f'to bring the view up to date.',
+                    next_step='fha index')
 
     payload = result.as_dict()
     payload['cli_echo'] = spec['echo'](kw)

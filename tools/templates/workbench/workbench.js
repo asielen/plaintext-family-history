@@ -243,13 +243,12 @@
      catch-all - hiding the one message ("reload the page you opened") that
      would actually get the human unstuck. Read that body as text instead and
      reject with it tagged, so the .catch handlers below can tell a real
-     network failure from a readable server refusal and show the right one. */
-  function apiRun(verb, args, dryRun) {
-    return fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
-      body: JSON.stringify({ verb: verb, args: args, dry_run: dryRun })
-    }).then(function (r) {
+     network failure from a readable server refusal and show the right one.
+     Shared by apiRun (JSON body) and the upload handler (multipart body) -
+     both hit the same CSRF/Host gate ahead of their own handler, which
+     answers with this same plain-text shape either way. */
+  function fetchJsonOrRefusal(url, opts) {
+    return fetch(url, opts).then(function (r) {
       var ctype = r.headers.get('content-type') || '';
       if (!r.ok && ctype.indexOf('application/json') === -1) {
         return r.text().then(function (text) {
@@ -259,6 +258,14 @@
         });
       }
       return r.json().then(function (j) { j._http = r.status; return j; });
+    });
+  }
+
+  function apiRun(verb, args, dryRun) {
+    return fetchJsonOrRefusal('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
+      body: JSON.stringify({ verb: verb, args: args, dry_run: dryRun })
     });
   }
 
@@ -315,7 +322,22 @@
     setBusy(modal, true);
     apiRun(c.verb, c.args, dryRun).then(function (result) {
       setBusy(modal, false);
-      if (dryRun) modal._run = c;
+      if (dryRun) {
+        modal._run = c;
+        /* A minting verb's dry run draws a REAL id (mint_ids picks randomly
+           on every call, by design - see person.run_new/claim.run_claim_new)
+           and shows it in the preview diff. Thread that id back into the
+           args Apply will send, so the record Apply actually creates is the
+           SAME one the human just approved, not a second independently-
+           minted id (P2 codex finding, round 5, PR #30). */
+        if (result.ok && result.data) {
+          if (c.verb === 'person.new' && result.data.person_id) {
+            modal._run.args.person_id = result.data.person_id;
+          } else if (c.verb === 'claim.new' && result.data.claim_id) {
+            modal._run.args.claim_id = result.data.claim_id;
+          }
+        }
+      }
       var host = ensurePreviewStep(modal);
       var ok = result.ok !== false && (result._http === 200);
       host.innerHTML =
@@ -660,8 +682,7 @@
       var what = modal.querySelector('[name="what"]'); if (what && what.value.trim()) fd.append('what', what.value);
       var who = modal.querySelector('[name="who"]'); if (who && who.value.trim()) fd.append('who', who.value);
       setBusy(modal, true);
-      fetch('/api/upload', { method: 'POST', headers: { 'X-FHA-CSRF': csrfToken() }, body: fd })
-        .then(function (r) { return r.json().then(function (j) { j._http = r.status; return j; }); })
+      fetchJsonOrRefusal('/api/upload', { method: 'POST', headers: { 'X-FHA-CSRF': csrfToken() }, body: fd })
         .then(function (result) {
           setBusy(modal, false);
           var host = ensurePreviewStep(modal);
@@ -676,7 +697,10 @@
             if (hasWarning) reloadOnClose = true;
             else setTimeout(function () { location.reload(); }, 700);
           }
-        }).catch(function () { setBusy(modal, false); showError(modal, 'Upload failed - is fha serve still running?'); });
+        }).catch(function (e) {
+          setBusy(modal, false);
+          showError(modal, (e && e.wbServerText && e.message) || 'Upload failed - is fha serve still running?');
+        });
     });
   }
 

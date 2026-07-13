@@ -1769,6 +1769,14 @@ class _SiteBuilder:
             stories = apply_private_fence(stories, drop=dp)
         bio = _extract_section(body, 'Biography')
         research = _extract_section(body, 'Research Notes')
+        # The section text AS WRITTEN (pending AI-DRAFT block and AI-ACCEPTED
+        # provenance comments intact), kept aside for the workbench editor
+        # prefill below - `bio` itself is about to be run through
+        # `strip_unaccepted_drafts` for the PUBLISHED html, and prefilling
+        # the replacement editor with that stripped copy would silently
+        # delete a pending draft (or an acceptance marker) the moment any
+        # small edit was applied, bypassing `fha confirm draft` entirely.
+        bio_as_written = (bio or '').strip()
         problem: str | None = None
         if bio:
             bio, problem = strip_unaccepted_drafts(bio)
@@ -1791,11 +1799,13 @@ class _SiteBuilder:
         biography_html = _prose_to_html(bio, render, embed, drop_private=dp) if bio else ''
         stories_html = _prose_to_html(stories, render, embed, drop_private=dp) if stories else ''
         research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
-        # `bio` (the raw markdown `person.edit --section biography` would
-        # overwrite) is returned alongside its rendered HTML so the workbench
-        # can prefill the whole-section REPLACE editor with what is actually
-        # there - the same text the render above was built from.
-        return biography_html, stories_html, research_html, bio or ''
+        # `bio_as_written` (NOT the draft-stripped `bio` used for the render
+        # above) is returned alongside the rendered HTML: it is the exact text
+        # `person.edit --section biography` would overwrite, pending AI-DRAFT
+        # block and AI-ACCEPTED markers intact, so the workbench's whole-
+        # section REPLACE editor can never silently discard either on a
+        # human's small edit.
+        return biography_html, stories_html, research_html, bio_as_written
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the

@@ -2178,9 +2178,14 @@ def _cmd_find_json(result: Result) -> int:
     document on top of that would be noise nobody asked for, so the choice
     here is binary: the one real document, or nothing on stdout at all (same
     as `--related` today).
+
+    The documented shape (TOOLING.md §4a, tools/README.md) is the bare hit
+    list `[{id, type, label, detail}, ...]`, not `Result.data`'s own wrapper
+    dict - printing `result.data` whole would hand a consumer written to
+    that contract `{"results": [...]}` instead of the array it expects.
     """
     if 'results' in result.data:
-        print(json.dumps(result.data))
+        print(json.dumps(result.data['results']))
         return result.exit_code
     for m in result.messages:
         prefix = {'error': 'ERROR', 'warning': 'WARNING'}.get(m.level, 'NOTE')

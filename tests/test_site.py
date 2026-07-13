@@ -1686,6 +1686,41 @@ class WorkbenchModeTests(_Base):
             'Priya emigrated in 1962 and worked as a teacher.',
             wb)
 
+    def test_edit_biography_modal_prefills_a_pending_ai_draft_verbatim(self):
+        # P2 codex finding (round 5, PR #30): `biography_raw` was built from
+        # `bio` AFTER `strip_unaccepted_drafts` stripped the pending
+        # `<!-- AI-DRAFT ... -->` block out (the same variable the RENDERED
+        # HTML is built from) - so the editor's prefill silently omitted an
+        # unaccepted draft. Applying any small human edit from that prefill
+        # would have deleted the draft outright, bypassing `fha confirm
+        # draft` entirely. The editor must show the section exactly as
+        # written, draft marker included, even though the published HTML
+        # correctly excludes it.
+        body = ('# Priya\n## Biography\n'
+                'A human-written paragraph that stays.\n\n'
+                '<!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+                'An unreviewed AI-drafted paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - v2 -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Priya Rao', tier='curated', body=body)
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        # Published HTML (the article body, BEFORE the modal <template>s that
+        # hold the editor prefill - the draft text legitimately appears
+        # there too, checked separately below): the accepted paragraph
+        # survives (marker stripped), the still-pending draft is excluded.
+        rendered = wb.split('<template id="tpl-confirm">')[0]
+        self.assertIn('A human-written paragraph that stays.', rendered)
+        self.assertNotIn('An unreviewed AI-drafted paragraph.', rendered)
+        # Editor prefill: the whole section exactly as written - both markers
+        # and the pending draft paragraph intact.
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem">'
+            'A human-written paragraph that stays.\n\n'
+            '&lt;!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) --&gt;\n\n'
+            'An unreviewed AI-drafted paragraph.\n\n'
+            '&lt;!-- AI-DRAFT 2026-07-01 claude-x - v2 --&gt;',
+            wb)
+
     def test_edit_biography_modal_empty_when_no_biography_yet(self):
         self._seed_person('p-aaaaaaaaaa', 'No Bio Yet', tier='curated', body='# No Bio Yet\n')
         self._run_wb()

@@ -1273,28 +1273,32 @@ class JsonCliTests(unittest.TestCase):
         return args
 
     def test_json_emits_one_parseable_document_and_nothing_else(self) -> None:
+        # The documented shape (TOOLING.md §4a, tools/README.md) is the bare
+        # hit list `[{id, type, label, detail}, ...]` - not Result.data's own
+        # `{"results": [...]}` wrapper (P2 codex finding, round 5, PR #30).
         args = self._parse(['Alice', '--json'])
         rc, out = _run(find._run_find, args)
         self.assertEqual(rc, EXIT_CLEAN)
         lines = out.splitlines()
         self.assertEqual(len(lines), 1)
         payload = json.loads(lines[0])
-        self.assertEqual(payload['results'][0]['id'], 'p-aaaaaaaaaa')
+        self.assertIsInstance(payload, list)
+        self.assertEqual(payload[0]['id'], 'p-aaaaaaaaaa')
 
     def test_json_with_text_flag(self) -> None:
         args = self._parse(['--text', 'Alice', '--json'])
         rc, out = _run(find._run_find, args)
         self.assertEqual(rc, EXIT_CLEAN)
         payload = json.loads(out.strip())
-        self.assertTrue(payload['results'])
+        self.assertTrue(payload)
 
     def test_json_with_kind_and_limit(self) -> None:
         args = self._parse(['Alice', '--json', '--kind', 'person', '--limit', '5'])
         rc, out = _run(find._run_find, args)
         self.assertEqual(rc, EXIT_CLEAN)
         payload = json.loads(out.strip())
-        self.assertTrue(payload['results'])
-        self.assertTrue(all(r['type'] == 'person' for r in payload['results']))
+        self.assertTrue(payload)
+        self.assertTrue(all(r['type'] == 'person' for r in payload))
 
     def test_json_with_unrecognised_kind_is_rejected(self) -> None:
         args = self._parse(['Alice', '--json', '--kind', 'nonsense'])

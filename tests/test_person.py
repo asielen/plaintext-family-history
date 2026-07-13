@@ -704,6 +704,42 @@ class NewTests(unittest.TestCase):
         self.assertEqual(result.data['status'], 'refused')
         self.assertEqual(target.read_text(encoding='utf-8'), 'pre-existing content\n')
 
+    def test_person_id_override_reuses_a_previously_minted_id(self) -> None:
+        # P2 codex finding (round 5, PR #30): the workbench's dry-run preview
+        # mints and shows a real P-id, but Apply used to call run_new AGAIN
+        # with no override, drawing a second, DIFFERENT id (mint_ids is
+        # random) - so the record actually created never matched the one the
+        # human approved. `person_id` lets a caller that already minted one
+        # (via an earlier dry run) reuse that exact id on the live write.
+        preview = person.run_new(self.root, 'Reused Id', dry_run=True)
+        self.assertEqual(preview.data['status'], 'dry-run')
+        previewed_id = preview.data['person_id']
+        live = person.run_new(self.root, 'Reused Id', person_id=previewed_id)
+        self.assertEqual(live.exit_code, EXIT_CLEAN)
+        self.assertEqual(live.data['person_id'], previewed_id)
+        path = Path(live.data['path'])
+        self.assertTrue(path.exists())
+        self.assertEqual(read_record(path)['meta']['id'].lower(), previewed_id.lower())
+
+    def test_person_id_override_rejects_a_malformed_id(self) -> None:
+        result = person.run_new(self.root, 'Bad Id', person_id='not-an-id')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+
+    def test_person_id_override_rejects_the_wrong_id_type(self) -> None:
+        result = person.run_new(self.root, 'Wrong Type', person_id='S-fa1234567b')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+
+    def test_person_id_override_refuses_a_stale_preview_id_that_now_exists(self) -> None:
+        # A colliding override (the archive changed since the preview that
+        # minted it) must be refused, not silently reused.
+        first = person.run_new(self.root, 'First Person')
+        self.assertEqual(first.exit_code, EXIT_CLEAN)
+        again = person.run_new(self.root, 'Second Person', person_id=first.data['person_id'])
+        self.assertEqual(again.exit_code, EXIT_FAILURE)
+        self.assertEqual(again.data['status'], 'refused')
+
     def test_blank_name_refused(self) -> None:
         before = self._existing_stub_names()
         result = person.run_new(self.root, '   ')

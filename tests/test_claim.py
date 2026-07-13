@@ -825,6 +825,50 @@ class RunClaimNewTests(unittest.TestCase):
         self.assertEqual(self.source.read_text(encoding='utf-8'), before)
         self.assertTrue(any('Bookkeeper' in m.text for m in result.messages))
 
+    def test_claim_id_override_reuses_a_previously_minted_id(self) -> None:
+        # P2 codex finding (round 5, PR #30): the workbench's dry-run preview
+        # mints and shows a real C-id, but Apply used to call run_claim_new
+        # AGAIN with no override, drawing a second, DIFFERENT id (mint_ids
+        # is random) - so the claim actually created never matched the one
+        # the human approved. `claim_id` lets a caller that already minted
+        # one (via an earlier dry run) reuse that exact id on the live write.
+        preview = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], dry_run=True)
+        previewed_id = preview['claim_id']
+        self.assertTrue(previewed_id)
+        live = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], claim_id=previewed_id)
+        self.assertEqual(live.exit_code, EXIT_CLEAN)
+        self.assertEqual(live['claim_id'], previewed_id)
+        self.assertIn(previewed_id, self._claims())
+
+    def test_claim_id_override_rejects_a_malformed_id(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', claim_id='not-an-id')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'invalid-id')
+
+    def test_claim_id_override_rejects_the_wrong_id_type(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', claim_id='P-aaaaaaaaaa')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'invalid-id')
+
+    def test_claim_id_override_refuses_a_stale_preview_id_that_now_exists(self) -> None:
+        first = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'])
+        self.assertEqual(first.exit_code, EXIT_CLEAN)
+        again = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Elsewhere', claim_id=first['claim_id'])
+        self.assertEqual(again.exit_code, EXIT_FAILURE)
+        self.assertEqual(again['status'], 'refused')
+
     def test_missing_source_is_not_found_with_next_step(self) -> None:
         result = claim.run_claim_new(
             self.root, source_id='S-0000000000', claim_type='occupation', value='Bookkeeper')

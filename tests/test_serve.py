@@ -279,6 +279,75 @@ class ApiRunTests(_ServeCase):
         self.req('GET', '/')
         self.assertTrue(self.state.marker.exists())
 
+    def test_reindex_failure_after_a_successful_write_is_a_warning_not_a_false_failure(self):
+        # P2 codex finding (round 5, PR #30): the engine write and its
+        # follow-up reindex/snapshot-invalidation used to share one
+        # try/except - a failure in the FOLLOW-UP step escaped run_api_run
+        # entirely, hit do_POST's generic handler, and answered 500/"internal
+        # error", which the workbench renders as "Nothing was written" even
+        # though the record was already saved. The write must be reported as
+        # what it was: a success, with a warning that the refresh needs a
+        # manual `fha index`.
+        row = self.a_suggested_claim()
+        cid = row[0]
+        real_reindex_after = serve._reindex_after
+
+        def flaky_reindex_after(state, verb, result):
+            raise RuntimeError('simulated index corruption')
+
+        serve._reindex_after = flaky_reindex_after
+        try:
+            s, d, _h = self.post_run('claim.review', {'claim_id': cid, 'status': 'accepted'}, False)
+        finally:
+            serve._reindex_after = real_reindex_after
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)   # the write itself succeeded
+        self.assertTrue(payload['changed'])       # and is reported as such
+        msg = payload['messages'][-1]
+        self.assertEqual(msg['level'], 'warning')
+        self.assertIn('could not refresh automatically', msg['text'])
+        self.assertEqual(msg['next_step'], 'fha index')
+        # The record really was written to disk, despite the follow-up failure.
+        src = None
+        for f in (self.root / 'sources').rglob('*.md'):
+            if cid.lower() in f.read_text(encoding='utf-8').lower():
+                src = f
+                break
+        self.assertIsNotNone(src)
+        self.assertIn('status: accepted', src.read_text(encoding='utf-8'))
+
+    def test_person_new_apply_reuses_the_previewed_minted_id(self):
+        # P2 codex finding (round 5, PR #30): the workbench's dry-run preview
+        # calls person.new and shows a real minted P-id, but Apply used to
+        # call the SAME engine again with dry_run:false - drawing a second,
+        # DIFFERENT random id, so the record actually created never matched
+        # what the preview showed. `/api/run`'s person.new verb now threads
+        # a client-supplied person_id straight through to person.run_new, so
+        # a client that reuses the preview's id gets that exact record.
+        s, d, _h = self.post_run('person.new', {'name': 'Preview Reuse Test'}, True)
+        self.assertEqual(s, 200)
+        previewed = json.loads(d)['data']['person_id']
+        s, d, _h = self.post_run(
+            'person.new', {'name': 'Preview Reuse Test', 'person_id': previewed}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertEqual(payload['data']['person_id'], previewed)
+
+    def test_claim_new_apply_reuses_the_previewed_minted_id(self):
+        row = self.a_suggested_claim()
+        sid = row[1]
+        args = {'source_id': sid, 'claim_type': 'occupation', 'value': 'Reuse test claim'}
+        s, d, _h = self.post_run('claim.new', args, True)
+        self.assertEqual(s, 200)
+        previewed = json.loads(d)['data']['claim_id']
+        s, d, _h = self.post_run('claim.new', dict(args, claim_id=previewed), False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertEqual(payload['data']['claim_id'], previewed)
+
     def test_live_claim_review_place_id_writes_structured_place(self):
         # P2 codex finding (PR #30): the workbench claim-edit modal's place
         # lookup had no id target, so a place picked from the lookup could

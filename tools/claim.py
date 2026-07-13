@@ -143,6 +143,7 @@ from _lib import (
     reapply_newline,
     resolve_root_arg,
     result_fail,
+    scan_ids_in_tree,
     scan_person_record_ids,
     sqlite_cache_schema_status,
     write_text_exact,
@@ -1066,8 +1067,21 @@ def run_claim_new(
     status: str = 'accepted',
     confidence: str | None = None,
     dry_run: bool = False,
+    claim_id: str | None = None,
 ) -> Result:
     """Mint a brand-new claim onto an existing source's `## Claims` block.
+
+    `claim_id` is NOT a CLI flag - `fha claim new` always mints its own id,
+    same as before. It exists for a caller (`fha serve`'s claim.new verb)
+    that already ran this SAME function once as a dry run and is now re-
+    running it live: reusing that earlier call's minted id here means the
+    apply commits exactly the claim the human previewed, instead of
+    `mint_ids` drawing a fresh random id on the second call (P2 codex
+    finding, round 5, PR #30 - the workbench's two-step preview/apply flow
+    otherwise shows one id and creates another). Still collision-checked
+    against the whole tree, same as a freshly-minted id would be - a stale
+    preview (something else changed the archive in between) is refused, not
+    silently reused.
 
     `data` is {'status': 'ok'|'invalid-id'|'invalid-type'|'invalid-status'|
     'refused'|'failed'|'not-found', 'claim_id', 'source_id'}. On a real write
@@ -1142,7 +1156,18 @@ def run_claim_new(
             f'No source record {fmt_id_display(sid)} found under {archive_root / "sources"}.',
             next_step='fha find ' + fmt_id_display(sid))
 
-    cid = mint_ids('C', 1, archive_root)[0]
+    if claim_id:
+        if not (is_valid_id(claim_id) and id_type_of(claim_id) == 'C'):
+            return _fail(result, 'invalid-id', f'{claim_id!r} is not a valid C-id.')
+        cid = normalize_id(claim_id)
+        if cid in scan_ids_in_tree(archive_root):
+            return _fail(
+                result, 'refused',
+                f'{fmt_id_display(cid)} already exists in the archive - the earlier '
+                'preview is stale (something else changed since). Preview again, '
+                'then apply.')
+    else:
+        cid = mint_ids('C', 1, archive_root)[0]
     result.data['claim_id'] = fmt_id_display(cid)
 
     # Confidence is required on every claim (SPEC §8.5) and the same section

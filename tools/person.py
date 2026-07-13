@@ -209,6 +209,7 @@ from _lib import (
     render_stub_content,
     resolve_root_arg,
     result_fail,
+    scan_ids_in_tree,
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
@@ -665,9 +666,22 @@ def _normalize_sex_input(value: str | None) -> str | None:
 def run_new(
     archive_root: Path, name: str, sex: str | None = None, gender: str | None = None,
     birth: str | None = None, death: str | None = None, dry_run: bool = False,
+    person_id: str | None = None,
 ) -> Result:
     """Mint one P-id, render its stub, and write it under people/stubs/;
     return a Result.
+
+    `person_id` is NOT a CLI flag - `fha person new` always mints its own id,
+    same as before. It exists for a caller (`fha serve`'s person.new verb)
+    that already ran this SAME function once as a dry run and is now re-
+    running it live: reusing that earlier call's minted id here means the
+    apply commits exactly the record the human previewed, instead of
+    `mint_ids` drawing a fresh random id on the second call (P2 codex
+    finding, round 5, PR #30 - the workbench's two-step preview/apply flow
+    otherwise shows one id and creates another). Still collision-checked
+    against the whole tree, same as a freshly-minted id would be - a stale
+    preview (something else changed the archive in between) is refused, not
+    silently reused.
 
     The one-command mint for a brand-new person - the parity command behind
     every "+ add person" button (plan 17 BUILD §3.3 option b), and the
@@ -738,7 +752,18 @@ def run_new(
             gloss[field] = _edtf_gloss(normalized)
 
     stubs_dir = archive_root / 'people' / 'stubs'
-    pid = mint_ids('P', 1, archive_root)[0].lower()
+    if person_id:
+        if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
+            return _refuse_result(result, 'refused', f'{person_id!r} is not a valid P-id.')
+        pid = normalize_id(person_id)
+        if pid in scan_ids_in_tree(archive_root):
+            return _refuse_result(
+                result, 'refused',
+                f'{fmt_id_display(pid)} already exists in the archive - the earlier '
+                'preview is stale (something else changed since). Preview again, '
+                'then apply.')
+    else:
+        pid = mint_ids('P', 1, archive_root)[0].lower()
     filename = stub_filename(clean_name, pid)
     path = stubs_dir / filename
     result.data['person_id'] = fmt_id_display(pid)
