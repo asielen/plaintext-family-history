@@ -3338,12 +3338,12 @@ def render_stub_content(
         '---',
         f'id: {pid}',
         f'aliases: [{pid}]',
-        f'name: {display_name}',
+        f'name: {yaml_inline(display_name)}',
     ]
     if sex is not None:
         lines.append(f'sex: {sex}')
     if gender is not None:
-        lines.append(f'gender: {gender}')
+        lines.append(f'gender: {yaml_inline(gender)}')
     lines.append('living: unknown')
     if birth is not None:
         lines.append(f'birth: {birth}   # unsourced estimate - a tool will remind you to add a source')

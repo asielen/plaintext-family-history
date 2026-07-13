@@ -1035,6 +1035,56 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(sidecar.exists())
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
+    def test_sidecar_pointer_only_accepts_capture_path_stub(self) -> None:
+        # P2 codex finding (PR #30): a `fha capture --path` stub sets
+        # asset_elsewhere + asset_path/asset_path_absolute but has no
+        # external_links, so it used to be permanently unprocessable without
+        # a hand-edit. It must now mint like any other pointer-only source -
+        # asset_path (the human's own shorthand) folded into provenance, but
+        # asset_path_absolute (a machine-specific path) never written into
+        # the committed record.
+        sidecar = self.archive / 'documents' / 'census' / 'elsewhere.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'title: Grandma Wedding Photo\n'
+            'asset_elsewhere: true\n'
+            'asset_path: E:/family-photos/grandma-wedding.jpg\n'
+            'asset_path_absolute: /mnt/e/family-photos/grandma-wedding.jpg\n'
+            '---\n'
+            'Still on the old external drive.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(sidecar.exists())  # stub consumed
+
+        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        rec = read_record(records[0])
+        self.assertEqual(rec['meta']['title'], 'Grandma Wedding Photo')
+        self.assertNotIn('files', rec['meta'])
+        self.assertNotIn('external_links', rec['meta'])
+        self.assertIn('E:/family-photos/grandma-wedding.jpg', rec['meta']['provenance'])
+        # The machine-specific absolute path never lands in the committed record.
+        raw = records[0].read_text(encoding='utf-8')
+        self.assertNotIn('/mnt/e/family-photos', raw)
+
+    def test_sidecar_pointer_only_asset_path_appends_to_existing_provenance(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'elsewhere-note.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'asset_elsewhere: true\n'
+            'asset_path: on Dad\'s laptop\n'
+            'provenance: Mentioned in Aunt Sue\'s 2019 email.\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(next((self.archive / 'sources').rglob('*_S-*.md')))
+        self.assertIn("Mentioned in Aunt Sue's 2019 email.", rec['meta']['provenance'])
+        self.assertIn("on Dad's laptop", rec['meta']['provenance'])
+
     def test_sidecar_pointer_only_honors_cli_overrides(self) -> None:
         sidecar = self.archive / 'documents' / 'census' / 'override.notes.md'
         sidecar.write_text(

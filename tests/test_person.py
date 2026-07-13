@@ -791,6 +791,26 @@ class RelateTests(unittest.TestCase):
         self.assertEqual(new_text.count('  - to:'), 3)
         self.assertIn('    status: hypothesis\n\n  - to: "[[P-2222222222|B Two]]"', new_text)
 
+    def test_target_name_with_embedded_quote_is_escaped_not_corrupting(self) -> None:
+        # P2 codex-adjacent finding (sweep of PR #30's _lib.py YAML-quoting
+        # fix): `target_name` is an EXISTING person's `name:` field, never
+        # validated by `relate` itself - a human may have typed a quote into
+        # it long before this ran (a nickname: `Anna "Annie" Smith`). Spliced
+        # unescaped into the hand-built double-quoted `- to: "[[...]]"`
+        # scalar, an embedded `"` used to end the string early and corrupt
+        # the rest of the line.
+        item = person._relationship_item_lines(
+            'P-4444444444', 'Anna "Annie" Smith', 'sibling', None)
+        text = '\n'.join(['---', f'id: {CURATED_PID}', 'name: Thomas Hartley',
+                          'living: false', 'created: 2026-01-01', '---', ''])
+        new_text = person._insert_relationship_entry(text, item)
+        self.assertIsNotNone(new_text)
+        self.curated.write_text(new_text, encoding='utf-8')
+        meta = read_record(self.curated)['meta']
+        rel = meta['relationships'][0]
+        self.assertEqual(rel['to'], '[[P-4444444444|Anna "Annie" Smith]]')
+        self.assertEqual(rel['type'], 'sibling')
+
     def test_idempotent_duplicate(self) -> None:
         person.run_relate(self.root, CURATED_PID, 'parent', TARGET_PID)
         before = self.curated.read_bytes()
@@ -809,6 +829,36 @@ class RelateTests(unittest.TestCase):
         self.assertIn('type: parent', curated_text)
         self.assertIn('type: child', stub_text)
         self.assertIn(f'[[{CURATED_PID}|Thomas Hartley]]', stub_text)
+
+    def test_reciprocal_second_write_failure_rolls_back_the_first(self) -> None:
+        # P2 codex finding (PR #30): the reciprocal write used to write the
+        # owner's file, then attempt the target's mirror - and on an OSError
+        # there, return a refusal WITHOUT undoing the owner's already-landed
+        # write. A --reciprocal call that reports failure must never
+        # silently leave a one-sided relationship on disk.
+        owner_before = self.curated.read_bytes()
+        target_before = self.target.read_bytes()
+
+        calls = {'n': 0}
+        real_write = person.write_text_exact
+
+        def _flaky_write(path, text):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise OSError('simulated lock')
+            return real_write(path, text)
+
+        with mock.patch.object(person, 'write_text_exact', _flaky_write):
+            result = person.run_relate(
+                self.root, CURATED_PID, 'parent', TARGET_PID, reciprocal=True)
+
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertEqual(result.changed, [])
+        # Both files are exactly as they were - the first write was rolled back.
+        self.assertEqual(self.curated.read_bytes(), owner_before)
+        self.assertEqual(self.target.read_bytes(), target_before)
+        self.assertIn('rolled back', ' '.join(m.text for m in result.messages))
 
     def test_reciprocal_rerun_fills_in_only_the_missing_mirror(self) -> None:
         # Forward-only first (no --reciprocal); a later --reciprocal call

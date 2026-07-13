@@ -594,20 +594,42 @@ def _apply_claim_review(
                 return idx, 'key', m.group(1)
         return None, None, None
 
+    def _value_span_end(idx: int) -> int:
+        """Return the exclusive end of the block owned by the key at `item[idx]`:
+        every following line up to (not including) the next sibling key written
+        at this item's own `key_indent`, or the item's end.
+
+        A flow-style `key: value` line has no continuation, so this only ever
+        advances past a genuine block-style value a human wrote by hand - most
+        commonly a `persons:` (or any other) key followed by an indented `- …`
+        list. Without this, replacing such a key with a flow-style rewrite
+        (`set_scalar`) or deleting it (`remove_key`) touched only the header
+        line and left its orphaned continuation lines behind, corrupting the
+        item's YAML - a block-style `persons:` list rewritten by `--persons`
+        used to leave its old `- P-…` lines stranded under the new inline
+        list, and the pre-write guard then refused the whole edit."""
+        sibling_re = re.compile(r'^' + re.escape(key_indent) + r'\S')
+        j = idx + 1
+        while j < len(item) and not sibling_re.match(item[j]):
+            j += 1
+        return j
+
     def set_scalar(key: str, value_text: str, insert_after: int) -> int:
         idx, kind, _ = find_key(key)
         if idx is not None:
+            end = _value_span_end(idx)
             if kind == 'dash':
-                item[idx] = f'{dash_prefix}{key}: {value_text}'
+                item[idx:end] = [f'{dash_prefix}{key}: {value_text}']
             else:
-                item[idx] = f'{key_indent}{key}: {value_text}'
+                item[idx:end] = [f'{key_indent}{key}: {value_text}']
             return idx
         pos = insert_after + 1
         item.insert(pos, f'{key_indent}{key}: {value_text}')
         return pos
 
     def remove_key(key: str) -> None:
-        """Delete one top-level item key entirely (dash or indented form), if
+        """Delete one top-level item key entirely - its header line AND any
+        block-style continuation lines it owns (dash or indented form), if
         present. Used for the place/place_text switch below; a claim legally
         has `value:` (never place/place_text) as its first/dash key, so this
         never removes the dash line in practice - and if a hand-edited claim
@@ -616,7 +638,7 @@ def _apply_claim_review(
         malformed block and refuse rather than save it."""
         idx, _kind, _ = find_key(key)
         if idx is not None:
-            del item[idx]
+            del item[idx:_value_span_end(idx)]
 
     # Drop the mutually-exclusive place key FIRST, before any index is
     # computed. A deletion shifts every following line up by one, so a
@@ -688,7 +710,16 @@ def _apply_claim_review(
         rendered_persons = '[' + ', '.join(fmt_id_display(p) for p in persons) + ']'
         persons_idx, _persons_kind, _ = find_key('persons')
         if persons_idx is not None:
+            before_len = len(item)
             set_scalar('persons', rendered_persons, insert_after=persons_idx)
+            # A block-style persons: list collapses to one flow-style line here,
+            # shrinking `item`. `anchor` may already point past this key (e.g. a
+            # newly-inserted --date landed right after status, which can sit
+            # below a block-style persons: in file order) - shift it by the same
+            # delta or confidence's fallback insert below lands short.
+            delta = len(item) - before_len
+            if delta and anchor > persons_idx:
+                anchor += delta
         else:
             anchor = set_scalar('persons', rendered_persons, insert_after=anchor)
     if confidence is not None:

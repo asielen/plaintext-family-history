@@ -15,6 +15,7 @@ serve.py directly (its own import wiring handles the site load).
 """
 
 import argparse
+import contextlib
 import hashlib
 import http.client
 import io
@@ -28,6 +29,7 @@ import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -277,6 +279,33 @@ class ApiRunTests(_ServeCase):
         self.req('GET', '/')
         self.assertTrue(self.state.marker.exists())
 
+    def test_live_claim_review_place_id_writes_structured_place(self):
+        # P2 codex finding (PR #30): the workbench claim-edit modal's place
+        # lookup had no id target, so a place picked from the lookup could
+        # only ever be submitted as `place_text` (a wikilink), never the
+        # structured `place` L-id the picker promised to resolve. The
+        # frontend fix lives in workbench.js/_modals.html (no JS test
+        # harness in this repo); this locks in the server-side contract
+        # those templates now drive - `place` alone reaches `run_claim` and
+        # writes a real `place:` L-id, exactly like `fha claim --place`.
+        row = self.a_suggested_claim()
+        cid = row[0]
+        s, d, _h = self.post_run(
+            'claim.review', {'claim_id': cid, 'place': 'L-7c1a9f4e22'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('--place L-7c1a9f4e22', payload['cli_echo'])
+        src = None
+        for f in (self.root / 'sources').rglob('*.md'):
+            if cid.lower() in f.read_text(encoding='utf-8').lower():
+                src = f
+                break
+        self.assertIsNotNone(src)
+        text = src.read_text(encoding='utf-8')
+        self.assertIn('place: L-7c1a9f4e22', text)
+        self.assertNotIn('place_text:', text)
+
 
 class UploadTests(_ServeCase):
     def _multipart(self, filename, content, fields=None):
@@ -331,6 +360,40 @@ class UploadTests(_ServeCase):
         # is folded into that same body rather than silently dropped.
         self.assertIn('A letter grandpa wrote in 1945.', note_body)
         self.assertIn('Grandpa Joe', note_body)
+
+    def test_upload_note_sidecar_write_failure_is_reported_not_swallowed(self):
+        # P2 codex finding (PR #30): a sidecar write failure AFTER the asset
+        # bytes are already saved used to be swallowed (`except OSError:
+        # pass`) - the API still answered 200 with no hint the note was
+        # lost. It must now surface as a warning, and `changed` must not
+        # falsely claim the sidecar was written.
+        boundary, body = self._multipart(
+            'sidecar-fail.txt', b'payload',
+            fields={'what': 'a note that will not save', 'who': 'Someone'})
+
+        real_write_text = Path.write_text
+
+        def _flaky_write_text(self_path, *a, **kw):
+            if self_path.name.endswith('.notes.md'):
+                raise OSError('simulated disk failure')
+            return real_write_text(self_path, *a, **kw)
+
+        with mock.patch.object(Path, 'write_text', _flaky_write_text):
+            s, d, _h = self.req('POST', '/api/upload', body=body,
+                                headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                                         'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])   # the asset itself is safe
+        inbox = self.root / 'inbox'
+        asset = inbox / 'sidecar-fail.txt'
+        sidecar = inbox / 'sidecar-fail.notes.md'
+        self.assertTrue(asset.is_file())
+        self.assertFalse(sidecar.exists())                 # genuinely never landed
+        self.assertEqual(payload['changed'], [str(asset)])  # not falsely reported as written
+        msg = payload['messages'][0]
+        self.assertEqual(msg['level'], 'warning')
+        self.assertIn('note could not be saved', msg['text'])
 
     def test_upload_note_bumps_stem_when_only_the_sidecar_collides(self):
         # The asset name `photo.jpg` has no collision, but an unrelated OLDER
@@ -748,6 +811,58 @@ class PortZeroTests(unittest.TestCase):
     def test_explicit_nonzero_port_passes_through(self):
         args = argparse.Namespace(port=9001)
         self.assertEqual(serve._resolved_port(args), 9001)
+
+
+class CmdServeEphemeralPortTests(unittest.TestCase):
+    """P2 codex finding (PR #30): `_cmd_serve` must serve on - and print/embed
+    - the OS-assigned port when `--port 0` is given, not the literal 0 it was
+    asked for. `_resolved_port` already passed 0 through untouched
+    (PortZeroTests above); the remaining bug was that `_cmd_serve` built the
+    banner URL and the ServeState (whose `port` the snapshot embeds) from
+    that requested port BEFORE binding, instead of `httpd.server_address[1]`
+    after. The functional server tests elsewhere in this file sidestep
+    `_cmd_serve` entirely - they build ServeState/httpd by hand and fix up
+    `state.port` themselves (see `_ServeCase.setUp`) - which is exactly why
+    this shipped uncaught; this test drives the real CLI entrypoint."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not EXAMPLE.is_dir():
+            raise unittest.SkipTest('example-archive not present')
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / 'arc'
+        shutil.copytree(EXAMPLE, self.root)
+        config = load_fha_yaml(self.root, strict=True)
+        index_mod.build_index(self.root, config)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_port_0_serves_and_prints_the_bound_port(self) -> None:
+        args = argparse.Namespace(root=str(self.root), port=0, no_browser=True)
+
+        class _ImmediateStop(ThreadingHTTPServer):
+            """Binds for real (so `server_address[1]` is a genuine OS-assigned
+            port) but returns from `serve_forever` at once, so the test
+            doesn't block on a server no request will ever reach."""
+            def serve_forever(self, poll_interval=0.5):
+                raise KeyboardInterrupt
+
+        real_ths = serve.ThreadingHTTPServer
+        serve.ThreadingHTTPServer = _ImmediateStop
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                exit_code = serve._cmd_serve(args)
+        finally:
+            serve.ThreadingHTTPServer = real_ths
+
+        self.assertEqual(exit_code, serve.EXIT_CLEAN)
+        banner = out.getvalue()
+        self.assertNotIn('127.0.0.1:0/', banner)
+        self.assertRegex(banner, r'serving at  http://127\.0\.0\.1:[1-9]\d*/')
 
 
 class EchoTests(unittest.TestCase):

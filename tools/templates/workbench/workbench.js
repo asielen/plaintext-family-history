@@ -45,8 +45,14 @@
   }
 
   function esc(s) {
+    // Every call site splices this into HTML - some (the lookup-result
+    // buttons) into double-quoted attributes via innerHTML. Without
+    // escaping '"' too, a label carrying one (`John "Jack" Smith`) closes
+    // the attribute early and lets the rest of the label - or a crafted
+    // archive label - inject new attributes into the element.
     return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   /* Insert text at a textarea/input caret (or append if unfocused). */
@@ -184,6 +190,19 @@
       if (c.type === 'checkbox') { args[name] = c.checked; return; }
       var v = c.value;
       if (v !== null && String(v).trim() !== '') args[name] = v;
+    });
+    /* A hidden `data-wb-idfield="otherName"` control (set by the lookup
+       click handler below when a result is picked by id) names the
+       plain-text field it supersedes: when both are non-blank, drop the
+       plain-text one so only the resolved id travels (e.g. a claim's
+       `place` L-id instead of a `place_text` wikilink - submitting both
+       is a refused mutually-exclusive pair server-side). A manually typed
+       plain-text field with no lookup pick is unaffected: the idfield
+       stays blank and collect() already dropped it above. */
+    $all('[data-wb-idfield]', modal).forEach(function (idEl) {
+      var idName = idEl.getAttribute('name');
+      var pairName = idEl.getAttribute('data-wb-idfield');
+      if (idName && pairName && args[idName] !== undefined) delete args[pairName];
     });
     /* A per-modal builder can rewrite (verb, args) - milestone routing, the
        sex/gender selector, the multi-field name lists. */

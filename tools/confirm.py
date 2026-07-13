@@ -1608,7 +1608,12 @@ def _rewrite_ref_item(item: str, token_re: re.Pattern, survivor_disp: str) -> st
         display = (m.group('display') or m.group('target')).strip()
     else:
         display = core
-    return f'"[[{survivor_disp}|{display}]]"'
+    # `display` came from the item's OWN existing text (a hand-typed alias
+    # name, not something this merge validated) - escape it for the
+    # double-quoted YAML scalar it lands in rather than splice it in raw
+    # (PR #30 review sweep; same class as person.py's relationship-mirror fix).
+    escaped_display = display.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"[[{survivor_disp}|{escaped_display}]]"'
 
 
 def _rewrite_person_list_value(

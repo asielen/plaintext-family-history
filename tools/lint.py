@@ -3596,9 +3596,17 @@ def _format_mirror_entry(
 ) -> list[str]:
     """The YAML list-item lines for a mirror relationship entry pointing back at
     the person who already records the edge. Pinned `[[P-id|Name]]` so it reads
-    and resolves; subtype omitted when there is nothing to say."""
+    and resolves; subtype omitted when there is nothing to say.
+
+    `owner_name` is an EXISTING person's `name:` field, not a value this
+    fixer validated - a human may have typed a quote into it long before
+    `--fix-reciprocal` ran. Escaped for the double-quoted YAML scalar it
+    lands in (same fix/reasoning as `person._relationship_item_lines`, PR
+    #30 review sweep) rather than left to splice in raw.
+    """
+    escaped_name = owner_name.replace('\\', '\\\\').replace('"', '\\"')
     lines = [
-        f'  - to: "[[{fmt_id_display(owner_pid)}|{owner_name}]]"',
+        f'  - to: "[[{fmt_id_display(owner_pid)}|{escaped_name}]]"',
         f'    type: {role}',
     ]
     if subtype:

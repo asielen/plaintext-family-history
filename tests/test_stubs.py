@@ -167,6 +167,36 @@ class RenderStubContentDefaultOutputTests(unittest.TestCase):
         self.assertNotIn('death', meta)
 
 
+class RenderStubContentYamlQuotingTests(unittest.TestCase):
+    """P2 codex finding (PR #30): `name`/`gender` are free text a human types
+    (`fha person new "Baby #2"`) and were spliced into the frontmatter
+    unquoted. YAML reads an unquoted ` #` as a comment marker and an
+    unquoted `: ` as a new mapping key, so a name carrying either silently
+    truncated on read-back, or - for `: ` - could corrupt the record. Both
+    fields must route through `yaml_inline` like every other free-text
+    frontmatter writer in this codebase."""
+
+    def test_name_with_hash_round_trips_whole(self) -> None:
+        text = render_stub_content('P-aaaaaaaaaa', 'Baby #2')
+        self.assertIn("name: 'Baby #2'\n", text)
+        self.assertEqual(_meta(text)['name'], 'Baby #2')
+
+    def test_name_with_colon_round_trips_whole(self) -> None:
+        text = render_stub_content('P-aaaaaaaaaa', 'Twin: firstborn')
+        self.assertEqual(_meta(text)['name'], 'Twin: firstborn')
+
+    def test_plain_name_stays_unquoted(self) -> None:
+        # No YAML-significant characters - yaml_inline should not add quotes
+        # a human didn't ask for (keeps the byte-identical-output contract
+        # for the overwhelmingly common case).
+        text = render_stub_content('P-aaaaaaaaaa', 'Jane Doe')
+        self.assertIn('name: Jane Doe\n', text)
+
+    def test_gender_with_yaml_significant_text_round_trips_whole(self) -> None:
+        text = render_stub_content('P-aaaaaaaaaa', 'Jane Doe', gender='non-binary: they/them')
+        self.assertEqual(_meta(text)['gender'], 'non-binary: they/them')
+
+
 class RenderStubContentExtensionTests(unittest.TestCase):
     """The sex/gender/birth/death keywords `fha person new` will use."""
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-12",
+  "generated": "2026-07-13",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -163,7 +163,7 @@
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "2add03cb5f1f36818a05f9569a3f0ec79b0e7955588cab8993a102e926806095",
+      "sha256": "3beeedc1b6dedb5c351250ee061f3a3829781fe1fab32fe81636d3318e0b69be",
       "spec_version": "1.2"
     },
     {
@@ -175,7 +175,7 @@
     {
       "path": "design/custom.css",
       "category": "skeleton",
-      "sha256": "ec5e92d69db34dd4d6d97dc600e71197b56d7dc889ed68e0c66d7ade106fc512",
+      "sha256": "817986f1e6e096e29f0ea598dac2bbde2b98c917b2862ea34ac6c64544946e20",
       "spec_version": "1.2"
     },
     {
@@ -247,7 +247,7 @@
     {
       "path": "design/styles.css",
       "category": "operating",
-      "sha256": "9285576b46dd734cf92af9422e38db02293ebd78c4e202a84a4ab322c78834e3",
+      "sha256": "2ba583643540523ffa79aa1a231ec68561f29efd8049ad73de3eb8cfdcb11a71",
       "spec_version": "1.2"
     },
     {
@@ -461,7 +461,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "5da9166c9aa0f309e54cb3ad374269ccf4f92ffe1eb2cddf0e68b5da110cb5b1",
+      "sha256": "9ed7fee72417d8b93a413955938e62381a34417251598f7672cb4685d7c9aa3c",
       "spec_version": "1.2"
     },
     {
@@ -515,13 +515,13 @@
     {
       "path": "tools/claim.py",
       "category": "operating",
-      "sha256": "5b7b72cedce1f1c60fe7e0d7b07ceceafe942fc29be300c7446e7493ae3ec972",
+      "sha256": "c7d2877954fea3924a4e8c1a2d55661c3be9b39a198f915c32430aa73b29c3b1",
       "spec_version": "1.2"
     },
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "e7cb8d2e69e18026295a8074c844077e0997f0879f27a86d2f85b9a7e5206f5f",
+      "sha256": "5706f7aa8ec66e982b5f3237d25084daeaaffd5b1cb763fe02b499f7e2a87f87",
       "spec_version": "1.2"
     },
     {
@@ -551,7 +551,7 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "550377cdab3bcb5c1040cd8ac6b74dedc77cbb5dc43c68fe3ac5691bd899da24",
+      "sha256": "9030e9186e353f38863db21cc447379b96840244c1914d50806ba9ff52b7f684",
       "spec_version": "1.2"
     },
     {
@@ -581,7 +581,7 @@
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "953be2a137a01ff34d63e9414978b929c261e4d863940056b02fb610b28d17e9",
+      "sha256": "73875bdb0aaaa43149d1e6d6c25dceb3723c739eecc3261f787de8233e1f3dd7",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/person.py",
       "category": "operating",
-      "sha256": "3ae7bf2b396b3724c6944549fc5c1b2a17860ee65e3f505afaf7fbd77d00c496",
+      "sha256": "abc1024c5c476dfa2e2e587d0de530d57d195199f7df9639b92aa52f6a025fd7",
       "spec_version": "1.2"
     },
     {
@@ -617,7 +617,7 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "0ba2e5141676c8771b39bfe1db5b773c9ee201473ed3da83314c3eb6b793c6f1",
+      "sha256": "881de96b05c6c91ce3c5927eae9a42f6526e55f20b1d03a0270dcc755b702698",
       "spec_version": "1.2"
     },
     {
@@ -647,13 +647,13 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "d39f568e212ddc93812c526aee1f1e61685f019c39503b522ffbfe519de1e9b4",
+      "sha256": "3709e3c2ae1e67a795d074d2c6fcd4f5891c441d1916efa57c025ba8763d5087",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "264890d3805807aba32089eef021cb9c54eac9e89c168c69f984cea0f6ebb0c3",
+      "sha256": "824e0d6b964e4cf68e885c6cdafc7de55bd62d1da590145d303ada719e5b1fb0",
       "spec_version": "1.2"
     },
     {
@@ -749,7 +749,7 @@
     {
       "path": "tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "0f70785e5580062a17a5673aedd7806afb16848afa51a0a1972dd062adbd987d",
+      "sha256": "db0a8cebffe531a0bbe92243110644a044289939f636db7c6628eff11fc7786b",
       "spec_version": "1.2"
     },
     {
@@ -767,7 +767,7 @@
     {
       "path": "tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "1112af5201cf5f8096e172f4932e3ee754c504002c604f88a9f3c06539cec8ec",
+      "sha256": "9ae24eb9c6208df2bcd2944e10f8a126aecb884363768a0167c83d1f1e25bf2f",
       "spec_version": "1.2"
     },
     {

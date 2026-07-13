@@ -168,6 +168,7 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import contextlib
 import difflib
 import re
 import sqlite3
@@ -212,6 +213,7 @@ from _lib import (
     sqlite_cache_schema_status,
     stub_filename,
     write_text_exact,
+    yaml_inline,
 )
 
 configure_utf8_stdout()
@@ -856,13 +858,25 @@ def _relationship_item_lines(
     resolvable even if the name changes later), the role, the nature when
     given, and `status: hypothesis` - always, per this verb's one job
     (recording a belief, never a sourced fact; see the module docstring).
+
+    `target_name` is an EXISTING person's `name:` field, not a value this
+    tool validated - a human can have typed a quote or backslash into it
+    (`Anna "Annie" Smith`) long before `relate` ever ran. It is escaped for
+    the double-quoted YAML scalar it lands in rather than routed through
+    `yaml_inline` (which could pick a different quote style and break the
+    plain `- to: "[[...]]"` shape existing records and tests already rely
+    on) - the wrapping quotes are fixed, only their content needs escaping.
+    `subtype` is free text too (see `warn_subtype` at the call site) and has
+    no such fixed-format constraint, so it goes through the shared
+    `yaml_inline` quoting rule like every other free-text frontmatter write.
     """
+    escaped_name = target_name.replace('\\', '\\\\').replace('"', '\\"')
     lines = [
-        f'- to: "[[{fmt_id_display(target_pid)}|{target_name}]]"',
+        f'- to: "[[{fmt_id_display(target_pid)}|{escaped_name}]]"',
         f'  type: {relation_type}',
     ]
     if subtype:
-        lines.append(f'  subtype: {subtype}')
+        lines.append(f'  subtype: {yaml_inline(subtype)}')
     lines.append('  status: hypothesis')
     return lines
 
@@ -1080,14 +1094,36 @@ def run_relate(
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
+    # `--reciprocal` promises BOTH sides land together. If the owner's write
+    # succeeds and the target's then fails (locked file, folder went
+    # read-only mid-run), leaving the first write in place would silently
+    # produce the one-sided relationship the flag exists to prevent - the
+    # command would report failure while the archive already changed. Roll
+    # any already-completed write in THIS call back to its original text
+    # before refusing, so a failure here is all-or-nothing like every other
+    # write in this codebase.
+    completed: list[tuple[Path, str]] = []
     for path, old_text, new_text, label in writes:
         try:
             write_text_exact(path, reapply_newline(new_text, old_text))
         except OSError as e:
+            for done_path, done_text in completed:
+                with contextlib.suppress(OSError):
+                    write_text_exact(done_path, done_text)
+            rollback_note = (
+                ' The other file was rolled back to how it was - nothing was kept.'
+                if completed else ' Nothing was written.'
+            )
             return _refuse_result(
                 result, 'refused',
                 f'cannot write {path}: {e}. Check the file is not open '
-                'elsewhere and the folder is writable, then retry.')
+                f'elsewhere and the folder is writable, then retry.{rollback_note}')
+        completed.append((path, old_text))
+
+    # Only record success once every write in the batch landed - `changed`/
+    # the info messages must never name a path whose write was just rolled
+    # back above.
+    for path, _old_text, _new_text, label in writes:
         result.note_changed(path)
         result.add('info',
                    f'Recorded: {label} (an unsourced belief - `fha claim` '

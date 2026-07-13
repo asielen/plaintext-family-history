@@ -126,6 +126,7 @@ import sqlite3
 import sys
 from collections import deque
 from pathlib import Path
+from urllib.parse import quote as _urlquote
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -1311,7 +1312,16 @@ class _SiteBuilder:
         Mirrors serve's own `_resolve_root_request` confinement (photos,
         documents, inbox only) so a href serve emits is one serve will also
         serve: resolve each allowed root, and if `resolved` sits under it, build
-        a forward-slash URL from the relative remainder."""
+        a forward-slash URL from the relative remainder.
+
+        Each path segment is percent-encoded (`#`/`?`/space and friends) -
+        serve's handler already `unquote()`s the whole `/root/...` path
+        before splitting alias from relpath, but a literal `#`/`?` in an
+        UNencoded href is stripped by the BROWSER before the request is even
+        sent (a URL fragment/query, not part of the path), so the request
+        that reaches serve is silently truncated and 404s even though the
+        file exists. `safe='/'` keeps the path separators themselves
+        unescaped."""
         try:
             target = resolved.resolve()
         except OSError:
@@ -1325,7 +1335,7 @@ class _SiteBuilder:
                 rel = target.relative_to(base)
             except ValueError:
                 continue
-            rel_posix = rel.as_posix()
+            rel_posix = _urlquote(rel.as_posix(), safe='/')
             return f'/root/{alias}/{rel_posix}' if rel_posix != '.' else f'/root/{alias}'
         return None
 

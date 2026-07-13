@@ -1304,6 +1304,31 @@ class JsonCliTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('nonsense', err.getvalue())
 
+    def test_json_with_no_query_is_refused_not_a_false_empty_success(self) -> None:
+        # P2 codex finding (PR #30): a bare `fha find --json` (no positional
+        # query, no --text) used to fall through with json_query == '' and
+        # print a real, parseable `{"results": []}` document at exit 0 - a
+        # mistyped automation call looked exactly like a genuine search that
+        # found nothing. The non-JSON branch already refuses this shape;
+        # --json must match it rather than silently "succeed" empty.
+        args = self._parse(['--json'])
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertEqual(out.getvalue(), '')   # no JSON document printed
+        self.assertIn('--json', err.getvalue())
+
+    def test_json_with_empty_text_flag_is_also_refused(self) -> None:
+        args = self._parse(['--text', '', '--json'])
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertEqual(out.getvalue(), '')
+
     def test_json_with_related_is_refused_naming_alternatives(self) -> None:
         args = self._parse(['--related', 'p-aaaaaaaaaa', '--json'])
         err = io.StringIO()

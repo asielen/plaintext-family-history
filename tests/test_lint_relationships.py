@@ -285,6 +285,26 @@ class ReciprocityW116Tests(unittest.TestCase):
         self.assertEqual(_codes(findings, 'W116'), [])
         self.assertEqual(_codes(findings, 'W115'), [])
 
+    def test_fix_reciprocal_owner_name_with_quote_is_escaped(self) -> None:
+        # Sweep of PR #30's YAML-quoting review fixes: `owner_name` is read
+        # from an EXISTING person record, never validated by this fixer - a
+        # human may have typed a quote into it long before --fix-reciprocal
+        # ran (same class as person.py's relationship-mirror fix).
+        child_f, child_t = _person(
+            CHILD, 'kid', 'Ann "Annie"',
+            relationships=_parent_entry(PARENT, 'Bob Kid', role='parent'))
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT)
+        root = _build({child_f: child_t, parent_f: parent_t, src_rel: src_text})
+        lint.run_lint(root, {}, fix_reciprocal=True)
+        parent_path = root / 'people' / 'stubs' / f'kid__bob_{PARENT}.md'
+
+        from _lib import read_record
+        rec = read_record(parent_path)
+        self.assertEqual(rec['parse_errors'], [])
+        rel = rec['meta']['relationships'][0]
+        self.assertEqual(rel['to'], '[[P-aaaaaaaaaa|Ann "Annie" kid]]')
+
 
 class NeedsSourcingBacklogTests(unittest.TestCase):
     def test_unsourced_and_hypothesis_entries_land_on_backlog(self) -> None:

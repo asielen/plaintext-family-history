@@ -319,7 +319,7 @@ These bind every delivery form and the engine alike:
 | Piece | Status |
 |---|---|
 | Engine `fha capture` (paste fallback, recipes, generic, stub render, research-log) | **built** ([`tools/capture.py`](tools/capture.py)) |
-| `fha capture --path` - register a must-never-move asset (§2.6) | **built** (plan 17, [`tools/capture.py`](tools/capture.py) `run_capture_path`; [`tests/test_capture.py`](tests/test_capture.py) `CapturePathTestCase`) - one pointer stub, `asset_path`/`asset_path_absolute` recorded; `fha process` reads the case-(c) `asset_elsewhere` flag but not yet the two new location keys (recorded follow-up, §2.6) |
+| `fha capture --path` - register a must-never-move asset (§2.6) | **built** (plan 17, [`tools/capture.py`](tools/capture.py) `run_capture_path`; [`tests/test_capture.py`](tests/test_capture.py) `CapturePathTestCase`) - one pointer stub, `asset_path`/`asset_path_absolute` recorded; `fha process` (`process_pointer_only`) now accepts `asset_path` as a second pointer-only shape alongside `external_links`, folding the human's own `asset_path` shorthand into `provenance:` (never the machine-specific `asset_path_absolute`) - PR #30 review follow-up, [`tests/test_process.py`](tests/test_process.py) `test_sidecar_pointer_only_accepts_capture_path_stub` |
 | Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
 | `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD_INGESTION.md MG2.1) |
 | `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD_INGESTION.md MG2.1) - warns when bundles sit in the staging folder waiting for `--ingest` |

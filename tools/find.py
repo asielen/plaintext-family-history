@@ -2516,6 +2516,19 @@ def _run_find(args: argparse.Namespace) -> int:
             print(f'ERROR: {kind_error}', file=sys.stderr)
             return EXIT_FAILURE
         json_query = text_query if text_query is not None else (query or '')
+        if not json_query:
+            # Mirror the non-JSON branch's refusal below: a missing query is
+            # a malformed call, not a real search with zero matches. Without
+            # this, `_ranked_search` happily runs on '' and returns an empty
+            # result set with exit 0 - a mistyped automation call (a bare
+            # `fha find --json`, or a shell variable that expanded empty)
+            # would look exactly like a real search that found nothing.
+            print(
+                'ERROR: fha find --json needs a query - fha find --json <ID|text>, '
+                'or add --text "phrase".',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
         limit = getattr(args, 'limit', 20)
         result = run_find_json(
             archive_root, fha_config, query=json_query, kinds=kinds, limit=limit,

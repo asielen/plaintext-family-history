@@ -1572,6 +1572,28 @@ class WorkbenchModeTests(_Base):
         self.assertIn('<option value="__paste__">paste an S-id&hellip;</option>', wb)
         self.assertIn('"subject_name": "Milestone Person"', wb)
 
+    def test_root_asset_url_percent_encodes_special_characters(self):
+        # P2 codex finding (PR #30): an asset filename containing a URL
+        # delimiter (`#`, `?`) was written verbatim into the workbench
+        # `/root/<alias>/<relpath>` href. The BROWSER strips a `#`
+        # fragment or `?` query before the request ever reaches serve, so
+        # `_resolve_root_request` got a truncated path and 404'd even
+        # though the file exists on disk.
+        self._seed_source('s-1111111111', 'Has Odd Filename')
+        asset_rel = 'documents/census/family #2 record.txt'
+        asset_path = self.archive_root / asset_rel
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_text('page text', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', asset_rel, 'page-1'))
+        self._run_wb()
+        wb = self._read('sources/s-1111111111.html')
+        self.assertIn('/root/documents/census/family%20%232%20record.txt', wb)
+        # The raw, unencoded '#' never appears mid-href (it would truncate
+        # the URL at the browser before the request is even sent).
+        self.assertNotIn('href="/root/documents/census/family #2', wb)
+
     def test_milestone_modal_omits_uncited_source(self):
         # A source that does not cite this person must not appear in their
         # picker - the list is scoped per person, not archive-wide.

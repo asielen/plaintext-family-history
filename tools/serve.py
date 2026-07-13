@@ -1506,6 +1506,7 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
                 tmp.unlink()
             return 500, _msg_payload(False, f'could not write the file: {e}')
         written = [str(dest)]
+        sidecar_error: str | None = None
         if has_note:
             sidecar = inbox / _sidecar_name(dest.name)
             lines = ['---', f'noted: {time.strftime("%Y-%m-%d")}']
@@ -1521,12 +1522,26 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
             try:
                 sidecar.write_text('\n'.join(lines), encoding='utf-8')
                 written.append(str(sidecar))
-            except OSError:
-                pass
+            except OSError as e:
+                # The asset itself is already safely saved (written above) -
+                # only the note sidecar failed. Report it as a warning rather
+                # than swallowing it: a silent 200 here would tell the human
+                # their note was kept when it was actually lost.
+                sidecar_error = str(e)
         invalidate_snapshot(state)
 
-    payload = _msg_payload(True, f'added inbox/{dest.name}'
-                           + (' with a note beside it' if len(written) > 1 else ''))
+    if sidecar_error is not None:
+        payload = _msg_payload(
+            True,
+            f'added inbox/{dest.name}, but the note could not be saved: '
+            f'{sidecar_error}. The file itself is safe - add the note by hand '
+            f'beside it (inbox/{_sidecar_name(dest.name)}), or re-upload once '
+            'the problem is fixed.',
+        )
+        payload['messages'][0]['level'] = 'warning'
+    else:
+        payload = _msg_payload(True, f'added inbox/{dest.name}'
+                               + (' with a note beside it' if len(written) > 1 else ''))
     payload['changed'] = written
     return 200, payload
 
@@ -1921,19 +1936,28 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         return pre.exit_code
 
     fha_config = pre.data['fha_config']
-    state = ServeState(archive_root, fha_config, port)
 
-    # Build the first snapshot up front so the first page render is instant.
-    ensure_snapshot(state)
-    review_count, inbox_count = _counts(state)
-
+    # Bind BEFORE building state/snapshot: `--port 0` asks the OS for a free
+    # port, and only the bound socket knows what it actually got. Binding
+    # first (rather than after ensure_snapshot) keeps the snapshot's embedded
+    # `port:` context - which workbench pages read to build their own API
+    # URLs - and the printed/opened URL honest for the ephemeral-port path
+    # the test suite relies on; building the snapshot against the requested
+    # port (still 0) would bake a dead URL into every rendered page.
     try:
         httpd = ThreadingHTTPServer(('127.0.0.1', port), _Handler)
     except OSError:
         print(f'ERROR: port {port} is busy - close the other serve window or pass '
               f'`--port {port + 1}`.', file=sys.stderr)
         return EXIT_FAILURE
+    port = httpd.server_address[1]
+
+    state = ServeState(archive_root, fha_config, port)
     httpd.state = state  # type: ignore[attr-defined]
+
+    # Build the first snapshot up front so the first page render is instant.
+    ensure_snapshot(state)
+    review_count, inbox_count = _counts(state)
 
     url = f'http://127.0.0.1:{port}/'
     print('')

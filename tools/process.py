@@ -1248,6 +1248,29 @@ def process_document(
     return EXIT_CLEAN
 
 
+def _pointer_provenance(sidecar_meta: dict) -> str | None:
+    """Provenance text for a case-(c) pointer-only source, folding in the
+    human's own `asset_path` shorthand when the sidecar carries one
+    (`fha capture --path`, TOOLING_INGESTION §2.6) alongside any hand-written
+    `provenance:` note - concatenated, not overwritten, so a human note
+    survives being processed alongside a captured location hint.
+
+    Uses `asset_path` (the location exactly as the human typed it - "their
+    own shorthand may be meaningful to them", `capture.py`'s
+    `run_capture_path` docstring) rather than `asset_path_absolute`: the
+    absolute form is a machine-specific path, and a source record is a
+    long-lived file that may travel in a packet or export, where a local
+    absolute path has no business appearing (AGENTS_TOOLING's privacy rule
+    against local absolute paths in exported/committed output).
+    """
+    existing = _sidecar_str(sidecar_meta, 'provenance')
+    asset_path = _sidecar_str(sidecar_meta, 'asset_path')
+    if not asset_path:
+        return existing
+    location_note = f'Original not copied into the archive - last known location: {asset_path}.'
+    return f'{existing}\n{location_note}' if existing else location_note
+
+
 def process_pointer_only(
     archive_root: Path,
     fha_config: dict,
@@ -1262,8 +1285,12 @@ def process_pointer_only(
     """TOOLING §13b case (c): mint a source record with no asset.
 
     Only reached when `_companion_for_sidecar` found no same-stem file *and*
-    the stub explicitly flags `asset_elsewhere: true` - citation +
-    `external_links` only, flagged for a later retrieval pass. Every other
+    the stub explicitly flags `asset_elsewhere: true`. Two pointer-only
+    shapes are accepted: citation + `external_links` (the page merely says
+    "record held at the county courthouse"), or `asset_path` (a
+    `fha capture --path` stub - a specific asset known to exist but that
+    must never be copied/moved; TOOLING_INGESTION §2.6). Either is enough to
+    mint; a stub with neither refuses, naming the fix. Every other
     no-companion case still refuses in `_companion_for_sidecar`.
     """
     sidecar_meta, notes_body = _read_sidecar(sidecar)
@@ -1282,10 +1309,11 @@ def process_pointer_only(
         else _slugify(sidecar.stem).replace('-', ' ')
     )
     external_links = _sidecar_external_links(sidecar_meta)
-    if not external_links:
+    asset_path = _sidecar_str(sidecar_meta, 'asset_path')
+    if not external_links and not asset_path:
         raise ProcessError(
-            f'{sidecar.name} flags asset_elsewhere but has no external_links; '
-            'add at least one before processing.'
+            f'{sidecar.name} flags asset_elsewhere but has neither external_links '
+            'nor asset_path; add at least one before processing.'
         )
 
     # DNA sources always carry restricted: true (SPEC §8.5.5, lint E017),
@@ -1306,7 +1334,7 @@ def process_pointer_only(
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
         source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name),
-        provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        provenance=_pointer_provenance(sidecar_meta),
         external_links=external_links,
     )
 

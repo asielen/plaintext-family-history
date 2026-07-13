@@ -1085,6 +1085,93 @@ class FieldExtensionApplyTests(unittest.TestCase):
         self.assertNotIn('place', rec['C-bb22cc33dd'])
 
 
+# ── --persons against a block-style existing list (P2 codex finding, PR #30) ────
+
+def _block_persons_block(pad: int, *, trailing_confidence: bool = False) -> str:
+    """One claim item whose `persons:` is a hand-written BLOCK list (the shape
+    `set_scalar`/`remove_key` used to touch only the header line of, leaving
+    the old `- P-…` continuation lines stranded under the new inline
+    rewrite). `trailing_confidence` adds a `confidence:` key AFTER persons so
+    a fresh `--confidence` insert exercises the `anchor` still landing after
+    persons' collapsed block, not on one of its orphaned lines."""
+    dash = '-' + ' ' * pad
+    ki = ' ' * (1 + pad)
+    li = ki + '  '   # list item indent, deeper than the persons: key itself
+    lines = [
+        '## Claims', '```yaml',
+        f'{dash}value: "Born 1880"',
+        f'{ki}id: C-aa11bb22cc',
+        f'{ki}type: birth',
+        f'{ki}persons:',
+        f'{li}- P-aaaaaaaaaa',
+        f'{li}- P-bbbbbbbbbb',
+        f'{ki}status: suggested',
+    ]
+    if trailing_confidence:
+        lines.append(f'{ki}confidence: low')
+    lines.append('```')
+    return '\n'.join(lines) + '\n'
+
+
+class PersonsBlockStyleRegressionTests(unittest.TestCase):
+    """--persons against an existing BLOCK-style (not flow `[...]`) list."""
+
+    def test_persons_block_list_replaced_as_a_unit(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _block_persons_block(pad), 'C-aa11bb22cc',
+                    persons=['P-cccccccccc'])
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                self.assertEqual(claims[0]['persons'], ['P-cccccccccc'])
+                self.assertEqual(claims[0]['status'], 'suggested')  # untouched
+                # No orphaned `- P-…` line survives from the old block list.
+                self.assertNotIn('- P-aaaaaaaaaa', new)
+                self.assertNotIn('- P-bbbbbbbbbb', new)
+
+    def test_persons_block_list_replace_keeps_later_key_placement_correct(self) -> None:
+        # A block-style persons: sits ABOVE confidence:. Replacing persons
+        # shrinks the item; a later fresh insert (--date, not present yet)
+        # relies on `anchor`, which must be shifted by that shrink or the new
+        # line lands mid-block instead of after status.
+        new, changed = claim._apply_claim_review(
+            _block_persons_block(1, trailing_confidence=True), 'C-aa11bb22cc',
+            persons=['P-cccccccccc'], date='1880')
+        self.assertTrue(changed)
+        claims = read_record_from_text(new)
+        self.assertEqual(len(claims), 1)
+        c = claims[0]
+        self.assertEqual(c['persons'], ['P-cccccccccc'])
+        self.assertEqual(str(c['date']), '1880')
+        self.assertEqual(c['confidence'], 'low')  # untouched, still readable
+        self.assertEqual(c['status'], 'suggested')
+
+    def test_persons_block_list_via_run_claim(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmp.name)
+            source = _write_source(root)
+            _write_person(root, 'P-aaaaaaaaaa', 'Anna Smith')
+            _write_person(root, 'P-bbbbbbbbbb', 'Ben Smith')
+            text = source.read_text(encoding='utf-8')
+            # Rewrite C-aa11bb22cc's persons as a block list, matching a
+            # human hand-edit or an older tool's output.
+            text = text.replace(
+                'persons: [P-aaaaaaaaaa]',
+                'persons:\n    - P-aaaaaaaaaa',
+                1,
+            )
+            source.write_text(text, encoding='utf-8')
+            result = claim.run_claim(root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            rec = {c['id']: c for c in read_record(source)['claims']}
+            self.assertEqual(rec['C-aa11bb22cc']['persons'], ['P-bbbbbbbbbb'])
+        finally:
+            tmp.cleanup()
+
+
 # ── The 2026-07 stale-anchor corruption (place/place_text over a notes block) ───
 
 class StaleAnchorRegressionTests(unittest.TestCase):
