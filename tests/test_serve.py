@@ -307,6 +307,78 @@ class ApiRunTests(_ServeCase):
         self.assertNotIn('place_text:', text)
 
 
+class SnapshotIndexFreshnessTests(_ServeCase):
+    """P2 codex finding (round 3, PR #30): `ensure_snapshot` used to check
+    `snapshot_is_stale` (which DOES watch record-file mtimes) but then call
+    `run_site` without first rebuilding a stale `.cache/index.sqlite` -
+    `open_index_db(..., strict=False)` only warns and still hands back rows
+    from before the edit. The rebuilt snapshot then got stamped `.built`
+    over stale content, hiding a record edit made outside serve until some
+    unrelated file happened to bump the marker's staleness check again."""
+
+    def test_ensure_snapshot_rebuilds_a_stale_index_before_rendering(self):
+        import sqlite3
+        row = self.a_suggested_claim()
+        self.assertIsNotNone(row)
+        cid, _sid = row
+        src_path = None
+        for f in (self.root / 'sources').rglob('*.md'):
+            if cid.lower() in f.read_text(encoding='utf-8').lower():
+                src_path = f
+                break
+        self.assertIsNotNone(src_path)
+
+        # Add a brand-new claim item to the ## Claims block by hand - exactly
+        # what a human editing the file directly (outside serve) would do.
+        # This bumps the file's mtime past the already-built snapshot AND
+        # leaves the index (built in setUp) with no row for the new claim.
+        lines = src_path.read_text(encoding='utf-8').splitlines()
+        heading_idx = next(i for i, ln in enumerate(lines) if ln.strip() == '## Claims')
+        close_idx = next(i for i in range(heading_idx, len(lines)) if lines[i].strip() == '```')
+        new_claim_id = 'C-zzzzzzzzzz'
+        lines[close_idx:close_idx] = [
+            '- value: "A brand-new fact added outside serve"',
+            f'  id: {new_claim_id}',
+            '  type: note',
+            '  status: suggested',
+        ]
+        src_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+        serve.invalidate_snapshot(self.state)
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+        serve.ensure_snapshot(self.state)
+
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            found = conn.execute(
+                'SELECT 1 FROM claims WHERE id = ?', (new_claim_id.lower(),)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(
+            found, 'ensure_snapshot must rebuild the index before rendering the snapshot')
+
+
+class PhotoIndexStalenessTests(_ServeCase):
+    """P2 codex finding (round 3, PR #30): photo strips/portraits/captions
+    render straight from `.cache/photos.sqlite`, but the staleness probe
+    didn't watch it - a `fha photoindex scan`/`tag-person`/`set-summary`
+    run while serve stayed open left the snapshot looking fresh over a
+    stale catalog until an unrelated watched file happened to change."""
+
+    def test_touching_photos_sqlite_marks_the_snapshot_stale(self):
+        serve.ensure_snapshot(self.state)   # fresh baseline (setUp already built one)
+        self.assertFalse(serve.snapshot_is_stale(self.state))
+        photos_db = self.root / '.cache' / 'photos.sqlite'
+        photos_db.write_text('', encoding='utf-8')
+        future = time.time() + 5
+        os.utime(photos_db, (future, future))
+        # Bypass the short-TTL mtime memo (_MEMO_TTL, unrelated to this fix)
+        # so the freshly-touched file is seen immediately rather than
+        # possibly within the same 1s cache window as the baseline check.
+        self.state._mtime_memo = None
+        self.assertTrue(serve.snapshot_is_stale(self.state))
+
+
 class UploadTests(_ServeCase):
     def _multipart(self, filename, content, fields=None):
         boundary = '----testboundary1234'
@@ -415,6 +487,31 @@ class UploadTests(_ServeCase):
         self.assertFalse((inbox / 'photo.jpg').exists())
         # The pre-existing, unrelated stub is untouched.
         self.assertIn('an older stub', (inbox / 'photo.notes.md').read_text(encoding='utf-8'))
+
+    def test_upload_bumps_destination_when_a_part_file_already_exists(self):
+        # P2 codex finding (round 3, PR #30): the write lands at
+        # `<dest>.part` first (write-then-atomic-replace). A pre-existing
+        # `letter.pdf.part` - a genuine partial download someone left in the
+        # inbox - has no matching `letter.pdf`, so the old collision check
+        # (dest.exists() / sidecar.exists() only) missed it entirely and the
+        # upload's temp write clobbered that `.part` file before the rename
+        # to `letter.pdf` ever ran.
+        inbox = self.root / 'inbox'
+        inbox.mkdir(parents=True, exist_ok=True)
+        partial = inbox / 'letter.pdf.part'
+        partial.write_bytes(b'a partial download in progress')
+        boundary, body = self._multipart('letter.pdf', b'the real upload')
+        s, d, _h = self.req('POST', '/api/upload', body=body,
+                            headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                                     'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        # The pre-existing partial download survives untouched...
+        self.assertEqual(partial.read_bytes(), b'a partial download in progress')
+        # ...and the new upload landed at a bumped name instead of clobbering it.
+        self.assertTrue((inbox / 'letter -2.pdf').is_file())
+        self.assertEqual((inbox / 'letter -2.pdf').read_bytes(), b'the real upload')
+        self.assertFalse((inbox / 'letter.pdf').exists())
 
     def test_upload_without_csrf_403(self):
         boundary, body = self._multipart('x.txt', b'x')

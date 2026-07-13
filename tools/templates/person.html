@@ -11,7 +11,7 @@
     <a href="#" data-wb-open-file="{{ person.record_relpath }}">open file</a>
     <span class="wb-sep">&middot;</span>
     <span>living: <strong>{{ person.living }}</strong></span>
-    <a href="#" data-wb-open="tpl-living" data-wb-args='{{ {"person_id": person.display_id} | tojson }}'>change&hellip;</a>
+    <a href="#" data-wb-open="tpl-living" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' data-wb-fill="value={{ person.living }}">change&hellip;</a>
   </div>
   {% endif %}
   {% if person.alt_names %}

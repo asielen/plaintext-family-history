@@ -144,14 +144,24 @@
     var pname = btn.getAttribute('data-wb-name');
     if (pname) { var ni = modal.querySelector('[name="name"]'); if (ni) ni.value = pname; }
 
-    /* generic field prefill: data-wb-fill="field=value|field2=value2" */
+    /* generic field prefill: data-wb-fill="field=value|field2=value2".
+       A radio GROUP shares one `name` across several inputs - querySelector
+       would grab only the first of them and stomp its OWN value attribute
+       (silently turning "deceased" into whatever value was being prefilled,
+       still unchecked) rather than checking the one that actually matches.
+       querySelectorAll + per-element handling covers both shapes; every
+       existing single-target usage (a <select> or plain <input>) still has
+       exactly one match, so this is a no-op behavior change for those. */
     var fill = btn.getAttribute('data-wb-fill');
     if (fill) {
       fill.split('|').forEach(function (pair) {
         var i = pair.indexOf('=');
         if (i < 0) return;
-        var c = modal.querySelector('[name="' + pair.slice(0, i) + '"]');
-        if (c) c.value = pair.slice(i + 1);
+        var val = pair.slice(i + 1);
+        $all('[name="' + pair.slice(0, i) + '"]', modal).forEach(function (c) {
+          if (c.type === 'radio') c.checked = (c.value === val);
+          else c.value = val;
+        });
       });
     }
     substitute(modal);
@@ -556,6 +566,17 @@
       var list = panel && panel.querySelector('.wb-lookup-results');
       if (list) debouncedLookup(q, list, { kind: q.getAttribute('data-wb-kind') });
       return;
+    }
+    /* A genuine user edit to a lookup-backed field invalidates whatever id a
+       PRIOR pick resolved to - clear the paired hidden idfield so collect()
+       doesn't override the human's just-typed text with a stale selection.
+       Only fires on real typing/paste: setting `.value =` from the pick
+       handler itself does not dispatch a native `input` event, so this
+       never fights the pick that just happened. */
+    if (e.target.classList && e.target.classList.contains('wb-target')) {
+      var wbField = e.target.closest('.wb-field');
+      var idEl = wbField && wbField.querySelector('input[data-wb-idfield]');
+      if (idEl && idEl.value) idEl.value = '';
     }
     var sb = e.target.closest('.wb-search input[name="wbq"]');
     if (sb) {

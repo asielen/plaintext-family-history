@@ -309,10 +309,17 @@ def _newest_mtime_under(base: Path) -> float:
 
 
 def _newest_input_mtime(state: ServeState) -> float:
-    """Newest mtime across the record trees + design/ + fha.yaml + the index.
-    A cheap scandir walk of these small trees only (contract SS2) - photos/
-    documents are never walked. `design/` is walked file-by-file like the
-    record trees (see `_newest_mtime_under`), not single-`os.stat`'d on the
+    """Newest mtime across the record trees + design/ + fha.yaml + the index +
+    the photo catalog. A cheap scandir walk of these small trees only
+    (contract SS2) - the photos/documents ASSET roots themselves are never
+    walked (could be huge; irrelevant to page HTML structure). `.cache/
+    photos.sqlite` is a single stat, not a walk - the workbench renders photo
+    strips, portraits, and captions straight from it, so a `fha photoindex
+    scan`/`tag-person`/`set-summary` run while serve stays open must mark the
+    snapshot stale exactly like an edited record does; without it those pages
+    would keep serving the pre-update catalog until an unrelated watched file
+    happened to change. `design/` is walked file-by-file like the record
+    trees (see `_newest_mtime_under`), not single-`os.stat`'d on the
     directory: editing `design/custom.css` must mark the snapshot stale, and a
     directory-level stat would miss that edit."""
     newest = 0.0
@@ -320,7 +327,8 @@ def _newest_input_mtime(state: ServeState) -> float:
     for name in _SNAPSHOT_INPUTS:
         newest = max(newest, _newest_mtime_under(root / name))
     newest = max(newest, _newest_mtime_under(root / 'design'))
-    for extra in (root / 'fha.yaml', root / '.cache' / 'index.sqlite'):
+    for extra in (root / 'fha.yaml', root / '.cache' / 'index.sqlite',
+                  root / '.cache' / 'photos.sqlite'):
         try:
             newest = max(newest, os.stat(extra).st_mtime)
         except OSError:
@@ -439,6 +447,22 @@ def ensure_snapshot(state: ServeState) -> None:
     with state.lock:
         if not snapshot_is_stale(state):
             return   # another thread rebuilt while we waited
+        # A record edited outside serve (a text editor save, a git checkout)
+        # is exactly what makes `snapshot_is_stale` true in the first place -
+        # but `run_site` below only WARNS on a stale `.cache/index.sqlite`
+        # and still renders from its old rows (strict=False: a read-only
+        # caller gets a slightly stale answer rather than none). Without
+        # this, the rebuilt snapshot would be stamped fresh while quietly
+        # showing pre-edit data, and `_counts` just below would undercount
+        # the review/inbox queues the same way. Mirrors the same
+        # open-or-rebuild check `run_serve_preflight` already does at
+        # startup, just re-run here since the archive can go stale again at
+        # any point during a long-running session.
+        conn = open_index_db(state.archive_root, ('persons', 'sources', 'claims'), strict=True)
+        if conn is None:
+            index_mod.build_index(state.archive_root, state.fha_config)
+        else:
+            conn.close()
         review_count, inbox_count = _counts(state)
         ctx = {
             'port': state.port,
@@ -1521,8 +1545,13 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
         # sidecar must bump the destination exactly like a collision on the
         # asset name itself, or this upload's note would collide with (and
         # get shadowed by, or silently overwrite) an unrelated older item's
-        # sidecar of the same stem.
-        while dest.exists() or (has_note and (inbox / _sidecar_name(dest.name)).exists()):
+        # sidecar of the same stem. The write below lands at `dest.name +
+        # '.part'` first (write-then-atomic-replace); a PRE-EXISTING file at
+        # that exact `.part` name - a genuine partial download someone left
+        # in the inbox - must bump the destination too, or the write below
+        # clobbers it before the rename ever happens.
+        while (dest.exists() or (has_note and (inbox / _sidecar_name(dest.name)).exists())
+               or (inbox / (dest.name + '.part')).exists()):
             dest = inbox / f'{stem} -{n}{ext}'
             n += 1
         # Confirm the final destination is still inside the inbox (belt + braces).

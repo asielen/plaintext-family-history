@@ -1632,6 +1632,31 @@ class WorkbenchModeTests(_Base):
         wb = self._read('persons/p-aaaaaaaaaa.html')
         self.assertNotIn('Someone Else Census', wb)
 
+    def test_certificate_source_type_option_removed(self):
+        # P2 codex finding (round 3, PR #30): the "File as a source" modal
+        # offered `certificate`, which is not in the SOURCE_TYPES controlled
+        # vocabulary (`vital-record` covers it) - choosing it always got
+        # refused by process.file. The option list must only ever offer
+        # values `process.file` actually accepts.
+        self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('<option>certificate</option>', wb)
+        self.assertIn('<option>vital-record</option>', wb)
+
+    def test_living_modal_prefills_current_value_not_a_hardcoded_default(self):
+        # P2 codex finding (round 3, PR #30): the Change-living modal always
+        # defaulted its radio group to "deceased" regardless of the actual
+        # person, so previewing/applying without manually re-picking could
+        # flip a living/unknown person to deceased. The template no longer
+        # hardcodes a checked default; the opener passes the person's real
+        # current value for workbench.js's data-wb-fill to preselect.
+        self._seed_person('p-aaaaaaaaaa', name='Living Person', living='true', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('value="false" checked', wb)
+        self.assertIn('data-wb-fill="value=true"', wb)
+
 
 if __name__ == '__main__':
     unittest.main()
