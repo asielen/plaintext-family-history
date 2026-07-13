@@ -29,7 +29,7 @@
       <code>{{ item.name }}</code>
       <span class="note">{{ item.kind }}
         {% if item.files %}&middot; files:
-          {% for f in item.files %}<a href="#" data-wb-open-file="inbox/{{ f }}">{{ f }}</a>{% if not loop.last %} &middot; {% endif %}{% endfor %}
+          {% for f in item.files %}<a href="#" data-wb-open-file="inbox/{{ (item.name ~ f) if item.kind == 'bundle' else f }}">{{ f }}</a>{% if not loop.last %} &middot; {% endif %}{% endfor %}
         {% endif %}
       </span>
       <div class="wb-actions">

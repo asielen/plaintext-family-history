@@ -25,8 +25,8 @@
   <dl class="summary">
     {% for row in person.summary %}
     <dt>{{ row.label }}</dt>
-    <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% endif %}{% if workbench %}
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-fill="mtype={{ row.label }}">edit</a>{% endif %}</dd>
+    <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% if workbench %}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-fill="mtype={{ row.label }}">edit</a>{% endif %}{% endif %}</dd>
     {% endfor %}
   </dl>
   {% endif %}

@@ -485,6 +485,37 @@ class OpenTests(_ServeCase):
         finally:
             serve._os_open = orig
 
+    def test_open_resolves_an_externally_configured_inbox_root(self):
+        # P2 codex finding (round 2, PR #30): `gather_inbox` hands the open/
+        # process APIs a relative `inbox/<name>` path assuming it always
+        # means `archive_root/inbox/<name>` - but fha.yaml's `roots:` may
+        # point `inbox` OUTSIDE the archive (same config surface as
+        # photos/documents), in which case that assumption is simply wrong
+        # and every Inbox button 404'd on a file that genuinely exists.
+        ext_tmp = tempfile.TemporaryDirectory()
+        try:
+            ext_inbox = Path(ext_tmp.name)
+            (ext_inbox / 'letter.txt').write_text('hi', encoding='utf-8')
+            self.state.fha_config = dict(self.state.fha_config)
+            self.state.fha_config['roots'] = dict(self.state.fha_config.get('roots') or {})
+            self.state.fha_config['roots']['inbox'] = str(ext_inbox)
+
+            opened = {}
+            orig = serve._os_open
+            serve._os_open = lambda p: opened.setdefault('p', p)
+            try:
+                s, _d, _h = self.req(
+                    'POST', '/api/open', body=json.dumps({'path': 'inbox/letter.txt'}),
+                    headers={'Content-Type': 'application/json',
+                             'X-FHA-CSRF': self.state.csrf_token})
+                self.assertEqual(s, 200)
+                self.assertEqual(Path(opened.get('p')).resolve(),
+                                 (ext_inbox / 'letter.txt').resolve())
+            finally:
+                serve._os_open = orig
+        finally:
+            ext_tmp.cleanup()
+
 
 class DisposabilityTests(_ServeCase):
     def test_delete_serve_snapshot_leaves_site_unchanged(self):
@@ -511,12 +542,69 @@ class PreflightTests(_ServeCase):
         self.assertTrue(r.ok)
         self.assertEqual(r.data['status'], 'ok')
 
+    def test_preflight_refuses_working_copy_mode(self):
+        # P2 codex finding (round 2, PR #30): fha serve must refuse a
+        # working-copy archive up front, naming the fix - not silently
+        # start, build an empty snapshot, and 404 every workbench page.
+        (self.root / 'WORKING_COPY').write_text('', encoding='utf-8')
+        try:
+            r = serve.run_serve_preflight(self.root, port=0)
+            self.assertFalse(r.ok)
+            self.assertEqual(r.data['status'], 'working-copy')
+            self.assertTrue(any('working-copy' in m.text for m in r.messages))
+        finally:
+            (self.root / 'WORKING_COPY').unlink()
+
+
+class EnsureSnapshotWorkingCopyTests(_ServeCase):
+    """P2 codex finding (round 2, PR #30): even with the preflight refusal
+    above, the archive can transition into working-copy mode DURING a
+    long-running serve session. `ensure_snapshot` must not stamp `.built`
+    over a snapshot `run_site` reports as working-copy (ok=True, zero
+    pages) - defense in depth alongside the preflight check."""
+
+    def test_working_copy_result_does_not_stamp_built_marker(self):
+        self.state.marker.unlink(missing_ok=True)
+        real_run_site = self.state.site_mod.run_site
+        self.state.site_mod.run_site = lambda *a, **kw: serve.Result(
+            ok=True, exit_code=serve.EXIT_CLEAN,
+            data={'status': 'working-copy', 'out_dir': str(self.state.snapshot_dir), 'pages': []},
+        )
+        try:
+            serve.ensure_snapshot(self.state)
+            self.assertFalse(self.state.marker.exists())
+            self.assertTrue(serve.snapshot_is_stale(self.state))
+        finally:
+            self.state.site_mod.run_site = real_run_site
+
     def test_preflight_port_busy(self):
         # The class already holds self.port; a second bind must be refused.
         r = serve.run_serve_preflight(self.root, port=self.port)
         self.assertFalse(r.ok)
         self.assertEqual(r.data['status'], 'port-busy')
         self.assertTrue(any('busy' in m.text for m in r.messages))
+
+
+class ConfineAssetPathExternalRootTests(_ServeCase):
+    """P2 codex finding (round 2, PR #30): `_confine_asset_path` (the gate
+    `process.file` - the Inbox "File as a source…" button - runs every path
+    through) has the same externally-configured-root gap as `run_api_open`,
+    since both used to join a relative path straight onto `archive_root`."""
+
+    def test_confine_asset_path_resolves_an_external_inbox_root(self):
+        ext_tmp = tempfile.TemporaryDirectory()
+        try:
+            ext_inbox = Path(ext_tmp.name)
+            (ext_inbox / 'letter.txt').write_text('hi', encoding='utf-8')
+            self.state.fha_config = dict(self.state.fha_config)
+            self.state.fha_config['roots'] = dict(self.state.fha_config.get('roots') or {})
+            self.state.fha_config['roots']['inbox'] = str(ext_inbox)
+
+            resolved, err = serve._confine_asset_path(self.state, 'inbox/letter.txt')
+            self.assertIsNone(err)
+            self.assertEqual(resolved.resolve(), (ext_inbox / 'letter.txt').resolve())
+        finally:
+            ext_tmp.cleanup()
 
 
 class CapturePathVerbTests(_ServeCase):
@@ -793,6 +881,24 @@ class InboxPairingTests(_ServeCase):
         self.assertEqual(by_name['letter.notes.md']['kind'], 'note')
         self.assertEqual(by_name['letter.txt']['kind'], 'asset')
         self.assertEqual(by_name['letter.pdf']['kind'], 'asset')
+
+    def test_bundle_file_links_include_the_bundle_directory(self):
+        # P2 codex finding (round 2, PR #30): a bundle item's `files` are
+        # bare basenames living inside the bundle SUBFOLDER, but the
+        # inbox.html template built every file link as `inbox/<basename>` -
+        # dropping the subfolder, so /api/open 404'd on a file the page had
+        # just listed as present.
+        inbox = self._reset_inbox()
+        bundle = inbox / 'census-bundle'
+        bundle.mkdir()
+        (bundle / 'notes.md').write_text('---\nnoted: 2020-01-01\n---\n\nbody\n', encoding='utf-8')
+        (bundle / 'scan.jpg').write_bytes(b'x')
+        s, d, _h = self.req('GET', '/inbox')
+        self.assertEqual(s, 200)
+        page = d.decode('utf-8')
+        self.assertIn('data-wb-open-file="inbox/census-bundle/scan.jpg"', page)
+        self.assertIn('data-wb-open-file="inbox/census-bundle/notes.md"', page)
+        self.assertNotIn('data-wb-open-file="inbox/scan.jpg"', page)
 
 
 class PortZeroTests(unittest.TestCase):

@@ -89,6 +89,7 @@ from _lib import (  # noqa: E402
     fmt_id_display,
     id_type_of,
     is_valid_id,
+    is_working_copy,
     load_fha_yaml,
     normalize_id,
     open_index_db,
@@ -142,9 +143,9 @@ def run_serve_preflight(archive_root: Path, *, port: int = DEFAULT_PORT) -> Resu
     Testable engine half of `fha serve` (the serving loop is in `_cmd_serve`).
     `data` carries {'status', 'archive_root', 'port', 'fha_config',
     'index_built'}. Refusals name the fix (AGENTS.md next-step rule): missing
-    jinja2, a busy port (EADDRINUSE), an unreadable config. A missing/stale index
-    is not a refusal - it is rebuilt here and reported in `index_built`, so the
-    first page render is never blocked on it."""
+    jinja2, a busy port (EADDRINUSE), an unreadable config, working-copy mode.
+    A missing/stale index is not a refusal - it is rebuilt here and reported
+    in `index_built`, so the first page render is never blocked on it."""
     result = Result(data={'status': None, 'archive_root': str(archive_root),
                           'port': port, 'fha_config': None, 'index_built': False})
     if jinja2 is None:
@@ -155,6 +156,26 @@ def run_serve_preflight(archive_root: Path, *, port: int = DEFAULT_PORT) -> Resu
                    'fha serve needs Jinja2 to render pages. Install it with '
                    '`python -m pip install jinja2`, then run `fha serve` again.',
                    next_step='python -m pip install jinja2')
+        return result
+
+    if is_working_copy(archive_root):
+        # `fha site`'s own build treats working-copy mode as a clean, ok=True
+        # warning (TOOLING §13d - the photo/document files are assumed
+        # present elsewhere, not missing). `ensure_snapshot` only ever checks
+        # `result.ok`, though, so if serve got this far it would stamp the
+        # `.built` marker over a snapshot that was never actually written
+        # (run_site returns zero pages here) - every workbench page then
+        # 404s against an empty snapshot dir until the process is restarted.
+        # Refusing here, before a socket is even bound, means the human
+        # never reaches that broken, hard-to-diagnose state.
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = 'working-copy'
+        result.add('error',
+                   'fha serve is not available in working-copy mode - the photo '
+                   'and document files are on the main machine, so the workbench '
+                   'snapshot can never build here. Run `fha serve` on the main '
+                   'machine instead.')
         return result
 
     try:
@@ -402,7 +423,17 @@ def invalidate_snapshot(state: ServeState) -> None:
 def ensure_snapshot(state: ServeState) -> None:
     """Rebuild the workbench snapshot if stale, holding the global lock so no
     write interleaves the rebuild. Idempotent and cheap when fresh (a scandir
-    staleness probe, then return)."""
+    staleness probe, then return).
+
+    `run_serve_preflight` already refuses to start `fha serve` at all in
+    working-copy mode - but the archive can transition into that mode
+    DURING a long-running serve session (a `WORKING_COPY` marker dropped in
+    while the process is up), and `run_site` reports that case as `ok=True`
+    with zero pages written (TOOLING §13d: a clean warning, not a failure,
+    for `fha site`'s own CLI). Checking `result.data['status']` here too -
+    not just `result.ok` - means the `.built` marker is never stamped over a
+    snapshot that was never actually written; without this, every workbench
+    page would 404 against an empty snapshot dir until the process restarts."""
     if not snapshot_is_stale(state):
         return
     with state.lock:
@@ -419,7 +450,7 @@ def ensure_snapshot(state: ServeState) -> None:
             state.archive_root, state.snapshot_dir,
             linked=True, workbench=True, workbench_context=ctx,
         )
-        if result.ok:
+        if result.ok and result.data.get('status') != 'working-copy':
             state.snapshot_dir.mkdir(parents=True, exist_ok=True)
             # First line: the building session's token (see snapshot_is_stale);
             # second: a human-readable build time for anyone poking at .cache.
@@ -1303,7 +1334,7 @@ def _confine_asset_path(state: ServeState, raw: str, must_exist: bool = True
     root = state.archive_root.resolve()
     candidate = Path(raw)
     if not candidate.is_absolute():
-        candidate = state.archive_root / raw
+        candidate = _alias_prefixed_path(state, raw)
     try:
         resolved = candidate.resolve()
     except OSError as e:
@@ -1546,6 +1577,30 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
     return 200, payload
 
 
+def _alias_prefixed_path(state: ServeState, raw: str) -> Path:
+    """Resolve a RELATIVE path that may be alias-prefixed (`inbox/foo.jpg`,
+    `documents/census/x.jpg` - the shape `gather_inbox`/`gather_review` hand
+    to the open/process APIs) through that alias's CONFIGURED root, falling
+    back to a plain archive-root join for anything else.
+
+    `fha.yaml`'s `roots:` mapping may point photos/documents/inbox OUTSIDE
+    the archive root (AGENTS_TOOLING's config-surface check) - `Path(raw)`
+    joined straight onto `archive_root` silently produces the wrong location
+    (and then a false "file not found") whenever the alias in question is
+    remapped, because the string's `<alias>/` prefix was never resolved
+    through `resolve_path`, only assumed to mean `archive_root/<alias>/…`."""
+    for alias in _ASSET_ALIASES:
+        prefix = alias + '/'
+        if raw == alias or raw.startswith(prefix):
+            try:
+                base = resolve_path(alias, state.fha_config, state.archive_root)
+            except Exception:
+                break
+            rest = raw[len(prefix):] if raw.startswith(prefix) else ''
+            return (base / rest) if rest else base
+    return state.archive_root / raw
+
+
 def run_api_open(state: ServeState, path: str) -> tuple[int, dict]:
     """OS-open a record/asset file after confinement (contract SS8). The target
     must resolve under the archive root or an allowed asset root."""
@@ -1554,7 +1609,7 @@ def run_api_open(state: ServeState, path: str) -> tuple[int, dict]:
     root = state.archive_root.resolve()
     candidate = Path(path)
     if not candidate.is_absolute():
-        candidate = state.archive_root / path
+        candidate = _alias_prefixed_path(state, path)
     try:
         resolved = candidate.resolve()
     except OSError as e:

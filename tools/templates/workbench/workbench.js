@@ -377,6 +377,7 @@
       if (source === '__paste__') source = (pastedId || '').trim();
       var date = args.mdate; delete args.mdate;
       var place = args.mplace; delete args.mplace;
+      var placeId = args.mplace_id; delete args.mplace_id;
       var spouse = args.mspouse; delete args.mspouse;
       var subject = args.person_id;
       var typeMap = { born: 'birth', died: 'death', married: 'marriage',
@@ -389,7 +390,15 @@
                     value: (args.mvalue || claimType + ' of ' + (args.subject_name || subject)),
                     status: 'accepted' };
         if (date) out.date = date;
-        if (place) { if (/^L-/.test(place)) out.place = place; else out.place_text = place; }
+        /* placeId is set only when the lookup resolved a place (collect()
+           drops the paired mplace text arg in that case - see the
+           data-wb-idfield handling there); a plain-typed L-id (any case,
+           no lookup used) is accepted too, since a human copy-pasting one
+           from elsewhere types it in whatever case they found it. Anything
+           else is prose - "the old farmhouse" - never a wikilink: the
+           lookup no longer inserts one into this field. */
+        if (placeId) out.place = placeId;
+        else if (place) { if (/^l-/i.test(place)) out.place = place; else out.place_text = place; }
         out.persons = people.join(',');
         return { verb: 'claim.new', args: out };
       }

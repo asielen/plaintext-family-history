@@ -1547,6 +1547,34 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('name="fha-csrf"', std)
         self.assertNotIn('name="fha-provisional"', std)
 
+    def test_vital_edit_link_only_offered_for_provisional_rows(self):
+        # P2 codex finding (round 2, PR #30): the summary row's "edit" link
+        # opened the generic milestone modal, which has no way to carry an
+        # existing claim/source id - so "editing" an ACCEPTED (sourced)
+        # vital silently left that claim untouched unless the human
+        # manually re-picked the right source (defaulting to "unsourced"
+        # routes the edit to person.estimate instead). The link must only
+        # appear on a provisional (unsourced-estimate) row, where the
+        # milestone modal's unsourced path is exactly what applies.
+        self._seed_person('p-aaaaaaaaaa', name='Accepted Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1899')
+        self._seed_source('s-1111111111', 'Birth Record')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', '1900',
+                         status='accepted', date_edtf='1900', persons=('p-aaaaaaaaaa',))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        # The accepted claim wins over the frontmatter estimate (existing
+        # contract) and carries NO edit link.
+        self.assertNotIn('estimate - unsourced', wb)
+        self.assertNotIn('wb-vital-edit', wb)
+
+        self._seed_person('p-bbbbbbbbbb', name='Provisional Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1923')
+        self._run_wb()
+        prov = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('estimate - unsourced', prov)
+        self.assertIn('wb-vital-edit', prov)
+
     def test_no_workbench_chrome_leaks_into_standalone(self):
         self._seed_person('p-cccccccccc', name='Plain Person', living='false',
                           tier='curated', frontmatter_extra='birth: 1900')
