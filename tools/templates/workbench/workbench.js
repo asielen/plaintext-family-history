@@ -21,6 +21,11 @@
 
   var overlay = null;
   var openerBtn = null;
+  /* Set instead of an immediate reload when a successful result still carries
+     a warning (e.g. the asset saved but its note sidecar did not) - reloading
+     right away would erase the warning before the human can read or copy it.
+     closeModal() honors this the moment they dismiss the modal themselves. */
+  var reloadOnClose = false;
 
   function csrfToken() {
     var m = document.querySelector('meta[name="fha-csrf"]');
@@ -109,6 +114,10 @@
       overlay = null;
       openerBtn = null;
       document.body.style.overflow = '';
+    }
+    if (reloadOnClose) {
+      reloadOnClose = false;
+      location.reload();
     }
   }
 
@@ -322,7 +331,11 @@
           : ('<button type="button" class="btn btn-primary" data-wb-close>' + (ok ? 'Done' : 'Close') + '</button>')) +
         '</div>';
       showStep(modal, host);
-      if (!dryRun && ok) setTimeout(function () { location.reload(); }, 700);
+      if (!dryRun && ok) {
+        var hasWarning = (result.messages || []).some(function (m) { return m.level === 'warning'; });
+        if (hasWarning) reloadOnClose = true;
+        else setTimeout(function () { location.reload(); }, 700);
+      }
     }).catch(function (e) {
       setBusy(modal, false);
       showError(modal, (e && e.wbServerText && e.message) || 'Could not reach fha serve - is it still running?');
@@ -487,8 +500,16 @@
     if ((t = e.target.closest('[data-wb-view]'))) { setReviewView(t.getAttribute('data-wb-view')); return; }
     if ((t = e.target.closest('[data-wb-reindex]'))) {
       e.preventDefault();
-      apiRun('index.rebuild', {}, false).then(function () { location.reload(); })
-        .catch(function () { location.reload(); });
+      apiRun('index.rebuild', {}, false).then(function (result) {
+        var ok = result.ok !== false && result._http === 200;
+        if (ok) {
+          location.reload();
+        } else {
+          alert((result.messages && result.messages[0] && result.messages[0].text) || 'Could not rebuild the index.');
+        }
+      }).catch(function (e2) {
+        alert((e2 && e2.wbServerText && e2.message) || 'Could not reach fha serve - is it still running?');
+      });
       return;
     }
     if ((t = e.target.closest('[data-wb-open]'))) { e.preventDefault(); openModal(t); return; }
@@ -650,7 +671,11 @@
             '<pre class="wb-diff">' + renderMessages(result) + '</pre>' +
             '<div class="wb-modal-foot"><button type="button" class="btn btn-primary" data-wb-close>Done</button></div>';
           showStep(modal, host);
-          if (ok) setTimeout(function () { location.reload(); }, 700);
+          if (ok) {
+            var hasWarning = (result.messages || []).some(function (m) { return m.level === 'warning'; });
+            if (hasWarning) reloadOnClose = true;
+            else setTimeout(function () { location.reload(); }, 700);
+          }
         }).catch(function () { setBusy(modal, false); showError(modal, 'Upload failed - is fha serve still running?'); });
     });
   }

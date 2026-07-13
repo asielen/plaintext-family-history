@@ -1544,7 +1544,7 @@ class _SiteBuilder:
         self._footnote_seq = []
 
         summary = self._person_summary(pid, page_dir)
-        biography_html, stories_html, research_html = self._person_prose(row, page_dir)
+        biography_html, stories_html, research_html, biography_raw = self._person_prose(row, page_dir)
         timeline = self._person_timeline(pid, page_dir)
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
@@ -1590,6 +1590,7 @@ class _SiteBuilder:
             'record_relpath': row['path'],
             'living': (row['living'] or 'unknown'),
             'milestone_sources': self._person_milestone_sources(pid) if self.workbench else [],
+            'biography_raw': biography_raw if self.workbench else '',
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
@@ -1730,7 +1731,7 @@ class _SiteBuilder:
         val = meta.get(field)
         return str(val).strip() if val not in (None, '') else None
 
-    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str, str]:
+    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str, str, str]:
         """Biography, Stories and Research Notes HTML, read from the person `.md` body.
 
         Unaccepted `<!-- AI-DRAFT ... -->` prose is excluded before rendering
@@ -1751,7 +1752,7 @@ class _SiteBuilder:
             rec = read_record(self.archive_root / row['path'])
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); skipping its prose.')
-            return '', '', ''
+            return '', '', '', ''
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
         # Apply the `<!-- private -->` fence to the whole body BEFORE section
@@ -1784,13 +1785,17 @@ class _SiteBuilder:
                 'fix the marker or remove the draft, then rebuild. Until then this '
                 "person's Biography, Stories and Research Notes are withheld from the site."
             )
-            return '', '', ''
+            return '', '', '', ''
         # Private fences were already applied to the whole body above, so
         # _prose_to_html need not re-apply them here.
         biography_html = _prose_to_html(bio, render, embed, drop_private=dp) if bio else ''
         stories_html = _prose_to_html(stories, render, embed, drop_private=dp) if stories else ''
         research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
-        return biography_html, stories_html, research_html
+        # `bio` (the raw markdown `person.edit --section biography` would
+        # overwrite) is returned alongside its rendered HTML so the workbench
+        # can prefill the whole-section REPLACE editor with what is actually
+        # there - the same text the render above was built from.
+        return biography_html, stories_html, research_html, bio or ''
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the
@@ -2937,6 +2942,11 @@ class _SiteBuilder:
         default_intro = ('A safe-to-share snapshot of this family archive.' if not self.linked
                          else 'Local developer preview (linked mode - not redacted, do not share).')
         intro = self._markup(f'<p>{_escape(default_intro)}</p>')
+        # The raw text `home.edit` would overwrite - workbench-only, so the
+        # "Edit the homepage intro" replacement editor can prefill with what
+        # is actually there instead of starting blank (a whole-section
+        # REPLACE that started empty would delete the existing intro).
+        intro_raw = ''
         home_md = self.archive_root / 'notes' / 'home.md'
         if home_md.is_file():
             try:
@@ -2952,6 +2962,8 @@ class _SiteBuilder:
                             f'({problem}) - the homepage intro is withheld until it is fixed.')
                     elif body.strip():
                         intro = self._markup(_prose_to_html(body, render, embed, drop_private=not self.linked))
+                        if self.workbench:
+                            intro_raw = body
             except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
                 self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
 
@@ -3015,7 +3027,8 @@ class _SiteBuilder:
 
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'sources': sources,
-            'places': places, 'intro': intro, 'tree': tree, 'hero': hero, 'root_prefix': '.',
+            'places': places, 'intro': intro, 'intro_raw': intro_raw, 'tree': tree,
+            'hero': hero, 'root_prefix': '.',
         })
 
     # - rendering plumbing -

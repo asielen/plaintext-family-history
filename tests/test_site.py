@@ -1657,6 +1657,66 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('value="false" checked', wb)
         self.assertIn('data-wb-fill="value=true"', wb)
 
+    def test_add_event_button_prefills_the_page_person_into_persons_field(self):
+        # P2 codex finding (round 4, PR #30): "Add a timeline event" fixes
+        # `persons` to the page person via `data-wb-args`, but the modal also
+        # has a blank `name="persons"` input - collect() lets any non-blank
+        # form field override a fixed arg of the same name, so typing a
+        # second participant instead of retyping the page person's own P-id
+        # silently dropped them from their own new event. The opener must
+        # prefill the field (via data-wb-fill) so it never starts blank.
+        self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('data-wb-fill="persons=P-aaaaaaaaaa"', wb)
+
+    def test_edit_biography_modal_prefills_existing_prose_not_blank(self):
+        # P2 codex finding (round 4, PR #30): the biography editor is a
+        # whole-section REPLACE (`person.edit --section biography`), but its
+        # textarea started empty even for a person who already has prose -
+        # previewing/applying a small addition without retyping the whole
+        # section first would silently delete the existing biography.
+        bio = ('# Priya\n## Biography\n'
+               'Priya emigrated in 1962 and worked as a teacher.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Priya Rao', tier='curated', body=bio)
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem">'
+            'Priya emigrated in 1962 and worked as a teacher.',
+            wb)
+
+    def test_edit_biography_modal_empty_when_no_biography_yet(self):
+        self._seed_person('p-aaaaaaaaaa', 'No Bio Yet', tier='curated', body='# No Bio Yet\n')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem"></textarea>', wb)
+
+    def test_edit_home_intro_modal_prefills_existing_text_not_blank(self):
+        # Same whole-section REPLACE risk as the biography editor above, for
+        # notes/home.md (`home.edit`).
+        home_md = self.archive_root / 'notes' / 'home.md'
+        home_md.parent.mkdir(parents=True, exist_ok=True)
+        home_md.write_text('Welcome to the Rao family archive.\n', encoding='utf-8')
+        self._run_wb()
+        idx = self._read('index.html')
+        self.assertIn(
+            '<textarea name="text" style="min-height:12rem">Welcome to the Rao family archive.',
+            idx)
+
+    def test_modals_render_without_error_on_a_page_with_no_person_in_context(self):
+        # The biography-prefill fix above references `person.biography_raw`
+        # from inside _modals.html, which is included on EVERY workbench
+        # page (source pages, index, etc.) - not just person pages, where
+        # `person` is never in the template context at all. A naive
+        # `person.biography_raw` reference raises UndefinedError on those
+        # pages instead of rendering blank.
+        self._seed_source('s-1111111111', 'A Source')
+        r = self._run_wb()
+        self.assertTrue(r.ok, r.messages)
+        self._read('sources/s-1111111111.html')
+
 
 if __name__ == '__main__':
     unittest.main()

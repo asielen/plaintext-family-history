@@ -84,7 +84,7 @@
   <p class="empty">No dated events recorded yet.</p>
   {% endif %}
   {% if workbench %}
-  <p><button class="btn btn-sm" data-wb-open="tpl-add-event" data-wb-args='{{ {"persons": person.display_id} | tojson }}'>Add a timeline event&hellip;</button></p>
+  <p><button class="btn btn-sm" data-wb-open="tpl-add-event" data-wb-args='{{ {"persons": person.display_id} | tojson }}' data-wb-fill="persons={{ person.display_id }}">Add a timeline event&hellip;</button></p>
   {% endif %}
 
   {% if person.photos %}

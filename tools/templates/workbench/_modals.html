@@ -303,7 +303,7 @@
     <input type="hidden" name="section" value="biography">
     <div class="wb-field">
       <label>## Biography</label>
-      <textarea name="text" class="wb-target" style="min-height:12rem"></textarea>
+      <textarea name="text" class="wb-target" style="min-height:12rem">{{ person.biography_raw if person is defined else '' }}</textarea>
       <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
       <div class="wb-lookup" hidden>
         <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
@@ -390,7 +390,7 @@
     <p class="wb-kicker">Edit the homepage intro</p>
     <h3>notes/home.md is yours</h3>
     <div class="wb-field"><label>Homepage intro (markdown)</label>
-      <textarea name="text" style="min-height:12rem"></textarea></div>
+      <textarea name="text" style="min-height:12rem">{{ intro_raw }}</textarea></div>
     <p class="note">notes/home.md is yours - same as editing it in any text editor. The homepage
       rebuilds from it, so this edit survives every future build.</p>
     <div class="wb-modal-foot">

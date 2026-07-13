@@ -488,6 +488,31 @@ class UploadTests(_ServeCase):
         # The pre-existing, unrelated stub is untouched.
         self.assertIn('an older stub', (inbox / 'photo.notes.md').read_text(encoding='utf-8'))
 
+    def test_upload_without_a_note_still_bumps_on_a_stranger_sidecar(self):
+        # P2 codex finding (round 4, PR #30): the collision check used to
+        # only look at an existing same-stem sidecar when THIS upload also
+        # carried a note (`has_note`). Uploading a bare `photo.jpg` with no
+        # note next to an unrelated pre-existing `photo.notes.md` used to
+        # sail straight through - `fha process`/`gather_inbox` pair an asset
+        # with ANY same-stem sidecar by stem alone, so that stranger's note
+        # would silently get filed onto this new, unrelated source.
+        inbox = self.root / 'inbox'
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / 'photo.notes.md').write_text(
+            '---\nnoted: 2020-01-01\n---\n\nan older, unrelated stub\n', encoding='utf-8')
+        boundary, body = self._multipart('photo.jpg', b'bytes')  # no what/who fields
+        s, d, _h = self.req('POST', '/api/upload', body=body,
+                            headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                                     'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        self.assertTrue((inbox / 'photo -2.jpg').is_file())
+        self.assertFalse((inbox / 'photo.jpg').exists())
+        self.assertFalse((inbox / 'photo -2.notes.md').exists())  # no note was given
+        # The pre-existing, unrelated stub is untouched and still paired only
+        # with the ORIGINAL `photo.jpg` stem, not silently claimed by the new upload.
+        self.assertIn('an older, unrelated stub', (inbox / 'photo.notes.md').read_text(encoding='utf-8'))
+
     def test_upload_bumps_destination_when_a_part_file_already_exists(self):
         # P2 codex finding (round 3, PR #30): the write lands at
         # `<dest>.part` first (write-then-atomic-replace). A pre-existing
@@ -700,6 +725,43 @@ class ConfineAssetPathExternalRootTests(_ServeCase):
             resolved, err = serve._confine_asset_path(self.state, 'inbox/letter.txt')
             self.assertIsNone(err)
             self.assertEqual(resolved.resolve(), (ext_inbox / 'letter.txt').resolve())
+        finally:
+            ext_tmp.cleanup()
+
+
+class ProcessVerbExternalRootTests(_ServeCase):
+    """P2 codex finding (round 4, PR #30): `_verb_process` ran `raw` through
+    `_confine_asset_path` (which understands an externally-configured
+    `roots.inbox`, per `ConfineAssetPathExternalRootTests` above) but then
+    discarded the resolved path and handed the ENGINE the raw alias string -
+    `process.py`'s own `_resolve_input_file` only retries a relative path
+    under `archive_root`, so an external inbox root still 404'd inside the
+    engine even though the confinement gate itself passed."""
+
+    def test_verb_process_passes_the_confined_path_not_the_raw_alias(self):
+        ext_tmp = tempfile.TemporaryDirectory()
+        try:
+            ext_inbox = Path(ext_tmp.name)
+            (ext_inbox / 'scan.jpg').write_bytes(b'not-a-real-jpeg')
+            self.state.fha_config = dict(self.state.fha_config)
+            self.state.fha_config['roots'] = dict(self.state.fha_config.get('roots') or {})
+            self.state.fha_config['roots']['inbox'] = str(ext_inbox)
+
+            seen = {}
+            real_run_process = serve.process_mod.run_process
+
+            def spy(ns):
+                seen['file'] = ns.file
+                return serve.Result(ok=True, exit_code=serve.EXIT_CLEAN)
+
+            serve.process_mod.run_process = spy
+            try:
+                serve._verb_process(self.state, {'file': 'inbox/scan.jpg'}, True)
+            finally:
+                serve.process_mod.run_process = real_run_process
+
+            self.assertIn('file', seen)
+            self.assertEqual(Path(seen['file']).resolve(), (ext_inbox / 'scan.jpg').resolve())
         finally:
             ext_tmp.cleanup()
 
@@ -1095,6 +1157,26 @@ class EchoTests(unittest.TestCase):
     def test_echo_capture_path_omits_title_when_absent(self):
         echo = serve._echo_capture_path({'path': '/library/grandma.jpg'})
         self.assertNotIn('--title', echo)
+
+    def test_q_escapes_command_substitution_so_it_cannot_run(self):
+        # P2 codex finding (round 4, PR #30): a value holding `$(...)` was
+        # still expanded by a POSIX shell inside the OLD double-quote form -
+        # only `"`/space/tab triggered quoting at all, and the `$` itself was
+        # never escaped even when quoted. Copy-pasting the echoed command
+        # must never execute anything hidden inside the value.
+        echo = serve._echo_person_new({'name': 'bad $(touch pwned)'})
+        self.assertIn('\\$(touch pwned)', echo)
+        self.assertNotIn('"bad $(touch pwned)"', echo)
+
+    def test_q_escapes_backtick_command_substitution(self):
+        echo = serve._echo_person_new({'name': 'bad `touch pwned`'})
+        self.assertIn('\\`touch pwned\\`', echo)
+
+    def test_q_quotes_a_value_with_no_spaces_but_a_shell_operator(self):
+        # An unquoted value with no space (e.g. `R&D`) used to be echoed bare
+        # - `&` backgrounds a command in an unquoted POSIX shell argument.
+        echo = serve._echo_person_new({'name': 'R&D'})
+        self.assertIn('"R&D"', echo)
 
 
 class StalenessMemoTests(_ServeCase):

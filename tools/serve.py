@@ -776,11 +776,17 @@ def _inbox_rel(p: Path, inbox: Path) -> str:
 # ── /api/run - the parity table (whitelist) ─────────────────────────────────────
 
 def _q(value: str) -> str:
-    """Quote a CLI echo argument if it contains spaces or quotes."""
+    """Double-quote a CLI echo argument the way a POSIX shell needs it: the
+    banner's "this button is exactly" command is meant to be copy-pasted and
+    re-run verbatim, so it must be safe even when the value holds shell
+    metacharacters. Inside double quotes only backslash, `"`, `$` and `` ` ``
+    are special (`&`, `;`, `(`, spaces, etc. are already literal there), so
+    escaping those four and always quoting - rather than only when a space or
+    quote is present - closes both the unquoted-`&`-style operator case and
+    the `$(...)`/backtick command-substitution case."""
     s = str(value)
-    if s == '' or any(ch in s for ch in ' "\t'):
-        return '"' + s.replace('"', '\\"') + '"'
-    return s
+    escaped = s.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+    return '"' + escaped + '"'
 
 
 def _short(text: str, n: int = 60) -> str:
@@ -1076,7 +1082,7 @@ def _verb_process(state, kw, dry_run):
     if err:
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', err)
     ns = argparse.Namespace(
-        file=raw, source_type=kw.get('source_type'), title=kw.get('title'),
+        file=str(confined), source_type=kw.get('source_type'), title=kw.get('title'),
         slug=kw.get('slug'), source_date=None, more=None, people=None,
         dry_run=dry_run, root=str(state.archive_root),
     )
@@ -1541,16 +1547,18 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
         stem, ext = os.path.splitext(base)
         n = 2
         # A note's sidecar shares the ASSET's stem, not its full name (same
-        # rule as above) - so when a note is given, a collision on the stem's
-        # sidecar must bump the destination exactly like a collision on the
-        # asset name itself, or this upload's note would collide with (and
-        # get shadowed by, or silently overwrite) an unrelated older item's
-        # sidecar of the same stem. The write below lands at `dest.name +
-        # '.part'` first (write-then-atomic-replace); a PRE-EXISTING file at
-        # that exact `.part` name - a genuine partial download someone left
-        # in the inbox - must bump the destination too, or the write below
-        # clobbers it before the rename ever happens.
-        while (dest.exists() or (has_note and (inbox / _sidecar_name(dest.name)).exists())
+        # rule as above) - so a pre-existing sidecar at the stem's name must
+        # bump the destination exactly like a collision on the asset name
+        # itself, regardless of whether THIS upload adds a note: `_find_sidecar`/
+        # `gather_inbox` pair an asset with any same-stem sidecar it finds,
+        # so filing a bare `foo.jpg` next to an unrelated pre-existing
+        # `foo.notes.md` would silently attach that stranger's note to this
+        # source. The write below lands at `dest.name + '.part'` first
+        # (write-then-atomic-replace); a PRE-EXISTING file at that exact
+        # `.part` name - a genuine partial download someone left in the
+        # inbox - must bump the destination too, or the write below clobbers
+        # it before the rename ever happens.
+        while (dest.exists() or (inbox / _sidecar_name(dest.name)).exists()
                or (inbox / (dest.name + '.part')).exists()):
             dest = inbox / f'{stem} -{n}{ext}'
             n += 1
