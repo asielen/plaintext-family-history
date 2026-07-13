@@ -1,0 +1,211 @@
+{
+  "seed": "P-075114a0f8",
+  "mode": "descendants",
+  "nodes": [
+    {
+      "p_id": "P-075114a0f8",
+      "name": "Caleb Comstock Hartley",
+      "sex": "M",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": null,
+      "photo": "/root/photos/caleb-chastina-hartley.jpg"
+    },
+    {
+      "p_id": "P-de957bcda1",
+      "name": "Thomas Edward Hartley",
+      "sex": "M",
+      "vitals": {
+        "birth": "1840~",
+        "death": null
+      },
+      "url": "persons/p-de957bcda1.html",
+      "photo": "/root/photos/thomas-hartley-portrait.jpg"
+    },
+    {
+      "p_id": "P-83e768cacb",
+      "name": "Frances Hartley",
+      "sex": "F",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": null,
+      "photo": "/root/photos/frances-hartley-winter.jpg"
+    },
+    {
+      "p_id": "P-c4b26bb4bc",
+      "name": "Ethel Hartley",
+      "sex": "F",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": null,
+      "photo": "/root/photos/ethel-hartley-portrait.jpg"
+    },
+    {
+      "p_id": "P-fa7541e871",
+      "name": "Calvin George Hartley",
+      "sex": "M",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": null,
+      "photo": "/root/photos/calvin-hartley-garden.jpg"
+    },
+    {
+      "p_id": "P-6f7g8h9jka",
+      "name": "Warren Calvin Hartley",
+      "sex": "M",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": null,
+      "photo": null
+    },
+    {
+      "p_id": "P-5e6f7g8h9j",
+      "name": "Edith Louise Hartley",
+      "sex": "F",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": null,
+      "photo": null
+    },
+    {
+      "p_id": "P-2b3c4d5e6f",
+      "name": "James Robert Bradford",
+      "sex": "M",
+      "vitals": {
+        "birth": "1955-03-15",
+        "death": "2015-11-03"
+      },
+      "url": "persons/p-2b3c4d5e6f.html",
+      "photo": null
+    },
+    {
+      "p_id": "P-0a1b2c3d4e",
+      "name": "Alex James Bradford",
+      "sex": "unknown",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": null,
+      "photo": null
+    }
+  ],
+  "edges": [
+    {
+      "type": "child",
+      "from": "P-075114a0f8",
+      "to": "P-de957bcda1",
+      "claim_id": "C-2e6b1f9c45",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-de957bcda1",
+      "to": "P-83e768cacb",
+      "claim_id": "C-77a0c5e218",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-de957bcda1",
+      "to": "P-c4b26bb4bc",
+      "claim_id": "C-bdfbce2a11",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-de957bcda1",
+      "to": "P-fa7541e871",
+      "claim_id": "C-fa0000001a",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-fa7541e871",
+      "to": "P-6f7g8h9jka",
+      "claim_id": "C-fa0000002b",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-6f7g8h9jka",
+      "to": "P-5e6f7g8h9j",
+      "claim_id": "C-fc0000001a",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-5e6f7g8h9j",
+      "to": "P-2b3c4d5e6f",
+      "claim_id": "C-fc0000002b",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-2b3c4d5e6f",
+      "to": "P-0a1b2c3d4e",
+      "claim_id": "C-fc0000003c",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    }
+  ]
+}

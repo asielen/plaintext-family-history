@@ -75,15 +75,24 @@ CODE MAP
     _PIL_AVAILABLE             - is Pillow importable?
     _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
 
+  Static charts (person page)
+    _render_fan_svg            - radial ancestor fan, self-contained SVG
+    _render_pedigree_svg       - horizontal family chart: children - subject/spouse(s)
+                                 - parents - grandparents, self-contained SVG
+
   Paths / hrefs
     _rel_href                  - relative href from a page dir to a target file
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
     _json_for_script           - JSON serialized safe for inline <script> embedding
 
-  Interactive tree (M8.5)
+  Interactive tree (M8.5) + shared chart redaction
     _apex_ancestor             - deepest ancestor of root_person (home-tree seed)
     _build_tree_data           - BFS relationships → neutral tree JSON + url + redaction
     _tree_node, _person_vitals - one redacted node; its birth/death labels
+    _chart_entry               - one redacted {name,url,dates} node; shared by the
+                                 Ahnentafel walk and the family-wings walk below
+    _build_ahnentafel          - parent-edge walk → Ahnentafel map (fan + pedigree)
+    _build_family_wings        - spouse/child edges → pedigree's family-chart columns
     _make_tree_ctx             - build a tree, write data/tree_*.json, return template ctx
     _copy_vendor               - copy the vendored renderer/adapter into the site
 
@@ -117,17 +126,21 @@ import sqlite3
 import sys
 from collections import deque
 from pathlib import Path
+from urllib.parse import quote as _urlquote
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    ASSET_ROOT_ALIASES,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    PROVISIONAL_VITAL_FIELDS,
     Result,
     FhaConfigError,
     apply_private_fence,
     configure_utf8_stdout,
+    extract_bare_ids,
     fmt_id_display,
     id_type_of,
     is_genetic_parent_subtype,
@@ -570,32 +583,64 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
     return '\n'.join(out)
 
 
-def _render_pedigree_svg(labels: dict) -> str:
-    """Render a horizontal (left→right) ancestor pedigree as a self-contained SVG.
+def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
+                          children: list[dict] | None = None) -> str:
+    """Render a horizontal (left→right) family pedigree as a self-contained SVG.
 
     `labels` is an Ahnentafel map {number: {'name','url','redacted','dates'}} covering
     two generations up - slot 1 the subject, 2/3 the parents, 4-7 the grandparents
-    (see `_build_ahnentafel`, called with max_gen=2). The subject sits at the left and
-    each ancestor generation steps rightward - the genealogical convention, and the
-    fix for the descendant renderer drawing ancestors *downward* (upside-down). Node
-    cards are HTML in <foreignObject> so names wrap and links work; a drawn person's
-    un-researched parent shows as a faint 'Unknown' slot so the bracket reads as a
-    pedigree. Redacted (living/restricted) people never reach here - the walk drops
-    them - so no living name can surface."""
-    CW, CH = 176, 62
-    COL_GAP, ROW, PAD = 40, 72, 8
-    base = PAD + CH / 2
+    (see `_build_ahnentafel`, called with max_gen=2). `spouses`/`children` are the
+    win-1 family-chart extension: plain lists of the same {'name','url','dates'}
+    shape (from `_build_family_wings`), never containing a redacted person - that
+    filtering happens upstream, so unlike an ancestor slot a redacted spouse/child
+    has no faint 'Unknown' placeholder to fall back on and is simply absent.
+
+    Layout, left to right: children (if any) - subject + spouse(s), stacked in one
+    column - parents - grandparents. This is the ancestors-only chart's original
+    shape with two columns bolted on either side of the subject; when spouses and
+    children are both empty the geometry (column x, row y, viewBox) is bit-for-bit
+    what the ancestors-only renderer produced before this win, so an existing
+    person's pedigree does not visually change. The subject sits at the left of
+    its own group and each ancestor generation steps rightward - the genealogical
+    convention, and the fix for the descendant renderer drawing ancestors
+    *downward* (upside-down). Node cards are HTML in <foreignObject> so names wrap
+    and links work; a drawn ancestor's un-researched parent shows as a faint
+    'Unknown' slot so the bracket reads as a pedigree - children get no such
+    placeholder (you cannot enumerate someone's unknown children).
+
+    A 4th column (children) needs more on-screen width than the 620px the
+    ancestors-only chart is capped at, so that case gets the `pedigree-family`
+    modifier class (a wider max-width in styles.css) plus tighter card/row
+    spacing - the size-reduced variant, matching the wireframe's `wb-famchart`
+    sizing without pulling in any of its workbench affordances."""
+    spouses = spouses or []
+    children = children or []
+    has_children_col = bool(children)
+
+    CW = 176
+    if has_children_col:
+        CH, COL_GAP, ROW, PAD = 48, 16, 60, 8
+    else:
+        CH, COL_GAP, ROW, PAD = 62, 40, 72, 8
+
+    # Generation index 0 is the subject/spouse column; ancestors step positive
+    # (1 = parents, 2 = grandparents); children, when present, take -1 so they
+    # sit to the left of the subject as the wireframe lays out.
+    min_gen = -1 if has_children_col else 0
 
     def col_x(gen: int) -> float:
-        return PAD + gen * (CW + COL_GAP)
+        return PAD + (gen - min_gen) * (CW + COL_GAP)
 
-    def y_center(num: int) -> float:
+    def row_index(num: int) -> float:
+        """Row position (in ROW units, subject = 1.5) for an Ahnentafel slot -
+        the same numbers the pre-win-1 renderer used, kept as a pure function
+        so spouse/children rows can be placed relative to the same scale."""
         g = num.bit_length() - 1
         if g == 0:                                   # subject
-            return base + 1.5 * ROW
+            return 1.5
         if g == 1:                                   # parent: centred over its 2 grandparents
-            return base + (0.5 if num == 2 else 2.5) * ROW
-        return base + (num - 4) * ROW                # grandparents: four stacked rows
+            return 0.5 if num == 2 else 2.5
+        return float(num - 4)                         # grandparents: four stacked rows
 
     # Draw the subject always; an ancestor slot only when its child is a drawn person -
     # real ancestors as name cards, a known person's missing parent as a faint 'Unknown'.
@@ -606,28 +651,44 @@ def _render_pedigree_svg(labels: dict) -> str:
         lab = labels.get(slot)
         render[slot] = ('person', lab) if (lab and lab.get('name')) else ('empty', None)
 
-    W = 2 * PAD + 3 * CW + 2 * COL_GAP
-    H = 2 * PAD + CH + 3 * ROW
+    subject_row = 1.5
+    spouse_rows = [subject_row + 1 + i for i in range(len(spouses))]     # stack below the subject
+    n_children = len(children)
+    # Centred on the subject's row so a small family reads as balanced, not
+    # lopsided - matches the wireframe centring children on the couple.
+    children_rows = [subject_row + (i - (n_children - 1) / 2) for i in range(n_children)]
+
+    # The ancestor band has always been rendered at a fixed size (rows 0-3,
+    # the full grandparent grid) whenever any ancestor slot beyond the
+    # subject has data - regardless of how many of those slots are actually
+    # filled - preserved here so an ancestors-only chart's canvas is
+    # unchanged. A family-only chart (spouse/children but zero known
+    # ancestors) has no reason to reserve that band, so it starts tight
+    # around the subject's own row instead. Spouse/children rows then extend
+    # whichever starting band only when they actually reach beyond it (extra
+    # spouses stacking past row 3, a wide brood of children reaching above
+    # row 0).
+    ancestor_band = [0.0, 3.0] if len(labels) > 1 else [subject_row]
+    all_rows = ancestor_band + spouse_rows + children_rows
+    min_row, max_row = min(all_rows), max(all_rows)
+    base = PAD + CH / 2 - min_row * ROW
+
+    def y_center(row: float) -> float:
+        return base + row * ROW
+
+    max_gen = max((k.bit_length() - 1 for k in render), default=0)
+    W = 2 * PAD + (max_gen - min_gen + 1) * CW + (max_gen - min_gen) * COL_GAP
+    H = 2 * PAD + CH + (max_row - min_row) * ROW
 
     def yr(edtf) -> str:
         m = re.search(r'\d{4}', str(edtf)) if edtf else None
         return m.group(0) if m else ''
 
-    links: list[str] = []
-    cards: list[str] = []
-    for slot, (kind, lab) in render.items():
-        x = col_x(slot.bit_length() - 1)
-        yc = y_center(slot)
-        for pslot in (2 * slot, 2 * slot + 1):       # elbow to each drawn parent
-            if pslot in render:
-                x2, y2 = col_x(pslot.bit_length() - 1), y_center(pslot)
-                midx = (x + CW + x2) / 2
-                links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
-                             f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
-        if kind == 'empty':
+    def card(x: float, yc: float, cls_extra: str, lab: dict | None) -> str:
+        if lab is None:
             cls, inner = 'ped-node ped-empty', '<span class="ped-name">Unknown</span>'
         else:
-            cls = 'ped-node' + (' ped-self' if slot == 1 else '')
+            cls = 'ped-node' + cls_extra
             name = html.escape(lab.get('name') or '')
             url = lab.get('url')
             name_el = (f'<a class="ped-name" href="{html.escape(url, quote=True)}">{name}</a>'
@@ -636,13 +697,60 @@ def _render_pedigree_svg(labels: dict) -> str:
             b, dd = yr(d.get('birth')), yr(d.get('death'))
             span = f'{b}–{dd}' if (b and dd) else (f'b. {b}' if b else (f'd. {dd}' if dd else ''))
             inner = name_el + (f'<span class="ped-dates">{span}</span>' if span else '')
-        cards.append(
-            f'<foreignObject x="{x:.0f}" y="{yc - CH / 2:.0f}" width="{CW}" height="{CH}">'
-            f'<div xmlns="http://www.w3.org/1999/xhtml" class="{cls}">{inner}</div>'
-            f'</foreignObject>')
+        return (f'<foreignObject x="{x:.0f}" y="{yc - CH / 2:.0f}" width="{CW}" height="{CH}">'
+                f'<div xmlns="http://www.w3.org/1999/xhtml" class="{cls}">{inner}</div>'
+                f'</foreignObject>')
 
-    return (f'<svg class="pedigree" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet" '
-            f'role="img" aria-label="Ancestor pedigree">' + ''.join(links) + ''.join(cards) + '</svg>')
+    links: list[str] = []
+    cards: list[str] = []
+    for slot, (kind, lab) in render.items():
+        x = col_x(slot.bit_length() - 1)
+        yc = y_center(row_index(slot))
+        for pslot in (2 * slot, 2 * slot + 1):       # elbow to each drawn ancestor's parent
+            if pslot in render:
+                x2, y2 = col_x(pslot.bit_length() - 1), y_center(row_index(pslot))
+                midx = (x + CW + x2) / 2
+                links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
+                             f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
+        cards.append(card(x, yc, ' ped-self' if slot == 1 else '', None if kind == 'empty' else lab))
+
+    subj_x = col_x(0)
+    subj_y = y_center(subject_row)
+    for i, lab in enumerate(spouses):
+        cards.append(card(subj_x, y_center(spouse_rows[i]), '', lab))
+    for i, lab in enumerate(children):
+        cards.append(card(col_x(-1), y_center(children_rows[i]), '', lab))
+
+    if children:
+        # A trunk between the children column and the subject/spouse column:
+        # one vertical spine plus a horizontal tick to every child and to the
+        # subject and each spouse - reads as "these children belong to this
+        # family", without asserting which specific spouse is the other
+        # parent (the data model does not record that).
+        trunk_x = (col_x(-1) + CW + subj_x) / 2
+        child_ys = [y_center(r) for r in children_rows]
+        family_ys = [subj_y] + [y_center(r) for r in spouse_rows]
+        trunk_ys = child_ys + family_ys
+        if len(set(trunk_ys)) > 1:
+            links.append(f'<path class="ped-link" d="M{trunk_x:.0f},{min(trunk_ys):.0f} '
+                         f'V{max(trunk_ys):.0f}"/>')
+        for cy in child_ys:
+            links.append(f'<path class="ped-link" d="M{col_x(-1) + CW:.0f},{cy:.0f} H{trunk_x:.0f}"/>')
+        for fy in family_ys:
+            links.append(f'<path class="ped-link" d="M{trunk_x:.0f},{fy:.0f} H{subj_x:.0f}"/>')
+    elif spouses:
+        # No children to route through a trunk - a direct bracket at the
+        # column's left edge is enough to show the subject and spouse(s) as
+        # one family unit.
+        family_ys = [subj_y] + [y_center(r) for r in spouse_rows]
+        if len(set(family_ys)) > 1:
+            links.append(f'<path class="ped-link" d="M{subj_x:.0f},{min(family_ys):.0f} '
+                         f'V{max(family_ys):.0f}"/>')
+
+    svg_cls = 'pedigree pedigree-family' if has_children_col else 'pedigree'
+    label = 'Family chart' if (spouses or children) else 'Ancestor pedigree'
+    return (f'<svg class="{svg_cls}" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet" '
+            f'role="img" aria-label="{label}">' + ''.join(links) + ''.join(cards) + '</svg>')
 
 
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
@@ -703,12 +811,24 @@ class _SiteBuilder:
         out_dir: Path,
         *,
         linked: bool,
+        workbench: bool = False,
+        workbench_context: dict | None = None,
     ) -> None:
         self.conn = conn
         self.archive_root = archive_root
         self.fha_config = fha_config
         self.out_dir = out_dir
         self.linked = linked          # False = standalone (default, redacted)
+        # Workbench mode is serve-only (never a CLI surface): it turns on the
+        # editing chrome in the templates (`{% if workbench %}`) and rewrites
+        # asset hrefs to serve's /root/<alias>/ URLs so photos/documents that
+        # live outside the snapshot resolve over HTTP instead of escaping it
+        # with ../../ relative links. It REQUIRES linked mode (unredacted) - the
+        # combination workbench+standalone is refused in run_site. Nothing here
+        # ever leaks into a standalone build: every branch is guarded on
+        # self.workbench, which is False for both `fha site` modes.
+        self.workbench = workbench
+        self.workbench_context = workbench_context or {}
         self.messages: list[str] = []
 
         self.persons_dir = out_dir / 'persons'
@@ -1165,6 +1285,61 @@ class _SiteBuilder:
 
     # - assets -
 
+    def _asset_href(self, resolved: Path, page_dir: Path) -> str:
+        """Href for an on-disk ASSET file (a photo/document/inbox scan), honoring
+        workbench mode.
+
+        In plain linked mode this is exactly `_rel_href` - a `../../` relative
+        path from the page directory to the real file, which works when the site
+        is opened from a file browser. But serve delivers the snapshot over HTTP
+        from `.cache/serve/site/`, and a `../../photos/...` link would climb out
+        of the snapshot root and 404 (or worse, escape confinement). So in
+        workbench mode any asset that lives under an allowed asset root
+        (photos/documents/inbox) is rewritten to serve's read-only
+        `/root/<alias>/<relpath>` URL; anything else (an asset root configured
+        somewhere exotic) falls back to the relative href rather than emitting a
+        broken link. The rewrite is applied ONLY in workbench mode, so `fha site
+        --linked` keeps its file-browser-relative behavior untouched."""
+        if self.workbench:
+            alias_url = self._root_alias_url(resolved)
+            if alias_url is not None:
+                return alias_url
+        return _rel_href(resolved, page_dir)
+
+    def _root_alias_url(self, resolved: Path) -> str | None:
+        """Map an absolute asset path to serve's `/root/<alias>/<relpath>` URL, or
+        None when it is not under any allowed asset root.
+
+        Mirrors serve's own `_resolve_root_request` confinement (photos,
+        documents, inbox only) so a href serve emits is one serve will also
+        serve: resolve each allowed root, and if `resolved` sits under it, build
+        a forward-slash URL from the relative remainder.
+
+        Each path segment is percent-encoded (`#`/`?`/space and friends) -
+        serve's handler already `unquote()`s the whole `/root/...` path
+        before splitting alias from relpath, but a literal `#`/`?` in an
+        UNencoded href is stripped by the BROWSER before the request is even
+        sent (a URL fragment/query, not part of the path), so the request
+        that reaches serve is silently truncated and 404s even though the
+        file exists. `safe='/'` keeps the path separators themselves
+        unescaped."""
+        try:
+            target = resolved.resolve()
+        except OSError:
+            return None
+        for alias in ASSET_ROOT_ALIASES:
+            try:
+                base = resolve_path(alias, self.fha_config, self.archive_root).resolve()
+            except Exception:
+                continue
+            try:
+                rel = target.relative_to(base)
+            except ValueError:
+                continue
+            rel_posix = _urlquote(rel.as_posix(), safe='/')
+            return f'/root/{alias}/{rel_posix}' if rel_posix != '.' else f'/root/{alias}'
+        return None
+
     def _file_entry(self, asset_rel: str, role: str | None, page_dir: Path) -> dict | None:
         """Build one source-page file entry (thumbnail + link) for an asset.
 
@@ -1193,7 +1368,7 @@ class _SiteBuilder:
             return {'label': label, 'note': 'file not available in this build', 'link_href': None, 'thumb_href': None}
 
         if self.linked:
-            href = _rel_href(resolved, page_dir)
+            href = self._asset_href(resolved, page_dir)
             return {
                 'label': label, 'note': role_note,
                 'link_href': href,
@@ -1291,23 +1466,49 @@ class _SiteBuilder:
                 'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
+                # Workbench-only: the C-id drives the inline claim actions. Never
+                # used in standalone output (the template gates on `workbench`).
+                'claim_id': fmt_id_display(c['id']),
             })
 
-        files = self._source_file_entries(sid, page_dir)
+        files, portrait_entry = self._source_file_entries(sid, page_dir)
+        # The record-head thumbnail (win 2): the same href the Files entry
+        # already resolved, just framed as a portrait plate with its own
+        # caption - never a second derivative, never a second privacy check.
+        portrait = ({'href': portrait_entry['thumb_href'], 'full_href': portrait_entry['link_href'],
+                    'caption': 'Open the scan full size'} if portrait_entry else None)
 
         ctx = {
             'display_id': fmt_id_display(sid), 'title': row['title'] or fmt_id_display(sid),
             'source_type': row['source_type'] or '', 'citation': citation,
             'date': row['date_edtf'] or '', 'repository': row['repository'] or '',
             'source_class': row['source_class'] or '', 'claims': claims, 'files': files,
+            'portrait': portrait,
+            # Workbench-only (template gates on `workbench`): S-id + record path.
+            'source_id': fmt_id_display(sid), 'record_relpath': row['path'],
         }
         self._write_page(self.sources_dir / _page_filename(sid), 'source.html',
                          {'source': ctx, 'root_prefix': '..'})
 
-    def _source_file_entries(self, sid: str, page_dir: Path) -> list[dict]:
+    def _source_file_entries(self, sid: str, page_dir: Path) -> tuple[list[dict], dict | None]:
         """Build the file-list entries for a source page, creating standalone
-        image derivatives as needed."""
+        image derivatives as needed, and pick the record-head portrait
+        thumbnail (win 2) out of the same pass.
+
+        Returns `(entries, portrait)`. `portrait` is the `source_files` row
+        the head-of-record thumbnail should use: `role: front` if one such
+        image resolved to a viewable thumbnail, else the first image in
+        `source_files`' own row order (the table's insertion order - there is
+        no separate sequence column, so "first" here means whatever order the
+        SELECT below already returns). It is None whenever no image asset
+        resolved to a thumbnail at all - no image row, every image missing on
+        disk, Pillow absent in standalone, or every image gated out for
+        naming a living person - so the portrait can never show what the
+        Files list itself would have hidden; it reuses that list's own
+        entries rather than re-resolving the file, so a missing/omitted image
+        degrades identically in both places."""
         entries: list[dict] = []
+        candidates: list[tuple[bool, dict]] = []   # (is_front, entry) for resolvable images
         for f in self.conn.execute(
             'SELECT path, role FROM source_files WHERE source_id = ?', (sid,)
         ):
@@ -1326,7 +1527,13 @@ class _SiteBuilder:
             if entry is None:   # standalone image needing a derivative
                 entry = self._standalone_image_entry(sid, f['path'], f['role'], page_dir)
             entries.append(entry)
-        return entries
+            is_image = Path(f['path']).suffix.lower() in _IMAGE_SUFFIXES
+            if is_image and entry.get('thumb_href'):
+                candidates.append(((f['role'] or '').strip().lower() == 'front', entry))
+        portrait = next((e for is_front, e in candidates if is_front), None)
+        if portrait is None and candidates:
+            portrait = candidates[0][1]
+        return entries, portrait
 
     # - person page (M8.2) -
 
@@ -1338,7 +1545,7 @@ class _SiteBuilder:
         self._footnote_seq = []
 
         summary = self._person_summary(pid, page_dir)
-        biography_html, stories_html, research_html = self._person_prose(row, page_dir)
+        biography_html, stories_html, research_html, biography_raw = self._person_prose(row, page_dir)
         timeline = self._person_timeline(pid, page_dir)
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
@@ -1346,10 +1553,23 @@ class _SiteBuilder:
         name = row['name'] or fmt_id_display(pid)
         alt_names, tags = self._person_header_meta(pid, name)
         # One Ahnentafel walk feeds both charts: the horizontal pedigree (subject +
-        # parents + grandparents, slots 1-7) and the deeper radial fan.
+        # parents + grandparents, slots 1-7) and the deeper radial fan. The pedigree
+        # is then widened into a family chart with the subject's spouse(s) and
+        # children (win 1) - the fan stays ancestors-only (a fan has no natural
+        # place to hang a descendant wing).
         ahnen = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
         ped_labels = {n: e for n, e in ahnen.items() if n < 8}
-        pedigree = self._markup(_render_pedigree_svg(ped_labels)) if len(ped_labels) > 1 else None
+        wings = self._build_family_wings(pid, page_dir)
+        has_pedigree = len(ped_labels) > 1 or wings['spouses'] or wings['children']
+        pedigree = (self._markup(_render_pedigree_svg(ped_labels, wings['spouses'], wings['children']))
+                   if has_pedigree else None)
+        # Same condition _render_pedigree_svg uses for its SVG aria-label (a
+        # sighted reader on the page and a screen-reader user on the SVG must
+        # be told the same truth about what the chart contains): a subject
+        # with a recorded spouse or child gets the family-chart heading, an
+        # ancestors-only chart gets the honest 'Ancestors' heading instead of
+        # the old unconditional 'Family'.
+        chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
         fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
 
         ctx = {
@@ -1358,12 +1578,20 @@ class _SiteBuilder:
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
             'pedigree': pedigree,
+            'chart_title': chart_title,
             'fan': fan,
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
             'stories_html': self._markup(stories_html) if stories_html else None,
             'research_html': self._markup(research_html) if research_html else None,
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
+            # Workbench-only fields (harmless in standalone - the template gates
+            # every use on `workbench`): the record's on-disk relpath for the
+            # "open file" button and living value for the "change..." affordance.
+            'record_relpath': row['path'],
+            'living': (row['living'] or 'unknown'),
+            'milestone_sources': self._person_milestone_sources(pid) if self.workbench else [],
+            'biography_raw': biography_raw if self.workbench else '',
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
@@ -1457,10 +1685,54 @@ class _SiteBuilder:
                     'value': r['date_edtf'] or r['value'] or '',
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
+                    'provisional': False,
                 })
+        # Workbench only (owner decision 2026-07-10, plan 17 BUILD §2.2/§8.3): a
+        # provisional birth/death - the unsourced `birth:`/`death:` frontmatter
+        # estimate a human knows before the record exists - is surfaced marked
+        # "estimate - unsourced", but ONLY for a vital that has no accepted claim
+        # yet (a sourced claim supersedes the estimate everywhere). This never
+        # runs in standalone or plain --linked: the published site stays
+        # claims-only, so an unsourced estimate never leaves the machine.
+        if self.workbench:
+            # One source of truth (AGENTS_TOOLING.md symmetry rule): which vitals
+            # get a provisional slot is `_lib.PROVISIONAL_VITAL_FIELDS`, not a
+            # literal repeated here. Sorted for determinism - a frozenset's
+            # iteration order is not guaranteed stable across runs.
+            for t in sorted(PROVISIONAL_VITAL_FIELDS):
+                if t in by_type:
+                    continue   # a sourced claim wins - the estimate is superseded
+                est = self._provisional_vital(pid, t)
+                if est:
+                    summary.append({
+                        'label': _VITAL_LABELS[t],
+                        'value': est,
+                        'place': '',
+                        'source_html': '',
+                        'provisional': True,
+                    })
+            # Keep the summary in the canonical vital order even after appending.
+            order = {label: i for i, label in enumerate(
+                _VITAL_LABELS[t] for t in _VITAL_ORDER)}
+            summary.sort(key=lambda row: order.get(row['label'], 99))
         return summary
 
-    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str, str]:
+    def _provisional_vital(self, pid: str, field: str) -> str | None:
+        """Read one provisional (unsourced) `birth:`/`death:` estimate from a
+        person's frontmatter, or None. Non-load-bearing family knowledge
+        (SPEC §9, `PROVISIONAL_VITAL_FIELDS`); the index does not carry it, so it
+        is read from the record file on demand and only in workbench mode."""
+        row = self.person_meta.get(pid)
+        if not row:
+            return None
+        try:
+            meta = read_record(self.archive_root / row['path'])['meta']
+        except Exception:
+            return None
+        val = meta.get(field)
+        return str(val).strip() if val not in (None, '') else None
+
+    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str, str, str]:
         """Biography, Stories and Research Notes HTML, read from the person `.md` body.
 
         Unaccepted `<!-- AI-DRAFT ... -->` prose is excluded before rendering
@@ -1481,7 +1753,7 @@ class _SiteBuilder:
             rec = read_record(self.archive_root / row['path'])
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); skipping its prose.')
-            return '', '', ''
+            return '', '', '', ''
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
         # Apply the `<!-- private -->` fence to the whole body BEFORE section
@@ -1491,6 +1763,20 @@ class _SiteBuilder:
         # text unfenced and publishable on a standalone build.
         body = rec['body']
         stories = rec['stories']
+        # The Biography section text exactly AS WRITTEN - private-fence
+        # markers and any AI-DRAFT/AI-ACCEPTED markers intact - captured
+        # from the UNTOUCHED body before ANY publish-time processing below,
+        # for the workbench editor prefill (`person.edit --section
+        # biography`'s whole-section REPLACE target). `apply_private_fence`
+        # is safe to run AFTER this in workbench mode (`dp` is always False
+        # here, since workbench requires linked=True) - it only strips the
+        # marker COMMENTS in that mode, never any text - but capturing
+        # BEFORE it anyway means the editor prefill still shows a real
+        # `<!-- private -->` fence if one is present, not laundered-away
+        # plain text a later small edit could re-publish on a standalone
+        # build (P2 codex finding, round 7, PR #30 - the round-5 fix here
+        # already protected a pending AI-DRAFT the same way).
+        bio_as_written = (_extract_section(body, 'Biography') or '').strip()
         dp = not self.linked
         if body:
             body = apply_private_fence(body, drop=dp)
@@ -1514,13 +1800,19 @@ class _SiteBuilder:
                 'fix the marker or remove the draft, then rebuild. Until then this '
                 "person's Biography, Stories and Research Notes are withheld from the site."
             )
-            return '', '', ''
+            return '', '', '', ''
         # Private fences were already applied to the whole body above, so
         # _prose_to_html need not re-apply them here.
         biography_html = _prose_to_html(bio, render, embed, drop_private=dp) if bio else ''
         stories_html = _prose_to_html(stories, render, embed, drop_private=dp) if stories else ''
         research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
-        return biography_html, stories_html, research_html
+        # `bio_as_written` (NOT the fence-processed, draft-stripped `bio`
+        # used for the render above) is returned alongside the rendered
+        # HTML: it is the exact text `person.edit --section biography`
+        # would overwrite, private-fence and AI-DRAFT/AI-ACCEPTED markers
+        # intact, so the workbench's whole-section REPLACE editor can never
+        # silently launder away any of them on a human's small edit.
+        return biography_html, stories_html, research_html, bio_as_written
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the
@@ -1605,6 +1897,32 @@ class _SiteBuilder:
             out.append({'num': self._footnotes[sid], 'html': self._markup(title)})
         return out
 
+    def _person_milestone_sources(self, pid: str) -> list[dict]:
+        """id/title pairs for the workbench milestone modal's Source picker -
+        every source that already cites this person, so 'Add a milestone' can
+        point at real evidence instead of the person composing a raw S-id from
+        memory. Workbench mode always runs --linked (redaction is moot: the
+        combination workbench+standalone is refused in run_site), so this skips
+        the footnote numbering and redacted-source placeholder `_person_sources`
+        needs for the public page and just lists id + title, sorted by title."""
+        rows = self.conn.execute(
+            'SELECT DISTINCT c.source_id FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
+            'WHERE cp.person_id = ? '
+            'UNION SELECT DISTINCT source_id FROM source_people WHERE person_id = ?',
+            (pid, pid),
+        ).fetchall()
+        out: list[dict] = []
+        seen: set[str] = set()
+        for r in rows:
+            sid = normalize_id(str(r[0])) if r[0] else None
+            if not sid or sid in seen or sid not in self.source_meta:
+                continue
+            seen.add(sid)
+            title = self.source_meta[sid]['title'] or fmt_id_display(sid)
+            out.append({'id': fmt_id_display(sid), 'title': title})
+        out.sort(key=lambda e: e['title'].lower())
+        return out
+
     def _has_public_claim(self, pid1: str, pid2: str) -> bool:
         """Return True if the relationship between two persons may be shown.
 
@@ -1678,10 +1996,12 @@ class _SiteBuilder:
         return groups
 
     def _person_family_strip(self, pid: str, page_dir: Path) -> dict | None:
-        """A compact parents / siblings / children map for the head of a person
-        page - one hop up and down, plus siblings, and nothing deeper. Redaction +
-        public-claim gates match Friends & Family; siblings are reached only
-        through a public, non-redacted parent."""
+        """A compact parents / spouses / siblings / children map for the head of
+        a person page - one hop up, sideways, and down, plus siblings, and
+        nothing deeper. Redaction + public-claim gates match Friends & Family
+        (and the same gate `_build_family_wings` applies to the pedigree's
+        spouse/child columns); siblings are reached only through a public,
+        non-redacted parent."""
         def edge(person: str, rel: str) -> list[str]:
             return [r['other_id'] for r in self.conn.execute(
                 'SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = ?',
@@ -1709,6 +2029,7 @@ class _SiteBuilder:
         parent_ids = edge(pid, 'parent')
         parents = links([(p, pid) for p in parent_ids], None)
         children = links([(c, pid) for c in edge(pid, 'child')], None)
+        spouses = links([(s, pid) for s in edge(pid, 'spouse')], None)
 
         sib_pairs, sib_seen = [], set()
         for par in parent_ids:
@@ -1722,9 +2043,66 @@ class _SiteBuilder:
                     sib_pairs.append((k, par))     # evidence is the shared parent
         siblings = links(sib_pairs, None)
 
-        if not (parents or siblings or children):
+        groups = {'parents': parents, 'spouses': spouses, 'siblings': siblings, 'children': children}
+        if self.workbench:
+            # `person.relate`'s whole output for an unsourced tie is a
+            # `relationships:` hypothesis entry, never an accepted claim, so
+            # it never reaches the `relationships` index table the groups
+            # above are built from - the "+ add" button's own write would
+            # otherwise be invisible on the very page it was added from (P2
+            # codex finding, round 7, PR #30). Workbench-only: merged in
+            # after the accepted groups, never counted for `not self.linked`
+            # standalone/redaction purposes (this whole branch never runs there).
+            for key, hyp_links in self._person_hypothesis_ties(pid, page_dir).items():
+                groups[key] = groups[key] + hyp_links
+        if not any(groups.values()):
             return None
-        return {'parents': parents, 'siblings': siblings, 'children': children}
+        return groups
+
+    def _person_hypothesis_ties(self, pid: str, page_dir: Path) -> dict[str, list[str]]:
+        """Workbench-only companion to `_person_family_strip`: this person's
+        OWN `relationships:` entries with `status: hypothesis` (SPEC §9 -
+        the whole output of an unsourced `person.relate` / the family
+        strip's "+ add" button), read straight from the record file since
+        a hypothesis is never indexed - the `relationships` table only ever
+        carries accepted-claim-backed edges (`fha xref`'s "typed
+        relationship graph" reads only genetic/social edges the same way).
+        Grouped by the entry's own `type` into the same four keys
+        `_person_family_strip` uses, so its caller can merge them straight
+        in; each link is tagged "(hypothesis)" so it is never mistaken for
+        a sourced tie."""
+        row = self.person_meta.get(pid)
+        if row is None:
+            return {}
+        try:
+            meta = read_record(self.archive_root / row['path'])['meta']
+        except Exception:  # noqa: BLE001 - an unreadable record just contributes nothing here
+            return {}
+        group_of_type = {'parent': 'parents', 'spouse': 'spouses',
+                         'sibling': 'siblings', 'child': 'children'}
+        out: dict[str, list[str]] = {}
+        for entry in (meta.get('relationships') or []):
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get('status') or '').strip().lower() != 'hypothesis':
+                continue
+            group = group_of_type.get(str(entry.get('type') or '').strip().lower())
+            if group is None:
+                continue
+            target_ids = extract_bare_ids(str(entry.get('to') or ''))
+            if not target_ids:
+                continue
+            target = normalize_id(target_ids[0])
+            if target == pid:
+                continue
+            # Build the whole raw HTML string first, then wrap it ONCE -
+            # `_person_link` returns a plain (already-escaped-at-the-leaves)
+            # string, and concatenating a `Markup`-wrapped fragment with a
+            # plain string via `+` would re-escape the plain side, turning
+            # this span's own tags into literal text.
+            link_html = self._person_link(target, page_dir) + ' <span class="wb-hypothesis-tag">(hypothesis)</span>'
+            out.setdefault(group, []).append(self._markup(link_html))
+        return out
 
     def _person_photos(self, pid: str, page_dir: Path) -> list[dict]:
         """Photo strip from `.cache/photos.sqlite` (`photo_people`), one entry
@@ -1800,7 +2178,7 @@ class _SiteBuilder:
         if not resolved.exists():
             return None
         if self.linked:
-            href = _rel_href(resolved, page_dir)
+            href = self._asset_href(resolved, page_dir)
             return {'href': href, 'full_href': href, 'caption': caption}
         if not _PIL_AVAILABLE:
             return None
@@ -1824,7 +2202,7 @@ class _SiteBuilder:
 
     def _profile_photo_href(self, pid: str, page_dir: Path) -> str | None:
         f = self._profile_photo_file(pid)
-        return _rel_href(f, page_dir) if f else None
+        return self._asset_href(f, page_dir) if f else None
 
     def _resolve_asset_path(self, ref: str) -> Path | None:
         """Best-effort resolve a human-written photo reference to a file on disk:
@@ -2091,7 +2469,7 @@ class _SiteBuilder:
         if resolved is None:
             return None
         if self.linked:
-            return _rel_href(resolved, page_dir)
+            return self._asset_href(resolved, page_dir)
         if not _PIL_AVAILABLE:
             return None
         dest = self._media_dest(ref, subdir)
@@ -2417,27 +2795,33 @@ class _SiteBuilder:
             'edges': edges,
         }
 
+    def _chart_entry(self, pid: str, page_dir: Path) -> dict:
+        """One redacted display node {'name','url','redacted','dates'} for any
+        static chart (pedigree ancestors, and - as of the family-chart win -
+        spouses/children too). Shared so every chart node gets identical
+        redaction treatment (mirrors `_tree_node`, the interactive-tree
+        equivalent): a living/restricted person redacts to a blank name, a
+        stub (no meta row) shows its bare id unlinked, everyone else gets
+        their real name plus a link when they have a page."""
+        no_dates = {'birth': None, 'death': None}
+        meta = self.person_meta.get(pid)
+        if meta is None:
+            return {'name': fmt_id_display(pid), 'url': None, 'redacted': False, 'dates': no_dates}
+        if not self.linked and self._person_is_redacted(meta):
+            return {'name': '', 'url': None, 'redacted': True, 'dates': no_dates}
+        url = (_rel_href(self.persons_dir / _page_filename(pid), page_dir)
+               if pid in self.person_pages else None)
+        # Dates ride along for the pedigree card; the radial fan ignores them.
+        return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
+                'redacted': False, 'dates': self._person_vitals(pid)}
+
     def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> dict:
         """Ahnentafel map {number: {'name','url','redacted'}} for the fan chart,
         walking `parent` edges from the seed. Father (a parent recorded M) takes the
         even slot, mother (F) the odd one; unknown-sex parents fill whatever slot is
         free. Redaction is applied per person - a withheld ancestor becomes a blank
         segment, never a leaked name (mirrors `_tree_node`)."""
-        no_dates = {'birth': None, 'death': None}
-
-        def entry(pid: str) -> dict:
-            meta = self.person_meta.get(pid)
-            if meta is None:
-                return {'name': fmt_id_display(pid), 'url': None, 'redacted': False, 'dates': no_dates}
-            if not self.linked and self._person_is_redacted(meta):
-                return {'name': '', 'url': None, 'redacted': True, 'dates': no_dates}
-            url = (_rel_href(self.persons_dir / _page_filename(pid), page_dir)
-                   if pid in self.person_pages else None)
-            # Dates ride along for the pedigree card; the radial fan ignores them.
-            return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
-                    'redacted': False, 'dates': self._person_vitals(pid)}
-
-        labels: dict[int, dict] = {1: entry(seed)}
+        labels: dict[int, dict] = {1: self._chart_entry(seed, page_dir)}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
         seen = {seed}
         while queue:
@@ -2468,11 +2852,51 @@ class _SiteBuilder:
             for slot_num, ppid in ((2 * num, father), (2 * num + 1, mother)):
                 if not ppid:
                     continue
-                labels[slot_num] = entry(ppid)
+                labels[slot_num] = self._chart_entry(ppid, page_dir)
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
                     seen.add(ppid)
                     queue.append((slot_num, ppid))
         return labels
+
+    def _build_family_wings(self, pid: str, page_dir: Path) -> dict:
+        """Spouse(s) and children for the person-page family chart (the win-1
+        extension of the ancestor pedigree), as two lists of `_chart_entry`
+        dicts, keyed 'spouses' / 'children'.
+
+        Unlike ancestor slots, a redacted spouse or child is not shown as a
+        faint 'Unknown' placeholder - you cannot enumerate someone's unknown
+        children the way an unresearched parent slot can be drawn, so the
+        entry is dropped outright. This mirrors what already happens to a
+        redacted ANCESTOR in practice: `_build_ahnentafel`'s walk excludes a
+        living/restricted parent from `parents` before it ever reaches
+        `_chart_entry`, so that slot renders as the ordinary empty-ancestor
+        placeholder rather than a labelled redaction. Dropping the person here
+        is the same outcome translated to a column with no placeholder to
+        fall back on: the safest rendering is silence, not a 'Living Person'
+        chip that would out them as an unnamed close relative.
+
+        The gate is identical to the ancestor one: standalone mode requires a
+        meta row, a non-redacted person, and at least one public (non-hard-
+        restricted) claim behind the edge. `--linked` shows every edge."""
+
+        def collect(rel: str) -> list[dict]:
+            out: list[dict] = []
+            for r in self.conn.execute(
+                'SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = ? '
+                'ORDER BY other_id', (pid, rel),
+            ):
+                other = r['other_id']
+                if other == pid:
+                    continue
+                if not self.linked:
+                    ometa = self.person_meta.get(other)
+                    if (ometa is None or self._person_is_redacted(ometa)
+                            or not self._has_public_claim(pid, other)):
+                        continue
+                out.append(self._chart_entry(other, page_dir))
+            return out
+
+        return {'spouses': collect('spouse'), 'children': collect('child')}
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
                        page_dir: Path, caption: str, *, initial_depth: int | None = None,
@@ -2534,6 +2958,17 @@ class _SiteBuilder:
             fonts = src / 'fonts'
             if fonts.is_dir():
                 shutil.copytree(fonts, self.assets_dir / 'fonts', dirs_exist_ok=True)
+            # Workbench mode ships the serve chrome's own stylesheet + script
+            # into assets/ so the served pages (built here, plus serve's own
+            # /review and /inbox which reference the same assets/ dir) stay
+            # self-contained under the snapshot root. These files never exist in
+            # a standalone/linked build - they are only copied when workbench.
+            if self.workbench:
+                wb_src = Path(__file__).resolve().parent / 'templates' / 'workbench'
+                for name in ('workbench.css', 'workbench.js'):
+                    f = wb_src / name
+                    if f.is_file():
+                        shutil.copy2(f, self.assets_dir / name)
         except OSError as e:
             self.messages.append(f'WARNING: could not copy the design assets into the site ({e}).')
 
@@ -2581,11 +3016,25 @@ class _SiteBuilder:
         default_intro = ('A safe-to-share snapshot of this family archive.' if not self.linked
                          else 'Local developer preview (linked mode - not redacted, do not share).')
         intro = self._markup(f'<p>{_escape(default_intro)}</p>')
+        # The raw text `home.edit` would overwrite - workbench-only, so the
+        # "Edit the homepage intro" replacement editor can prefill with what
+        # is actually there instead of starting blank (a whole-section
+        # REPLACE that started empty would delete the existing intro).
+        intro_raw = ''
         home_md = self.archive_root / 'notes' / 'home.md'
         if home_md.is_file():
             try:
                 body = (read_record(home_md).get('body') or '').strip()
                 if body:
+                    # The text AS WRITTEN - any pending AI-DRAFT block intact -
+                    # captured before draft-stripping below, for the workbench
+                    # editor prefill (`home.edit`'s whole-file REPLACE target).
+                    # Reusing the stripped `body` here would silently delete a
+                    # pending draft the moment any small homepage edit was
+                    # applied, bypassing `fha confirm draft` entirely (P2
+                    # codex finding, round 7, PR #30 - the same fix already
+                    # applied to the person Biography editor in round 5).
+                    body_as_written = body
                     # Fail-closed on `<!-- AI-DRAFT ... -->`: unaccepted drafts
                     # must not slip into the homepage prose, and a damaged marker
                     # withholds the whole intro rather than leak partial draft.
@@ -2596,6 +3045,8 @@ class _SiteBuilder:
                             f'({problem}) - the homepage intro is withheld until it is fixed.')
                     elif body.strip():
                         intro = self._markup(_prose_to_html(body, render, embed, drop_private=not self.linked))
+                        if self.workbench:
+                            intro_raw = body_as_written
             except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
                 self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
 
@@ -2659,7 +3110,8 @@ class _SiteBuilder:
 
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'sources': sources,
-            'places': places, 'intro': intro, 'tree': tree, 'hero': hero, 'root_prefix': '.',
+            'places': places, 'intro': intro, 'intro_raw': intro_raw, 'tree': tree,
+            'hero': hero, 'root_prefix': '.',
         })
 
     # - rendering plumbing -
@@ -2688,6 +3140,21 @@ class _SiteBuilder:
                     'Generated by fha site (linked preview - unredacted; do not publish).'
                 ),
             }
+            # Workbench chrome (serve only). base.html gates the serve bar, the
+            # CSRF meta tag, the workbench assets, and the modal templates on
+            # `workbench`; the runtime values it needs (port, per-process CSRF
+            # token, review/inbox counts) are supplied by serve as
+            # workbench_context. Both stay absent (falsy) in every `fha site`
+            # build, so no chrome can leak into a shared snapshot.
+            if self.workbench:
+                full['workbench'] = True
+                # Which vitals get a provisional (unsourced) slot, computed once
+                # from _lib.PROVISIONAL_VITAL_FIELDS and handed to workbench.js
+                # via a meta tag - the client-side milestone router reads this
+                # instead of hardcoding its own birth/death literal, so the two
+                # halves of the milestone feature cannot drift apart.
+                full['provisional_vital_fields'] = ' '.join(sorted(PROVISIONAL_VITAL_FIELDS))
+                full.update(self.workbench_context)
             full.update(ctx)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(tmpl.render(**full), encoding='utf-8')
@@ -2792,6 +3259,8 @@ def _site_payload(
     *,
     linked: bool = False,
     dry_run: bool = False,
+    workbench: bool = False,
+    workbench_context: dict | None = None,
 ) -> dict:
     """Build the site and return a result dict.
 
@@ -2845,7 +3314,8 @@ def _site_payload(
     if conn is None:
         return {'status': 'no-index', 'messages': [], 'out_dir': out_dir, 'pages': 0}
 
-    builder = _SiteBuilder(conn, archive_root, fha_config, out_dir, linked=linked)
+    builder = _SiteBuilder(conn, archive_root, fha_config, out_dir, linked=linked,
+                           workbench=workbench, workbench_context=workbench_context)
     try:
         builder.prepare()
         if dry_run:
@@ -2879,6 +3349,8 @@ def run_site(
     *,
     linked: bool = False,
     dry_run: bool = False,
+    workbench: bool = False,
+    workbench_context: dict | None = None,
 ) -> Result:
     """Library entry point. Build the site and return a Result.
 
@@ -2887,7 +3359,21 @@ def run_site(
     reading `result['status']` / `result['pages']` unchanged.  A real build lists
     the written output directory in `changed`; a --dry-run (status 'dry-run')
     writes nothing and leaves `changed` empty.
+
+    `workbench` (serve only - never exposed on the `fha site` CLI) turns on the
+    editing chrome and the /root/ asset-href rewrite. It REQUIRES `linked`:
+    workbench+standalone is refused here, because the workbench is the private,
+    unredacted local view by definition. `workbench_context` carries serve's
+    runtime values (port, CSRF token, review/inbox counts) baked into the bar.
     """
+    if workbench and not linked:
+        return Result(
+            ok=False, exit_code=EXIT_FAILURE,
+            data={'status': 'bad-config', 'out_dir': str(out_dir), 'pages': 0,
+                  'messages': ['workbench mode requires linked mode (it is the '
+                               'unredacted local view). This is an internal serve '
+                               'call - report it as a bug.']},
+        ).add('error', 'workbench mode requires linked mode.')
     if is_working_copy(archive_root):
         # Warning-level refusal, not a failure: ok stays True, exit stays clean,
         # data.status='working-copy' is the machine discriminator (TOOLING §13d).
@@ -2908,7 +3394,8 @@ def run_site(
             'warning',
             warning_text,
         )
-    payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run)
+    payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run,
+                            workbench=workbench, workbench_context=workbench_context)
     status = payload['status']
     changed = [str(payload['out_dir'])] if status == 'ok' else []
     # Mirror _cmd_site's per-status exit codes so headless callers returning

@@ -19,6 +19,8 @@ claim), and a pre-existing duplicate claim id refuses with the E001 repair
 path, not the "would hide every claim" corruption wording (finding 15).
 """
 
+import contextlib
+import io
 import shutil
 import sqlite3
 import sys
@@ -82,6 +84,68 @@ def _write_source(archive_root: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_CLAIM_BLOCK, encoding='utf-8')
     return path
+
+
+def _write_person(archive_root: Path, pid: str, name: str) -> Path:
+    """A minimal stub person record `claim new`'s --persons check can resolve."""
+    slug = name.lower().replace(' ', '_')
+    path = archive_root / 'people' / 'stubs' / f'{slug}__{pid}.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'---\nid: {pid}\nname: {name}\nliving: false\ntier: stub\ncreated: 2026-07-01\n---\n',
+        encoding='utf-8',
+    )
+    return path
+
+
+def _indented_block(pad: int, *, place: str | None = None, place_text: str | None = None) -> str:
+    """One claim item at a given dash-to-key spacing (SPEC-legal, see
+    KeyIndentVariantTests) - used to round-trip the new type/place/persons
+    fields at both the 2-space (pad=1) and 4-space (pad=3) conventions."""
+    dash = '-' + ' ' * pad
+    ki = ' ' * (1 + pad)
+    lines = [
+        '## Claims', '```yaml',
+        f'{dash}value: "Born 1880"',
+        f'{ki}id: C-aa11bb22cc',
+        f'{ki}type: birth',
+        f'{ki}persons: [P-aaaaaaaaaa]',
+    ]
+    if place is not None:
+        lines.append(f'{ki}place: {place}')
+    if place_text is not None:
+        lines.append(f'{ki}place_text: "{place_text}"')
+    lines.append(f'{ki}status: suggested')
+    lines.append('```')
+    return '\n'.join(lines) + '\n'
+
+
+def _notes_repro_block(pad: int, *, place: str | None = None,
+                       place_text: str | None = None) -> str:
+    """A claim item with a place/place_text key sitting ABOVE a trailing
+    `notes: |` block - the exact 2026-07 stale-anchor repro shape - at a given
+    dash-to-key spacing (pad=1 -> 2-space, pad=3 -> 4-space). The two
+    continuation lines are indented deeper than `notes:`, as YAML requires."""
+    dash = '-' + ' ' * pad
+    ki = ' ' * (1 + pad)
+    cont = ki + '  '            # block-scalar continuation, deeper than notes:
+    lines = [
+        '## Claims', '```yaml',
+        f'{dash}value: "Anna Smith born 1880"',
+        f'{ki}id: C-aa11bb22cc',
+        f'{ki}type: birth',
+        f'{ki}persons: [P-aaaaaaaaaa]',
+    ]
+    if place is not None:
+        lines.append(f'{ki}place: {place}')
+    if place_text is not None:
+        lines.append(f'{ki}place_text: "{place_text}"')
+    lines.append(f'{ki}status: suggested')
+    lines.append(f'{ki}notes: |')
+    lines.append(f'{cont}First note line.')
+    lines.append(f'{cont}Second note line.')
+    lines.append('```')
+    return '\n'.join(lines) + '\n'
 
 
 # ── Surgical edit (pure text) ──────────────────────────────────────────────────
@@ -310,6 +374,15 @@ class RunClaimTests(unittest.TestCase):
         rec = {c['id']: c for c in read_record(self.source)['claims']}
         self.assertEqual(str(rec['C-aa11bb22cc']['reviewed']), '2026-06-24')
         self.assertIn(str(self.source), result.changed)
+
+    def test_publishes_canonical_source_id(self) -> None:
+        # data['source_id'] carries the canonical S-id (S- + 10 chars) the
+        # holding source is filed under, alongside the kept-for-compat path.
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['source_id'], 'S-1111111111')
+        self.assertRegex(result['source_id'], r'^S-[0-9a-hjkmnp-tv-z]{10}$')
+        self.assertEqual(result['source'], str(self.source))
 
     def test_accept_defaults_reviewed_to_today_not_refused(self) -> None:
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
@@ -698,6 +771,597 @@ class ClaimIndexLintIntegrationTests(unittest.TestCase):
         self.assertEqual(accept.exit_code, EXIT_CLEAN)
         self.assertEqual(self._claim_status_in_index(self.BIRTH_CLAIM), 'accepted')
         self.assertFalse(self._w101_birth_for_person())
+
+
+# ── fha claim new: run_claim_new contract ────────────────────────────────────────
+
+class RunClaimNewTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_accepted_happy_path_writes_block_and_stamps_reviewed(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper, Plains Junction Railroad', persons=['P-aaaaaaaaaa'],
+            date='1874', status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn(str(self.source), result.changed)
+        cid = result['claim_id']
+        self.assertTrue(cid)
+        rec = self._claims()[cid]
+        self.assertEqual(rec['type'], 'occupation')
+        self.assertEqual(rec['value'], 'Bookkeeper, Plains Junction Railroad')
+        self.assertEqual(rec['persons'], ['P-aaaaaaaaaa'])
+        self.assertEqual(str(rec['date']), '1874')
+        self.assertEqual(rec['status'], 'accepted')
+        self.assertEqual(str(rec['reviewed']), claim._today())
+
+    def test_suggested_has_no_reviewed_stamp(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], status='suggested')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(rec['status'], 'suggested')
+        self.assertNotIn('reviewed', rec)
+
+    def test_dry_run_writes_nothing(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        self.assertTrue(any('Bookkeeper' in m.text for m in result.messages))
+
+    def test_claim_id_override_reuses_a_previously_minted_id(self) -> None:
+        # P2 codex finding (round 5, PR #30): the workbench's dry-run preview
+        # mints and shows a real C-id, but Apply used to call run_claim_new
+        # AGAIN with no override, drawing a second, DIFFERENT id (mint_ids
+        # is random) - so the claim actually created never matched the one
+        # the human approved. `claim_id` lets a caller that already minted
+        # one (via an earlier dry run) reuse that exact id on the live write.
+        preview = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], dry_run=True)
+        previewed_id = preview['claim_id']
+        self.assertTrue(previewed_id)
+        live = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], claim_id=previewed_id)
+        self.assertEqual(live.exit_code, EXIT_CLEAN)
+        self.assertEqual(live['claim_id'], previewed_id)
+        self.assertIn(previewed_id, self._claims())
+
+    def test_claim_id_override_rejects_a_malformed_id(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', claim_id='not-an-id')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'invalid-id')
+
+    def test_claim_id_override_rejects_the_wrong_id_type(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', claim_id='P-aaaaaaaaaa')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'invalid-id')
+
+    def test_claim_id_override_refuses_a_stale_preview_id_that_now_exists(self) -> None:
+        first = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'])
+        self.assertEqual(first.exit_code, EXIT_CLEAN)
+        again = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Elsewhere', claim_id=first['claim_id'])
+        self.assertEqual(again.exit_code, EXIT_FAILURE)
+        self.assertEqual(again['status'], 'refused')
+
+    def test_missing_source_is_not_found_with_next_step(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-0000000000', claim_type='occupation', value='Bookkeeper')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        self.assertTrue(any(m.next_step and 'fha find' in m.next_step for m in result.messages))
+
+    def test_relationship_type_refused_names_sanctioned_paths(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='relationship', value='Friends')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('fha person relate', text)
+        self.assertIn('fha confirm cooccur', text)
+        self.assertIn('roles:', text)
+        # nothing written
+        self.assertEqual(len(read_record(self.source)['claims']), 2)
+
+    def test_unresolvable_person_refused_naming_id_and_fix(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-zzzzzzzzzz'])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('P-zzzzzzzzzz', text)
+        self.assertIn('fha person new', text)
+        self.assertIn('fha stubs --from-names', text)
+        self.assertEqual(len(read_record(self.source)['claims']), 2)
+
+    def test_loose_date_normalized(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka', date='circa 1880')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(str(rec['date']), '1880~')
+
+    def test_nonsense_date_gets_plain_error(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived somewhere', date='sometime maybe idk')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('1880', text)   # a concrete example, not a bare EDTF error
+
+    def test_place_and_place_text_mutually_exclusive(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived somewhere', place='L-baba9801fa', place_text='Topeka')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('mutually exclusive', ' '.join(m.text for m in result.messages))
+
+    def test_appends_after_existing_claims_with_one_blank_line(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='note', value='A late addition')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        lines = self.source.read_text(encoding='utf-8').splitlines()
+        idx = next(i for i, ln in enumerate(lines) if 'A late addition' in ln)
+        self.assertEqual(lines[idx - 1].strip(), '')
+        self.assertEqual(len(read_record(self.source)['claims']), 3)
+
+    def test_crlf_round_trip(self) -> None:
+        crlf = _CLAIM_BLOCK.replace('\n', '\r\n')
+        self.source.write_bytes(crlf.encode('utf-8'))
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='note', value='CRLF test')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        after = self.source.read_bytes()
+        self.assertNotIn(b'\r\r\n', after)
+        self.assertEqual(after.count(b'\n'), after.count(b'\r\n'))
+
+    def test_missing_persons_warns_but_still_mints(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='note', value='No persons yet')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(any('persons:' in m.text for m in result.messages))
+        self.assertIn(result['claim_id'], self._claims())
+
+    def test_confidence_defaults_from_source_type(self) -> None:
+        # confidence: is required on every claim (SPEC §8.5, lint E010), and
+        # §8.5 directs tooling to DEFAULT it from source_type rather than
+        # leave it missing. The fixture source is source_type: other, which
+        # the rubric maps to the conservative 'medium'.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()[result['claim_id']].get('confidence'), 'medium')
+        self.assertTrue(any('defaulted to medium' in m.text for m in result.messages))
+
+    def test_confidence_override_wins_and_skips_default_message(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', persons=['P-aaaaaaaaaa'], confidence='high')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()[result['claim_id']].get('confidence'), 'high')
+        self.assertFalse(any('defaulted' in m.text for m in result.messages))
+
+    def test_confidence_invalid_refused_without_write(self) -> None:
+        before = (self.root / 'sources' / 'other'
+                  / 'test-source_S-1111111111.md').read_text(encoding='utf-8')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='occupation',
+            value='Bookkeeper', confidence='certain')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(any('high, medium, low' in m.text for m in result.messages))
+        after = (self.root / 'sources' / 'other'
+                 / 'test-source_S-1111111111.md').read_text(encoding='utf-8')
+        self.assertEqual(before, after)
+
+    def test_default_confidence_rubric_anchors(self) -> None:
+        # The SPEC §8.5 anchors, pinned: vital-record -> high, interview ->
+        # low, everything else (census included) -> medium.
+        from _lib import default_confidence
+        self.assertEqual(default_confidence('vital-record'), 'high')
+        self.assertEqual(default_confidence('interview'), 'low')
+        self.assertEqual(default_confidence('census'), 'medium')
+        self.assertEqual(default_confidence(None), 'medium')
+
+    def test_edit_verb_confidence_field_only(self) -> None:
+        # Field-only --confidence edit: replaces the existing confidence: line
+        # in place, leaves status and reviewed untouched.
+        result = claim.run_claim(
+            self.root, claim_id='C-aa11bb22cc', confidence='low')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = (self.root / 'sources' / 'other'
+                / 'test-source_S-1111111111.md').read_text(encoding='utf-8')
+        self.assertIn('confidence: low', text)
+        self.assertNotIn('confidence: high', text)
+        self.assertIn('status: suggested', text)
+        self.assertNotIn('reviewed:', text.split('C-aa11bb22cc')[1].split('- value:')[0])
+
+
+# ── fha claim new: CLI routing (fha.main and the standalone parser) ─────────────
+
+class ClaimNewCliRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        # resolve_root_arg (the CLI-layer path _cmd_claim/_cmd_claim_new use,
+        # unlike run_claim/run_claim_new called directly) requires fha.yaml.
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_fha_main_routes_claim_new(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'new', '--source', 'S-1111111111', '--type', 'note',
+                          '--value', 'via fha.main', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Minted', out.getvalue())
+        claims = read_record(self.source)['claims']
+        self.assertTrue(any(c['value'] == 'via fha.main' for c in claims))
+
+    def test_fha_main_flat_claim_verb_still_works(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'C-aa11bb22cc', '--status', 'accepted',
+                          '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = {c['id']: c for c in read_record(self.source)['claims']}
+        self.assertEqual(claims['C-aa11bb22cc']['status'], 'accepted')
+
+    def test_standalone_new_subcommand(self) -> None:
+        rc = claim._standalone_main(['new', '--source', 'S-1111111111', '--type', 'note',
+                                     '--value', 'via standalone', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = read_record(self.source)['claims']
+        self.assertTrue(any(c['value'] == 'via standalone' for c in claims))
+
+    def test_standalone_flat_verb_still_works(self) -> None:
+        rc = claim._standalone_main(['C-aa11bb22cc', '--status', 'accepted', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = {c['id']: c for c in read_record(self.source)['claims']}
+        self.assertEqual(claims['C-aa11bb22cc']['status'], 'accepted')
+
+
+# ── Field extension (Task 3): _apply_claim_review unit-level round-trips ────────
+
+class FieldExtensionApplyTests(unittest.TestCase):
+    """Each new field (type/place/place_text/persons) round-trips at both the
+    2-space (pad=1) and 4-space (pad=3) dash-to-key conventions - the same
+    discipline KeyIndentVariantTests exercises for status/value/date."""
+
+    def test_type_round_trips_both_indents(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc', type_='occupation')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(claims[0]['type'], 'occupation')
+                self.assertEqual(claims[0]['status'], 'suggested')  # untouched
+
+    def test_place_round_trips_both_indents(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc', place='L-baba9801fa')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(str(claims[0]['place']), 'L-baba9801fa')
+
+    def test_place_text_round_trips_both_indents(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc', place_text='Topeka, Kansas')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(claims[0]['place_text'], 'Topeka, Kansas')
+
+    def test_persons_round_trips_both_indents_and_replaces(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _indented_block(pad), 'C-aa11bb22cc',
+                    persons=['P-bbbbbbbbbb', 'P-cccccccccc'])
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(claims[0]['persons'], ['P-bbbbbbbbbb', 'P-cccccccccc'])
+
+    def test_place_switches_to_place_text_removing_place(self) -> None:
+        new, changed = claim._apply_claim_review(
+            _indented_block(1, place='L-baba9801fa'), 'C-aa11bb22cc',
+            place_text='Fairview City')
+        self.assertTrue(changed)
+        claims = read_record_from_text(new)
+        self.assertEqual(claims[0]['place_text'], 'Fairview City')
+        self.assertNotIn('place', claims[0])
+
+    def test_place_text_switches_to_place_removing_place_text(self) -> None:
+        new, changed = claim._apply_claim_review(
+            _indented_block(1, place_text='Fairview City'), 'C-aa11bb22cc',
+            place='L-baba9801fa')
+        self.assertTrue(changed)
+        claims = read_record_from_text(new)
+        self.assertEqual(str(claims[0]['place']), 'L-baba9801fa')
+        self.assertNotIn('place_text', claims[0])
+
+    def test_status_optional_field_only_edit_leaves_status_and_reviewed_untouched(self) -> None:
+        new, changed = claim._apply_claim_review(
+            _CLAIM_BLOCK, 'C-aa11bb22cc', place='L-baba9801fa')
+        self.assertTrue(changed)
+        rec = {c['id']: c for c in read_record_from_text(new)}
+        self.assertEqual(rec['C-aa11bb22cc']['status'], 'suggested')
+        self.assertNotIn('reviewed', rec['C-aa11bb22cc'])
+        self.assertEqual(str(rec['C-aa11bb22cc']['place']), 'L-baba9801fa')
+        # sibling untouched
+        self.assertNotIn('place', rec['C-bb22cc33dd'])
+
+
+# ── --persons against a block-style existing list (P2 codex finding, PR #30) ────
+
+def _block_persons_block(pad: int, *, trailing_confidence: bool = False) -> str:
+    """One claim item whose `persons:` is a hand-written BLOCK list (the shape
+    `set_scalar`/`remove_key` used to touch only the header line of, leaving
+    the old `- P-…` continuation lines stranded under the new inline
+    rewrite). `trailing_confidence` adds a `confidence:` key AFTER persons so
+    a fresh `--confidence` insert exercises the `anchor` still landing after
+    persons' collapsed block, not on one of its orphaned lines."""
+    dash = '-' + ' ' * pad
+    ki = ' ' * (1 + pad)
+    li = ki + '  '   # list item indent, deeper than the persons: key itself
+    lines = [
+        '## Claims', '```yaml',
+        f'{dash}value: "Born 1880"',
+        f'{ki}id: C-aa11bb22cc',
+        f'{ki}type: birth',
+        f'{ki}persons:',
+        f'{li}- P-aaaaaaaaaa',
+        f'{li}- P-bbbbbbbbbb',
+        f'{ki}status: suggested',
+    ]
+    if trailing_confidence:
+        lines.append(f'{ki}confidence: low')
+    lines.append('```')
+    return '\n'.join(lines) + '\n'
+
+
+class PersonsBlockStyleRegressionTests(unittest.TestCase):
+    """--persons against an existing BLOCK-style (not flow `[...]`) list."""
+
+    def test_persons_block_list_replaced_as_a_unit(self) -> None:
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                new, changed = claim._apply_claim_review(
+                    _block_persons_block(pad), 'C-aa11bb22cc',
+                    persons=['P-cccccccccc'])
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                self.assertEqual(claims[0]['persons'], ['P-cccccccccc'])
+                self.assertEqual(claims[0]['status'], 'suggested')  # untouched
+                # No orphaned `- P-…` line survives from the old block list.
+                self.assertNotIn('- P-aaaaaaaaaa', new)
+                self.assertNotIn('- P-bbbbbbbbbb', new)
+
+    def test_persons_block_list_replace_keeps_later_key_placement_correct(self) -> None:
+        # A block-style persons: sits ABOVE confidence:. Replacing persons
+        # shrinks the item; a later fresh insert (--date, not present yet)
+        # relies on `anchor`, which must be shifted by that shrink or the new
+        # line lands mid-block instead of after status.
+        new, changed = claim._apply_claim_review(
+            _block_persons_block(1, trailing_confidence=True), 'C-aa11bb22cc',
+            persons=['P-cccccccccc'], date='1880')
+        self.assertTrue(changed)
+        claims = read_record_from_text(new)
+        self.assertEqual(len(claims), 1)
+        c = claims[0]
+        self.assertEqual(c['persons'], ['P-cccccccccc'])
+        self.assertEqual(str(c['date']), '1880')
+        self.assertEqual(c['confidence'], 'low')  # untouched, still readable
+        self.assertEqual(c['status'], 'suggested')
+
+    def test_persons_block_list_via_run_claim(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmp.name)
+            source = _write_source(root)
+            _write_person(root, 'P-aaaaaaaaaa', 'Anna Smith')
+            _write_person(root, 'P-bbbbbbbbbb', 'Ben Smith')
+            text = source.read_text(encoding='utf-8')
+            # Rewrite C-aa11bb22cc's persons as a block list, matching a
+            # human hand-edit or an older tool's output.
+            text = text.replace(
+                'persons: [P-aaaaaaaaaa]',
+                'persons:\n    - P-aaaaaaaaaa',
+                1,
+            )
+            source.write_text(text, encoding='utf-8')
+            result = claim.run_claim(root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            rec = {c['id']: c for c in read_record(source)['claims']}
+            self.assertEqual(rec['C-aa11bb22cc']['persons'], ['P-bbbbbbbbbb'])
+        finally:
+            tmp.cleanup()
+
+
+# ── The 2026-07 stale-anchor corruption (place/place_text over a notes block) ───
+
+class StaleAnchorRegressionTests(unittest.TestCase):
+    """A place_text/place key sitting above a `notes: |` block. The switch to
+    the other place kind deletes that key, but the pre-fix code fixed
+    status_idx/anchor BEFORE the deletion, so every line below shifted up one
+    and the new place key was spliced between `notes:` and its continuation -
+    silently emptying the note, folding its text into the place value, while
+    the block still parsed (the guard let it through). Removing the old place
+    key up front, before any index is computed, keeps the notes block intact."""
+
+    NOTES = ['First note line.', 'Second note line.']
+
+    def test_place_over_notes_does_not_corrupt_the_notes_block(self) -> None:
+        # The EXACT repro: place_text above a two-line `notes: |`, switched to
+        # --place while accepting. Rounds-trip at 2-space (pad=1) and 4-space
+        # (pad=3) dash indents.
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                text = _notes_repro_block(pad, place_text='Fairview, as written')
+                new, changed = claim._apply_claim_review(
+                    text, 'C-aa11bb22cc',
+                    status='accepted', reviewed='2026-07-12', place='L-baba9801fa')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                c = claims[0]
+                # The note survived: both lines, in order, nothing folded away.
+                self.assertEqual(c['notes'].splitlines(), self.NOTES)
+                # The place switched cleanly - the L-id, and no place_text left.
+                self.assertEqual(str(c['place']), 'L-baba9801fa')
+                self.assertNotIn('place_text', c)
+                self.assertEqual(c['status'], 'accepted')
+                self.assertEqual(str(c['reviewed']), '2026-07-12')
+                # The `place:` line sits BEFORE the `notes:` line in the text.
+                new_lines = new.splitlines()
+                place_line = next(i for i, ln in enumerate(new_lines)
+                                  if ln.strip().startswith('place:'))
+                notes_line = next(i for i, ln in enumerate(new_lines)
+                                  if ln.strip().startswith('notes:'))
+                self.assertLess(place_line, notes_line)
+
+    def test_place_text_over_notes_mirror(self) -> None:
+        # The mirror: an existing place above a notes block, switched to
+        # --place-text while accepting. Same two-indent round-trip.
+        for pad in (1, 3):
+            with self.subTest(pad=pad):
+                text = _notes_repro_block(pad, place='L-1234567890')
+                new, changed = claim._apply_claim_review(
+                    text, 'C-aa11bb22cc',
+                    status='accepted', reviewed='2026-07-12',
+                    place_text='Fairview, Kansas')
+                self.assertTrue(changed)
+                claims = read_record_from_text(new)
+                self.assertEqual(len(claims), 1)
+                c = claims[0]
+                self.assertEqual(c['notes'].splitlines(), self.NOTES)
+                self.assertEqual(c['place_text'], 'Fairview, Kansas')
+                self.assertNotIn('place', c)
+                new_lines = new.splitlines()
+                pt_line = next(i for i, ln in enumerate(new_lines)
+                               if ln.strip().startswith('place_text:'))
+                notes_line = next(i for i, ln in enumerate(new_lines)
+                                  if ln.strip().startswith('notes:'))
+                self.assertLess(pt_line, notes_line)
+
+
+# ── Field extension (Task 3): run_claim contract ─────────────────────────────────
+
+class RunClaimFieldEditTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        _write_person(self.root, 'P-bbbbbbbbbb', 'Ben Smith')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_status_now_optional_field_only_edit(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', place_text='Topeka')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertEqual(rec['status'], 'suggested')       # untouched
+        self.assertNotIn('reviewed', rec)                  # untouched
+        self.assertEqual(rec['place_text'], 'Topeka')
+
+    def test_no_mutation_flag_is_plainly_refused(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'no-op')
+        self.assertTrue(result.messages)
+        self.assertIn('--status', result.messages[0].text)
+
+    def test_persons_replaces_the_whole_list(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['persons'], ['P-bbbbbbbbbb'])
+
+    def test_unresolvable_person_refused(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', persons=['P-zzzzzzzzzz'])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_type_relationship_refused(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', claim_type='relationship')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        self.assertIn('fha confirm cooccur', ' '.join(m.text for m in result.messages))
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_type_change_round_trips(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', claim_type='baptism')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['type'], 'baptism')
+
+    def test_place_and_place_text_mutually_exclusive(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 place='L-baba9801fa', place_text='Topeka')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+
+    def test_reviewed_without_status_refused(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 reviewed='2026-07-11', value='corrected value')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('--status', ' '.join(m.text for m in result.messages))
+
+    def test_status_move_still_stamps_reviewed_as_before(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()['C-aa11bb22cc']
+        self.assertEqual(rec['status'], 'accepted')
+        self.assertEqual(str(rec['reviewed']), claim._today())
+
+    def test_existing_status_only_call_unaffected(self) -> None:
+        # The pre-Task-3 call shape (status only) must behave exactly as before.
+        result = claim.run_claim(self.root, claim_id='C-bb22cc33dd', status='rejected')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-bb22cc33dd']['status'], 'rejected')
 
 
 if __name__ == '__main__':

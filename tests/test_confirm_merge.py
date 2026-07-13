@@ -343,6 +343,23 @@ class MergeHelperTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(new, f'["[[{SURVIVOR}|Tommy]]"]')
 
+    def test_rewrite_ref_item_escapes_a_quote_in_the_display_name(self) -> None:
+        # Sweep of PR #30's YAML-quoting review fixes: `display` comes from
+        # the item's OWN existing text - a hand-typed, UNQUOTED wikilink
+        # naming a nickname-in-quotes ("Tommy \"Slim\" Hartley") is not
+        # unusual in genealogy prose, and was never validated by the merge.
+        # Spliced unescaped into the hand-built double-quoted `"[[...]]"`
+        # scalar this produces, an embedded `"` used to corrupt the result.
+        token_re = confirm._person_token_re(MERGED.lower())
+        survivor_disp = confirm.fmt_id_display(SURVIVOR.lower())
+        new = confirm._rewrite_ref_item('[[Tommy "Slim" Hartley]]', token_re, survivor_disp)
+        self.assertEqual(new, f'"[[{SURVIVOR}|Tommy \\"Slim\\" Hartley]]"')
+        # And the result is genuinely valid YAML, not just accepted by this
+        # codebase's own hand-rolled text scanners.
+        import yaml
+        parsed = yaml.safe_load(f'x: [{new}]')
+        self.assertEqual(parsed['x'], [f'[[{SURVIVOR}|Tommy "Slim" Hartley]]'])
+
     def test_render_scalar_round_trips_a_restricted_mapping(self) -> None:
         # read_record coerces booleans to 'true'; the fold must write the real
         # boolean back so the mapping form survives verbatim.

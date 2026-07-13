@@ -7,6 +7,7 @@ refusal / rollback / --more logic runs without the binary.
 Run: python -m unittest tests.test_process -v   (from the repo root)
 """
 
+import argparse
 import os
 import contextlib
 import io
@@ -1035,6 +1036,56 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(sidecar.exists())
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
+    def test_sidecar_pointer_only_accepts_capture_path_stub(self) -> None:
+        # P2 codex finding (PR #30): a `fha capture --path` stub sets
+        # asset_elsewhere + asset_path/asset_path_absolute but has no
+        # external_links, so it used to be permanently unprocessable without
+        # a hand-edit. It must now mint like any other pointer-only source -
+        # asset_path (the human's own shorthand) folded into provenance, but
+        # asset_path_absolute (a machine-specific path) never written into
+        # the committed record.
+        sidecar = self.archive / 'documents' / 'census' / 'elsewhere.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'title: Grandma Wedding Photo\n'
+            'asset_elsewhere: true\n'
+            'asset_path: E:/family-photos/grandma-wedding.jpg\n'
+            'asset_path_absolute: /mnt/e/family-photos/grandma-wedding.jpg\n'
+            '---\n'
+            'Still on the old external drive.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(sidecar.exists())  # stub consumed
+
+        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        rec = read_record(records[0])
+        self.assertEqual(rec['meta']['title'], 'Grandma Wedding Photo')
+        self.assertNotIn('files', rec['meta'])
+        self.assertNotIn('external_links', rec['meta'])
+        self.assertIn('E:/family-photos/grandma-wedding.jpg', rec['meta']['provenance'])
+        # The machine-specific absolute path never lands in the committed record.
+        raw = records[0].read_text(encoding='utf-8')
+        self.assertNotIn('/mnt/e/family-photos', raw)
+
+    def test_sidecar_pointer_only_asset_path_appends_to_existing_provenance(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'elsewhere-note.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'asset_elsewhere: true\n'
+            'asset_path: on Dad\'s laptop\n'
+            'provenance: Mentioned in Aunt Sue\'s 2019 email.\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(next((self.archive / 'sources').rglob('*_S-*.md')))
+        self.assertIn("Mentioned in Aunt Sue's 2019 email.", rec['meta']['provenance'])
+        self.assertIn("on Dad's laptop", rec['meta']['provenance'])
+
     def test_sidecar_pointer_only_honors_cli_overrides(self) -> None:
         sidecar = self.archive / 'documents' / 'census' / 'override.notes.md'
         sidecar.write_text(
@@ -1771,6 +1822,165 @@ class InputPathResolutionTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
         self.assertEqual(len(read_record(record)['meta']['files']), 2)
+
+
+class SourceIdOverrideTests(unittest.TestCase):
+    """P2 codex finding (round 7, PR #30): `fha serve`'s process.file verb
+    dry-run preview shows a real minted S-id (`_mint_one_source_id` mints on
+    every call, by design - same as person.new/claim.new), but Apply used to
+    call `run_process` again with no way to reuse it, drawing a second,
+    DIFFERENT id - so the source actually created never matched the id the
+    preview showed and the human approved. `_mint_one_source_id` now takes
+    an optional `source_id` override (the same id-reuse pattern already
+    fixed for person.new/claim.new), threaded through `process_document`,
+    `process_photo`, and `process_pointer_only` - the three single-file
+    branches `fha serve` can reach without an interactive prompt - and
+    reported back through `run_process`'s `Result.data['source_id']` so a
+    caller can round-trip a dry-run preview's id into the live Apply call.
+
+    A plain `unittest.TestCase` (not `ProcessTestCase`) on purpose: that
+    class's `setUp` doubles as the fixture AND already carries 100+ test_*
+    methods of its own, so subclassing it here would silently re-run every
+    one of them a second time under this class's name too.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _make_archive(Path(self._tmp.name))
+        self._orig_read = process._run_exiftool_read_keywords
+        self._orig_embed = process._run_exiftool_embed_source
+        self._orig_remove = process._run_exiftool_remove_source
+
+    def tearDown(self) -> None:
+        process._run_exiftool_read_keywords = self._orig_read
+        process._run_exiftool_embed_source = self._orig_embed
+        process._run_exiftool_remove_source = self._orig_remove
+        self._tmp.cleanup()
+
+    def _install_photo_store(self) -> FakePhotoStore:
+        store = FakePhotoStore()
+        process._run_exiftool_read_keywords = store.read
+        process._run_exiftool_embed_source = store.embed
+        process._run_exiftool_remove_source = store.remove
+        return store
+
+    def _args(self, file_path, **overrides) -> argparse.Namespace:
+        base = {
+            'root': str(self.archive), 'file': str(file_path), 'source_type': None,
+            'title': None, 'slug': None, 'source_date': None, 'more': None,
+            'people': None, 'dry_run': False,
+        }
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_document_reports_the_minted_source_id_in_result_data(self) -> None:
+        original = self.archive / 'documents' / 'census' / 'report.txt'
+        original.write_text('x', encoding='utf-8')
+        result = process.run_process(self._args(original, source_type='census'))
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        sid = result.data['source_id']
+        self.assertTrue(sid and sid.upper().startswith('S-'))
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['id'].lower(), sid.lower())
+
+    def test_document_apply_reuses_the_previewed_minted_source_id(self) -> None:
+        original = self.archive / 'documents' / 'census' / 'letter.txt'
+        original.write_text('x', encoding='utf-8')
+        preview = process.run_process(self._args(original, source_type='census', dry_run=True))
+        self.assertEqual(preview.exit_code, EXIT_CLEAN)
+        previewed = preview.data['source_id']
+        self.assertTrue(original.exists())  # dry run wrote nothing
+        live = process.run_process(
+            self._args(original, source_type='census', source_id=previewed))
+        self.assertEqual(live.exit_code, EXIT_CLEAN)
+        self.assertEqual(live.data['source_id'], previewed)
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['id'].lower(), previewed.lower())
+
+    def test_pointer_only_apply_reuses_the_previewed_minted_source_id(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'courthouse.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\nexternal_links:\n'
+            '  - url: https://county.test/courthouse\n---\nbody\n',
+            encoding='utf-8',
+        )
+        preview = process.run_process(self._args(sidecar, dry_run=True))
+        self.assertEqual(preview.exit_code, EXIT_CLEAN)
+        previewed = preview.data['source_id']
+        self.assertTrue(sidecar.exists())  # dry run wrote nothing
+        live = process.run_process(self._args(sidecar, source_id=previewed))
+        self.assertEqual(live.exit_code, EXIT_CLEAN)
+        self.assertEqual(live.data['source_id'], previewed)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['id'].lower(), previewed.lower())
+
+    def test_photo_apply_reuses_the_previewed_minted_source_id(self) -> None:
+        self._install_photo_store()
+        photo = self.archive / 'photos' / '1880' / 'grandma.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+        preview = process.run_process(self._args(photo, dry_run=True))
+        self.assertEqual(preview.exit_code, EXIT_CLEAN)
+        previewed = preview.data['source_id']
+        live = process.run_process(self._args(photo, source_id=previewed))
+        self.assertEqual(live.exit_code, EXIT_CLEAN)
+        self.assertEqual(live.data['source_id'], previewed)
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['id'].lower(), previewed.lower())
+
+    def test_source_id_override_rejects_a_malformed_id(self) -> None:
+        with self.assertRaises(process.ProcessError):
+            process._mint_one_source_id(self.archive, source_id='not-an-id')
+
+    def test_source_id_override_rejects_the_wrong_id_type(self) -> None:
+        with self.assertRaises(process.ProcessError):
+            process._mint_one_source_id(self.archive, source_id='P-fa1234567b')
+
+    def test_source_id_override_refuses_a_stale_preview_id_that_now_exists(self) -> None:
+        # A colliding override (the archive changed since the preview that
+        # minted it) must be refused, not silently reused.
+        original = self.archive / 'documents' / 'census' / 'first.txt'
+        original.write_text('x', encoding='utf-8')
+        first = process.run_process(self._args(original, source_type='census'))
+        self.assertEqual(first.exit_code, EXIT_CLEAN)
+        taken = first.data['source_id']
+        second = self.archive / 'documents' / 'census' / 'second.txt'
+        second.write_text('y', encoding='utf-8')
+        again = process.run_process(
+            self._args(second, source_type='census', source_id=taken))
+        self.assertEqual(again.exit_code, EXIT_ERRORS)
+        self.assertTrue(second.exists())  # refused, not half-processed
+
+    def test_no_override_still_mints_a_fresh_id_each_call(self) -> None:
+        # The CLI never sends `source_id` (`_add_arguments` has no such
+        # flag) - `_run_process` must fall back to a fresh mint per call
+        # when the Namespace lacks the attribute entirely, exactly as
+        # before this fix.
+        one = self.archive / 'documents' / 'census' / 'one.txt'
+        two = self.archive / 'documents' / 'census' / 'two.txt'
+        one.write_text('1', encoding='utf-8')
+        two.write_text('2', encoding='utf-8')
+        r1 = process.run_process(self._args(one, source_type='census'))
+        r2 = process.run_process(self._args(two, source_type='census'))
+        self.assertEqual(r1.exit_code, EXIT_CLEAN)
+        self.assertEqual(r2.exit_code, EXIT_CLEAN)
+        self.assertNotEqual(r1.data['source_id'], r2.data['source_id'])
+
+    def test_more_and_folder_modes_report_no_source_id(self) -> None:
+        # Nothing is minted by --more (it attaches to an EXISTING source) or
+        # by a bare folder/bundle dispatch (BUILD.md M7.3/M7.4) - `data`
+        # must say so plainly (None) rather than leaking a stale value.
+        page1 = self.archive / 'documents' / 'census' / 'page1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        filed = process.run_process(self._args(page1, source_type='census'))
+        self.assertEqual(filed.exit_code, EXIT_CLEAN)
+        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+
+        page2 = self.archive / 'documents' / 'census' / 'page2.txt'
+        page2.write_text('p2', encoding='utf-8')
+        more_result = process.run_process(
+            self._args(renamed, more=[str(page2), 'page-2']))
+        self.assertEqual(more_result.exit_code, EXIT_CLEAN)
+        self.assertIsNone(more_result.data['source_id'])
 
 
 if __name__ == '__main__':

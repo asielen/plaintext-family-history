@@ -79,12 +79,33 @@ Capture reads the **open DOM/HTML only**. It does not log in, paginate, query AP
 | `--type TYPE` | override the inferred `source_type` (controlled vocabulary) |
 | `--date DATE` | override the source's own date (EDTF or loose natural language) |
 | `--asset FILE` | an image/document to stage, or the saved page HTML to read |
+| `--path PATH` | register a file that must stay exactly where it is - see §2.6 |
+| `--note TEXT` | a note to record with `--path` (goes in the stub body) |
 | `--ingest [DIR]` | sweep staged companion bundles from `DIR` (default: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`) into the inbox (§6) |
 | `--dry-run` | preview every write without touching disk |
 
-The modes are mutually exclusive: `--install-host`, `--host`, `--ingest`, and the default page capture (`--url`/`--title`/`--type`/`--date`/`--asset`) each run alone. Mixing flags across two modes (e.g. `--ingest --url …`) is a hard error naming both sides, not a silent drop of the losing mode's flags. (`--browser` belongs to `--install-host`; `--dry-run` is cross-mode.)
+The modes are mutually exclusive: `--install-host`, `--host`, `--ingest`, `--path`, and the default page capture (`--url`/`--title`/`--type`/`--date`/`--asset`) each run alone. Mixing flags across two modes (e.g. `--ingest --url …`) is a hard error naming both sides, not a silent drop of the losing mode's flags. (`--browser` belongs to `--install-host`; `--dry-run` is cross-mode; `--title` is shared between page capture and `--path`, since both use it to label the stub.)
 
 Exit: `0` clean · `2` user error (bad `--type`/`--date`, asset destination clash, mixing mode flags) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
+
+### 2.6 `--path` - register a file that must never move (plan 17)
+
+A fourth mode, unrelated to web pages: `fha capture --path PATH [--note TEXT] [--title TEXT]` registers a file - most often a photo still sitting in a family member's own library, or a document in someone else's archive folder - that can never be copied, moved, or renamed, but still belongs on the processing queue. It reads no HTML and stages no asset copy; the target is only `.exists()`-checked, never opened.
+
+The stub it writes reuses the case-(c) pointer-only shape (§2.3): `asset_elsewhere: true`, so `fha process` knows the missing companion asset is deliberate, not an oversight. Two new frontmatter keys carry the location itself, since case (c) previously only ever said a companion was *missing*, never *where it actually lives*: `asset_path` (the path exactly as the human typed it - a mapped drive letter, a relative note-to-self, whatever shorthand was meaningful to them) and `asset_path_absolute` (the resolved, unambiguous form, usable regardless of the working directory a later pass runs from). Both are forward-slashed for a stable cross-platform read.
+
+```yaml
+---
+title: "Grandma's wedding photo"
+asset_elsewhere: true
+asset_path: E:/family-photos/grandma-wedding.jpg
+asset_path_absolute: E:/family-photos/grandma-wedding.jpg
+---
+```
+
+`slug` comes from the target file's own stem (there is no page title to borrow), so the stub is named after what it points at. A missing target (an unplugged drive, a typo'd path) is not a hard refusal - the human may be capturing before reconnecting the drive - so the stub is still written and a warning printed either way.
+
+**Recorded follow-up, not a promise.** As of this build, `fha process` reads and honors `asset_elsewhere: true` (the existing case-(c) flag), but does **not yet** read `asset_path`/`asset_path_absolute` - it mints a no-asset record the same way it already does for any other pointer-only stub, without pre-filling those two locations into the record. Consuming them (e.g. offering the resolved path as a "confirm you can see this file" step at processing time) is a natural next step for `fha process`, not yet built.
 
 ---
 
@@ -298,6 +319,7 @@ These bind every delivery form and the engine alike:
 | Piece | Status |
 |---|---|
 | Engine `fha capture` (paste fallback, recipes, generic, stub render, research-log) | **built** ([`tools/capture.py`](tools/capture.py)) |
+| `fha capture --path` - register a must-never-move asset (§2.6) | **built** (plan 17, [`tools/capture.py`](tools/capture.py) `run_capture_path`; [`tests/test_capture.py`](tests/test_capture.py) `CapturePathTestCase`) - one pointer stub, `asset_path`/`asset_path_absolute` recorded; `fha process` (`process_pointer_only`) now accepts `asset_path` as a second pointer-only shape alongside `external_links`, folding the human's own `asset_path` shorthand into `provenance:` (never the machine-specific `asset_path_absolute`) - PR #30 review follow-up, [`tests/test_process.py`](tests/test_process.py) `test_sidecar_pointer_only_accepts_capture_path_stub` |
 | Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
 | `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD_INGESTION.md MG2.1) |
 | `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD_INGESTION.md MG2.1) - warns when bundles sit in the staging folder waiting for `--ingest` |

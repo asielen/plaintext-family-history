@@ -263,6 +263,34 @@ class PersonPageTests(_Base):
         self.assertNotIn('<h3>census</h3>', html)                # no longer grouped by type
         self.assertNotIn('class="ids"', html)                    # person id line removed
 
+    def test_summary_vitals_are_separate_dt_dd_pairs(self):
+        # Win 3: Born / Married / Died must each read on its own line. The
+        # `.summary` block has no dt/dd display override in design/styles.css
+        # (dl/dt/dd default to block), so this is a markup check - one dt/dd
+        # PAIR per vital, never two labels or two values sharing an element -
+        # which is what actually makes each line separate on the page.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', 'Born',
+                         status='accepted', date_edtf='1840', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'marriage', 'Married',
+                         status='accepted', date_edtf='1871', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'death', 'Died',
+                         status='accepted', date_edtf='1910', persons=('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<dt>Born</dt>', html)
+        self.assertIn('<dt>Married</dt>', html)
+        self.assertIn('<dt>Died</dt>', html)
+        born_idx = html.index('<dt>Born</dt>')
+        married_idx = html.index('<dt>Married</dt>')
+        died_idx = html.index('<dt>Died</dt>')
+        self.assertTrue(born_idx < married_idx < died_idx)
+        # Each <dd> holds exactly its own vital's value - the next label never
+        # bleeds into the previous value, which would read as one run-on line.
+        self.assertIn('1840', html[born_idx:married_idx])
+        self.assertNotIn('1871', html[born_idx:married_idx])
+
     def test_alt_names_and_tags_in_header(self):
         self._seed_person(
             'p-aaaaaaaaaa', 'Margaret Hartley', surname='Hartley',
@@ -330,6 +358,61 @@ class PersonRedactionTests(_Base):
         self.assertIn('Living Larry', dan)                       # real name, not redacted
         self.assertIn('href="p-aaaaaaaaaa.html"', dan)           # real link (sibling page)
         self.assertNotIn(site._LIVING_LABEL, dan)
+
+
+class FamilyStripTests(_Base):
+    """The compact parents/spouses/siblings/children nav at the top of a person
+    page (`_person_family_strip`). Redaction here must mirror what the other
+    strip groups (and `_build_family_wings`'s pedigree columns) already do -
+    this is the fix-1 regression: a `spouse` edge from `relationships` was
+    never surfaced into the strip's `spouses` key at all."""
+
+    def test_family_strip_shows_spouse_linked_and_standalone(self):
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', surname='Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole', surname='Cole', living='false')
+        self._seed_source('s-1111111111', 'Marriage Record', source_type='vital-record',
+                          people=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_claim('c-1111111111', 's-1111111111', 'marriage', 'Married Margaret Cole',
+                         status='accepted', date_edtf='1871',
+                         persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+
+        self._run(linked=True)
+        linked = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="family-strip"', linked)
+        self.assertIn('<span class="fs-label">Spouse</span>', linked)
+        strip = linked[linked.index('class="family-strip"'):]
+        self.assertIn('Margaret Cole', strip[:strip.index('</nav>')])
+
+        self._run(linked=False)
+        standalone = self._read('persons/p-aaaaaaaaaa.html')
+        strip = standalone[standalone.index('class="family-strip"'):]
+        self.assertIn('Margaret Cole', strip[:strip.index('</nav>')])
+
+    def test_family_strip_redacts_living_spouse_same_as_living_child(self):
+        # The non-negotiable case (mirrors FamilyChartTests' pedigree-column
+        # version of this same rule): a living spouse must be redacted from
+        # the standalone strip exactly as a living child already is - both
+        # omitted outright, both restored in --linked.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Living Spouse', living='true')
+        self._seed_person('p-cccccccccc', 'Living Child', living='true')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+
+        self._run(linked=False)
+        standalone = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Living Spouse', standalone)
+        self.assertNotIn('Living Child', standalone)
+        # No parent/spouse/sibling/child survives redaction, so the strip
+        # itself is correctly absent (not shown empty) - same as the pedigree
+        # chart's all-redacted case.
+        self.assertNotIn('class="family-strip"', standalone)
+
+        self._run(linked=True)
+        linked = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Living Spouse', linked)
+        self.assertIn('Living Child', linked)
 
 
 class ResilienceTests(_Base):
@@ -505,6 +588,153 @@ class AssetTests(_Base):
         self._run(linked=False)
         html = self._read('sources/s-1111111111.html')
         self.assertIn('original kept in the archive', html)      # not copied out of the archive
+
+    def test_source_portrait_honors_living_tagged_gate(self):
+        # Win 2's record-head thumbnail reuses the Files section's own file
+        # entry, so it must inherit the same living-tagged-photo gate rather
+        # than re-resolving (and re-publishing) the image on its own.
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/pic.jpg', 'g1', 1, ''))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/pic.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        # The living-tagged gate is a standalone-only redaction (linked is an
+        # unredacted developer preview, like every other asset rule here).
+        self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+        self.assertIn('image omitted - tagged to a living person', html)
+
+
+class SourcePortraitTests(_Base):
+    """Win 2 (plan 17): a right-floated scan thumbnail at the head of a source
+    record, linking to the full-size image (private/wireframes/source.html's
+    `.person-portrait` pattern, reused as `.source-portrait` so the image can
+    sit inside one floated <figure> with its caption instead of two competing
+    right floats). The Files section gets a matching 'full size' text link on
+    every image it already lists."""
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_standalone_portrait_uses_media_derivative(self):
+        from PIL import Image
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (2000, 1500), (120, 90, 60)).save(img)
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('class="source-portrait"', html)
+        self.assertIn('Open the scan full size', html)
+        self.assertIn('media/', html)                    # a derivative, not the archive original
+        self.assertIn('full-size-link', html)             # the Files entry also links "full size"
+
+    def test_linked_portrait_uses_real_path(self):
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('class="source-portrait"', html)
+        self.assertIn('pic.jpg', html)                    # the real archive path, no derivative
+
+    def test_portrait_prefers_front_role_over_first(self):
+        self._seed_source('s-1111111111', 'Multi Image', source_type='photo')
+        for name in ('first.jpg', 'second.jpg'):
+            img = self.archive_root / 'photos' / '1880' / name
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/first.jpg', 'page-1'))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/second.jpg', 'front'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        start = html.index('class="source-portrait"')
+        block = html[start:start + 400]
+        self.assertIn('second.jpg', block)
+        self.assertNotIn('first.jpg', block)
+
+    def test_portrait_falls_back_to_first_image_without_front_role(self):
+        self._seed_source('s-1111111111', 'Multi Image', source_type='photo')
+        for name in ('first.jpg', 'second.jpg'):
+            img = self.archive_root / 'photos' / '1880' / name
+            img.parent.mkdir(parents=True, exist_ok=True)
+            img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/first.jpg', 'page-1'))
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/second.jpg', 'page-2'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        start = html.index('class="source-portrait"')
+        block = html[start:start + 400]
+        self.assertIn('first.jpg', block)
+        self.assertNotIn('second.jpg', block)
+
+    def test_portrait_absent_without_image_asset(self):
+        self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'documents/letters/note_s-1111111111.txt', 'transcript'))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+
+    def test_portrait_absent_when_no_files_at_all(self):
+        self._seed_source('s-1111111111', 'No Files Source')
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+
+    def test_no_pillow_degrades_gracefully_no_portrait(self):
+        # Standalone with Pillow unavailable: the page still builds, the
+        # image is omitted (never the original, which would leak EXIF), and
+        # the head thumbnail simply does not appear rather than breaking.
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        original = site._PIL_AVAILABLE
+        site._PIL_AVAILABLE = False
+        try:
+            res = self._run(linked=False)
+        finally:
+            site._PIL_AVAILABLE = original
+        self.assertEqual(res['status'], 'ok')
+        self.assertTrue((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        html = self._read('sources/s-1111111111.html')
+        self.assertNotIn('class="source-portrait"', html)
+        self.assertIn('Pillow not installed', html)
 
 
 class PlacePageTests(_Base):
@@ -856,6 +1086,110 @@ class TreeTests(_Base):
         self.assertNotIn('fha-tree-data', self._read('index.html'))
 
 
+class FamilyChartTests(_Base):
+    """Win 1 (plan 17): the person-page pedigree grows spouse + children
+    columns (children left, subject + spouse(s), parents, grandparents right -
+    see private/wireframes/person.html for the illustrative layout). `_seed_rel`
+    mirrors index.py's derived edge directions: `child` is written on the
+    PARENT's row pointing at the child (`person_id`=parent, `other_id`=child);
+    `spouse` is reciprocal but a single direction is enough for a page built
+    from that person's own point of view."""
+
+    def test_family_chart_shows_spouse_and_children(self):
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', surname='Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole', surname='Cole')
+        self._seed_person('p-cccccccccc', 'Ethel Hartley', surname='Hartley')
+        self._seed_person('p-dddddddddd', 'Calvin Hartley', surname='Hartley')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-dddddddddd')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        # A children column pushes the chart to 4 columns - the compact variant.
+        self.assertIn('class="pedigree pedigree-family"', page)
+        self.assertIn('Margaret Cole', page)
+        self.assertIn('Ethel Hartley', page)
+        self.assertIn('Calvin Hartley', page)
+        # Chart heading tracks the same spouse-or-children test the SVG
+        # aria-label uses (site.py chart_title): a family chart says "Family".
+        self.assertIn('Family</summary>', page)
+
+    def test_ancestor_only_pedigree_unchanged_without_family(self):
+        # No spouse/children at all: today's ancestor-only shape is preserved
+        # exactly - plain `pedigree` class, no compact family variant, and the
+        # heading reads "Ancestors" (chart honesty: no spouse/child column
+        # means it isn't a family chart).
+        self._seed_person('p-aaaaaaaaaa', 'Child Carl', surname='Carl')
+        self._seed_person('p-bbbbbbbbbb', 'Parent Pat', surname='Pat')
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-aaaaaaaaaa')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="pedigree"', page)
+        self.assertNotIn('pedigree-family', page)
+        self.assertIn('Ancestors</summary>', page)
+
+    def test_family_chart_renders_with_no_known_ancestors(self):
+        # Win 1 drops the old "only if >=1 known ancestor" gate: a subject
+        # with zero recorded parents but a spouse still gets a family chart.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="pedigree"', page)
+        self.assertIn('Margaret Cole', page)
+
+    def test_family_chart_multiple_spouses_stack(self):
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'First Wife')
+        self._seed_person('p-cccccccccc', 'Second Wife')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-cccccccccc')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('First Wife', page)
+        self.assertIn('Second Wife', page)
+
+    def test_family_chart_redacts_living_spouse_and_child_standalone(self):
+        # The non-negotiable case: a living spouse/child must never leak a
+        # name or date into the standalone SVG, and (since there is no
+        # 'Unknown' placeholder a child/spouse column can fall back to,
+        # unlike an ancestor slot) they are omitted outright rather than
+        # shown as a redaction chip.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Living Spouse', living='true')
+        self._seed_person('p-cccccccccc', 'Living Child', living='true')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+        self._run(linked=False)
+        standalone = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Living Spouse', standalone)
+        self.assertNotIn('Living Child', standalone)
+        # Everything that would have appeared was redacted, and there are no
+        # ancestors either - the whole chart is correctly absent, not shown
+        # empty (matches the pre-win-1 "no ancestors -> no chart" behavior).
+        self.assertNotIn('class="pedigree"', standalone)
+
+        self._run(linked=True)
+        linked = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Living Spouse', linked)
+        self.assertIn('Living Child', linked)
+
+    def test_family_chart_redacted_child_omitted_deceased_sibling_kept(self):
+        # A mixed household: one living child is dropped, one deceased child
+        # still shows - proves the redaction is per-child, not all-or-nothing.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', living='false')
+        self._seed_person('p-bbbbbbbbbb', 'Living Child', living='true')
+        self._seed_person('p-cccccccccc', 'Deceased Child', living='false')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+        self._run(linked=False)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Living Child', page)
+        self.assertIn('Deceased Child', page)
+
+
 class DraftExclusionTests(_Base):
     """Unaccepted `<!-- AI-DRAFT ... -->` prose (AGENTS.md: draft prose stays
     inside its markers until the human accepts it via `fha confirm draft`)
@@ -1168,6 +1502,341 @@ class ProseConverterTests(unittest.TestCase):
     def test_token_delegated_to_renderer(self):
         out = site._prose_to_html('Born in [S-1111111111] year.', lambda t: f'<a>{t}</a>')
         self.assertIn('<a>S-1111111111</a>', out)
+
+
+class WorkbenchModeTests(_Base):
+    """Workbench mode (serve-only) adds editing chrome and provisional vitals,
+    and NONE of it may leak into a standalone or plain-linked build (the plan-17
+    symmetry rule). Also: workbench requires linked."""
+
+    _CTX = {'port': 8765, 'csrf_token': 'abc123', 'review_count': 2, 'inbox_count': 1}
+
+    def _run_wb(self, *, workbench=True, linked=True):
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        return site.run_site(self.archive_root, self.out_dir, linked=linked,
+                             workbench=workbench, workbench_context=self._CTX)
+
+    def test_workbench_requires_linked(self):
+        self.conn.commit()
+        r = site.run_site(self.archive_root, self.out_dir, linked=False, workbench=True)
+        self.assertFalse(r.ok)
+
+    def test_provisional_vital_shows_in_workbench_only(self):
+        # A curated person with an unsourced birth: estimate and no birth claim.
+        self._seed_person('p-bbbbbbbbbb', name='Prov Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1923')
+        # Workbench: the estimate appears, marked.
+        self._run_wb()
+        wb = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('estimate - unsourced', wb)
+        self.assertIn('fha serve', wb)          # serve bar
+        self.assertIn('name="fha-csrf"', wb)     # CSRF meta
+        # One source of truth (_lib.PROVISIONAL_VITAL_FIELDS): the same set that
+        # decides which vitals get a provisional slot is handed to workbench.js
+        # as a meta tag, sorted so the content is deterministic across runs.
+        self.assertIn('<meta name="fha-provisional" content="birth death">', wb)
+        # Standalone build of the SAME archive: none of it.
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        self._run(linked=False)
+        std = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertNotIn('estimate - unsourced', std)
+        self.assertNotIn('fha serve', std)
+        self.assertNotIn('name="fha-csrf"', std)
+        self.assertNotIn('name="fha-provisional"', std)
+
+    def test_vital_edit_link_only_offered_for_provisional_rows(self):
+        # P2 codex finding (round 2, PR #30): the summary row's "edit" link
+        # opened the generic milestone modal, which has no way to carry an
+        # existing claim/source id - so "editing" an ACCEPTED (sourced)
+        # vital silently left that claim untouched unless the human
+        # manually re-picked the right source (defaulting to "unsourced"
+        # routes the edit to person.estimate instead). The link must only
+        # appear on a provisional (unsourced-estimate) row, where the
+        # milestone modal's unsourced path is exactly what applies.
+        self._seed_person('p-aaaaaaaaaa', name='Accepted Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1899')
+        self._seed_source('s-1111111111', 'Birth Record')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', '1900',
+                         status='accepted', date_edtf='1900', persons=('p-aaaaaaaaaa',))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        # The accepted claim wins over the frontmatter estimate (existing
+        # contract) and carries NO edit link.
+        self.assertNotIn('estimate - unsourced', wb)
+        self.assertNotIn('wb-vital-edit', wb)
+
+        self._seed_person('p-bbbbbbbbbb', name='Provisional Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1923')
+        self._run_wb()
+        prov = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('estimate - unsourced', prov)
+        self.assertIn('wb-vital-edit', prov)
+
+    def test_no_workbench_chrome_leaks_into_standalone(self):
+        self._seed_person('p-cccccccccc', name='Plain Person', living='false',
+                          tier='curated', frontmatter_extra='birth: 1900')
+        self._seed_source('s-1111111111', title='S1')
+        self._run(linked=False)
+        for rel in ('index.html', 'persons/p-cccccccccc.html', 'sources/s-1111111111.html'):
+            out = self._read(rel)
+            for leak in ('fha serve', 'name="fha-csrf"', 'estimate - unsourced',
+                         'workbench.js', 'data-wb-open', '/root/', 'name="fha-provisional"'):
+                self.assertNotIn(leak, out, f'{leak!r} leaked into standalone {rel}')
+
+    def test_milestone_modal_lists_cited_sources_and_paste_option(self):
+        # Fix 4: the milestone modal's Source picker must offer this person's
+        # own cited sources (never a raw S-id the human has to type from
+        # memory) plus the paste-an-S-id escape hatch; and the milestone
+        # openers must carry the person's display name so a sourced claim
+        # composes as "birth of Jane Doe", never a bare P-id.
+        self._seed_person('p-aaaaaaaaaa', name='Milestone Person', living='false')
+        self._seed_source('s-1111111111', title='1900 Census', people=('p-aaaaaaaaaa',))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('<option value="S-1111111111">S-1111111111 - 1900 Census</option>', wb)
+        self.assertIn('<option value="__paste__">paste an S-id&hellip;</option>', wb)
+        self.assertIn('"subject_name": "Milestone Person"', wb)
+
+    def test_root_asset_url_percent_encodes_special_characters(self):
+        # P2 codex finding (PR #30): an asset filename containing a URL
+        # delimiter (`#`, `?`) was written verbatim into the workbench
+        # `/root/<alias>/<relpath>` href. The BROWSER strips a `#`
+        # fragment or `?` query before the request ever reaches serve, so
+        # `_resolve_root_request` got a truncated path and 404'd even
+        # though the file exists on disk.
+        self._seed_source('s-1111111111', 'Has Odd Filename')
+        asset_rel = 'documents/census/family #2 record.txt'
+        asset_path = self.archive_root / asset_rel
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_text('page text', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', asset_rel, 'page-1'))
+        self._run_wb()
+        wb = self._read('sources/s-1111111111.html')
+        self.assertIn('/root/documents/census/family%20%232%20record.txt', wb)
+        # The raw, unencoded '#' never appears mid-href (it would truncate
+        # the URL at the browser before the request is even sent).
+        self.assertNotIn('href="/root/documents/census/family #2', wb)
+
+    def test_milestone_modal_omits_uncited_source(self):
+        # A source that does not cite this person must not appear in their
+        # picker - the list is scoped per person, not archive-wide.
+        self._seed_person('p-aaaaaaaaaa', name='Milestone Person', living='false')
+        self._seed_person('p-bbbbbbbbbb', name='Other Person', living='false')
+        self._seed_source('s-1111111111', title='Someone Else Census', people=('p-bbbbbbbbbb',))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Someone Else Census', wb)
+
+    def test_certificate_source_type_option_removed(self):
+        # P2 codex finding (round 3, PR #30): the "File as a source" modal
+        # offered `certificate`, which is not in the SOURCE_TYPES controlled
+        # vocabulary (`vital-record` covers it) - choosing it always got
+        # refused by process.file. The option list must only ever offer
+        # values `process.file` actually accepts.
+        self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('<option>certificate</option>', wb)
+        self.assertIn('<option>vital-record</option>', wb)
+
+    def test_living_modal_prefills_current_value_not_a_hardcoded_default(self):
+        # P2 codex finding (round 3, PR #30): the Change-living modal always
+        # defaulted its radio group to "deceased" regardless of the actual
+        # person, so previewing/applying without manually re-picking could
+        # flip a living/unknown person to deceased. The template no longer
+        # hardcodes a checked default; the opener passes the person's real
+        # current value for workbench.js's data-wb-fill to preselect.
+        self._seed_person('p-aaaaaaaaaa', name='Living Person', living='true', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('value="false" checked', wb)
+        self.assertIn('data-wb-fill="value=true"', wb)
+
+    def test_add_event_button_prefills_the_page_person_into_persons_field(self):
+        # P2 codex finding (round 4, PR #30): "Add a timeline event" fixes
+        # `persons` to the page person via `data-wb-args`, but the modal also
+        # has a blank `name="persons"` input - collect() lets any non-blank
+        # form field override a fixed arg of the same name, so typing a
+        # second participant instead of retyping the page person's own P-id
+        # silently dropped them from their own new event. The opener must
+        # prefill the field (via data-wb-fill) so it never starts blank.
+        self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('data-wb-fill="persons=P-aaaaaaaaaa"', wb)
+
+    def test_edit_biography_modal_prefills_existing_prose_not_blank(self):
+        # P2 codex finding (round 4, PR #30): the biography editor is a
+        # whole-section REPLACE (`person.edit --section biography`), but its
+        # textarea started empty even for a person who already has prose -
+        # previewing/applying a small addition without retyping the whole
+        # section first would silently delete the existing biography.
+        bio = ('# Priya\n## Biography\n'
+               'Priya emigrated in 1962 and worked as a teacher.\n')
+        self._seed_person('p-aaaaaaaaaa', 'Priya Rao', tier='curated', body=bio)
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem">'
+            'Priya emigrated in 1962 and worked as a teacher.',
+            wb)
+
+    def test_edit_biography_modal_prefills_a_pending_ai_draft_verbatim(self):
+        # P2 codex finding (round 5, PR #30): `biography_raw` was built from
+        # `bio` AFTER `strip_unaccepted_drafts` stripped the pending
+        # `<!-- AI-DRAFT ... -->` block out (the same variable the RENDERED
+        # HTML is built from) - so the editor's prefill silently omitted an
+        # unaccepted draft. Applying any small human edit from that prefill
+        # would have deleted the draft outright, bypassing `fha confirm
+        # draft` entirely. The editor must show the section exactly as
+        # written, draft marker included, even though the published HTML
+        # correctly excludes it.
+        body = ('# Priya\n## Biography\n'
+                'A human-written paragraph that stays.\n\n'
+                '<!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+                'An unreviewed AI-drafted paragraph.\n\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - v2 -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Priya Rao', tier='curated', body=body)
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        # Published HTML (the article body, BEFORE the modal <template>s that
+        # hold the editor prefill - the draft text legitimately appears
+        # there too, checked separately below): the accepted paragraph
+        # survives (marker stripped), the still-pending draft is excluded.
+        rendered = wb.split('<template id="tpl-confirm">')[0]
+        self.assertIn('A human-written paragraph that stays.', rendered)
+        self.assertNotIn('An unreviewed AI-drafted paragraph.', rendered)
+        # Editor prefill: the whole section exactly as written - both markers
+        # and the pending draft paragraph intact.
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem">'
+            'A human-written paragraph that stays.\n\n'
+            '&lt;!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) --&gt;\n\n'
+            'An unreviewed AI-drafted paragraph.\n\n'
+            '&lt;!-- AI-DRAFT 2026-07-01 claude-x - v2 --&gt;',
+            wb)
+
+    def test_edit_biography_modal_prefills_a_private_fence_verbatim(self):
+        # P2 codex finding (round 7, PR #30): `bio_as_written` was captured
+        # AFTER `apply_private_fence(..., drop=False)` had already stripped
+        # the `<!-- private -->`/`<!-- /private -->` marker comments (kept
+        # in workbench/linked mode, but with the markers themselves
+        # removed) - so the editor prefill showed private prose with no
+        # fence at all. Applying any small edit from that prefill would
+        # have replaced the whole section with unfenced text, publishing
+        # the previously-private paragraph on a later standalone build.
+        # The editor must show the fence markers exactly as written.
+        body = ('# Priya\n## Biography\n'
+                'A public paragraph.\n\n'
+                '<!-- private -->\nA private paragraph.\n<!-- /private -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Priya Rao', tier='curated', body=body)
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        # Published (linked/workbench) HTML: private prose kept, marker stripped.
+        rendered = wb.split('<template id="tpl-confirm">')[0]
+        self.assertIn('A private paragraph.', rendered)
+        self.assertNotIn('&lt;!-- private --&gt;', rendered)
+        # Editor prefill: the fence markers are still there, verbatim.
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem">'
+            'A public paragraph.\n\n'
+            '&lt;!-- private --&gt;\nA private paragraph.\n&lt;!-- /private --&gt;',
+            wb)
+
+    def test_family_strip_shows_an_unsourced_relate_hypothesis_in_workbench(self):
+        # P2 codex finding (round 7, PR #30): the family strip's "+ add"
+        # button runs `person.relate`, which (by design, SPEC §9) writes
+        # ONLY an unsourced `relationships:` hypothesis entry on the record
+        # file - it never reaches the `relationships` index table the strip
+        # is normally built from. Previewing/applying the button's own
+        # write left the strip showing nothing, as if the write had failed.
+        # Workbench mode must surface the hypothesis (tagged so it is never
+        # mistaken for a sourced tie); a standalone/plain-linked build must
+        # never show it (it isn't a fact yet).
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole', tier='stub')
+        self._seed_person(
+            'p-aaaaaaaaaa', 'Thomas Hartley', tier='curated',
+            frontmatter_extra=(
+                'relationships:\n'
+                '  - to: "[[P-bbbbbbbbbb|Margaret Cole]]"\n'
+                '    type: parent\n'
+                '    status: hypothesis'))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Margaret Cole', wb)
+        self.assertIn('wb-hypothesis-tag', wb)
+        self.assertIn('(hypothesis)', wb)
+
+        # Standalone build of the SAME archive: the hypothesis never appears
+        # (not a sourced fact, and `_person_hypothesis_ties` is workbench-only).
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        self._run(linked=False)
+        std = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Margaret Cole', std)
+        self.assertNotIn('wb-hypothesis-tag', std)
+        self.assertNotIn('hypothesis', std)
+
+    def test_edit_biography_modal_empty_when_no_biography_yet(self):
+        self._seed_person('p-aaaaaaaaaa', 'No Bio Yet', tier='curated', body='# No Bio Yet\n')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem"></textarea>', wb)
+
+    def test_edit_home_intro_modal_prefills_existing_text_not_blank(self):
+        # Same whole-section REPLACE risk as the biography editor above, for
+        # notes/home.md (`home.edit`).
+        home_md = self.archive_root / 'notes' / 'home.md'
+        home_md.parent.mkdir(parents=True, exist_ok=True)
+        home_md.write_text('Welcome to the Rao family archive.\n', encoding='utf-8')
+        self._run_wb()
+        idx = self._read('index.html')
+        self.assertIn(
+            '<textarea name="text" style="min-height:12rem">Welcome to the Rao family archive.',
+            idx)
+
+    def test_edit_home_intro_modal_prefills_a_pending_ai_draft_verbatim(self):
+        # P2 codex finding (round 7, PR #30): `intro_raw` was assigned from
+        # `body` AFTER `strip_unaccepted_drafts` had reassigned it to the
+        # stripped copy - the same bug the round-5 biography fix addressed,
+        # just not caught here at the time. The homepage editor must show
+        # notes/home.md exactly as written, pending draft marker included.
+        home_md = self.archive_root / 'notes' / 'home.md'
+        home_md.parent.mkdir(parents=True, exist_ok=True)
+        home_md.write_text(
+            'An unreviewed AI-drafted paragraph.\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n\n'
+            'A human-written welcome that stays.\n',
+            encoding='utf-8')
+        self._run_wb()
+        idx = self._read('index.html')
+        rendered = idx.split('<template id="tpl-confirm">')[0]
+        self.assertIn('A human-written welcome that stays.', rendered)
+        self.assertNotIn('An unreviewed AI-drafted paragraph.', rendered)
+        self.assertIn(
+            '<textarea name="text" style="min-height:12rem">'
+            'An unreviewed AI-drafted paragraph.\n\n'
+            '&lt;!-- AI-DRAFT 2026-07-01 claude-x - v1 --&gt;\n\n'
+            'A human-written welcome that stays.',
+            idx)
+
+    def test_modals_render_without_error_on_a_page_with_no_person_in_context(self):
+        # The biography-prefill fix above references `person.biography_raw`
+        # from inside _modals.html, which is included on EVERY workbench
+        # page (source pages, index, etc.) - not just person pages, where
+        # `person` is never in the template context at all. A naive
+        # `person.biography_raw` reference raises UndefinedError on those
+        # pages instead of rendering blank.
+        self._seed_source('s-1111111111', 'A Source')
+        r = self._run_wb()
+        self.assertTrue(r.ok, r.messages)
+        self._read('sources/s-1111111111.html')
 
 
 if __name__ == '__main__':

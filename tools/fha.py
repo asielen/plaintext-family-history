@@ -26,8 +26,8 @@ COMMANDS = (
     'id', 'index', 'lint', 'check', 'stubs', 'views', 'doctor', 'find', 'search',
     'relate', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
     'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
-    'person', 'site', 'install', 'update-tools', 'working-copy', 'normalize-links',
-    'backup',
+    'person', 'source', 'site', 'serve', 'install', 'update-tools', 'working-copy',
+    'normalize-links', 'backup',
 )
 
 
@@ -87,27 +87,15 @@ def _first_command_token(argv: list[str]) -> str | None:
 
 
 def _load_site_module():
-    """Import tools/site.py under a private module name.
+    """Import tools/site.py under the private `fha_site` name.
 
-    The tool's command is `fha site`, so its file must be `tools/site.py`
-    (BUILD.md M8.1) - but the stem `site` collides with Python's stdlib `site`
-    module, which is already in sys.modules from interpreter startup. A plain
-    `import site` therefore returns the stdlib module, not ours. Loading the
-    file by path under the alias `fha_site` sidesteps the collision without
-    disturbing the cached stdlib module the way replacing sys.modules['site']
-    would.
+    Thin wrapper over the shared `_lib.load_site_module` (see its docstring for
+    the stdlib-`site`-shadow quirk this works around). The importlib loader used
+    to live here in full, byte-for-byte duplicated in serve.py; it moved to
+    `_lib` so the two front doors cannot drift.
     """
-    import importlib.util
-
-    mod = sys.modules.get('fha_site')
-    if mod is not None:
-        return mod
-    path = Path(__file__).parent / 'site.py'
-    spec = importlib.util.spec_from_file_location('fha_site', path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules['fha_site'] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    from _lib import load_site_module
+    return load_site_module()
 
 
 def _unknown_command_exit(command: str) -> int:
@@ -391,6 +379,82 @@ def _intercept_gedcom_import(argv: list[str]) -> int | None:
     return gedcom_import_main(subargv)
 
 
+def _intercept_claim_new(argv: list[str]) -> int | None:
+    """
+    Early interception for `fha claim new …` (SPEC §8.4).
+
+    claim.py's main parser is flat (a positional C-id, plus --status/--value/…
+    for the review/field-edit verb). `new` is not a C-id, so letting the flat
+    parser see it would misread 'new' as the positional claim_id and fail with
+    a confusing "not a valid claim ID" instead of running the mint verb.
+    Routed here first instead, the same mechanism `fha gedcom import` and
+    `fha id check` use (TOOLING §13a2 / §4a).
+
+    Returns an exit code when the first two command tokens are `claim new`, or
+    None to let normal argparse handling proceed - so `fha claim <C-id> …` is
+    unaffected and still reaches claim.py's registered subparser below.
+    """
+    global_root: str | None = None
+    command_idx: int | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--debug':
+            i += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and i + 1 < len(argv):
+                global_root = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            i += 1
+            continue
+        if tok.startswith('--spec-root='):
+            i += 1
+            continue
+        command_idx = i
+        break
+
+    if command_idx is None or argv[command_idx] != 'claim':
+        return None
+
+    # Skip any flags between 'claim' and the next positional (mirrors
+    # _intercept_gedcom_import's dual-position --root convention).
+    j = command_idx + 1
+    while j < len(argv):
+        tok = argv[j]
+        if tok == '--debug':
+            j += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and j + 1 < len(argv):
+                global_root = argv[j + 1]
+            j += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            j += 1
+            continue
+        if tok.startswith('--spec-root='):
+            j += 1
+            continue
+        break
+    if j >= len(argv) or argv[j] != 'new':
+        return None
+
+    from claim import build_claim_new_parser
+    subargv = [tok for tok in argv[j + 1:] if tok != '--debug']
+    # Honor a --root supplied before the 'new' word when the subcommand
+    # didn't set its own.
+    if global_root and '--root' not in subargv \
+            and not any(t.startswith('--root=') for t in subargv):
+        subargv += ['--root', global_root]
+    args = build_claim_new_parser().parse_args(subargv)
+    return args.func(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for `fha` (or `python tools/fha.py`).
@@ -438,6 +502,12 @@ def main(argv: list[str] | None = None) -> int:
         if result is not None:
             return result
 
+        # Intercept 'claim new' before argparse: the review/field-edit parser
+        # takes a positional C-id and must stay unchanged (SPEC §8.4).
+        result = _intercept_claim_new(argv_list)
+        if result is not None:
+            return result
+
         # Lazy imports: keep them inside main() for the reason above.
         from id import register as id_register
         from index import register as index_register
@@ -461,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         from claim import register as claim_register
         from confirm import register as confirm_register
         from person import register as person_register
+        from source import register as source_register
+        from serve import register as serve_register
         from scaffold import register as scaffold_register
         from working_copy import register as working_copy_register
         from normalize_links import register as normalize_links_register
@@ -495,7 +567,9 @@ def main(argv: list[str] | None = None) -> int:
         claim_register(subs)
         confirm_register(subs)
         person_register(subs)
+        source_register(subs)
         site_register(subs)
+        serve_register(subs)
         scaffold_register(subs)  # adds both 'install' and 'update-tools'
         working_copy_register(subs)
         normalize_links_register(subs)

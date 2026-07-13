@@ -2,8 +2,21 @@
 {% block title %}{{ source.title }} - {{ site_title }}{% endblock %}
 {% block content %}
 <article class="source">
+  {% if source.portrait %}
+  <figure class="source-portrait">
+    <a href="{{ source.portrait.full_href }}"><img src="{{ source.portrait.href }}" alt="Scan of {{ source.title }}"></a>
+    <figcaption><a href="{{ source.portrait.full_href }}">{{ source.portrait.caption }}</a></figcaption>
+  </figure>
+  {% endif %}
   <h1>{{ source.title }}</h1>
   {% if source.source_type %}<p class="ids">{{ source.source_type }}</p>{% endif %}
+  {% if workbench %}
+  <div class="wb-record">
+    <span>record:</span>
+    <code>{{ source.record_relpath }}</code>
+    <a href="#" data-wb-open-file="{{ source.record_relpath }}">open file</a>
+  </div>
+  {% endif %}
 
   {% if source.citation %}<blockquote class="citation">{{ source.citation }}</blockquote>{% endif %}
 
@@ -16,16 +29,27 @@
   <h2>Claims</h2>
   {% if source.claims %}
   <table class="claims">
-    <thead><tr><th>Type</th><th>Value</th><th>Date</th><th>Place</th><th>People</th><th>Status</th></tr></thead>
+    <thead><tr><th>Type</th><th>Value</th><th>Date</th><th>Place</th><th>People</th><th>Status</th>{% if workbench %}<th></th>{% endif %}</tr></thead>
     <tbody>
     {% for c in source.claims %}
-      <tr>
+      <tr{% if workbench and c.status == 'suggested' %} class="wb-suggested"{% endif %}>
         <td>{{ c.type }}</td>
         <td>{{ c.value }}</td>
         <td>{{ c.date }}</td>
         <td>{{ c.place }}</td>
         <td>{{ c.persons_html }}</td>
         <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
+        {% if workbench %}
+        <td class="wb-actions">
+          {% if c.status == 'suggested' %}
+          <button class="btn btn-primary btn-sm" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}' data-wb-fill="status=accepted">Edit &amp; accept&hellip;</button>
+          <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct data-wb-args='{{ {"claim_id": c.claim_id, "status": "accepted"} | tojson }}'>Accept as-is</button>
+          <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct data-wb-args='{{ {"claim_id": c.claim_id, "status": "disputed"} | tojson }}'>Dispute</button>
+          {% else %}
+          <a class="wb-fix" href="#" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}'>fix&hellip;</a>
+          {% endif %}
+        </td>
+        {% endif %}
       </tr>
     {% endfor %}
     </tbody>
@@ -33,19 +57,29 @@
   {% else %}
   <p class="empty">No claims recorded for this source.</p>
   {% endif %}
+  {% if workbench %}
+  <p><button class="btn btn-sm" data-wb-open="tpl-add-claim" data-wb-args='{{ {"source_id": source.source_id} | tojson }}'>Add a claim&hellip;</button></p>
+  {% endif %}
 
   {% if source.files %}
   <h2>Files</h2>
   <ul class="files">
     {% for f in source.files %}
     <li>
-      {% if f.thumb_href %}<a href="{{ f.link_href }}"><img class="thumb" src="{{ f.thumb_href }}" alt="{{ f.label }}"></a>
+      {% if f.thumb_href %}
+      <a href="{{ f.link_href }}"><img class="thumb" src="{{ f.thumb_href }}" alt="{{ f.label }}"></a>
+      <a class="full-size-link" href="{{ f.link_href }}">full size</a>
       {% elif f.link_href %}<a href="{{ f.link_href }}">{{ f.label }}</a>
       {% else %}{{ f.label }}{% endif %}
       {% if f.note %}<span class="note">{{ f.note }}</span>{% endif %}
     </li>
     {% endfor %}
   </ul>
+  {% endif %}
+
+  {% if workbench %}
+  <h2>Research Notes
+    <a class="wb-fix" href="#" data-wb-open="tpl-source-note" data-wb-args='{{ {"source_id": source.source_id} | tojson }}' style="font-weight:400">add&hellip;</a></h2>
   {% endif %}
 </article>
 {% endblock %}

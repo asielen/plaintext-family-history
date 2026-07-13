@@ -72,6 +72,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    SIGNIFICANCE              - claim type → 'vital'/'substantive'/'incidental'
 #    CLAIM_TYPES, VITAL_TYPES  - frozensets derived from SIGNIFICANCE
 #    SOURCE_TYPES              - controlled vocabulary for source_type field
+#    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
 #    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
 #
@@ -95,14 +96,25 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #  Record parsing
 #    read_text_exact / write_text_exact - newline-exact record IO (no CRLF/LF translation)
+#    reapply_newline           - restore a record's CRLF/LF convention after a text edit
+#    yaml_inline                - single-line quoted YAML scalar (every surgical writer's rule)
 #    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
 #    read_record               - parse frontmatter + claims + body from a .md file
 #    claim_item_key_indent     - one claim item's real mapping-key column (surgical edits)
 #    claims_edit_problem       - pre-write re-parse guard for surgical claims-block edits
+#    ClaimEditRefused          - shared "surgical claims edit unsafe" exception
+#    _find_claims_block        - locate the ## Claims ```yaml fence (line indices)
+#    guard_claims_rewrite      - claims_edit_problem wrapped as a raise-on-problem guard
+#    append_claim_to_source    - append a whole new claim item to a source's ## Claims block
 #    is_merged_meta            - normalized SPEC §9 tombstone test (status: merged)
 #    frontmatter_fence_span    - the ONE `---` fence grammar (exact, FRONT_RE-matched)
 #    parse_frontmatter_strict  - frontmatter mapping via plain yaml.safe_load (no coercion)
 #    frontmatter_edit_problem  - pre-write guard for surgical frontmatter edits
+#    section_bounds            - locate one `## Heading` prose section's line span
+#    lines_end_with_newline    - did this split('\n') list end in the EOF sentinel?
+#    create_section_at_eof     - shared "heading missing, append it at EOF" tail
+#    append_paragraph_to_section - add a paragraph at a `## Heading`'s end (shared by
+#                                 person edit/note + source note; CRLF-safe, bounded)
 #    parse_filename            - decompose filename into {id_str, kind, is_companion}
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
@@ -125,6 +137,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_working_copy           - WORKING_COPY marker present at archive root?
 #    is_fixture_path           - path under example-archive/ or tests/fixtures/?
 #    find_person_record_path   - scan people/ for one P-id's record file (never the index)
+#    find_source_record_path   - scan sources/ for one S-id's record file (never the index)
+#    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
+#    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
+#    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
 #    extract_bare_ids          - all bare IDs from a text block
@@ -149,6 +165,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    Message                   - one human-facing line: level/text/next_step (+code/path)
 #    Result                    - the structured-result contract every run_* returns
 #    finding_to_message        - fold a lint Finding into a Result Message
+#    result_fail               - the shared refusal/not-found Result builder every
+#                                 write-back engine delegates to (confirm/claim/person/source)
+#    load_site_module          - import tools/site.py under the private `fha_site`
+#                                 name (shared by the fha + serve front doors)
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -333,6 +353,62 @@ def format_source_type_error(value: object, *, where: str = 'source_type') -> st
         f'unknown {where} {value!r}. source_type means the source category, '
         f'for example census or photo. Use one of: {source_type_list()}.'
     )
+
+
+# A person's birth-assigned sex (SPEC §9): optional, and distinct from the
+# free-text `gender` field beside it. Kept as a small controlled vocabulary
+# (like SOURCE_TYPES) rather than free text so `fha person new` and any future
+# validator can catch a typo ("m" vs "M", "male") before it lands in a record.
+PERSON_SEX_VALUES: frozenset[str] = frozenset({'M', 'F', 'intersex', 'unknown'})
+
+
+def format_person_sex_error(value: object) -> str:
+    """Explain an unrecognised `sex` value with the valid list and a plain gloss.
+
+    `sex` is optional and easy to confuse with `gender` (the free-text identity
+    field beside it, SPEC §9), so the refusal spells out the distinction rather
+    than just naming the field.
+    """
+    return (
+        f'unrecognised sex {value!r}. sex records birth-assigned sex where a '
+        f"record states it (separate from gender, which is free text) - use one "
+        f'of: {", ".join(sorted(PERSON_SEX_VALUES))}.'
+    )
+
+
+# Claim confidence (SPEC §8.5): evidence quality, required on every claim and
+# distinct from status (review state). Kept here as the one canonical
+# vocabulary + defaulting rubric so every claim-minting path (fha claim new
+# today, any future drafting pass) defaults identically. lint.py's
+# VALID_CONFIDENCE mirrors the same three values for validation.
+CONFIDENCE_VALUES: tuple[str, ...] = ('high', 'medium', 'low')
+
+_CONFIDENCE_BY_SOURCE_TYPE: dict[str, str] = {
+    'vital-record': 'high',
+    'interview': 'low',
+}
+
+
+def default_confidence(source_type: object) -> str:
+    """Default a new claim's confidence from its source's source_type.
+
+    SPEC §8.5 (locked): "Tooling defaults confidence from source_type
+    (vital-record -> high, census/newspaper -> medium, interview hearsay ->
+    low) and only asks the human when the source class is ambiguous." The
+    rubric's named anchors are mapped explicitly; every other source type
+    lands on 'medium' ("single source with moderate specificity") - the
+    conservative middle, never silently wrong in the dangerous direction.
+    The human always overrides with --confidence.
+    """
+    return _CONFIDENCE_BY_SOURCE_TYPE.get(str(source_type or ''), 'medium')
+
+
+# The asset-root aliases a workbench front door may expose over HTTP and the
+# only roots its confinement checks accept (photos/documents may be remapped
+# outside the archive by fha.yaml `roots:`; inbox is the drop folder). serve.py
+# uses this for /root/<alias>/ confinement and site.py mirrors it when writing
+# workbench-mode hrefs - one constant so the two can never drift apart.
+ASSET_ROOT_ALIASES: tuple[str, ...] = ('photos', 'documents', 'inbox')
 
 
 def format_edtf_error(value: object, *, field: str = 'date') -> str:
@@ -973,6 +1049,34 @@ def reapply_newline(text: str, like: str) -> str:
     return text
 
 
+def yaml_inline(value: str) -> str:
+    """Render a value as a single-line YAML scalar, quoting only when needed.
+
+    Every surgical writer that edits a record as text (not round-tripped
+    through the YAML emitter, so key order, comments, and the fenced ```yaml
+    block survive untouched) shares this one quoting rule: `fha claim`'s
+    `--value` edits, `fha confirm`'s `places.yaml` writes, `fha process`'s
+    scaffold scalars, and `fha stubs`' record scaffold all pass free-form
+    strings (a source title, a place hierarchy entry, a filename) that may
+    carry YAML-significant characters (`: `, a leading `-`, a ` #` comment
+    marker) - unquoted, those would corrupt the surrounding hand-edited
+    document or make `read_record` fail to parse it back. Routing every one
+    of those values through `yaml.safe_dump`'s flow style gets exactly the
+    quoting a plain `yaml.safe_load` needs, with no line breaks, and
+    `width=10**9` keeps a long string on one line rather than folded.
+
+    `safe_dump` also always terminates a bare scalar document with `...`
+    (the YAML end-of-document marker) - harmless in a full document, but
+    wrong to splice into the middle of a line the caller is building, so it
+    is stripped here once, in the one place every caller relies on."""
+    rendered = yaml.safe_dump(
+        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
+    ).strip()
+    if rendered.endswith('...'):          # safe_dump tags a bare scalar document
+        rendered = rendered[:-3].strip()
+    return rendered
+
+
 def _coerce_yaml(obj: Any) -> Any:
     """Recursively coerce YAML scalars to types the index expects."""
     if isinstance(obj, dict):
@@ -1232,6 +1336,160 @@ def claims_edit_problem(
     return None
 
 
+class ClaimEditRefused(Exception):
+    """A surgical ``## Claims`` edit cannot be performed safely.
+
+    Every claims-block writer across `fha claim` and `fha confirm` raises this
+    one exception when a rewrite would corrupt the block's YAML or land on
+    the wrong claim; the caller turns it into a plain refusal `Result` with
+    nothing written (AGENTS_TOOLING's "no traceback ever reaches the user"
+    rule). Before `fha claim new` needed the same append machinery as
+    `fha confirm cooccur`, claim.py and confirm.py each carried their own
+    same-shaped class (`_ClaimEditRefused` / `_EditRefused`) - tools never
+    import tools, so the moment a SECOND tool needed `append_claim_to_source`
+    and `guard_claims_rewrite`, those private types had to become one shared
+    type here. Both files keep their historic private name as a plain alias
+    (`_ClaimEditRefused = ClaimEditRefused`, `_EditRefused = ClaimEditRefused`)
+    so every existing `except` site - and the tests that assert on those
+    names - keep working unchanged.
+    """
+
+
+def _find_claims_block(lines: list[str]) -> tuple[int, int] | None:
+    """Return (open_fence, close_fence) line indices of the ``## Claims`` block.
+
+    A line-precise counterpart to `CLAIMS_RE`: that regex reads the block's
+    text for parsing, but a surgical writer needs the exact line indices to
+    splice new lines into, and a whole-text regex match cannot hand those
+    back cleanly (the fence text can repeat, and mapping a character offset
+    back to a line index invites off-by-one bugs). Returns None when the file
+    has no `## Claims` heading, or the heading is not followed by a
+    ` ```yaml ` / `` ``` `` fence pair before the next `##` heading.
+
+    Shared by every text-splicing claims writer: `append_claim_to_source`
+    below, and confirm.py's `_add_link_to_claim`/`_set_scalar_on_claim`
+    (which import this rather than keep their own copy - it moved here
+    alongside `append_claim_to_source` since both need it).
+    """
+    heading = None
+    for i, ln in enumerate(lines):
+        if re.match(r'^##\s+Claims\b', ln):
+            heading = i
+            break
+    if heading is None:
+        return None
+
+    open_fence = None
+    for i in range(heading + 1, len(lines)):
+        if lines[i].strip() == '```yaml':
+            open_fence = i
+            break
+        if lines[i].startswith('## '):  # next section before any fence
+            return None
+    if open_fence is None:
+        return None
+
+    for i in range(open_fence + 1, len(lines)):
+        if lines[i].strip() == '```':
+            return open_fence, i
+    return None
+
+
+def guard_claims_rewrite(
+    new_text: str, claim_id: str | None, *, expect_status: str | None = None,
+    before_text: str | None = None,
+) -> str:
+    """Re-parse a rewritten claims block; raise `ClaimEditRefused` on any problem.
+
+    Moved here from confirm.py alongside `append_claim_to_source`: every
+    claims-block writer (confirm.py's `_add_link_to_claim`/
+    `_set_scalar_on_claim`, this module's `append_claim_to_source`, and any
+    future one - including a second tool file) funnels its rewrite through
+    here before returning it, because a rewrite that breaks the block's YAML
+    hides EVERY claim in that source from lint/index/report - a false
+    success far worse than a refusal. The check itself is
+    `claims_edit_problem`; this wrapper just turns a problem into the
+    refusal exception every caller already handles, keeping each writer's
+    happy path readable.
+
+    `before_text` (the text the writer started from) keeps the refusal
+    honest about whose fault the problem is. When the same check already
+    fails on that starting text, this edit did not cause the problem - and
+    the only pre-existing state that can reach this guard is a duplicate of
+    `claim_id` (locating the claim required the block to parse and the id to
+    be present, so parse failures and absences are ruled out). That case is
+    the human's duplicate-id repair (lint E001), so the refusal says so
+    instead of accusing this edit of hiding claims. Writers that mint a
+    brand-new id (`append_claim_to_source`) must NOT pass `before_text`: the
+    new id is legitimately absent from the starting text, which would trip
+    this probe.
+    """
+    problem = claims_edit_problem(new_text, claim_id, expect_status=expect_status)
+    if problem is None:
+        return new_text
+    if (before_text is not None and claim_id is not None
+            and claims_edit_problem(before_text, claim_id) is not None):
+        raise ClaimEditRefused(
+            f'claim id {fmt_id_display(normalize_id(claim_id))} appears more than once '
+            'in this file - a duplicate-id problem (lint E001) that predates this edit. '
+            'Fix the duplicate first: open the file, give one of those claims a fresh '
+            'id (mint one with `fha id mint C`), then retry.'
+        )
+    raise ClaimEditRefused(
+        f'{problem}, so saving this edit would hide every claim in the file '
+        'from the tools. Open the claim under ## Claims in the source file, '
+        'make the change by hand, then run `fha lint` to check it.'
+    )
+
+
+# The SHAPE of a claim's `id:` key line (optionally after the list dash), used
+# only to pull the newly-minted claim's own id out of `append_claim_to_source`'s
+# `item_lines` for the pre-write guard's `claim_id` argument. claim.py and
+# confirm.py keep their own copies of this same pattern for their line-ownership
+# checks (`_own_id_key_line`, a stricter test than this shape match alone) -
+# KEEP IN SYNC if the id grammar ever changes.
+_CLAIM_ID_KEY_RE = re.compile(
+    r'^\s*(?:-\s+)?id:\s*(C-[0-9a-hjkmnp-tv-z]{10})\b', re.I
+)
+
+
+def append_claim_to_source(text: str, item_lines: list[str]) -> tuple[str, bool]:
+    """Append one new claim item (its full YAML lines) to the ## Claims block.
+
+    Moved here from confirm.py: `fha confirm cooccur` and `fha claim new`
+    both mint a brand-new claim and append it to an existing source's block,
+    and tools never import tools, so the moment a second tool needed this
+    exact append it could no longer stay confirm.py-private. The appended
+    item is templated at column 0; against a hand-indented block (items at a
+    deeper column) that would break the block's YAML, so the result passes
+    through `guard_claims_rewrite` (keyed on the new item's own C-id) - a
+    mismatch raises `ClaimEditRefused` instead of writing a block no tool can
+    read.
+    """
+    lines = text.splitlines()
+    block = _find_claims_block(lines)
+    if block is None:
+        return text, False
+    open_fence, close_fence = block
+
+    new = lines[:close_fence]
+    # Separate from any preceding claim with one blank line, matching the
+    # readable spacing the example records use between claim items.
+    if close_fence > open_fence + 1 and new and new[-1].strip() != '':
+        new.append('')
+    new.extend(item_lines)
+    new.extend(lines[close_fence:])
+    trailing = '\n' if text.endswith('\n') else ''
+
+    new_cid = None
+    for ln in item_lines:
+        m = _CLAIM_ID_KEY_RE.match(ln)
+        if m:
+            new_cid = m.group(1)
+            break
+    return guard_claims_rewrite('\n'.join(new) + trailing, new_cid), True
+
+
 def is_merged_meta(meta: dict | None) -> bool:
     """True when a record's frontmatter marks it a merged tombstone (SPEC §9).
 
@@ -1354,6 +1612,130 @@ def frontmatter_edit_problem(
         if meta.get(key) != before_meta.get(key):
             return f'the {key!r} field would change value'
     return None
+
+
+# ── Prose-section locate/append (## Heading bodies) ───────────────────────────
+#
+# The one CRLF-safe, bounded '## Heading' locate/append every prose-section
+# writer shares: `fha person edit`/`note` (Biography / Stories / Research Notes)
+# and `fha source note` (## Notes). Both tools independently grew a copy of this
+# text surgery - and independently fixed the same EOF-newline and CRLF-sentinel
+# bugs in it - so it is unified here. All of it operates on `text.split('\n')`
+# line lists (never a YAML round-trip), so key order, hand comments, and every
+# byte outside the touched section survive.
+
+_SECTION_HEADING_RE = re.compile(r'^##\s+\S')
+
+
+def section_bounds(
+    lines: list[str], body_start: int, heading_text: str,
+) -> tuple[int, int, int] | None:
+    """Find one `## {heading_text}` section's bounds, or None if absent.
+
+    Returns `(heading_idx, content_start, content_end)`: the section's prose
+    spans `lines[content_start:content_end]` - everything from just after the
+    heading line up to the next level-2 (`## `) heading, or EOF. Searching
+    only from `body_start` (just past the frontmatter's closing fence) means
+    a `## Biography`-shaped line could never be mistaken for one written
+    inside the frontmatter (which cannot happen anyway, but the boundary is
+    explicit rather than assumed). The `\\r?$` in the heading match lets a
+    CRLF-authored record's `## Notes\\r` line match the same as a plain one.
+    """
+    heading_re = re.compile(rf'^##\s+{re.escape(heading_text)}\s*\r?$')
+    for i in range(body_start, len(lines)):
+        if heading_re.match(lines[i]):
+            content_end = len(lines)
+            for j in range(i + 1, len(lines)):
+                if _SECTION_HEADING_RE.match(lines[j]):
+                    content_end = j
+                    break
+            return i, i + 1, content_end
+    return None
+
+
+def lines_end_with_newline(lines: list[str]) -> bool:
+    """True when `lines` (from `text.split('\\n')`) came from text ending in a
+    trailing newline - `split` leaves a trailing empty element in that case.
+    Checked whenever a section edit touches EOF (the section is the last one,
+    or is being newly created) so the file's own convention is restored
+    afterward instead of silently losing - or gaining - its final newline."""
+    return bool(lines) and lines[-1] == ''
+
+
+def create_section_at_eof(
+    lines: list[str], heading_text: str, body_text: str, cr: str,
+) -> list[str]:
+    """The shared "heading does not exist yet" tail for the section writers:
+    append `## {heading_text}` plus `body_text` at EOF, with exactly one
+    blank-line separator from whatever came before.
+
+    A file's trailing element from `text.split('\\n')` (when the text ends in
+    a newline) is a bare `''` SENTINEL - split attaches `\\r` to the line
+    BEFORE a newline, never to this final placeholder - so it means "nothing
+    after the last newline," not a real blank line. Reusing it as a mid-file
+    separator is exactly what produced two real CRLF bugs during this
+    function's own tests: a stray bare `\\n` appearing mid-file, and a
+    dangling `\\r` at EOF with no following `\\n`. The fix: strip that
+    sentinel BEFORE deciding on spacing, add a genuine (`cr`-valued)
+    separator only if one is actually needed, then restore exactly one
+    proper end-of-file sentinel (a bare `''`, never `cr`) afterward.
+    """
+    ends_nl = lines_end_with_newline(lines)
+    base = list(lines[:-1]) if ends_nl else list(lines)
+    if base and base[-1].strip() != '':
+        base.append(cr)
+    base.append(f'## {heading_text}{cr}')
+    base.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
+    if ends_nl:
+        base.append('')
+    return base
+
+
+def append_paragraph_to_section(
+    lines: list[str], body_start: int, heading_text: str, paragraph: str, cr: str,
+) -> tuple[list[str], bool, str]:
+    """Append `paragraph` to a `## {heading_text}` section; the shared engine.
+
+    Returns `(new_lines, created, old_content)`. `paragraph` lands as a new,
+    blank-line-separated paragraph at the END of the section, never touching
+    what was already there (the nothing-ever-lost contract `fha person note`
+    and `fha source note` both depend on). A section holding only a
+    `*(none yet)*` / `(none yet)` placeholder is treated as empty - the
+    placeholder is replaced outright rather than kept alongside real prose,
+    since it means exactly "nothing here yet" and leaving it in would read as
+    a second, contradictory sentence. When the heading is absent it is created
+    at EOF (`created` True) via `create_section_at_eof`.
+
+    `cr` is `'\\r'` for a CRLF-authored record, else `''` - applied to every
+    NEWLY inserted line so a CRLF file gains no stray bare-LF line, with the
+    EOF sentinel (`lines_end_with_newline`) restored so the file's
+    trailing-newline state is preserved either way.
+    """
+    located = section_bounds(lines, body_start, heading_text)
+    body_text = paragraph.strip('\n')
+    if located is None:
+        return create_section_at_eof(lines, heading_text, body_text, cr), True, ''
+
+    _, content_start, content_end = located
+    old_content_lines = lines[content_start:content_end]
+    old_content = '\n'.join(old_content_lines)
+    trimmed = list(old_content_lines)
+    while trimmed and trimmed[-1].strip() == '':
+        trimmed.pop()
+    is_placeholder = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    has_next = content_end < len(lines)
+
+    new_lines = list(lines[:content_start])
+    if trimmed and not is_placeholder:
+        new_lines.extend(trimmed)
+        new_lines.append(cr)
+    new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
+    if has_next:
+        new_lines.append(cr)             # a real blank-line separator - more follows
+    elif lines_end_with_newline(lines):
+        new_lines.append('')             # the file's own end-of-file sentinel, restored
+    new_lines.extend(lines[content_end:])
+    return new_lines, False, old_content
 
 
 def parse_filename(path: str | Path) -> dict | None:
@@ -2829,6 +3211,154 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
     return None
 
 
+def find_source_record_path(archive_root: str | Path, source_id: str) -> Path | None:
+    """Scan `sources/` for one S-id's record file, or None.
+
+    The source sibling of `find_person_record_path`: identity is the
+    `_{S-id}.md` filename suffix (`parse_filename`), so a stale or absent
+    index never blocks or misdirects a write aimed at a source record. Source
+    filenames carry no companion-kind suffix the way person profiles do
+    (`parse_filename` only ever sets `is_companion` for `P`-typed `.md`
+    files), so every `_{S-id}.md` match under `sources/` is the record itself.
+
+    Two tools had already re-implemented this exact scan privately
+    (`fha confirm`'s `_find_source_path_by_id`, `fha source`'s
+    `_find_source_record_path`) before `fha claim new` needed it too; this is
+    the shared home going forward - the same shared-infrastructure rationale
+    as `mint_ids` and `find_person_record_path`. The two existing private
+    copies are left as-is (out of scope for this change) rather than churned
+    just to call through here.
+    """
+    target = normalize_id(source_id)
+    sources_dir = Path(archive_root) / 'sources'
+    if not sources_dir.is_dir():
+        return None
+    for path in sorted(sources_dir.rglob('*.md')):
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('id_str') != target:
+            continue
+        if parsed.get('id_type') == 'S':
+            return path
+    return None
+
+
+def stub_slug_name(name: str) -> tuple[str, str]:
+    """Parse a display name into (surname_slug, given_slug) for a stub filename.
+
+    Best effort, not a real name-parsing engine: the last word is taken as the
+    surname and everything before it as given names, because that is right
+    often enough for the filename to be recognisable, and a stub filename is
+    provisional anyway (renamed by hand once a human files the person
+    properly). Sanitised to `[a-z0-9_]` so the slug is always a safe filename
+    component regardless of what punctuation the display name carries.
+
+    A SINGLE-token name is a surname-less person - a mononym (`Cher`), an
+    enslaved ancestor recorded only by a given name, a patronymic. SPEC §13
+    files those with the sort-name slot EMPTY, so the filename leads with the
+    double underscore (`__cher_P-….md`), a distinct no-surname sort group -
+    hence the empty surname slug here, not the literal 'unknown'. 'unknown'
+    stays reserved for the genuinely nameless fallback below (a blank or
+    whitespace-only display name), which is a missing name, not a mononym.
+    """
+    parts = name.strip().split()
+    if not parts:
+        return ('unknown', 'unknown')
+    if len(parts) == 1:
+        return ('', parts[0].lower())
+    surname = parts[-1].lower().replace(' ', '_')
+    given = '_'.join(p.lower() for p in parts[:-1])
+    surname = re.sub(r'[^a-z0-9_]', '', surname)
+    given = re.sub(r'[^a-z0-9_]', '', given)
+    return (surname or 'unknown', given or 'unknown')
+
+
+def stub_filename(name: str | None, pid: str) -> str:
+    """Return the `{surname}__{given}_{P-id}.md` stub filename (SPEC §13).
+
+    A blank or literal "unknown" name falls back to the surname-less
+    `unknown__unknown_{P-id}` form rather than calling `stub_slug_name` on a
+    name with nothing to slug - the double underscore is the same convention
+    §13 uses for surname-less people (mononyms, enslaved ancestors named only
+    by a given name), so an unresolved reference reads the same way on disk.
+    """
+    if name and name.lower() not in ('unknown', ''):
+        surname, given = stub_slug_name(name)
+    else:
+        surname, given = 'unknown', 'unknown'
+    return f'{surname}__{given}_{pid}.md'
+
+
+def render_stub_content(
+    pid: str,
+    name: str | None,
+    *,
+    sex: str | None = None,
+    gender: str | None = None,
+    birth: str | None = None,
+    death: str | None = None,
+) -> str:
+    """Render a §9 person-stub record's frontmatter text (id/aliases/name/…/tier).
+
+    Shared by `fha stubs` (unresolved-reference and `--from-names` minting) and
+    `fha person new` (a human deliberately starting a stub with what they
+    already know). The field order - id, aliases, name, [sex], [gender],
+    living, birth/death, created, tier - is fixed so every stub reads the same
+    way regardless of which tool wrote it; `tests/test_templates.py` checks it
+    against `archive-template/people/stubs/_TEMPLATE.stub.md`.
+
+    `aliases:` carries the P-id from birth - the line that makes a bare
+    `[[P-…]]` cite click through in Obsidian. The display name registers as an
+    alias automatically (the index reads it from `name:`), so a hand-typed
+    `[[Name]]` resolves once the stub is promoted to a real name.
+
+    `sex`/`gender` are omitted entirely (not written as blank/null) when not
+    given - most stubs never carry either, and an absent key is friendlier to
+    a hand reader than `sex: null`. `sex` is validated against
+    `PERSON_SEX_VALUES` (SPEC §9); `gender` is free text, so it is trusted
+    as-is.
+
+    `birth`/`death` are PROVISIONAL, unsourced EDTF estimates (see
+    `PROVISIONAL_VITAL_FIELDS`) - the honest "I know roughly when" a human or a
+    tool may have before any source is filed. Given, they are written as real
+    `birth: value` / `death: value` lines carrying the same reassuring inline
+    comment a human reads before a source shows up; omitted, the field is
+    offered instead as a commented-out hint (`# birth:   # …`) so it stays
+    discoverable without faking an unsourced fact. Each of the two is decided
+    independently - a stub can carry a real `birth:` and a still-commented
+    `# death:`. Values are written verbatim: this function renders text, it
+    does not validate EDTF shape (the caller - the CLI layer - normalises and
+    validates the date before it ever reaches here, the same division of
+    labor `process.py`'s scaffold renderer uses).
+    """
+    if sex is not None and sex not in PERSON_SEX_VALUES:
+        raise ValueError(format_person_sex_error(sex))
+
+    display_name = name if name and name.lower() != 'unknown' else 'unknown'
+    lines = [
+        '---',
+        f'id: {pid}',
+        f'aliases: [{pid}]',
+        f'name: {yaml_inline(display_name)}',
+    ]
+    if sex is not None:
+        lines.append(f'sex: {sex}')
+    if gender is not None:
+        lines.append(f'gender: {yaml_inline(gender)}')
+    lines.append('living: unknown')
+    if birth is not None:
+        lines.append(f'birth: {birth}   # unsourced estimate - a tool will remind you to add a source')
+    else:
+        lines.append('# birth:   # an honest guess is fine - a tool will remind you to add a source later')
+    if death is not None:
+        lines.append(f'death: {death}   # unsourced estimate - a tool will remind you to add a source')
+    else:
+        lines.append('# death:   # same here; leave commented until you know')
+    lines.append(f'created: {datetime.date.today().isoformat()}')
+    lines.append('tier: stub')
+    lines.append('---')
+    return '\n'.join(lines) + '\n'
+
+
 # Matches the `_{S-id}.md` suffix in a source record filename; used by
 # find_source_record to locate a source by its ID without trusting the slug.
 _SOURCE_RECORD_FILENAME_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})\.md$', re.I)
@@ -3101,3 +3631,63 @@ def finding_to_message(finding: Finding) -> Message:
         code=finding.code,
         path=finding.path,
     )
+
+
+def result_fail(
+    result: Result,
+    status: str,
+    message: str,
+    *,
+    exit_code: int = EXIT_FAILURE,
+    level: str = 'error',
+    next_step: str | None = None,
+) -> Result:
+    """Mark `result` a non-success outcome and add its one human-facing line.
+
+    The single refusal/not-found builder every write-back engine shares. Four
+    tools had each grown a near-identical private copy - `fha confirm`'s
+    `_fail`/`_notfound`, `fha claim`'s `_fail`/`_notfound`, `fha person`'s
+    `_refuse_result`/`_not_found_result`, and `fha source`'s inline `_refuse`
+    closure - so the shape (set `ok=False`, stamp `exit_code`, record
+    `data['status']`, append one message) lives here once and they delegate.
+
+    The default is the common case: a hard refusal (`EXIT_FAILURE`, an
+    `error`-level line). A not-found result passes `exit_code=EXIT_WARNINGS`
+    and `level='warning'` with `status='not-found'`; `next_step` carries the
+    exact recovery command when there is one. The builder never changes the
+    message text - each call site still owns its exact wording.
+    """
+    result.ok = False
+    result.exit_code = exit_code
+    result.data['status'] = status
+    result.add(level, message, next_step=next_step)
+    return result
+
+
+def load_site_module():
+    """Import tools/site.py under a private module name (shared by fha + serve).
+
+    The tool's command is `fha site`, so its file must be `tools/site.py`
+    (BUILD.md M8.1) - but the stem `site` collides with Python's stdlib `site`
+    module, which is already in sys.modules from interpreter startup. A plain
+    `import site` therefore returns the stdlib module, not ours. Loading the
+    file by path under the alias `fha_site` sidesteps the collision without
+    disturbing the cached stdlib module the way replacing sys.modules['site']
+    would. `Path(__file__).parent` is `tools/` (this file's own directory), so
+    the sibling `site.py` is found regardless of the caller's location.
+
+    Both front doors (`fha` and `serve`) need this identical loader; it lives
+    here so they cannot drift, even though a front door importing a tool engine
+    is otherwise the exception, not the rule (tools never import tools).
+    """
+    import importlib.util
+
+    mod = sys.modules.get('fha_site')
+    if mod is not None:
+        return mod
+    path = Path(__file__).parent / 'site.py'
+    spec = importlib.util.spec_from_file_location('fha_site', path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules['fha_site'] = mod
+    spec.loader.exec_module(mod)
+    return mod

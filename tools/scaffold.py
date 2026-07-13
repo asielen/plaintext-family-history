@@ -143,6 +143,15 @@ _ROOT_OPERATING_DOCS = (
     'BUILD_INTERFACE.md',
 )
 
+# Double-clickable launchers that live at the repo root (not under tools/). They
+# ship into every archive so a non-technical owner can start the workbench
+# without a terminal. serve.cmd is a thin wrapper around `py -3 tools\fha.py
+# serve` (plan 17). Enumerated like the root docs because the repo root also
+# holds furniture that never enters an archive.
+_ROOT_LAUNCHERS = (
+    'serve.cmd',
+)
+
 # Subtrees walked whole for the operating layer. `.claude/skills/` carries the
 # agent's genealogy workflow procedures (process-source, review-claims, …) - the
 # "how to operate" an archive, so it ships. `.claude/settings.json` is *not*
@@ -217,6 +226,11 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
     out: list[tuple[str, Path]] = []
 
     for name in _ROOT_OPERATING_DOCS:
+        src = repo_root / name
+        if src.is_file():
+            out.append((name, src))
+
+    for name in _ROOT_LAUNCHERS:
         src = repo_root / name
         if src.is_file():
             out.append((name, src))

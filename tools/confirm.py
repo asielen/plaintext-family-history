@@ -81,19 +81,23 @@ After a write that changes the query surface, re-run `fha index`.
 CODE MAP
 --------
   Shared edit helpers
-    _today, _EditRefused
+    _today
+    _EditRefused                  - alias of _lib.ClaimEditRefused (shared with fha claim)
     _find_source_path_for_claim   - scan sources/ for the .md holding one C-id
     _find_source_path_by_id       - scan sources/ for one S-id's record
-    (person records are located via _lib.find_person_record_path, shared with fha person)
-    _find_claims_block            - locate the ## Claims ```yaml fence
+    (person records are located via _lib.find_person_record_path, shared with fha person;
+     source records can also be via the newer _lib.find_source_record_path, shared with
+     fha claim new - _find_source_path_by_id above predates it and is left as-is)
+    _find_claims_block            - alias of _lib._find_claims_block (locate the ## Claims fence)
     _claim_spans                  - split the block into claim items
     _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
     _item_span_for                - find the item that owns one C-id (verified)
     _parse_inline_list            - read a `key: [a, b]` inline YAML list
-    _guard_claims_rewrite         - pre-write re-parse guard (raises _EditRefused)
+    _guard_claims_rewrite         - alias of _lib.guard_claims_rewrite (pre-write re-parse guard)
     _add_link_to_claim            - append a corroborates/contradicts target
     _set_scalar_on_claim          - set a single scalar key (e.g. place:)
-    _append_claim_to_source       - append a whole new claim item to the block
+    _append_claim_to_source       - alias of _lib.append_claim_to_source (append a whole new
+                                    claim item to the block - shared with fha claim new)
 
   Merge machinery (confirm merge)
     _fm_key_span                  - locate one top-level frontmatter key
@@ -142,15 +146,20 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    ClaimEditRefused,
     Result,
+    _find_claims_block,
+    append_claim_to_source,
     build_alias_map,
     claim_item_key_indent,
     claims_edit_problem,
     configure_utf8_stdout,
     find_person_record_path,
+    find_source_record_path,
     fmt_id_display,
     frontmatter_edit_problem,
     frontmatter_fence_span,
+    guard_claims_rewrite,
     id_type_of,
     is_generated_file,
     is_merged_meta,
@@ -164,11 +173,13 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     resolve_root_arg,
+    result_fail,
     resolve_typed_ref,
     strip_link_wrapper,
     write_text_exact,
     scan_ids_in_tree,
     scan_person_record_ids,
+    yaml_inline,
 )
 
 configure_utf8_stdout()
@@ -187,8 +198,12 @@ def _today() -> str:
     return datetime.date.today().isoformat()
 
 
-class _EditRefused(Exception):
-    """A surgical edit cannot be performed safely (caller turns into a Result)."""
+# Thin alias: the exception type itself now lives in `_lib.ClaimEditRefused`
+# (moved there when `fha claim new` needed the same claims-append machinery
+# as `run_confirm_cooccur` - see its docstring for the why). Kept as a
+# module-level name here so every existing `except _EditRefused` site in this
+# file, and the tests that assert on `confirm._EditRefused`, are unchanged.
+_EditRefused = ClaimEditRefused
 
 
 # ── Locating records on disk (the .md files are truth, never the index) ─────────
@@ -212,45 +227,24 @@ def _find_source_path_for_claim(archive_root: Path, claim_id: str) -> Path | Non
 
 
 def _find_source_path_by_id(archive_root: Path, source_id: str) -> Path | None:
-    """Scan `sources/` for the record file whose `_{S-id}.md` suffix matches."""
-    target = normalize_id(source_id)
-    sources_dir = archive_root / 'sources'
-    if not sources_dir.is_dir():
-        return None
-    for path in sorted(sources_dir.rglob('*.md')):
-        parsed = parse_filename(path)
-        if parsed and parsed.get('id_str') == target:
-            return path
-    return None
+    """Scan `sources/` for the record file whose `_{S-id}.md` suffix matches.
+
+    Thin wrapper over the shared `_lib.find_source_record_path` (the same scan
+    `fha source note` and `fha claim new` use). The shared version additionally
+    requires the matched file's id_type to be `S`; that is a no-op tightening
+    here - `parse_filename` only sets a non-`S` id_type for a differently-typed
+    id in the suffix, and the sole caller has already validated `source_id` as
+    an S-id - so the semantics are identical for every input this receives.
+    """
+    return find_source_record_path(archive_root, source_id)
 
 
 # ── Surgical claim-block editing ───────────────────────────────────────────────
-
-def _find_claims_block(lines: list[str]) -> tuple[int, int] | None:
-    """Return (open_fence, close_fence) of the ## Claims ```yaml block, or None."""
-    heading = None
-    for i, ln in enumerate(lines):
-        if re.match(r'^##\s+Claims\b', ln):
-            heading = i
-            break
-    if heading is None:
-        return None
-
-    open_fence = None
-    for i in range(heading + 1, len(lines)):
-        if lines[i].strip() == '```yaml':
-            open_fence = i
-            break
-        if lines[i].startswith('## '):  # next section before any fence
-            return None
-    if open_fence is None:
-        return None
-
-    for i in range(open_fence + 1, len(lines)):
-        if lines[i].strip() == '```':
-            return open_fence, i
-    return None
-
+#
+# `_find_claims_block` used to be defined here; it moved to `_lib.py` (as the
+# same private name, imported directly above) when `fha claim new` needed the
+# exact same line-precise fence lookup that `append_claim_to_source` also
+# needed - see its docstring in `_lib.py` for the why.
 
 def _claim_spans(lines: list[str], open_fence: int, close_fence: int) -> tuple[str, list[tuple[int, int]]]:
     """Split a claims block into (base_indent, [(start, end), …]) per claim item."""
@@ -370,21 +364,11 @@ def _item_span_for(
     return None
 
 
-def _yaml_inline(value: str) -> str:
-    """Render a string as a single-line YAML scalar, quoting only when needed.
-
-    `places.yaml` and the claims block are edited as text (not round-tripped
-    through the YAML emitter) to preserve key order and comments, so a free-form
-    place name/hierarchy that carries YAML-significant characters (`: `, a leading
-    `-`, ` #`) must be quoted exactly when the parser needs it - the same
-    discipline `fha claim`/`fha process` use for scaffold scalars.
-    """
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):          # safe_dump tags a bare scalar document
-        rendered = rendered[:-3].strip()
-    return rendered
+# Thin alias: the quoting rule itself lives in `_lib.yaml_inline` (shared by
+# every surgical claim/frontmatter writer - see its docstring for the why).
+# Kept as a module-level name here so existing call sites in this file (and
+# any test importing `confirm._yaml_inline`) do not need to change.
+_yaml_inline = yaml_inline
 
 
 def _split_inline_comment(raw: str) -> tuple[str, str]:
@@ -421,47 +405,12 @@ def _parse_inline_list(raw: str) -> list[str]:
     return [raw]  # a single bare scalar (e.g. `corroborates: C-x`)
 
 
-def _guard_claims_rewrite(
-    new_text: str, claim_id: str | None, *, expect_status: str | None = None,
-    before_text: str | None = None,
-) -> str:
-    """Re-parse a rewritten claims block; raise `_EditRefused` on any problem.
-
-    Every claims-block writer in this file funnels its rewrite through here
-    before returning it, because a rewrite that breaks the block's YAML hides
-    EVERY claim in that source from lint/index/report - a false success far
-    worse than a refusal. The check itself lives in `_lib.claims_edit_problem`
-    (shared with `fha claim`); this wrapper just turns a problem into the
-    refusal exception the callers already handle, keeping each writer's happy
-    path readable.
-
-    `before_text` (the text the writer started from) keeps the refusal honest
-    about whose fault the problem is. When the same check already fails on
-    that starting text, this edit did not cause the problem - and the only
-    pre-existing state that can reach this guard is a duplicate of `claim_id`
-    (locating the claim required the block to parse and the id to be present,
-    so parse failures and absences are ruled out). That case is the human's
-    duplicate-id repair (lint E001), so the refusal says so instead of
-    accusing this edit of hiding claims. Writers that mint a brand-new id
-    (`_append_claim_to_source`) must NOT pass `before_text`: the new id is
-    legitimately absent from the starting text, which would trip this probe.
-    """
-    problem = claims_edit_problem(new_text, claim_id, expect_status=expect_status)
-    if problem is None:
-        return new_text
-    if (before_text is not None and claim_id is not None
-            and claims_edit_problem(before_text, claim_id) is not None):
-        raise _EditRefused(
-            f'claim id {fmt_id_display(normalize_id(claim_id))} appears more than once '
-            'in this file - a duplicate-id problem (lint E001) that predates this edit. '
-            'Fix the duplicate first: open the file, give one of those claims a fresh '
-            'id (mint one with `fha id mint C`), then retry.'
-        )
-    raise _EditRefused(
-        f'{problem}, so saving this edit would hide every claim in the file '
-        'from the tools. Open the claim under ## Claims in the source file, '
-        'make the change by hand, then run `fha lint` to check it.'
-    )
+# Thin alias: `guard_claims_rewrite` moved to `_lib.py` (raising the shared
+# `ClaimEditRefused`, aliased above as `_EditRefused`) when `fha claim new`
+# needed the exact same pre-write guard `append_claim_to_source` uses. Kept
+# as a module-level name here so `_add_link_to_claim`/`_set_scalar_on_claim`
+# below - and any test calling `confirm._guard_claims_rewrite` - are unchanged.
+_guard_claims_rewrite = guard_claims_rewrite
 
 
 def _add_link_to_claim(
@@ -574,36 +523,12 @@ def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tupl
                                  expect_status=expect, before_text=text), True
 
 
-def _append_claim_to_source(text: str, item_lines: list[str]) -> tuple[str, bool]:
-    """Append one new claim item (its full YAML lines) to the ## Claims block.
-
-    The appended item is templated at column 0; against a hand-indented block
-    (items at a deeper column) that would break the block's YAML, so the result
-    passes through `_guard_claims_rewrite` (keyed on the new item's own C-id) -
-    a mismatch raises `_EditRefused` instead of writing a block no tool can read.
-    """
-    lines = text.splitlines()
-    block = _find_claims_block(lines)
-    if block is None:
-        return text, False
-    open_fence, close_fence = block
-
-    new = lines[:close_fence]
-    # Separate from any preceding claim with one blank line, matching the
-    # readable spacing the example records use between claim items.
-    if close_fence > open_fence + 1 and new and new[-1].strip() != '':
-        new.append('')
-    new.extend(item_lines)
-    new.extend(lines[close_fence:])
-    trailing = '\n' if text.endswith('\n') else ''
-
-    new_cid = None
-    for ln in item_lines:
-        m = _CLAIM_ID_KEY_RE.match(ln)
-        if m:
-            new_cid = m.group(1)
-            break
-    return _guard_claims_rewrite('\n'.join(new) + trailing, new_cid), True
+# Thin alias: `append_claim_to_source` moved to `_lib.py` (see its docstring)
+# when `fha claim new` needed the exact same "mint a claim, append it to an
+# existing source's block" step `run_confirm_cooccur` below already does.
+# Kept as a module-level name here so `run_confirm_cooccur`'s call site, and
+# any test calling `confirm._append_claim_to_source`, are unchanged.
+_append_claim_to_source = append_claim_to_source
 
 
 # ── Verb: confirm xref ──────────────────────────────────────────────────────────
@@ -828,7 +753,11 @@ def run_confirm_cooccur(
     """Mint a social `relationship` claim into the confirming source's record.
 
     `data` is {'status', 'claim_id', 'person_a', 'person_b', 'subtype',
-    'source', 'claim_status'}. Minted `suggested` by default (the human's
+    'source', 'source_id', 'claim_status'}. `source` is the record path (kept
+    for backward compat); `source_id` is the canonical `S-…` id this confirm
+    already knows from its `source_id` argument - the field a downstream
+    reindexer (`fha serve`) reads to know which source to refresh. Minted
+    `suggested` by default (the human's
     confirm proposes; accepting into a graph edge is the step-05 review). With
     `--accept` the claim is minted `accepted` and stamped `reviewed:` (today
     unless given), treating this confirm as the review - the only way it becomes
@@ -841,7 +770,7 @@ def run_confirm_cooccur(
     """
     result = Result(data={
         'status': None, 'claim_id': None, 'person_a': None, 'person_b': None,
-        'subtype': subtype, 'source': None, 'claim_status': None,
+        'subtype': subtype, 'source': None, 'source_id': None, 'claim_status': None,
     })
 
     # --reviewed only stamps the review date onto an *accepted* claim; a
@@ -890,6 +819,11 @@ def run_confirm_cooccur(
                          f'{archive_root / "sources"}.',
                          next_step='fha find ' + fmt_id_display(source_id))
     result.data['source'] = str(source_path)
+    # Publish the canonical `S-…` id (path kept above for backward compat) so a
+    # downstream reindexer reads one field. This confirm already validated the
+    # `source_id` argument as an S-id, so the display form is authoritative -
+    # no filename parse needed, unlike claim.py which had only the record path.
+    result.data['source_id'] = fmt_id_display(normalize_id(source_id))
 
     # Idempotency gate: never mint a second claim for a pair + subtype this
     # source already covers with a live claim (see _existing_pair_claim).
@@ -1674,7 +1608,12 @@ def _rewrite_ref_item(item: str, token_re: re.Pattern, survivor_disp: str) -> st
         display = (m.group('display') or m.group('target')).strip()
     else:
         display = core
-    return f'"[[{survivor_disp}|{display}]]"'
+    # `display` came from the item's OWN existing text (a hand-typed alias
+    # name, not something this merge validated) - escape it for the
+    # double-quoted YAML scalar it lands in rather than splice it in raw
+    # (PR #30 review sweep; same class as person.py's relationship-mirror fix).
+    escaped_display = display.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"[[{survivor_disp}|{escaped_display}]]"'
 
 
 def _rewrite_person_list_value(
@@ -3118,19 +3057,14 @@ def run_confirm_merge(
 # ── Result helpers ──────────────────────────────────────────────────────────────
 
 def _fail(result: Result, status: str, message: str) -> Result:
-    result.ok = False
-    result.exit_code = EXIT_FAILURE
-    result.data['status'] = status
-    result.add('error', message)
-    return result
+    """A plain hard refusal (exit 3, error-level) - delegates to _lib.result_fail."""
+    return result_fail(result, status, message)
 
 
 def _notfound(result: Result, message: str, next_step: str | None = None) -> Result:
-    result.ok = False
-    result.exit_code = EXIT_WARNINGS
-    result.data['status'] = 'not-found'
-    result.add('warning', message, next_step=next_step)
-    return result
+    """A not-found warning (exit 1) - delegates to _lib.result_fail."""
+    return result_fail(result, 'not-found', message,
+                       exit_code=EXIT_WARNINGS, level='warning', next_step=next_step)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────

@@ -514,6 +514,17 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(claim['status'], 'suggested')
         self.assertNotIn(frozenset((PERSON_1.lower(), PERSON_3.lower())), edges)
 
+    def test_cooccur_publishes_canonical_source_id(self) -> None:
+        # data['source_id'] carries the canonical S-id (S- + 10 chars) this
+        # confirm already knew from its --source argument - the field a
+        # downstream reindexer reads. The path stays in data['source'].
+        result = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['source_id'], 'S-fc3456789d')
+        self.assertRegex(result['source_id'], r'^S-[0-9a-hjkmnp-tv-z]{10}$')
+        self.assertTrue(result['source'])
+
     def test_cooccur_accept_derives_edge(self) -> None:
         result = confirm.run_confirm_cooccur(
             self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,

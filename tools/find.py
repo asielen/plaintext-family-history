@@ -6,6 +6,9 @@ find.py - fha find: the universal locator.
   fha find --text "phrase"            Full-text search across records, notes, transcripts
   fha find --related <ID> [--date E]  Neighborhood of any ID, optionally time-sliced
   fha find --related --date <EDTF>    Standalone time-slice neighborhood (no ID)
+  fha find --json <ID|text>           Machine-readable result list (a reference-resolver
+                                       backend - see search_json below), optionally narrowed
+                                       with --kind and --limit
 
 Detects ID type from its prefix letter and prints structured output.
 Uses the SQLite index when present.  If the index is stale, it prints a
@@ -25,12 +28,24 @@ Design decisions in TOOLING §4a:
       .cache/photos.sqlite is fresh (else find prints a skip note). The
       transcripts_fts table exists but is not yet populated - transcript
       search is deferred to a later milestone.
+
+  --json (plan 17; documented in TOOLING §4a): a pure, machine-readable ranked
+  search over the index - the backend the fha serve reference resolver (and
+  any autocomplete UI) calls to turn a typed name/ID fragment into candidates.
+  Like --related, an absent/incompatible index is a hard error (no tree-scan
+  fallback - the alias/name/title ranking has no meaningful equivalent
+  outside the index) using the exact same open_index_db plain-message +
+  exit-3 contract --related already established. Not yet combinable with
+  --related (no defined meaning for "the neighborhood of X, as ranked
+  search results" - refused with a plain message naming the supported
+  combinations, exit 2).
 """
 
 from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import re
 import sqlite3
 import sys
@@ -103,6 +118,22 @@ configure_utf8_stdout()
 #    _related_date             - standalone --date time-slice neighborhood
 #    _related_dispatch         - top-level neighborhood dispatcher (prints, returns int)
 #    run_related                - wraps _related_dispatch into the Result contract
+#
+#  --json (plan 17): the reference-resolver backend - a pure ranked search,
+#    no printing (opened via _lib.open_index_db with _SEARCH_REQUIRED_TABLES)
+#    _like_pattern              - escape a search term for a SQL LIKE substring match
+#    _best_match_tier           - 0 exact / 1 prefix / 2 substring against several fields
+#    _person_label_detail, _source_label_detail, _place_label_detail
+#                               - (label, detail) formatters per SPEC §9/§14 field shape
+#    _lookup_label_detail       - alias canonical_id → (label, detail) by resolved type
+#    _bare_id_hit               - direct table lookup for a whole-string ID query
+#    _ranked_search             - the merge: aliases + persons + sources + places/place_names
+#                                 + notes_fts, deduped by id, sorted by tier then label
+#    search_json                - public engine: opens/closes its own connection, returns list[dict]
+#    run_find_json               - wraps _ranked_search into the Result contract (own connection,
+#                                 shared with search_json's core, not a second open_index_db call)
+#    _cmd_find_json              - the only layer that prints: one json.dumps document, or nothing
+#    _parse_kind_filter          - CLI --kind comma list → (kinds, error_message)
 #
 #  Public API
 #    find_by_id                - locate a single ID; called by fha id check alias in fha.py
@@ -1726,6 +1757,462 @@ def _related_dispatch(
         conn.close()
 
 
+# ── --json (plan 17): the reference-resolver backend ────────────────────────
+#
+# A pure, ranked index search with no printing and no tree-scan fallback -
+# the machine-readable surface a future reference-resolver skill or UI
+# autocomplete calls to turn a typed fragment ("hartl", a pasted P-id, "the
+# 1900 census") into a short candidate list. Unlike find_by_id's tolerant
+# degrade-to-scan behavior, this follows --related's contract exactly: the
+# alias/name/title ranking below has no meaningful equivalent without the
+# index, so a missing/stale/incompatible index is the same hard stop
+# --related already uses (open_index_db's plain message, exit 3).
+_SEARCH_REQUIRED_TABLES = (
+    'aliases', 'persons', 'sources', 'places', 'place_names',
+    'claims', 'hypotheses', 'notes_fts',
+)
+
+# The type values a hit can carry, and the CLI's --kind filter vocabulary.
+_JSON_RESULT_KINDS = ('person', 'source', 'place', 'hypothesis', 'claim', 'text')
+
+# id_type_of's letter → the hit 'type' string search_json returns. Deliberately
+# excludes nothing: even though the general (non-bare-ID) ranking path only
+# ever produces person/source/place/text hits (claims and hypotheses are
+# never registered in the aliases table - see _register_cited_claim_aliases
+# and _index_hypotheses_block in index.py), _bare_id_hit uses this same map
+# for a bare C-id/H-id query, so all five entries live in one place.
+_ID_TYPE_TO_HIT_TYPE: dict[str, str] = {
+    'P': 'person', 'S': 'source', 'L': 'place', 'C': 'claim', 'H': 'hypothesis',
+}
+
+# Every notes_fts hit ranks below every exact/prefix/substring name match -
+# FTS relevance isn't on the same scale as the 0/1/2 ladder below it.
+_TIER_TEXT = 3
+
+
+def _like_pattern(term: str) -> str:
+    """Escape `%`/`_`/`\\` in a search term, then wrap it for a SQL LIKE
+    substring match (`ESCAPE '\\'` at each call site turns the escaping on).
+
+    A human's query is untrusted text that may itself contain LIKE wildcards
+    (a source titled "50% Off", a place "Under_Hill") - without escaping,
+    those characters would be interpreted as SQL wildcards instead of the
+    literal characters the human typed, silently widening or narrowing the
+    match in a way no user could predict.
+    """
+    escaped = term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return f'%{escaped}%'
+
+
+def _best_match_tier(q_lower: str, texts: tuple[str | None, ...]) -> int | None:
+    """Best (lowest) rank tier a candidate earns against `q_lower` across
+    several of its own fields (e.g. a person's name AND surname, or a
+    source's only field, title) - 0 exact, 1 case-insensitive prefix, 2
+    substring, or None if none of the given fields actually contain the
+    query (the SQL LIKE filter that produced this row already guarantees at
+    least one will, so None here only fires for a defensive belt-and-braces
+    check, never in the normal path).
+    """
+    best: int | None = None
+    for text in texts:
+        if not text:
+            continue
+        text_lower = text.lower()
+        if text_lower == q_lower:
+            tier = 0
+        elif text_lower.startswith(q_lower):
+            tier = 1
+        elif q_lower in text_lower:
+            tier = 2
+        else:
+            continue
+        if best is None or tier < best:
+            best = tier
+    return best
+
+
+def _person_label_detail(row: sqlite3.Row) -> tuple[str | None, str]:
+    """(label, detail) for a `persons` row: display name, and "birth - death ·
+    tier" - e.g. "1840~ - 1923 · stub" - trimmed to whichever vitals exist so
+    a person with neither reads as just their tier."""
+    label = row['name'] or None
+    if not label:
+        return None, ''
+    birth = (row['birth'] or '').strip()
+    death = (row['death'] or '').strip()
+    tier = row['tier'] or 'stub'
+    if birth or death:
+        return label, f"{birth or '?'} - {death or '?'} · {tier}"
+    return label, tier
+
+
+def _source_label_detail(row: sqlite3.Row) -> tuple[str | None, str]:
+    """(label, detail) for a `sources` row: title, and "source_type · date"
+    (either half omitted when blank, e.g. a source with no date yet)."""
+    label = row['title'] or None
+    if not label:
+        return None, ''
+    parts = [p for p in (row['source_type'], row['date_edtf']) if p]
+    return label, ' · '.join(parts)
+
+
+def _place_label_detail(row: sqlite3.Row) -> tuple[str | None, str]:
+    """(label, detail) for a `places` row: name, and its hierarchy string."""
+    label = row['name'] or None
+    if not label:
+        return None, ''
+    return label, (row['hierarchy'] or '')
+
+
+def _lookup_label_detail(
+    conn: sqlite3.Connection, hit_type: str, canonical_id: str,
+) -> tuple[str | None, str]:
+    """Resolve an alias row's `canonical_id` to a display (label, detail) by
+    re-reading the record it names.
+
+    A `None` label (no matching row) means a dangling alias - a merged
+    tombstone whose old alias rows a stale-but-passing index still carries,
+    or any other alias→record mismatch - and the caller treats that as no
+    hit rather than crashing on it, the same "degrade, don't fail" instinct
+    `find_by_id`'s scan fallback applies elsewhere in this file.
+    """
+    if hit_type == 'person':
+        row = conn.execute(
+            'SELECT name, birth, death, tier FROM persons WHERE id = ?', (canonical_id,)
+        ).fetchone()
+        return _person_label_detail(row) if row else (None, '')
+    if hit_type == 'source':
+        row = conn.execute(
+            'SELECT title, source_type, date_edtf FROM sources WHERE id = ?', (canonical_id,)
+        ).fetchone()
+        return _source_label_detail(row) if row else (None, '')
+    if hit_type == 'place':
+        row = conn.execute(
+            'SELECT name, hierarchy FROM places WHERE id = ?', (canonical_id,)
+        ).fetchone()
+        return _place_label_detail(row) if row else (None, '')
+    return None, ''
+
+
+def _truncate_label(text: str, limit: int = 80) -> str:
+    """Shorten a claim value / hypothesis text to a one-line label."""
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1] + '…'
+
+
+def _bare_id_hit(conn: sqlite3.Connection, id_norm: str) -> dict | None:
+    """Look up a whole-string ID query directly against its own table - never
+    through `aliases`, because a hypothesis is never registered there
+    (`_index_hypotheses_block` in index.py never calls `_insert_record_aliases`)
+    and a cited claim's only alias row resolves to its OWNING SOURCE, not the
+    claim itself (`_register_cited_claim_aliases`). Returns one hit dict, or
+    None if the ID names nothing in the index.
+    """
+    hit_type = _ID_TYPE_TO_HIT_TYPE.get(id_type_of(id_norm) or '')
+    if hit_type in ('person', 'source', 'place'):
+        label, detail = _lookup_label_detail(conn, hit_type, id_norm)
+        if label is None:
+            return None
+        return {'id': id_norm, 'type': hit_type, 'label': label, 'detail': detail}
+
+    if hit_type == 'claim':
+        row = conn.execute(
+            'SELECT id, source_id, type, value, status FROM claims WHERE id = ?', (id_norm,)
+        ).fetchone()
+        if row is None:
+            return None
+        label = _truncate_label(row['value'] or f'{row["type"]} claim')
+        src = conn.execute(
+            'SELECT title FROM sources WHERE id = ?', (row['source_id'],)
+        ).fetchone()
+        detail = ' · '.join(p for p in (row['status'], src['title'] if src else None) if p)
+        return {'id': id_norm, 'type': 'claim', 'label': label, 'detail': detail}
+
+    if hit_type == 'hypothesis':
+        row = conn.execute(
+            'SELECT id, person_id, hypothesis, status FROM hypotheses WHERE id = ?', (id_norm,)
+        ).fetchone()
+        if row is None:
+            return None
+        label = _truncate_label(row['hypothesis'] or 'hypothesis')
+        person_name = None
+        if row['person_id']:
+            prow = conn.execute(
+                'SELECT name FROM persons WHERE id = ?', (row['person_id'],)
+            ).fetchone()
+            person_name = prow['name'] if prow else None
+        detail = ' · '.join(p for p in (row['status'], person_name) if p)
+        return {'id': id_norm, 'type': 'hypothesis', 'label': label, 'detail': detail}
+
+    return None
+
+
+def _ranked_search(
+    conn: sqlite3.Connection,
+    query: str,
+    kinds: list[str] | None,
+    limit: int,
+) -> list[dict]:
+    """The core of `search_json`/`run_find_json`, over an already-open connection.
+
+    Two modes, per TOOLING §4a (proposed) / the plan-17 contract:
+
+    1. `query` is a bare valid ID (`_lib.is_valid_id`/`normalize_id`) - look
+       it up directly in its own table (`_bare_id_hit`) and return that one
+       record, first and alone. This is the "I have an ID, resolve it" path;
+       it does not also run the ranked search below.
+    2. Otherwise, a ranked search across four index surfaces:
+         - `aliases`      - every person/place name+variant+stem, every
+                             source's own stems (never its title - a
+                             source's title is not registered as an alias,
+                             see index.py's `_insert_record_aliases` calls)
+         - `persons`      - name/surname directly (catches a bare surname,
+                             which has no alias row of its own)
+         - `sources`      - title directly (the alias table can't do this)
+         - `places`/`place_names` - name/alt_name directly
+         - `notes_fts`    - full-text prose hit, always lowest priority
+       Each candidate keeps only its BEST tier across every field/source
+       that named it (`_best_match_tier`), then results are deduped by id,
+       sorted by (tier, label) for a deterministic order, and cut to `limit`.
+
+    `kinds` (a set of the six type strings, or None for "everything") is
+    applied per-candidate before dedup so it also bounds how much work later
+    tiers do (a `kinds=['text']` search skips the alias/persons/sources/
+    places queries entirely - see the guard on the notes_fts block).
+    """
+    q = (query or '').strip()
+    limit = max(0, limit)
+    if not q or limit == 0:
+        return []
+
+    kind_set = set(kinds) if kinds is not None else None
+
+    id_norm = normalize_id(q)
+    if is_valid_id(id_norm):
+        hit = _bare_id_hit(conn, id_norm)
+        if hit is None or (kind_set is not None and hit['type'] not in kind_set):
+            return []
+        return [hit]
+
+    q_lower = q.lower()
+    pattern = _like_pattern(q_lower)
+    candidates: dict[str, dict] = {}
+
+    def consider(cid: str, type_: str, label: str | None, detail: str, *texts: str | None) -> None:
+        if label is None or (kind_set is not None and type_ not in kind_set):
+            return
+        tier = _best_match_tier(q_lower, texts)
+        if tier is None:
+            return
+        existing = candidates.get(cid)
+        if existing is None or tier < existing['tier']:
+            candidates[cid] = {
+                'tier': tier,
+                'hit': {'id': cid, 'type': type_, 'label': label, 'detail': detail},
+            }
+
+    if kind_set is None or kind_set & {'person', 'source', 'place'}:
+        for alias, canonical_id, _alias_kind in conn.execute(
+            "SELECT alias, canonical_id, kind FROM aliases WHERE alias LIKE ? ESCAPE '\\'",
+            (pattern,),
+        ):
+            hit_type = _ID_TYPE_TO_HIT_TYPE.get(id_type_of(canonical_id) or '')
+            if hit_type not in ('person', 'source', 'place'):
+                continue   # a 'claim' alias resolves to its owning source, already covered above
+            label, detail = _lookup_label_detail(conn, hit_type, canonical_id)
+            consider(canonical_id, hit_type, label, detail, alias)
+
+    if kind_set is None or 'person' in kind_set:
+        for row in conn.execute(
+            "SELECT id, name, surname, birth, death, tier FROM persons "
+            "WHERE name LIKE ? ESCAPE '\\' OR surname LIKE ? ESCAPE '\\'",
+            (pattern, pattern),
+        ):
+            label, detail = _person_label_detail(row)
+            consider(row['id'], 'person', label, detail, row['name'], row['surname'])
+
+    if kind_set is None or 'source' in kind_set:
+        for row in conn.execute(
+            "SELECT id, title, source_type, date_edtf FROM sources WHERE title LIKE ? ESCAPE '\\'",
+            (pattern,),
+        ):
+            label, detail = _source_label_detail(row)
+            consider(row['id'], 'source', label, detail, row['title'])
+
+    if kind_set is None or 'place' in kind_set:
+        for row in conn.execute(
+            "SELECT id, name, hierarchy FROM places WHERE name LIKE ? ESCAPE '\\'",
+            (pattern,),
+        ):
+            label, detail = _place_label_detail(row)
+            consider(row['id'], 'place', label, detail, row['name'])
+        # A single JOIN, not one `SELECT ... WHERE id = ?` per matching
+        # alt_name row (that was an N+1 - one extra query per hit). The
+        # INNER JOIN drops any alt_name row whose place_id no longer matches
+        # a place - the same "skip it" the old `if place_row is None`
+        # check gave, just done by the join instead of a follow-up query.
+        for row in conn.execute(
+            "SELECT place_names.place_id AS place_id, place_names.alt_name AS alt_name, "
+            "places.name AS name, places.hierarchy AS hierarchy "
+            "FROM place_names JOIN places ON place_names.place_id = places.id "
+            "WHERE place_names.alt_name LIKE ? ESCAPE '\\'",
+            (pattern,),
+        ):
+            label, detail = _place_label_detail(row)
+            consider(row['place_id'], 'place', label, detail, row['alt_name'])
+
+    if kind_set is None or 'text' in kind_set:
+        try:
+            fts_rows = conn.execute(
+                "SELECT path, snippet(notes_fts, 1, '', '', ' … ', 10) AS snip "
+                'FROM notes_fts WHERE notes_fts MATCH ? LIMIT ?',
+                (q, max(limit * 5, 50)),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Not valid FTS5 query syntax (unbalanced quotes, a bare leading
+            # '-' or '*', …) - degrade to no text hits rather than fail the
+            # whole search over one clause of it.
+            fts_rows = []
+        for row in fts_rows:
+            path = row['path']
+            existing = candidates.get(path)
+            if existing is None or _TIER_TEXT < existing['tier']:
+                candidates[path] = {
+                    'tier': _TIER_TEXT,
+                    'hit': {
+                        'id': path, 'type': 'text',
+                        'label': (row['snip'] or '').strip(), 'detail': path,
+                    },
+                }
+
+    ordered = sorted(candidates.values(), key=lambda c: (c['tier'], c['hit']['label'].lower()))
+    return [c['hit'] for c in ordered[:limit]]
+
+
+def search_json(
+    archive_root: Path,
+    fha_config: dict,
+    query: str,
+    *,
+    kinds: list[str] | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """The reference-resolver engine: a pure index query, no printing.
+
+    Opens and closes its own connection (via `_lib.open_index_db`, the same
+    missing/stale-index contract `--related` uses) and returns a plain list
+    of hit dicts - `[]` on a missing/incompatible index or a genuinely empty
+    result, indistinguishably, because this function makes no report; a
+    caller that must tell those two apart (the CLI) uses `run_find_json`
+    instead, which carries the outcome in a `Result`.
+
+    `fha_config` is accepted for signature parity with every other finder in
+    this file (`_find_person`, `_related_person`, …) and to leave room for a
+    later asset-root-aware hit (e.g. resolving a text hit's path through
+    `resolve_path` for an external documents root); today's hit sources
+    (aliases/persons/sources/places/place_names/notes_fts) all carry
+    archive-relative paths and IDs already, so it is not read yet.
+    """
+    conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
+    if conn is None:
+        return []
+    try:
+        return _ranked_search(conn, query, kinds, limit)
+    except sqlite3.OperationalError:
+        # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's
+        # table probe confirms the required tables EXIST, not that every
+        # column a query touches is present in an older schema.
+        return []
+    finally:
+        conn.close()
+
+
+def run_find_json(
+    archive_root: Path,
+    fha_config: dict,
+    *,
+    query: str,
+    kinds: list[str] | None = None,
+    limit: int = 20,
+) -> Result:
+    """Wrap the reference-resolver search in the `Result` contract.
+
+    Deliberately does not call `search_json` (which owns its own open/close
+    connection lifecycle) - opening a second connection here would mean a
+    second `open_index_db` call, and since that helper prints its own
+    ERROR/WARNING as a side effect, a missing or stale index would print its
+    plain-language message TWICE. Instead this opens once and shares the
+    connection with `_ranked_search`, `search_json`'s same core, so the
+    plain message - and the exit code - are identical to calling
+    `search_json` directly, printed exactly once.
+    """
+    conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
+    if conn is None:
+        # open_index_db already printed the plain ERROR/WARNING to stderr -
+        # the same missing/stale-index contract _related_dispatch uses.
+        return Result(ok=False, exit_code=EXIT_FAILURE)
+    try:
+        try:
+            results = _ranked_search(conn, query, kinds, limit)
+        except sqlite3.OperationalError:
+            return Result(ok=False, exit_code=EXIT_FAILURE).add(
+                'error',
+                '.cache/index.sqlite is unreadable or has an incompatible schema; '
+                'your search index is out of date. Run `fha index` to rebuild it.',
+                next_step='fha index',
+            )
+    finally:
+        conn.close()
+    return Result(ok=True, exit_code=EXIT_CLEAN, data={'results': results})
+
+
+def _cmd_find_json(result: Result) -> int:
+    """The only layer that prints a --json result: exactly one `json.dumps`
+    document on stdout when the search actually ran, nothing on stdout
+    otherwise.
+
+    A missing/stale/incompatible index never reaches this with a 'results'
+    key in `result.data` - `run_find_json` returns before setting one, and
+    `open_index_db` (or the schema-mismatch catch) already put the plain
+    cause + `fha index` next step on stderr. Printing a second, empty JSON
+    document on top of that would be noise nobody asked for, so the choice
+    here is binary: the one real document, or nothing on stdout at all (same
+    as `--related` today).
+
+    The documented shape (TOOLING.md §4a, tools/README.md) is the bare hit
+    list `[{id, type, label, detail}, ...]`, not `Result.data`'s own wrapper
+    dict - printing `result.data` whole would hand a consumer written to
+    that contract `{"results": [...]}` instead of the array it expects.
+    """
+    if 'results' in result.data:
+        print(json.dumps(result.data['results']))
+        return result.exit_code
+    for m in result.messages:
+        prefix = {'error': 'ERROR', 'warning': 'WARNING'}.get(m.level, 'NOTE')
+        print(f'{prefix}: {m.text}', file=sys.stderr)
+    return result.exit_code
+
+
+def _parse_kind_filter(raw: str | None) -> tuple[list[str] | None, str | None]:
+    """Parse `--kind`'s comma list into (kinds, error_message).
+
+    `kinds` is None when `--kind` wasn't given at all (no filter - the
+    default, "search everything"); `error_message` is None on success and a
+    plain, copy-pasteable-fix message otherwise (the AGENTS_TOOLING
+    jargon-needs-a-valid-list rule).
+    """
+    if raw is None:
+        return None, None
+    kinds = [k.strip() for k in raw.split(',') if k.strip()]
+    bad = [k for k in kinds if k not in _JSON_RESULT_KINDS]
+    if bad:
+        return None, (
+            f'unrecognised --kind value(s): {", ".join(bad)}. '
+            f'Use a comma list from: {", ".join(_JSON_RESULT_KINDS)}.'
+        )
+    return kinds, None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def _text_search(query: str, archive_root: Path, fha_config: dict) -> int:
@@ -1892,6 +2379,7 @@ Locate anything in the archive, or search its full text.
   fha find <ID>              Everything about one ID (person, source, place...)
   fha find --text "phrase"   Full-text search across records, notes, captions
   fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
+  fha find --json <ID|text>  Machine-readable result list (add --kind/--limit to narrow it)
 
 This is your search box. For plain word search, `fha search <words>` is the same
 as `fha find --text`."""
@@ -1924,6 +2412,27 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         '--date', metavar='EDTF',
         help='Time-slice filter. With --related <ID>, narrows that neighborhood to the '
              'given EDTF range; with --related and no ID, reports everything active in that range.',
+    )
+
+    # --json is not part of the --text/--related mutex group above: it is a
+    # rendering choice (machine-readable vs. human report), valid with a
+    # bare ID/text query or --text, but not yet with --related (checked in
+    # _run_find, not by argparse, since the "not supported yet" refusal needs
+    # its own plain message naming the combinations that DO work).
+    p.add_argument(
+        '--json', action='store_true', dest='use_json',
+        help='Machine-readable result list instead of a human report. Valid with a bare '
+             'ID/text query or --text; combine with --kind/--limit to narrow it. Not yet '
+             'valid with --related.',
+    )
+    p.add_argument(
+        '--kind', metavar='KIND[,KIND...]',
+        help='With --json: only these result kinds - person, source, place, hypothesis, '
+             'claim, text (comma list). Default: every kind.',
+    )
+    p.add_argument(
+        '--limit', type=int, default=20, metavar='N',
+        help='With --json: maximum number of results (default 20).',
     )
 
     p.add_argument(
@@ -1981,6 +2490,7 @@ def _run_find(args: argparse.Namespace) -> int:
     related = getattr(args, 'related', _NO_RELATED)
     query = getattr(args, 'query', None)
     date = getattr(args, 'date', None)
+    use_json = getattr(args, 'use_json', False)
 
     related_requested = related is not _NO_RELATED
     related_id = related if (related_requested and related) else None
@@ -1991,6 +2501,44 @@ def _run_find(args: argparse.Namespace) -> int:
     if date is not None and not related_requested:
         print('ERROR: --date requires --related.', file=sys.stderr)
         return EXIT_FAILURE
+
+    if use_json:
+        if related_requested:
+            # --text/--related are mutually exclusive at the argparse level,
+            # so the only way to reach --json + --related is --related alone
+            # (with or without an ID/--date). EXIT_ERRORS (2, not the usual
+            # EXIT_FAILURE 3 this file uses for bad input) - this is a
+            # well-formed request the tool understands and refuses, not a
+            # missing/corrupt index or a malformed argument.
+            print(
+                'ERROR: --json does not support --related yet. Combine --json with a bare '
+                'ID/text query, or with --text "phrase" - add --kind/--limit to narrow either.',
+                file=sys.stderr,
+            )
+            return EXIT_ERRORS
+        kinds, kind_error = _parse_kind_filter(getattr(args, 'kind', None))
+        if kind_error:
+            print(f'ERROR: {kind_error}', file=sys.stderr)
+            return EXIT_FAILURE
+        json_query = text_query if text_query is not None else (query or '')
+        if not json_query:
+            # Mirror the non-JSON branch's refusal below: a missing query is
+            # a malformed call, not a real search with zero matches. Without
+            # this, `_ranked_search` happily runs on '' and returns an empty
+            # result set with exit 0 - a mistyped automation call (a bare
+            # `fha find --json`, or a shell variable that expanded empty)
+            # would look exactly like a real search that found nothing.
+            print(
+                'ERROR: fha find --json needs a query - fha find --json <ID|text>, '
+                'or add --text "phrase".',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+        limit = getattr(args, 'limit', 20)
+        result = run_find_json(
+            archive_root, fha_config, query=json_query, kinds=kinds, limit=limit,
+        )
+        return _cmd_find_json(result)
 
     # run_find returns a Result; this CLI bridge renders nothing further (the
     # finder helpers already printed) and hands fha.py the plain int exit code.
@@ -2055,6 +2603,10 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         '--date', metavar='EDTF',
         help='Time-slice filter for --related (alone, or combined with an ID).',
     )
+
+    parser.add_argument('--json', action='store_true', dest='use_json')
+    parser.add_argument('--kind', metavar='KIND[,KIND...]')
+    parser.add_argument('--limit', type=int, default=20, metavar='N')
 
     parser.add_argument('query', nargs='?', metavar='ID_OR_TEXT')
     args = parser.parse_args(argv)

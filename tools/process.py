@@ -148,10 +148,12 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    scan_ids_in_tree,
     scan_person_record_ids,
     select_variation_primary,
     is_working_copy,
     variant_role,
+    yaml_inline,
 )
 
 configure_utf8_stdout()
@@ -361,24 +363,11 @@ def _read_source_keyword(file_path: Path) -> str | None:
 
 # ── Record scaffolding ────────────────────────────────────────────────────────
 
-def _yaml_inline(value: str) -> str:
-    """Render a string as a single-line YAML scalar, quoting only when needed.
-
-    The scaffold is built as text (not `yaml.safe_dump` on the whole record) to
-    keep the SPEC §14 field order and the literal ```yaml fence a human reads.
-    But free-form values - a `--title`, a filename preserved as
-    `original_filename`, a `--more` role, an alias path - can carry
-    YAML-significant characters (`: `, a leading `-`, ` #`) that would make the
-    frontmatter unparseable, so each is round-tripped through the YAML emitter
-    and quoted exactly when the parser needs it. Without this, a title like
-    `Letter: Home` silently produces a record `read_record` cannot load.
-    """
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):
-        rendered = rendered[:-3].strip()
-    return rendered
+# Thin alias: the quoting rule itself lives in `_lib.yaml_inline` (shared by
+# every surgical claim/frontmatter writer - see its docstring for the why).
+# Kept as a module-level name here so existing call sites in this file (and
+# any test importing `process._yaml_inline`) do not need to change.
+_yaml_inline = yaml_inline
 
 
 def _render_scaffold_file_entry(entry: dict) -> list[str]:
@@ -1133,6 +1122,8 @@ def process_document(
     source_date: str | None,
     dry_run: bool,
     real_path: Path | None = None,
+    source_id: str | None = None,
+    report: dict | None = None,
 ) -> int:
     """M7.1: rename a documents-root original and scaffold its source record.
 
@@ -1147,6 +1138,12 @@ def process_document(
     source_type directory, and hide the stub deletion the live run performs.
     Everything destination-shaped (rename target, alias, record path) keeps
     using `file_path` - those name what live WOULD create.
+
+    `source_id` is `_mint_one_source_id`'s override (see its docstring);
+    `report`, when given, is filled with `{'source_id': sid}` for the caller
+    (`fha serve`'s process.file verb) to read back - the id used is reported
+    on BOTH a dry-run preview and a live apply, so the two can be compared or
+    threaded together, the same round-trip person.new/claim.new already have.
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
@@ -1191,7 +1188,9 @@ def process_document(
                 f'{_rel(dna_root, archive_root)}; file DNA originals there before processing.'
             )
 
-    sid = _mint_one_source_id(archive_root)
+    sid = _mint_one_source_id(archive_root, source_id=source_id)
+    if report is not None:
+        report['source_id'] = sid
     final_slug = _derive_slug(slug, final_title if title is None else title, file_path)
     ext = file_path.suffix
     new_name = f'{final_slug}_{sid}{ext}'
@@ -1260,6 +1259,29 @@ def process_document(
     return EXIT_CLEAN
 
 
+def _pointer_provenance(sidecar_meta: dict) -> str | None:
+    """Provenance text for a case-(c) pointer-only source, folding in the
+    human's own `asset_path` shorthand when the sidecar carries one
+    (`fha capture --path`, TOOLING_INGESTION §2.6) alongside any hand-written
+    `provenance:` note - concatenated, not overwritten, so a human note
+    survives being processed alongside a captured location hint.
+
+    Uses `asset_path` (the location exactly as the human typed it - "their
+    own shorthand may be meaningful to them", `capture.py`'s
+    `run_capture_path` docstring) rather than `asset_path_absolute`: the
+    absolute form is a machine-specific path, and a source record is a
+    long-lived file that may travel in a packet or export, where a local
+    absolute path has no business appearing (AGENTS_TOOLING's privacy rule
+    against local absolute paths in exported/committed output).
+    """
+    existing = _sidecar_str(sidecar_meta, 'provenance')
+    asset_path = _sidecar_str(sidecar_meta, 'asset_path')
+    if not asset_path:
+        return existing
+    location_note = f'Original not copied into the archive - last known location: {asset_path}.'
+    return f'{existing}\n{location_note}' if existing else location_note
+
+
 def process_pointer_only(
     archive_root: Path,
     fha_config: dict,
@@ -1270,13 +1292,22 @@ def process_pointer_only(
     title: str | None = None,
     source_date: str | None = None,
     dry_run: bool,
+    source_id: str | None = None,
+    report: dict | None = None,
 ) -> int:
     """TOOLING §13b case (c): mint a source record with no asset.
 
     Only reached when `_companion_for_sidecar` found no same-stem file *and*
-    the stub explicitly flags `asset_elsewhere: true` - citation +
-    `external_links` only, flagged for a later retrieval pass. Every other
+    the stub explicitly flags `asset_elsewhere: true`. Two pointer-only
+    shapes are accepted: citation + `external_links` (the page merely says
+    "record held at the county courthouse"), or `asset_path` (a
+    `fha capture --path` stub - a specific asset known to exist but that
+    must never be copied/moved; TOOLING_INGESTION §2.6). Either is enough to
+    mint; a stub with neither refuses, naming the fix. Every other
     no-companion case still refuses in `_companion_for_sidecar`.
+
+    `source_id`/`report` are `process_document`'s same mint-override/
+    report-back pair - see its docstring.
     """
     sidecar_meta, notes_body = _read_sidecar(sidecar)
     resolved_type = source_type or _DEFAULT_DOCUMENT_TYPE
@@ -1294,17 +1325,20 @@ def process_pointer_only(
         else _slugify(sidecar.stem).replace('-', ' ')
     )
     external_links = _sidecar_external_links(sidecar_meta)
-    if not external_links:
+    asset_path = _sidecar_str(sidecar_meta, 'asset_path')
+    if not external_links and not asset_path:
         raise ProcessError(
-            f'{sidecar.name} flags asset_elsewhere but has no external_links; '
-            'add at least one before processing.'
+            f'{sidecar.name} flags asset_elsewhere but has neither external_links '
+            'nor asset_path; add at least one before processing.'
         )
 
     # DNA sources always carry restricted: true (SPEC §8.5.5, lint E017),
     # same as process_document - a missing asset doesn't relax that rule.
     restricted = source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted')
 
-    sid = _mint_one_source_id(archive_root)
+    sid = _mint_one_source_id(archive_root, source_id=source_id)
+    if report is not None:
+        report['source_id'] = sid
     final_slug = _derive_slug(slug, final_title, sidecar)
     record_dir = archive_root / 'sources' / _record_subdir(source_type)
     record_path = record_dir / f'{final_slug}_{sid}.md'
@@ -1318,7 +1352,7 @@ def process_pointer_only(
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
         source_date=source_date or _sidecar_source_date(sidecar_meta, sidecar.name),
-        provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        provenance=_pointer_provenance(sidecar_meta),
         external_links=external_links,
     )
 
@@ -1354,6 +1388,8 @@ def process_photo(
     dry_run: bool,
     people: list[str] | None = None,
     real_path: Path | None = None,
+    source_id: str | None = None,
+    report: dict | None = None,
 ) -> int:
     """M7.2: embed a SOURCE keyword in a photo and scaffold its source record.
 
@@ -1375,6 +1411,9 @@ def process_photo(
     photo and carries the stub's hints exactly as the live run would. All
     destination-shaped output (alias, record path, the embed line) keeps using
     `file_path` - the live run's post-move reality.
+
+    `source_id`/`report` are `process_document`'s same mint-override/
+    report-back pair - see its docstring.
     """
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
     if not _is_under(file_path, photos_root):
@@ -1420,7 +1459,9 @@ def process_photo(
         if title is None and sidecar_meta.get('title'):
             final_title = str(sidecar_meta['title'])
 
-    sid = _mint_one_source_id(archive_root)
+    sid = _mint_one_source_id(archive_root, source_id=source_id)
+    if report is not None:
+        report['source_id'] = sid
     final_slug = _derive_slug(slug, final_title if title is None else title, file_path)
     record_dir = archive_root / 'sources' / _PHOTO_DIR
     record_path = record_dir / f'{final_slug}_{sid}.md'
@@ -1681,6 +1722,8 @@ def _process_variation_set(
     dry_run: bool,
     people: list[str] | None = None,
     real_paths: dict[Path, Path] | None = None,
+    source_id: str | None = None,
+    report: dict | None = None,
 ) -> int:
     """Surface a variation set and process it per the human's one/separate/skip choice.
 
@@ -1693,6 +1736,12 @@ def _process_variation_set(
     `real_paths` (the process_photo_group contract) maps a virtual dry-run
     inbox destination to its real on-disk location; it is threaded into every
     processing branch so preview reads stay against reality.
+
+    `source_id`/`report` (`process_document`'s mint-override/report-back
+    pair) are only meaningful for the single-member fast path below - a real
+    variation set always mints through the interactive one/separate/skip
+    choice, which `fha serve` cannot drive (TOOLING §6's prompt needs a
+    human), so no caller ever has a previewed id to pass for those branches.
     """
     members = sorted(members)
     real_paths = real_paths or {}
@@ -1700,7 +1749,8 @@ def _process_variation_set(
         return process_photo(archive_root, fha_config, members[0],
                              slug=slug, title=title, source_date=source_date,
                              dry_run=dry_run, people=people,
-                             real_path=real_paths.get(members[0]))
+                             real_path=real_paths.get(members[0]),
+                             source_id=source_id, report=report)
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     letter, desc = _batch_type(members)
@@ -2232,8 +2282,9 @@ def _source_id_of(file_path: Path, fha_config: dict, archive_root: Path) -> str 
     return _filename_has_source_id(file_path)
 
 
-def _mint_one_source_id(archive_root: Path) -> str:
-    """Mint one fresh S-id through the shared `_lib` ID minter.
+def _mint_one_source_id(archive_root: Path, source_id: str | None = None) -> str:
+    """Mint one fresh S-id through the shared `_lib` ID minter, or reuse an
+    already-minted one.
 
     The ID CLI and process tool both call the same `_lib.mint_ids` helper so
     there is one Crockford alphabet and one collision-checking path, while
@@ -2241,7 +2292,28 @@ def _mint_one_source_id(archive_root: Path) -> str:
 
     Called in `--dry-run` too: minting is a read-only tree scan (it reserves
     nothing), so previewing the real S-id a live run would assign is safe.
+
+    `source_id` is NOT a CLI flag - `fha process` always mints its own id,
+    same as before. It exists for a caller (`fha serve`'s process.file verb)
+    that already ran this SAME function once as a dry run and is now
+    re-running it live: reusing that earlier call's minted id here means
+    Apply commits exactly the source the human previewed, instead of
+    `mint_ids` drawing a fresh random id on the second call (the same
+    preview/apply mismatch already fixed for person.new/claim.new - P2 codex
+    finding, round 7, PR #30). Still collision-checked against the whole
+    tree, same as a freshly-minted id would be - a stale preview (something
+    else changed the archive in between) is refused, not silently reused.
     """
+    if source_id:
+        if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
+            raise ProcessError(f'{source_id!r} is not a valid S-id.')
+        sid = normalize_id(source_id)
+        if sid in scan_ids_in_tree(archive_root):
+            raise ProcessError(
+                f'{fmt_id_display(sid)} already exists in the archive - the earlier '
+                'preview is stale (something else changed since). Preview again, '
+                'then apply.')
+        return fmt_id_display(sid)
     # mint_ids returns the canonical display form ('S-xxxxxxxxxx', uppercase type
     # prefix) that every on-disk record, filename, and SOURCE keyword uses
     # (SPEC §13, the example archive). Keep it - do not lowercase for writing.
@@ -2378,6 +2450,13 @@ def run_process(args: argparse.Namespace) -> Result:
     they are (a deferred Phase-3 concern). This wraps the flow's exit code into a
     Result (Result == int, so callers/tests comparing against EXIT_* keep
     working); the per-file rename/undo detail is reported inline by the flow.
+
+    `data` is {'status': 'working-copy'} on that one refusal, else
+    {'source_id': str | None} - the S-id `_run_process` minted (or reused via
+    a `fha serve`-only `args.source_id` override; see `_mint_one_source_id`)
+    on the branch that actually ran, or None for a mode that mints nothing
+    (--more, a folder/bundle, a real photo variation set - TOOLING §6's
+    interactive one/separate/skip prompt, which `fha serve` cannot drive).
     """
     archive_root = resolve_root_arg(args)
     if archive_root is not None and is_working_copy(archive_root):
@@ -2397,7 +2476,10 @@ def run_process(args: argparse.Namespace) -> Result:
             'Run this command there.',
         )
     exit_code = _run_process(args)
-    return Result(ok=(exit_code not in (EXIT_ERRORS, EXIT_FAILURE)), exit_code=exit_code)
+    return Result(
+        ok=(exit_code not in (EXIT_ERRORS, EXIT_FAILURE)), exit_code=exit_code,
+        data={'source_id': getattr(args, 'result_source_id', None)},
+    )
 
 
 def _run_process(args: argparse.Namespace) -> int:
@@ -2433,6 +2515,17 @@ def _run_process(args: argparse.Namespace) -> int:
         return EXIT_ERRORS
 
     dry_run = bool(getattr(args, 'dry_run', False))
+    # Not a CLI flag (`_add_arguments` never registers it) - only `fha serve`'s
+    # process.file verb sets it on the Namespace it builds by hand, threading
+    # back an earlier dry-run's minted id so Apply commits exactly the source
+    # previewed (see `_mint_one_source_id`). `mint_report` is the matching
+    # output side: filled with the id actually used by whichever of the three
+    # single-file branches below runs, then copied onto `args` just before
+    # returning so `run_process` can read it into `Result.data` without
+    # `_run_process` itself changing its plain-int return contract (two
+    # existing tests call it directly and expect a bare int back).
+    source_id_override = getattr(args, 'source_id', None)
+    mint_report: dict = {}
     source_date = getattr(args, 'source_date', None)
     normalized_source_date = normalize_date(source_date) if source_date else None
     if source_date and normalized_source_date is None:
@@ -2504,11 +2597,14 @@ def _run_process(args: argparse.Namespace) -> int:
                     print('ERROR: --more attaches a file to a record with an asset; '
                           'a pointer-only source has none.', file=sys.stderr)
                     return EXIT_ERRORS
-                return process_pointer_only(
+                rc = process_pointer_only(
                     archive_root, fha_config, file_path,
                     source_type=args.source_type, slug=args.slug, title=args.title,
                     source_date=source_date, dry_run=dry_run,
+                    source_id=source_id_override, report=mint_report,
                 )
+                args.result_source_id = mint_report.get('source_id')
+                return rc
             sidecar_path = file_path
             file_path = companion
         else:
@@ -2566,6 +2662,7 @@ def _run_process(args: argparse.Namespace) -> int:
                     slug=args.slug, title=args.title, source_date=source_date,
                     dry_run=dry_run, people=people or None,
                     real_paths={file_path: real_path} if real_path is not None else None,
+                    source_id=source_id_override, report=mint_report,
                 )
             else:
                 if people:
@@ -2585,9 +2682,11 @@ def _run_process(args: argparse.Namespace) -> int:
                             source_type=source_type, slug=args.slug, title=args.title,
                             source_date=source_date, dry_run=dry_run,
                             real_path=real_path,
+                            source_id=source_id_override, report=mint_report,
                         )
         if rc != EXIT_CLEAN and relocate_undo is not None:
             relocate_undo()
+        args.result_source_id = mint_report.get('source_id')
         return rc
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)

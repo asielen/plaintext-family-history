@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Inbox - {{ site_title }}{% endblock %}
+{% block content %}
+<article class="inbox">
+  <h1>Inbox</h1>
+  <p class="ids">the archive's front porch - <code>inbox/</code></p>
+
+  <p style="max-width:var(--measure)">Drop a scan, a photo, a letter, a PDF. It lands in
+  <code>inbox/</code> exactly as if you'd dragged it there in Explorer - and you can attach a
+  note about what it is, so future-you (or the processing pass) knows.</p>
+
+  <div class="wb-drop" id="wb-drop" data-wb-drop-open="tpl-upload">
+    <span class="wb-drop-big">Drag a file here</span>
+    or click to choose one
+  </div>
+  <input type="file" id="wb-file" hidden>
+  <p class="wb-later">&hellip;or <a href="#" data-wb-open="tpl-bypath">register a photo by its path</a> -
+    for pictures that should stay exactly where they are (the photo library is never reorganized).</p>
+
+  <h2>Waiting in the inbox <span class="wb-count" data-wb-counts="inbox">{{ items|length }}</span></h2>
+  <p class="note" style="max-width:var(--measure)">This is the literal contents of
+  <code>inbox/</code> - everything <code>fha</code> sees here, the interface shows, and every
+  file is one click from opening for review.</p>
+
+  {% if items %}
+  <ul class="wb-inbox-list" id="wb-inbox-list">
+    {% for item in items %}
+    <li>
+      <code>{{ item.name }}</code>
+      <span class="note">{{ item.kind }}
+        {% if item.files %}&middot; files:
+          {% for f in item.files %}<a href="#" data-wb-open-file="inbox/{{ (item.name ~ f) if item.kind == 'bundle' else f }}">{{ f }}</a>{% if not loop.last %} &middot; {% endif %}{% endfor %}
+        {% endif %}
+      </span>
+      <div class="wb-actions">
+        <a href="#" class="wb-fix" data-wb-open-file="{{ item.open_path }}">open file for review</a>
+        <button class="btn btn-primary btn-sm" data-wb-open="tpl-process"
+                data-wb-args='{{ {"file": item.process_path} | tojson }}'>File as a source&hellip;</button>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">The inbox is empty. Drop something above, or run <code>fha capture --ingest</code>.</p>
+  {% endif %}
+
+  <h2>What happens when, and who does it</h2>
+  <dl class="meta" style="max-width:var(--measure)">
+    <dt>Landing</dt>
+    <dd>Explorer drag, the drop zone above, or <code>fha capture --ingest</code> - all
+      identical: bytes in <code>inbox/</code>, nothing else.</dd>
+    <dt>Filing (a click)</dt>
+    <dd><strong>File as a source</strong> runs Stage A of <code>fha process</code>: mints the
+      S-id, moves and renames the document into <code>documents/</code>, scaffolds the source
+      record. Deterministic, dry-run-gated - a button can own it.</dd>
+    <dt>Reading the evidence (the AI lane)</dt>
+    <dd>Drafting claims <em>from</em> the document - reading the scan, extracting names and
+      dates - is judgment work. It stays with Claude (<code>process-source</code>) or with you
+      (<em>Add a claim</em> on the source page). Serve never guesses at your evidence.</dd>
+    <dt>Review</dt>
+    <dd>Anything drafted lands as <code>suggested</code> and waits on the
+      <a href="{{ root_prefix }}/review">Review page</a>, grouped under its source.</dd>
+  </dl>
+</article>
+{% endblock %}
