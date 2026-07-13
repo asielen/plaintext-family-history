@@ -1721,6 +1721,67 @@ class WorkbenchModeTests(_Base):
             '&lt;!-- AI-DRAFT 2026-07-01 claude-x - v2 --&gt;',
             wb)
 
+    def test_edit_biography_modal_prefills_a_private_fence_verbatim(self):
+        # P2 codex finding (round 7, PR #30): `bio_as_written` was captured
+        # AFTER `apply_private_fence(..., drop=False)` had already stripped
+        # the `<!-- private -->`/`<!-- /private -->` marker comments (kept
+        # in workbench/linked mode, but with the markers themselves
+        # removed) - so the editor prefill showed private prose with no
+        # fence at all. Applying any small edit from that prefill would
+        # have replaced the whole section with unfenced text, publishing
+        # the previously-private paragraph on a later standalone build.
+        # The editor must show the fence markers exactly as written.
+        body = ('# Priya\n## Biography\n'
+                'A public paragraph.\n\n'
+                '<!-- private -->\nA private paragraph.\n<!-- /private -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Priya Rao', tier='curated', body=body)
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        # Published (linked/workbench) HTML: private prose kept, marker stripped.
+        rendered = wb.split('<template id="tpl-confirm">')[0]
+        self.assertIn('A private paragraph.', rendered)
+        self.assertNotIn('&lt;!-- private --&gt;', rendered)
+        # Editor prefill: the fence markers are still there, verbatim.
+        self.assertIn(
+            '<textarea name="text" class="wb-target" style="min-height:12rem">'
+            'A public paragraph.\n\n'
+            '&lt;!-- private --&gt;\nA private paragraph.\n&lt;!-- /private --&gt;',
+            wb)
+
+    def test_family_strip_shows_an_unsourced_relate_hypothesis_in_workbench(self):
+        # P2 codex finding (round 7, PR #30): the family strip's "+ add"
+        # button runs `person.relate`, which (by design, SPEC §9) writes
+        # ONLY an unsourced `relationships:` hypothesis entry on the record
+        # file - it never reaches the `relationships` index table the strip
+        # is normally built from. Previewing/applying the button's own
+        # write left the strip showing nothing, as if the write had failed.
+        # Workbench mode must surface the hypothesis (tagged so it is never
+        # mistaken for a sourced tie); a standalone/plain-linked build must
+        # never show it (it isn't a fact yet).
+        self._seed_person('p-bbbbbbbbbb', 'Margaret Cole', tier='stub')
+        self._seed_person(
+            'p-aaaaaaaaaa', 'Thomas Hartley', tier='curated',
+            frontmatter_extra=(
+                'relationships:\n'
+                '  - to: "[[P-bbbbbbbbbb|Margaret Cole]]"\n'
+                '    type: parent\n'
+                '    status: hypothesis'))
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Margaret Cole', wb)
+        self.assertIn('wb-hypothesis-tag', wb)
+        self.assertIn('(hypothesis)', wb)
+
+        # Standalone build of the SAME archive: the hypothesis never appears
+        # (not a sourced fact, and `_person_hypothesis_ties` is workbench-only).
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        self._run(linked=False)
+        std = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Margaret Cole', std)
+        self.assertNotIn('wb-hypothesis-tag', std)
+        self.assertNotIn('hypothesis', std)
+
     def test_edit_biography_modal_empty_when_no_biography_yet(self):
         self._seed_person('p-aaaaaaaaaa', 'No Bio Yet', tier='curated', body='# No Bio Yet\n')
         self._run_wb()
@@ -1738,6 +1799,31 @@ class WorkbenchModeTests(_Base):
         idx = self._read('index.html')
         self.assertIn(
             '<textarea name="text" style="min-height:12rem">Welcome to the Rao family archive.',
+            idx)
+
+    def test_edit_home_intro_modal_prefills_a_pending_ai_draft_verbatim(self):
+        # P2 codex finding (round 7, PR #30): `intro_raw` was assigned from
+        # `body` AFTER `strip_unaccepted_drafts` had reassigned it to the
+        # stripped copy - the same bug the round-5 biography fix addressed,
+        # just not caught here at the time. The homepage editor must show
+        # notes/home.md exactly as written, pending draft marker included.
+        home_md = self.archive_root / 'notes' / 'home.md'
+        home_md.parent.mkdir(parents=True, exist_ok=True)
+        home_md.write_text(
+            'An unreviewed AI-drafted paragraph.\n\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n\n'
+            'A human-written welcome that stays.\n',
+            encoding='utf-8')
+        self._run_wb()
+        idx = self._read('index.html')
+        rendered = idx.split('<template id="tpl-confirm">')[0]
+        self.assertIn('A human-written welcome that stays.', rendered)
+        self.assertNotIn('An unreviewed AI-drafted paragraph.', rendered)
+        self.assertIn(
+            '<textarea name="text" style="min-height:12rem">'
+            'An unreviewed AI-drafted paragraph.\n\n'
+            '&lt;!-- AI-DRAFT 2026-07-01 claude-x - v1 --&gt;\n\n'
+            'A human-written welcome that stays.',
             idx)
 
     def test_modals_render_without_error_on_a_page_with_no_person_in_context(self):

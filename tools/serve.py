@@ -822,11 +822,6 @@ def _q(value: str) -> str:
     return '"' + escaped + '"'
 
 
-def _short(text: str, n: int = 60) -> str:
-    s = ' '.join(str(text).split())
-    return s if len(s) <= n else s[:n] + '...'
-
-
 def _as_list(value) -> list[str]:
     if value is None:
         return []
@@ -870,9 +865,9 @@ def _echo_claim_review(kw):
     if kw.get('status'):
         parts += ['--status', kw['status']]
     if kw.get('value'):
-        parts += ['--value', _q(_short(kw['value']))]
+        parts += ['--value', _q(kw['value'])]
     if kw.get('date'):
-        parts += ['--date', kw['date']]
+        parts += ['--date', _q(kw['date'])]
     if kw.get('claim_type'):
         parts += ['--type', kw['claim_type']]
     if kw.get('place'):
@@ -905,9 +900,9 @@ def _verb_claim_new(state, kw, dry_run):
 
 def _echo_claim_new(kw):
     parts = ['fha claim new', '--source', kw.get('source_id', '?'),
-             '--type', kw.get('claim_type', '?'), '--value', _q(_short(kw.get('value', '')))]
+             '--type', kw.get('claim_type', '?'), '--value', _q(kw.get('value', ''))]
     if kw.get('date'):
-        parts += ['--date', kw['date']]
+        parts += ['--date', _q(kw['date'])]
     if kw.get('place'):
         parts += ['--place', kw['place']]
     if kw.get('place_text'):
@@ -1015,9 +1010,9 @@ def _verb_estimate(state, kw, dry_run):
 def _echo_estimate(kw):
     parts = ['fha person estimate', kw.get('person_id', '?')]
     if kw.get('birth'):
-        parts += ['--birth', kw['birth']]
+        parts += ['--birth', _q(kw['birth'])]
     if kw.get('death'):
-        parts += ['--death', kw['death']]
+        parts += ['--death', _q(kw['death'])]
     return ' '.join(parts)
 
 
@@ -1029,7 +1024,7 @@ def _verb_person_edit(state, kw, dry_run):
 
 def _echo_person_edit(kw):
     parts = ['fha person edit', kw.get('person_id', '?'), '--section', kw.get('section', '?'),
-             '--text', _q(_short(kw.get('text', '')))]
+             '--text', _q(kw.get('text', ''))]
     if kw.get('append'):
         parts.append('--append')
     return ' '.join(parts)
@@ -1043,7 +1038,7 @@ def _verb_person_note(state, kw, dry_run):
 
 def _echo_person_note(kw):
     return (f'fha person note {kw.get("person_id", "?")} --section '
-            f'{kw.get("section", "?")} --text {_q(_short(kw.get("text", "")))}')
+            f'{kw.get("section", "?")} --text {_q(kw.get("text", ""))}')
 
 
 def _verb_source_note(state, kw, dry_run):
@@ -1052,7 +1047,7 @@ def _verb_source_note(state, kw, dry_run):
 
 
 def _echo_source_note(kw):
-    return f'fha source note {kw.get("source_id", "?")} --text {_q(_short(kw.get("text", "")))}'
+    return f'fha source note {kw.get("source_id", "?")} --text {_q(kw.get("text", ""))}'
 
 
 # ── Per-thread stdout/stderr routing (process.py's own prints) ────────────────
@@ -1132,6 +1127,14 @@ def _verb_process(state, kw, dry_run):
         file=str(confined), source_type=kw.get('source_type'), title=kw.get('title'),
         slug=kw.get('slug'), source_date=None, more=None, people=None,
         dry_run=dry_run, root=str(state.archive_root),
+        # Threaded back in by the workbench's Apply step from the id its own
+        # earlier dry-run preview minted and showed the human, so Apply
+        # commits exactly that source instead of `_mint_one_source_id`
+        # minting a second, different S-id (P2 codex finding, round 7, PR
+        # #30 - the same preview/apply mismatch already fixed for
+        # person.new/claim.new). Not a real `fha process` CLI flag - this
+        # Namespace attribute exists only for this verb's own round-trip.
+        source_id=kw.get('source_id'),
     )
     buf = io.StringIO()
     out_tee = sys.stdout if isinstance(sys.stdout, _ThreadTee) else None
@@ -1157,7 +1160,7 @@ def _verb_process(state, kw, dry_run):
             out_tee.set_buffer(None)
         if err_tee is not None:
             err_tee.set_buffer(None)
-    out = Result(ok=res.ok, exit_code=res.exit_code)
+    out = Result(ok=res.ok, exit_code=res.exit_code, data=dict(res.data or {}))
     for line in buf.getvalue().splitlines():
         if line.strip():
             out.add(_classify_captured_line(line), line)
@@ -1220,7 +1223,7 @@ def _verb_capture_path(state, kw, dry_run):
 def _echo_capture_path(kw):
     parts = ['fha capture', '--path', _q(kw.get('path', ''))]
     if kw.get('note'):
-        parts += ['--note', _q(_short(kw['note']))]
+        parts += ['--note', _q(kw['note'])]
     if kw.get('title'):
         parts += ['--title', _q(kw['title'])]
     return ' '.join(parts)
@@ -1327,7 +1330,8 @@ VERBS: dict[str, dict] = {
                     'run': _verb_person_note, 'echo': _echo_person_note, 'reindex': 'full'},
     'source.note': {'schema': {'source_id': 'str', 'text': 'str'},
                     'run': _verb_source_note, 'echo': _echo_source_note, 'reindex': 'source'},
-    'process.file': {'schema': {'file': 'str', 'source_type': 'str', 'title': 'str', 'slug': 'str'},
+    'process.file': {'schema': {'file': 'str', 'source_type': 'str', 'title': 'str', 'slug': 'str',
+                                'source_id': 'str'},
                      'run': _verb_process, 'echo': _echo_process, 'reindex': 'full'},
     'capture.path': {'schema': {'path': 'str', 'note': 'str', 'title': 'str'},
                      'run': _verb_capture_path, 'echo': _echo_capture_path, 'reindex': 'full'},

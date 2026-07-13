@@ -1053,7 +1053,14 @@ def run_capture_path(
 
     slug = _slugify(target.stem)
     inbox = resolve_path('inbox', fha_config, archive_root)
-    stem = _unique_stub_stem(inbox, slug)
+    # `asset_suffix` matters here exactly like it does for the scraped-page
+    # path above: without it, `_unique_stub_stem` only checks for a colliding
+    # `.notes.md`, so a pointer stub for an EXTERNAL /library/grandma.jpg
+    # could land at the same stem as an unrelated LOCAL inbox/grandma.jpg -
+    # `gather_inbox()`/`fha process` then pair the new sidecar with that
+    # stranger asset by stem, and the pointer-only source is never processed
+    # as pointer-only (P2 codex finding, round 7, PR #30).
+    stem = _unique_stub_stem(inbox, slug, target.suffix.lower())
     stub_path = inbox / f'{stem}.notes.md'
     stub_text = _render_pointer_stub(
         title=title, note=note, given_path=given_path, absolute_path=absolute_path)

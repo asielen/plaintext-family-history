@@ -335,6 +335,8 @@
             modal._run.args.person_id = result.data.person_id;
           } else if (c.verb === 'claim.new' && result.data.claim_id) {
             modal._run.args.claim_id = result.data.claim_id;
+          } else if (c.verb === 'process.file' && result.data.source_id) {
+            modal._run.args.source_id = result.data.source_id;
           }
         }
       }
@@ -710,12 +712,14 @@
     if (!b) return;
     e.preventDefault();
     var path = b.getAttribute('data-wb-open-file');
-    fetch('/api/open', {
+    fetchJsonOrRefusal('/api/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
       body: JSON.stringify({ path: path })
-    }).then(function (r) { return r.json(); }).then(function (j) {
+    }).then(function (j) {
       if (j.ok === false) alert((j.messages && j.messages[0] && j.messages[0].text) || 'Could not open the file.');
-    }).catch(function () { alert('Could not reach fha serve.'); });
+    }).catch(function (e) {
+      alert((e && e.wbServerText && e.message) || 'Could not reach fha serve.');
+    });
   });
 })();

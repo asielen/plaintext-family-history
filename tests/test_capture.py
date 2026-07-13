@@ -685,6 +685,26 @@ class CapturePathTestCase(unittest.TestCase):
         self.assertIn('an older registration',
                       (inbox / 'grandma-wedding.notes.md').read_text(encoding='utf-8'))
 
+    def test_unrelated_same_stem_inbox_asset_also_bumps_the_stub(self) -> None:
+        # P2 codex finding (round 7, PR #30): the collision check used to
+        # only look for a same-stem `.notes.md`, not a same-stem ASSET - so
+        # an external `--path` target could land its pointer stub at the
+        # same stem as an unrelated LOCAL inbox/grandma-wedding.jpg.
+        # gather_inbox()/fha process pair a sidecar with any same-stem
+        # asset, so that stranger file would get wrongly paired with this
+        # pointer-only stub instead of the pointer-only source staying
+        # unpaired as intended.
+        inbox = self.archive / 'inbox'
+        inbox.mkdir()
+        (inbox / 'grandma-wedding.jpg').write_bytes(b'an unrelated local photo')
+        rc = capture.run_capture_path(
+            self.archive, self.config, path=str(self.target)).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((inbox / 'grandma-wedding-2.notes.md').exists())
+        self.assertFalse((inbox / 'grandma-wedding.notes.md').exists())
+        # The unrelated local asset is untouched.
+        self.assertEqual((inbox / 'grandma-wedding.jpg').read_bytes(), b'an unrelated local photo')
+
     def test_missing_target_warns_but_still_writes(self) -> None:
         # The house engine contract: run_capture_path returns a Result and
         # never prints - the warning lives in Result.messages, not stderr.

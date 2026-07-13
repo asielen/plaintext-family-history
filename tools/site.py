@@ -140,6 +140,7 @@ from _lib import (
     FhaConfigError,
     apply_private_fence,
     configure_utf8_stdout,
+    extract_bare_ids,
     fmt_id_display,
     id_type_of,
     is_genetic_parent_subtype,
@@ -1762,6 +1763,20 @@ class _SiteBuilder:
         # text unfenced and publishable on a standalone build.
         body = rec['body']
         stories = rec['stories']
+        # The Biography section text exactly AS WRITTEN - private-fence
+        # markers and any AI-DRAFT/AI-ACCEPTED markers intact - captured
+        # from the UNTOUCHED body before ANY publish-time processing below,
+        # for the workbench editor prefill (`person.edit --section
+        # biography`'s whole-section REPLACE target). `apply_private_fence`
+        # is safe to run AFTER this in workbench mode (`dp` is always False
+        # here, since workbench requires linked=True) - it only strips the
+        # marker COMMENTS in that mode, never any text - but capturing
+        # BEFORE it anyway means the editor prefill still shows a real
+        # `<!-- private -->` fence if one is present, not laundered-away
+        # plain text a later small edit could re-publish on a standalone
+        # build (P2 codex finding, round 7, PR #30 - the round-5 fix here
+        # already protected a pending AI-DRAFT the same way).
+        bio_as_written = (_extract_section(body, 'Biography') or '').strip()
         dp = not self.linked
         if body:
             body = apply_private_fence(body, drop=dp)
@@ -1769,14 +1784,6 @@ class _SiteBuilder:
             stories = apply_private_fence(stories, drop=dp)
         bio = _extract_section(body, 'Biography')
         research = _extract_section(body, 'Research Notes')
-        # The section text AS WRITTEN (pending AI-DRAFT block and AI-ACCEPTED
-        # provenance comments intact), kept aside for the workbench editor
-        # prefill below - `bio` itself is about to be run through
-        # `strip_unaccepted_drafts` for the PUBLISHED html, and prefilling
-        # the replacement editor with that stripped copy would silently
-        # delete a pending draft (or an acceptance marker) the moment any
-        # small edit was applied, bypassing `fha confirm draft` entirely.
-        bio_as_written = (bio or '').strip()
         problem: str | None = None
         if bio:
             bio, problem = strip_unaccepted_drafts(bio)
@@ -1799,12 +1806,12 @@ class _SiteBuilder:
         biography_html = _prose_to_html(bio, render, embed, drop_private=dp) if bio else ''
         stories_html = _prose_to_html(stories, render, embed, drop_private=dp) if stories else ''
         research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
-        # `bio_as_written` (NOT the draft-stripped `bio` used for the render
-        # above) is returned alongside the rendered HTML: it is the exact text
-        # `person.edit --section biography` would overwrite, pending AI-DRAFT
-        # block and AI-ACCEPTED markers intact, so the workbench's whole-
-        # section REPLACE editor can never silently discard either on a
-        # human's small edit.
+        # `bio_as_written` (NOT the fence-processed, draft-stripped `bio`
+        # used for the render above) is returned alongside the rendered
+        # HTML: it is the exact text `person.edit --section biography`
+        # would overwrite, private-fence and AI-DRAFT/AI-ACCEPTED markers
+        # intact, so the workbench's whole-section REPLACE editor can never
+        # silently launder away any of them on a human's small edit.
         return biography_html, stories_html, research_html, bio_as_written
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
@@ -2036,9 +2043,66 @@ class _SiteBuilder:
                     sib_pairs.append((k, par))     # evidence is the shared parent
         siblings = links(sib_pairs, None)
 
-        if not (parents or spouses or siblings or children):
+        groups = {'parents': parents, 'spouses': spouses, 'siblings': siblings, 'children': children}
+        if self.workbench:
+            # `person.relate`'s whole output for an unsourced tie is a
+            # `relationships:` hypothesis entry, never an accepted claim, so
+            # it never reaches the `relationships` index table the groups
+            # above are built from - the "+ add" button's own write would
+            # otherwise be invisible on the very page it was added from (P2
+            # codex finding, round 7, PR #30). Workbench-only: merged in
+            # after the accepted groups, never counted for `not self.linked`
+            # standalone/redaction purposes (this whole branch never runs there).
+            for key, hyp_links in self._person_hypothesis_ties(pid, page_dir).items():
+                groups[key] = groups[key] + hyp_links
+        if not any(groups.values()):
             return None
-        return {'parents': parents, 'spouses': spouses, 'siblings': siblings, 'children': children}
+        return groups
+
+    def _person_hypothesis_ties(self, pid: str, page_dir: Path) -> dict[str, list[str]]:
+        """Workbench-only companion to `_person_family_strip`: this person's
+        OWN `relationships:` entries with `status: hypothesis` (SPEC §9 -
+        the whole output of an unsourced `person.relate` / the family
+        strip's "+ add" button), read straight from the record file since
+        a hypothesis is never indexed - the `relationships` table only ever
+        carries accepted-claim-backed edges (`fha xref`'s "typed
+        relationship graph" reads only genetic/social edges the same way).
+        Grouped by the entry's own `type` into the same four keys
+        `_person_family_strip` uses, so its caller can merge them straight
+        in; each link is tagged "(hypothesis)" so it is never mistaken for
+        a sourced tie."""
+        row = self.person_meta.get(pid)
+        if row is None:
+            return {}
+        try:
+            meta = read_record(self.archive_root / row['path'])['meta']
+        except Exception:  # noqa: BLE001 - an unreadable record just contributes nothing here
+            return {}
+        group_of_type = {'parent': 'parents', 'spouse': 'spouses',
+                         'sibling': 'siblings', 'child': 'children'}
+        out: dict[str, list[str]] = {}
+        for entry in (meta.get('relationships') or []):
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get('status') or '').strip().lower() != 'hypothesis':
+                continue
+            group = group_of_type.get(str(entry.get('type') or '').strip().lower())
+            if group is None:
+                continue
+            target_ids = extract_bare_ids(str(entry.get('to') or ''))
+            if not target_ids:
+                continue
+            target = normalize_id(target_ids[0])
+            if target == pid:
+                continue
+            # Build the whole raw HTML string first, then wrap it ONCE -
+            # `_person_link` returns a plain (already-escaped-at-the-leaves)
+            # string, and concatenating a `Markup`-wrapped fragment with a
+            # plain string via `+` would re-escape the plain side, turning
+            # this span's own tags into literal text.
+            link_html = self._person_link(target, page_dir) + ' <span class="wb-hypothesis-tag">(hypothesis)</span>'
+            out.setdefault(group, []).append(self._markup(link_html))
+        return out
 
     def _person_photos(self, pid: str, page_dir: Path) -> list[dict]:
         """Photo strip from `.cache/photos.sqlite` (`photo_people`), one entry
@@ -2962,6 +3026,15 @@ class _SiteBuilder:
             try:
                 body = (read_record(home_md).get('body') or '').strip()
                 if body:
+                    # The text AS WRITTEN - any pending AI-DRAFT block intact -
+                    # captured before draft-stripping below, for the workbench
+                    # editor prefill (`home.edit`'s whole-file REPLACE target).
+                    # Reusing the stripped `body` here would silently delete a
+                    # pending draft the moment any small homepage edit was
+                    # applied, bypassing `fha confirm draft` entirely (P2
+                    # codex finding, round 7, PR #30 - the same fix already
+                    # applied to the person Biography editor in round 5).
+                    body_as_written = body
                     # Fail-closed on `<!-- AI-DRAFT ... -->`: unaccepted drafts
                     # must not slip into the homepage prose, and a damaged marker
                     # withholds the whole intro rather than leak partial draft.
@@ -2973,7 +3046,7 @@ class _SiteBuilder:
                     elif body.strip():
                         intro = self._markup(_prose_to_html(body, render, embed, drop_private=not self.linked))
                         if self.workbench:
-                            intro_raw = body
+                            intro_raw = body_as_written
             except Exception:  # noqa: BLE001 - a bad home.md just falls back to the default
                 self.messages.append('WARNING: notes/home.md could not be read; using the default intro.')
 

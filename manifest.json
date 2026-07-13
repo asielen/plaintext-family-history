@@ -473,7 +473,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "8fd9b4401020cd08dc21d031be650201a19e9cebd3874ac9bf5e3b469ead561f",
+      "sha256": "4e73fe5fbfee35aa3b4fcb550b77f1e96c5ffe4cdbc4b971548484dcb1eab4e4",
       "spec_version": "1.2"
     },
     {
@@ -617,7 +617,7 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "881de96b05c6c91ce3c5927eae9a42f6526e55f20b1d03a0270dcc755b702698",
+      "sha256": "797229b2ecd759f126189638628d4cf661c0c0a2ce01de40940f4efbcf33980f",
       "spec_version": "1.2"
     },
     {
@@ -647,13 +647,13 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "7abc0d9bdd8f9201e88ec1ef9174ec46219453c4e51a0b6590fba2e30d8bdaf9",
+      "sha256": "573fdfd26ff962de8678b621173f8f3e54460a8991270de5a7ff5ed11f7381b2",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "f4ec99eb15440431bb55b6849e95779fc9dbc1d97b37bcbb3fab5cec8927970d",
+      "sha256": "9e5bf5e58c10cc1711180fa363f9d020edf666309384cff0c9fe7bc3a9bd4211",
       "spec_version": "1.2"
     },
     {
@@ -761,13 +761,13 @@
     {
       "path": "tools/templates/workbench/workbench.css",
       "category": "operating",
-      "sha256": "89fe05902f61eb15e14136898f310226c42e0b31604daf290a01cfbcd23e4664",
+      "sha256": "2ab2d09bd263427be4f1e592d357d6d35417c23b1e345cb710bcbc4853673a30",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "2b964d1b4faeae3598fd7704d9bcbece13124939862adf0fbe80691e26e1b6f1",
+      "sha256": "cd63880417f3612fa446b440b75c732c0b183d54277b5e750799e4f14035292f",
       "spec_version": "1.2"
     },
     {

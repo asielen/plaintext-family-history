@@ -348,6 +348,39 @@ class ApiRunTests(_ServeCase):
         self.assertTrue(payload['ok'], payload)
         self.assertEqual(payload['data']['claim_id'], previewed)
 
+    def test_process_file_apply_reuses_the_previewed_minted_source_id(self):
+        # P2 codex finding (round 7, PR #30): same preview/apply mismatch as
+        # person.new/claim.new above, for `process.file` - the dry-run
+        # preview mints and shows a real S-id, but Apply used to call
+        # run_process again with no way to reuse it, drawing a second,
+        # different id. `process.file`'s schema now carries a `source_id`
+        # round-trip key the same way, threaded through to
+        # `_mint_one_source_id`'s override.
+        target = self.root / 'documents' / 'transcripts' / 'new-interview.txt'
+        target.write_text('a fresh transcript', encoding='utf-8')
+        s, d, _h = self.post_run(
+            'process.file', {'file': 'documents/transcripts/new-interview.txt'}, True)
+        self.assertEqual(s, 200)
+        preview_payload = json.loads(d)
+        self.assertTrue(preview_payload['ok'], preview_payload)
+        previewed = preview_payload['data']['source_id']
+        self.assertTrue(previewed and previewed.upper().startswith('S-'))
+        self.assertTrue(target.exists())  # dry run wrote nothing
+
+        s, d, _h = self.post_run(
+            'process.file',
+            {'file': 'documents/transcripts/new-interview.txt', 'source_id': previewed},
+            False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertEqual(payload['data']['source_id'], previewed)
+        records = [
+            f for f in (self.root / 'sources').rglob('*.md')
+            if previewed.lower() in f.read_text(encoding='utf-8').lower()
+        ]
+        self.assertEqual(len(records), 1)
+
     def test_live_claim_review_place_id_writes_structured_place(self):
         # P2 codex finding (PR #30): the workbench claim-edit modal's place
         # lookup had no id target, so a place picked from the lookup could
@@ -1342,6 +1375,50 @@ class EchoTests(unittest.TestCase):
         # - `&` backgrounds a command in an unquoted POSIX shell argument.
         echo = serve._echo_person_new({'name': 'R&D'})
         self.assertIn('"R&D"', echo)
+
+    def test_echo_claim_review_quotes_a_plain_words_date(self):
+        # P2 codex finding (round 7, PR #30): `--date` was appended bare - a
+        # plain-words date like "June 1923" (which `fha claim`/`claim.new`
+        # itself accepts and normalizes) split into multiple unquoted shell
+        # tokens in the copyable echo, so pasting it ran a different command
+        # than the previewed action.
+        echo = serve._echo_claim_review({'claim_id': 'C-fa1234567b', 'date': 'June 1923'})
+        self.assertIn('"June 1923"', echo)
+
+    def test_echo_claim_new_quotes_a_plain_words_date(self):
+        echo = serve._echo_claim_new({
+            'source_id': 'S-fa1234567b', 'claim_type': 'birth', 'value': '1870',
+            'date': 'June 1923',
+        })
+        self.assertIn('"June 1923"', echo)
+
+    def test_echo_estimate_quotes_plain_words_birth_and_death(self):
+        echo = serve._echo_estimate({
+            'person_id': 'P-fa1234567b', 'birth': 'circa 1870', 'death': 'June 1923',
+        })
+        self.assertIn('"circa 1870"', echo)
+        self.assertIn('"June 1923"', echo)
+
+    def test_echoed_command_is_never_truncated(self):
+        # P2 codex finding (round 7, PR #30): `_short()` cut any echoed value
+        # over 60 chars with an ellipsis before quoting it - the workbench
+        # labels this block "This button is exactly", so a copied command
+        # for a long claim value/biography edit/note used to write different
+        # (truncated) text than what was actually previewed/applied.
+        long_value = 'x' * 200
+        echo = serve._echo_claim_review({'claim_id': 'C-fa1234567b', 'value': long_value})
+        self.assertIn(long_value, echo)
+        self.assertNotIn('...', echo)
+
+        echo = serve._echo_person_edit({
+            'person_id': 'P-fa1234567b', 'section': 'biography', 'text': long_value,
+        })
+        self.assertIn(long_value, echo)
+        self.assertNotIn('...', echo)
+
+        echo = serve._echo_source_note({'source_id': 'S-fa1234567b', 'text': long_value})
+        self.assertIn(long_value, echo)
+        self.assertNotIn('...', echo)
 
 
 class StalenessMemoTests(_ServeCase):
