@@ -473,7 +473,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "70570c73aae07cc81ebb2dd4a07e2a4c0cb360615944c463229fd04a06272618",
+      "sha256": "8fd9b4401020cd08dc21d031be650201a19e9cebd3874ac9bf5e3b469ead561f",
       "spec_version": "1.2"
     },
     {
@@ -647,7 +647,7 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "8a46370da56b2fad168f5ee1ed05b2311964fc3b216cee33b7debc5e402cab85",
+      "sha256": "7abc0d9bdd8f9201e88ec1ef9174ec46219453c4e51a0b6590fba2e30d8bdaf9",
       "spec_version": "1.2"
     },
     {

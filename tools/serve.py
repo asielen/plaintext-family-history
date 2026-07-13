@@ -428,10 +428,19 @@ def invalidate_snapshot(state: ServeState) -> None:
         state._inbox_count_memo = None
 
 
-def ensure_snapshot(state: ServeState) -> None:
+def ensure_snapshot(state: ServeState) -> Result | None:
     """Rebuild the workbench snapshot if stale, holding the global lock so no
     write interleaves the rebuild. Idempotent and cheap when fresh (a scandir
-    staleness probe, then return).
+    staleness probe, then return `None` - the common case, so most callers
+    need not thread anything through their hot path).
+
+    Returns the `run_site` `Result` whenever a rebuild was actually
+    attempted, so a caller CAN tell success from a refusal/zero-pages
+    outcome and refuse the request instead of silently serving whatever
+    snapshot files are still sitting on disk from an earlier, now-stale
+    build (P2 codex finding, round 6, PR #30 - a genuine `run_site` failure,
+    e.g. `fha.yaml` edited into a bad state mid-session, used to just fall
+    through here with no signal at all).
 
     `run_serve_preflight` already refuses to start `fha serve` at all in
     working-copy mode - but the archive can transition into that mode
@@ -441,12 +450,14 @@ def ensure_snapshot(state: ServeState) -> None:
     for `fha site`'s own CLI). Checking `result.data['status']` here too -
     not just `result.ok` - means the `.built` marker is never stamped over a
     snapshot that was never actually written; without this, every workbench
-    page would 404 against an empty snapshot dir until the process restarts."""
+    page would 404 against an empty snapshot dir until the process restarts.
+    Callers apply the same `status != 'working-copy'` check to the returned
+    Result before trusting it to serve, for the identical reason."""
     if not snapshot_is_stale(state):
-        return
+        return None
     with state.lock:
         if not snapshot_is_stale(state):
-            return   # another thread rebuilt while we waited
+            return None   # another thread rebuilt while we waited
         # A record edited outside serve (a text editor save, a git checkout)
         # is exactly what makes `snapshot_is_stale` true in the first place -
         # but `run_site` below only WARNS on a stale `.cache/index.sqlite`
@@ -479,6 +490,28 @@ def ensure_snapshot(state: ServeState) -> None:
             # First line: the building session's token (see snapshot_is_stale);
             # second: a human-readable build time for anyone poking at .cache.
             state.marker.write_text(f'{state.csrf_token}\n{time.time()}\n', encoding='utf-8')
+        return result
+
+
+def _snapshot_failure_message(rebuild: Result) -> str:
+    """Plain refusal text for a failed/zero-pages snapshot rebuild - the
+    first error message `run_site` recorded, or a generic fallback naming
+    where to look."""
+    for m in rebuild.messages:
+        if m.level == 'error':
+            return m.text
+    return 'the workbench snapshot could not be rebuilt - check the terminal fha serve runs in.'
+
+
+def _snapshot_rebuild_failed(rebuild: Result | None) -> bool:
+    """True when `ensure_snapshot` attempted a rebuild that did NOT leave a
+    snapshot safe to serve as fresh - `None` (nothing needed rebuilding,
+    already fresh) is not a failure. Shared by every `do_GET` route that
+    calls `ensure_snapshot` before reading `.cache/serve/site/`, so a
+    genuine `run_site` refusal (or a working-copy transition mid-session)
+    refuses the request instead of silently falling through to whatever
+    snapshot files an earlier, now-stale build left on disk."""
+    return rebuild is not None and (not rebuild.ok or rebuild.data.get('status') == 'working-copy')
 
 
 # ── Page context + counts ───────────────────────────────────────────────────────
@@ -1156,23 +1189,29 @@ def _verb_capture_path(state, kw, dry_run):
     isn't already protected - the write this verb performs is the pointer
     stub in inbox/, which `run_capture_path` itself confines.
 
-    A RELATIVE path is resolved against `state.archive_root` before it reaches
-    the engine: `run_capture_path` resolves a bare relative path against this
-    PROCESS's own current directory, which is the server's launch directory,
-    not the browser's - meaningless for a value a human typed into a form. An
-    absolute path (the common case, since the point of `--path` is a file
-    living elsewhere) passes through untouched.
+    A RELATIVE path is resolved against `state.archive_root` for the ENGINE'S
+    existence check only (`run_capture_path`'s `check_path`): a bare relative
+    path resolved against this PROCESS's own current directory - the
+    server's launch directory, not the browser's - would be meaningless for
+    a value a human typed into a form. The raw, as-typed value is still what
+    gets passed as `path` (and so stored as the record's `asset_path`,
+    TOOLING §13b) - resolving it to an archive-root-absolute string before
+    the engine ever saw it used to overwrite that field with a machine-
+    specific path the human never typed (P2 codex finding, round 6, PR #30).
+    An absolute path (the common case, since the point of `--path` is a file
+    living elsewhere) needs no `check_path` override - `path` alone already
+    resolves the same way from any cwd.
 
     Reads `Result.messages` straight from the engine with no redirect: since
     `run_capture_path` follows the house engine contract (returns a Result,
     never prints), there is nothing here to capture."""
     raw = kw.get('path', '')
-    path_value = raw
+    check_path = None
     if raw and not Path(raw).is_absolute():
-        path_value = str(state.archive_root / raw)
+        check_path = state.archive_root / raw
     try:
         return capture.run_capture_path(
-            state.archive_root, state.fha_config, path=path_value,
+            state.archive_root, state.fha_config, path=raw, check_path=check_path,
             note=kw.get('note'), title=kw.get('title'), dry_run=dry_run)
     except Exception as e:  # noqa: BLE001
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not register: {e}')
@@ -1628,7 +1667,19 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
                 # than swallowing it: a silent 200 here would tell the human
                 # their note was kept when it was actually lost.
                 sidecar_error = str(e)
-        invalidate_snapshot(state)
+        snapshot_error: str | None = None
+        try:
+            invalidate_snapshot(state)
+        except Exception as e:  # noqa: BLE001 - the file(s) already landed on
+            # disk by this point; letting this escape (uncaught, like an
+            # engine exception) would answer do_POST's generic 500/'internal
+            # error', and the workbench renders that as "Upload refused" for
+            # a file that is actually already safely in the inbox - inviting
+            # a human to re-upload it and create a duplicate. Report it as a
+            # warning on the still-successful response instead (same shape
+            # as round 5's run_api_run reindex/snapshot-invalidation fix).
+            traceback.print_exc()
+            snapshot_error = str(e)
 
     if sidecar_error is not None:
         payload = _msg_payload(
@@ -1642,6 +1693,14 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
     else:
         payload = _msg_payload(True, f'added inbox/{dest.name}'
                                + (' with a note beside it' if len(written) > 1 else ''))
+    if snapshot_error is not None:
+        payload['messages'].append({
+            'level': 'warning',
+            'text': f'the file was saved, but the workbench view could not refresh '
+                    f'automatically ({snapshot_error}). Reload the page, or restart '
+                    'fha serve, to see it.',
+            'next_step': None,
+        })
     payload['changed'] = written
     return 200, payload
 
@@ -1810,7 +1869,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_root_asset(path)
                 return
             if path == '/review':
-                ensure_snapshot(self.state)
+                rebuild = ensure_snapshot(self.state)
+                if _snapshot_rebuild_failed(rebuild):
+                    self._reject(503, f'fha serve could not refresh its view: '
+                                      f'{_snapshot_failure_message(rebuild)}')
+                    return
                 # This gather IS the servebar's review count - thread it
                 # through instead of letting _workbench_context trigger a
                 # second gather_review via the cache (see _render_page).
@@ -1819,7 +1882,11 @@ class _Handler(BaseHTTPRequestHandler):
                                   review_count=len(review_data['items']))
                 return
             if path == '/inbox':
-                ensure_snapshot(self.state)
+                rebuild = ensure_snapshot(self.state)
+                if _snapshot_rebuild_failed(rebuild):
+                    self._reject(503, f'fha serve could not refresh its view: '
+                                      f'{_snapshot_failure_message(rebuild)}')
+                    return
                 inbox_data = gather_inbox(self.state)
                 self._render_page('inbox.html', inbox_data, title='Inbox',
                                   inbox_count=len(inbox_data['items']))
@@ -1828,7 +1895,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._not_found()
                 return
             # Static snapshot file.
-            ensure_snapshot(self.state)
+            rebuild = ensure_snapshot(self.state)
+            if _snapshot_rebuild_failed(rebuild):
+                self._reject(503, f'fha serve could not refresh its view: '
+                                  f'{_snapshot_failure_message(rebuild)}')
+                return
             resolved = _resolve_snapshot_request(self.state, path)
             if resolved is None:
                 self._not_found()

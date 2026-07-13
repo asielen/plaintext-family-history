@@ -536,6 +536,37 @@ class UploadTests(_ServeCase):
         self.assertEqual(msg['level'], 'warning')
         self.assertIn('note could not be saved', msg['text'])
 
+    def test_upload_snapshot_invalidation_failure_is_a_warning_not_a_false_refusal(self):
+        # P2 codex finding (round 6, PR #30): the round-5 refresh-failure fix
+        # covered /api/run's invalidate_snapshot call but not /api/upload's -
+        # a failure there (e.g. the .built marker locked/read-only) escaped
+        # uncaught to do_POST's generic 500 handler, which the workbench
+        # renders as "Upload refused" for a file that was already safely
+        # written - inviting a duplicate re-upload. It must report success
+        # with a warning instead.
+        boundary, body = self._multipart('snapshot-fail.txt', b'payload')
+        real_invalidate = serve.invalidate_snapshot
+
+        def _flaky_invalidate(state):
+            raise OSError('simulated marker unlink failure')
+
+        serve.invalidate_snapshot = _flaky_invalidate
+        try:
+            s, d, _h = self.req('POST', '/api/upload', body=body,
+                                headers={'Content-Type': f'multipart/form-data; boundary={boundary}',
+                                         'X-FHA-CSRF': self.state.csrf_token})
+        finally:
+            serve.invalidate_snapshot = real_invalidate
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)   # the file itself is safe
+        asset = self.root / 'inbox' / 'snapshot-fail.txt'
+        self.assertTrue(asset.is_file())
+        self.assertEqual(payload['changed'], [str(asset)])
+        msg = payload['messages'][-1]
+        self.assertEqual(msg['level'], 'warning')
+        self.assertIn('could not refresh automatically', msg['text'])
+
     def test_upload_note_bumps_stem_when_only_the_sidecar_collides(self):
         # The asset name `photo.jpg` has no collision, but an unrelated OLDER
         # stub already holds its sidecar's stem (`photo.notes.md`) - both the
@@ -768,6 +799,63 @@ class EnsureSnapshotWorkingCopyTests(_ServeCase):
         finally:
             self.state.site_mod.run_site = real_run_site
 
+    def test_ensure_snapshot_returns_the_result_when_a_rebuild_was_attempted(self):
+        # P2 codex finding (round 6, PR #30): callers need to tell "already
+        # fresh, nothing done" (None) apart from "a rebuild ran" (the
+        # run_site Result) so they can refuse a request rather than
+        # silently serve a stale/failed snapshot - see GetRefusesStale...
+        # below for the HTTP-level half of this fix.
+        self.assertIsNone(serve.ensure_snapshot(self.state))   # already fresh from setUp
+        self.state.marker.unlink(missing_ok=True)
+        result = serve.ensure_snapshot(self.state)
+        self.assertIsNotNone(result)
+        self.assertTrue(result.ok)
+
+
+class GetRefusesStaleSnapshotOnRebuildFailureTests(_ServeCase):
+    """P2 codex finding (round 6, PR #30): `ensure_snapshot` avoided stamping
+    `.built` over a failed/working-copy rebuild (round 2's fix), but every
+    `do_GET` route called it and then read `.cache/serve/site/` regardless -
+    silently serving whatever snapshot files an earlier, now-stale build
+    left behind, with no sign anything was wrong."""
+
+    def tearDown(self):
+        # site_mod is the one process-wide cached module (sys.modules
+        # caching in _load_site_module), not a fresh copy per ServeState -
+        # a run_site patch left in place would leak into the NEXT test's
+        # setUp, which builds its own "prior good snapshot" before the test
+        # body ever runs.
+        if hasattr(self, '_real_run_site'):
+            self.state.site_mod.run_site = self._real_run_site
+        super().tearDown()
+
+    def _force_rebuild_to_fail(self):
+        self.state.marker.unlink(missing_ok=True)   # snapshot_is_stale() -> True
+        self._real_run_site = self.state.site_mod.run_site
+        self.state.site_mod.run_site = lambda *a, **kw: serve.Result(
+            ok=False, exit_code=serve.EXIT_FAILURE,
+        ).add('error', 'simulated: fha.yaml is broken')
+
+    def test_static_page_refuses_rather_than_serving_a_stale_snapshot(self):
+        # A real snapshot already exists from setUp (a prior good build).
+        self.assertTrue(self.state.marker.exists())
+        self._force_rebuild_to_fail()
+        s, d, _h = self.req('GET', '/')
+        self.assertEqual(s, 503)
+        self.assertIn('simulated: fha.yaml is broken', d.decode('utf-8'))
+
+    def test_review_page_refuses_rather_than_serving_stale(self):
+        self._force_rebuild_to_fail()
+        s, d, _h = self.req('GET', '/review')
+        self.assertEqual(s, 503)
+        self.assertIn('simulated: fha.yaml is broken', d.decode('utf-8'))
+
+    def test_inbox_page_refuses_rather_than_serving_stale(self):
+        self._force_rebuild_to_fail()
+        s, d, _h = self.req('GET', '/inbox')
+        self.assertEqual(s, 503)
+        self.assertIn('simulated: fha.yaml is broken', d.decode('utf-8'))
+
     def test_preflight_port_busy(self):
         # The class already holds self.port; a second bind must be refused.
         r = serve.run_serve_preflight(self.root, port=self.port)
@@ -867,6 +955,14 @@ class CapturePathVerbTests(_ServeCase):
         rec = read_record(stub_path)
         self.assertEqual(rec['meta']['asset_path_absolute'],
                          str(target.resolve()).replace('\\', '/'))
+        # P2 codex finding (round 6, PR #30): `asset_path` must stay exactly
+        # what the human typed - the archive-root resolution above is for
+        # the existence check / `asset_path_absolute` only. It used to
+        # overwrite `asset_path` with that same machine-specific absolute
+        # path, contrary to TOOLING §13b ("asset_path is the path exactly as
+        # the human typed it") and to what `fha capture --path` itself
+        # stores for the identical relative-path case.
+        self.assertEqual(rec['meta']['asset_path'], 'some-scan.jpg')
 
 
 class ThreadTeeTests(unittest.TestCase):

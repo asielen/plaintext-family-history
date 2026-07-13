@@ -635,6 +635,25 @@ class CapturePathTestCase(unittest.TestCase):
         self.assertTrue(self.target.is_file())
         self.assertEqual(self.target.read_bytes(), before)
 
+    def test_check_path_drives_existence_but_asset_path_stays_as_typed(self) -> None:
+        # P2 codex finding (round 6, PR #30): `fha serve`'s workbench resolves
+        # a relative form value against archive_root for existence-checking
+        # purposes (the server process has no cwd meaningful to the
+        # browser) - but that resolved value must never leak into the
+        # stored `asset_path`, which stays exactly what a human typed
+        # (TOOLING §13b). `check_path` is the seam that lets the caller
+        # supply the resolved candidate separately.
+        relative_typed = 'library/grandma-wedding.jpg'
+        rc = capture.run_capture_path(
+            self.archive, self.config, path=relative_typed,
+            check_path=self.target).exit_code
+        self.assertEqual(rc, EXIT_CLEAN)   # exists via check_path, not `path`
+        rec = read_record(self._only_stub())
+        self.assertEqual(rec['meta']['asset_path'], relative_typed)
+        self.assertEqual(
+            rec['meta']['asset_path_absolute'],
+            str(self.target.resolve()).replace('\\', '/'))
+
     def test_note_and_title_land_in_the_stub(self) -> None:
         rc = capture.run_capture_path(
             self.archive, self.config, path=str(self.target),

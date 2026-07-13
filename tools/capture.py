@@ -1002,8 +1002,22 @@ def run_capture_path(
     note: str | None = None,
     title: str | None = None,
     dry_run: bool = False,
+    check_path: str | Path | None = None,
 ) -> Result:
     """Register a must-never-move asset: write ONE pointer stub, touch nothing else.
+
+    `check_path` is NOT a CLI concern - `fha capture --path` always resolves
+    `path` itself against its own process cwd, the natural reading for a
+    human-typed shell argument. It exists for a caller (`fha serve`'s
+    capture.path verb) whose relative paths mean something else: the server
+    process has no cwd meaningful to the browser, so the workbench resolves
+    a relative form value against `archive_root` instead - but that resolved
+    form must never overwrite what gets stored as `asset_path` (P2 codex
+    finding, round 6, PR #30: a typed `photos/grandma.jpg` was being stored
+    as a machine-specific absolute path). Passing the archive-relative
+    candidate here lets it drive the existence check / `asset_path_absolute`
+    while `path` itself - stored verbatim as `asset_path` below - stays
+    exactly what the human typed.
 
     Some assets (a photo still living in a family member's own library, a
     document in someone else's archive folder) can never be copied, moved, or
@@ -1032,7 +1046,7 @@ def run_capture_path(
     lets `fha serve` read this function's output as structured messages
     instead of scraping captured stdout/stderr.
     """
-    target = Path(path)
+    target = Path(check_path) if check_path is not None else Path(path)
     given_path = str(path).replace('\\', '/')
     absolute_path = str(target.resolve()).replace('\\', '/')
     exists = target.exists()
