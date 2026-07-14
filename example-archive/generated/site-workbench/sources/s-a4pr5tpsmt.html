@@ -163,6 +163,7 @@
         <input type="text" name="date" value=""></div>
       <div class="wb-field"><label>Place <span class="wb-optional">(text, or resolve to an L-id)</span></label>
         <input type="text" name="place_text" class="wb-target wb-plain" value="">
+        <input type="hidden" name="place" data-wb-idfield="place_text">
         <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
         <div class="wb-lookup" hidden>
           <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">
@@ -310,6 +311,7 @@
         <input type="text" name="mdate" value=""></div>
       <div class="wb-field"><label>Place <span class="wb-optional">(optional)</span></label>
         <input type="text" name="mplace" class="wb-target wb-plain" value="">
+        <input type="hidden" name="mplace_id" data-wb-idfield="mplace">
         <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
         <div class="wb-lookup" hidden>
           <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">
@@ -470,7 +472,7 @@
     <p class="wb-kicker">One-field record edit</p>
     <h3>Is this person living?</h3>
     <div class="wb-field"><div class="wb-radio">
-      <label><input type="radio" name="value" value="false" checked> deceased</label>
+      <label><input type="radio" name="value" value="false"> deceased</label>
       <label><input type="radio" name="value" value="true"> living</label>
       <label><input type="radio" name="value" value="unknown"> unknown</label>
     </div></div>
@@ -561,7 +563,7 @@
       <select name="source_type">
         <option>letter</option><option>census</option><option>vital-record</option>
         <option>newspaper</option><option>photo</option><option>interview</option>
-        <option>book</option><option>certificate</option><option selected>other</option>
+        <option>book</option><option selected>other</option>
       </select>
     </div>
     <p class="wb-hint">What the button will <em>not</em> do: read the evidence and draft claims
