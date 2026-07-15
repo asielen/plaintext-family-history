@@ -3,6 +3,9 @@
 {% block content %}
 <article class="person">
   {% if person.portrait %}<img class="person-portrait" src="{{ person.portrait }}" alt="Portrait of {{ person.name }}">{% endif %}
+  {% if workbench %}
+  <p class="wb-fix"><a href="#" data-wb-open="tpl-set-photo" data-wb-args='{{ {"person_id": person.display_id} | tojson }}'>{{ 'change photo' if person.portrait else 'set a profile photo' }}&hellip;</a></p>
+  {% endif %}
   <h1>{{ person.name }}</h1>
   {% if workbench %}
   <div class="wb-record">

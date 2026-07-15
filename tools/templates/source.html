@@ -42,11 +42,15 @@
         {% if workbench %}
         <td class="wb-actions">
           {% if c.status == 'suggested' %}
-          <button class="btn btn-primary btn-sm" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}' data-wb-fill="status=accepted">Edit &amp; accept&hellip;</button>
+          <button class="btn btn-primary btn-sm" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}' data-wb-fill="status=accepted"
+                  data-wb-prefill='{{ {"claim_type": c.type, "value": c.value, "date": c.date, "place_text": c.place_text,
+                    "place": c.place_id, "persons": c.persons_ids} | tojson }}'>Edit &amp; accept&hellip;</button>
           <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct data-wb-args='{{ {"claim_id": c.claim_id, "status": "accepted"} | tojson }}'>Accept as-is</button>
           <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct data-wb-args='{{ {"claim_id": c.claim_id, "status": "disputed"} | tojson }}'>Dispute</button>
           {% else %}
-          <a class="wb-fix" href="#" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}'>fix&hellip;</a>
+          <a class="wb-fix" href="#" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": c.claim_id} | tojson }}'
+             data-wb-prefill='{{ {"claim_type": c.type, "value": c.value, "date": c.date, "place_text": c.place_text,
+               "place": c.place_id, "persons": c.persons_ids} | tojson }}'>fix&hellip;</a>
           {% endif %}
         </td>
         {% endif %}

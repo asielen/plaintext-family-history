@@ -594,7 +594,7 @@ def gather_review(state: ServeState) -> dict:
     if conn is not None:
         try:
             rows = conn.execute(
-                "SELECT c.id, c.type, c.value, c.date_edtf, c.place_text, c.confidence, "
+                "SELECT c.id, c.type, c.value, c.date_edtf, c.place_text, c.place_id, c.confidence, "
                 "c.source_id, s.title AS source_title "
                 "FROM claims c LEFT JOIN sources s ON c.source_id = s.id "
                 "WHERE c.status = 'suggested' ORDER BY c.source_id, c.id"
@@ -631,6 +631,14 @@ def gather_review(state: ServeState) -> dict:
                     ) if x),
                     'person_labels': pnames,
                     'actions': 'claim',
+                    # Raw (not display-formatted) fields so the "edit & accept"
+                    # modal can prefill with the claim's current data instead
+                    # of opening blank (same gap the biography editor already
+                    # had fixed for it).
+                    'claim_type': r['type'] or '', 'value_raw': r['value'] or '',
+                    'date_raw': r['date_edtf'] or '', 'place_text_raw': r['place_text'] or '',
+                    'place_id_raw': fmt_id_display(r['place_id']) if r['place_id'] else '',
+                    'persons_ids': ','.join(fmt_id_display(pid) for pid in people),
                 })
         except Exception:
             pass
@@ -961,6 +969,15 @@ def _verb_set_living(state, kw, dry_run):
 
 def _echo_set_living(kw):
     return f'fha person set-living {kw.get("person_id", "?")} {kw.get("value", "?")}'
+
+
+def _verb_set_profile_photo(state, kw, dry_run):
+    return person.run_set_profile_photo(
+        state.archive_root, kw.get('person_id', ''), kw.get('value', ''), dry_run=dry_run)
+
+
+def _echo_set_profile_photo(kw):
+    return f'fha person set-profile-photo {kw.get("person_id", "?")} {_q(kw.get("value", "?"))}'
 
 
 def _verb_person_new(state, kw, dry_run):
@@ -1316,6 +1333,9 @@ VERBS: dict[str, dict] = {
                         'run': _verb_dismiss, 'echo': _echo_dismiss, 'reindex': 'none'},
     'person.set-living': {'schema': {'person_id': 'str', 'value': 'str'},
                           'run': _verb_set_living, 'echo': _echo_set_living, 'reindex': 'full'},
+    'person.set-profile-photo': {'schema': {'person_id': 'str', 'value': 'str'},
+                                 'run': _verb_set_profile_photo, 'echo': _echo_set_profile_photo,
+                                 'reindex': 'full'},
     'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
                              'birth': 'str', 'death': 'str', 'person_id': 'str'},
                    'run': _verb_person_new, 'echo': _echo_person_new, 'reindex': 'full'},

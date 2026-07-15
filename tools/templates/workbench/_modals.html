@@ -232,7 +232,15 @@
   <div class="wb-step">
     <p class="wb-kicker">Add a timeline event</p>
     <h3>Events are claims - which source says so?</h3>
-    <div class="wb-field"><label>Source S-id</label><input type="text" name="source_id" value=""></div>
+    <div class="wb-field">
+      <label>Source</label>
+      <input type="text" name="source_id" class="wb-target" data-wb-refmode="id" value="">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a source&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search sources&hellip;" data-wb-kind="source">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+    </div>
     <div class="wb-field">
       <label>Type</label>
       <select name="claim_type">
@@ -245,11 +253,24 @@
     <div class="wb-field"><label>What happened</label><input type="text" name="value" value=""></div>
     <div class="wb-row2">
       <div class="wb-field"><label>Date (EDTF)</label><input type="text" name="date" value=""></div>
-      <div class="wb-field"><label>Place</label><input type="text" name="place_text" value=""></div>
+      <div class="wb-field"><label>Place <span class="wb-optional">(text, or resolve to an L-id)</span></label>
+        <input type="text" name="place_text" class="wb-target wb-plain" value="">
+        <input type="hidden" name="place" data-wb-idfield="place_text">
+        <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
+        <div class="wb-lookup" hidden>
+          <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">
+          <ul class="wb-lookup-results"></ul>
+        </div>
+      </div>
     </div>
     <div class="wb-field">
       <label>People <span class="wb-optional">(P-ids, comma-separated)</span></label>
-      <input type="text" name="persons" value="">
+      <input type="text" name="persons" class="wb-target wb-multi" data-wb-refmode="id" value="">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a person&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search people&hellip;" data-wb-kind="person">
+        <ul class="wb-lookup-results"></ul>
+      </div>
     </div>
     <p class="wb-hint">No record at all? Then it isn't a timeline event yet - put it in
       Research Notes (or a hypothesis) until a source backs it. That rule is what keeps every
@@ -309,6 +330,7 @@
         <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
         <ul class="wb-lookup-results"></ul>
       </div>
+      <p class="wb-bracket-warn" hidden></p>
     </div>
     <p class="note">The <code>![[photo.jpg|caption]]</code> line <em>is</em> the embedded picture.
       <code>[[P-&hellip;]]</code> / <code>[[S-&hellip;]]</code> / <code>[[C-&hellip;]]</code> are the links behind the footnote numbers;
@@ -364,6 +386,29 @@
     </div></div>
     <p class="note">This flag drives privacy: people marked <code>living: true</code> (or
       unknown) are redacted from anything exported for sharing.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- set the profile portrait --- #}
+<template id="tpl-set-photo" data-wb-verb="person.set-profile-photo">
+  <div class="wb-step">
+    <p class="wb-kicker">One-field record edit</p>
+    <h3>Which photo is their portrait?</h3>
+    <div class="wb-field">
+      <label>Photo</label>
+      <input type="text" name="value" class="wb-target" data-wb-refmode="id" value="">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a photo source&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search photo sources&hellip;" data-wb-kind="source">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+    </div>
+    <p class="note">A filename, path, or S-id also works typed directly. Shown on this
+      person's page and as their small square in the family tree.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>

@@ -584,7 +584,9 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
 
 
 def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
-                          children: list[dict] | None = None) -> str:
+                          children: list[dict] | None = None,
+                          missing_parent_of: dict[int, str] | None = None,
+                          workbench: bool = False) -> str:
     """Render a horizontal (left→right) family pedigree as a self-contained SVG.
 
     `labels` is an Ahnentafel map {number: {'name','url','redacted','dates'}} covering
@@ -612,7 +614,14 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     ancestors-only chart is capped at, so that case gets the `pedigree-family`
     modifier class (a wider max-width in styles.css) plus tighter card/row
     spacing - the size-reduced variant, matching the wireframe's `wb-famchart`
-    sizing without pulling in any of its workbench affordances."""
+    sizing without pulling in any of its workbench affordances.
+
+    `missing_parent_of` (workbench only, per the plan-17 wireframe's
+    `ped-empty[data-wb-open]` cards) maps an empty ancestor slot number to the
+    P-id of its known child, so that slot's 'Unknown' becomes a clickable
+    'Unknown — add' that opens 'add family' scoped to the right person -
+    never shown when `workbench` is false, matching every other workbench-only
+    affordance already gated the same way on this page."""
     spouses = spouses or []
     children = children or []
     has_children_col = bool(children)
@@ -684,9 +693,22 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
         m = re.search(r'\d{4}', str(edtf)) if edtf else None
         return m.group(0) if m else ''
 
-    def card(x: float, yc: float, cls_extra: str, lab: dict | None) -> str:
+    def card(x: float, yc: float, cls_extra: str, lab: dict | None, slot: int | None = None) -> str:
+        div_attrs = ''
         if lab is None:
+            child_pid = missing_parent_of.get(slot) if (workbench and missing_parent_of and slot is not None) else None
             cls, inner = 'ped-node ped-empty', '<span class="ped-name">Unknown</span>'
+            if child_pid:
+                # Same 'click the empty ancestor slot' affordance the plan-17
+                # wireframe mocked (person.html's ped-empty[data-wb-open]
+                # cards): opens 'add family' scoped to the known child one
+                # generation closer, relation parent - existing modal, no new
+                # capability, matching the "+ add" links elsewhere on this page.
+                args = html.escape(json.dumps(
+                    {'person_id': fmt_id_display(child_pid), 'relation_type': 'parent'}), quote=True)
+                inner = '<span class="ped-name">Unknown &mdash; add</span>'
+                div_attrs = (f' data-wb-open="tpl-add-family" data-wb-args=\'{args}\' '
+                            'title="Create a stub for this ancestor" role="button" tabindex="0"')
         else:
             cls = 'ped-node' + cls_extra
             name = html.escape(lab.get('name') or '')
@@ -698,7 +720,7 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             span = f'{b}–{dd}' if (b and dd) else (f'b. {b}' if b else (f'd. {dd}' if dd else ''))
             inner = name_el + (f'<span class="ped-dates">{span}</span>' if span else '')
         return (f'<foreignObject x="{x:.0f}" y="{yc - CH / 2:.0f}" width="{CW}" height="{CH}">'
-                f'<div xmlns="http://www.w3.org/1999/xhtml" class="{cls}">{inner}</div>'
+                f'<div xmlns="http://www.w3.org/1999/xhtml" class="{cls}"{div_attrs}>{inner}</div>'
                 f'</foreignObject>')
 
     links: list[str] = []
@@ -712,7 +734,7 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 midx = (x + CW + x2) / 2
                 links.append(f'<path class="ped-link" d="M{x + CW:.0f},{yc:.0f} '
                              f'H{midx:.0f} V{y2:.0f} H{x2:.0f}"/>')
-        cards.append(card(x, yc, ' ped-self' if slot == 1 else '', None if kind == 'empty' else lab))
+        cards.append(card(x, yc, ' ped-self' if slot == 1 else '', None if kind == 'empty' else lab, slot))
 
     subj_x = col_x(0)
     subj_y = y_center(subject_row)
@@ -1469,6 +1491,13 @@ class _SiteBuilder:
                 # Workbench-only: the C-id drives the inline claim actions. Never
                 # used in standalone output (the template gates on `workbench`).
                 'claim_id': fmt_id_display(c['id']),
+                # Workbench-only: raw (not pre-rendered-to-HTML) field values so
+                # the "edit & accept" modal can prefill with the claim's current
+                # data instead of opening blank (PR #30 gap - the biography
+                # editor got this fix, this claim modal never did).
+                'place_text': c['place_text'] or '',
+                'place_id': fmt_id_display(c['place_id']) if c['place_id'] else '',
+                'persons_ids': ','.join(fmt_id_display(p['person_id']) for p in person_rows),
             })
 
         files, portrait_entry = self._source_file_entries(sid, page_dir)
@@ -1557,11 +1586,14 @@ class _SiteBuilder:
         # is then widened into a family chart with the subject's spouse(s) and
         # children (win 1) - the fan stays ancestors-only (a fan has no natural
         # place to hang a descendant wing).
-        ahnen = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
+        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
         ped_labels = {n: e for n, e in ahnen.items() if n < 8}
+        ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
         has_pedigree = len(ped_labels) > 1 or wings['spouses'] or wings['children']
-        pedigree = (self._markup(_render_pedigree_svg(ped_labels, wings['spouses'], wings['children']))
+        pedigree = (self._markup(_render_pedigree_svg(
+                        ped_labels, wings['spouses'], wings['children'],
+                        missing_parent_of=ped_missing, workbench=self.workbench))
                    if has_pedigree else None)
         # Same condition _render_pedigree_svg uses for its SVG aria-label (a
         # sighted reader on the page and a screen-reader user on the SVG must
@@ -2815,13 +2847,18 @@ class _SiteBuilder:
         return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
                 'redacted': False, 'dates': self._person_vitals(pid)}
 
-    def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> dict:
+    def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> tuple[dict, dict]:
         """Ahnentafel map {number: {'name','url','redacted'}} for the fan chart,
-        walking `parent` edges from the seed. Father (a parent recorded M) takes the
-        even slot, mother (F) the odd one; unknown-sex parents fill whatever slot is
-        free. Redaction is applied per person - a withheld ancestor becomes a blank
-        segment, never a leaked name (mirrors `_tree_node`)."""
+        walking `parent` edges from the seed, plus a second map {number: pid} of
+        each EMPTY ancestor slot's known child (workbench mode wires this onto
+        the pedigree's 'Unknown' placeholder so it opens 'add family' scoped to
+        that child - the slot that is actually missing a parent, not a fixed
+        subject). Father (a parent recorded M) takes the even slot, mother (F)
+        the odd one; unknown-sex parents fill whatever slot is free. Redaction
+        is applied per person - a withheld ancestor becomes a blank segment,
+        never a leaked name (mirrors `_tree_node`)."""
         labels: dict[int, dict] = {1: self._chart_entry(seed, page_dir)}
+        missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
         seen = {seed}
         while queue:
@@ -2851,12 +2888,13 @@ class _SiteBuilder:
                 mother = rest.pop(0)
             for slot_num, ppid in ((2 * num, father), (2 * num + 1, mother)):
                 if not ppid:
+                    missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = self._chart_entry(ppid, page_dir)
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
                     seen.add(ppid)
                     queue.append((slot_num, ppid))
-        return labels
+        return labels, missing_parent_of
 
     def _build_family_wings(self, pid: str, page_dir: Path) -> dict:
         """Spouse(s) and children for the person-page family chart (the win-1
@@ -2985,6 +3023,14 @@ class _SiteBuilder:
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
 
         # Surname A-Z: group curated (non-redacted) people by surname initial.
+        # Workbench only (plan-17 wireframe, home.html - the approved design):
+        # a stub - minted via "Add a person" but not yet promoted to a full
+        # curated page - is listed inline in its surname group too, as a
+        # non-linking `stub-ref` with an "open file" action, so it is never
+        # lost between minting and being fleshed out. TOOLING §12's "a stub
+        # gets no standalone page" still holds - `href` stays unset - this
+        # only makes it findable. Never shown outside the workbench: the
+        # published/standalone snapshot stays curated-only.
         by_letter: dict[str, list[dict]] = {}
         for pid in self.person_pages:
             meta = self.person_meta[pid]
@@ -2992,7 +3038,16 @@ class _SiteBuilder:
             surname = (meta['surname'] or name or '?').strip()
             letter = surname[:1].upper() if surname[:1].isalpha() else '#'
             by_letter.setdefault(letter, []).append(
-                {'name': name, 'href': f'persons/{_page_filename(pid)}'})
+                {'name': name, 'href': f'persons/{_page_filename(pid)}', 'stub': False})
+        if self.workbench:
+            for pid, meta in self.person_meta.items():
+                if (meta['tier'] or '') != 'stub':
+                    continue
+                name = meta['name'] or fmt_id_display(pid)
+                surname = (meta['surname'] or name or '?').strip()
+                letter = surname[:1].upper() if surname[:1].isalpha() else '#'
+                by_letter.setdefault(letter, []).append(
+                    {'name': name, 'href': None, 'stub': True, 'record_relpath': meta['path']})
         surnames = [
             {'letter': letter, 'people': sorted(by_letter[letter], key=lambda p: p['name'].lower())}
             for letter in sorted(by_letter)

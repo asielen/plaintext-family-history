@@ -39,7 +39,7 @@
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>
   <ul class="index-list">
-    {% for p in group.people %}<li><a href="{{ p.href }}">{{ p.name }}</a></li>{% endfor %}
+    {% for p in group.people %}<li>{% if p.stub %}<span class="stub-ref">{{ p.name }}</span> <a class="wb-fix" href="#" data-wb-open-file="{{ p.record_relpath }}" title="Open this stub's record file">open file</a>{% else %}<a href="{{ p.href }}">{{ p.name }}</a>{% endif %}</li>{% endfor %}
   </ul>
   {% endfor %}
   {% else %}

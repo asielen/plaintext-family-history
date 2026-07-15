@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-13",
+  "generated": "2026-07-14",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -247,7 +247,7 @@
     {
       "path": "design/styles.css",
       "category": "operating",
-      "sha256": "2ba583643540523ffa79aa1a231ec68561f29efd8049ad73de3eb8cfdcb11a71",
+      "sha256": "e8a2d247fb2d523504b0b92f55a3b2ad016604dd5ecbdfc4e394ef16a1ef0a37",
       "spec_version": "1.2"
     },
     {
@@ -435,7 +435,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "e256a4c74bc6a97a719009b68a8c8010c4d772131cf817c7f1689f81df05b1e1",
+      "sha256": "c61c433f73b99e42338196f41502d396ca73a13e6722bd55f77060ea9dfa7c35",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/person.py",
       "category": "operating",
-      "sha256": "f8a37df80a2282270f20fd6cf1b0e5be1de20d1974241baa107975219114d971",
+      "sha256": "a97f019908ea5705b84da296bd24363577e323d3e384e1b30c8326b4a0bb1b4f",
       "spec_version": "1.2"
     },
     {
@@ -647,13 +647,13 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "573fdfd26ff962de8678b621173f8f3e54460a8991270de5a7ff5ed11f7381b2",
+      "sha256": "b3c240a90ccc2cd90574f2ee1c96c425573b14fd243ab18c7f1a7bde4098db2b",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "9e5bf5e58c10cc1711180fa363f9d020edf666309384cff0c9fe7bc3a9bd4211",
+      "sha256": "30a24730928b4eb1faadc719f6aacbce1f491aaaeb7295394e7b3b8324b281e3",
       "spec_version": "1.2"
     },
     {
@@ -701,13 +701,13 @@
     {
       "path": "tools/templates/index.html",
       "category": "operating",
-      "sha256": "6b6b71eaf5b8b4fb855f3107330d39d087ad40075f8a8456416e0d20b3dbb67f",
+      "sha256": "90727dfcf028e03ea026818ae79e7c40e89530b397cd391d0e7151c772cf73ee",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "41e4c92c741a52ce0bc47ba97c727223224301da3faa74b79680be650b0993cb",
+      "sha256": "daebbed14c8b6356c4bfd08646717c846eb5da8a4f73a9a3a9d8facd44f44852",
       "spec_version": "1.2"
     },
     {
@@ -719,13 +719,13 @@
     {
       "path": "tools/templates/review.html",
       "category": "operating",
-      "sha256": "eb65c61280155ce02cd7b76afef28abde1e56cdb0f93a5dcb1f586344b8f832e",
+      "sha256": "35e3129ee79bc4450aee2be89fc5357b906207e65e408f4697df0cd61035edbc",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/source.html",
       "category": "operating",
-      "sha256": "7c2fe5571a98e79f6f57a1ee81b630fbb457b290bc2989ed9a3f08d70c2b85c2",
+      "sha256": "fc7adc14df7adb9433412bfd2056bd67bf0e8efee7817b3b9c45639ee16ec908",
       "spec_version": "1.2"
     },
     {
@@ -749,7 +749,7 @@
     {
       "path": "tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "2fd270032fe9f064ef271f371eccc7c98e6d5f7389c753f5104a729bd01a1a3c",
+      "sha256": "803976df2dbfc212ddd53a9c86076cdab1252506ea89f6d0c54343865f42d1a8",
       "spec_version": "1.2"
     },
     {
@@ -761,13 +761,13 @@
     {
       "path": "tools/templates/workbench/workbench.css",
       "category": "operating",
-      "sha256": "2ab2d09bd263427be4f1e592d357d6d35417c23b1e345cb710bcbc4853673a30",
+      "sha256": "b3b77a825286c94a16e5292c5b5cd1932a5be669876dcd87d66bc2a3e409f82a",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "cd63880417f3612fa446b440b75c732c0b183d54277b5e750799e4f14035292f",
+      "sha256": "08d0a07487fcb56f9f641a65449552e535701263c49e40fae4db08174ae68df4",
       "spec_version": "1.2"
     },
     {

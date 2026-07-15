@@ -72,6 +72,25 @@
     el.focus();
   }
 
+  /* A dropped `[` or `]` turns a `[[S-id|caption]]` link or `![[S-id]]`
+     photo embed into text the site renderer no longer recognizes at all -
+     it falls back to literal escaped text with no error shown anywhere. A
+     live count-mismatch warning here is the earliest point a human can
+     catch that, well before Preview/Apply. Purely advisory - it never
+     blocks submission, since a `[[`/`]]` can legitimately appear unbalanced
+     mid-edit (e.g. while typing a new link). */
+  function updateBracketWarning(el) {
+    var field = el.closest('.wb-field');
+    var warn = field && field.querySelector('.wb-bracket-warn');
+    if (!warn) return;
+    var opens = (el.value.match(/\[\[/g) || []).length;
+    var closes = (el.value.match(/\]\]/g) || []).length;
+    if (opens === closes) { warn.hidden = true; return; }
+    warn.hidden = false;
+    warn.textContent = 'Heads up: ' + opens + ' "[[" but ' + closes + ' "]]" - a missing '
+      + 'bracket will make a link or photo show as raw text instead.';
+  }
+
   /* Copy form-control values into any [data-wb-sub="<name>"] placeholder. */
   function substitute(modal) {
     $all('[data-wb-sub]', modal).forEach(function (el) {
@@ -173,9 +192,28 @@
         });
       });
     }
+    /* Same idea as data-wb-fill, but for values that may themselves contain
+       '|' or '=' (a claim's free-text value/place) - JSON has no delimiter
+       to collide with. data-wb-fill stays as the simple string form for
+       fixed short values (a status literal); this is for "prefill this
+       modal with a specific record's current data". */
+    var prefill = btn.getAttribute('data-wb-prefill');
+    if (prefill) {
+      try {
+        var pf = JSON.parse(prefill);
+        for (var pkey in pf) {
+          var pval = pf[pkey];
+          $all('[name="' + pkey + '"]', modal).forEach(function (c) {
+            if (c.type === 'radio') c.checked = (c.value === pval);
+            else c.value = pval;
+          });
+        }
+      } catch (e) { /* malformed prefill JSON - leave fields as authored */ }
+    }
     substitute(modal);
     updateShowIf(modal);
     showStep(modal, 0);
+    $all('textarea[name="text"]', modal).forEach(updateBracketWarning);
 
     /* A "direct" modal (no input form - e.g. Accept as-is, Dispute) jumps
        straight to a real dry-run preview. */
@@ -269,11 +307,42 @@
     });
   }
 
+  /* A unified-diff/YAML line is classified independent of its message's
+     `level` - the engine emits every diff line (added or removed) as one
+     'info' message each, so coloring by level alone painted removed lines
+     the same green as added ones. */
+  function classifyDiffLine(line) {
+    if (/^@@.*@@/.test(line)) return 'wb-diff-hunk';
+    if (/^--- /.test(line) || /^\+\+\+ /.test(line)) return 'wb-diff-file';
+    if (/^\+(?!\+\+)/.test(line)) return 'add';
+    if (/^-(?!--)/.test(line)) return 'del';
+    return null;
+  }
+
+  /* Bolds a leading `key:` (YAML frontmatter shape) so a preview reads as
+     field/value pairs rather than a wall of text. Deliberately narrow -
+     the key token allows only word chars/hyphens, so an ordinary prose
+     sentence with a colon in it ("Born: ...") can't get misread since a
+     real prose line has a space before the colon's subject, not right
+     after it. */
+  var YAML_KEY_RE = /^(\s*(?:[+-]\s*)?)([A-Za-z_][\w-]*)(:)(\s.*|)$/;
+  function highlightYamlKey(line) {
+    var m = YAML_KEY_RE.exec(line);
+    if (!m) return esc(line);
+    return esc(m[1]) + '<span class="wb-yaml-key">' + esc(m[2]) + '</span>' + esc(m[3]) + esc(m[4]);
+  }
+
   function renderMessages(result) {
     var out = '';
     (result.messages || []).forEach(function (m) {
-      var cls = m.level === 'error' ? 'del' : (m.level === 'warning' ? 'ctx' : 'add');
-      out += '<span class="' + cls + '">' + esc(m.text) + '</span>';
+      var baseCls = m.level === 'error' ? 'del' : (m.level === 'warning' ? 'ctx' : 'add');
+      (m.text || '').split('\n').forEach(function (line) {
+        var diffCls = classifyDiffLine(line);
+        var cls = diffCls || baseCls;
+        var html = (diffCls === 'wb-diff-hunk' || diffCls === 'wb-diff-file')
+          ? esc(line) : highlightYamlKey(line);
+        out += '<span class="' + cls + '">' + (html || '&nbsp;') + '</span>';
+      });
       if (m.next_step) out += '<span class="ctx">  next: ' + esc(m.next_step) + '</span>';
     });
     return out || '<span class="ctx">(no changes)</span>';
@@ -342,10 +411,33 @@
       }
       var host = ensurePreviewStep(modal);
       var ok = result.ok !== false && (result._http === 200);
+      /* On a clean preview or a completed apply, most humans want the plain-
+         English summary, not the raw diff - so the diff collapses behind a
+         <details> and a one-line explainer takes its place. A failure (can't
+         apply / nothing written) is the one thing worth reading immediately,
+         so that case stays expanded with no explainer standing in front of it. */
+      var explain = dryRun
+        ? (ok ? '<p class="wb-preview-explain">Below is what the file will look like after this change. '
+              + 'Click <strong>Apply</strong> to write it - your archive updates and the page refreshes.</p>' : '')
+        : (ok ? '<p class="wb-preview-explain">Written to your archive. The page refreshes in a moment.</p>' : '');
+      /* A warning (e.g. "this estimate is superseded by an existing accepted
+         claim, so it will not show anywhere") describes something that will
+         surprise the human even though the write itself succeeded - it must
+         not be buried inside the collapsed technical diff below, or the one
+         write-succeeded-but-nothing-visible-changed case this exists to
+         explain goes right on looking like silent failure. */
+      var warnings = (result.messages || []).filter(function (m) { return m.level === 'warning'; });
+      var warnHtml = warnings.length
+        ? '<div class="wb-warn-callout">' + warnings.map(function (m) {
+            return '<p>' + esc(m.text) + '</p>';
+          }).join('') + '</div>'
+        : '';
+      var diffHtml = '<pre class="wb-diff">' + renderMessages(result) + '</pre>';
+      if (ok) diffHtml = '<details class="wb-diff-details"><summary>Show the technical preview</summary>' + diffHtml + '</details>';
       host.innerHTML =
         '<p class="wb-kicker">' + (dryRun ? 'Dry run - nothing written yet' : (ok ? 'Applied' : 'Not applied')) + '</p>' +
         '<h3>' + (dryRun ? (ok ? 'Preview' : 'Cannot apply yet') : (ok ? 'Done' : 'Nothing was written')) + '</h3>' +
-        '<pre class="wb-diff">' + renderMessages(result) + '</pre>' +
+        explain + warnHtml + diffHtml +
         cliBlock(result) +
         '<div class="wb-modal-foot">' +
         (dryRun
@@ -623,6 +715,7 @@
       var idEl = wbField && wbField.querySelector('input[data-wb-idfield]');
       if (idEl && idEl.value) idEl.value = '';
     }
+    if (e.target.matches && e.target.matches('textarea[name="text"]')) updateBracketWarning(e.target);
     var sb = e.target.closest('.wb-search input[name="wbq"]');
     if (sb) {
       var form = sb.closest('.wb-search');

@@ -525,6 +525,205 @@ def run_set_living(
     return result
 
 
+def _replace_scalar_line(line: str, key: str, value: str) -> str:
+    """Rewrite one `key:` line to a new bare-scalar value, preserving a
+    trailing comment. Generalizes `_replace_living_line` for any single-line
+    scalar frontmatter field (same shape, parametric on the key name)."""
+    m = re.match(rf'^({re.escape(key)}:)([ \t]*)([^#]*?)([ \t]*)(#.*?)?(\r?)$', line)
+    if m is None:  # caller matched the key already; this is belt-and-braces
+        return line
+    comment = m.group(5)
+    cr = m.group(6)
+    if comment:
+        sep = m.group(4) or '  '
+        return f'{key}: {value}{sep}{comment}{cr}'
+    return f'{key}: {value}{cr}'
+
+
+def run_set_profile_photo(
+    archive_root: Path, person_id: str, value: str, dry_run: bool = False,
+) -> Result:
+    """Set one person record's `profile_photo:` field (SPEC.md - the portrait
+    shown on their page and as a tree thumbnail); return a Result.
+
+    `value` is written as given - a filename, path, or S-id - and resolved
+    leniently at site-generation time, not validated here: an unresolvable
+    reference just means no portrait shows, never a write-time refusal,
+    matching how the site already treats a missing/broken hero or embed
+    reference. `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|
+    'merged'|'refused', 'person_id', 'path', 'old', 'new'}. Same surgical-
+    single-line-replace shape as `run_set_living` above.
+    """
+    result = Result(data={
+        'status': None, 'person_id': None, 'path': None, 'old': None, 'new': None,
+    })
+
+    def _refuse(status: str, message: str) -> Result:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = status
+        result.add('error', message)
+        return result
+
+    val = str(value).strip()
+    if not val:
+        return _refuse('refused', 'give a filename, path, or S-id for the photo. Nothing was changed.')
+    result.data['new'] = val
+
+    if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
+        return _refuse(
+            'refused',
+            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
+            '- a P followed by a dash and 10 characters from the archive alphabet.')
+    pid = normalize_id(person_id)
+    result.data['person_id'] = fmt_id_display(pid)
+
+    path = find_person_record_path(archive_root, pid)
+    if path is None:
+        result.ok = False
+        result.exit_code = EXIT_WARNINGS
+        result.data['status'] = 'not-found'
+        result.add('warning',
+                   f'No person record found for {fmt_id_display(pid)} under '
+                   f'{archive_root / "people"} - check the id with '
+                   f'`fha find {fmt_id_display(pid)}`.',
+                   next_step='fha find ' + fmt_id_display(pid))
+        return result
+    result.data['path'] = str(path)
+
+    try:
+        text = read_text_exact(path)
+    except OSError as e:
+        return _refuse('refused', f'cannot read {path}: {e}. Check the file is '
+                       'not open in another program and try again.')
+
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return _refuse(
+            'refused',
+            f'{path.name} has no frontmatter block (the header between --- lines '
+            f'at the top of the file), so there is nowhere safe to write the field. '
+            f'Open {path} and add the header by hand, then run `fha lint`. '
+            'Nothing was written.')
+    try:
+        before_meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        before_meta = None
+    if not isinstance(before_meta, dict):
+        return _refuse(
+            'refused',
+            f'the header of {path.name} does not read as YAML, so editing it '
+            f'automatically could make things worse. Open {path}, fix the header '
+            'by hand (run `fha lint` to see the problem line), then retry. '
+            'Nothing was written.')
+
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    if is_merged_meta(before_meta):
+        result.exit_code = EXIT_FAILURE
+        result.ok = False
+        result.data['status'] = 'merged'
+        survivor = normalize_id(str(before_meta.get('merged_into') or ''))
+        if survivor and is_valid_id(survivor):
+            result.add('error',
+                       f'{label} was merged into {fmt_id_display(survivor)} - this record '
+                       'is a tombstone that readers resolve through, so the profile photo '
+                       'lives on the surviving record. Set it there instead.')
+        else:
+            result.add('error',
+                       f'{label} is a merged tombstone, but its merged_into: pointer is '
+                       'missing or malformed, so the surviving record cannot be named. '
+                       f'Find it with `fha find {fmt_id_display(pid)}`. Nothing was written.')
+        return result
+
+    old = str(before_meta.get('profile_photo') or '').strip() or None
+    result.data['old'] = old
+
+    if old == val:
+        result.data['status'] = 'already'
+        result.add('info', f'{label} already has this profile photo - nothing to change.')
+        return result
+
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse(
+            'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit '
+            f'safely. Open {path} and set profile_photo: {val} by hand, then run '
+            '`fha lint`. Nothing was written.')
+    start, end = bounds
+
+    key_lines = _key_line_indexes(lines, start + 1, end, 'profile_photo')
+    new_lines = list(lines)
+    if len(key_lines) > 1:
+        return _refuse(
+            'refused',
+            f'{path.name} has more than one top-level profile_photo: line in its '
+            'header, so the right one to edit cannot be chosen safely. Open '
+            f'{path} and fix the duplicate by hand, then run `fha lint`. '
+            'Nothing was written.')
+    if key_lines and 'profile_photo' not in before_meta:
+        return _refuse(
+            'refused',
+            f'{path.name} has a profile_photo: line that belongs to another '
+            "field's value, not a real profile_photo field, so it cannot be "
+            f'edited safely. Open {path} and add a top-level profile_photo: {val} '
+            'line by hand, then run `fha lint`. Nothing was written.')
+    if key_lines:
+        new_lines[key_lines[0]] = _replace_scalar_line(lines[key_lines[0]], 'profile_photo', val)
+    elif 'profile_photo' in before_meta:
+        return _refuse(
+            'refused',
+            f'the profile_photo field in {path.name} is not written as its own '
+            f'line, so it cannot be edited safely. Open {path} and set '
+            f'profile_photo: {val} by hand, then run `fha lint`. Nothing was written.')
+    else:
+        cr = '\r' if lines[start].endswith('\r') else ''
+        name_lines = _key_line_indexes(lines, start + 1, end, 'name')
+        insert_at = (name_lines[0] + 1) if name_lines else end
+        new_lines.insert(insert_at, f'profile_photo: {val}{cr}')
+
+    new_text = '\n'.join(new_lines)
+    problem = frontmatter_edit_problem(new_text, before_meta=before_meta,
+                                       changed_keys={'profile_photo'})
+    if problem is not None:
+        return _refuse(
+            'refused',
+            f'Refusing to change {label}: {problem}, so saving could corrupt the '
+            f'record. Nothing was written. Open {path} and set profile_photo: {val} '
+            'by hand, then run `fha lint` to check it.')
+
+    old_display = old or '(none)'
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would set {label} profile_photo: {old_display} -> {val}.')
+        for dline in difflib.unified_diff(
+            text.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        write_text_exact(path, reapply_newline(new_text, text))
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere and '
+            'the folder is writable, then retry.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'{label} profile photo is now {val}.', path=path)
+    result.add('info',
+               'Next: reload the workbench (or run `fha site`) to see it on the '
+               'page and in the tree.')
+    return result
+
+
 # ── Shared prelude for every verb below set-living ─────────────────────────────
 
 def _refuse_result(
@@ -1584,6 +1783,17 @@ def run_edit(
     warn_stub = str(before_meta.get('tier') or '').strip().lower() == 'stub'
     verb = 'append to' if append else 'replace'
 
+    # A dropped '[' or ']' turns a `[[S-id|caption]]` wikilink or `![[S-id]]`
+    # photo embed into text the renderer can no longer recognize at all -
+    # it falls through to literal escaped text instead of a link, and an
+    # embed falls through instead of showing the photo (see _EMBED_RE /
+    # _INLINE_RE in site.py, both anchored on a literal `]]`). That failure
+    # is silent on the page, so it is worth flagging here where the human
+    # can still see it and re-check the source text.
+    open_brackets = new_text.count('[[')
+    close_brackets = new_text.count(']]')
+    warn_unbalanced_brackets = open_brackets != close_brackets
+
     if dry_run:
         result.data['status'] = 'dry-run'
         if created:
@@ -1603,6 +1813,13 @@ def run_edit(
                        '<!-- private --> section the new text does not '
                        'repeat, so it would be dropped. Include it in '
                        '--text/--file if you want it kept.')
+            result.exit_code = EXIT_WARNINGS
+        if warn_unbalanced_brackets:
+            result.add('warning',
+                       f'the new ## {heading_text} has {open_brackets} "[[" but '
+                       f'{close_brackets} "]]" - an unbalanced wikilink or photo '
+                       'embed renders as raw text instead of a link or photo. '
+                       'Check for a missing bracket before applying.')
             result.exit_code = EXIT_WARNINGS
         if warn_stub:
             result.add('info',
@@ -1632,6 +1849,13 @@ def run_edit(
                    f"{label}'s old ## {heading_text} had a <!-- private --> "
                    'section that is not in the new text, so it is now gone. '
                    'Nothing else was touched.')
+        result.exit_code = EXIT_WARNINGS
+    if warn_unbalanced_brackets:
+        result.add('warning',
+                   f'{label}\'s new ## {heading_text} has {open_brackets} "[[" but '
+                   f'{close_brackets} "]]" - an unbalanced wikilink or photo embed '
+                   'renders as raw text instead of a link or photo. Check for a '
+                   'missing bracket and edit again if this was not intended.')
         result.exit_code = EXIT_WARNINGS
     if warn_stub:
         result.add('info',
@@ -1763,6 +1987,15 @@ def _cmd_set_living(args: argparse.Namespace) -> int:
     if archive_root is None:
         return EXIT_FAILURE
     return _emit(run_set_living(
+        archive_root, person_id=args.person_id, value=args.value,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _cmd_set_profile_photo(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person set-profile-photo')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_set_profile_photo(
         archive_root, person_id=args.person_id, value=args.value,
         dry_run=bool(getattr(args, 'dry_run', False))))
 
@@ -1916,6 +2149,25 @@ def _add_set_living_arguments(sub: argparse._SubParsersAction) -> None:
     sl.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the one-line change without writing.')
     sl.set_defaults(func=_cmd_set_living)
+
+
+def _add_set_profile_photo_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the set-profile-photo verb on a group subparser (shared by both mains)."""
+    sp = sub.add_parser(
+        'set-profile-photo',
+        help="Set the portrait shown on a person's page and in the tree.",
+        description='Set a person\'s profile_photo: field - a filename, path, or S-id, '
+                    'resolved leniently against the photo catalog when the site is built.',
+    )
+    sp.add_argument('person_id', metavar='P-id',
+                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    sp.add_argument('value', metavar='PHOTO',
+                    help='A filename, path, or S-id identifying the photo.')
+    sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    sp.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the one-line change without writing.')
+    sp.set_defaults(func=_cmd_set_profile_photo)
 
 
 _RELATE_DESCRIPTION = """\
@@ -2082,6 +2334,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
     _add_set_living_arguments(sub)
+    _add_set_profile_photo_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
@@ -2100,6 +2353,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
     _add_set_living_arguments(sub)
+    _add_set_profile_photo_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
