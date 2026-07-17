@@ -13,7 +13,7 @@
     </form>
     <a href="{{ root_prefix }}/review">Review <span class="wb-count" data-wb-counts="review">{{ review_count }}</span></a>
     <a href="{{ root_prefix }}/inbox">Inbox <span class="wb-count" data-wb-counts="inbox">{{ inbox_count }}</span></a>
-    <a href="#" data-wb-open="tpl-publish" title="Rebuild the shareable static site">Publish&hellip;</a>
-    <a href="#" data-wb-reindex title="Re-read the index and re-render (serve renders fresh on every page load)">&#8635;</a>
+    <a href="#" data-wb-open="tpl-publish" data-wb-direct data-wb-apply-label="Rebuild" title="Rebuild the shareable static site">Publish&hellip;</a>
+    <a href="#" data-wb-reindex title="Rebuild the search index, then refresh this page">&#8635;</a>
   </span>
 </div>

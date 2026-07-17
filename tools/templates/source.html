@@ -15,6 +15,8 @@
     <span>record:</span>
     <code>{{ source.record_relpath }}</code>
     <a href="#" data-wb-open-file="{{ source.record_relpath }}">open file</a>
+    {% if source.suggested_count %}<span class="wb-sep">&middot;</span>
+    <span>{{ source.suggested_count }} suggested claim{{ 's' if source.suggested_count != 1 else '' }} below wait{{ '' if source.suggested_count != 1 else 's' }} for <a href="{{ root_prefix }}/review">review</a></span>{% endif %}
   </div>
   {% endif %}
 
@@ -62,7 +64,8 @@
   <p class="empty">No claims recorded for this source.</p>
   {% endif %}
   {% if workbench %}
-  <p><button class="btn btn-sm" data-wb-open="tpl-add-claim" data-wb-args='{{ {"source_id": source.source_id} | tojson }}'>Add a claim&hellip;</button></p>
+  <p><button class="btn btn-sm" data-wb-open="tpl-add-claim" data-wb-args='{{ {"source_id": source.source_id} | tojson }}'>Add a claim&hellip;</button>
+    <span class="wb-later">something this record says that isn't captured above.</span></p>
   {% endif %}
 
   {% if source.files %}
@@ -72,10 +75,12 @@
     <li>
       {% if f.thumb_href %}
       <a href="{{ f.link_href }}"><img class="thumb" src="{{ f.thumb_href }}" alt="{{ f.label }}"></a>
+      <span>{{ f.label }}</span>
       <a class="full-size-link" href="{{ f.link_href }}">full size</a>
       {% elif f.link_href %}<a href="{{ f.link_href }}">{{ f.label }}</a>
       {% else %}{{ f.label }}{% endif %}
       {% if f.note %}<span class="note">{{ f.note }}</span>{% endif %}
+      {% if workbench and f.path %}<a class="wb-fix" href="#" data-wb-open-file="{{ f.path }}">open</a>{% endif %}
     </li>
     {% endfor %}
   </ul>
@@ -84,6 +89,7 @@
   {% if workbench %}
   <h2>Research Notes
     <a class="wb-fix" href="#" data-wb-open="tpl-source-note" data-wb-args='{{ {"source_id": source.source_id} | tojson }}' style="font-weight:400">add&hellip;</a></h2>
+  {% if source.notes_html %}{{ source.notes_html }}{% else %}<p class="empty">(none yet)</p>{% endif %}
   {% endif %}
 </article>
 {% endblock %}

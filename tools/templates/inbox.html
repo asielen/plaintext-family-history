@@ -27,14 +27,15 @@
     {% for item in items %}
     <li>
       <code>{{ item.name }}</code>
-      <span class="note">{{ item.kind }}
+      <span class="note">{{ item.kind_phrase or item.kind }}{% if item.landed %}, {{ item.landed }}{% endif %}
         {% if item.files %}&middot; files:
           {% for f in item.files %}<a href="#" data-wb-open-file="inbox/{{ (item.name ~ f) if item.kind == 'bundle' else f }}">{{ f }}</a>{% if not loop.last %} &middot; {% endif %}{% endfor %}
         {% endif %}
+        {% if item.kind == 'bundle' %}&middot; bundles file the same way (one click, one source){% endif %}
       </span>
       <div class="wb-actions">
         <a href="#" class="wb-fix" data-wb-open-file="{{ item.open_path }}">open file for review</a>
-        <button class="btn btn-primary btn-sm" data-wb-open="tpl-process"
+        <button class="btn btn-primary btn-sm" data-wb-open="{{ 'tpl-process-bundle' if item.kind == 'bundle' else 'tpl-process' }}"
                 data-wb-args='{{ {"file": item.process_path} | tojson }}'>File as a source&hellip;</button>
       </div>
     </li>

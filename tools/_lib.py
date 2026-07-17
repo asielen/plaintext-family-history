@@ -3296,6 +3296,8 @@ def render_stub_content(
     gender: str | None = None,
     birth: str | None = None,
     death: str | None = None,
+    birth_place: str | None = None,
+    death_place: str | None = None,
 ) -> str:
     """Render a §9 person-stub record's frontmatter text (id/aliases/name/…/tier).
 
@@ -3349,10 +3351,18 @@ def render_stub_content(
         lines.append(f'birth: {birth}   # unsourced estimate - a tool will remind you to add a source')
     else:
         lines.append('# birth:   # an honest guess is fine - a tool will remind you to add a source later')
+    # Optional place beside each provisional vital (plan-17 wireframe: the mint
+    # and add-family forms ask "birth date + place, death date + place"). Same
+    # provisional, unsourced standing as birth:/death: - purely frontmatter
+    # family knowledge until a sourced claim supersedes the vital.
+    if birth_place:
+        lines.append(f'birth_place: {yaml_inline(str(birth_place).strip())}   # unsourced, goes with the birth estimate')
     if death is not None:
         lines.append(f'death: {death}   # unsourced estimate - a tool will remind you to add a source')
     else:
         lines.append('# death:   # same here; leave commented until you know')
+    if death_place:
+        lines.append(f'death_place: {yaml_inline(str(death_place).strip())}   # unsourced, goes with the death estimate')
     lines.append(f'created: {datetime.date.today().isoformat()}')
     lines.append('tier: stub')
     lines.append('---')

@@ -1547,15 +1547,13 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('name="fha-csrf"', std)
         self.assertNotIn('name="fha-provisional"', std)
 
-    def test_vital_edit_link_only_offered_for_provisional_rows(self):
-        # P2 codex finding (round 2, PR #30): the summary row's "edit" link
-        # opened the generic milestone modal, which has no way to carry an
-        # existing claim/source id - so "editing" an ACCEPTED (sourced)
-        # vital silently left that claim untouched unless the human
-        # manually re-picked the right source (defaulting to "unsourced"
-        # routes the edit to person.estimate instead). The link must only
-        # appear on a provisional (unsourced-estimate) row, where the
-        # milestone modal's unsourced path is exactly what applies.
+    def test_vital_edit_links_on_every_summary_row(self):
+        # Owner decision, live review 2026-07-16 (reversing the round-2 PR #30
+        # removal): EVERY summary row carries an edit affordance, per the
+        # approved wireframe. A SOURCED vital's edit opens the CLAIM editor
+        # (tpl-claim-edit) with the claim id + current data prefilled - the
+        # claim context whose absence justified the earlier removal - so
+        # editing changes the actual fact instead of minting a duplicate.
         self._seed_person('p-aaaaaaaaaa', name='Accepted Person', living='false',
                           tier='curated', frontmatter_extra='birth: 1899')
         self._seed_source('s-1111111111', 'Birth Record')
@@ -1564,9 +1562,12 @@ class WorkbenchModeTests(_Base):
         self._run_wb()
         wb = self._read('persons/p-aaaaaaaaaa.html')
         # The accepted claim wins over the frontmatter estimate (existing
-        # contract) and carries NO edit link.
+        # contract) - and its edit link carries the claim's own context.
         self.assertNotIn('estimate - unsourced', wb)
-        self.assertNotIn('wb-vital-edit', wb)
+        self.assertIn('wb-vital-edit', wb)
+        self.assertIn('tpl-claim-edit', wb)
+        self.assertIn('C-1111111111', wb)
+        self.assertIn('data-wb-prefill', wb)
 
         self._seed_person('p-bbbbbbbbbb', name='Provisional Person', living='false',
                           tier='curated', frontmatter_extra='birth: 1923')
@@ -1574,6 +1575,9 @@ class WorkbenchModeTests(_Base):
         prov = self._read('persons/p-bbbbbbbbbb.html')
         self.assertIn('estimate - unsourced', prov)
         self.assertIn('wb-vital-edit', prov)
+        # A vital with neither claim nor estimate gets a visible "not
+        # recorded" row with a one-click add (wireframe).
+        self.assertIn('not recorded', prov)
 
     def test_no_workbench_chrome_leaks_into_standalone(self):
         self._seed_person('p-cccccccccc', name='Plain Person', living='false',

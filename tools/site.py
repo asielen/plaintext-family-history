@@ -704,10 +704,16 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 # cards): opens 'add family' scoped to the known child one
                 # generation closer, relation parent - existing modal, no new
                 # capability, matching the "+ add" links elsewhere on this page.
+                # data-wb-fill presets the VISIBLE relation select to parent -
+                # without it, collect() lets the select's non-blank default
+                # ('sibling') silently override the fixed arg, so clicking an
+                # ancestor slot recorded a sibling (owner-reported bug,
+                # live review 2026-07-16).
                 args = html.escape(json.dumps(
                     {'person_id': fmt_id_display(child_pid), 'relation_type': 'parent'}), quote=True)
                 inner = '<span class="ped-name">Unknown &mdash; add</span>'
                 div_attrs = (f' data-wb-open="tpl-add-family" data-wb-args=\'{args}\' '
+                            'data-wb-fill="relation_type=parent" '
                             'title="Create a stub for this ancestor" role="button" tabindex="0"')
         else:
             cls = 'ped-node' + cls_extra
@@ -1013,8 +1019,12 @@ class _SiteBuilder:
         # the same redaction rule as everywhere else.
         self.place_pages.update(self.place_meta)
         for pid, row in self.person_meta.items():
-            if (row['tier'] or '') != 'curated':
-                continue          # stubs/connections get no standalone page (TOOLING §12)
+            if (row['tier'] or '') != 'curated' and not self.workbench:
+                continue          # stubs/connections get no standalone page (TOOLING §12);
+                                  # the WORKBENCH gives every recorded person a page so a
+                                  # stub is viewable and editable in the editing interface
+                                  # (owner decision, live review 2026-07-16) - published
+                                  # and plain --linked output stay curated-only.
             if self.linked or not self._person_is_redacted(row):
                 self.person_pages.add(pid)
 
@@ -1200,6 +1210,8 @@ class _SiteBuilder:
                 return f'<a href="{href}">{name}</a>'
             # A person without a page (a stub): show the name but mark it a stub
             # with a dotted underline, mirroring the tree's stub-node convention.
+            # (In the workbench stubs have pages, so this branch is only reached
+            # outside it - no affordance to attach.)
             return f'<span class="stub-ref">{name}</span>'
         if kind == 'S' and pid in self.source_meta:
             return self._cite_source(pid, page_dir, in_display)
@@ -1219,7 +1231,17 @@ class _SiteBuilder:
         if kind == 'S':
             return ''
         # Unresolved ID token - surfaced as the literal [X-xxxx] form, not hidden
-        # (TOOLING §12 / BUILD M8.1; these are already lint errors).
+        # (TOOLING §12 / BUILD M8.1; these are already lint errors). Workbench:
+        # a claim-named person with no record yet gets the wireframe's mint '+'
+        # right where their reference appears - person.new reuses the P-id
+        # passed via data-wb-args, so every claim naming them keeps pointing
+        # at the same person once the stub exists.
+        if self.workbench and kind == 'P':
+            args = html.escape(json.dumps({'person_id': display}), quote=True)
+            return (f'<mark>[{_escape(display)}]</mark>'
+                    f'<a class="wb-mint" href="#" data-wb-open="tpl-mint" '
+                    f"data-wb-args='{args}' "
+                    f'title="Create a record for {_escape(display)}">+</a>')
         return f'<mark>[{_escape(display)}]</mark>'
 
     def _person_link(self, pid: str, page_dir: Path) -> str:
@@ -1445,9 +1467,11 @@ class _SiteBuilder:
         page_dir = self.sources_dir
 
         citation = ''
+        record_body = ''
         try:
             rec = read_record(self.archive_root / row['path'])
             citation = ' '.join(str(rec['meta'].get('citation', '') or '').split())
+            record_body = rec.get('body') or ''
             if rec['parse_errors']:
                 self.messages.append(
                     f'WARNING: {row["path"]} has a formatting problem '
@@ -1455,6 +1479,21 @@ class _SiteBuilder:
                 )
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); showing the title only.')
+
+        # Workbench: the record's ## Notes section, rendered under the page's
+        # Research Notes heading - the wireframe shows the notes a source-note
+        # apply writes; without this the just-written note is invisible on
+        # reload and the apply reads as a silent failure.
+        notes_html = None
+        if self.workbench and record_body:
+            m = re.search(r'^## Notes[ \t]*\r?$\n(.*?)(?=^## |\Z)', record_body,
+                          re.M | re.S)
+            notes_text = (m.group(1).strip() if m else '')
+            if notes_text:
+                render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+                embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+                notes_html = self._markup(_prose_to_html(
+                    notes_text, render, embed, drop_private=not self.linked))
 
         # A standalone snapshot publishes only the archive's current position -
         # accepted + needs-review. `suggested` (unreviewed AI drafts; "your
@@ -1494,8 +1533,11 @@ class _SiteBuilder:
                 # Workbench-only: raw (not pre-rendered-to-HTML) field values so
                 # the "edit & accept" modal can prefill with the claim's current
                 # data instead of opening blank (PR #30 gap - the biography
-                # editor got this fix, this claim modal never did).
-                'place_text': c['place_text'] or '',
+                # editor got this fix, this claim modal never did). place_text
+                # is the DISPLAY label (registry name when the claim carries a
+                # resolved place_id and no text) so a resolved place never
+                # opens as a blank field the human could overwrite unknowingly.
+                'place_text': self._place_label(c['place_text'], c['place_id']),
                 'place_id': fmt_id_display(c['place_id']) if c['place_id'] else '',
                 'persons_ids': ','.join(fmt_id_display(p['person_id']) for p in person_rows),
             })
@@ -1513,8 +1555,11 @@ class _SiteBuilder:
             'date': row['date_edtf'] or '', 'repository': row['repository'] or '',
             'source_class': row['source_class'] or '', 'claims': claims, 'files': files,
             'portrait': portrait,
-            # Workbench-only (template gates on `workbench`): S-id + record path.
+            # Workbench-only (template gates on `workbench`): S-id + record path,
+            # the record-bar suggested-claims pointer, and the ## Notes render.
             'source_id': fmt_id_display(sid), 'record_relpath': row['path'],
+            'suggested_count': sum(1 for c in claims if c['status'] == 'suggested'),
+            'notes_html': notes_html,
         }
         self._write_page(self.sources_dir / _page_filename(sid), 'source.html',
                          {'source': ctx, 'root_prefix': '..'})
@@ -1550,11 +1595,15 @@ class _SiteBuilder:
                     'note': 'image omitted - tagged to a living person',
                     'link_href': None,
                     'thumb_href': None,
+                    'path': f['path'],
                 })
                 continue
             entry = self._file_entry(f['path'], f['role'], page_dir)
             if entry is None:   # standalone image needing a derivative
                 entry = self._standalone_image_entry(sid, f['path'], f['role'], page_dir)
+            # Workbench: the archive-relative path drives the per-file 'open'
+            # (OS editor via /api/open) affordance the wireframe specifies.
+            entry['path'] = f['path']
             entries.append(entry)
             is_image = Path(f['path']).suffix.lower() in _IMAGE_SUFFIXES
             if is_image and entry.get('thumb_href'):
@@ -1567,7 +1616,8 @@ class _SiteBuilder:
     # - person page (M8.2) -
 
     def build_person_page(self, pid: str) -> None:
-        """Render one curated person page (TOOLING §12 / M8.2)."""
+        """Render one person page (TOOLING §12 / M8.2) - curated persons, plus
+        stub-tier persons in workbench mode (see the person_pages build)."""
         row = self.person_meta[pid]
         page_dir = self.persons_dir
         self._footnotes = {}          # start this page's source-footnote numbering
@@ -1624,6 +1674,14 @@ class _SiteBuilder:
             'living': (row['living'] or 'unknown'),
             'milestone_sources': self._person_milestone_sources(pid) if self.workbench else [],
             'biography_raw': biography_raw if self.workbench else '',
+            # Wireframe wb-pointer: how many suggested claims naming this person
+            # wait in the review queue (0 renders nothing).
+            'open_review_count': (self.conn.execute(
+                "SELECT COUNT(DISTINCT c.id) FROM claims c "
+                "JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.status = 'suggested'", (pid,)
+            ).fetchone()[0] if self.workbench else 0),
+            'is_stub': (row['tier'] or '') == 'stub',
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
@@ -1693,6 +1751,15 @@ class _SiteBuilder:
             f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter}",
             (pid,),
         ).fetchall()
+        claim_persons: dict[str, str] = {}
+        if self.workbench:
+            # Raw person lists per claim, for the sourced-row edit affordance's
+            # prefill (built here so the loop below needs no second query pass).
+            for r in rows:
+                prs = self.conn.execute(
+                    'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY position',
+                    (r['id'],)).fetchall()
+                claim_persons[r['id']] = ','.join(fmt_id_display(p['person_id']) for p in prs)
         # Standalone: withold vitals whose only support is a withheld source; a fact
         # established exclusively by a restricted/DNA/publication_ok=false source must
         # not appear as a public datum with the citation silently redacted. A
@@ -1712,13 +1779,31 @@ class _SiteBuilder:
         for t in _VITAL_ORDER:
             if t in by_type:
                 r = by_type[t]
-                summary.append({
+                row_out = {
                     'label': _VITAL_LABELS[t],
                     'value': r['date_edtf'] or r['value'] or '',
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                     'provisional': False,
-                })
+                    'missing': False,
+                }
+                if self.workbench:
+                    # The wireframe puts an edit affordance on EVERY summary
+                    # row (owner complaint, live review 2026-07-16). A sourced
+                    # vital's edit opens the claim editor prefilled with the
+                    # claim's own data - editing the actual claim, not minting
+                    # a duplicate (resolving the round-2 codex concern that
+                    # removed the link: the modal now carries claim context).
+                    row_out.update({
+                        'claim_id': fmt_id_display(r['id']),
+                        'claim_type': r['type'],
+                        'value_raw': r['value'] or '',
+                        'date_raw': r['date_edtf'] or '',
+                        'place_text_raw': self._place_label(r['place_text'], r['place_id']),
+                        'place_id_raw': fmt_id_display(r['place_id']) if r['place_id'] else '',
+                        'persons_ids': claim_persons.get(r['id'], ''),
+                    })
+                summary.append(row_out)
         # Workbench only (owner decision 2026-07-10, plan 17 BUILD §2.2/§8.3): a
         # provisional birth/death - the unsourced `birth:`/`death:` frontmatter
         # estimate a human knows before the record exists - is surfaced marked
@@ -1731,18 +1816,33 @@ class _SiteBuilder:
             # get a provisional slot is `_lib.PROVISIONAL_VITAL_FIELDS`, not a
             # literal repeated here. Sorted for determinism - a frozenset's
             # iteration order is not guaranteed stable across runs.
+            provisional_shown: set[str] = set()
             for t in sorted(PROVISIONAL_VITAL_FIELDS):
                 if t in by_type:
                     continue   # a sourced claim wins - the estimate is superseded
                 est = self._provisional_vital(pid, t)
                 if est:
+                    place = self._provisional_vital(pid, f'{t}_place') or ''
                     summary.append({
                         'label': _VITAL_LABELS[t],
-                        'value': est,
+                        'value': est if not place else f'{est} - {place}',
                         'place': '',
                         'source_html': '',
                         'provisional': True,
+                        'missing': False,
                     })
+                    provisional_shown.add(t)
+            # Wireframe (person.html "Died - not recorded / add"): a core vital
+            # with neither a claim nor an estimate still gets a row, visibly
+            # absent and one click from being filled. Only the big three - an
+            # absent baptism/burial is normal, not a gap worth a row.
+            for t in ('birth', 'marriage', 'death'):
+                if t in by_type or t in provisional_shown:
+                    continue
+                summary.append({
+                    'label': _VITAL_LABELS[t], 'value': '', 'place': '',
+                    'source_html': '', 'provisional': False, 'missing': True,
+                })
             # Keep the summary in the canonical vital order even after appending.
             order = {label: i for i, label in enumerate(
                 _VITAL_LABELS[t] for t in _VITAL_ORDER)}
@@ -3022,15 +3122,12 @@ class _SiteBuilder:
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
 
-        # Surname A-Z: group curated (non-redacted) people by surname initial.
-        # Workbench only (plan-17 wireframe, home.html - the approved design):
-        # a stub - minted via "Add a person" but not yet promoted to a full
-        # curated page - is listed inline in its surname group too, as a
-        # non-linking `stub-ref` with an "open file" action, so it is never
-        # lost between minting and being fleshed out. TOOLING §12's "a stub
-        # gets no standalone page" still holds - `href` stays unset - this
-        # only makes it findable. Never shown outside the workbench: the
-        # published/standalone snapshot stays curated-only.
+        # Surname A-Z: group people by surname initial. In the workbench every
+        # recorded person is in person_pages (stubs included - owner decision,
+        # live review 2026-07-16), so a stub lists inline in its surname group
+        # as a linked entry marked stub, with an "open file" escape hatch.
+        # Published/standalone output stays curated-only (person_pages already
+        # excludes stubs there).
         by_letter: dict[str, list[dict]] = {}
         for pid in self.person_pages:
             meta = self.person_meta[pid]
@@ -3038,16 +3135,23 @@ class _SiteBuilder:
             surname = (meta['surname'] or name or '?').strip()
             letter = surname[:1].upper() if surname[:1].isalpha() else '#'
             by_letter.setdefault(letter, []).append(
-                {'name': name, 'href': f'persons/{_page_filename(pid)}', 'stub': False})
+                {'name': name, 'href': f'persons/{_page_filename(pid)}',
+                 'stub': (meta['tier'] or '') == 'stub', 'record_relpath': meta['path']})
         if self.workbench:
-            for pid, meta in self.person_meta.items():
-                if (meta['tier'] or '') != 'stub':
-                    continue
-                name = meta['name'] or fmt_id_display(pid)
-                surname = (meta['surname'] or name or '?').strip()
-                letter = surname[:1].upper() if surname[:1].isalpha() else '#'
-                by_letter.setdefault(letter, []).append(
-                    {'name': name, 'href': None, 'stub': True, 'record_relpath': meta['path']})
+            # A person named in claims with NO record at all (lint's E005 set)
+            # is otherwise invisible: list them under '#' with the wireframe's
+            # mint '+' so one click creates their stub REUSING the claim's
+            # P-id (person.new accepts person_id), keeping every claim that
+            # names them pointing at the same person.
+            recordless = [
+                r['person_id'] for r in self.conn.execute(
+                    'SELECT DISTINCT person_id FROM claim_persons')
+                if r['person_id'] not in self.person_meta
+            ]
+            for pid in sorted(recordless):
+                by_letter.setdefault('#', []).append(
+                    {'name': fmt_id_display(pid), 'href': None, 'stub': True,
+                     'recordless': True, 'person_id': fmt_id_display(pid)})
         surnames = [
             {'letter': letter, 'people': sorted(by_letter[letter], key=lambda p: p['name'].lower())}
             for letter in sorted(by_letter)

@@ -91,16 +91,26 @@
       + 'bracket will make a link or photo show as raw text instead.';
   }
 
-  /* Copy form-control values into any [data-wb-sub="<name>"] placeholder. */
+  /* Copy form-control values into any [data-wb-sub="<name>"] placeholder.
+     [data-wb-sub-stem] is the same but strips the extension - the upload
+     modal's sidecar preview needs the STEM (photo.jpg -> photo.notes.md,
+     process.py's pairing rule), not the full name. */
   function substitute(modal) {
-    $all('[data-wb-sub]', modal).forEach(function (el) {
-      var name = el.getAttribute('data-wb-sub');
+    function readField(name) {
       var val = null;
       $all('[name="' + name + '"]', modal).forEach(function (c) {
         if (c.type === 'radio') { if (c.checked) val = c.value; }
         else val = c.value;
       });
+      return val;
+    }
+    $all('[data-wb-sub]', modal).forEach(function (el) {
+      var val = readField(el.getAttribute('data-wb-sub'));
       if (val !== null) el.textContent = val;
+    });
+    $all('[data-wb-sub-stem]', modal).forEach(function (el) {
+      var val = readField(el.getAttribute('data-wb-sub-stem'));
+      if (val !== null) el.textContent = val.replace(/\.[^.\/]+$/, '');
     });
   }
 
@@ -165,6 +175,12 @@
     if (verb) modal.setAttribute('data-wb-verb', verb);
     if (build) modal.setAttribute('data-wb-build', build);
     if (btn.getAttribute('data-wb-args')) modal.setAttribute('data-wb-args', btn.getAttribute('data-wb-args'));
+    var applyLabel = btn.getAttribute('data-wb-apply-label') || tpl.getAttribute('data-wb-apply-label');
+    if (applyLabel) modal.setAttribute('data-wb-apply-label', applyLabel);
+    /* Opener-supplied heading (e.g. the co-occurrence pair's names) - the
+       modal must say WHO it acts on, not just what it does. */
+    var title = btn.getAttribute('data-wb-title');
+    if (title) { var h3 = modal.querySelector('h3'); if (h3) h3.textContent = title; }
 
     /* opener may inject a filename (drop zone) or a person name (mint "+") */
     var fname = btn.getAttribute('data-wb-file-name');
@@ -216,8 +232,10 @@
     $all('textarea[name="text"]', modal).forEach(updateBracketWarning);
 
     /* A "direct" modal (no input form - e.g. Accept as-is, Dispute) jumps
-       straight to a real dry-run preview. */
-    if (btn.hasAttribute('data-wb-direct')) runPreview(modal);
+       straight to a real dry-run preview. Remember it on the modal: its step 0
+       is an empty shell, so the preview foot must not offer a Back button
+       into nothing (wireframe: single-step modals foot Cancel + Apply only). */
+    if (btn.hasAttribute('data-wb-direct')) { modal.setAttribute('data-wb-direct', ''); runPreview(modal); }
     else {
       var focusable = modal.querySelector('input, textarea, select, button');
       if (focusable) try { focusable.focus(); } catch (e) {}
@@ -402,6 +420,8 @@
         if (result.ok && result.data) {
           if (c.verb === 'person.new' && result.data.person_id) {
             modal._run.args.person_id = result.data.person_id;
+          } else if (c.verb === 'person.add_family' && result.data.new_person_id) {
+            modal._run.args.new_person_id = result.data.new_person_id;
           } else if (c.verb === 'claim.new' && result.data.claim_id) {
             modal._run.args.claim_id = result.data.claim_id;
           } else if (c.verb === 'process.file' && result.data.source_id) {
@@ -441,9 +461,15 @@
         cliBlock(result) +
         '<div class="wb-modal-foot">' +
         (dryRun
-          ? ('<button type="button" class="btn" data-wb-back>&larr; Back</button>' +
+          /* No Back on a direct modal - its step 0 is an empty shell, so Back
+             would land on a blank dead-end (wireframe: single-step modals
+             foot Cancel + Apply only). data-wb-apply-label lets a verb name
+             its own apply action ('Rebuild' for publish). */
+          ? ((modal.hasAttribute('data-wb-direct') ? '' :
+              '<button type="button" class="btn" data-wb-back>&larr; Back</button>') +
              '<button type="button" class="btn" data-wb-close>Cancel</button>' +
-             (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>Apply</button>' : ''))
+             (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>'
+                   + esc(modal.getAttribute('data-wb-apply-label') || 'Apply') + '</button>' : ''))
           : ('<button type="button" class="btn btn-primary" data-wb-close>' + (ok ? 'Done' : 'Close') + '</button>')) +
         '</div>';
       showStep(modal, host);
@@ -548,6 +574,10 @@
       if (PROVISIONAL_FIELDS.indexOf(claimType) !== -1) {
         var e = { person_id: subject };
         if (date) e[claimType] = date;
+        /* The place travels too (wireframe: the unsourced summary line is
+           '**Born:** <date> - <place>') - as the provisional
+           birth_place/death_place frontmatter beside the date. */
+        if (placeId || place) e[claimType + '_place'] = placeId || place;
         return { verb: 'person.estimate', args: e };
       }
       if (mtype === 'married') {
@@ -559,12 +589,24 @@
       return { verb: '__unwritable__', args: { mtype: mtype } };
     },
 
-    /* add-family: relate the subject to a looked-up person. `target_id` is set
-       by the lookup; a bare name with no id lets the engine report a plain miss
-       and the modal note points at minting first. */
+    /* add-family: the combined mint+link verb. A lookup pick fills the hidden
+       target_id (collect() then drops the visible name) -> the server just
+       relates. A typed name with no pick -> the server mints a stub AND
+       relates in one apply, echoing both commands (wireframe person.html
+       dry-run). Vitals fields only matter on the mint path; the server
+       ignores them when target_id is set. */
     add_family: function (args) {
       applySexGender(args);
-      return { verb: 'person.relate', args: args };
+      return { verb: 'person.add_family', args: args };
+    },
+
+    /* add-event: fold the cited-sources <select> + its "another source"
+       escape hatch into claim.new's single source_id key. */
+    add_event: function (args) {
+      var pick = args.source_pick; delete args.source_pick;
+      var manual = args.source_manual; delete args.source_manual;
+      args.source_id = (pick === '__other__') ? (manual || '').trim() : (pick || '');
+      return { verb: 'claim.new', args: args };
     }
   };
 
@@ -596,6 +638,14 @@
     if (opts && opts.kind) url += '&kind=' + encodeURIComponent(opts.kind);
     fetch(url).then(function (r) { return r.json(); }).then(function (j) {
       var rows = (j.results || []).map(function (hit) {
+        /* A full-text hit is a snippet, not a record - it has no page to
+           navigate to and no id worth inserting; render it as a plain note
+           (wireframe: text hits are non-clickable snippets). */
+        if (hit.type === 'text') {
+          return '<li><span class="note"><span class="wb-kind">text</span> ' +
+            esc(hit.label || '') + (hit.detail ? ' <span class="note">' + esc(hit.detail) + '</span>' : '') +
+            '</span></li>';
+        }
         var wikilink = '[[' + hit.id + '|' + (hit.label || hit.id) + ']]';
         return '<li><button type="button" class="wb-hit"' +
           ' data-wb-ref="' + esc(wikilink) + '"' +
@@ -603,9 +653,28 @@
           ' data-wb-ref-id="' + esc(hit.id) + '">' +
           '<span class="wb-kind">' + esc(hit.type) + '</span> ' +
           esc(hit.label || hit.id) + ' <span class="wb-mono">' + esc(hit.id) + '</span>' +
+          /* The disambiguating detail line ('b. 1840~ New York', 'stub',
+             a place hierarchy) - fha find computes it for exactly this,
+             so two same-named people are tellable apart (wireframe). */
+          (hit.detail ? ' <span class="note">' + esc(hit.detail) + '</span>' : '') +
           '</button></li>';
       }).join('');
-      listEl.innerHTML = rows || '<li><span class="note">no matches - type more, or use "+ create"</span></li>';
+      /* Person lookups end with a real '+ create' row (wireframe: typeahead-
+         with-create) - it opens the mint modal with the query as the name.
+         The old no-match copy referenced a control that didn't exist. */
+      var createRow = '';
+      if (opts && opts.kind === 'person' && q) {
+        createRow = '<li><button type="button" class="wb-hit" data-wb-open="tpl-mint" ' +
+          'data-wb-name="' + esc(q) + '">+ create "' + esc(q) + '" - mint a stub</button></li>';
+      }
+      listEl.innerHTML = (rows + createRow) ||
+        '<li><span class="note">no matches - type more, or check the spelling</span></li>';
+      /* The search BAR (no kind) gets the wireframe's CLI-parity footer:
+         the search is exactly `fha find --text "<q>"`, said so and copyable. */
+      if ((!opts || !opts.kind) && listEl.closest('.wb-search-results')) {
+        listEl.innerHTML += '<li class="wb-search-echo"><code>fha find --text "' + esc(q) + '"</code>' +
+          '<button type="button" class="btn btn-sm" data-wb-copy>copy</button></li>';
+      }
     }).catch(function () { listEl.innerHTML = '<li><span class="note">lookup failed</span></li>'; });
   }
   var debouncedLookup = debounce(runLookup, 150);
@@ -651,6 +720,11 @@
       var ctrl = rfield && rfield.querySelector('textarea, input.wb-target');
       if (ctrl) {
         var mode = ctrl.getAttribute('data-wb-refmode');   /* 'id' | 'plain' | (wikilink) */
+        /* wb-plain without an explicit refmode means plain too (wireframe
+           rule): a visible place/name field shows the human-readable label,
+           never a raw [[L-...|...]] wikilink - the paired hidden idfield
+           carries the resolved id. */
+        if (!mode && ctrl.classList.contains('wb-plain')) mode = 'plain';
         var ins = mode === 'id' ? t.getAttribute('data-wb-ref-id')
                 : mode === 'plain' ? (t.getAttribute('data-wb-ref-plain') || t.getAttribute('data-wb-ref'))
                 : t.getAttribute('data-wb-ref');
@@ -688,7 +762,15 @@
     return '/' + dir + '/' + id.toLowerCase() + '.html';
   }
 
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeModal(); return; }
+    /* A non-native opener carrying role=button (the pedigree's empty ancestor
+       slots) must honor its own ARIA promise: Enter/Space activates it. */
+    if (e.key === 'Enter' || e.key === ' ') {
+      var t = e.target.closest && e.target.closest('[data-wb-open][role="button"]');
+      if (t) { e.preventDefault(); openModal(t); }
+    }
+  });
 
   document.addEventListener('change', function (e) {
     var m = e.target.closest && e.target.closest('.wb-modal');
@@ -716,6 +798,10 @@
       if (idEl && idEl.value) idEl.value = '';
     }
     if (e.target.matches && e.target.matches('textarea[name="text"]')) updateBracketWarning(e.target);
+    /* typing a new landing name updates the '-> inbox/...' preview live */
+    if (e.target.matches && e.target.matches('input[name="filename"]')) {
+      var fm = e.target.closest('.wb-modal'); if (fm) substitute(fm);
+    }
     var sb = e.target.closest('.wb-search input[name="wbq"]');
     if (sb) {
       var form = sb.closest('.wb-search');
@@ -748,7 +834,10 @@
     var openUpload = function (file) {
       pending = file;
       var m = openModal(drop, drop.getAttribute('data-wb-drop-open'));
-      if (m) { var fi = m.querySelector('[name="filename"]'); if (fi) fi.value = file ? file.name : ''; }
+      if (m) {
+        var fi = m.querySelector('[name="filename"]'); if (fi) fi.value = file ? file.name : '';
+        substitute(m);   /* refresh the '-> inbox/...' destination preview */
+      }
     };
     drop.addEventListener('click', function () { if (fileInput) fileInput.click(); });
     if (fileInput) fileInput.addEventListener('change', function () {
@@ -774,6 +863,12 @@
       if (!pending) { showError(modal, 'No file chosen. Close and drop a file again.'); return; }
       var fd = new FormData();
       fd.append('file', pending, pending.name);
+      /* The File field is editable (wireframe): the name left in it is the
+         name that lands in inbox/ - server-side sanitized like any other. */
+      var fname = modal.querySelector('[name="filename"]');
+      if (fname && fname.value.trim() && fname.value.trim() !== pending.name) {
+        fd.append('filename', fname.value.trim());
+      }
       var what = modal.querySelector('[name="what"]'); if (what && what.value.trim()) fd.append('what', what.value);
       var who = modal.querySelector('[name="who"]'); if (who && who.value.trim()) fd.append('who', who.value);
       setBusy(modal, true);

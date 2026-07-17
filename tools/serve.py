@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import hmac
 import io
 import json
@@ -595,6 +596,7 @@ def gather_review(state: ServeState) -> dict:
         try:
             rows = conn.execute(
                 "SELECT c.id, c.type, c.value, c.date_edtf, c.place_text, c.place_id, c.confidence, "
+                "c.evidence, c.anchor, c.notes, "
                 "c.source_id, s.title AS source_title "
                 "FROM claims c LEFT JOIN sources s ON c.source_id = s.id "
                 "WHERE c.status = 'suggested' ORDER BY c.source_id, c.id"
@@ -615,11 +617,18 @@ def gather_review(state: ServeState) -> dict:
                 stitle = r['source_title'] or (fmt_id_display(sid) if sid else 'no source')
                 if sid:
                     sources[sid] = stitle
+                # The evidence excerpt + locator the reviewer judges from
+                # (the wireframe's blockquote.citation on every queue item -
+                # without it the queue demands opening each source by hand).
+                excerpt = (r['evidence'] or '').strip()
+                cite_bits = [stitle]
+                if r['anchor']:
+                    cite_bits.append(str(r['anchor']))
                 items.append({
                     'kind': 'suggested claim',
                     'group_source': sid or 'unsourced',
                     'group_source_title': stitle,
-                    'group_persons': people[:1],
+                    'group_persons': people,
                     'claim_id': fmt_id_display(cid),
                     'headline': r['value'] or f'{r["type"]} claim',
                     'meta': ' - '.join(x for x in (
@@ -631,6 +640,9 @@ def gather_review(state: ServeState) -> dict:
                     ) if x),
                     'person_labels': pnames,
                     'actions': 'claim',
+                    'excerpt': excerpt,
+                    'cite': ' - '.join(cite_bits) if excerpt else '',
+                    'note': (r['notes'] or '').strip(),
                     # Raw (not display-formatted) fields so the "edit & accept"
                     # modal can prefill with the claim's current data instead
                     # of opening blank (same gap the biography editor already
@@ -663,17 +675,31 @@ def gather_review(state: ServeState) -> dict:
                         # Register the source so the review page has a slot to
                         # render this item into (its group_source below).
                         sources.setdefault(ca_src, ca.get('source_title') or fmt_id_display(ca_src))
+                    # Wireframe: the chip is the noun, the headline names the
+                    # relation, the pair rows are headed by their SOURCE titles
+                    # (corroboration is about independent sources - hiding
+                    # which two defeats the judgment), and the meta says what
+                    # matched.
+                    noun = 'contradiction' if kind == 'contradicts' else 'corroboration'
+                    verb_word = 'contradict' if kind == 'contradicts' else 'corroborate'
+                    ca_title = ca.get('source_title') or (fmt_id_display(ca_src) if ca_src else 'no source')
+                    cb_src = cb.get('source_id')
+                    cb_title = cb.get('source_title') or (fmt_id_display(cb_src) if cb_src else 'no source')
                     items.append({
-                        'kind': kind,
+                        'kind': noun,
                         'group_source': ca_src or 'unsourced',
                         'group_source_title': ca.get('source_title') or '',
                         'group_persons': [pid] if pid else [],
                         'claim_a': fmt_id_display(ca['id']),
                         'claim_b': fmt_id_display(cb['id']),
-                        'headline': 'Do these two claims relate?',
+                        'headline': f'Do these two claims {verb_word} each other?',
                         'pair_a': f'{ca.get("value") or ca.get("type")} ({fmt_id_display(ca["id"])})',
                         'pair_b': f'{cb.get("value") or cb.get("type")} ({fmt_id_display(cb["id"])})',
-                        'meta': f'proposed by fha xref - {kind} candidate for {pname}',
+                        'pair_a_source': ca_title,
+                        'pair_b_source': cb_title,
+                        'pairs_with': cb_title,
+                        'meta': (f'proposed by fha xref - {noun} candidate for {pname}'
+                                 f' - matched on person + {ca.get("type") or "claim"} type'),
                         'actions': 'xref',
                     })
     except Exception:
@@ -691,25 +717,61 @@ def gather_review(state: ServeState) -> dict:
                 src_id = src_ids[0] if src_ids else None
                 if src_id:
                     sources.setdefault(src_id, fmt_id_display(src_id))
+                src_title = sources.get(src_id, '') if src_id else ''
+                headline = f'{persons[pa]} & {persons[pb]} appear together'
+                if src_title and not src_title.upper().startswith('S-'):
+                    headline += f' in {src_title}'
                 items.append({
                     'kind': 'co-occurrence',
                     'group_source': src_id or 'unsourced',
-                    'group_source_title': sources.get(src_id, '') if src_id else '',
-                    'group_persons': [pa],
+                    'group_source_title': src_title,
+                    # Both people - the by-person view must list the pair under
+                    # each of them (wireframe note: "real serve would list an
+                    # item under every person it touches").
+                    'group_persons': [pa, pb],
                     'person_a': fmt_id_display(pa),
                     'person_b': fmt_id_display(pb),
                     'source_id': fmt_id_display(src_id) if src_id else '',
-                    'headline': f'{persons[pa]} & {persons[pb]} appear together',
-                    'meta': f'{c.get("source_count", 0)} source(s)',
+                    'headline': headline,
+                    'meta': (f'{c.get("source_count", 0)} source(s) - '
+                             f'{fmt_id_display(pa)} & {fmt_id_display(pb)}'),
                     'actions': 'cooccur',
+                    'pair_title': f'{persons[pa]} & {persons[pb]}',
                 })
     except Exception:
         pass
 
+    # A co-occurrence-only source registered above knows only its S-id; give
+    # its section header the real title (wireframe shows the full source title).
+    # Same pass: whether each by-person header's person has a page to link
+    # ('open person', wireframe) and whether they are a stub.
+    person_rows: dict[str, dict] = {}
+    conn2 = open_index_db(root, ('sources', 'persons'), strict=False)
+    if conn2 is not None:
+        try:
+            for sid, t in list(sources.items()):
+                if t != fmt_id_display(sid):
+                    continue
+                row = conn2.execute('SELECT title FROM sources WHERE id = ?', (sid,)).fetchone()
+                if row and row['title']:
+                    sources[sid] = row['title']
+            for pid in persons:
+                row = conn2.execute('SELECT tier FROM persons WHERE id = ?', (pid,)).fetchone()
+                if row is not None:
+                    person_rows[pid] = {'has_page': True,
+                                        'stub': (row['tier'] or '') == 'stub'}
+        except Exception:
+            pass
+        finally:
+            conn2.close()
+
     return {
         'items': items,
         'sources': [{'id': sid, 'title': t} for sid, t in sources.items()],
-        'persons': [{'id': pid, 'name': n} for pid, n in persons.items()],
+        'persons': [{'id': pid, 'name': n,
+                     'has_page': person_rows.get(pid, {}).get('has_page', False),
+                     'stub': person_rows.get(pid, {}).get('stub', False)}
+                    for pid, n in persons.items()],
     }
 
 
@@ -802,6 +864,23 @@ def gather_inbox(state: ServeState) -> dict:
                 'files': [p.name], 'open_path': rel, 'process_path': rel, 'sidecar': None,
             })
         consumed.add(p.name)
+
+    # Wireframe (inbox.html): each item is annotated in plain language with
+    # the date it landed, not a machine token - 'a capture bundle from the
+    # browser companion, 2026-06-30' beats 'bundle'.
+    kind_phrases = {
+        'bundle': 'a capture bundle (files that belong together)',
+        'asset+note': 'a file with a note beside it',
+        'note': 'loose notes dropped in by hand',
+        'asset': 'a file waiting for context',
+    }
+    for item in items:
+        item['kind_phrase'] = kind_phrases.get(item['kind'], item['kind'])
+        try:
+            target = inbox / item['name'].rstrip('/')
+            item['landed'] = datetime.date.fromtimestamp(target.stat().st_mtime).isoformat()
+        except OSError:
+            item['landed'] = ''
 
     return {'items': items}
 
@@ -984,21 +1063,77 @@ def _verb_person_new(state, kw, dry_run):
     return person.run_new(
         state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
         birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run,
+        birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
         # Threaded back in by the workbench's Apply step from the id its own
         # earlier dry-run preview minted and showed the human, so Apply
         # commits exactly that person instead of `run_new` minting a second,
-        # different P-id (P2 codex finding, round 5, PR #30). The CLI
-        # (`fha person new`) never sends this - the schema key exists only
-        # for this verb's own round-trip.
+        # different P-id (P2 codex finding, round 5, PR #30). The mint '+'
+        # next to a claim-named person with no record passes it too, so the
+        # stub REUSES the P-id every claim already points at (plan-17
+        # wireframe: "every claim that names them keeps pointing at them").
         person_id=kw.get('person_id'))
 
 
 def _echo_person_new(kw):
     parts = ['fha person new', _q(kw.get('name', ''))]
-    for flag in ('sex', 'gender', 'birth', 'death'):
-        if kw.get(flag):
-            parts += [f'--{flag}', _q(kw[flag])]
+    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place'):
+        key = flag.replace('-', '_')
+        if kw.get(key):
+            parts += [f'--{flag}', _q(kw[key])]
     return ' '.join(parts)
+
+
+def _verb_add_family(state, kw, dry_run):
+    """The wireframe's combined add-family flow: link an existing person when
+    the lookup resolved one (`target_id`), else mint a stub from the typed
+    name FIRST and relate the subject to the fresh stub - two engine calls,
+    one button, echoing both commands (exactly the wireframe's dry-run,
+    person.html:316-322). The minted id round-trips via data['new_person_id']
+    so Apply commits the same stub the preview showed."""
+    target = str(kw.get('target_id') or '').strip()
+    if target:
+        return person.run_relate(
+            state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
+            target, dry_run=dry_run)
+    name = str(kw.get('name') or '').strip()
+    minted = person.run_new(
+        state.archive_root, name, sex=kw.get('sex'), gender=kw.get('gender'),
+        birth=kw.get('birth'), death=kw.get('death'),
+        birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
+        dry_run=dry_run, person_id=kw.get('new_person_id'))
+    if not minted.ok or not minted.data.get('person_id'):
+        return minted
+    new_pid = minted.data['person_id']
+    minted.data['new_person_id'] = new_pid
+    # Dry-run: the stub does not exist on disk yet, so run_relate would refuse
+    # the target as unknown - narrate the second step instead of running it.
+    # Live: the stub was just written, so the relate runs for real.
+    if dry_run:
+        minted.add('info',
+                   f'[dry-run] Would then record {kw.get("relation_type", "?")}: '
+                   f'{new_pid} on {kw.get("person_id", "?")} as a hypothesis '
+                   '(unsourced family-tie belief, SPEC §9).')
+        return minted
+    related = person.run_relate(
+        state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
+        new_pid, dry_run=False)
+    for m in related.messages:
+        minted.messages.append(m)
+    for p in related.changed:
+        minted.note_changed(p)
+    if not related.ok:
+        minted.ok = False
+        minted.exit_code = max(minted.exit_code, related.exit_code)
+    return minted
+
+
+def _echo_add_family(kw):
+    if str(kw.get('target_id') or '').strip():
+        return _echo_relate(kw)
+    mint = _echo_person_new(kw)
+    rel = (f'fha person relate {kw.get("person_id", "?")} '
+           f'--{kw.get("relation_type", "sibling")} <new P-id>')
+    return f'{mint} && {rel}'
 
 
 def _verb_relate(state, kw, dry_run):
@@ -1021,15 +1156,21 @@ def _echo_relate(kw):
 def _verb_estimate(state, kw, dry_run):
     return person.run_estimate(
         state.archive_root, kw.get('person_id', ''),
-        birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run)
+        birth=kw.get('birth'), death=kw.get('death'),
+        birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
+        dry_run=dry_run)
 
 
 def _echo_estimate(kw):
     parts = ['fha person estimate', kw.get('person_id', '?')]
     if kw.get('birth'):
         parts += ['--birth', _q(kw['birth'])]
+    if kw.get('birth_place'):
+        parts += ['--birth-place', _q(kw['birth_place'])]
     if kw.get('death'):
         parts += ['--death', _q(kw['death'])]
+    if kw.get('death_place'):
+        parts += ['--death-place', _q(kw['death_place'])]
     return ' '.join(parts)
 
 
@@ -1248,7 +1389,20 @@ def _echo_capture_path(kw):
 
 def _verb_publish(state, kw, dry_run):
     out_dir = state.archive_root / 'generated' / 'site'
-    return state.site_mod.run_site(state.archive_root, out_dir, linked=False, dry_run=dry_run)
+    result = state.site_mod.run_site(state.archive_root, out_dir, linked=False, dry_run=dry_run)
+    if dry_run:
+        # Wireframe (home.html Publish dry run): tell the human when the
+        # shareable snapshot was last built, so "rebuild or not" is judgeable.
+        try:
+            marker = out_dir / 'index.html'
+            if marker.is_file():
+                built = datetime.date.fromtimestamp(marker.stat().st_mtime).isoformat()
+                result.add('info', f'Last built: {built}.')
+            else:
+                result.add('info', 'Never built yet - this will be the first snapshot.')
+        except OSError:
+            pass
+    return result
 
 
 def _echo_publish(kw):
@@ -1337,12 +1491,23 @@ VERBS: dict[str, dict] = {
                                  'run': _verb_set_profile_photo, 'echo': _echo_set_profile_photo,
                                  'reindex': 'full'},
     'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
-                             'birth': 'str', 'death': 'str', 'person_id': 'str'},
+                             'birth': 'str', 'death': 'str', 'person_id': 'str',
+                             'birth_place': 'str', 'death_place': 'str'},
                    'run': _verb_person_new, 'echo': _echo_person_new, 'reindex': 'full'},
     'person.relate': {'schema': {'person_id': 'str', 'relation_type': 'str', 'target_id': 'str',
                                 'subtype': 'str', 'reciprocal': 'bool'},
                       'run': _verb_relate, 'echo': _echo_relate, 'reindex': 'full'},
-    'person.estimate': {'schema': {'person_id': 'str', 'birth': 'str', 'death': 'str'},
+    # The wireframe's combined add-family: link an existing person, or mint a
+    # stub from a typed name and relate to it in one apply (two engine calls,
+    # both echoed - the wireframe's own dry-run shows two commands).
+    'person.add_family': {'schema': {'person_id': 'str', 'relation_type': 'str',
+                                    'target_id': 'str', 'name': 'str', 'sex': 'str',
+                                    'gender': 'str', 'birth': 'str', 'birth_place': 'str',
+                                    'death': 'str', 'death_place': 'str',
+                                    'new_person_id': 'str'},
+                          'run': _verb_add_family, 'echo': _echo_add_family, 'reindex': 'full'},
+    'person.estimate': {'schema': {'person_id': 'str', 'birth': 'str', 'death': 'str',
+                                  'birth_place': 'str', 'death_place': 'str'},
                         'run': _verb_estimate, 'echo': _echo_estimate, 'reindex': 'full'},
     'person.edit': {'schema': {'person_id': 'str', 'section': 'str', 'text': 'str', 'append': 'bool'},
                     'run': _verb_person_edit, 'echo': _echo_person_edit, 'reindex': 'full'},
@@ -1717,6 +1882,15 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
     else:
         payload = _msg_payload(True, f'added inbox/{dest.name}'
                                + (' with a note beside it' if len(written) > 1 else ''))
+        # Wireframe (inbox.html Applied step): say what happens next, not just
+        # what landed - the guidance is the difference between an inbox that
+        # teaches and a bare confirmation.
+        payload['messages'].append({
+            'level': 'info',
+            'text': 'It waits there until you click "File as a source...", run '
+                    '`fha process`, or ask Claude to process the inbox.',
+            'next_step': None,
+        })
     if snapshot_error is not None:
         payload['messages'].append({
             'level': 'warning',
@@ -2020,6 +2194,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         filename, data = parsed['file']
         text = parsed['text']
+        # Wireframe: the File field is editable, so 'IMG_2043.jpg' can land as
+        # a meaningful name. A typed override goes through the exact same
+        # `_sanitize_basename` confinement as the multipart name.
+        typed = (text.get('filename') or '').strip()
+        if typed:
+            filename = typed
         code, payload = run_api_upload(self.state, filename, data,
                                        what=text.get('what', ''), who=text.get('who', ''))
         self._send_json(code, payload)

@@ -39,7 +39,17 @@
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>
   <ul class="index-list">
-    {% for p in group.people %}<li>{% if p.stub %}<span class="stub-ref">{{ p.name }}</span> <a class="wb-fix" href="#" data-wb-open-file="{{ p.record_relpath }}" title="Open this stub's record file">open file</a>{% else %}<a href="{{ p.href }}">{{ p.name }}</a>{% endif %}</li>{% endfor %}
+    {% for p in group.people %}<li>
+      {%- if p.recordless -%}
+        {#- Named in claims, no record at all: the mint '+' creates their stub
+            REUSING the claim's P-id, so every claim keeps pointing at them. -#}
+        <span class="stub-ref">{{ p.name }}</span> <a class="wb-mint" href="#" data-wb-open="tpl-mint" data-wb-args='{{ {"person_id": p.person_id} | tojson }}' title="Create a record for {{ p.name }}">+</a>
+      {%- elif p.stub -%}
+        <a class="stub-ref" href="{{ p.href }}">{{ p.name }}</a> <span class="wb-later">stub</span> <a class="wb-fix" href="#" data-wb-open-file="{{ p.record_relpath }}" title="Open this stub's record file">open file</a>
+      {%- else -%}
+        <a href="{{ p.href }}">{{ p.name }}</a>
+      {%- endif -%}
+    </li>{% endfor %}
   </ul>
   {% endfor %}
   {% else %}

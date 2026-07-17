@@ -866,6 +866,7 @@ def run_new(
     archive_root: Path, name: str, sex: str | None = None, gender: str | None = None,
     birth: str | None = None, death: str | None = None, dry_run: bool = False,
     person_id: str | None = None,
+    birth_place: str | None = None, death_place: str | None = None,
 ) -> Result:
     """Mint one P-id, render its stub, and write it under people/stubs/;
     return a Result.
@@ -978,7 +979,11 @@ def run_new(
 
     content = render_stub_content(
         pid, clean_name, sex=sex_clean, gender=gender,
-        birth=fields.get('birth'), death=fields.get('death'))
+        birth=fields.get('birth'), death=fields.get('death'),
+        # A place with no date still records (family knowledge is often
+        # "born in Kansas, no idea when") - places are free text, unvalidated.
+        birth_place=(str(birth_place).strip() or None) if birth_place else None,
+        death_place=(str(death_place).strip() or None) if death_place else None)
 
     def _add_new_messages() -> None:
         for field, note in gloss.items():
@@ -1424,6 +1429,7 @@ def _accepted_vital_claim_exists(archive_root: Path, pid: str, field: str) -> bo
 def run_estimate(
     archive_root: Path, person_id: str, birth: str | None = None,
     death: str | None = None, dry_run: bool = False,
+    birth_place: str | None = None, death_place: str | None = None,
 ) -> Result:
     """Write the provisional, unsourced birth:/death: estimates (SPEC §9);
     return a Result.
@@ -1432,10 +1438,16 @@ def run_estimate(
     do for that field), or the literal string `'-'` to CLEAR the field
     (remove the line), or a date string to set - accepted as strict EDTF
     (`is_valid_edtf`) or loose human wording (`normalize_date`, "circa 1870"
-    -> "1870~"). At least one of the two must be given. Both dates are
+    -> "1870~"). At least one field must be given. Both dates are
     validated BEFORE any file is touched, so a bad second date never leaves
     the first one written - `estimate --birth 1870 --death nonsense` writes
     nothing and explains only the date that failed.
+
+    `birth_place`/`death_place` are the same provisional standing for the
+    matching place (plan-17 wireframe: birth date + place, death date +
+    place asked together): free text, no validation beyond non-blank, `'-'`
+    clears, written as `birth_place:`/`death_place:` frontmatter beside the
+    dates and shown on the workbench's provisional summary rows.
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'path', 'birth', 'death'}. A field already
@@ -1446,14 +1458,15 @@ def run_estimate(
         'status': None, 'person_id': None, 'path': None, 'birth': None, 'death': None,
     })
 
-    if birth is None and death is None:
+    if birth is None and death is None and birth_place is None and death_place is None:
         return _refuse_result(
             result, 'refused',
-            'estimate needs at least one date to record - add --birth DATE, '
-            '--death DATE, or both. Use `-` to clear a field instead of a '
-            'date, e.g. `fha person estimate P-... --birth -`.')
+            'estimate needs at least one field to record - add --birth DATE, '
+            '--death DATE, --birth-place/--death-place PLACE, or several. Use '
+            '`-` to clear a field instead of a value, e.g. '
+            '`fha person estimate P-... --birth -`.')
 
-    fields: dict[str, str | None] = {}   # field -> target EDTF, or None to clear
+    fields: dict[str, str | None] = {}   # field -> target value, or None to clear
     gloss: dict[str, str] = {}           # field -> plain-language note (only when normalized)
     for field, raw in (('birth', birth), ('death', death)):
         if raw is None:
@@ -1471,6 +1484,13 @@ def run_estimate(
         fields[field] = normalized
         if normalized != raw:
             gloss[field] = _edtf_gloss(normalized)
+    for field, raw in (('birth_place', birth_place), ('death_place', death_place)):
+        if raw is None:
+            continue
+        raw = str(raw).strip()
+        if not raw:
+            continue
+        fields[field] = None if raw == '-' else raw
 
     owner = _locate_person(archive_root, person_id, result)
     if owner is None:
@@ -1536,19 +1556,23 @@ def run_estimate(
                     fresh_insert_at -= 1
             continue
 
+        # Free-text place values go through yaml_inline (a colon or quote in
+        # "Fairview: the old township" must not corrupt the header); dates
+        # are bare EDTF scalars and stay unquoted, as always.
+        written_value = yaml_inline(target) if field.endswith('_place') else target
         if real_lines:
-            new_lines[real_lines[0]] = f'{field}: {target}{cr}'
+            new_lines[real_lines[0]] = f'{field}: {written_value}{cr}'
         elif commented:
-            new_lines[commented[0]] = f'{field}: {target}{cr}'
+            new_lines[commented[0]] = f'{field}: {written_value}{cr}'
         else:
             if fresh_insert_at is None:
                 living_lines = _key_line_indexes(new_lines, start + 1, end, 'living')
                 fresh_insert_at = (living_lines[0] + 1) if living_lines else end
-            new_lines.insert(fresh_insert_at, f'{field}: {target}{cr}')
+            new_lines.insert(fresh_insert_at, f'{field}: {written_value}{cr}')
             end += 1
             fresh_insert_at += 1
 
-        if _accepted_vital_claim_exists(archive_root, pid, field):
+        if field in ('birth', 'death') and _accepted_vital_claim_exists(archive_root, pid, field):
             warn_claim_wins.append(field)
 
     new_text = '\n'.join(new_lines)
@@ -1979,6 +2003,8 @@ def _cmd_new(args: argparse.Namespace) -> int:
     return _emit(run_new(
         archive_root, name=args.name, sex=args.sex, gender=args.gender,
         birth=args.birth, death=args.death,
+        birth_place=getattr(args, 'birth_place', None),
+        death_place=getattr(args, 'death_place', None),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -2029,6 +2055,8 @@ def _cmd_estimate(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return _emit(run_estimate(
         archive_root, person_id=args.person_id, birth=args.birth, death=args.death,
+        birth_place=getattr(args, 'birth_place', None),
+        death_place=getattr(args, 'death_place', None),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -2122,8 +2150,12 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
                     help='Free-text gender/identity - omit unless there is something to record.')
     nw.add_argument('--birth', metavar='DATE',
                     help='A provisional, unsourced birth date or estimate.')
+    nw.add_argument('--birth-place', metavar='PLACE', dest='birth_place',
+                    help='A provisional, unsourced birth place (free text).')
     nw.add_argument('--death', metavar='DATE',
                     help='A provisional, unsourced death date or estimate.')
+    nw.add_argument('--death-place', metavar='PLACE', dest='death_place',
+                    help='A provisional, unsourced death place (free text).')
     nw.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     nw.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -2243,8 +2275,12 @@ def _add_estimate_arguments(sub: argparse._SubParsersAction) -> None:
                     help='The person to update (e.g. P-2b3c4d5e6f).')
     es.add_argument('--birth', metavar='DATE',
                     help='A birth date/estimate, or - to clear it.')
+    es.add_argument('--birth-place', metavar='PLACE', dest='birth_place',
+                    help='A provisional birth place (free text), or - to clear it.')
     es.add_argument('--death', metavar='DATE',
                     help='A death date/estimate, or - to clear it.')
+    es.add_argument('--death-place', metavar='PLACE', dest='death_place',
+                    help='A provisional death place (free text), or - to clear it.')
     es.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     es.add_argument('--dry-run', action='store_true', dest='dry_run',

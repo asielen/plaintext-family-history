@@ -87,6 +87,27 @@ tr.wb-row-actions td { padding-top: var(--space-2); }
 tr.wb-row-actions .wb-actions { margin-top: 0; }
 .wb-fix { font-family: var(--font-sans); font-size: var(--text-xs); white-space: nowrap; color: var(--accent); }
 
+/* ---- "+" mint-a-stub: follows any named-but-recordless person (wireframe) ---- */
+a.wb-mint { display: inline-flex; align-items: center; justify-content: center;
+  width: 1.05em; height: 1.05em; margin-left: 3px; vertical-align: 1px;
+  font-family: var(--font-sans); font-size: 0.78em; font-weight: 600; line-height: 1;
+  color: var(--accent); border: 1px dashed var(--rule-strong); border-radius: 999px;
+  text-decoration: none; }
+a.wb-mint:hover { border-color: var(--accent); background: var(--surface); }
+
+/* pointer chip: "N review items touch this person" (wireframe) */
+.wb-pointer { font-family: var(--font-sans); font-size: var(--text-xs);
+  border: 1px solid var(--rule-strong); background: var(--surface);
+  padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-5);
+  max-width: var(--measure); }
+
+/* the search dropdown's CLI-parity footer: `fha find --text "..."` + copy */
+.wb-search-echo { display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-xs); border-top: 1px solid var(--rule);
+  padding: var(--space-1) var(--space-2); }
+.wb-search-echo code { background: none; }
+.wb-search-echo code::before { content: "$ "; color: var(--muted); }
+
 /* ---- modal: dry-run -> apply ---- */
 .wb-overlay { position: fixed; inset: 0; background: rgba(42, 36, 32, 0.45); z-index: 70;
   display: flex; align-items: flex-start; justify-content: center;
