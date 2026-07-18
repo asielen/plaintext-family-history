@@ -181,6 +181,22 @@ pre.wb-diff { margin: 0 0 var(--space-3); white-space: pre-wrap; font-size: var(
 .wb-row2 > .wb-field { flex: 1 1 10rem; margin: 0; }
 .wb-optional { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); }
 
+/* ---- append-log entries with their own edit buttons ---- */
+/* The link is always in the layout (space reserved by padding) but only
+   visible while the entry is hovered or the link itself is focused - a log
+   of many notes stays readable, and keyboard users still reach every one. */
+.wb-log-entry { position: relative; max-width: var(--measure); padding-right: 3.5rem; }
+.wb-log-entry a.wb-entry-edit { position: absolute; top: 0; right: 0;
+  font-family: var(--font-sans); font-size: var(--text-xs); color: var(--accent);
+  text-decoration: none; white-space: nowrap; visibility: hidden; }
+.wb-log-entry:hover a.wb-entry-edit, .wb-log-entry a.wb-entry-edit:focus { visibility: visible; }
+.wb-log-entry a.wb-entry-edit:hover { text-decoration: underline; }
+
+/* resolved names under an ID field: "Margaret Cole (P-...) · Thomas (P-...)" */
+.wb-id-names { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
+  margin: var(--space-1) 0 0; }
+.wb-id-names[hidden] { display: none; }
+
 /* ---- inline reference lookup (name -> ID resolver) ---- */
 .wb-lookuptoggle { display: inline-block; margin-top: 5px; font-family: var(--font-sans);
   font-size: var(--text-xs); color: var(--accent); background: none; border: none;

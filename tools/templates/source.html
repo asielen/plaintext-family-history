@@ -89,7 +89,16 @@
   {% if workbench %}
   <h2>Research Notes
     <a class="wb-fix" href="#" data-wb-open="tpl-source-note" data-wb-args='{{ {"source_id": source.source_id} | tojson }}' style="font-weight:400">add&hellip;</a></h2>
-  {% if source.notes_html %}{{ source.notes_html }}{% else %}<p class="empty">(none yet)</p>{% endif %}
+  {%- if source.notes_entries %}
+  {#- One edit button per note; the modal rewrites just that paragraph
+      (source.edit_note names it by its exact current text). -#}
+  {% for e in source.notes_entries %}
+  <div class="wb-log-entry">{{ e.html }}
+    <a class="wb-entry-edit" href="#" data-wb-open="tpl-edit-source-note"
+       data-wb-args='{{ {"source_id": source.source_id, "old_text": e.raw} | tojson }}'
+       data-wb-prefill='{{ {"text": e.raw} | tojson }}'>edit&hellip;</a></div>
+  {% endfor %}
+  {%- elif source.notes_html %}{{ source.notes_html }}{% else %}<p class="empty">(none yet)</p>{% endif %}
   {% endif %}
 </article>
 {% endblock %}

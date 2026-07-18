@@ -45,7 +45,9 @@
             REUSING the claim's P-id, so every claim keeps pointing at them. -#}
         <span class="stub-ref">{{ p.name }}</span> <a class="wb-mint" href="#" data-wb-open="tpl-mint" data-wb-args='{{ {"person_id": p.person_id} | tojson }}' title="Create a record for {{ p.name }}">+</a>
       {%- elif p.stub -%}
-        <a class="stub-ref" href="{{ p.href }}">{{ p.name }}</a> <span class="wb-later">stub</span> <a class="wb-fix" href="#" data-wb-open-file="{{ p.record_relpath }}" title="Open this stub's record file">open file</a>
+        {#- No "open file" here: stubs are editable on their own page now, and
+            the person page keeps its open-file link for the file-browser path. -#}
+        <a class="stub-ref" href="{{ p.href }}">{{ p.name }}</a> <span class="wb-later">stub</span>
       {%- else -%}
         <a href="{{ p.href }}">{{ p.name }}</a>
       {%- endif -%}
@@ -64,10 +66,13 @@
   {% endif %}
 
   <h2 id="sources">Sources</h2>
-  {% if sources %}
+  {% if source_groups %}
+  {% for group in source_groups %}
+  <h3>{{ group.label }}</h3>
   <ul class="index-list">
-    {% for s in sources %}<li><a href="{{ s.href }}">{{ s.title }}</a></li>{% endfor %}
+    {% for s in group.sources %}<li><a href="{{ s.href }}">{{ s.title }}</a></li>{% endfor %}
   </ul>
+  {% endfor %}
   {% else %}
   <p class="empty">No sources are published yet.</p>
   {% endif %}

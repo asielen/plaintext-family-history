@@ -6,15 +6,57 @@
 
   <dl class="meta">
     {% if place.hierarchy %}<dt>Location</dt><dd>{{ place.hierarchy }}</dd>{% endif %}
-    {% if place.alt_names %}<dt>Also known as</dt><dd>{{ place.alt_names | join(', ') }}</dd>{% endif %}
-    {% if place.map_url %}<dt>Map</dt><dd><a href="{{ place.map_url }}">View on OpenStreetMap</a></dd>{% endif %}
+    {% if place.alt_names or workbench %}
+    <dt>Also known as</dt><dd>{% if place.alt_names %}{{ place.alt_names | join(', ') }}{% else %}<span class="empty">none recorded</span>{% endif %}{% if workbench %}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-place-aka"
+         data-wb-args='{{ {"place_id": place.display_id} | tojson }}'
+         data-wb-prefill='{{ {"aka": place.aka_joined} | tojson }}'>edit&hellip;</a>{% endif %}</dd>
+    {% endif %}
+    {% if place.map_url or workbench %}
+    <dt>Map</dt><dd>{% if place.map_url %}<a href="{{ place.map_url }}">View on OpenStreetMap</a>
+      <span class="note">({{ place.lat }}, {{ place.lon }})</span>
+      {%- else %}<span class="empty">no coordinates yet</span>{% endif %}{% if workbench %}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-place-coords"
+         data-wb-args='{{ {"place_id": place.display_id} | tojson }}'
+         data-wb-prefill='{{ {"lat": place.lat if place.lat is not none else "", "lon": place.lon if place.lon is not none else ""} | tojson }}'>{{ 'edit coordinates' if place.map_url else 'set coordinates' }}&hellip;</a>{% endif %}</dd>
+    {% endif %}
   </dl>
 
+  {% if place.map_embed_url %}
+  {#- The embedded view degrades to an empty frame offline; the "View on
+      OpenStreetMap" link above always works. -#}
+  <div class="place-map">
+    <iframe src="{{ place.map_embed_url }}" title="Map of {{ place.name }}"
+            loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+  </div>
+  {% endif %}
+
+  {% if place.history or workbench %}
+  <h2>Names over time{% if workbench %}
+    <a class="wb-fix" href="#" data-wb-open="tpl-place-history" style="font-weight:400"
+       data-wb-args='{{ {"place_id": place.display_id} | tojson }}'
+       data-wb-prefill='{{ {"history": place.history_lines} | tojson }}'>edit&hellip;</a>{% endif %}</h2>
   {% if place.history %}
-  <h2>Names over time</h2>
   <ul>
     {% for h in place.history %}<li>{% if h.period %}{{ h.period }}: {% endif %}{{ h.hierarchy }}</li>{% endfor %}
   </ul>
+  {% elif workbench %}<p class="empty">No earlier names or jurisdictions recorded yet.</p>{% endif %}
+  {% endif %}
+
+  {% if place.notes_html or workbench %}
+  <h2>Research notes{% if workbench %}
+    <a class="wb-fix" href="#" data-wb-open="tpl-place-note" style="font-weight:400"
+       data-wb-args='{{ {"place_id": place.display_id} | tojson }}'>add&hellip;</a>{% endif %}</h2>
+  {%- if workbench and place.notes_entries %}
+  {#- One edit button per note; the modal rewrites just that entry
+      (place.edit_note names it by its exact current text). -#}
+  {% for e in place.notes_entries %}
+  <div class="wb-log-entry">{{ e.html }}
+    <a class="wb-entry-edit" href="#" data-wb-open="tpl-edit-place-note"
+       data-wb-args='{{ {"place_id": place.display_id, "old_text": e.raw} | tojson }}'
+       data-wb-prefill='{{ {"text": e.raw} | tojson }}'>edit&hellip;</a></div>
+  {% endfor %}
+  {%- elif place.notes_html %}{{ place.notes_html }}{% elif workbench %}<p class="empty">(none yet)</p>{% endif %}
   {% endif %}
 
   {% if place.micro %}

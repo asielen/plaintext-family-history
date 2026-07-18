@@ -33,6 +33,7 @@ created: 2026-06-14
     child: P-fa7541e871
     parent: [P-de957bcda1, P-cd795c61e0]
   status: accepted
+  corroborates: [C-bdfbce2a11, C-77a0c5e218]
   reviewed: 2026-06-14
   confidence: medium
   information: secondary

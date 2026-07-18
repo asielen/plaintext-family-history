@@ -147,6 +147,7 @@ from _lib import (
     is_working_copy,
     load_fha_yaml,
     normalize_id,
+    split_log_entries,
     strip_link_wrapper,
     strip_unaccepted_drafts,
     open_index_db,
@@ -602,7 +603,14 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     shape with two columns bolted on either side of the subject; when spouses and
     children are both empty the geometry (column x, row y, viewBox) is bit-for-bit
     what the ancestors-only renderer produced before this win, so an existing
-    person's pedigree does not visually change. The subject sits at the left of
+    person's pedigree does not visually change. Family lines route couples-first
+    (owner request, review 2026-07-17): the subject's and a spouse's lines join at
+    that couple's junction before one line splits to that couple's own children -
+    the ancestor elbow, mirrored - and children are grouped by which drawn spouse
+    is their other parent (each spouse entry carries `id`, each child entry
+    `co_parents`, from `_build_family_wings`). Kids with no drawn co-parent hang
+    off the subject alone, which is also the privacy-safe fallback for a
+    redacted co-parent. The subject sits at the left of
     its own group and each ancestor generation steps rightward - the genealogical
     convention, and the fix for the descendant renderer drawing ancestors
     *downward* (upside-down). Node cards are HTML in <foreignObject> so names wrap
@@ -626,9 +634,32 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     children = children or []
     has_children_col = bool(children)
 
+    # Group children by which drawn spouse is their other parent (the
+    # `co_parents` ids `_build_family_wings` attaches): group 0 is the
+    # subject-alone lane (no recorded/drawn co-parent), group i+1 is spouse
+    # i's couple. Each group draws its own couple bracket + children trunk,
+    # so kids by different spouses hang off different junctions (owner
+    # request, review 2026-07-17). Entries without ids (older callers,
+    # tests) all land in the subject lane - same as before grouping existed.
+    spouse_lane = {normalize_id(str(s['id'])): i + 1
+                   for i, s in enumerate(spouses) if s.get('id')}
+    child_groups: list[list[int]] = [[] for _ in range(len(spouses) + 1)]
+    for idx, ch in enumerate(children):
+        co = [normalize_id(str(c)) for c in (ch.get('co_parents') or [])]
+        lane = next((spouse_lane[c] for c in co if c in spouse_lane), 0)
+        child_groups[lane].append(idx)
+    # Lanes that need their own x-stations in the children gap: every couple
+    # (bracket, plus a trunk when it has children) and the subject lane only
+    # when it actually has children.
+    n_lanes = len(spouses) + (1 if child_groups[0] else 0)
+
     CW = 176
     if has_children_col:
-        CH, COL_GAP, ROW, PAD = 48, 16, 60, 8
+        # The children gap holds two x-stations per lane (couple junction +
+        # children trunk), spaced ~8 units apart - one couple keeps the chart
+        # compact, extra spouses widen it as they need room.
+        CH, ROW, PAD = 48, 60, 8
+        COL_GAP = max(24, 8 * (2 * max(n_lanes, 1) + 2))
     else:
         CH, COL_GAP, ROW, PAD = 62, 40, 72, 8
 
@@ -662,10 +693,17 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
 
     subject_row = 1.5
     spouse_rows = [subject_row + 1 + i for i in range(len(spouses))]     # stack below the subject
+    # Children stack top-to-bottom in lane order - subject-only children
+    # first (nearest the subject's row), then each couple's in spouse order -
+    # so a lane's kids sit near its junction and trunks stay short. The
+    # column is centred on the whole family band (subject through last
+    # spouse), not the subject alone, so a two-spouse chart reads balanced.
+    ordered_children = [i for lane in child_groups for i in lane]
     n_children = len(children)
-    # Centred on the subject's row so a small family reads as balanced, not
-    # lopsided - matches the wireframe centring children on the couple.
-    children_rows = [subject_row + (i - (n_children - 1) / 2) for i in range(n_children)]
+    family_mid = (subject_row + spouse_rows[-1]) / 2 if spouse_rows else subject_row
+    children_rows = [family_mid + (i - (n_children - 1) / 2) for i in range(n_children)]
+    # Row of each child by its ORIGINAL index (cards and ticks look rows up here).
+    child_row_of = {orig: children_rows[pos] for pos, orig in enumerate(ordered_children)}
 
     # The ancestor band has always been rendered at a fixed size (rows 0-3,
     # the full grandparent grid) whenever any ancestor slot beyond the
@@ -747,29 +785,66 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     for i, lab in enumerate(spouses):
         cards.append(card(subj_x, y_center(spouse_rows[i]), '', lab))
     for i, lab in enumerate(children):
-        cards.append(card(col_x(-1), y_center(children_rows[i]), '', lab))
+        cards.append(card(col_x(-1), y_center(child_row_of[i]), '', lab))
 
     if children:
-        # A trunk between the children column and the subject/spouse column:
-        # one vertical spine plus a horizontal tick to every child and to the
-        # subject and each spouse - reads as "these children belong to this
-        # family", without asserting which specific spouse is the other
-        # parent (the data model does not record that).
-        trunk_x = (col_x(-1) + CW + subj_x) / 2
-        child_ys = [y_center(r) for r in children_rows]
-        family_ys = [subj_y] + [y_center(r) for r in spouse_rows]
-        trunk_ys = child_ys + family_ys
-        if len(set(trunk_ys)) > 1:
-            links.append(f'<path class="ped-link" d="M{trunk_x:.0f},{min(trunk_ys):.0f} '
-                         f'V{max(trunk_ys):.0f}"/>')
-        for cy in child_ys:
-            links.append(f'<path class="ped-link" d="M{col_x(-1) + CW:.0f},{cy:.0f} H{trunk_x:.0f}"/>')
-        for fy in family_ys:
-            links.append(f'<path class="ped-link" d="M{trunk_x:.0f},{fy:.0f} H{subj_x:.0f}"/>')
+        # Couples-first routing (owner request, review 2026-07-17): the
+        # subject's and each spouse's lines COME TOGETHER at that couple's
+        # junction before splitting to that couple's own children - the
+        # mirror image of the ancestor elbows on the right. Each lane gets
+        # two x-stations in the children gap: an outer one (nearer the
+        # family column) where the couple bracket joins, and an inner one
+        # (nearer the children) where the trunk splits to the kids. Lanes
+        # step leftward in order, so a second marriage's lines never overlap
+        # the first's - horizontals may cross other lanes' verticals at
+        # right angles (readable as crossing wires), but no two lanes share
+        # a collinear segment.
+        gap_right = subj_x
+        step = (subj_x - (col_x(-1) + CW)) / (2 * max(n_lanes, 1) + 2)
+
+        def lane_stations(k: int) -> tuple[float, float]:
+            """(junction_x, trunk_x) for draw-lane k (0 nearest the family)."""
+            return gap_right - (2 * k + 1) * step, gap_right - (2 * k + 2) * step
+
+        draw_lane = 0
+        # Subject-only children first: their line leaves the subject's own
+        # card - there is no couple to join - then splits at its trunk.
+        if child_groups[0]:
+            _, trunk_x = lane_stations(draw_lane)
+            draw_lane += 1
+            child_ys = [y_center(child_row_of[i]) for i in child_groups[0]]
+            span = child_ys + [subj_y]
+            links.append(f'<path class="ped-link" d="M{subj_x:.0f},{subj_y:.0f} H{trunk_x:.0f}"/>')
+            if len(set(span)) > 1:
+                links.append(f'<path class="ped-link" d="M{trunk_x:.0f},{min(span):.0f} '
+                             f'V{max(span):.0f}"/>')
+            for cy in child_ys:
+                links.append(f'<path class="ped-link" d="M{col_x(-1) + CW:.0f},{cy:.0f} H{trunk_x:.0f}"/>')
+        for i in range(len(spouses)):
+            junction_x, trunk_x = lane_stations(draw_lane)
+            draw_lane += 1
+            spouse_y = y_center(spouse_rows[i])
+            # The couple bracket: subject and spouse join at the junction...
+            links.append(f'<path class="ped-link" d="M{subj_x:.0f},{subj_y:.0f} '
+                         f'H{junction_x:.0f} V{spouse_y:.0f} H{subj_x:.0f}"/>')
+            kids = child_groups[i + 1]
+            if not kids:
+                continue
+            # ...and only then does one line leave the couple's midpoint and
+            # split to their children - the ancestor elbow, mirrored.
+            mid_y = (subj_y + spouse_y) / 2
+            child_ys = [y_center(child_row_of[c]) for c in kids]
+            span = child_ys + [mid_y]
+            links.append(f'<path class="ped-link" d="M{junction_x:.0f},{mid_y:.0f} H{trunk_x:.0f}"/>')
+            if len(set(span)) > 1:
+                links.append(f'<path class="ped-link" d="M{trunk_x:.0f},{min(span):.0f} '
+                             f'V{max(span):.0f}"/>')
+            for cy in child_ys:
+                links.append(f'<path class="ped-link" d="M{col_x(-1) + CW:.0f},{cy:.0f} H{trunk_x:.0f}"/>')
     elif spouses:
-        # No children to route through a trunk - a direct bracket at the
-        # column's left edge is enough to show the subject and spouse(s) as
-        # one family unit.
+        # No children to route to - a direct bracket at the column's left
+        # edge is enough to show the subject and spouse(s) as one family
+        # unit (there is no children gap to hold a junction station here).
         family_ys = [subj_y] + [y_center(r) for r in spouse_rows]
         if len(set(family_ys)) > 1:
             links.append(f'<path class="ped-link" d="M{subj_x:.0f},{min(family_ys):.0f} '
@@ -923,11 +998,13 @@ class _SiteBuilder:
         ):
             self.person_meta[row['id']] = row
         for row in self.conn.execute(
-            'SELECT id, title, source_type, date_edtf, repository, source_class, '
+            'SELECT id, title, source_type, date_edtf, date_min, repository, source_class, '
             'restricted, publication_ok, status, path FROM sources'
         ):
             self.source_meta[row['id']] = row
-        for row in self.conn.execute('SELECT id, name, hierarchy, within, lat, lon FROM places'):
+        for row in self.conn.execute(
+            'SELECT id, name, hierarchy, within, lat, lon, notes FROM places'
+        ):
             self.place_meta[row['id']] = row
             self.place_names[row['id']] = row['name'] or ''
 
@@ -1483,8 +1560,12 @@ class _SiteBuilder:
         # Workbench: the record's ## Notes section, rendered under the page's
         # Research Notes heading - the wireframe shows the notes a source-note
         # apply writes; without this the just-written note is invisible on
-        # reload and the apply reads as a silent failure.
+        # reload and the apply reads as a silent failure. Rendered per entry
+        # (same split as the person page's Stories/Research logs) so each
+        # note carries its own edit button; notes_html stays as the joined
+        # fallback for any template path that wants the section whole.
         notes_html = None
+        notes_entries: list[dict] = []
         if self.workbench and record_body:
             m = re.search(r'^## Notes[ \t]*\r?$\n(.*?)(?=^## |\Z)', record_body,
                           re.M | re.S)
@@ -1494,6 +1575,10 @@ class _SiteBuilder:
                 embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
                 notes_html = self._markup(_prose_to_html(
                     notes_text, render, embed, drop_private=not self.linked))
+                notes_entries = [
+                    {'html': self._markup(_prose_to_html(
+                        e, render, embed, drop_private=not self.linked)), 'raw': e}
+                    for e in split_log_entries(notes_text)]
 
         # A standalone snapshot publishes only the archive's current position -
         # accepted + needs-review. `suggested` (unreviewed AI drafts; "your
@@ -1560,6 +1645,7 @@ class _SiteBuilder:
             'source_id': fmt_id_display(sid), 'record_relpath': row['path'],
             'suggested_count': sum(1 for c in claims if c['status'] == 'suggested'),
             'notes_html': notes_html,
+            'notes_entries': notes_entries,
         }
         self._write_page(self.sources_dir / _page_filename(sid), 'source.html',
                          {'source': ctx, 'root_prefix': '..'})
@@ -1624,7 +1710,8 @@ class _SiteBuilder:
         self._footnote_seq = []
 
         summary = self._person_summary(pid, page_dir)
-        biography_html, stories_html, research_html, biography_raw = self._person_prose(row, page_dir)
+        (biography_html, stories_html, research_html, biography_raw,
+         stories_entries, research_entries) = self._person_prose(row, page_dir)
         timeline = self._person_timeline(pid, page_dir)
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
@@ -1666,6 +1753,12 @@ class _SiteBuilder:
             'biography_html': self._markup(biography_html) if biography_html else None,
             'stories_html': self._markup(stories_html) if stories_html else None,
             'research_html': self._markup(research_html) if research_html else None,
+            # Workbench-only per-entry views of the same two append-logs:
+            # one edit button per entry (empty lists in standalone builds).
+            'stories_entries': [{'html': self._markup(e['html']), 'raw': e['raw']}
+                                for e in stories_entries],
+            'research_entries': [{'html': self._markup(e['html']), 'raw': e['raw']}
+                                 for e in research_entries],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
@@ -1864,7 +1957,7 @@ class _SiteBuilder:
         val = meta.get(field)
         return str(val).strip() if val not in (None, '') else None
 
-    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple[str, str, str, str]:
+    def _person_prose(self, row: sqlite3.Row, page_dir: Path) -> tuple:
         """Biography, Stories and Research Notes HTML, read from the person `.md` body.
 
         Unaccepted `<!-- AI-DRAFT ... -->` prose is excluded before rendering
@@ -1885,7 +1978,7 @@ class _SiteBuilder:
             rec = read_record(self.archive_root / row['path'])
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); skipping its prose.')
-            return '', '', '', ''
+            return '', '', '', '', [], []
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731 - tiny closure
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
         # Apply the `<!-- private -->` fence to the whole body BEFORE section
@@ -1932,19 +2025,36 @@ class _SiteBuilder:
                 'fix the marker or remove the draft, then rebuild. Until then this '
                 "person's Biography, Stories and Research Notes are withheld from the site."
             )
-            return '', '', '', ''
+            return '', '', '', '', [], []
         # Private fences were already applied to the whole body above, so
         # _prose_to_html need not re-apply them here.
         biography_html = _prose_to_html(bio, render, embed, drop_private=dp) if bio else ''
         stories_html = _prose_to_html(stories, render, embed, drop_private=dp) if stories else ''
         research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
+        # Workbench-only: the same Stories/Research text again, split into
+        # its append-log entries so each can carry its own edit button
+        # (owner request, review 2026-07-16). Split AFTER the display
+        # filters above, so a button only ever names an entry the page
+        # actually shows; the edit engine re-finds the entry by its exact
+        # text (person.run_edit_note), so any display/disk drift refuses
+        # with a plain message instead of mis-editing.
+        stories_entries: list[dict] = []
+        research_entries: list[dict] = []
+        if self.workbench:
+            stories_entries = [
+                {'html': _prose_to_html(e, render, embed, drop_private=dp), 'raw': e}
+                for e in split_log_entries(stories or '')]
+            research_entries = [
+                {'html': _prose_to_html(e, render, embed, drop_private=dp), 'raw': e}
+                for e in split_log_entries(research or '')]
         # `bio_as_written` (NOT the fence-processed, draft-stripped `bio`
         # used for the render above) is returned alongside the rendered
         # HTML: it is the exact text `person.edit --section biography`
         # would overwrite, private-fence and AI-DRAFT/AI-ACCEPTED markers
         # intact, so the workbench's whole-section REPLACE editor can never
         # silently launder away any of them on a human's small edit.
-        return biography_html, stories_html, research_html, bio_as_written
+        return (biography_html, stories_html, research_html, bio_as_written,
+                stories_entries, research_entries)
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the
@@ -2627,20 +2737,31 @@ class _SiteBuilder:
     # - place page (M8.3) -
 
     def build_place_page(self, lid: str) -> None:
-        """Render one place page (TOOLING §12 / M8.3): name, coords (a map *URL*,
-        no embedded map dependency), dated `history:`, claims naming the place,
-        contained micro-places (`within:` children), and the people most often
-        associated with it. People links follow the standard redaction rule, and
-        the people-frequency list omits redacted persons entirely so a standalone
-        place page never links to - or even names - a living person."""
+        """Render one place page (TOOLING §12 / M8.3): name, coords (an embedded
+        OpenStreetMap view plus the plain map link - owner decision, review
+        2026-07-16; the iframe degrades to nothing offline and the link always
+        works), dated `history:`, the registry's `notes:` prose, claims naming
+        the place, contained micro-places (`within:` children), and the people
+        most often associated with it. People links follow the standard
+        redaction rule, and the people-frequency list omits redacted persons
+        entirely so a standalone place page never links to - or even names - a
+        living person."""
         row = self.place_meta[lid]
         page_dir = self.places_dir
         self._footnotes = None        # place-page sources render as named links, not footnotes
 
         lat, lon = row['lat'], row['lon']
         map_url = None
+        map_embed_url = None
         if lat is not None and lon is not None:
             map_url = f'https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=12/{lat}/{lon}'
+            # The embed endpoint needs an explicit bounding box; roughly a
+            # town-scale window around the pin reads best for family places.
+            d_lat, d_lon = 0.03, 0.05
+            map_embed_url = (
+                'https://www.openstreetmap.org/export/embed.html'
+                f'?bbox={lon - d_lon}%2C{lat - d_lat}%2C{lon + d_lon}%2C{lat + d_lat}'
+                f'&layer=mapnik&marker={lat}%2C{lon}')
 
         alt_names = [
             r['alt_name'] for r in self.conn.execute(
@@ -2710,11 +2831,41 @@ class _SiteBuilder:
             if child in self.place_meta:
                 micro.append(self._markup(self.render_token(fmt_id_display(child), page_dir)))
 
+        # The registry's `notes:` prose - reference context (SPEC §15, loose
+        # citations welcome), rendered in both modes; [[links]] resolve like
+        # any prose. Workbench mode also splits it into its append-log
+        # entries (same grammar as the person/source logs) so each note
+        # carries its own edit button driving `fha places edit-note`.
+        notes_html = None
+        notes_entries: list[dict] = []
+        notes_raw = str(row['notes'] or '').strip()
+        if notes_raw:
+            render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+            embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+            notes_html = self._markup(_prose_to_html(
+                notes_raw, render, embed, drop_private=not self.linked))
+            if self.workbench:
+                notes_entries = [
+                    {'html': self._markup(_prose_to_html(
+                        e, render, embed, drop_private=not self.linked)), 'raw': e}
+                    for e in split_log_entries(notes_raw)]
+
         ctx = {
             'display_id': fmt_id_display(lid), 'name': row['name'] or fmt_id_display(lid),
             'hierarchy': row['hierarchy'] or '', 'map_url': map_url,
+            'map_embed_url': map_embed_url,
             'alt_names': alt_names, 'history': history, 'claims': claims,
-            'people': people, 'micro': micro,
+            'people': people, 'micro': micro, 'notes_html': notes_html,
+            'notes_entries': notes_entries,
+            # Workbench-only prefills (template gates on `workbench`): the
+            # current values in exactly the plain shapes the edit modals and
+            # `fha places set` speak - "lat, lon", a comma-joined aka list,
+            # one "PERIOD | HIERARCHY" line per history entry.
+            'lat': lat, 'lon': lon,
+            'aka_joined': ', '.join(alt_names),
+            'history_lines': '\n'.join(
+                (f"{h['period']} | {h['hierarchy']}" if h['period'] else h['hierarchy'])
+                for h in history),
         }
         self._write_page(self.places_dir / _page_filename(lid), 'place.html',
                          {'place': ctx, 'root_prefix': '..'})
@@ -3031,10 +3182,28 @@ class _SiteBuilder:
                     if (ometa is None or self._person_is_redacted(ometa)
                             or not self._has_public_claim(pid, other)):
                         continue
-                out.append(self._chart_entry(other, page_dir))
+                entry = self._chart_entry(other, page_dir)
+                entry['id'] = other
+                out.append(entry)
             return out
 
-        return {'spouses': collect('spouse'), 'children': collect('child')}
+        spouses = collect('spouse')
+        children = collect('child')
+        # Each child's OTHER parent(s), so the renderer can hang the child off
+        # the right couple's junction - a person with children by two spouses
+        # draws two family brackets, each splitting to its own children. A
+        # child whose co-parent is not among the drawn spouses (unrecorded, or
+        # redacted - the spouse list already excludes redacted people) falls
+        # back to hanging off the subject alone, which is also the privacy-safe
+        # rendering: it never hints at who the withheld parent is.
+        for ch in children:
+            ch['co_parents'] = [
+                r['other_id'] for r in self.conn.execute(
+                    "SELECT DISTINCT other_id FROM relationships "
+                    "WHERE person_id = ? AND rel = 'parent'", (ch['id'],))
+                if r['other_id'] != pid
+            ]
+        return {'spouses': spouses, 'children': children}
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
                        page_dir: Path, caption: str, *, initial_depth: int | None = None,
@@ -3125,7 +3294,8 @@ class _SiteBuilder:
         # Surname A-Z: group people by surname initial. In the workbench every
         # recorded person is in person_pages (stubs included - owner decision,
         # live review 2026-07-16), so a stub lists inline in its surname group
-        # as a linked entry marked stub, with an "open file" escape hatch.
+        # as a linked entry marked stub (its page carries the open-file escape
+        # hatch; the list itself stays clean - owner request, 2026-07-16).
         # Published/standalone output stays curated-only (person_pages already
         # excludes stubs there).
         by_letter: dict[str, list[dict]] = {}
@@ -3136,7 +3306,7 @@ class _SiteBuilder:
             letter = surname[:1].upper() if surname[:1].isalpha() else '#'
             by_letter.setdefault(letter, []).append(
                 {'name': name, 'href': f'persons/{_page_filename(pid)}',
-                 'stub': (meta['tier'] or '') == 'stub', 'record_relpath': meta['path']})
+                 'stub': (meta['tier'] or '') == 'stub'})
         if self.workbench:
             # A person named in claims with NO record at all (lint's E005 set)
             # is otherwise invisible: list them under '#' with the wireframe's
@@ -3161,10 +3331,24 @@ class _SiteBuilder:
         discoveries = [self._markup(_prose_to_html(chunk, render, embed, drop_private=not self.linked))
                        for chunk in entries]
 
-        sources = sorted(
-            ({'title': self.source_meta[sid]['title'] or fmt_id_display(sid),
-              'href': f'sources/{_page_filename(sid)}'} for sid in self.source_pages),
-            key=lambda s: s['title'].lower())
+        # Sources, grouped by the decade of the record's own date (a census
+        # year, a letter's postmark - `date_min` is the EDTF lower bound the
+        # index already computed) so a growing list stays scannable: decades
+        # in order, alphabetical within each, undated records last under
+        # their own heading (owner request, review 2026-07-16).
+        by_decade: dict[str, list[dict]] = {}
+        for sid in self.source_pages:
+            row = self.source_meta[sid]
+            year = (row['date_min'] or '')[:4]
+            label = f'{int(year) // 10 * 10}s' if year.isdigit() else 'Undated'
+            by_decade.setdefault(label, []).append(
+                {'title': row['title'] or fmt_id_display(sid),
+                 'href': f'sources/{_page_filename(sid)}'})
+        source_groups = [
+            {'label': label,
+             'sources': sorted(by_decade[label], key=lambda s: s['title'].lower())}
+            for label in sorted(by_decade, key=lambda g: (g == 'Undated', g))
+        ]
         places = sorted(
             ({'name': self.place_meta[lid]['name'] or fmt_id_display(lid),
               'href': f'places/{_page_filename(lid)}'} for lid in self.place_pages),
@@ -3268,7 +3452,7 @@ class _SiteBuilder:
                                        home_id=home_person)
 
         self._write_page(self.out_dir / 'index.html', 'index.html', {
-            'surnames': surnames, 'discoveries': discoveries, 'sources': sources,
+            'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
             'places': places, 'intro': intro, 'intro_raw': intro_raw, 'tree': tree,
             'hero': hero, 'root_prefix': '.',
         })

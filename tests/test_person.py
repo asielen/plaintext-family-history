@@ -1422,6 +1422,81 @@ class NoteTests(unittest.TestCase):
         self.assertNotIn('\n', after.replace('\r\n', ''))
 
 
+class EditNoteTests(unittest.TestCase):
+    """fha person edit-note: rewrite ONE append-log entry, matched by exact text."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.stub = self.root / 'people' / 'stubs' / f'hartley__rose_{PID}.md'
+        person.run_note(self.root, PID, 'research', 'First note.')
+        person.run_note(self.root, PID, 'research', 'Second note.')
+        person.run_note(self.root, PID, 'research', 'Third note.')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_rewrites_only_the_named_entry(self) -> None:
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Second note.', 'Second note, corrected.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = self.stub.read_text(encoding='utf-8')
+        self.assertIn('First note.\n\nSecond note, corrected.\n\nThird note.', text)
+        self.assertNotIn('Second note.\n', text.replace('Second note, corrected.', ''))
+
+    def test_entry_not_found_refused_nothing_written(self) -> None:
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Never written.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('not found', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_duplicate_entry_refused_as_ambiguous(self) -> None:
+        person.run_note(self.root, PID, 'research', 'First note.')  # a duplicate
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(self.root, PID, 'research', 'First note.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('2 times', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_empty_replacement_refused(self) -> None:
+        result = person.run_edit_note(self.root, PID, 'research', 'First note.', '   ')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('replacement text was empty', result.messages[0].text)
+
+    def test_dry_run_writes_nothing_and_shows_diff(self) -> None:
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'First note.', 'Changed.', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.stub.read_bytes(), before)
+        joined = '\n'.join(m.text for m in result.messages)
+        self.assertIn('+Changed.', joined)
+
+    def test_biography_section_refused(self) -> None:
+        result = person.run_edit_note(self.root, PID, 'biography', 'a', 'b')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+
+    def test_unbalanced_brackets_warn(self) -> None:
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'First note.', 'See [[S-2b3c4d5e6f.')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertTrue(any('[[' in m.text for m in result.messages))
+
+    def test_crlf_file_round_trips_with_endings_intact(self) -> None:
+        crlf = self.stub.read_text(encoding='utf-8').replace('\n', '\r\n')
+        self.stub.write_bytes(crlf.encode('utf-8'))
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Second note.', 'Second note, corrected.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        after = self.stub.read_bytes().decode('utf-8')
+        self.assertNotIn('\n', after.replace('\r\n', ''))
+        self.assertIn('Second note, corrected.', after)
+
+
 class PersonNewVerbsCliTests(unittest.TestCase):
     """CLI wiring smoke tests for new/relate/estimate/edit/note via fha.main."""
 

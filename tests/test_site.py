@@ -14,6 +14,7 @@ path under the private name `fha_site` (the same trick fha.py uses).
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -1150,6 +1151,84 @@ class FamilyChartTests(_Base):
         page = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('First Wife', page)
         self.assertIn('Second Wife', page)
+
+    def test_couple_junction_joins_before_children_split(self):
+        # Owner request (review 2026-07-17): the subject's and spouse's lines
+        # come together at the couple's junction FIRST, and only then does one
+        # line split to their children - the ancestor elbow, mirrored.
+        svg = site._render_pedigree_svg(
+            {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}},
+            spouses=[{'name': 'Spouse', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}}],
+            children=[{'name': 'Kid', 'co_parents': ['p-bbbbbbbbbb'], 'url': None, 'dates': {}}])
+        # The couple bracket: a path that leaves the subject, drops to the
+        # spouse, and returns to the same column edge (start x == end x) -
+        # ancestor elbows never close back on their own x.
+        brackets = [m for m in re.findall(
+            r'<path class="ped-link" d="M(\d+),(\d+) H(\d+) V(\d+) H(\d+)"/>', svg)
+            if m[0] == m[4]]
+        self.assertEqual(len(brackets), 1)
+        jx = int(brackets[0][2])
+        mid_y = (int(brackets[0][1]) + int(brackets[0][3])) // 2
+        # One line leaves the couple's MIDPOINT (not the subject's own row)
+        # toward the children trunk.
+        self.assertIn(f'M{jx},{mid_y} H', svg)
+
+    def test_children_group_by_their_other_parent(self):
+        # A person with kids by two spouses: each couple gets its own bracket
+        # and its own trunk; a child with no recorded co-parent hangs off the
+        # subject alone. Kids D+E are with spouse B, kid F with spouse C, kid
+        # G has no second parent recorded.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'First Wife')
+        self._seed_person('p-cccccccccc', 'Second Wife')
+        self._seed_person('p-dddddddddd', 'Kid Dee')
+        self._seed_person('p-eeeeeeeeee', 'Kid Eve')
+        self._seed_person('p-ffffffffff', 'Kid Eff')
+        self._seed_person('p-gggggggggg', 'Kid Gee')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-cccccccccc')
+        for kid in ('p-dddddddddd', 'p-eeeeeeeeee', 'p-ffffffffff', 'p-gggggggggg'):
+            self._seed_rel('p-aaaaaaaaaa', 'child', kid)
+            self._seed_rel(kid, 'parent', 'p-aaaaaaaaaa')
+        self._seed_rel('p-dddddddddd', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-eeeeeeeeee', 'parent', 'p-bbbbbbbbbb')
+        self._seed_rel('p-ffffffffff', 'parent', 'p-cccccccccc')
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+
+        # Two couples -> two closed brackets (start x == end x), at DIFFERENT
+        # junction x-stations so a second marriage never overlaps the first.
+        brackets = [m for m in re.findall(
+            r'<path class="ped-link" d="M(\d+),(\d+) H(\d+) V(\d+) H(\d+)"/>', page)
+            if m[0] == m[4]]
+        self.assertEqual(len(brackets), 2)
+        self.assertNotEqual(brackets[0][2], brackets[1][2])
+
+        # Card centre-y by name, from the foreignObject geometry.
+        y_of = {}
+        for x, y, h, inner in re.findall(
+                r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="\d+" height="(\d+)">(.*?)</foreignObject>',
+                page, re.S):
+            m = re.search(r'ped-name[^>]*>([^<]+)<', inner)
+            if m:
+                y_of[m.group(1)] = int(y) + int(h) // 2
+
+        # Children ticks are the horizontal-only links leaving the children
+        # column's right edge; map each child's row to its trunk x.
+        children_right = min(x for x, *_rest in
+                             [(int(a), b) for a, b, _c in re.findall(
+                                 r'<path class="ped-link" d="M(\d+),(\d+) H(\d+)"/>', page)])
+        trunk_of = {}
+        for a, b, c in re.findall(r'<path class="ped-link" d="M(\d+),(\d+) H(\d+)"/>', page):
+            if int(a) == children_right:
+                trunk_of[int(b)] = int(c)
+        tick = {name: trunk_of[y_of[name]] for name in ('Kid Dee', 'Kid Eve', 'Kid Eff', 'Kid Gee')}
+        # Same couple -> same trunk; different couples (and the no-co-parent
+        # kid) -> different trunks.
+        self.assertEqual(tick['Kid Dee'], tick['Kid Eve'])
+        self.assertNotEqual(tick['Kid Dee'], tick['Kid Eff'])
+        self.assertNotEqual(tick['Kid Dee'], tick['Kid Gee'])
+        self.assertNotEqual(tick['Kid Eff'], tick['Kid Gee'])
 
     def test_family_chart_redacts_living_spouse_and_child_standalone(self):
         # The non-negotiable case: a living spouse/child must never leak a

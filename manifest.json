@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-16",
+  "generated": "2026-07-17",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -109,7 +109,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "50a5bc222723df6924293302e757d4f68dcdf461b8fa4ee06a259ee8b621eefd",
+      "sha256": "d1adcd0aa754c024851c873fe0b7383a780eb600cb29eea0f83c2d8c3fe325b4",
       "spec_version": "1.2"
     },
     {
@@ -121,7 +121,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "58faf181d2dc6cdd3e12c2b07ad7a2db0f4c5abc85c0506c8fffbfd30563d9ce",
+      "sha256": "9940d4f71dcc6a162da4edd4499278a3d8a030471209833c900e5237bb598168",
       "spec_version": "1.2"
     },
     {
@@ -145,19 +145,19 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "c41c7014d3af27a79d4f237e6f4b643936dfe8147d770b8559f576124a5cc2c3",
+      "sha256": "f593ef2f04e3c320d374d427d2f941b6b3175a57b53e6a49878676a0e497ffdc",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "73142efef18aee9aa375a32511e5029e526c6d8bbd290ca9c8f7fefc49ae0a32",
+      "sha256": "4243a5a131d08e26cedf4af95380aae96fbbe7643c54570c845d20b19bb4a239",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "1b59acbb3680d91b68a0a333fcc2e04af0ab6cf805f953b48856cd34d3cddc8b",
+      "sha256": "120567d92a9c7650430b8014ea178aa6f4fcadb0a431d8e9190fde990206fff9",
       "spec_version": "1.2"
     },
     {
@@ -169,7 +169,7 @@
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "652ce93e0dfa69568ec9e4b18a37b57b6b069edabf53cfa7262f6e79b1477179",
+      "sha256": "604af43fb2460d4a188640618871bee7f83af2ae0a2d124b4fad17d3b279599d",
       "spec_version": "1.2"
     },
     {
@@ -247,7 +247,7 @@
     {
       "path": "design/styles.css",
       "category": "operating",
-      "sha256": "04ee705cd471351393b2004d1087d44cd7578279ea617a1ec2f5c745b5aceab5",
+      "sha256": "045d2392758c275987b799ccfa7ff908af7be422985a244538ac90806fcb52c5",
       "spec_version": "1.2"
     },
     {
@@ -455,13 +455,13 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "cf14c44c89f4aaf5f99a6a242f541fafc8e4283bc57aee4df97e7f69148c5532",
+      "sha256": "d2b920ed0855e9107612df737b79dbc1b5b9e4f8d62769543bdd82ce59780d8e",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "3291e3af24235637ba7d9e323a7d3207890dff0f5dcd281d5d5982adb21c56f0",
+      "sha256": "60982ab4e15d031f933b9bb015581820e9c3561d1b97bac9de5530d0cce598b4",
       "spec_version": "1.2"
     },
     {
@@ -551,7 +551,7 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "871845c7087b168c2ce18c5ce493b8c0562b0407884355f0169e4596f55d0a23",
+      "sha256": "42501e1eb9a07af9f5d8e35c37301d11b066d8487eabef2ca0bc230f6d8d8fc2",
       "spec_version": "1.2"
     },
     {
@@ -575,7 +575,7 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "0af843f353a786113040205156232703de8816966c8bb5322d3f28dac27ba295",
+      "sha256": "f65ffa4780e63d50bbb34691f439d2495f591aafa21ec6e82e5652714c1ee1ce",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/person.py",
       "category": "operating",
-      "sha256": "c28d53e43de45162229055fdb1881b4b8e37857febcedb7ab4f50a1084e32ac5",
+      "sha256": "a3ddb4e348365c683e9e682027370fa550aebae40bfb9d30a4544219f285033e",
       "spec_version": "1.2"
     },
     {
@@ -611,7 +611,7 @@
     {
       "path": "tools/places.py",
       "category": "operating",
-      "sha256": "5d1ec77248172e42954118e0c205f1180616596c14e700187add4626ab1a3e75",
+      "sha256": "0221e22b4566c18fab318403c1990c77392167d8774cc64e3e0aeb28a159458b",
       "spec_version": "1.2"
     },
     {
@@ -647,19 +647,19 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "2e1966a604f886a209366920dd0d1762ec37894d5dcb11d426a6152cf5347032",
+      "sha256": "f143332d59ede6d8a4112da92ffb36703434dd42fafde32eb01aa22252ab20d1",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "6f738a8f71cab5289728ff6e3127862a33c94a039bb390fe44d3306826d65afd",
+      "sha256": "0b17c2cbd2998242cc44d0d19efbf0c23954113c1f7395508333b65e502fa104",
       "spec_version": "1.2"
     },
     {
       "path": "tools/source.py",
       "category": "operating",
-      "sha256": "9cac832453907c784f7becbfa73d02a688e4e4c439577e6d63f713a3b935d72c",
+      "sha256": "598dbc2a2c6fc781967335a2b6206b22ede78952ca86caed7ddc592c821caaa5",
       "spec_version": "1.2"
     },
     {
@@ -701,19 +701,19 @@
     {
       "path": "tools/templates/index.html",
       "category": "operating",
-      "sha256": "3ded70400c5123c11869ad57cb092abdccbb1351e8b54a693f6aee1b7ce966fd",
+      "sha256": "38d3789230a5ebda532f1657156caa3d488a1073a2468d07b91912495257a58a",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/person.html",
       "category": "operating",
-      "sha256": "9c85563ab1c34e7d51d2b6f395b54d8be31b6699c897cd765267dc7636dbb0ba",
+      "sha256": "07f1ca26d45855005a0f730b9a2f656692f3f00b79d51e16beb23f5897e8ca87",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/place.html",
       "category": "operating",
-      "sha256": "b9a337015031ed5480c0b770729e41a7b4b42ba03db1fd1ed15ea55e7c00cd95",
+      "sha256": "b75fa5a9cc606b794aa6e4ea29ceeab1e4ac2df723bcccfa4a49c572d6f7cb5a",
       "spec_version": "1.2"
     },
     {
@@ -725,7 +725,7 @@
     {
       "path": "tools/templates/source.html",
       "category": "operating",
-      "sha256": "973de7650ca15a329b0418540a0de8f71a6f4976b36958ee4165df6d4fd43e8f",
+      "sha256": "c184922a95b25a13ec66af1de569ccecc40f907ed5ff3b7e503cae26fa9b29ba",
       "spec_version": "1.2"
     },
     {
@@ -749,7 +749,7 @@
     {
       "path": "tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "d211fc0912d2ad99729c8af6ac08bd865f90b534fcdf3d63a85ff0ba8713d78e",
+      "sha256": "421d21d0db25bd33d30dbb3427af604c6defb4d01f6ec5ff96a1f46e7f1168d5",
       "spec_version": "1.2"
     },
     {
@@ -761,13 +761,13 @@
     {
       "path": "tools/templates/workbench/workbench.css",
       "category": "operating",
-      "sha256": "e6a12ebe7dcc6b85b48ad70ea1873e4e6629c054f7b5b49061593fafac6d9c3b",
+      "sha256": "ee7d6f6e91fdedcd053cdc14dd3bfa481b4e6c44b4d6098a61ebdb6272458f35",
       "spec_version": "1.2"
     },
     {
       "path": "tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "e24503928900cad1d9c06d50b5e35ebfe4947c13248e188f8c6c5e580416699a",
+      "sha256": "681ff25795d2bc4ea2f5beb6f402452de24cc4717e3bd125e55f4de1a8a4f83b",
       "spec_version": "1.2"
     },
     {

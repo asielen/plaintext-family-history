@@ -230,6 +230,9 @@
     updateShowIf(modal);
     showStep(modal, 0);
     $all('textarea[name="text"]', modal).forEach(updateBracketWarning);
+    /* a prefilled ID field (Edit & accept's People list) resolves to names
+       right away, so the human reviews people, not Crockford strings */
+    $all('input[data-wb-refmode="id"]', modal).forEach(renderIdNames);
 
     /* A "direct" modal (no input form - e.g. Accept as-is, Dispute) jumps
        straight to a real dry-run preview. Remember it on the modal: its step 0
@@ -679,6 +682,55 @@
   }
   var debouncedLookup = debounce(runLookup, 150);
 
+  /* --- resolve raw IDs to names under ID-mode fields ----------------------- */
+  /* A field that holds bare IDs (a claim's People list, a spouse pick, a
+     photo S-id) is unreviewable as "P-6f7g8h9jka" - the human should see WHO
+     that is. This renders a "Name (P-id) · Name (P-id)" line under any
+     [data-wb-refmode="id"] input, resolving each ID through /api/find's
+     bare-ID path (one small GET per unseen ID, cached for the page's life).
+     Non-ID tokens (a typed name) are simply skipped, and the line hides when
+     nothing resolves - purely advisory, never blocks submission. */
+  var idNameCache = {};   /* lowercased id -> label; null while in flight */
+  var ID_TOKEN_RE = /^[pslch]-[0-9a-z]{4,}$/i;
+
+  function renderIdNames(input) {
+    if (!input || !document.body.contains(input)) return;
+    var field = input.closest('.wb-field');
+    if (!field) return;
+    var out = field.querySelector('[data-wb-idnames]');
+    var ids = input.value.split(',').map(function (t) { return t.trim(); })
+      .filter(function (t) { return ID_TOKEN_RE.test(t); });
+    if (!ids.length) {
+      if (out) { out.hidden = true; out.textContent = ''; }
+      return;
+    }
+    if (!out) {
+      out = document.createElement('p');
+      out.className = 'wb-id-names';
+      out.setAttribute('data-wb-idnames', '');
+      input.insertAdjacentElement('afterend', out);
+    }
+    out.hidden = false;
+    out.textContent = ids.map(function (id) {
+      var label = idNameCache[id.toLowerCase()];
+      return label ? (label + ' (' + id + ')') : (id + ' …');
+    }).join('  ·  ');
+    ids.forEach(function (id) {
+      var key = id.toLowerCase();
+      if (idNameCache[key] !== undefined) return;   /* cached or in flight */
+      idNameCache[key] = null;
+      fetch('/api/find?q=' + encodeURIComponent(id) + '&limit=1')
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          var hit = (j.results || [])[0];
+          idNameCache[key] = (hit && hit.label) ? hit.label : '(no record with this ID)';
+          renderIdNames(input);
+        })
+        .catch(function () { delete idNameCache[key]; });
+    });
+  }
+  var debouncedIdNames = debounce(renderIdNames, 200);
+
   /* --- global click handling ---------------------------------------------- */
   document.addEventListener('click', function (e) {
     var t;
@@ -735,6 +787,9 @@
         /* keep a parallel id field in sync when the visible field shows a name */
         var idTarget = rfield.querySelector('input[data-wb-idfield]');
         if (idTarget) idTarget.value = t.getAttribute('data-wb-ref-id');
+        /* a pick sets .value programmatically (no native input event), so
+           refresh the names-under-the-field line here */
+        if (ctrl.getAttribute && ctrl.getAttribute('data-wb-refmode') === 'id') renderIdNames(ctrl);
       }
       /* a search-bar hit is a navigation, not an insert */
       if (t.closest('.wb-search-results') && t.getAttribute('data-wb-ref-id')) {
@@ -798,6 +853,7 @@
       if (idEl && idEl.value) idEl.value = '';
     }
     if (e.target.matches && e.target.matches('textarea[name="text"]')) updateBracketWarning(e.target);
+    if (e.target.matches && e.target.matches('input[data-wb-refmode="id"]')) debouncedIdNames(e.target);
     /* typing a new landing name updates the '-> inbox/...' preview live */
     if (e.target.matches && e.target.matches('input[name="filename"]')) {
       var fm = e.target.closest('.wb-modal'); if (fm) substitute(fm);
@@ -893,6 +949,40 @@
         });
     });
   }
+
+  /* "browse for the file..." - fha serve opens the OS's own file-picker
+     window (a browser page cannot read a local file's full path) and the
+     chosen path lands in the named field. Nothing is moved or registered by
+     the pick itself; Preview/Apply still gate the actual write. */
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-wb-pickfile]');
+    if (!b) return;
+    e.preventDefault();
+    var modal = b.closest('.wb-modal');
+    var target = modal && modal.querySelector('[name="' + b.getAttribute('data-wb-pickfile') + '"]');
+    if (!target) return;
+    var orig = b.textContent;
+    b.disabled = true;
+    b.textContent = 'a picker window is open - it may be behind this one…';
+    fetchJsonOrRefusal('/api/pickfile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
+      body: '{}'
+    }).then(function (j) {
+      b.disabled = false;
+      b.textContent = orig;
+      if (j.ok === false) {
+        alert((j.messages && j.messages[0] && j.messages[0].text) || 'Could not open a file picker - type the path instead.');
+        return;
+      }
+      var path = j.data && j.data.path;
+      if (path) target.value = path;   /* cancel leaves the field as it was */
+    }).catch(function (err) {
+      b.disabled = false;
+      b.textContent = orig;
+      alert((err && err.wbServerText && err.message) || 'Could not reach fha serve - is it still running?');
+    });
+  });
 
   /* open a file in the OS editor via POST /api/open (buttons with data-wb-open-file) */
   document.addEventListener('click', function (e) {

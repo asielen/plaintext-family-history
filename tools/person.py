@@ -160,6 +160,8 @@ CODE MAP
   _locate_section / _ends_with_newline / _create_section_at_eof / _append_to_section
                                  - thin local wrappers over those _lib helpers
   _replace_section               - swap a section's whole content (replace mode)
+  run_edit_note                  - swap ONE append-log entry (workbench per-entry edit;
+                                   matched by exact text via replace_paragraph_in_section)
   run_edit                      - replace/append one section; Result
   run_note                      - append-only note; refuses on an unclosed private fence
   _emit / _cmd_* / _add_*_arguments / register / _standalone_main
@@ -207,6 +209,7 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     render_stub_content,
+    replace_paragraph_in_section,
     resolve_root_arg,
     result_fail,
     scan_ids_in_tree,
@@ -1986,6 +1989,118 @@ def run_note(
     return result
 
 
+def run_edit_note(
+    archive_root: Path, person_id: str, section: str, old_text: str, text: str,
+    dry_run: bool = False,
+) -> Result:
+    """Replace ONE existing entry of a Stories/Research Notes append-log;
+    return a Result.
+
+    The surgical counterpart of `run_note`: where note only ever adds at the
+    end, this swaps a single existing entry (one blank-line-separated
+    paragraph run, exactly what one note append wrote) for corrected text -
+    the workbench's per-entry edit button. The entry is identified by its
+    EXACT current text (`old_text`), not by position: display filters strip
+    drafts and private markers, so a rendered entry's index cannot be
+    trusted across the render/disk boundary, but its text can. No match, or
+    more than one, is a plain refusal and nothing is written (the shared
+    matcher: `_lib.replace_paragraph_in_section`).
+
+    Deleting an entry is deliberately NOT this function (an empty --text is
+    refused): the archive prefers preserved trails, so removals stay a
+    deliberate hand edit to the record file.
+    """
+    result = Result(data={'status': None, 'person_id': None, 'path': None, 'section': section})
+
+    if section not in ('stories', 'research'):
+        return _refuse_result(
+            result, 'refused',
+            f'{section!r} is not a section edit-note can change. Use stories or research.')
+    if not str(old_text or '').strip():
+        return _refuse_result(
+            result, 'refused',
+            'no entry was named - --old-text (the entry\'s current text) was empty.')
+    if not str(text or '').strip():
+        return _refuse_result(
+            result, 'refused',
+            'the replacement text was empty. To remove an entry entirely, edit the '
+            'record file itself - this tool only rewrites entries, never deletes them.')
+
+    owner = _locate_person(archive_root, person_id, result)
+    if owner is None:
+        return result
+    path, full_text, before_meta, pid = owner
+    result.data['person_id'] = fmt_id_display(pid)
+    result.data['path'] = str(path)
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    lines = full_text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse_result(
+            result, 'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit '
+            f'safely. Open {path} and edit the entry by hand. Nothing was written.')
+    _, fence_end = bounds
+    cr = '\r' if lines[0].endswith('\r') else ''
+    heading_text = SECTION_HEADINGS[section]
+
+    new_lines, err = replace_paragraph_in_section(
+        lines, fence_end + 1, heading_text, old_text, text, cr)
+    if err is not None:
+        return _refuse_result(result, 'refused', err)
+    new_full_text = '\n'.join(new_lines)
+
+    # The same silent-failure guard run_edit carries: an unbalanced wikilink
+    # renders as raw text with no error anywhere, so flag it while the human
+    # can still see it. And an edit that changes the entry's own
+    # <!-- private --> markers can unbalance the section's redaction fence.
+    open_brackets = text.count('[[')
+    close_brackets = text.count(']]')
+    warn_unbalanced_brackets = open_brackets != close_brackets
+    warn_private_changed = (
+        old_text.count(_PRIVATE_OPEN) != text.count(_PRIVATE_OPEN)
+        or old_text.count(_PRIVATE_CLOSE) != text.count(_PRIVATE_CLOSE))
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would rewrite one entry of ## {heading_text} '
+                           f'in {path.name}; the rest of the log is untouched.')
+        for dline in difflib.unified_diff(
+            full_text.splitlines(), new_full_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+    else:
+        try:
+            write_text_exact(path, reapply_newline(new_full_text, full_text))
+        except OSError as e:
+            return _refuse_result(
+                result, 'refused',
+                f'cannot write {path}: {e}. Check the file is not open elsewhere '
+                'and the folder is writable, then retry.')
+        result.data['status'] = 'ok'
+        result.note_changed(path)
+        result.add('info', f'Rewrote one entry of ## {heading_text} in {label}.', path=path)
+
+    if warn_unbalanced_brackets:
+        result.add('warning',
+                   f'the new entry has {open_brackets} "[[" but {close_brackets} "]]" - '
+                   'an unbalanced wikilink or photo embed renders as raw text instead '
+                   'of a link or photo. Check for a missing bracket.')
+        result.exit_code = EXIT_WARNINGS
+    if warn_private_changed:
+        result.add('warning',
+                   'this edit changes the entry\'s <!-- private --> markers - make '
+                   f'sure ## {heading_text}\'s private fence still opens and closes, '
+                   'or private text could publish on a shared export.')
+        result.exit_code = EXIT_WARNINGS
+    if dry_run:
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _emit(result: Result) -> int:
@@ -2079,6 +2194,16 @@ def _cmd_note(args: argparse.Namespace) -> int:
         text=args.text, dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_edit_note(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person edit-note')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_edit_note(
+        archive_root, person_id=args.person_id, section=args.section,
+        old_text=args.old_text, text=args.text,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _make_group_help(parser: argparse.ArgumentParser):
     """Bare `fha person` prints the group help and exits 2 (a verb is required)."""
     def _cmd(args: argparse.Namespace) -> int:
@@ -2097,6 +2222,7 @@ Update a person's record directly - the deterministic person-field write-backs.
   fha person estimate <P-id> --birth DATE --death DATE
   fha person edit <P-id> --section biography|stories|research --text TEXT
   fha person note <P-id> --section stories|research --text TEXT
+  fha person edit-note <P-id> --section stories|research --old-text TEXT --text TEXT
 
 new mints a brand-new person and writes their stub record. set-living marks
 a person as living, passed away, or unknown (drives export privacy). relate
@@ -2358,6 +2484,41 @@ def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
     nt.set_defaults(func=_cmd_note)
 
 
+_EDIT_NOTE_DESCRIPTION = """\
+Rewrite ONE existing entry of Stories or Research Notes - the rest is untouched.
+
+  fha person edit-note P-2b3c4d5e6f --section research \\
+      --old-text "Check the 1880 census." --text "Checked the 1880 census - nothing."
+
+The entry is named by its exact current text (--old-text); if that text is
+not found (someone edited the file since), or appears more than once, nothing
+is written and the message says so. Deleting an entry stays a hand edit to
+the record file - this only rewrites."""
+
+
+def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the edit-note verb on a group subparser (shared by both mains)."""
+    en = sub.add_parser(
+        'edit-note',
+        help='Rewrite one existing Stories/Research Notes entry.',
+        description=_EDIT_NOTE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    en.add_argument('person_id', metavar='P-id',
+                    help='The person whose entry is being corrected.')
+    en.add_argument('--section', required=True, choices=('stories', 'research'),
+                    help='Which section the entry lives in.')
+    en.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
+                    help="The entry's current text, exactly as it stands.")
+    en.add_argument('--text', metavar='TEXT', required=True,
+                    help='The corrected entry text.')
+    en.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    en.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the change without writing.')
+    en.set_defaults(func=_cmd_edit_note)
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'person' onto the main fha parser."""
     p = subs.add_parser(
@@ -2375,6 +2536,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
     _add_note_arguments(sub)
+    _add_edit_note_arguments(sub)
     p.set_defaults(func=_make_group_help(p))
     return p
 
@@ -2394,6 +2556,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
     _add_note_arguments(sub)
+    _add_edit_note_arguments(sub)
     parser.set_defaults(func=_make_group_help(parser))
     args = parser.parse_args(argv)
     return args.func(args) or 0

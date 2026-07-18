@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-places.py - fha places lint / fha places candidates: place registry hygiene
-and recurrence detection (TOOLING §10, SPEC §15).
+places.py - fha places: place registry hygiene, recurrence detection, and
+human-directed registry edits (TOOLING §10, SPEC §15).
 
   fha places lint [--root PATH]
   fha places candidates [--root PATH] [--threshold N]
   fha places geocode [--place L-id] [--all] [--offline] [--root PATH]
+  fha places set L-id [--coords "LAT, LON"] [--aka "A, B"] [--history "PERIOD | HIERARCHY"]...
+  fha places note L-id --text TEXT [--dry-run]
 
 `fha places lint` checks `places/places.yaml` (via the index's `places`/
 `place_names`/`place_history` tables) plus `claims.place_id` for registry
@@ -38,6 +40,14 @@ guessed), and **every write requires interactive `[y/N]` confirmation**. Writes
 edit `places/places.yaml` surgically (the matched block only) so the file's hand
 comments and unrelated entries are preserved without needing `ruamel.yaml`.
 
+`fha places set` / `fha places note` are the human-directed registry edits the
+workbench place page drives: coordinates, the also-known-as list, the dated
+names-over-time entries (each a FULL per-field replace), and a dated research
+note appended to `notes:`. Same surgical one-block writes as geocode; no [y/N]
+gate because the values are the human's own, previewed and applied by them
+(see the write-backs section comment for how this satisfies the AGENTS.md
+coordinate-confirmation rule).
+
 CODE MAP
 --------
   Lint
@@ -56,17 +66,28 @@ CODE MAP
     GeoRow, _load_gazetteer                - parse the GeoNames dump
     _download_gazetteer                    - one-time offline-dump fetch
     _match_place                           - name+hierarchy → unique hit / ambiguous / none
+    _locate_place_block                    - one `- id:` block's line span (shared grammar)
     _apply_geocode_to_yaml                 - surgical places.yaml block edit
     run_geocode                            - gather candidates, match, (confirm) write
 
+  Registry write-backs (set / note)
+    _key_span, _set_block_key              - one key's span within a block; replace/insert
+    _parse_coords_text, _parse_history_lines - human-typed field values → stored shapes
+    _place_write_result, _finish_place_write - shared head (validate/read) and tail (diff/write)
+    run_place_set                          - coords / alt_names / history, full per-field replace
+    run_place_note                         - dated research note appended to notes:
+    run_place_edit_note                    - rewrite ONE notes: entry (matched by exact text)
+
   CLI
     _cmd_places_lint, _cmd_places_candidates, _cmd_places_geocode,
-    register, _standalone_main
+    _cmd_places_set, _cmd_places_note, register, _standalone_main
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
+import difflib
 import io
 import re
 import sqlite3
@@ -78,6 +99,8 @@ from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+import yaml
 
 from _lib import (
     EXIT_CLEAN,
@@ -96,7 +119,13 @@ from _lib import (
     normalize_place_text,
     open_index_db,
     photoindex_status,
+    read_text_exact,
+    reapply_newline,
     resolve_root_arg,
+    result_fail,
+    split_log_entries,
+    write_text_exact,
+    yaml_inline,
 )
 
 _LINT_REQUIRED_TABLES = ('places', 'place_names', 'place_history', 'claims')
@@ -666,6 +695,35 @@ def _block_indent(lines: list[str], start: int, end: int) -> str:
     return '  '
 
 
+def _locate_place_block(lines: list[str], place_id: str) -> tuple[int, int] | None:
+    """[start, end) line span of the `- id:` block for `place_id`, or None.
+
+    The one block grammar every surgical places.yaml writer shares (geocode,
+    set, note): the block starts at the matching `- id:` line and ends at the
+    next list item at the SAME or a shallower indent - not only at column 0,
+    since the registry list may be written flush-left or uniformly indented
+    (both valid YAML). A deeper-indented dash is a nested alt_names/history
+    item inside the block, never a sibling, so it never ends the block."""
+    pid = normalize_id(place_id)
+    id_re = re.compile(r'^\s*-\s+id:\s*([PSCLHpsclh]-[0-9a-hjkmnp-tv-z]{10})\s*(?:#.*)?$')
+    start = None
+    for i, line in enumerate(lines):
+        m = id_re.match(line)
+        if m and normalize_id(m.group(1)) == pid:
+            start = i
+            break
+    if start is None:
+        return None
+    start_indent = len(re.match(r'^(\s*)', lines[start]).group(1))
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        m = re.match(r'^(\s*)-\s', lines[j])
+        if m and len(m.group(1)) <= start_indent:
+            end = j
+            break
+    return start, end
+
+
 def _apply_geocode_to_yaml(
     text: str, place_id: str, lat: float, lon: float, alt_names: list[str],
 ) -> tuple[str, bool]:
@@ -676,35 +734,17 @@ def _apply_geocode_to_yaml(
     An existing `coords:` line in that block is replaced; `alt_names:` is added
     only when the block has none (a human-curated list is never clobbered).
 
-    The registry list may be written flush-left or uniformly indented (both are
-    valid YAML), so the block ends at the next list item at the SAME or a
-    shallower indent than the matched `- id:` line - not only at column 0.
-    Matching only column-0 items here made an indented registry's block run to
-    EOF, so the coords rewrite could land on a LATER place's coords line and
-    alt_names could append to the file tail. A deeper-indented dash (a nested
-    alt_names/history list item inside the block) never ends the block."""
+    Block bounds come from `_locate_place_block` (shared with the set/note
+    write-backs): the block ends at the next list item at the SAME or a
+    shallower indent than the matched `- id:` line - not only at column 0
+    (the registry list may be written flush-left or uniformly indented, and
+    a deeper-indented dash is a nested alt_names/history item, never a
+    sibling)."""
     lines = text.splitlines()
-    pid = normalize_id(place_id)
-
-    id_re = re.compile(r'^\s*-\s+id:\s*([PSCLHpsclh]-[0-9a-hjkmnp-tv-z]{10})\s*(?:#.*)?$')
-    start = None
-    for i, line in enumerate(lines):
-        m = id_re.match(line)
-        if m and normalize_id(m.group(1)) == pid:
-            start = i
-            break
-    if start is None:
+    span = _locate_place_block(lines, place_id)
+    if span is None:
         return text, False
-
-    # Block runs until the next sibling list item (list-marker indent <= the
-    # matched `- id:` line's indent) or EOF.
-    start_indent = len(re.match(r'^(\s*)', lines[start]).group(1))
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        m = re.match(r'^(\s*)-\s', lines[j])
-        if m and len(m.group(1)) <= start_indent:
-            end = j
-            break
+    start, end = span
 
     indent = _block_indent(lines, start, end)
     block = lines[start:end]
@@ -913,6 +953,387 @@ def _interactive_confirm(prompt: str) -> bool:
     return ans in ('y', 'yes')
 
 
+# ── Registry write-backs (set / note) ─────────────────────────────────────────
+# The human-directed edits the workbench place page drives: coordinates, the
+# alt-names ("also known as") list, the dated `history:` entries, and a dated
+# research note appended to `notes:`. All of them are the same text surgery
+# `_apply_geocode_to_yaml` performs - one block, one key, comments and every
+# other entry untouched. The AGENTS.md rule "no editing places.yaml
+# coordinates without human confirmation" is satisfied by construction here:
+# unlike geocode (which INFERS coordinates and so asks [y/N] per write),
+# these engines only ever write values the human personally supplied - typed
+# into the command or into the workbench form, previewed as a dry-run diff,
+# and applied by their own click. The command IS the confirmation, the same
+# way directing `fha claim` is the human's accept.
+
+def _key_span(block: list[str], key: str, indent: str) -> tuple[int, int] | None:
+    """[start, end) span of `key:` plus its continuation lines within a block.
+
+    A mapping value may continue over following lines (a block scalar, a
+    multi-line list) - every continuation line is MORE indented than the key.
+    An internal blank line belongs to the value only when more-indented
+    content follows it, so the span ends after the LAST more-indented line
+    and a trailing blank separator between registry entries is never
+    swallowed into a rewrite."""
+    key_re = re.compile(rf'^{re.escape(indent)}{re.escape(key)}:')
+    for k, line in enumerate(block):
+        if not key_re.match(line):
+            continue
+        last_content = k
+        for j in range(k + 1, len(block)):
+            if not block[j].strip():
+                continue
+            if len(re.match(r'^(\s*)', block[j]).group(1)) > len(indent):
+                last_content = j
+            else:
+                break
+        return k, last_content + 1
+    return None
+
+
+def _set_block_key(block: list[str], key: str, indent: str, value_lines: list[str]) -> None:
+    """Replace `key:`'s span with `value_lines`, or insert them into the block.
+
+    In-place. A fresh key lands before any trailing blank separator lines
+    (the same rule `_apply_geocode_to_yaml` follows for alt_names) so it
+    stays attached to its own mapping instead of drifting toward the next
+    entry."""
+    span = _key_span(block, key, indent)
+    if span is not None:
+        block[span[0]:span[1]] = value_lines
+        return
+    insert_at = len(block)
+    while insert_at > 0 and not block[insert_at - 1].strip():
+        insert_at -= 1
+    block[insert_at:insert_at] = value_lines
+
+
+def _parse_coords_text(raw: str) -> tuple[float, float] | str:
+    """Parse a human-typed "lat, lon" pair; return (lat, lon) or a plain error.
+
+    Forgiving on shape (comma or whitespace separated, stray brackets
+    tolerated) but strict on meaning: two numbers, latitude within +-90,
+    longitude within +-180 - a swapped pair is the classic error and the
+    range check catches half of those."""
+    cleaned = str(raw).strip().strip('[]()')
+    parts = [p for p in re.split(r'[,\s]+', cleaned) if p]
+    if len(parts) != 2:
+        return ('coordinates need two numbers - latitude, longitude - like '
+                '"39.8000, -95.6000".')
+    try:
+        lat, lon = float(parts[0]), float(parts[1])
+    except ValueError:
+        return (f'could not read {raw!r} as numbers. Coordinates look like '
+                '"39.8000, -95.6000" (latitude first).')
+    if not (-90.0 <= lat <= 90.0):
+        return (f'latitude {lat} is out of range (-90 to 90). Latitude comes '
+                'first - the pair may be swapped.')
+    if not (-180.0 <= lon <= 180.0):
+        return f'longitude {lon} is out of range (-180 to 180).'
+    return lat, lon
+
+
+def _parse_history_lines(entries: list[str]) -> list[dict]:
+    """Parse "PERIOD | HIERARCHY" lines into SPEC §15 history entries.
+
+    The workbench textarea and the repeatable --history flag both speak this
+    one plain shape: an EDTF period, a pipe, the hierarchy of that era. A
+    line with no pipe is taken as a hierarchy with no period (legal - the
+    period is optional in the spec's `{period, hierarchy}` mapping)."""
+    out: list[dict] = []
+    for raw in entries:
+        line = str(raw).strip()
+        if not line:
+            continue
+        if '|' in line:
+            period, _, hierarchy = line.partition('|')
+            entry = {'period': period.strip(), 'hierarchy': hierarchy.strip()}
+            if not entry['period']:
+                entry.pop('period')
+        else:
+            entry = {'hierarchy': line}
+        if entry.get('hierarchy'):
+            out.append(entry)
+    return out
+
+
+def _place_write_result(archive_root: Path, place_id: str) -> tuple[Result, str | None, str | None]:
+    """The shared head of run_place_set/run_place_note: validate the L-id,
+    read places/places.yaml, and confirm the block exists.
+
+    Returns (result, text, error): on any failure `result` already carries
+    the refusal and `(text, error)` explain nothing further needs doing
+    (`error` non-None); on success `text` is the registry's current content."""
+    result = Result(data={'status': None, 'place_id': None, 'path': None})
+    if not (is_valid_id(place_id) and id_type_of(place_id) == 'L'):
+        result_fail(result, 'refused',
+                    f'{place_id!r} is not a valid place ID. L-ids look like '
+                    'L-7c1a9f4e22 - an L followed by a dash and 10 characters '
+                    'from the archive alphabet.')
+        return result, None, 'refused'
+    pid = normalize_id(place_id)
+    result.data['place_id'] = fmt_id_display(pid)
+    path = archive_root / 'places' / 'places.yaml'
+    result.data['path'] = str(path)
+    if not path.is_file():
+        result_fail(result, 'not-found',
+                    f'there is no place registry at {path} yet - nothing to edit.',
+                    exit_code=EXIT_WARNINGS, level='warning',
+                    next_step='fha confirm place')
+        return result, None, 'not-found'
+    try:
+        text = read_text_exact(path)
+    except OSError as e:
+        result_fail(result, 'refused', f'cannot read {path}: {e}')
+        return result, None, 'refused'
+    if _locate_place_block(text.splitlines(), pid) is None:
+        result_fail(result, 'not-found',
+                    f'no place {fmt_id_display(pid)} in the registry - check the '
+                    f'id with `fha find {fmt_id_display(pid)}`.',
+                    exit_code=EXIT_WARNINGS, level='warning',
+                    next_step=f'fha find {fmt_id_display(pid)}')
+        return result, None, 'not-found'
+    return result, text, None
+
+
+def _finish_place_write(result: Result, path: Path, old_text: str, new_text: str,
+                        summary: str, dry_run: bool) -> Result:
+    """The shared tail of run_place_set/run_place_note: diff preview or write."""
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] {summary}')
+        for dline in difflib.unified_diff(
+            old_text.splitlines(), new_text.splitlines(),
+            fromfile='places/places.yaml (before)',
+            tofile='places/places.yaml (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+    try:
+        write_text_exact(path, reapply_newline(new_text, old_text))
+    except OSError as e:
+        return result_fail(result, 'refused',
+                           f'cannot write {path}: {e}. Check the file is not open '
+                           'elsewhere and the folder is writable, then retry.')
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', summary, path=path)
+    result.add('info',
+               'Next: run `fha index` when convenient so pages and search see the change.',
+               next_step='fha index')
+    return result
+
+
+def run_place_set(
+    archive_root: Path, place_id: str, *,
+    coords: str | None = None, aka: list[str] | None = None,
+    history: list[str] | None = None, dry_run: bool = False,
+) -> Result:
+    """Set a registry place's coords / alt_names / history; return a Result.
+
+    Each given field is a FULL replacement of that key (the workbench form
+    shows the current value and the human rewrites it); an omitted field is
+    untouched. `coords` is the human's "lat, lon" text, `aka` the complete
+    alt-names list, `history` "PERIOD | HIERARCHY" lines. The write is the
+    same one-block text surgery geocode does; see the section comment above
+    for why no [y/N] gate applies to these human-supplied values."""
+    result, text, err = _place_write_result(archive_root, place_id)
+    if err is not None:
+        return result
+    if coords is None and aka is None and history is None:
+        return result_fail(result, 'refused',
+                           'nothing to change - give --coords, --aka, and/or --history.')
+
+    latlon: tuple[float, float] | None = None
+    if coords is not None:
+        parsed = _parse_coords_text(coords)
+        if isinstance(parsed, str):
+            return result_fail(result, 'refused', parsed)
+        latlon = parsed
+    history_entries = _parse_history_lines(history) if history is not None else None
+    if history is not None and history_entries == [] and any(str(h).strip() for h in history):
+        return result_fail(result, 'refused',
+                           'no usable history entries - write one per line as '
+                           '"1858/1861 | Fairview, Breton Co., Kansas Territory, USA".')
+
+    lines = text.splitlines()
+    start, end = _locate_place_block(lines, place_id)
+    indent = _block_indent(lines, start, end)
+    block = lines[start:end]
+
+    changed_fields: list[str] = []
+    if latlon is not None:
+        _set_block_key(block, 'coords', indent,
+                       [f'{indent}coords: [{latlon[0]}, {latlon[1]}]'])
+        changed_fields.append(f'coordinates -> [{latlon[0]}, {latlon[1]}]')
+    if aka is not None:
+        cleaned = [a.strip() for a in aka if str(a).strip()]
+        _set_block_key(block, 'alt_names', indent,
+                       [f'{indent}alt_names: {yaml_inline(cleaned)}'])
+        changed_fields.append('also-known-as -> ' + (', '.join(cleaned) or '(none)'))
+    if history_entries is not None:
+        # Each entry is dumped as ONE flow mapping by yaml itself (not
+        # hand-spliced from yaml_inline'd scalars: a hierarchy's own commas
+        # would break a hand-built `{...}`). sort_keys=False keeps the
+        # spec's period-first shape.
+        value_lines = [f'{indent}history:']
+        for entry in history_entries:
+            rendered = yaml.safe_dump(
+                entry, default_flow_style=True, allow_unicode=True,
+                width=10 ** 9, sort_keys=False).strip()
+            value_lines.append(f'{indent}  - {rendered}')
+        if not history_entries:
+            value_lines = [f'{indent}history: []']
+        _set_block_key(block, 'history', indent, value_lines)
+        changed_fields.append(f'names-over-time -> {len(history_entries)} entr'
+                              + ('y' if len(history_entries) == 1 else 'ies'))
+
+    new_text = '\n'.join(lines[:start] + block + lines[end:])
+    if text.endswith('\n'):
+        new_text += '\n'
+    if new_text == text:
+        result.data['status'] = 'ok'
+        result.add('info', 'no change - the registry already matches.')
+        return result
+    summary = (f'Update {result.data["place_id"]} in places/places.yaml: '
+               + '; '.join(changed_fields) + '.')
+    return _finish_place_write(result, Path(result.data['path']), text, new_text,
+                               summary, dry_run)
+
+
+def run_place_edit_note(
+    archive_root: Path, place_id: str, old_text: str, text: str,
+    dry_run: bool = False,
+) -> Result:
+    """Rewrite ONE entry of a place's `notes:` append-log; return a Result.
+
+    The `fha person edit-note` twin for the registry: `notes:` holds dated,
+    blank-line-separated paragraphs (what `run_place_note` appends), and this
+    swaps exactly one of them - named by its exact current text, the same
+    position-free match every per-entry editor uses (`_lib`'s
+    `split_log_entries` defines the entry grammar). No match, an ambiguous
+    duplicate, or an empty replacement are plain refusals with nothing
+    written; removals stay a deliberate hand edit. The whole `notes:` value
+    is then re-emitted as a `notes: |` block scalar, same as the appender."""
+    result, registry_text, err = _place_write_result(archive_root, place_id)
+    if err is not None:
+        return result
+    if not (old_text or '').strip():
+        return result_fail(result, 'refused',
+                           'no entry was named - --old-text (the entry\'s current '
+                           'text) was empty.')
+    if not (text or '').strip():
+        return result_fail(result, 'refused',
+                           'the replacement text was empty. To remove a note '
+                           'entirely, edit places/places.yaml itself - this tool '
+                           'only rewrites notes, never deletes them.')
+
+    pid = normalize_id(place_id)
+    try:
+        entries = yaml.safe_load(registry_text) or []
+    except yaml.YAMLError as e:
+        return result_fail(result, 'refused',
+                           f'places/places.yaml could not be parsed ({e}) - fix the '
+                           'registry first (`fha places lint` points at problems).',
+                           next_step='fha places lint')
+    old_notes = ''
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict) and normalize_id(str(entry.get('id') or '')) == pid:
+            old_notes = str(entry.get('notes') or '').strip()
+            break
+
+    def norm(t: str) -> str:
+        return '\n'.join(ln.rstrip('\r') for ln in t.strip('\n').split('\n'))
+
+    notes_entries = split_log_entries(old_notes)
+    target = norm(old_text)
+    matches = [i for i, e in enumerate(notes_entries) if norm(e) == target]
+    if not matches:
+        return result_fail(result, 'refused',
+                           'that note was not found on this place - it may have '
+                           'been edited since the page was loaded. Reload the '
+                           'page and try again.')
+    if len(matches) > 1:
+        return result_fail(result, 'refused',
+                           f'that exact note appears {len(matches)} times on this '
+                           'place, so this edit cannot tell which one you meant. '
+                           'Edit places/places.yaml directly for this one.')
+    notes_entries[matches[0]] = norm(text)
+    new_value = '\n\n'.join(notes_entries)
+
+    lines = registry_text.splitlines()
+    start, end = _locate_place_block(lines, pid)
+    indent = _block_indent(lines, start, end)
+    block = lines[start:end]
+    value_lines = [f'{indent}notes: |']
+    for ln in new_value.split('\n'):
+        value_lines.append(f'{indent}  {ln}'.rstrip())
+    _set_block_key(block, 'notes', indent, value_lines)
+
+    new_text = '\n'.join(lines[:start] + block + lines[end:])
+    if registry_text.endswith('\n'):
+        new_text += '\n'
+    summary = f'Rewrite one research note on {result.data["place_id"]} in places/places.yaml.'
+    return _finish_place_write(result, Path(result.data['path']), registry_text,
+                               new_text, summary, dry_run)
+
+
+def run_place_note(
+    archive_root: Path, place_id: str, text: str, dry_run: bool = False,
+) -> Result:
+    """Append a dated research note to a registry place's `notes:`; return a
+    Result.
+
+    Place notes are reference prose (SPEC §15 - loose citations welcome, a
+    place is not a genealogical conclusion), and this keeps them an append
+    log like a person's Research Notes: the existing value is preserved and
+    the new note lands after it as its own dated paragraph, so the key is
+    rewritten as a `notes: |` block scalar (the one YAML shape that holds
+    paragraphs legibly). Whatever scalar style the value had before is
+    parsed with plain yaml.safe_load, never guessed from the text."""
+    result, registry_text, err = _place_write_result(archive_root, place_id)
+    if err is not None:
+        return result
+    note_body = (text or '').strip()
+    if not note_body:
+        return result_fail(result, 'refused',
+                           'there is no note text to add - --text was empty.')
+
+    pid = normalize_id(place_id)
+    try:
+        entries = yaml.safe_load(registry_text) or []
+    except yaml.YAMLError as e:
+        return result_fail(result, 'refused',
+                           f'places/places.yaml could not be parsed ({e}) - fix the '
+                           'registry first (`fha places lint` points at problems).',
+                           next_step='fha places lint')
+    old_notes = ''
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict) and normalize_id(str(entry.get('id') or '')) == pid:
+            old_notes = str(entry.get('notes') or '').strip()
+            break
+
+    stamp = datetime.date.today().isoformat()
+    new_value = (old_notes + '\n\n' if old_notes else '') + f'{stamp}: {note_body}'
+
+    lines = registry_text.splitlines()
+    start, end = _locate_place_block(lines, pid)
+    indent = _block_indent(lines, start, end)
+    block = lines[start:end]
+    value_lines = [f'{indent}notes: |']
+    for ln in new_value.split('\n'):
+        value_lines.append(f'{indent}  {ln}'.rstrip())
+    _set_block_key(block, 'notes', indent, value_lines)
+
+    new_text = '\n'.join(lines[:start] + block + lines[end:])
+    if registry_text.endswith('\n'):
+        new_text += '\n'
+    summary = f'Add a research note to {result.data["place_id"]} in places/places.yaml.'
+    return _finish_place_write(result, Path(result.data['path']), registry_text,
+                               new_text, summary, dry_run)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _cmd_places_lint(args: argparse.Namespace) -> int:
@@ -1020,16 +1441,61 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
     return EXIT_CLEAN
 
 
+def _emit_place_result(result: Result) -> int:
+    """Print a set/note Result's messages the standard engine way."""
+    for msg in result.messages:
+        stream = sys.stderr if msg.level == 'error' else sys.stdout
+        prefix = 'ERROR: ' if msg.level == 'error' else ''
+        print(f'{prefix}{msg.text}', file=stream)
+    return result.exit_code
+
+
+def _cmd_places_set(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    aka = None
+    if getattr(args, 'aka', None) is not None:
+        aka = [a.strip() for a in str(args.aka).split(',')]
+    return _emit_place_result(run_place_set(
+        archive_root, args.place_id,
+        coords=getattr(args, 'coords', None), aka=aka,
+        history=getattr(args, 'history', None),
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _cmd_places_note(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit_place_result(run_place_note(
+        archive_root, args.place_id, args.text,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _cmd_places_edit_note(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit_place_result(run_place_edit_note(
+        archive_root, args.place_id, args.old_text, args.text,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
-Keep your places tidy and fill in their coordinates.
+Keep your places tidy, fill in their coordinates, and record what you learn.
 
   fha places lint                    Check the place registry for problems
   fha places candidates              Recurring place-text worth a registry entry
   fha places geocode (--place L-id | --all)  Fill in coordinates (offline, confirmed one by one)
+  fha places set L-id [--coords "LAT, LON"] [--aka "A, B"] [--history "PERIOD | HIERARCHY"]...
+  fha places note L-id --text "..."  Append a dated research note to the place
+  fha places edit-note L-id --old-text "..." --text "..."  Rewrite one existing note
 
 "Am I spelling this town three different ways?", "which place should become a
-real entry?", "fill in the coordinates for these towns.\""""
+real entry?", "fill in the coordinates for these towns", "move the pin",
+"note what I found out about this town.\""""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -1063,6 +1529,44 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                            help='Preview proposed changes without writing.')
     geocode_p.set_defaults(func=_cmd_places_geocode)
 
+    set_p = deferred.add_parser(
+        'set', help="Set a place's coordinates, alt-names, or names-over-time (full replace per field)")
+    set_p.add_argument('place_id', metavar='L-id', help='The place to update.')
+    set_p.add_argument('--coords', metavar='"LAT, LON"',
+                       help='New coordinates, latitude first - e.g. "39.8000, -95.6000".')
+    set_p.add_argument('--aka', metavar='"A, B"',
+                       help='The complete also-known-as list, comma-separated (replaces the old list).')
+    set_p.add_argument('--history', metavar='"PERIOD | HIERARCHY"', action='append',
+                       help='One names-over-time entry; repeat the flag for more (replaces the old list).')
+    set_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                       help='Archive root (auto-detected if omitted).')
+    set_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                       help='Preview the change without writing.')
+    set_p.set_defaults(func=_cmd_places_set)
+
+    note_p = deferred.add_parser('note', help='Append a dated research note to a place')
+    note_p.add_argument('place_id', metavar='L-id', help='The place the note is about.')
+    note_p.add_argument('--text', metavar='TEXT', required=True,
+                        help='The note, in your own words (loose citations welcome).')
+    note_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                        help='Archive root (auto-detected if omitted).')
+    note_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                        help='Preview the change without writing.')
+    note_p.set_defaults(func=_cmd_places_note)
+
+    edit_note_p = deferred.add_parser(
+        'edit-note', help="Rewrite one existing research note on a place (named by its exact text)")
+    edit_note_p.add_argument('place_id', metavar='L-id', help='The place whose note is being corrected.')
+    edit_note_p.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
+                             help="The note's current text, exactly as it stands.")
+    edit_note_p.add_argument('--text', metavar='TEXT', required=True,
+                             help='The corrected note text.')
+    edit_note_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                             help='Archive root (auto-detected if omitted).')
+    edit_note_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                             help='Preview the change without writing.')
+    edit_note_p.set_defaults(func=_cmd_places_edit_note)
+
     # Bare `fha places` (no verb) is a usage error, not a tool failure: exit 2,
     # matching `fha person`/`fha confirm` (audit flag 15).
     p.set_defaults(func=lambda a: p.print_help() or EXIT_ERRORS)
@@ -1093,6 +1597,30 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     geocode_p.add_argument('--offline', action='store_true')
     geocode_p.add_argument('--dry-run', action='store_true', dest='dry_run')
     geocode_p.set_defaults(func=_cmd_places_geocode)
+
+    set_p = subs.add_parser('set')
+    set_p.add_argument('place_id', metavar='L-id')
+    set_p.add_argument('--coords', metavar='"LAT, LON"')
+    set_p.add_argument('--aka', metavar='"A, B"')
+    set_p.add_argument('--history', metavar='"PERIOD | HIERARCHY"', action='append')
+    set_p.add_argument('--root', metavar='PATH')
+    set_p.add_argument('--dry-run', action='store_true', dest='dry_run')
+    set_p.set_defaults(func=_cmd_places_set)
+
+    note_p = subs.add_parser('note')
+    note_p.add_argument('place_id', metavar='L-id')
+    note_p.add_argument('--text', metavar='TEXT', required=True)
+    note_p.add_argument('--root', metavar='PATH')
+    note_p.add_argument('--dry-run', action='store_true', dest='dry_run')
+    note_p.set_defaults(func=_cmd_places_note)
+
+    edit_note_p = subs.add_parser('edit-note')
+    edit_note_p.add_argument('place_id', metavar='L-id')
+    edit_note_p.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text')
+    edit_note_p.add_argument('--text', metavar='TEXT', required=True)
+    edit_note_p.add_argument('--root', metavar='PATH')
+    edit_note_p.add_argument('--dry-run', action='store_true', dest='dry_run')
+    edit_note_p.set_defaults(func=_cmd_places_edit_note)
 
     args = parser.parse_args(argv)
     if not getattr(args, 'func', None):

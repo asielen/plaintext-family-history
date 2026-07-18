@@ -73,6 +73,7 @@ from _lib import (
     normalize_id,
     normalize_place_text,
     open_index_db,
+    PHOTO_EXTENSIONS,
     photoindex_status,
     read_record,
     resolve_path,
@@ -1773,7 +1774,19 @@ _SEARCH_REQUIRED_TABLES = (
 )
 
 # The type values a hit can carry, and the CLI's --kind filter vocabulary.
-_JSON_RESULT_KINDS = ('person', 'source', 'place', 'hypothesis', 'claim', 'text')
+# 'photo-source' is a filter value, not a hit type: it narrows the source
+# search to sources that actually own photo assets (source_type 'photo', or
+# any file with a PHOTO_EXTENSIONS suffix in source_files) - the hits it
+# yields still carry type 'source'. Built for pickers that only make sense
+# over photos (the workbench's set-profile-photo lookup).
+_JSON_RESULT_KINDS = ('person', 'source', 'place', 'hypothesis', 'claim', 'text',
+                      'photo-source')
+
+# The source_files filter behind kind 'photo-source'. PHOTO_EXTENSIONS is a
+# fixed frozenset of literal suffixes ('.jpg', ...), so splicing it into SQL
+# is safe - there is no user input in this string.
+_PHOTO_FILE_SQL = ' OR '.join(
+    f"lower(sf.path) LIKE '%{ext}'" for ext in sorted(PHOTO_EXTENSIONS))
 
 # id_type_of's letter → the hit 'type' string search_json returns. Deliberately
 # excludes nothing: even though the general (non-bare-ID) ranking path only
@@ -1990,8 +2003,14 @@ def _ranked_search(
     id_norm = normalize_id(q)
     if is_valid_id(id_norm):
         hit = _bare_id_hit(conn, id_norm)
-        if hit is None or (kind_set is not None and hit['type'] not in kind_set):
+        if hit is None:
             return []
+        if kind_set is not None and hit['type'] not in kind_set:
+            # A pasted S-id is an explicit pick, so a photo-source filter
+            # still resolves it even when the source has no photo file -
+            # the picker's own note says a typed S-id always works.
+            if not (hit['type'] == 'source' and 'photo-source' in kind_set):
+                return []
         return [hit]
 
     q_lower = q.lower()
@@ -2038,6 +2057,29 @@ def _ranked_search(
         ):
             label, detail = _source_label_detail(row)
             consider(row['id'], 'source', label, detail, row['title'])
+
+    if kind_set is not None and 'photo-source' in kind_set:
+        # Same title search as 'source', narrowed to sources that own at
+        # least one photo file (or are typed photo outright). The hits stay
+        # type 'source' - 'photo-source' is a filter, not a result type -
+        # so the kind check happens here, not in consider().
+        for row in conn.execute(
+            "SELECT s.id, s.title, s.source_type, s.date_edtf FROM sources s "
+            "WHERE s.title LIKE ? ESCAPE '\\' AND (s.source_type = 'photo' "
+            "OR EXISTS (SELECT 1 FROM source_files sf WHERE sf.source_id = s.id "
+            f"AND ({_PHOTO_FILE_SQL})))",
+            (pattern,),
+        ):
+            label, detail = _source_label_detail(row)
+            tier = _best_match_tier(q_lower, (row['title'],))
+            if label is None or tier is None:
+                continue
+            existing = candidates.get(row['id'])
+            if existing is None or tier < existing['tier']:
+                candidates[row['id']] = {
+                    'tier': tier,
+                    'hit': {'id': row['id'], 'type': 'source', 'label': label, 'detail': detail},
+                }
 
     if kind_set is None or 'place' in kind_set:
         for row in conn.execute(
@@ -2428,7 +2470,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         '--kind', metavar='KIND[,KIND...]',
         help='With --json: only these result kinds - person, source, place, hypothesis, '
-             'claim, text (comma list). Default: every kind.',
+             'claim, text (comma list; photo-source = only sources that have photo '
+             'files). Default: every kind.',
     )
     p.add_argument(
         '--limit', type=int, default=20, metavar='N',

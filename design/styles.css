@@ -357,6 +357,12 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
                font-family: var(--font-sans); font-weight: 600; font-size: var(--text-xs);
                text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--muted); }
 
+/* Place-page embedded map (OpenStreetMap iframe). Ruled like a plate, not a
+   card; degrades to an empty ruled frame when offline (the plain map link
+   above it always works). */
+.place-map { margin: var(--space-4) 0 var(--space-6); max-width: var(--measure); }
+.place-map iframe { display: block; width: 100%; height: 20rem; border: 1px solid var(--rule-strong); }
+
 /* Statuses read as words in the status ink, not tinted pills */
 .status { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
 .status::before { content: "\2022\00a0"; font-size: 0.8em; }

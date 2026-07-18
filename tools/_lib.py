@@ -115,6 +115,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    create_section_at_eof     - shared "heading missing, append it at EOF" tail
 #    append_paragraph_to_section - add a paragraph at a `## Heading`'s end (shared by
 #                                 person edit/note + source note; CRLF-safe, bounded)
+#    split_log_entries         - an append-log section's entries (paragraph runs)
+#    replace_paragraph_in_section - swap ONE entry of an append-log section (the
+#                                 workbench's per-entry edit; matched by exact text)
 #    parse_filename            - decompose filename into {id_str, kind, is_companion}
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
@@ -497,7 +500,8 @@ COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-in
 # privacy markers reading as unrestricted in every SQL prefilter and count
 # built on the column - so bump to force `fha index` to rebuild before
 # doctor/find/exporter queries trust it (same rationale as v2).
-INDEX_SCHEMA_VERSION = 5
+# 6: places.notes column (place research notes rendered on place pages).
+INDEX_SCHEMA_VERSION = 6
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 
@@ -1736,6 +1740,90 @@ def append_paragraph_to_section(
         new_lines.append('')             # the file's own end-of-file sentinel, restored
     new_lines.extend(lines[content_end:])
     return new_lines, False, old_content
+
+
+def split_log_entries(text: str) -> list[str]:
+    """Split an append-log section's text into its entries (paragraph runs).
+
+    An entry is what one `fha person note` / `fha source note` append wrote:
+    a run of non-blank lines separated from its neighbors by blank lines.
+    Two consumers MUST split identically - the workbench (one edit button
+    per entry) and `replace_paragraph_in_section` (finding the entry that
+    button targets) - or a button would name text the engine cannot find,
+    so this is their single shared home. Lines keep their own text exactly
+    (indentation included); only the blank separators are consumed."""
+    entries: list[str] = []
+    current: list[str] = []
+    for line in (text or '').split('\n'):
+        if line.strip() == '':
+            if current:
+                entries.append('\n'.join(current))
+                current = []
+        else:
+            current.append(line.rstrip('\r'))
+    if current:
+        entries.append('\n'.join(current))
+    return entries
+
+
+def replace_paragraph_in_section(
+    lines: list[str], body_start: int, heading_text: str,
+    old_paragraph: str, new_paragraph: str, cr: str,
+) -> tuple[list[str] | None, str | None]:
+    """Replace ONE existing entry of a `## {heading_text}` append-log section.
+
+    The surgical sibling of `append_paragraph_to_section`: where that one
+    only ever adds at the end (the nothing-ever-lost note path), this one
+    swaps a single existing entry for new text and leaves every other line
+    of the file untouched - the workbench's per-entry edit button.
+
+    `old_paragraph` identifies the entry BY ITS EXACT TEXT, not by position:
+    positions shift whenever drafts or private fences are display-stripped,
+    so a rendered entry's index is not trustworthy across the render/disk
+    boundary, but its text is. Both sides are compared with per-line `\\r`
+    stripped so a CRLF-authored record matches the browser's LF copy.
+    Returns `(new_lines, None)` on the single match, else `(None, reason)` -
+    absent section, entry not found (stale page), or the same text appearing
+    more than once (ambiguous; the file edit is the honest fallback). `cr`
+    follows the same convention as `append_paragraph_to_section`.
+    """
+    located = section_bounds(lines, body_start, heading_text)
+    if located is None:
+        return None, (f'this record has no ## {heading_text} section - '
+                      'the entry may have been removed. Reload the page.')
+    _, content_start, content_end = located
+
+    spans: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for i in range(content_start, content_end):
+        if lines[i].strip() == '':
+            if run_start is not None:
+                spans.append((run_start, i))
+                run_start = None
+        elif run_start is None:
+            run_start = i
+    if run_start is not None:
+        spans.append((run_start, content_end))
+
+    def norm(text: str) -> str:
+        return '\n'.join(ln.rstrip('\r') for ln in text.strip('\n').split('\n'))
+
+    target = norm(old_paragraph)
+    matches = [(s, e) for s, e in spans
+               if '\n'.join(ln.rstrip('\r') for ln in lines[s:e]) == target]
+    if not matches:
+        return None, (f'that entry was not found in ## {heading_text} - it may '
+                      'have been edited since this page was loaded. Reload the '
+                      'page and try again.')
+    if len(matches) > 1:
+        return None, (f'that exact entry appears {len(matches)} times in '
+                      f'## {heading_text}, so this edit cannot tell which one '
+                      'you meant. Edit the record file directly for this one.')
+    start, end = matches[0]
+    new_lines = list(lines[:start])
+    new_lines.extend(f'{ln}{cr}' for ln in norm(new_paragraph).split('\n'))
+    new_lines.extend(lines[end:])
+    return new_lines, None
 
 
 def parse_filename(path: str | Path) -> dict | None:

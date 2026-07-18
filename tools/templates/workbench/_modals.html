@@ -192,11 +192,11 @@
         <input type="text" name="death_place" value=""></div>
     </div>
     <p class="note">A typed name mints a new stub AND records the tie in one go; a pick from
-      the search links the existing person instead (their record is left alone - the vitals
-      fields above only apply to a brand-new stub). Either way the tie itself is recorded as a
-      <em>hypothesis</em> on this person's record: no record names it yet. When a record proves
-      it, the hypothesis graduates to a sourced relationship claim (accepted in Review, like
-      the census ones were).</p>
+      the search links the existing person instead (the vitals fields above only apply to a
+      brand-new stub). Either way the tie is recorded as a <em>hypothesis</em> on BOTH
+      records - add John as Jane's spouse and it shows from John's page too. When a record
+      proves it, the hypothesis graduates to a sourced relationship claim (accepted in
+      Review, like the census ones were).</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
@@ -250,7 +250,8 @@
       <p class="wb-hint">Pick one of this person's cited sources, or paste an S-id.
         A <strong>sourced</strong> milestone also becomes a claim - so it shows in the Timeline,
         with a footnote. An <strong>unsourced</strong> Born/Died is just the summary line
-        (family knowledge, no footnote); an unsourced Married is recorded as the spouse hypothesis.</p>
+        (family knowledge, no footnote); an unsourced Married is recorded as the spouse
+        hypothesis on both people's records.</p>
     </div>
     <div class="wb-field" data-wb-showif="msource:__paste__">
       <label>Source S-id</label><input type="text" name="msource_id" value="">
@@ -466,13 +467,65 @@
       <label>Photo</label>
       <input type="text" name="value" class="wb-target" data-wb-refmode="id" value="">
       <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a photo source&hellip;</button>
+      {#- kind=photo-source: only sources that actually own photo files - a
+          census PDF matching the query is not a portrait candidate. -#}
       <div class="wb-lookup" hidden>
-        <input type="text" class="wb-lookup-q" placeholder="Search photo sources&hellip;" data-wb-kind="source">
+        <input type="text" class="wb-lookup-q" placeholder="Search photo sources&hellip;" data-wb-kind="photo-source">
         <ul class="wb-lookup-results"></ul>
       </div>
     </div>
     <p class="note">A filename, path, or S-id also works typed directly. Shown on this
       person's page and as their small square in the family tree.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- edit ONE entry of a Stories/Research Notes log (person.edit_note) --- #}
+<template id="tpl-edit-note" data-wb-verb="person.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one entry - the rest of the log is untouched</p>
+    <h3>Edit this entry</h3>
+    <div class="wb-field">
+      <label>The entry, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one entry is replaced - every other note stays exactly as
+      written. If the file changed since this page loaded, the preview says so and nothing
+      is written. To remove an entry entirely, edit the record file itself.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- edit ONE note on a source (source.edit_note) --- #}
+<template id="tpl-edit-source-note" data-wb-verb="source.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note stays exactly as
+      written. If the file changed since this page loaded, the preview says so and nothing
+      is written.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
@@ -511,6 +564,106 @@
   </div>
 </template>
 
+{# --- place: set coordinates (place.set) --- #}
+<template id="tpl-place-coords" data-wb-verb="place.set">
+  <div class="wb-step">
+    <p class="wb-kicker">The pin anchors this place's identity</p>
+    <h3>Where exactly is this place?</h3>
+    <div class="wb-row2">
+      <div class="wb-field"><label>Latitude</label>
+        <input type="text" name="lat" value="" placeholder="39.8000"></div>
+      <div class="wb-field"><label>Longitude</label>
+        <input type="text" name="lon" value="" placeholder="-95.6000"></div>
+    </div>
+    <p class="note">Jurisdictions and names change; the dirt does not - these coordinates
+      are what keeps this place the same place across renames. Right-click a spot on
+      openstreetmap.org and pick "Show address" to read off its coordinates. The preview
+      shows the exact registry change before anything is written.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: edit the also-known-as list (place.set) --- #}
+<template id="tpl-place-aka" data-wb-verb="place.set">
+  <div class="wb-step">
+    <p class="wb-kicker">Other names this place goes by</p>
+    <h3>Also known as</h3>
+    <div class="wb-field"><label>Names, comma-separated</label>
+      <input type="text" name="aka" value="" placeholder="Fairview City, Old Fairview"></div>
+    <p class="note">This replaces the whole list, so keep the names you want. Spelling
+      variants recorded here help search find the place however a record wrote it.
+      (To empty the list entirely, edit <code>places/places.yaml</code> by hand.)</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: edit names-over-time (place.set) --- #}
+<template id="tpl-place-history" data-wb-verb="place.set">
+  <div class="wb-step">
+    <p class="wb-kicker">What this place was called, era by era</p>
+    <h3>Names over time</h3>
+    <div class="wb-field"><label>One entry per line: PERIOD | name of that era</label>
+      <textarea name="history" style="min-height:7rem" placeholder="1858/1861 | Fairview, Breton Co., Kansas Territory, USA"></textarea></div>
+    <p class="note">The period is a date or range the archive's way (<code>1858/1861</code>,
+      <code>1854</code>, <code>[..1861]</code>); after the <code>|</code> comes the full name
+      and jurisdiction of that era. This replaces the whole list - keep the lines you want.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: edit ONE research note (place.edit_note) --- #}
+<template id="tpl-edit-place-note" data-wb-verb="place.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note on this place stays
+      exactly as written. If the registry changed since this page loaded, the preview says
+      so and nothing is written.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: append a research note (place.note) --- #}
+<template id="tpl-place-note" data-wb-verb="place.note">
+  <div class="wb-step">
+    <p class="wb-kicker">Append-only - never overwrites</p>
+    <h3>Add a research note to this place</h3>
+    <div class="wb-field">
+      <label>What did you learn about this place?</label>
+      <textarea name="text"></textarea>
+    </div>
+    <p class="note">Place notes are background context, not family facts - loose citations
+      ("county history, p. 12", a Wikipedia link) are welcome here. The note lands dated,
+      after whatever is already written.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
 {# --- upload a file into the inbox (multipart, not /api/run) --- #}
 <template id="tpl-upload">
   <div class="wb-step">
@@ -540,7 +693,13 @@
   <div class="wb-step">
     <p class="wb-kicker">Register without moving</p>
     <h3>A photo that stays where it is</h3>
-    <div class="wb-field"><label>Path to the photo</label><input type="text" name="path" value=""></div>
+    <div class="wb-field"><label>Path to the photo</label>
+      <input type="text" name="path" value="" placeholder="C:\Photos\1965\reunion.jpg - or browse below">
+      {#- The picker window is opened by fha serve itself (a browser page
+          cannot read a local file's full path) - picking only fills this
+          field; the file is not touched. -#}
+      <button type="button" class="wb-lookuptoggle" data-wb-pickfile="path">&#128193; browse for the file&hellip;</button>
+    </div>
     <div class="wb-field"><label>What is it? (optional)</label><textarea name="note" style="min-height:4rem"></textarea></div>
     <p class="note">Photo-library files are never renamed or moved. Processing writes the durable
       identity <em>into</em> the photo (the embedded <code>SOURCE:</code> keyword) and records

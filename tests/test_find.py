@@ -1355,5 +1355,54 @@ class JsonCliTests(unittest.TestCase):
         self.assertIn('fha index', err.getvalue())
 
 
+class SearchJsonPhotoSourceKindTests(unittest.TestCase):
+    """kind 'photo-source': only sources that actually own photo assets
+    (source_type photo, or any photo-suffixed file in source_files) - the
+    workbench's set-profile-photo picker. Hits still carry type 'source'."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        # A census with a PDF only, a photo-typed source, and an 'other'
+        # source whose files include a scan (a photo by extension).
+        _add_source(self.conn, 's-1111111111', 'Hartley census page', source_type='census')
+        self.conn.execute(
+            "INSERT INTO source_files(source_id, path) VALUES ('s-1111111111', 'documents/census/page_s-1111111111.pdf')")
+        _add_source(self.conn, 's-2222222222', 'Hartley family portrait', source_type='photo')
+        _add_source(self.conn, 's-3333333333', 'Hartley bible flyleaf', source_type='other')
+        self.conn.execute(
+            "INSERT INTO source_files(source_id, path) VALUES ('s-3333333333', 'photos/1900/flyleaf.JPG')")
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_filters_to_sources_with_photo_assets(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Hartley',
+                                   kinds=['photo-source'])
+        ids = {r['id'] for r in results}
+        self.assertEqual(ids, {'s-2222222222', 's-3333333333'})
+        self.assertTrue(all(r['type'] == 'source' for r in results))
+
+    def test_plain_source_kind_still_returns_everything(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'Hartley', kinds=['source'])
+        self.assertEqual(len(results), 3)
+
+    def test_pasted_bare_id_resolves_even_without_photos(self) -> None:
+        # An explicit S-id is an explicit pick - the picker's own note says a
+        # typed id always works, photo assets or not.
+        results = find.search_json(self.archive_root, {}, 's-1111111111',
+                                   kinds=['photo-source'])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['id'], 's-1111111111')
+
+    def test_photo_extension_match_is_case_insensitive(self) -> None:
+        results = find.search_json(self.archive_root, {}, 'flyleaf',
+                                   kinds=['photo-source'])
+        self.assertEqual([r['id'] for r in results], ['s-3333333333'])
+
+
 if __name__ == '__main__':
     unittest.main()

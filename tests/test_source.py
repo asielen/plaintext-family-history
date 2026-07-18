@@ -290,6 +290,62 @@ class SourceNoteRefusalTests(unittest.TestCase):
         self.assertEqual(self.record.read_bytes(), before)
 
 
+class SourceEditNoteTests(unittest.TestCase):
+    """fha source edit-note: rewrite ONE ## Notes paragraph, matched by exact text."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.record = self.root / 'sources' / 'other' / f'hartley-bible_{SID}.md'
+        source.run_source_note(self.root, SID, text='Second note.')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_rewrites_only_the_named_note(self) -> None:
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Found in the attic in 1998.',
+            text="Found in Grandma's attic in 1998.")
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = self.record.read_text(encoding='utf-8')
+        self.assertIn("Found in Grandma's attic in 1998.\n\nSecond note.", text)
+        self.assertNotIn('Found in the attic', text)
+
+    def test_note_not_found_refused_nothing_written(self) -> None:
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Never written.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('not found', result.messages[0].text)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_empty_replacement_refused(self) -> None:
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Second note.', text='  ')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+
+    def test_claims_block_never_touched(self) -> None:
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Second note.', text='Second note, corrected.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = read_record(self.record)
+        self.assertEqual(rec['claims'][0]['id'], 'C-aaaaaaaaaa')
+
+    def test_dry_run_writes_nothing(self) -> None:
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Second note.', text='Changed.', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_missing_source_exit1_next_step(self) -> None:
+        result = source.run_source_edit_note(
+            self.root, 'S-zzzzzzzzzz', old_text='a', text='b')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result.data['status'], 'not-found')
+
+
 class SourceNoteCliTests(unittest.TestCase):
     """The argparse boundary and dispatcher wiring ride fha.main."""
 

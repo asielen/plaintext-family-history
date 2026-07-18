@@ -49,6 +49,8 @@ Code map:
   _workbench_context        - the bar/CSRF/counts baked into every page
   gather_review / gather_inbox - the two serve-rendered pages' data
   VERBS + _verb_*           - the /api/run parity table (the one mutation door)
+  run_api_pickfile          - /api/pickfile: native OS file-picker, returns the
+                              chosen path only (a browser page cannot read one)
   _reindex_after            - post-write reindex policy (upsert vs full)
   _ThreadTee                - per-thread stdout/stderr router (process.py's
                               prints, captured without racing concurrent GETs)
@@ -110,6 +112,7 @@ import cooccur  # noqa: E402
 import find as find_mod  # noqa: E402
 import index as index_mod  # noqa: E402
 import person  # noqa: E402
+import places as places_mod  # noqa: E402
 import process as process_mod  # noqa: E402
 import source as source_mod  # noqa: E402
 import xref as xref_mod  # noqa: E402
@@ -267,6 +270,10 @@ class ServeState:
         self._mtime_memo: tuple[float, float] | None = None
         self._review_count_memo: tuple[float, int] | None = None
         self._inbox_count_memo: tuple[float, int] | None = None
+        # Guards the native file-picker dialog (/api/pickfile): one at a time,
+        # never under the mutation `lock` - a dialog can sit open for minutes
+        # and must not block writes or page renders while it does.
+        self.pick_lock = threading.Lock()
 
     @property
     def site_title(self) -> str:
@@ -1089,12 +1096,18 @@ def _verb_add_family(state, kw, dry_run):
     name FIRST and relate the subject to the fresh stub - two engine calls,
     one button, echoing both commands (exactly the wireframe's dry-run,
     person.html:316-322). The minted id round-trips via data['new_person_id']
-    so Apply commits the same stub the preview showed."""
+    so Apply commits the same stub the preview showed.
+
+    Both paths relate with reciprocal=True (owner decision, review
+    2026-07-16): the tie lands on BOTH records - subject and existing person,
+    or subject and fresh stub - so it shows from either person's page. The
+    flag is written into `kw` so the CLI echo names it."""
+    kw['reciprocal'] = True
     target = str(kw.get('target_id') or '').strip()
     if target:
         return person.run_relate(
             state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
-            target, dry_run=dry_run)
+            target, reciprocal=True, dry_run=dry_run)
     name = str(kw.get('name') or '').strip()
     minted = person.run_new(
         state.archive_root, name, sex=kw.get('sex'), gender=kw.get('gender'),
@@ -1112,11 +1125,12 @@ def _verb_add_family(state, kw, dry_run):
         minted.add('info',
                    f'[dry-run] Would then record {kw.get("relation_type", "?")}: '
                    f'{new_pid} on {kw.get("person_id", "?")} as a hypothesis '
-                   '(unsourced family-tie belief, SPEC §9).')
+                   '(unsourced family-tie belief, SPEC §9), and the mirror-image '
+                   'tie on the new record - it shows from both pages.')
         return minted
     related = person.run_relate(
         state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
-        new_pid, dry_run=False)
+        new_pid, reciprocal=True, dry_run=False)
     for m in related.messages:
         minted.messages.append(m)
     for p in related.changed:
@@ -1132,15 +1146,24 @@ def _echo_add_family(kw):
         return _echo_relate(kw)
     mint = _echo_person_new(kw)
     rel = (f'fha person relate {kw.get("person_id", "?")} '
-           f'--{kw.get("relation_type", "sibling")} <new P-id>')
+           f'--{kw.get("relation_type", "sibling")} <new P-id> --reciprocal')
     return f'{mint} && {rel}'
 
 
 def _verb_relate(state, kw, dry_run):
+    """Record an unsourced family tie - mirrored on BOTH records by default.
+
+    The workbench default is reciprocal=True (owner decision, review
+    2026-07-16): a tie written to one file only shows on one person's page
+    only, which reads as silent failure from the other tab. An explicit
+    {"reciprocal": false} still records a one-sided belief. The effective
+    value is written back into `kw` so the CLI echo shows the --reciprocal
+    that actually ran."""
+    kw['reciprocal'] = bool(kw.get('reciprocal', True))
     return person.run_relate(
         state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
         kw.get('target_id', ''), subtype=kw.get('subtype'),
-        reciprocal=bool(kw.get('reciprocal', False)), dry_run=dry_run)
+        reciprocal=kw['reciprocal'], dry_run=dry_run)
 
 
 def _echo_relate(kw):
@@ -1199,6 +1222,18 @@ def _echo_person_note(kw):
             f'{kw.get("section", "?")} --text {_q(kw.get("text", ""))}')
 
 
+def _verb_person_edit_note(state, kw, dry_run):
+    return person.run_edit_note(
+        state.archive_root, kw.get('person_id', ''), kw.get('section', ''),
+        old_text=kw.get('old_text', ''), text=kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_person_edit_note(kw):
+    return (f'fha person edit-note {kw.get("person_id", "?")} --section '
+            f'{kw.get("section", "?")} --old-text {_q(kw.get("old_text", ""))} '
+            f'--text {_q(kw.get("text", ""))}')
+
+
 def _verb_source_note(state, kw, dry_run):
     return source_mod.run_source_note(
         state.archive_root, kw.get('source_id', ''), text=kw.get('text', ''), dry_run=dry_run)
@@ -1206,6 +1241,17 @@ def _verb_source_note(state, kw, dry_run):
 
 def _echo_source_note(kw):
     return f'fha source note {kw.get("source_id", "?")} --text {_q(kw.get("text", ""))}'
+
+
+def _verb_source_edit_note(state, kw, dry_run):
+    return source_mod.run_source_edit_note(
+        state.archive_root, kw.get('source_id', ''),
+        old_text=kw.get('old_text', ''), text=kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_source_edit_note(kw):
+    return (f'fha source edit-note {kw.get("source_id", "?")} '
+            f'--old-text {_q(kw.get("old_text", ""))} --text {_q(kw.get("text", ""))}')
 
 
 # ── Per-thread stdout/stderr routing (process.py's own prints) ────────────────
@@ -1261,6 +1307,58 @@ def _classify_captured_line(line: str) -> str:
     if line.startswith('WARNING'):
         return 'warning'
     return 'info'
+
+
+def _verb_place_set(state, kw, dry_run):
+    """Registry place edit (coordinates / aka / names-over-time) - the place
+    page's edit buttons. The three modals share this one verb, each sending
+    only its own field(s); the engine replaces exactly the fields given.
+    The dry-run preview + the human's own Apply ARE the confirmation the
+    AGENTS.md coordinate rule requires (see places.py's write-backs section)."""
+    coords = None
+    if str(kw.get('lat') or '').strip() or str(kw.get('lon') or '').strip():
+        coords = f"{kw.get('lat', '')}, {kw.get('lon', '')}"
+    aka = kw.get('aka')
+    history = kw.get('history')
+    return places_mod.run_place_set(
+        state.archive_root, kw.get('place_id', ''),
+        coords=coords,
+        aka=[a.strip() for a in str(aka).split(',')] if aka is not None else None,
+        history=str(history).split('\n') if history is not None else None,
+        dry_run=dry_run)
+
+
+def _echo_place_set(kw):
+    parts = ['fha places set', kw.get('place_id', '?')]
+    if str(kw.get('lat') or '').strip() or str(kw.get('lon') or '').strip():
+        parts += ['--coords', _q(f'{kw.get("lat", "")}, {kw.get("lon", "")}')]
+    if kw.get('aka') is not None:
+        parts += ['--aka', _q(kw['aka'])]
+    if kw.get('history') is not None:
+        for line in str(kw['history']).split('\n'):
+            if line.strip():
+                parts += ['--history', _q(line.strip())]
+    return ' '.join(parts)
+
+
+def _verb_place_note(state, kw, dry_run):
+    return places_mod.run_place_note(
+        state.archive_root, kw.get('place_id', ''), kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_place_note(kw):
+    return f'fha places note {kw.get("place_id", "?")} --text {_q(kw.get("text", ""))}'
+
+
+def _verb_place_edit_note(state, kw, dry_run):
+    return places_mod.run_place_edit_note(
+        state.archive_root, kw.get('place_id', ''),
+        kw.get('old_text', ''), kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_place_edit_note(kw):
+    return (f'fha places edit-note {kw.get("place_id", "?")} '
+            f'--old-text {_q(kw.get("old_text", ""))} --text {_q(kw.get("text", ""))}')
 
 
 def _verb_process(state, kw, dry_run):
@@ -1513,8 +1611,23 @@ VERBS: dict[str, dict] = {
                     'run': _verb_person_edit, 'echo': _echo_person_edit, 'reindex': 'full'},
     'person.note': {'schema': {'person_id': 'str', 'section': 'str', 'text': 'str'},
                     'run': _verb_person_note, 'echo': _echo_person_note, 'reindex': 'full'},
+    'person.edit_note': {'schema': {'person_id': 'str', 'section': 'str',
+                                    'old_text': 'str', 'text': 'str'},
+                         'run': _verb_person_edit_note, 'echo': _echo_person_edit_note,
+                         'reindex': 'full'},
     'source.note': {'schema': {'source_id': 'str', 'text': 'str'},
                     'run': _verb_source_note, 'echo': _echo_source_note, 'reindex': 'source'},
+    'source.edit_note': {'schema': {'source_id': 'str', 'old_text': 'str', 'text': 'str'},
+                         'run': _verb_source_edit_note, 'echo': _echo_source_edit_note,
+                         'reindex': 'source'},
+    'place.set': {'schema': {'place_id': 'str', 'lat': 'str', 'lon': 'str',
+                             'aka': 'str', 'history': 'str'},
+                  'run': _verb_place_set, 'echo': _echo_place_set, 'reindex': 'full'},
+    'place.note': {'schema': {'place_id': 'str', 'text': 'str'},
+                   'run': _verb_place_note, 'echo': _echo_place_note, 'reindex': 'full'},
+    'place.edit_note': {'schema': {'place_id': 'str', 'old_text': 'str', 'text': 'str'},
+                        'run': _verb_place_edit_note, 'echo': _echo_place_edit_note,
+                        'reindex': 'full'},
     'process.file': {'schema': {'file': 'str', 'source_type': 'str', 'title': 'str', 'slug': 'str',
                                 'source_id': 'str'},
                      'run': _verb_process, 'echo': _echo_process, 'reindex': 'full'},
@@ -1957,6 +2070,61 @@ def run_api_open(state: ServeState, path: str) -> tuple[int, dict]:
     return 200, _msg_payload(True, f'opened {resolved.name} in your usual editor.')
 
 
+# The tkinter one-shot behind /api/pickfile. Runs in a SUBPROCESS, not this
+# process: Tk is not thread-safe, and every serve request runs on its own
+# thread - a fresh interpreter per pick sidesteps the whole class of
+# Tk-reused-across-threads crashes for the price of one process spawn.
+# The chosen path is the subprocess's single stdout line ('' on cancel).
+_PICKFILE_SNIPPET = (
+    'import tkinter, tkinter.filedialog\n'
+    'root = tkinter.Tk()\n'
+    'root.withdraw()\n'
+    'root.attributes("-topmost", True)\n'
+    'print(tkinter.filedialog.askopenfilename(parent=root) or "")\n'
+)
+
+
+def run_api_pickfile(state: ServeState) -> tuple[int, dict]:
+    """Open the OS's own file-picker window and return the chosen path.
+
+    Exists because a browser cannot hand a page the full path of a local
+    file (a security rule of every browser) - but the register-by-path flow
+    needs exactly that path, unmoved and uncopied. serve runs on the same
+    machine as the browser, so IT opens the native dialog and passes the
+    choice back. Nothing is read, moved, or registered here - the path just
+    lands in the form field, and registering still goes through the normal
+    capture.path preview/apply.
+
+    One dialog at a time (`state.pick_lock`); a second click while one is
+    open gets a plain pointer to the existing window rather than a stack of
+    dialogs. Machines without tkinter (some minimal Pythons) get a plain
+    "type the path instead" - the text field keeps working either way."""
+    import subprocess
+    if not state.pick_lock.acquire(blocking=False):
+        return 200, _msg_payload(False, 'a file-picker window is already open - look for it '
+                                        'on your desktop (it may be behind this window).')
+    try:
+        proc = subprocess.run(
+            [sys.executable, '-c', _PICKFILE_SNIPPET],
+            capture_output=True, text=True, timeout=600,
+        )
+        if proc.returncode != 0:
+            return 200, _msg_payload(False, 'this computer could not open a file-picker window. '
+                                            'Type or paste the full path into the field instead.')
+        path = (proc.stdout or '').strip()
+        payload = _msg_payload(True, f'picked {path}' if path else 'no file chosen.')
+        payload['data'] = {'path': path}
+        return 200, payload
+    except subprocess.TimeoutExpired:
+        return 200, _msg_payload(False, 'the file-picker window sat unanswered for 10 minutes '
+                                        'and was closed. Click browse again, or type the path.')
+    except Exception as e:  # noqa: BLE001 - a picker failure becomes a plain message
+        return 200, _msg_payload(False, f'could not open a file picker ({e}). Type or paste '
+                                        'the full path into the field instead.')
+    finally:
+        state.pick_lock.release()
+
+
 def _os_open(path: Path) -> None:
     """Open a file with the OS default handler. Windows is the target
     (os.startfile); other platforms fall back to open/xdg-open."""
@@ -2124,6 +2292,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_upload()
             elif path == '/api/open':
                 self._handle_open()
+            elif path == '/api/pickfile':
+                self._handle_pickfile()
             elif path == '/api/reindex':
                 self._handle_reindex()
             else:
@@ -2212,6 +2382,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, _msg_payload(False, 'the request body was not valid JSON.'))
             return
         code, payload = run_api_open(self.state, req.get('path', ''))
+        self._send_json(code, payload)
+
+    def _handle_pickfile(self) -> None:
+        # No fields are read from the body, but it must still be drained so a
+        # stray Content-Length can't desync the next keep-alive request (see
+        # `_read_body`'s docstring - same shape as `_handle_reindex`).
+        body = self._read_body(cap=64 * 1024)
+        if body is None:
+            self._send_json(413, _msg_payload(False, 'request too large.'))
+            return
+        code, payload = run_api_pickfile(self.state)
         self._send_json(code, payload)
 
     def _handle_reindex(self) -> None:

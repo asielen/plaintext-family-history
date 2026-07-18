@@ -275,7 +275,8 @@ CREATE TABLE IF NOT EXISTS places(
   hierarchy TEXT,
   within TEXT,
   lat REAL,
-  lon REAL
+  lon REAL,
+  notes TEXT
 );
 -- place_names: alternate names for each registered place.
 CREATE TABLE IF NOT EXISTS place_names(place_id TEXT, alt_name TEXT);
@@ -566,9 +567,10 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> list[str]:
         if coord_warning:
             warnings.append(coord_warning)
         conn.execute(
-            'INSERT OR REPLACE INTO places(id, name, hierarchy, within, lat, lon) VALUES (?,?,?,?,?,?)',
+            'INSERT OR REPLACE INTO places(id, name, hierarchy, within, lat, lon, notes) '
+            'VALUES (?,?,?,?,?,?,?)',
             (pid, place.get('name'), place.get('hierarchy'), place.get('within'),
-             lat, lon),
+             lat, lon, str(place.get('notes') or '').strip() or None),
         )
         alt_names = [str(a) for a in (place.get('alt_names') or [])]
         for alt in alt_names:

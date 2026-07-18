@@ -5,5 +5,9 @@
   hierarchy: Fairview, Breton County, Kansas, USA
   alt_names: [Fairview City]
   history:
-    - {period: "1858/1861", hierarchy: "Fairview, Breton Co., Kansas Territory, USA"}
-  notes: fictional town used in the example archive
+    - {period: 1858/1861, hierarchy: 'Fairview, Breton Co., Kansas Territory, USA'}
+    - {hierarchy: Another name}
+  notes: |
+    fictional town used in the example archive
+
+    2026-07-17: New note

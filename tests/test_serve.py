@@ -1593,5 +1593,134 @@ class KeepAliveHygieneTests(_ServeCase):
             conn.close()
 
 
+class PlaceVerbTests(_ServeCase):
+    """place.set / place.note: the place page's registry write-backs
+    (owner request, review 2026-07-16). L-7c1a9f4e22 is the example
+    archive's Fairview."""
+
+    LID = 'L-7c1a9f4e22'
+
+    def test_place_set_dry_run_previews_and_writes_nothing(self):
+        before = _tree_hash(self.root)
+        s, d, _h = self.post_run('place.set',
+                                 {'place_id': self.LID, 'lat': '40.1', 'lon': '-95.0'}, True)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('fha places set L-7c1a9f4e22 --coords "40.1, -95.0"',
+                      payload['cli_echo'])
+        self.assertEqual(_tree_hash(self.root), before)
+
+    def test_place_set_apply_moves_the_pin(self):
+        s, d, _h = self.post_run('place.set',
+                                 {'place_id': self.LID, 'lat': '40.1', 'lon': '-95.0'}, False)
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        registry = (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8')
+        self.assertIn('coords: [40.1, -95.0]', registry)
+
+    def test_place_note_apply_appends_dated_note(self):
+        s, d, _h = self.post_run('place.note',
+                                 {'place_id': self.LID, 'text': 'Platted 1858.'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('fha places note L-7c1a9f4e22 --text "Platted 1858."',
+                      payload['cli_echo'])
+        registry = (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8')
+        self.assertIn('Platted 1858.', registry)
+
+    def test_place_edit_note_rewrites_one_entry(self):
+        s, _d, _h = self.post_run('place.note',
+                                  {'place_id': self.LID, 'text': 'First finding.'}, False)
+        self.assertEqual(s, 200)
+        registry = (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8')
+        line = next(ln.strip() for ln in registry.splitlines() if 'First finding.' in ln)
+        s, d, _h = self.post_run('place.edit_note',
+                                 {'place_id': self.LID, 'old_text': line,
+                                  'text': 'First finding, corrected.'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('fha places edit-note', payload['cli_echo'])
+        registry = (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8')
+        self.assertIn('First finding, corrected.', registry)
+        self.assertNotIn('First finding.\n', registry)
+
+    def test_place_set_unknown_id_is_a_plain_refusal(self):
+        s, d, _h = self.post_run('place.set',
+                                 {'place_id': 'L-bbbbbbbbbb', 'lat': '1', 'lon': '2'}, True)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertFalse(payload['ok'])
+        self.assertIn('fha find', payload['messages'][0]['text'])
+
+
+class ReciprocalRelateTests(_ServeCase):
+    """The workbench mirrors unsourced ties on BOTH records by default
+    (owner request, review 2026-07-16): add John as Jane's spouse and it
+    shows from John's page too."""
+
+    A = 'P-6f7g8h9jka'   # Warren Calvin Hartley
+    B = 'P-c4b26bb4bc'   # Ethel Hartley
+
+    def _person_file(self, pid):
+        hits = [p for p in (self.root / 'people').rglob(f'*{pid.lower()}*.md')
+                if '_timeline' not in p.name and '_sources-index' not in p.name
+                and '_draft-queue' not in p.name]
+        self.assertTrue(hits, f'no record file found for {pid}')
+        return hits[0]
+
+    def test_relate_defaults_to_reciprocal_and_echoes_it(self):
+        s, d, _h = self.post_run('person.relate',
+                                 {'person_id': self.A, 'relation_type': 'spouse',
+                                  'target_id': self.B}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('--reciprocal', payload['cli_echo'])
+        a_text = self._person_file(self.A).read_text(encoding='utf-8')
+        b_text = self._person_file(self.B).read_text(encoding='utf-8')
+        self.assertIn(self.B, a_text)
+        self.assertIn(self.A, b_text)
+        self.assertIn('status: hypothesis', a_text)
+        self.assertIn('status: hypothesis', b_text)
+
+    def test_explicit_false_still_records_one_sided(self):
+        b_before = self._person_file(self.B).read_bytes()
+        s, d, _h = self.post_run('person.relate',
+                                 {'person_id': self.A, 'relation_type': 'spouse',
+                                  'target_id': self.B, 'reciprocal': False}, False)
+        self.assertEqual(s, 200)
+        self.assertTrue(json.loads(d)['ok'])
+        a_text = self._person_file(self.A).read_text(encoding='utf-8')
+        self.assertIn(self.B, a_text)
+        # The target's record is byte-identical - no mirror was written.
+        self.assertEqual(self._person_file(self.B).read_bytes(), b_before)
+
+
+class PickFileTests(_ServeCase):
+    """/api/pickfile - only the no-dialog paths (a real dialog would hang a
+    headless test run): the one-at-a-time lock refusal, and the CSRF gate."""
+
+    def test_busy_lock_is_a_plain_refusal_not_a_second_dialog(self):
+        self.state.pick_lock.acquire()
+        try:
+            headers = {'Content-Type': 'application/json',
+                       'X-FHA-CSRF': self.state.csrf_token}
+            s, d, _h = self.req('POST', '/api/pickfile', body='{}', headers=headers)
+            self.assertEqual(s, 200)
+            payload = json.loads(d)
+            self.assertFalse(payload['ok'])
+            self.assertIn('already open', payload['messages'][0]['text'])
+        finally:
+            self.state.pick_lock.release()
+
+    def test_pickfile_requires_csrf(self):
+        s, _d, _h = self.req('POST', '/api/pickfile', body='{}',
+                             headers={'Content-Type': 'application/json'})
+        self.assertEqual(s, 403)
+
+
 if __name__ == '__main__':
     unittest.main()

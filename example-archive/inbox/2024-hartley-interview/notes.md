@@ -4,7 +4,7 @@ source_date: 2024-03
 people:
   - Ethel Hartley
 files:
-  - { file: interview.mp3, role: recording }       # absent in this example (no binaries)
+  - { file: interview.mp3, role: recording }       # tiny silent placeholder (fixture)
   - { file: interview-transcript.md, role: transcript }
 ---
 
@@ -20,8 +20,9 @@ files:
      each file is filed into its asset tree carrying that shared S-id (the recording
      via a SOURCE: keyword, the transcript via the `-transcript` filename role), and
      this prose flows into the source's ## Notes. The bundle has no S-id yet. A
-     fictional fixture - the .mp3 is referenced but absent (this example ships no
-     binaries); the transcript beside it is real plain text. -->
+     fictional fixture - the .mp3 is a tiny silent placeholder (a real recording
+     would be too big to ship); the transcript beside it is real plain text.
+     Processing this bundle dissolves the folder - `git restore` brings it back. -->
 
 What is this?
 A phone interview I recorded with Great-Aunt Ethel in March 2024, plus the
