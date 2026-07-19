@@ -411,11 +411,19 @@
       if (!c.verb) return;
       if (c.verb === '__unwritable__') {
         var host0 = ensurePreviewStep(modal);
-        host0.innerHTML = '<p class="wb-kicker">No provisional slot</p>' +
-          '<h3>This one needs a source</h3>' +
-          '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
-          'Record it with a source (it becomes a claim), or leave it as a research note ' +
-          'until a record backs it.</span></pre>' +
+        var body0 = (c.args && c.args.reason === 'married-dated')
+          ? '<p class="wb-kicker">The date and place need a source</p>' +
+            '<h3>An unsourced marriage records only the spouse tie</h3>' +
+            '<pre class="wb-diff"><span class="ctx">Without a source there is nowhere to keep a marriage date or ' +
+            'place - applying would silently drop what you typed. Pick a source above (the marriage becomes a ' +
+            'claim carrying the date and place), or clear the Date/Place fields to record just the spouse as an ' +
+            'unsourced family-tie belief.</span></pre>'
+          : '<p class="wb-kicker">No provisional slot</p>' +
+            '<h3>This one needs a source</h3>' +
+            '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
+            'Record it with a source (it becomes a claim), or leave it as a research note ' +
+            'until a record backs it.</span></pre>';
+        host0.innerHTML = body0 +
           '<div class="wb-modal-foot"><button type="button" class="btn" data-wb-back>&larr; Back</button>' +
           '<button type="button" class="btn btn-primary" data-wb-close>Close</button></div>';
         showStep(modal, host0);
@@ -601,6 +609,14 @@
         return { verb: 'person.estimate', args: e };
       }
       if (mtype === 'married') {
+        /* An unsourced marriage records ONLY the spouse hypothesis -
+           person.relate has no date/place slot, so a typed Date/Place would
+           silently vanish on apply (P2 codex finding, round 6, PR #31).
+           Refuse with the honest explanation instead of dropping the
+           human's data. */
+        if (date || place || placeId) {
+          return { verb: '__unwritable__', args: { reason: 'married-dated' } };
+        }
         return { verb: 'person.relate',
                  args: { person_id: subject, relation_type: 'spouse', target_id: spouse } };
       }

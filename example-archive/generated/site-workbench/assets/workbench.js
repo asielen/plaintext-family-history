@@ -267,7 +267,15 @@
       if (c.type === 'radio') { if (c.checked) args[name] = c.value; return; }
       if (c.type === 'checkbox') { args[name] = c.checked; return; }
       var v = c.value;
-      if (v !== null && String(v).trim() !== '') args[name] = v;
+      /* data-wb-allowempty: a whole-list REPLACE field (the aka/history
+         textareas) where blank is a real value - "clear the list" - not an
+         untouched field to drop. Everything else keeps the blank-means-
+         omitted rule (a blank field never overrides a fixed arg). P2 codex
+         finding, round 3, PR #31: deleting every line used to submit
+         nothing, so the engine refused "nothing to change". */
+      if (v !== null && (String(v).trim() !== '' || c.hasAttribute('data-wb-allowempty'))) {
+        args[name] = v;
+      }
     });
     /* A hidden `data-wb-idfield="otherName"` control (set by the lookup
        click handler below when a result is picked by id) names the
@@ -280,6 +288,11 @@
     $all('[data-wb-idfield]', modal).forEach(function (idEl) {
       var idName = idEl.getAttribute('name');
       var pairName = idEl.getAttribute('data-wb-idfield');
+      /* data-wb-keeppair: keep the visible text BESIDE the resolved id -
+         for a builder that routes to different verbs wanting different
+         representations (the milestone modal: a claim wants the L-id, a
+         provisional estimate wants the human-readable place text). */
+      if (idEl.hasAttribute('data-wb-keeppair')) return;
       if (idName && pairName && args[idName] !== undefined) delete args[pairName];
     });
     /* A per-modal builder can rewrite (verb, args) - milestone routing, the
@@ -398,11 +411,19 @@
       if (!c.verb) return;
       if (c.verb === '__unwritable__') {
         var host0 = ensurePreviewStep(modal);
-        host0.innerHTML = '<p class="wb-kicker">No provisional slot</p>' +
-          '<h3>This one needs a source</h3>' +
-          '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
-          'Record it with a source (it becomes a claim), or leave it as a research note ' +
-          'until a record backs it.</span></pre>' +
+        var body0 = (c.args && c.args.reason === 'married-dated')
+          ? '<p class="wb-kicker">The date and place need a source</p>' +
+            '<h3>An unsourced marriage records only the spouse tie</h3>' +
+            '<pre class="wb-diff"><span class="ctx">Without a source there is nowhere to keep a marriage date or ' +
+            'place - applying would silently drop what you typed. Pick a source above (the marriage becomes a ' +
+            'claim carrying the date and place), or clear the Date/Place fields to record just the spouse as an ' +
+            'unsourced family-tie belief.</span></pre>'
+          : '<p class="wb-kicker">No provisional slot</p>' +
+            '<h3>This one needs a source</h3>' +
+            '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
+            'Record it with a source (it becomes a claim), or leave it as a research note ' +
+            'until a record backs it.</span></pre>';
+        host0.innerHTML = body0 +
           '<div class="wb-modal-foot"><button type="button" class="btn" data-wb-back>&larr; Back</button>' +
           '<button type="button" class="btn btn-primary" data-wb-close>Close</button></div>';
         showStep(modal, host0);
@@ -579,11 +600,23 @@
         if (date) e[claimType] = date;
         /* The place travels too (wireframe: the unsourced summary line is
            '**Born:** <date> - <place>') - as the provisional
-           birth_place/death_place frontmatter beside the date. */
-        if (placeId || place) e[claimType + '_place'] = placeId || place;
+           birth_place/death_place frontmatter beside the date. These fields
+           are FREE TEXT rendered literally, so the human-readable label wins
+           over a picked L-id (which would show as 'L-...' on the summary
+           row - P2 codex finding, round 5, PR #31); the id alone is the
+           fallback when there is no label to prefer. */
+        if (place || placeId) e[claimType + '_place'] = place || placeId;
         return { verb: 'person.estimate', args: e };
       }
       if (mtype === 'married') {
+        /* An unsourced marriage records ONLY the spouse hypothesis -
+           person.relate has no date/place slot, so a typed Date/Place would
+           silently vanish on apply (P2 codex finding, round 6, PR #31).
+           Refuse with the honest explanation instead of dropping the
+           human's data. */
+        if (date || place || placeId) {
+          return { verb: '__unwritable__', args: { reason: 'married-dated' } };
+        }
         return { verb: 'person.relate',
                  args: { person_id: subject, relation_type: 'spouse', target_id: spouse } };
       }
@@ -664,14 +697,21 @@
       }).join('');
       /* Person lookups end with a real '+ create' row (wireframe: typeahead-
          with-create) - it opens the mint modal with the query as the name.
-         The old no-match copy referenced a control that didn't exist. */
+         The old no-match copy referenced a control that didn't exist.
+         EXCEPT under data-wb-nocreate (the add-family lookup): opening the
+         standalone mint modal would close the relation modal and create a
+         stub with no tie recorded - there, creation IS the modal's own
+         typed-name path, so the fallback note points back at it (P2 codex
+         finding, round 3, PR #31). */
       var createRow = '';
-      if (opts && opts.kind === 'person' && q) {
+      if (opts && opts.kind === 'person' && q && !opts.nocreate) {
         createRow = '<li><button type="button" class="wb-hit" data-wb-open="tpl-mint" ' +
           'data-wb-name="' + esc(q) + '">+ create "' + esc(q) + '" - mint a stub</button></li>';
       }
-      listEl.innerHTML = (rows + createRow) ||
-        '<li><span class="note">no matches - type more, or check the spelling</span></li>';
+      var emptyNote = (opts && opts.nocreate)
+        ? '<li><span class="note">no match - leave the name typed above and Apply will create them and record the tie</span></li>'
+        : '<li><span class="note">no matches - type more, or check the spelling</span></li>';
+      listEl.innerHTML = (rows + createRow) || emptyNote;
       /* The search BAR (no kind) gets the wireframe's CLI-parity footer:
          the search is exactly `fha find --text "<q>"`, said so and copyable. */
       if ((!opts || !opts.kind) && listEl.closest('.wb-search-results')) {
@@ -838,7 +878,8 @@
     if (q) {
       var panel = q.closest('.wb-lookup');
       var list = panel && panel.querySelector('.wb-lookup-results');
-      if (list) debouncedLookup(q, list, { kind: q.getAttribute('data-wb-kind') });
+      if (list) debouncedLookup(q, list, { kind: q.getAttribute('data-wb-kind'),
+                                           nocreate: q.hasAttribute('data-wb-nocreate') });
       return;
     }
     /* A genuine user edit to a lookup-backed field invalidates whatever id a

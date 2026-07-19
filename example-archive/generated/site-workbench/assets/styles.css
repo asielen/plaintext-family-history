@@ -491,6 +491,10 @@ a.fan-link, a.fan-link:hover { text-decoration: none; }
                      background: var(--surface-sunken); }
 .ped-node.ped-empty { border-style: dashed; background: none; box-shadow: none;
                       justify-content: center; align-items: center; }
+/* Workbench only: a slot filled by an unsourced frontmatter hypothesis tie -
+   present (so its "Unknown - add" can't mint a duplicate) but visibly not a
+   claim-backed edge. */
+.ped-node.ped-hypothesis { border-style: dashed; }
 .ped-name { font-family: var(--font-serif); font-size: var(--text-sm); line-height: 1.1;
             color: var(--ink); text-decoration: none;
             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

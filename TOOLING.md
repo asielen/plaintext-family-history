@@ -292,17 +292,20 @@ This is the human gate from the engine side: the `review-claims` skill (§16) an
 
 ## 3c. `fha person` - person-field write-backs
 
-The deterministic write-backs for a person record's own frontmatter and prose. The group exists so that a field or a bounded prose edit every export decision or workbench button hangs on is a safe one-line command instead of a hand edit. Seven verbs ship: `set-living`, `new`, `relate`, `estimate`, `edit`, `note`, `edit-note`.
+The deterministic write-backs for a person record's own frontmatter and prose. The group exists so that a field or a bounded prose edit every export decision or workbench button hangs on is a safe one-line command instead of a hand edit. Eight verbs ship: `set-living`, `set-profile-photo`, `new`, `relate`, `estimate`, `edit`, `note`, `edit-note`.
 
 ```
 fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
-fha person new "Name" [--sex M|F|intersex|unknown] [--gender TEXT] [--birth DATE] [--death DATE] [--dry-run]
+fha person set-profile-photo <P-id> PHOTO [--dry-run] [--root PATH]
+fha person new "Name" [--sex M|F|intersex|unknown] [--gender TEXT] [--birth DATE] [--death DATE] [--birth-place TEXT] [--death-place TEXT] [--dry-run]
 fha person relate <P-id> (--parent|--child|--sibling|--spouse) <P-id2> [--subtype WORD] [--reciprocal] [--dry-run]
-fha person estimate <P-id> [--birth DATE|-] [--death DATE|-] [--dry-run]
+fha person estimate <P-id> [--birth DATE|-] [--death DATE|-] [--birth-place PLACE|-] [--death-place PLACE|-] [--dry-run]
 fha person edit <P-id> --section biography|stories|research (--text TEXT|--file PATH) [--append] [--dry-run]
 fha person note <P-id> --section stories|research --text TEXT [--dry-run]
 fha person edit-note <P-id> --section stories|research --old-text TEXT --text TEXT [--dry-run]
 ```
+
+**`set-profile-photo` contract (2026-07-17).** Sets the record's `profile_photo:` field (SPEC §9 - the portrait shown on the person's page and as their tree thumbnail); the workbench's set-profile-photo picker echoes exactly this command. `PHOTO` is a filename, path, or S-id, written as given and resolved leniently at site-generation time (an unresolvable reference just means no portrait shows - never a write-time refusal, matching how the site treats a missing hero/embed reference). The same surgical single-line edit, pre-write guard, merged-tombstone refusal, `already` idempotence, and `--dry-run` diff as `set-living`; the value is quoted through the shared `yaml_inline` rule, so a `#` or `: ` in a filename can never corrupt the header.
 
 **`set-living` contract.** `living:` drives redaction in every external export (SPEC §9, §19; `unknown` is treated as living - the safe default). The record is located by scanning `people/` for the `_{P-id}.md` filename suffix (stubs and curated profiles alike; a stale or absent index never blocks or misleads a write - the §3b rule, via the shared `_lib.find_person_record_path`). The edit is **surgical text surgery**: only the one top-level `living:` line changes (trailing hand comment preserved; CRLF endings byte-faithful); when the key is absent (a legal hand-made record), a `living:` line is inserted after `name:` in the stub scaffold's field order. Before any write the rewritten frontmatter is **re-parsed and vetted** (the frontmatter twin of `_lib.claims_edit_problem`): it must parse, `living` must equal the target, `id` must be unchanged, and no other field may appear, disappear, or change value - any failure is a refusal with nothing written, so an odd hand-authored file becomes a clean refusal, never a corruption. A **merged tombstone** (`status: merged`) is never edited - readers resolve through `merged_into` (SPEC §9), so the refusal names the surviving record to edit instead. Idempotent: a value already equal to the target is a clean `already` no-op. Every arm previews under `--dry-run` (unified diff, nothing written).
 
@@ -1002,6 +1005,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha claim new --source S-id --type … --value "…" […]` (T C) | Mint a brand-new claim directly onto a source, by hand (§3b) - the by-hand alternative to an AI draft pass. Defaults to `--status accepted` (typing it IS the review); `--confidence` defaults from the source's `source_type` (SPEC §8.5) when omitted. `--type relationship` refused - see `fha person relate`/`fha confirm cooccur`. `--dry-run`. |
 | `fha confirm <verb> …` (T C) | Act on a detection candidate, report prompt, or confirmed decision: `xref`, `cooccur`, `dismiss`, `place`, `discovery`, `draft`, `merge` (§14a3). The deterministic write floor under the read-only detectors and the merge-identities skill. Every verb `--dry-run`. |
 | `fha person set-living <P-id> true\|false\|unknown` (T C) | Flip one person's living flag - the switch every export redaction hangs on (§3c). Surgical one-line edit, `--dry-run` previews; never flipped automatically (accepting a death claim only prompts the offer). |
+| `fha person set-profile-photo <P-id> PHOTO` (T C) | Set the record's `profile_photo:` portrait (page hero + tree thumbnail, SPEC §9). Filename/path/S-id written as given, resolved leniently at build time; same surgical-edit guards and `--dry-run` as `set-living`. The workbench picker echoes exactly this command. |
 | `fha person new "Name" […]` (T C) | Mint a brand-new person from nothing and write their stub (§3c) - `--sex`/`--gender`/`--birth`/`--death` all optional, vitals PROVISIONAL until a sourced claim supersedes them. `--dry-run`. |
 | `fha person relate <P-id> (--parent\|--child\|--sibling\|--spouse) <P-id2>` (T C) | Jot an unsourced family-tie belief (§3c) - always `status: hypothesis`, no `--status` flag. `--subtype`, `--reciprocal` mirrors the entry onto `P-id2`. `--dry-run`. |
 | `fha person estimate <P-id> [--birth DATE\|-] [--death DATE\|-]` (T C) | Provisional, unsourced birth/death estimate (§3c) - superseded once a sourced vital claim exists. `--dry-run`. |

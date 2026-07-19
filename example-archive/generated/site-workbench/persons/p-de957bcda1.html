@@ -47,8 +47,8 @@
   
   <div class="wb-record">
     <span>record:</span>
-    <code>people\040 Thomas Hartley + Margaret Cole [Calvin + Ethel + Frances]\hartley__thomas_edward_P-de957bcda1.md</code>
-    <a href="#" data-wb-open-file="people\040 Thomas Hartley + Margaret Cole [Calvin + Ethel + Frances]\hartley__thomas_edward_P-de957bcda1.md">open file</a>
+    <code>people/040 Thomas Hartley + Margaret Cole [Calvin + Ethel + Frances]/hartley__thomas_edward_P-de957bcda1.md</code>
+    <a href="#" data-wb-open-file="people/040 Thomas Hartley + Margaret Cole [Calvin + Ethel + Frances]/hartley__thomas_edward_P-de957bcda1.md">open file</a>
     <span class="wb-sep">&middot;</span>
     <span>living: <strong>false</strong></span>
     <a href="#" data-wb-open="tpl-living" data-wb-args='{"person_id": "P-de957bcda1"}' data-wb-fill="value=false">change&hellip;</a>
@@ -217,8 +217,8 @@
   
   <div class="wb-log-entry"><p>A living cousin mentioned a family story that Thomas left New York after a falling-out with a brother; unverified, and it names people who may still be living, so keep it out of anything shared until confirmed.</p>
     <a class="wb-entry-edit" href="#" data-wb-open="tpl-edit-note"
-       data-wb-args='{"old_text": "A living cousin mentioned a family story that Thomas left New York after a\nfalling-out with a brother; unverified, and it names people who may still be\nliving, so keep it out of anything shared until confirmed.", "person_id": "P-de957bcda1", "section": "research"}'
-       data-wb-prefill='{"text": "A living cousin mentioned a family story that Thomas left New York after a\nfalling-out with a brother; unverified, and it names people who may still be\nliving, so keep it out of anything shared until confirmed."}'>edit&hellip;</a></div>
+       data-wb-args='{"old_text": "\u003c!-- private --\u003e\nA living cousin mentioned a family story that Thomas left New York after a\nfalling-out with a brother; unverified, and it names people who may still be\nliving, so keep it out of anything shared until confirmed.\n\u003c!-- /private --\u003e", "person_id": "P-de957bcda1", "section": "research"}'
+       data-wb-prefill='{"text": "\u003c!-- private --\u003e\nA living cousin mentioned a family story that Thomas left New York after a\nfalling-out with a brother; unverified, and it names people who may still be\nliving, so keep it out of anything shared until confirmed.\n\u003c!-- /private --\u003e"}'>edit&hellip;</a></div>
   
   
 
@@ -421,7 +421,8 @@
       <input type="hidden" name="target_id" data-wb-idfield="name">
       <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; already in the archive? link to the existing person instead</button>
       <div class="wb-lookup" hidden>
-        <input type="text" class="wb-lookup-q" placeholder="Search existing people&hellip;" data-wb-kind="person">
+        
+        <input type="text" class="wb-lookup-q" placeholder="Search existing people&hellip;" data-wb-kind="person" data-wb-nocreate>
         <ul class="wb-lookup-results"></ul>
       </div>
     </div>
@@ -493,8 +494,9 @@
       <div class="wb-field"><label>Date <span class="wb-optional">(EDTF or plain)</span></label>
         <input type="text" name="mdate" value=""></div>
       <div class="wb-field"><label>Place <span class="wb-optional">(optional)</span></label>
+        
         <input type="text" name="mplace" class="wb-target wb-plain" value="">
-        <input type="hidden" name="mplace_id" data-wb-idfield="mplace">
+        <input type="hidden" name="mplace_id" data-wb-idfield="mplace" data-wb-keeppair>
         <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
         <div class="wb-lookup" hidden>
           <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">
@@ -870,11 +872,12 @@
   <div class="wb-step">
     <p class="wb-kicker">Other names this place goes by</p>
     <h3>Also known as</h3>
-    <div class="wb-field"><label>Names, comma-separated</label>
-      <input type="text" name="aka" value="" placeholder="Fairview City, Old Fairview"></div>
-    <p class="note">This replaces the whole list, so keep the names you want. Spelling
+    <div class="wb-field"><label>Names, one per line</label>
+      <textarea name="aka" rows="4" placeholder="Fairview City&#10;Old Fairview" data-wb-allowempty></textarea></div>
+    <p class="note">This replaces the whole list, so keep the names you want. One name
+      per line - a name may itself contain commas ("Washington, D.C."). Spelling
       variants recorded here help search find the place however a record wrote it.
-      (To empty the list entirely, edit <code>places/places.yaml</code> by hand.)</p>
+      Deleting every line clears the list.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
@@ -888,10 +891,11 @@
     <p class="wb-kicker">What this place was called, era by era</p>
     <h3>Names over time</h3>
     <div class="wb-field"><label>One entry per line: PERIOD | name of that era</label>
-      <textarea name="history" style="min-height:7rem" placeholder="1858/1861 | Fairview, Breton Co., Kansas Territory, USA"></textarea></div>
+      <textarea name="history" style="min-height:7rem" placeholder="1858/1861 | Fairview, Breton Co., Kansas Territory, USA" data-wb-allowempty></textarea></div>
     <p class="note">The period is a date or range the archive's way (<code>1858/1861</code>,
       <code>1854</code>, <code>[..1861]</code>); after the <code>|</code> comes the full name
-      and jurisdiction of that era. This replaces the whole list - keep the lines you want.</p>
+      and jurisdiction of that era. This replaces the whole list - keep the lines you
+      want; deleting every line clears it.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>

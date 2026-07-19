@@ -157,7 +157,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "8f52614e79290b05b10e38e05774ff14b5dead859aca19fd041747865233dd53",
+      "sha256": "f641c3085b282e4fd32e65b390231428ba44339cc0d31a671a80ff876942e09e",
       "spec_version": "1.2"
     },
     {
@@ -455,7 +455,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "42a2b633461552afb750c43de62489a7f26bfa84fcea2b4e42dcae44878df9ad",
+      "sha256": "530ae55aafb1af81276698ee1f51d7a91ec2340779c1d87129682ed6a5d42b22",
       "spec_version": "1.2"
     },
     {
@@ -599,7 +599,7 @@
     {
       "path": "tools/person.py",
       "category": "operating",
-      "sha256": "e0309176f79e4e2f5a982e4f666fab08e64ae5cffe4670da0cab615f0b7a83a5",
+      "sha256": "0af4430dfa540f6568e6150e1cdbd5a5474fe88b7bad81c74caa7503f003f47a",
       "spec_version": "1.2"
     },
     {
@@ -647,7 +647,7 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "9e5709f7e899f0c0f5f5ea2625d7bac19c12acb8478c40ff73a53fb374d61e5b",
+      "sha256": "176184955a0e46fbf6b2da782ebf7445de0009568b708c83cbedb1ef6707c1ea",
       "spec_version": "1.2"
     },
     {
@@ -767,7 +767,7 @@
     {
       "path": "tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "a9b5df247365c018a72d1c05dc27960065447042e318670166ae1f114a3b9740",
+      "sha256": "72c1f55bd8aaf69b67addd352ab4c6663c54dbcd115991fad4ee754a76660d69",
       "spec_version": "1.2"
     },
     {

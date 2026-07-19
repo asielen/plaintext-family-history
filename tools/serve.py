@@ -631,6 +631,20 @@ def gather_review(state: ServeState) -> dict:
                 cite_bits = [stitle]
                 if r['anchor']:
                     cite_bits.append(str(r['anchor']))
+                # Place display: the as-written text, else the registry name
+                # resolved from place_id (the same fallback the site's
+                # `_place_label` gives the source/person claim editors). A
+                # lookup-backed claim carries ONLY place_id, and without this
+                # the queue row said nothing about WHERE and the editor's
+                # visible Place field opened blank while the hidden L-id
+                # silently posted - the reviewer could not see which place
+                # they were accepting (P2 codex finding, round 6, PR #31).
+                place_label = (r['place_text'] or '').strip()
+                if not place_label and r['place_id']:
+                    prow = conn.execute('SELECT name FROM places WHERE id = ?',
+                                        (r['place_id'],)).fetchone()
+                    place_label = ((prow['name'] if prow and prow['name'] else '')
+                                   or fmt_id_display(r['place_id']))
                 items.append({
                     'kind': 'suggested claim',
                     'group_source': sid or 'unsourced',
@@ -641,7 +655,7 @@ def gather_review(state: ServeState) -> dict:
                     'meta': ' - '.join(x for x in (
                         r['type'],
                         f'date {r["date_edtf"]}' if r['date_edtf'] else None,
-                        r['place_text'] or None,
+                        place_label or None,
                         ', '.join(pnames) if pnames else None,
                         f'confidence {r["confidence"]}' if r['confidence'] else None,
                     ) if x),
@@ -655,7 +669,7 @@ def gather_review(state: ServeState) -> dict:
                     # of opening blank (same gap the biography editor already
                     # had fixed for it).
                     'claim_type': r['type'] or '', 'value_raw': r['value'] or '',
-                    'date_raw': r['date_edtf'] or '', 'place_text_raw': r['place_text'] or '',
+                    'date_raw': r['date_edtf'] or '', 'place_text_raw': place_label,
                     'place_id_raw': fmt_id_display(r['place_id']) if r['place_id'] else '',
                     'persons_ids': ','.join(fmt_id_display(pid) for pid in people),
                 })

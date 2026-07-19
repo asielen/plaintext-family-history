@@ -2543,7 +2543,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'person' onto the main fha parser."""
     p = subs.add_parser(
         'person',
-        help='Person-record write-backs: set-living, relate, estimate, edit, note',
+        help='Person-record write-backs: set-living, set-profile-photo, relate, '
+             'estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
