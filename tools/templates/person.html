@@ -3,6 +3,9 @@
 {% block content %}
 <article class="person">
   {% if person.portrait %}<img class="person-portrait" src="{{ person.portrait }}" alt="Portrait of {{ person.name }}">{% endif %}
+  {% if workbench %}
+  <p class="wb-fix"><a href="#" data-wb-open="tpl-set-photo" data-wb-args='{{ {"person_id": person.display_id} | tojson }}'>{{ 'change photo' if person.portrait else 'set a profile photo' }}&hellip;</a></p>
+  {% endif %}
   <h1>{{ person.name }}</h1>
   {% if workbench %}
   <div class="wb-record">
@@ -17,6 +20,10 @@
   {% if person.alt_names %}
   <p class="alt-names">{% for a in person.alt_names %}{{ a }}{% if not loop.last %} <span class="alt-sep">·</span> {% endif %}{% endfor %}</p>
   {% endif %}
+  {% if workbench and person.open_review_count %}
+  <p class="wb-pointer">{{ person.open_review_count }} open review item{{ 's' if person.open_review_count != 1 else '' }} involve{{ '' if person.open_review_count != 1 else 's' }} this person -
+    <a href="{{ root_prefix }}/review">open the review queue</a>.</p>
+  {% endif %}
   {% if person.tags %}
   <ul class="tag-pills" aria-label="Tags">{% for t in person.tags %}<li class="tag-pill">{{ t }}</li>{% endfor %}</ul>
   {% endif %}
@@ -25,8 +32,20 @@
   <dl class="summary">
     {% for row in person.summary %}
     <dt>{{ row.label }}</dt>
-    <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% if workbench %}
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-fill="mtype={{ row.label }}">edit</a>{% endif %}{% endif %}</dd>
+    {%- if row.missing %}
+    <dd><span class="empty">not recorded</span>{% if workbench %}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-fill="mtype={{ row.label }}">add</a>{% endif %}</dd>
+    {%- else %}
+    <dd>{{ row.value }}{% if row.place %}{% if row.value %} - {% endif %}{{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% if workbench %}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-prefill='{{ {"mtype": row.label, "mdate": row.date_raw, "mplace": row.place_raw} | tojson }}'>edit</a>{% endif %}{% endif %}
+      {%- if workbench and not row.provisional and row.claim_id -%}
+      {#- A sourced vital's edit opens the CLAIM editor prefilled with the
+          claim's own data - editing the actual fact, never minting a
+          duplicate (the wireframe's every-row edit affordance, with the
+          claim context the round-2 codex fix found missing). -#}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-claim-edit" data-wb-args='{{ {"claim_id": row.claim_id} | tojson }}' data-wb-prefill='{{ {"claim_type": row.claim_type, "value": row.value_raw, "date": row.date_raw, "place_text": row.place_text_raw, "place": row.place_id_raw, "persons": row.persons_ids} | tojson }}'>edit</a>
+      {%- endif %}</dd>
+    {%- endif %}
     {% endfor %}
   </dl>
   {% endif %}
@@ -41,7 +60,7 @@
     {% for grp, label, rel in [('parents','Parents','parent'), ('spouses','Spouse','spouse'), ('siblings','Siblings','sibling'), ('children','Children','child')] %}
     {% if fs[grp] or workbench %}
     <div class="fs-group"><span class="fs-label">{{ label }}</span>
-      <ul>{% for m in (fs[grp] or []) %}<li>{{ m }}</li>{% endfor %}</ul>
+      <ul>{% for m in (fs[grp] or []) %}<li>{{ m }}</li>{% else %}{% if workbench %}<li><span class="empty">(none recorded)</span></li>{% endif %}{% endfor %}</ul>
       {% if workbench %}<a class="wb-add" href="#" data-wb-open="tpl-add-family" data-wb-args='{{ {"person_id": person.display_id, "relation_type": rel} | tojson }}' data-wb-fill="relation_type={{ rel }}">+ add</a>{% endif %}</div>
     {% endif %}
     {% endfor %}
@@ -84,7 +103,11 @@
   <p class="empty">No dated events recorded yet.</p>
   {% endif %}
   {% if workbench %}
-  <p><button class="btn btn-sm" data-wb-open="tpl-add-event" data-wb-args='{{ {"persons": person.display_id} | tojson }}' data-wb-fill="persons={{ person.display_id }}">Add a timeline event&hellip;</button></p>
+  {#- No `persons` in data-wb-args: the fill below seeds the visible field, and
+      collect() sends exactly what is on screen - a fixed arg would silently
+      re-attach this person even after the human deleted them from the field. -#}
+  <p><button class="btn btn-sm" data-wb-open="tpl-add-event" data-wb-fill="persons={{ person.display_id }}">Add a timeline event&hellip;</button>
+    <span class="wb-later">timeline entries are claims - the form asks which source it comes from.</span></p>
   {% endif %}
 
   {% if person.photos %}
@@ -102,13 +125,33 @@
   {% if person.stories_html or workbench %}
   <h2>Stories{% if workbench %}
     <a class="wb-fix" href="#" data-wb-open="tpl-note" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' style="font-weight:400">add&hellip;</a>{% endif %}</h2>
-  {% if person.stories_html %}{{ person.stories_html }}{% endif %}
+  {%- if workbench and person.stories_entries %}
+  {#- One edit button per append-log entry; the modal rewrites just that
+      entry (person.edit_note names it by its exact current text). -#}
+  {% for e in person.stories_entries %}
+  <div class="wb-log-entry">{{ e.html }}
+    <a class="wb-entry-edit" href="#" data-wb-open="tpl-edit-note"
+       data-wb-args='{{ {"person_id": person.display_id, "section": "stories", "old_text": e.raw} | tojson }}'
+       data-wb-prefill='{{ {"text": e.raw} | tojson }}'>edit&hellip;</a></div>
+  {% endfor %}
+  {%- elif person.stories_html %}{{ person.stories_html }}{% elif workbench %}<p class="empty">(none yet)</p>{% endif %}
+  {% if workbench %}
+  <p><button class="btn btn-sm" data-wb-open="tpl-note" data-wb-args='{{ {"person_id": person.display_id} | tojson }}'>Add a story or note&hellip;</button>
+    <span class="wb-later">appends to this record, marked human-written - never overwrites.</span></p>
+  {% endif %}
   {% endif %}
 
   {% if person.research_html or workbench %}
   <h2>Research Notes{% if workbench %}
     <a class="wb-fix" href="#" data-wb-open="tpl-add-research" data-wb-args='{{ {"person_id": person.display_id} | tojson }}' style="font-weight:400">add&hellip;</a>{% endif %}</h2>
-  {% if person.research_html %}{{ person.research_html }}{% endif %}
+  {%- if workbench and person.research_entries %}
+  {% for e in person.research_entries %}
+  <div class="wb-log-entry">{{ e.html }}
+    <a class="wb-entry-edit" href="#" data-wb-open="tpl-edit-note"
+       data-wb-args='{{ {"person_id": person.display_id, "section": "research", "old_text": e.raw} | tojson }}'
+       data-wb-prefill='{{ {"text": e.raw} | tojson }}'>edit&hellip;</a></div>
+  {% endfor %}
+  {%- elif person.research_html %}{{ person.research_html }}{% endif %}
   {% endif %}
 
   {% if person.family %}

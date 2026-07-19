@@ -740,6 +740,26 @@ class NewTests(unittest.TestCase):
         self.assertEqual(again.exit_code, EXIT_FAILURE)
         self.assertEqual(again.data['status'], 'refused')
 
+    def test_person_id_override_allows_a_claim_named_id_with_no_record(self) -> None:
+        # P2 codex finding (round 1, PR #31): the workbench's mint '+' next to
+        # a claim-named person passes a P-id that BY DEFINITION already
+        # appears textually in a source record's claims - that mention is the
+        # reason the stub is being minted, not a staleness signal. Only an
+        # existing person RECORD refuses the reuse.
+        pid = 'P-ffffffffff'
+        src_dir = self.root / 'sources' / 'census'
+        src_dir.mkdir(parents=True)
+        (src_dir / 'census_S-aaaaaaaaaa.md').write_text(
+            '---\nid: S-aaaaaaaaaa\ntitle: A census\n---\n\n## Claims\n\n'
+            f'- id: C-aaaaaaaaaa\n  persons: [[[{pid}]]]\n',
+            encoding='utf-8')
+        result = person.run_new(self.root, 'Claim Named', person_id=pid)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['person_id'], pid)
+        path = Path(result.data['path'])
+        self.assertTrue(path.exists())
+        self.assertEqual(read_record(path)['meta']['id'].lower(), pid.lower())
+
     def test_blank_name_refused(self) -> None:
         before = self._existing_stub_names()
         result = person.run_new(self.root, '   ')
@@ -752,6 +772,38 @@ class NewTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         text = Path(result.data['path']).read_text(encoding='utf-8')
         self.assertIn('gender: two-spirit\n', text)
+
+
+class SetProfilePhotoQuotingTests(unittest.TestCase):
+    """The profile_photo value is free text (a filename), so it takes the
+    shared yaml_inline quoting rule: a ` #` or `: ` in a common name like
+    `Grandpa #2.jpg` written bare would truncate as a YAML comment or corrupt
+    the header while the guard ignores the changed field (P2 codex finding,
+    round 1, PR #31)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_yaml_significant_filenames_survive_insert_and_replace(self) -> None:
+        # First write inserts the key; the second replaces it - both paths
+        # must quote. Each value round-trips through the YAML parser intact.
+        for value in ('Grandpa #2.jpg', 'photos: 1900/portrait.jpg'):
+            with self.subTest(value=value):
+                result = person.run_set_profile_photo(self.root, CURATED_PID, value)
+                self.assertEqual(result.exit_code, EXIT_CLEAN)
+                rec = read_record(Path(result.data['path']))
+                self.assertEqual(rec['parse_errors'], [])
+                self.assertEqual(rec['meta']['profile_photo'], value)
+
+    def test_plain_filenames_still_written_bare(self) -> None:
+        result = person.run_set_profile_photo(self.root, CURATED_PID, 'portrait.jpg')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = Path(result.data['path']).read_text(encoding='utf-8')
+        self.assertIn('profile_photo: portrait.jpg\n', text)
 
 
 class RelateTests(unittest.TestCase):
@@ -1420,6 +1472,81 @@ class NoteTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         after = self.stub.read_bytes().decode('utf-8')
         self.assertNotIn('\n', after.replace('\r\n', ''))
+
+
+class EditNoteTests(unittest.TestCase):
+    """fha person edit-note: rewrite ONE append-log entry, matched by exact text."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.stub = self.root / 'people' / 'stubs' / f'hartley__rose_{PID}.md'
+        person.run_note(self.root, PID, 'research', 'First note.')
+        person.run_note(self.root, PID, 'research', 'Second note.')
+        person.run_note(self.root, PID, 'research', 'Third note.')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_rewrites_only_the_named_entry(self) -> None:
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Second note.', 'Second note, corrected.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = self.stub.read_text(encoding='utf-8')
+        self.assertIn('First note.\n\nSecond note, corrected.\n\nThird note.', text)
+        self.assertNotIn('Second note.\n', text.replace('Second note, corrected.', ''))
+
+    def test_entry_not_found_refused_nothing_written(self) -> None:
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Never written.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('not found', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_duplicate_entry_refused_as_ambiguous(self) -> None:
+        person.run_note(self.root, PID, 'research', 'First note.')  # a duplicate
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(self.root, PID, 'research', 'First note.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('2 times', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_empty_replacement_refused(self) -> None:
+        result = person.run_edit_note(self.root, PID, 'research', 'First note.', '   ')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('replacement text was empty', result.messages[0].text)
+
+    def test_dry_run_writes_nothing_and_shows_diff(self) -> None:
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'First note.', 'Changed.', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.stub.read_bytes(), before)
+        joined = '\n'.join(m.text for m in result.messages)
+        self.assertIn('+Changed.', joined)
+
+    def test_biography_section_refused(self) -> None:
+        result = person.run_edit_note(self.root, PID, 'biography', 'a', 'b')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+
+    def test_unbalanced_brackets_warn(self) -> None:
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'First note.', 'See [[S-2b3c4d5e6f.')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertTrue(any('[[' in m.text for m in result.messages))
+
+    def test_crlf_file_round_trips_with_endings_intact(self) -> None:
+        crlf = self.stub.read_text(encoding='utf-8').replace('\n', '\r\n')
+        self.stub.write_bytes(crlf.encode('utf-8'))
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Second note.', 'Second note, corrected.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        after = self.stub.read_bytes().decode('utf-8')
+        self.assertNotIn('\n', after.replace('\r\n', ''))
+        self.assertIn('Second note, corrected.', after)
 
 
 class PersonNewVerbsCliTests(unittest.TestCase):

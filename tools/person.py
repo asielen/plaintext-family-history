@@ -160,6 +160,8 @@ CODE MAP
   _locate_section / _ends_with_newline / _create_section_at_eof / _append_to_section
                                  - thin local wrappers over those _lib helpers
   _replace_section               - swap a section's whole content (replace mode)
+  run_edit_note                  - swap ONE append-log entry (workbench per-entry edit;
+                                   matched by exact text via replace_paragraph_in_section)
   run_edit                      - replace/append one section; Result
   run_note                      - append-only note; refuses on an unclosed private fence
   _emit / _cmd_* / _add_*_arguments / register / _standalone_main
@@ -207,9 +209,9 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     render_stub_content,
+    replace_paragraph_in_section,
     resolve_root_arg,
     result_fail,
-    scan_ids_in_tree,
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
@@ -525,6 +527,210 @@ def run_set_living(
     return result
 
 
+def _replace_scalar_line(line: str, key: str, value: str) -> str:
+    """Rewrite one `key:` line to a new bare-scalar value, preserving a
+    trailing comment. Generalizes `_replace_living_line` for any single-line
+    scalar frontmatter field (same shape, parametric on the key name)."""
+    m = re.match(rf'^({re.escape(key)}:)([ \t]*)([^#]*?)([ \t]*)(#.*?)?(\r?)$', line)
+    if m is None:  # caller matched the key already; this is belt-and-braces
+        return line
+    comment = m.group(5)
+    cr = m.group(6)
+    if comment:
+        sep = m.group(4) or '  '
+        return f'{key}: {value}{sep}{comment}{cr}'
+    return f'{key}: {value}{cr}'
+
+
+def run_set_profile_photo(
+    archive_root: Path, person_id: str, value: str, dry_run: bool = False,
+) -> Result:
+    """Set one person record's `profile_photo:` field (SPEC.md - the portrait
+    shown on their page and as a tree thumbnail); return a Result.
+
+    `value` is written as given - a filename, path, or S-id - and resolved
+    leniently at site-generation time, not validated here: an unresolvable
+    reference just means no portrait shows, never a write-time refusal,
+    matching how the site already treats a missing/broken hero or embed
+    reference. `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|
+    'merged'|'refused', 'person_id', 'path', 'old', 'new'}. Same surgical-
+    single-line-replace shape as `run_set_living` above.
+    """
+    result = Result(data={
+        'status': None, 'person_id': None, 'path': None, 'old': None, 'new': None,
+    })
+
+    def _refuse(status: str, message: str) -> Result:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = status
+        result.add('error', message)
+        return result
+
+    val = str(value).strip()
+    if not val:
+        return _refuse('refused', 'give a filename, path, or S-id for the photo. Nothing was changed.')
+    result.data['new'] = val
+
+    if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
+        return _refuse(
+            'refused',
+            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
+            '- a P followed by a dash and 10 characters from the archive alphabet.')
+    pid = normalize_id(person_id)
+    result.data['person_id'] = fmt_id_display(pid)
+
+    path = find_person_record_path(archive_root, pid)
+    if path is None:
+        result.ok = False
+        result.exit_code = EXIT_WARNINGS
+        result.data['status'] = 'not-found'
+        result.add('warning',
+                   f'No person record found for {fmt_id_display(pid)} under '
+                   f'{archive_root / "people"} - check the id with '
+                   f'`fha find {fmt_id_display(pid)}`.',
+                   next_step='fha find ' + fmt_id_display(pid))
+        return result
+    result.data['path'] = str(path)
+
+    try:
+        text = read_text_exact(path)
+    except OSError as e:
+        return _refuse('refused', f'cannot read {path}: {e}. Check the file is '
+                       'not open in another program and try again.')
+
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return _refuse(
+            'refused',
+            f'{path.name} has no frontmatter block (the header between --- lines '
+            f'at the top of the file), so there is nowhere safe to write the field. '
+            f'Open {path} and add the header by hand, then run `fha lint`. '
+            'Nothing was written.')
+    try:
+        before_meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        before_meta = None
+    if not isinstance(before_meta, dict):
+        return _refuse(
+            'refused',
+            f'the header of {path.name} does not read as YAML, so editing it '
+            f'automatically could make things worse. Open {path}, fix the header '
+            'by hand (run `fha lint` to see the problem line), then retry. '
+            'Nothing was written.')
+
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    if is_merged_meta(before_meta):
+        result.exit_code = EXIT_FAILURE
+        result.ok = False
+        result.data['status'] = 'merged'
+        survivor = normalize_id(str(before_meta.get('merged_into') or ''))
+        if survivor and is_valid_id(survivor):
+            result.add('error',
+                       f'{label} was merged into {fmt_id_display(survivor)} - this record '
+                       'is a tombstone that readers resolve through, so the profile photo '
+                       'lives on the surviving record. Set it there instead.')
+        else:
+            result.add('error',
+                       f'{label} is a merged tombstone, but its merged_into: pointer is '
+                       'missing or malformed, so the surviving record cannot be named. '
+                       f'Find it with `fha find {fmt_id_display(pid)}`. Nothing was written.')
+        return result
+
+    old = str(before_meta.get('profile_photo') or '').strip() or None
+    result.data['old'] = old
+
+    if old == val:
+        result.data['status'] = 'already'
+        result.add('info', f'{label} already has this profile photo - nothing to change.')
+        return result
+
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse(
+            'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit '
+            f'safely. Open {path} and set profile_photo: {val} by hand, then run '
+            '`fha lint`. Nothing was written.')
+    start, end = bounds
+
+    key_lines = _key_line_indexes(lines, start + 1, end, 'profile_photo')
+    new_lines = list(lines)
+    if len(key_lines) > 1:
+        return _refuse(
+            'refused',
+            f'{path.name} has more than one top-level profile_photo: line in its '
+            'header, so the right one to edit cannot be chosen safely. Open '
+            f'{path} and fix the duplicate by hand, then run `fha lint`. '
+            'Nothing was written.')
+    if key_lines and 'profile_photo' not in before_meta:
+        return _refuse(
+            'refused',
+            f'{path.name} has a profile_photo: line that belongs to another '
+            "field's value, not a real profile_photo field, so it cannot be "
+            f'edited safely. Open {path} and add a top-level profile_photo: {val} '
+            'line by hand, then run `fha lint`. Nothing was written.')
+    # The filename is free text: a ` #` or `: ` in it (`Grandpa #2.jpg`)
+    # written bare would truncate as a YAML comment or corrupt the header, so
+    # it takes the shared yaml_inline quoting rule like every other free-text
+    # frontmatter write.
+    val_yaml = yaml_inline(val)
+    if key_lines:
+        new_lines[key_lines[0]] = _replace_scalar_line(lines[key_lines[0]], 'profile_photo', val_yaml)
+    elif 'profile_photo' in before_meta:
+        return _refuse(
+            'refused',
+            f'the profile_photo field in {path.name} is not written as its own '
+            f'line, so it cannot be edited safely. Open {path} and set '
+            f'profile_photo: {val} by hand, then run `fha lint`. Nothing was written.')
+    else:
+        cr = '\r' if lines[start].endswith('\r') else ''
+        name_lines = _key_line_indexes(lines, start + 1, end, 'name')
+        insert_at = (name_lines[0] + 1) if name_lines else end
+        new_lines.insert(insert_at, f'profile_photo: {val_yaml}{cr}')
+
+    new_text = '\n'.join(new_lines)
+    problem = frontmatter_edit_problem(new_text, before_meta=before_meta,
+                                       changed_keys={'profile_photo'})
+    if problem is not None:
+        return _refuse(
+            'refused',
+            f'Refusing to change {label}: {problem}, so saving could corrupt the '
+            f'record. Nothing was written. Open {path} and set profile_photo: {val} '
+            'by hand, then run `fha lint` to check it.')
+
+    old_display = old or '(none)'
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would set {label} profile_photo: {old_display} -> {val}.')
+        for dline in difflib.unified_diff(
+            text.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        write_text_exact(path, reapply_newline(new_text, text))
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere and '
+            'the folder is writable, then retry.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'{label} profile photo is now {val}.', path=path)
+    result.add('info',
+               'Next: reload the workbench (or run `fha site`) to see it on the '
+               'page and in the tree.')
+    return result
+
+
 # ── Shared prelude for every verb below set-living ─────────────────────────────
 
 def _refuse_result(
@@ -667,6 +873,7 @@ def run_new(
     archive_root: Path, name: str, sex: str | None = None, gender: str | None = None,
     birth: str | None = None, death: str | None = None, dry_run: bool = False,
     person_id: str | None = None,
+    birth_place: str | None = None, death_place: str | None = None,
 ) -> Result:
     """Mint one P-id, render its stub, and write it under people/stubs/;
     return a Result.
@@ -756,12 +963,23 @@ def run_new(
         if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
             return _refuse_result(result, 'refused', f'{person_id!r} is not a valid P-id.')
         pid = normalize_id(person_id)
-        if pid in scan_ids_in_tree(archive_root):
+        # Reuse is refused only when a person RECORD already carries this id -
+        # not on any textual mention of it. The workbench's claim-reference
+        # mint '+' passes a P-id that by definition already appears in a
+        # source record's claims (that is the whole point: the stub resolves
+        # those references), so a scan_ids_in_tree() check would refuse every
+        # such mint as stale (P2 codex finding, round 1, PR #31). The
+        # preview/apply staleness this guard exists for - someone else
+        # created the person in between - is exactly "a record file now
+        # exists", which is what this checks.
+        existing = find_person_record_path(archive_root, pid)
+        if existing is not None:
             return _refuse_result(
                 result, 'refused',
-                f'{fmt_id_display(pid)} already exists in the archive - the earlier '
-                'preview is stale (something else changed since). Preview again, '
-                'then apply.')
+                f'{fmt_id_display(pid)} already has a person record at '
+                f'{existing} - nothing to mint. If this came from a preview, '
+                'something else created the record since; review it with '
+                f'`fha find {fmt_id_display(pid)}`.')
     else:
         pid = mint_ids('P', 1, archive_root)[0].lower()
     filename = stub_filename(clean_name, pid)
@@ -779,7 +997,11 @@ def run_new(
 
     content = render_stub_content(
         pid, clean_name, sex=sex_clean, gender=gender,
-        birth=fields.get('birth'), death=fields.get('death'))
+        birth=fields.get('birth'), death=fields.get('death'),
+        # A place with no date still records (family knowledge is often
+        # "born in Kansas, no idea when") - places are free text, unvalidated.
+        birth_place=(str(birth_place).strip() or None) if birth_place else None,
+        death_place=(str(death_place).strip() or None) if death_place else None)
 
     def _add_new_messages() -> None:
         for field, note in gloss.items():
@@ -1225,6 +1447,7 @@ def _accepted_vital_claim_exists(archive_root: Path, pid: str, field: str) -> bo
 def run_estimate(
     archive_root: Path, person_id: str, birth: str | None = None,
     death: str | None = None, dry_run: bool = False,
+    birth_place: str | None = None, death_place: str | None = None,
 ) -> Result:
     """Write the provisional, unsourced birth:/death: estimates (SPEC §9);
     return a Result.
@@ -1233,10 +1456,16 @@ def run_estimate(
     do for that field), or the literal string `'-'` to CLEAR the field
     (remove the line), or a date string to set - accepted as strict EDTF
     (`is_valid_edtf`) or loose human wording (`normalize_date`, "circa 1870"
-    -> "1870~"). At least one of the two must be given. Both dates are
+    -> "1870~"). At least one field must be given. Both dates are
     validated BEFORE any file is touched, so a bad second date never leaves
     the first one written - `estimate --birth 1870 --death nonsense` writes
     nothing and explains only the date that failed.
+
+    `birth_place`/`death_place` are the same provisional standing for the
+    matching place (plan-17 wireframe: birth date + place, death date +
+    place asked together): free text, no validation beyond non-blank, `'-'`
+    clears, written as `birth_place:`/`death_place:` frontmatter beside the
+    dates and shown on the workbench's provisional summary rows.
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'path', 'birth', 'death'}. A field already
@@ -1247,14 +1476,15 @@ def run_estimate(
         'status': None, 'person_id': None, 'path': None, 'birth': None, 'death': None,
     })
 
-    if birth is None and death is None:
+    if birth is None and death is None and birth_place is None and death_place is None:
         return _refuse_result(
             result, 'refused',
-            'estimate needs at least one date to record - add --birth DATE, '
-            '--death DATE, or both. Use `-` to clear a field instead of a '
-            'date, e.g. `fha person estimate P-... --birth -`.')
+            'estimate needs at least one field to record - add --birth DATE, '
+            '--death DATE, --birth-place/--death-place PLACE, or several. Use '
+            '`-` to clear a field instead of a value, e.g. '
+            '`fha person estimate P-... --birth -`.')
 
-    fields: dict[str, str | None] = {}   # field -> target EDTF, or None to clear
+    fields: dict[str, str | None] = {}   # field -> target value, or None to clear
     gloss: dict[str, str] = {}           # field -> plain-language note (only when normalized)
     for field, raw in (('birth', birth), ('death', death)):
         if raw is None:
@@ -1272,6 +1502,13 @@ def run_estimate(
         fields[field] = normalized
         if normalized != raw:
             gloss[field] = _edtf_gloss(normalized)
+    for field, raw in (('birth_place', birth_place), ('death_place', death_place)):
+        if raw is None:
+            continue
+        raw = str(raw).strip()
+        if not raw:
+            continue
+        fields[field] = None if raw == '-' else raw
 
     owner = _locate_person(archive_root, person_id, result)
     if owner is None:
@@ -1337,19 +1574,23 @@ def run_estimate(
                     fresh_insert_at -= 1
             continue
 
+        # Free-text place values go through yaml_inline (a colon or quote in
+        # "Fairview: the old township" must not corrupt the header); dates
+        # are bare EDTF scalars and stay unquoted, as always.
+        written_value = yaml_inline(target) if field.endswith('_place') else target
         if real_lines:
-            new_lines[real_lines[0]] = f'{field}: {target}{cr}'
+            new_lines[real_lines[0]] = f'{field}: {written_value}{cr}'
         elif commented:
-            new_lines[commented[0]] = f'{field}: {target}{cr}'
+            new_lines[commented[0]] = f'{field}: {written_value}{cr}'
         else:
             if fresh_insert_at is None:
                 living_lines = _key_line_indexes(new_lines, start + 1, end, 'living')
                 fresh_insert_at = (living_lines[0] + 1) if living_lines else end
-            new_lines.insert(fresh_insert_at, f'{field}: {target}{cr}')
+            new_lines.insert(fresh_insert_at, f'{field}: {written_value}{cr}')
             end += 1
             fresh_insert_at += 1
 
-        if _accepted_vital_claim_exists(archive_root, pid, field):
+        if field in ('birth', 'death') and _accepted_vital_claim_exists(archive_root, pid, field):
             warn_claim_wins.append(field)
 
     new_text = '\n'.join(new_lines)
@@ -1584,6 +1825,17 @@ def run_edit(
     warn_stub = str(before_meta.get('tier') or '').strip().lower() == 'stub'
     verb = 'append to' if append else 'replace'
 
+    # A dropped '[' or ']' turns a `[[S-id|caption]]` wikilink or `![[S-id]]`
+    # photo embed into text the renderer can no longer recognize at all -
+    # it falls through to literal escaped text instead of a link, and an
+    # embed falls through instead of showing the photo (see _EMBED_RE /
+    # _INLINE_RE in site.py, both anchored on a literal `]]`). That failure
+    # is silent on the page, so it is worth flagging here where the human
+    # can still see it and re-check the source text.
+    open_brackets = new_text.count('[[')
+    close_brackets = new_text.count(']]')
+    warn_unbalanced_brackets = open_brackets != close_brackets
+
     if dry_run:
         result.data['status'] = 'dry-run'
         if created:
@@ -1603,6 +1855,13 @@ def run_edit(
                        '<!-- private --> section the new text does not '
                        'repeat, so it would be dropped. Include it in '
                        '--text/--file if you want it kept.')
+            result.exit_code = EXIT_WARNINGS
+        if warn_unbalanced_brackets:
+            result.add('warning',
+                       f'the new ## {heading_text} has {open_brackets} "[[" but '
+                       f'{close_brackets} "]]" - an unbalanced wikilink or photo '
+                       'embed renders as raw text instead of a link or photo. '
+                       'Check for a missing bracket before applying.')
             result.exit_code = EXIT_WARNINGS
         if warn_stub:
             result.add('info',
@@ -1632,6 +1891,13 @@ def run_edit(
                    f"{label}'s old ## {heading_text} had a <!-- private --> "
                    'section that is not in the new text, so it is now gone. '
                    'Nothing else was touched.')
+        result.exit_code = EXIT_WARNINGS
+    if warn_unbalanced_brackets:
+        result.add('warning',
+                   f'{label}\'s new ## {heading_text} has {open_brackets} "[[" but '
+                   f'{close_brackets} "]]" - an unbalanced wikilink or photo embed '
+                   'renders as raw text instead of a link or photo. Check for a '
+                   'missing bracket and edit again if this was not intended.')
         result.exit_code = EXIT_WARNINGS
     if warn_stub:
         result.add('info',
@@ -1738,6 +2004,118 @@ def run_note(
     return result
 
 
+def run_edit_note(
+    archive_root: Path, person_id: str, section: str, old_text: str, text: str,
+    dry_run: bool = False,
+) -> Result:
+    """Replace ONE existing entry of a Stories/Research Notes append-log;
+    return a Result.
+
+    The surgical counterpart of `run_note`: where note only ever adds at the
+    end, this swaps a single existing entry (one blank-line-separated
+    paragraph run, exactly what one note append wrote) for corrected text -
+    the workbench's per-entry edit button. The entry is identified by its
+    EXACT current text (`old_text`), not by position: display filters strip
+    drafts and private markers, so a rendered entry's index cannot be
+    trusted across the render/disk boundary, but its text can. No match, or
+    more than one, is a plain refusal and nothing is written (the shared
+    matcher: `_lib.replace_paragraph_in_section`).
+
+    Deleting an entry is deliberately NOT this function (an empty --text is
+    refused): the archive prefers preserved trails, so removals stay a
+    deliberate hand edit to the record file.
+    """
+    result = Result(data={'status': None, 'person_id': None, 'path': None, 'section': section})
+
+    if section not in ('stories', 'research'):
+        return _refuse_result(
+            result, 'refused',
+            f'{section!r} is not a section edit-note can change. Use stories or research.')
+    if not str(old_text or '').strip():
+        return _refuse_result(
+            result, 'refused',
+            'no entry was named - --old-text (the entry\'s current text) was empty.')
+    if not str(text or '').strip():
+        return _refuse_result(
+            result, 'refused',
+            'the replacement text was empty. To remove an entry entirely, edit the '
+            'record file itself - this tool only rewrites entries, never deletes them.')
+
+    owner = _locate_person(archive_root, person_id, result)
+    if owner is None:
+        return result
+    path, full_text, before_meta, pid = owner
+    result.data['person_id'] = fmt_id_display(pid)
+    result.data['path'] = str(path)
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    lines = full_text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse_result(
+            result, 'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit '
+            f'safely. Open {path} and edit the entry by hand. Nothing was written.')
+    _, fence_end = bounds
+    cr = '\r' if lines[0].endswith('\r') else ''
+    heading_text = SECTION_HEADINGS[section]
+
+    new_lines, err = replace_paragraph_in_section(
+        lines, fence_end + 1, heading_text, old_text, text, cr)
+    if err is not None:
+        return _refuse_result(result, 'refused', err)
+    new_full_text = '\n'.join(new_lines)
+
+    # The same silent-failure guard run_edit carries: an unbalanced wikilink
+    # renders as raw text with no error anywhere, so flag it while the human
+    # can still see it. And an edit that changes the entry's own
+    # <!-- private --> markers can unbalance the section's redaction fence.
+    open_brackets = text.count('[[')
+    close_brackets = text.count(']]')
+    warn_unbalanced_brackets = open_brackets != close_brackets
+    warn_private_changed = (
+        old_text.count(_PRIVATE_OPEN) != text.count(_PRIVATE_OPEN)
+        or old_text.count(_PRIVATE_CLOSE) != text.count(_PRIVATE_CLOSE))
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would rewrite one entry of ## {heading_text} '
+                           f'in {path.name}; the rest of the log is untouched.')
+        for dline in difflib.unified_diff(
+            full_text.splitlines(), new_full_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+    else:
+        try:
+            write_text_exact(path, reapply_newline(new_full_text, full_text))
+        except OSError as e:
+            return _refuse_result(
+                result, 'refused',
+                f'cannot write {path}: {e}. Check the file is not open elsewhere '
+                'and the folder is writable, then retry.')
+        result.data['status'] = 'ok'
+        result.note_changed(path)
+        result.add('info', f'Rewrote one entry of ## {heading_text} in {label}.', path=path)
+
+    if warn_unbalanced_brackets:
+        result.add('warning',
+                   f'the new entry has {open_brackets} "[[" but {close_brackets} "]]" - '
+                   'an unbalanced wikilink or photo embed renders as raw text instead '
+                   'of a link or photo. Check for a missing bracket.')
+        result.exit_code = EXIT_WARNINGS
+    if warn_private_changed:
+        result.add('warning',
+                   'this edit changes the entry\'s <!-- private --> markers - make '
+                   f'sure ## {heading_text}\'s private fence still opens and closes, '
+                   'or private text could publish on a shared export.')
+        result.exit_code = EXIT_WARNINGS
+    if dry_run:
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _emit(result: Result) -> int:
@@ -1755,6 +2133,8 @@ def _cmd_new(args: argparse.Namespace) -> int:
     return _emit(run_new(
         archive_root, name=args.name, sex=args.sex, gender=args.gender,
         birth=args.birth, death=args.death,
+        birth_place=getattr(args, 'birth_place', None),
+        death_place=getattr(args, 'death_place', None),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -1763,6 +2143,15 @@ def _cmd_set_living(args: argparse.Namespace) -> int:
     if archive_root is None:
         return EXIT_FAILURE
     return _emit(run_set_living(
+        archive_root, person_id=args.person_id, value=args.value,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _cmd_set_profile_photo(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person set-profile-photo')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_set_profile_photo(
         archive_root, person_id=args.person_id, value=args.value,
         dry_run=bool(getattr(args, 'dry_run', False))))
 
@@ -1796,6 +2185,8 @@ def _cmd_estimate(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return _emit(run_estimate(
         archive_root, person_id=args.person_id, birth=args.birth, death=args.death,
+        birth_place=getattr(args, 'birth_place', None),
+        death_place=getattr(args, 'death_place', None),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -1818,6 +2209,16 @@ def _cmd_note(args: argparse.Namespace) -> int:
         text=args.text, dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_edit_note(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person edit-note')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_edit_note(
+        archive_root, person_id=args.person_id, section=args.section,
+        old_text=args.old_text, text=args.text,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _make_group_help(parser: argparse.ArgumentParser):
     """Bare `fha person` prints the group help and exits 2 (a verb is required)."""
     def _cmd(args: argparse.Namespace) -> int:
@@ -1836,6 +2237,7 @@ Update a person's record directly - the deterministic person-field write-backs.
   fha person estimate <P-id> --birth DATE --death DATE
   fha person edit <P-id> --section biography|stories|research --text TEXT
   fha person note <P-id> --section stories|research --text TEXT
+  fha person edit-note <P-id> --section stories|research --old-text TEXT --text TEXT
 
 new mints a brand-new person and writes their stub record. set-living marks
 a person as living, passed away, or unknown (drives export privacy). relate
@@ -1889,8 +2291,12 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
                     help='Free-text gender/identity - omit unless there is something to record.')
     nw.add_argument('--birth', metavar='DATE',
                     help='A provisional, unsourced birth date or estimate.')
+    nw.add_argument('--birth-place', metavar='PLACE', dest='birth_place',
+                    help='A provisional, unsourced birth place (free text).')
     nw.add_argument('--death', metavar='DATE',
                     help='A provisional, unsourced death date or estimate.')
+    nw.add_argument('--death-place', metavar='PLACE', dest='death_place',
+                    help='A provisional, unsourced death place (free text).')
     nw.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     nw.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -1916,6 +2322,25 @@ def _add_set_living_arguments(sub: argparse._SubParsersAction) -> None:
     sl.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the one-line change without writing.')
     sl.set_defaults(func=_cmd_set_living)
+
+
+def _add_set_profile_photo_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the set-profile-photo verb on a group subparser (shared by both mains)."""
+    sp = sub.add_parser(
+        'set-profile-photo',
+        help="Set the portrait shown on a person's page and in the tree.",
+        description='Set a person\'s profile_photo: field - a filename, path, or S-id, '
+                    'resolved leniently against the photo catalog when the site is built.',
+    )
+    sp.add_argument('person_id', metavar='P-id',
+                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    sp.add_argument('value', metavar='PHOTO',
+                    help='A filename, path, or S-id identifying the photo.')
+    sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    sp.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the one-line change without writing.')
+    sp.set_defaults(func=_cmd_set_profile_photo)
 
 
 _RELATE_DESCRIPTION = """\
@@ -1966,24 +2391,29 @@ def _add_relate_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _ESTIMATE_DESCRIPTION = """\
-Write a provisional, unsourced birth/death estimate - a starting guess.
+Write a provisional, unsourced birth/death estimate - a starting guess for
+the when, the where, or both.
 
   fha person estimate P-2b3c4d5e6f --birth 1870
   fha person estimate P-2b3c4d5e6f --birth "circa 1870" --death "before 1940"
+  fha person estimate P-2b3c4d5e6f --birth-place "Kansas"   Place only - no date needed
   fha person estimate P-2b3c4d5e6f --birth -             Clear the birth estimate
 
 DATE accepts the archive's exact date form (1870, 1870-06, 188X for "the
 1880s") or plain words ("circa 1870", "before 1940", "the 1880s") - loose
-wording is translated for you. Use - by itself to clear a field. A sourced
-birth/death claim always supersedes this estimate; run `fha claim` once you
-have a source. At least one of --birth/--death is required."""
+wording is translated for you. --birth-place/--death-place record the WHERE
+as free text ("born in Kansas, no idea when" is real family knowledge), with
+or without a date. Use - by itself to clear any field. A sourced birth/death
+claim always supersedes this estimate; run `fha claim` once you have a
+source. At least one of --birth/--death/--birth-place/--death-place is
+required."""
 
 
 def _add_estimate_arguments(sub: argparse._SubParsersAction) -> None:
     """Register the estimate verb on a group subparser (shared by both mains)."""
     es = sub.add_parser(
         'estimate',
-        help='Write a provisional, unsourced birth/death estimate.',
+        help='Write a provisional, unsourced birth/death date and/or place estimate.',
         description=_ESTIMATE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1991,8 +2421,12 @@ def _add_estimate_arguments(sub: argparse._SubParsersAction) -> None:
                     help='The person to update (e.g. P-2b3c4d5e6f).')
     es.add_argument('--birth', metavar='DATE',
                     help='A birth date/estimate, or - to clear it.')
+    es.add_argument('--birth-place', metavar='PLACE', dest='birth_place',
+                    help='A provisional birth place (free text), or - to clear it.')
     es.add_argument('--death', metavar='DATE',
                     help='A death date/estimate, or - to clear it.')
+    es.add_argument('--death-place', metavar='PLACE', dest='death_place',
+                    help='A provisional death place (free text), or - to clear it.')
     es.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     es.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -2070,11 +2504,47 @@ def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
     nt.set_defaults(func=_cmd_note)
 
 
+_EDIT_NOTE_DESCRIPTION = """\
+Rewrite ONE existing entry of Stories or Research Notes - the rest is untouched.
+
+  fha person edit-note P-2b3c4d5e6f --section research \\
+      --old-text "Check the 1880 census." --text "Checked the 1880 census - nothing."
+
+The entry is named by its exact current text (--old-text); if that text is
+not found (someone edited the file since), or appears more than once, nothing
+is written and the message says so. Deleting an entry stays a hand edit to
+the record file - this only rewrites."""
+
+
+def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the edit-note verb on a group subparser (shared by both mains)."""
+    en = sub.add_parser(
+        'edit-note',
+        help='Rewrite one existing Stories/Research Notes entry.',
+        description=_EDIT_NOTE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    en.add_argument('person_id', metavar='P-id',
+                    help='The person whose entry is being corrected.')
+    en.add_argument('--section', required=True, choices=('stories', 'research'),
+                    help='Which section the entry lives in.')
+    en.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
+                    help="The entry's current text, exactly as it stands.")
+    en.add_argument('--text', metavar='TEXT', required=True,
+                    help='The corrected entry text.')
+    en.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    en.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the change without writing.')
+    en.set_defaults(func=_cmd_edit_note)
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'person' onto the main fha parser."""
     p = subs.add_parser(
         'person',
-        help='Person-record write-backs: set-living, relate, estimate, edit, note',
+        help='Person-record write-backs: set-living, set-profile-photo, relate, '
+             'estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2082,10 +2552,12 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
     _add_set_living_arguments(sub)
+    _add_set_profile_photo_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
     _add_note_arguments(sub)
+    _add_edit_note_arguments(sub)
     p.set_defaults(func=_make_group_help(p))
     return p
 
@@ -2100,10 +2572,12 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
     _add_set_living_arguments(sub)
+    _add_set_profile_photo_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
     _add_note_arguments(sub)
+    _add_edit_note_arguments(sub)
     parser.set_defaults(func=_make_group_help(parser))
     args = parser.parse_args(argv)
     return args.func(args) or 0

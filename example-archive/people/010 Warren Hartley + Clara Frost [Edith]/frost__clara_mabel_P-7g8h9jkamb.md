@@ -8,4 +8,9 @@ living: false
 birth: 1849~   # provisional - no backing source claim yet (needs-sourcing backlog)
 created: 2026-06-14
 tier: stub
+relationships:
+  - to: "[[P-5e6f7g8h9j|Edith Louise Hartley]]"
+    type: child
+    subtype: biological
+    claim: "[[C-fc0000001a]]"
 ---

@@ -3,6 +3,7 @@
 source.py - fha source: deterministic source-record write-backs (TOOLING §3c sibling).
 
   fha source note S-id --text TEXT [--dry-run] [--root PATH]
+  fha source edit-note S-id --old-text TEXT --text TEXT [--dry-run] [--root PATH]
 
 A source's `## Notes` section is the human-written free-text channel SPEC §14
 reserves for "the story behind it, context, or where the original is kept" -
@@ -13,8 +14,9 @@ phone, on the porch, mid-research-session, and the tool finds the record,
 appends the sentence as its own paragraph, and touches nothing else.
 
 This module deliberately opens the `fha source` namespace - future
-source-field verbs would live here - but only `note` ships now (mirrors
-person.py's `set-living`-only opening).
+source-field verbs would live here. Two verbs ship now: `note` (append) and
+`edit-note` (rewrite one existing paragraph - the workbench's per-entry edit
+button; see run_source_edit_note).
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
@@ -66,8 +68,11 @@ CODE MAP
   (locate + append are the shared _lib helpers: find_source_record_path finds
    the record; append_paragraph_to_section performs the bounded '## Notes' edit)
   _source_label               - "S-xxxx (title)" for human-facing messages
-  run_source_note             - validate, locate, edit; returns a _lib.Result
-  _emit / _cmd_source_note / _make_group_help / register / _standalone_main
+  run_source_note             - validate, locate, append; returns a _lib.Result
+  run_source_edit_note        - rewrite ONE existing Notes paragraph (matched by
+                                exact text via _lib.replace_paragraph_in_section)
+  _emit / _cmd_source_note / _cmd_source_edit_note / _make_group_help
+  register / _standalone_main
 """
 
 from __future__ import annotations
@@ -98,6 +103,7 @@ from _lib import (
     normalize_id,
     read_text_exact,
     reapply_newline,
+    replace_paragraph_in_section,
     resolve_root_arg,
     result_fail,
     write_text_exact,
@@ -260,6 +266,125 @@ def run_source_note(
     return result
 
 
+def run_source_edit_note(
+    archive_root: Path, source_id: str, *, old_text: str, text: str,
+    dry_run: bool = False,
+) -> Result:
+    """Replace ONE existing entry of a source's `## Notes` append-log; return
+    a Result.
+
+    The surgical counterpart of `run_source_note` (same shape as
+    `person.run_edit_note`): the entry is identified by its EXACT current
+    text, matched by the shared `_lib.replace_paragraph_in_section` - no
+    match, or an ambiguous one, is a plain refusal and nothing is written.
+    An empty replacement is refused too: removals stay a deliberate hand
+    edit, the same nothing-ever-lost instinct as the appender. The Claims
+    regression guard from `run_source_note` applies unchanged."""
+    result = Result(data={'status': None, 'source_id': None, 'path': None})
+
+    def _refuse(status: str, message: str, *, next_step: str | None = None) -> Result:
+        return result_fail(result, status, message, next_step=next_step)
+
+    if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
+        return _refuse(
+            'refused',
+            f'{source_id!r} is not a valid source ID. S-ids look like '
+            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from '
+            'the archive alphabet.')
+    sid = normalize_id(source_id)
+    result.data['source_id'] = fmt_id_display(sid)
+
+    if not (old_text or '').strip():
+        return _refuse(
+            'refused',
+            'no entry was named - --old-text (the entry\'s current text) was empty.')
+    if not (text or '').strip():
+        return _refuse(
+            'refused',
+            'the replacement text was empty. To remove a note entirely, edit the '
+            'record file itself - this tool only rewrites notes, never deletes them.')
+
+    path = find_source_record_path(archive_root, sid)
+    if path is None:
+        return result_fail(
+            result, 'not-found',
+            f'No source record found for {fmt_id_display(sid)} under '
+            f'{archive_root / "sources"} - check the id with '
+            f'`fha find {fmt_id_display(sid)}`.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha find ' + fmt_id_display(sid))
+    result.data['path'] = str(path)
+
+    try:
+        text_in = read_text_exact(path)
+    except OSError as e:
+        return _refuse(
+            'refused', f'cannot read {path}: {e}',
+            next_step='Check the file is not open in another program and try again.')
+
+    label = _source_label(text_in, sid)
+
+    lines = text_in.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    body_start = (bounds[1] + 1) if bounds is not None else 0
+
+    heading_matches = [
+        i for i in range(body_start, len(lines))
+        if _NOTES_HEADING_RE.match(lines[i].rstrip('\r'))
+    ]
+    if len(heading_matches) > 1:
+        return _refuse(
+            'refused',
+            f'{path.name} has more than one ## Notes heading, so the right '
+            f'one to edit cannot be chosen safely. Open {path} and remove '
+            'the extra heading by hand, then run `fha lint`. Nothing was written.')
+
+    cr = '\r' if '\r\n' in text_in else ''
+    new_lines, err = replace_paragraph_in_section(
+        lines, body_start, 'Notes', old_text, text, cr)
+    if err is not None:
+        return _refuse('refused', err)
+    new_text = '\n'.join(new_lines)
+
+    before_problem = claims_edit_problem(text_in)
+    after_problem = claims_edit_problem(new_text)
+    if before_problem is None and after_problem is not None:
+        return _refuse(
+            'refused',
+            f'Refusing to edit the note on {label}: the edit would leave the '
+            f'## Claims block broken ({after_problem}). Nothing was written. '
+            f'This should not happen - open {path} and check it by hand, '
+            'then run `fha lint`.')
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would rewrite one note on {label}; '
+                           'the rest of ## Notes is untouched.')
+        for dline in difflib.unified_diff(
+            text_in.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        write_text_exact(path, reapply_newline(new_text, text_in))
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere '
+            'and the folder is writable, then retry.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'Rewrote one note on {label}.', path=path)
+    result.add('info',
+               'Next: run `fha index` when convenient so search sees the change.',
+               next_step='fha index')
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _emit(result: Result) -> int:
@@ -279,6 +404,15 @@ def _cmd_source_note(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_source_edit_note(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha source edit-note')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_source_edit_note(
+        archive_root, source_id=args.source_id, old_text=args.old_text,
+        text=args.text, dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _make_group_help(parser: argparse.ArgumentParser):
     """Bare `fha source` prints the group help and exits 2 (a verb is required)."""
     def _cmd(args: argparse.Namespace) -> int:
@@ -292,9 +426,11 @@ _CLI_DESCRIPTION = """\
 Update a source record directly - the deterministic source-field write-backs.
 
   fha source note S-2b3c4d5e6f --text "..."
+  fha source edit-note S-2b3c4d5e6f --old-text "..." --text "..."
 
-Today this group has one verb, note: append a hand-written paragraph to a
-source's ## Notes section. Future source-field verbs will live here too."""
+note appends a hand-written paragraph to a source's ## Notes section;
+edit-note rewrites one existing paragraph there (named by its exact current
+text) and leaves the rest untouched."""
 
 _NOTE_DESCRIPTION = """\
 Add a note to a source - appended to the end of its ## Notes section.
@@ -326,17 +462,51 @@ def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
     n.set_defaults(func=_cmd_source_note)
 
 
+_EDIT_NOTE_DESCRIPTION = """\
+Rewrite ONE existing ## Notes paragraph - the rest of the section is untouched.
+
+  fha source edit-note S-2b3c4d5e6f \\
+      --old-text "Found in the cedar chest." --text "Found in Grandma's cedar chest, 2024."
+
+The note is named by its exact current text (--old-text); if that text is not
+found (someone edited the file since), or appears more than once, nothing is
+written and the message says so. Deleting a note stays a hand edit to the
+record file - this only rewrites. Preview first with --dry-run."""
+
+
+def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the edit-note verb on a group subparser (shared by both mains)."""
+    en = sub.add_parser(
+        'edit-note',
+        help="Rewrite one existing paragraph of a source's ## Notes.",
+        description=_EDIT_NOTE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    en.add_argument('source_id', metavar='S-id',
+                    help='The source whose note is being corrected.')
+    en.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
+                    help="The note's current text, exactly as it stands.")
+    en.add_argument('--text', metavar='TEXT', required=True,
+                    help='The corrected note text.')
+    en.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    en.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the change without writing.')
+    en.set_defaults(func=_cmd_source_edit_note)
+
+
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'source' onto the main fha parser."""
     p = subs.add_parser(
         'source',
-        help='Source-record write-backs: note (append to ## Notes)',
+        help='Source-record write-backs: note (append) and edit-note (rewrite one)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = p.add_subparsers(dest='source_command', metavar='SUBCOMMAND')
     _add_note_arguments(sub)
+    _add_edit_note_arguments(sub)
     p.set_defaults(func=_make_group_help(p))
     return p
 
@@ -350,6 +520,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = parser.add_subparsers(dest='source_command', metavar='SUBCOMMAND')
     _add_note_arguments(sub)
+    _add_edit_note_arguments(sub)
     parser.set_defaults(func=_make_group_help(parser))
     args = parser.parse_args(argv)
     return args.func(args) or 0

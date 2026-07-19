@@ -115,6 +115,20 @@ created: 2026-06-12
   information: secondary
   evidence: indirect
   notes: Parentage placeholder for the example; in a real archive this would rest on a vital record or proof argument, not a census alone.
+
+- value: Lived at 16 Lake Vista
+  id: C-1q49bbb6r3
+  type: residence
+  persons: [P-de957bcda1]
+  date: 1989
+  place_text: daly City
+  status: rejected
+  confidence: medium
+  reviewed: 2026-07-17
+  notes: >
+    Test entry typed during a live workbench review session (2026-07-16), not an
+    assertion of this source - the 1989 date cannot belong to a person born about
+    1840. Kept as rejected to preserve the review trail.
 ```
 
 ## Notes

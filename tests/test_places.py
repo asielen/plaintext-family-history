@@ -614,5 +614,223 @@ class HaversineTests(unittest.TestCase):
         self.assertLess(d, 130)
 
 
+_SET_REGISTRY = (
+    '# Place registry - a hand comment that must survive every edit\n'
+    '- id: L-7c1a9f4e22\n'
+    '  name: Fairview\n'
+    '  coords: [39.8, -95.6]\n'
+    '  hierarchy: Fairview, Breton County, Kansas, USA\n'
+    '  alt_names: [Fairview City]\n'
+    '  history:\n'
+    '    - {period: "1858/1861", hierarchy: "Fairview, Breton Co., Kansas Territory, USA"}\n'
+    '  notes: fictional town\n'
+    '- id: L-9999999999\n'
+    '  name: Elsewhere\n'
+    '  coords: [1.0, 2.0]\n'
+)
+
+
+class PlaceSetNoteTests(unittest.TestCase):
+    """fha places set / note: the human-directed registry write-backs."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'places').mkdir(parents=True)
+        self.registry = self.root / 'places' / 'places.yaml'
+        self.registry.write_text(_SET_REGISTRY, encoding='utf-8', newline='')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _parsed(self):
+        import yaml
+        return {e['id']: e for e in yaml.safe_load(self.registry.read_text(encoding='utf-8'))}
+
+    def test_set_coords_touches_only_the_target_block(self) -> None:
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22', coords='40.1, -95.0')
+        self.assertEqual(result.exit_code, 0)
+        text = self.registry.read_text(encoding='utf-8')
+        self.assertIn('# Place registry - a hand comment', text)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22']['coords'], [40.1, -95.0])
+        self.assertEqual(parsed['L-9999999999']['coords'], [1.0, 2.0])
+
+    def test_set_coords_out_of_range_refused(self) -> None:
+        before = self.registry.read_bytes()
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22', coords='95.0, 10.0')
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('out of range', result.messages[0].text)
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_set_aka_replaces_the_whole_list(self) -> None:
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22',
+                                      aka=['Fairview City', 'Old Fairview'])
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22']['alt_names'],
+                         ['Fairview City', 'Old Fairview'])
+
+    def test_set_aka_and_history_empty_lists_clear(self) -> None:
+        # The engine half of the workbench's "delete every line to clear"
+        # (and the CLI's lone `--aka -` / `--history -` sentinel).
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22', aka=[], history=[])
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('alt_names'), [])
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('history'), [])
+
+    def test_clearing_absent_lists_is_a_no_op(self) -> None:
+        # Final-review finding (PR #31): an untouched Apply of the aka /
+        # names-over-time modal posts an empty field (data-wb-allowempty),
+        # which must NOT write 'alt_names: []' / 'history: []' onto a place
+        # that never had those keys - a no-op action may not mutate the
+        # registry.
+        before = self.registry.read_bytes()
+        result = places.run_place_set(self.root, 'L-9999999999',
+                                      aka=[''], history=[''])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(self.registry.read_bytes(), before)
+        self.assertIn('no change', ' '.join(m.text for m in result.messages))
+
+    def test_history_period_without_name_is_refused(self) -> None:
+        # Final-review finding (PR #31): a 'PERIOD | ' line (period, empty
+        # hierarchy) used to be silently dropped - and since the workbench
+        # prefills a hand-authored period-only registry entry in exactly
+        # that shape, any unrelated history edit silently deleted it. Now a
+        # plain refusal, nothing written.
+        before = self.registry.read_bytes()
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22',
+                                      history=['1900 | '])
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('no place name', result.messages[0].text)
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_cli_dash_sentinel_clears_both_lists(self) -> None:
+        import argparse as _ap
+        import io as _io
+        from contextlib import redirect_stdout
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        args = _ap.Namespace(root=str(self.root), place_id='L-7c1a9f4e22',
+                             coords=None, aka=['-'], history=['-'], dry_run=False)
+        with redirect_stdout(_io.StringIO()):
+            rc = places._cmd_places_set(args)
+        self.assertEqual(rc, 0)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('alt_names'), [])
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('history'), [])
+
+    def test_set_aka_name_with_comma_stays_one_alias(self) -> None:
+        # P2 codex finding (round 2, PR #31): each name is verbatim - a
+        # comma inside it ("Washington, D.C.") must survive the write and
+        # parse back as ONE alias, never resplit.
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22',
+                                      aka=['Washington, D.C.'])
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22']['alt_names'], ['Washington, D.C.'])
+
+    def test_set_history_replaces_from_pipe_lines(self) -> None:
+        result = places.run_place_set(
+            self.root, 'L-7c1a9f4e22',
+            history=['1854/1858 | Fairview settlement, Kansas Territory',
+                     '1858/1861 | Fairview, Breton Co., Kansas Territory, USA'])
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        hist = parsed['L-7c1a9f4e22']['history']
+        self.assertEqual(len(hist), 2)
+        self.assertEqual(hist[0]['period'], '1854/1858')
+        self.assertEqual(hist[1]['hierarchy'], 'Fairview, Breton Co., Kansas Territory, USA')
+
+    def test_set_history_refuses_an_unreadable_period(self) -> None:
+        # P2 codex finding (round 1, PR #31): a typo period ("1858??") used to
+        # be written verbatim; edtf_bounds() then indexed it at the all-time
+        # 0001..9999 bounds, silently scrambling names-over-time order.
+        before = self.registry.read_bytes()
+        result = places.run_place_set(
+            self.root, 'L-7c1a9f4e22',
+            history=['1858?? | Fairview, Kansas Territory'])
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('history period', result.messages[0].text)
+        self.assertIn('1858/1861', result.messages[0].text)   # the range example
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_set_history_normalizes_a_loose_period(self) -> None:
+        # Loose human wording is read the same way claim dates are.
+        result = places.run_place_set(
+            self.root, 'L-7c1a9f4e22',
+            history=['circa 1858 | Fairview settlement, Kansas Territory'])
+        self.assertEqual(result.exit_code, 0)
+        hist = self._parsed()['L-7c1a9f4e22']['history']
+        self.assertEqual(hist[0]['period'], '1858~')
+
+    def test_set_nothing_refused(self) -> None:
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22')
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('nothing to change', result.messages[0].text)
+
+    def test_unknown_place_exit1_next_step(self) -> None:
+        result = places.run_place_set(self.root, 'L-bbbbbbbbbb', coords='1, 2')
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(result.data['status'], 'not-found')
+        self.assertEqual(result.messages[0].next_step, 'fha find L-bbbbbbbbbb')
+
+    def test_dry_run_writes_nothing_and_shows_diff(self) -> None:
+        before = self.registry.read_bytes()
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22',
+                                      coords='40.1, -95.0', dry_run=True)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertEqual(self.registry.read_bytes(), before)
+        joined = '\n'.join(m.text for m in result.messages)
+        self.assertIn('+  coords: [40.1, -95.0]', joined)
+
+    def test_note_appends_dated_paragraph_keeping_old_notes(self) -> None:
+        result = places.run_place_note(self.root, 'L-7c1a9f4e22',
+                                       'Platted 1858 per the county history.')
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        notes = parsed['L-7c1a9f4e22']['notes']
+        self.assertIn('fictional town', notes)
+        self.assertIn('Platted 1858 per the county history.', notes)
+        # Dated: the appended paragraph starts with an ISO date stamp.
+        import re as _re
+        self.assertTrue(_re.search(r'\d{4}-\d{2}-\d{2}: Platted 1858', notes))
+        # The rest of the block survived the notes rewrite.
+        self.assertEqual(parsed['L-7c1a9f4e22']['coords'], [39.8, -95.6])
+
+    def test_note_creates_the_key_when_absent(self) -> None:
+        result = places.run_place_note(self.root, 'L-9999999999', 'First note.')
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        self.assertIn('First note.', parsed['L-9999999999']['notes'])
+
+    def test_note_empty_text_refused(self) -> None:
+        result = places.run_place_note(self.root, 'L-7c1a9f4e22', '   ')
+        self.assertEqual(result.exit_code, 3)
+
+    def test_edit_note_rewrites_only_the_named_entry(self) -> None:
+        places.run_place_note(self.root, 'L-7c1a9f4e22', 'Second note.')
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'fictional town', 'fictional town (example fixture)')
+        self.assertEqual(result.exit_code, 0)
+        notes = self._parsed()['L-7c1a9f4e22']['notes']
+        self.assertIn('fictional town (example fixture)', notes)
+        self.assertIn('Second note.', notes)
+
+    def test_edit_note_not_found_refused_nothing_written(self) -> None:
+        before = self.registry.read_bytes()
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'Never written.', 'x')
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('not found', result.messages[0].text)
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_edit_note_empty_replacement_refused(self) -> None:
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'fictional town', '  ')
+        self.assertEqual(result.exit_code, 3)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -21,6 +21,11 @@
 
   var overlay = null;
   var openerBtn = null;
+  /* Set instead of an immediate reload when a successful result still carries
+     a warning (e.g. the asset saved but its note sidecar did not) - reloading
+     right away would erase the warning before the human can read or copy it.
+     closeModal() honors this the moment they dismiss the modal themselves. */
+  var reloadOnClose = false;
 
   function csrfToken() {
     var m = document.querySelector('meta[name="fha-csrf"]');
@@ -45,8 +50,14 @@
   }
 
   function esc(s) {
+    // Every call site splices this into HTML - some (the lookup-result
+    // buttons) into double-quoted attributes via innerHTML. Without
+    // escaping '"' too, a label carrying one (`John "Jack" Smith`) closes
+    // the attribute early and lets the rest of the label - or a crafted
+    // archive label - inject new attributes into the element.
     return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   /* Insert text at a textarea/input caret (or append if unfocused). */
@@ -61,16 +72,45 @@
     el.focus();
   }
 
-  /* Copy form-control values into any [data-wb-sub="<name>"] placeholder. */
+  /* A dropped `[` or `]` turns a `[[S-id|caption]]` link or `![[S-id]]`
+     photo embed into text the site renderer no longer recognizes at all -
+     it falls back to literal escaped text with no error shown anywhere. A
+     live count-mismatch warning here is the earliest point a human can
+     catch that, well before Preview/Apply. Purely advisory - it never
+     blocks submission, since a `[[`/`]]` can legitimately appear unbalanced
+     mid-edit (e.g. while typing a new link). */
+  function updateBracketWarning(el) {
+    var field = el.closest('.wb-field');
+    var warn = field && field.querySelector('.wb-bracket-warn');
+    if (!warn) return;
+    var opens = (el.value.match(/\[\[/g) || []).length;
+    var closes = (el.value.match(/\]\]/g) || []).length;
+    if (opens === closes) { warn.hidden = true; return; }
+    warn.hidden = false;
+    warn.textContent = 'Heads up: ' + opens + ' "[[" but ' + closes + ' "]]" - a missing '
+      + 'bracket will make a link or photo show as raw text instead.';
+  }
+
+  /* Copy form-control values into any [data-wb-sub="<name>"] placeholder.
+     [data-wb-sub-stem] is the same but strips the extension - the upload
+     modal's sidecar preview needs the STEM (photo.jpg -> photo.notes.md,
+     process.py's pairing rule), not the full name. */
   function substitute(modal) {
-    $all('[data-wb-sub]', modal).forEach(function (el) {
-      var name = el.getAttribute('data-wb-sub');
+    function readField(name) {
       var val = null;
       $all('[name="' + name + '"]', modal).forEach(function (c) {
         if (c.type === 'radio') { if (c.checked) val = c.value; }
         else val = c.value;
       });
+      return val;
+    }
+    $all('[data-wb-sub]', modal).forEach(function (el) {
+      var val = readField(el.getAttribute('data-wb-sub'));
       if (val !== null) el.textContent = val;
+    });
+    $all('[data-wb-sub-stem]', modal).forEach(function (el) {
+      var val = readField(el.getAttribute('data-wb-sub-stem'));
+      if (val !== null) el.textContent = val.replace(/\.[^.\/]+$/, '');
     });
   }
 
@@ -104,6 +144,10 @@
       openerBtn = null;
       document.body.style.overflow = '';
     }
+    if (reloadOnClose) {
+      reloadOnClose = false;
+      location.reload();
+    }
   }
 
   function openModal(btn, tplId) {
@@ -131,6 +175,12 @@
     if (verb) modal.setAttribute('data-wb-verb', verb);
     if (build) modal.setAttribute('data-wb-build', build);
     if (btn.getAttribute('data-wb-args')) modal.setAttribute('data-wb-args', btn.getAttribute('data-wb-args'));
+    var applyLabel = btn.getAttribute('data-wb-apply-label') || tpl.getAttribute('data-wb-apply-label');
+    if (applyLabel) modal.setAttribute('data-wb-apply-label', applyLabel);
+    /* Opener-supplied heading (e.g. the co-occurrence pair's names) - the
+       modal must say WHO it acts on, not just what it does. */
+    var title = btn.getAttribute('data-wb-title');
+    if (title) { var h3 = modal.querySelector('h3'); if (h3) h3.textContent = title; }
 
     /* opener may inject a filename (drop zone) or a person name (mint "+") */
     var fname = btn.getAttribute('data-wb-file-name');
@@ -138,23 +188,57 @@
     var pname = btn.getAttribute('data-wb-name');
     if (pname) { var ni = modal.querySelector('[name="name"]'); if (ni) ni.value = pname; }
 
-    /* generic field prefill: data-wb-fill="field=value|field2=value2" */
+    /* generic field prefill: data-wb-fill="field=value|field2=value2".
+       A radio GROUP shares one `name` across several inputs - querySelector
+       would grab only the first of them and stomp its OWN value attribute
+       (silently turning "deceased" into whatever value was being prefilled,
+       still unchecked) rather than checking the one that actually matches.
+       querySelectorAll + per-element handling covers both shapes; every
+       existing single-target usage (a <select> or plain <input>) still has
+       exactly one match, so this is a no-op behavior change for those. */
     var fill = btn.getAttribute('data-wb-fill');
     if (fill) {
       fill.split('|').forEach(function (pair) {
         var i = pair.indexOf('=');
         if (i < 0) return;
-        var c = modal.querySelector('[name="' + pair.slice(0, i) + '"]');
-        if (c) c.value = pair.slice(i + 1);
+        var val = pair.slice(i + 1);
+        $all('[name="' + pair.slice(0, i) + '"]', modal).forEach(function (c) {
+          if (c.type === 'radio') c.checked = (c.value === val);
+          else c.value = val;
+        });
       });
+    }
+    /* Same idea as data-wb-fill, but for values that may themselves contain
+       '|' or '=' (a claim's free-text value/place) - JSON has no delimiter
+       to collide with. data-wb-fill stays as the simple string form for
+       fixed short values (a status literal); this is for "prefill this
+       modal with a specific record's current data". */
+    var prefill = btn.getAttribute('data-wb-prefill');
+    if (prefill) {
+      try {
+        var pf = JSON.parse(prefill);
+        for (var pkey in pf) {
+          var pval = pf[pkey];
+          $all('[name="' + pkey + '"]', modal).forEach(function (c) {
+            if (c.type === 'radio') c.checked = (c.value === pval);
+            else c.value = pval;
+          });
+        }
+      } catch (e) { /* malformed prefill JSON - leave fields as authored */ }
     }
     substitute(modal);
     updateShowIf(modal);
     showStep(modal, 0);
+    $all('textarea[name="text"]', modal).forEach(updateBracketWarning);
+    /* a prefilled ID field (Edit & accept's People list) resolves to names
+       right away, so the human reviews people, not Crockford strings */
+    $all('input[data-wb-refmode="id"]', modal).forEach(renderIdNames);
 
     /* A "direct" modal (no input form - e.g. Accept as-is, Dispute) jumps
-       straight to a real dry-run preview. */
-    if (btn.hasAttribute('data-wb-direct')) runPreview(modal);
+       straight to a real dry-run preview. Remember it on the modal: its step 0
+       is an empty shell, so the preview foot must not offer a Back button
+       into nothing (wireframe: single-step modals foot Cancel + Apply only). */
+    if (btn.hasAttribute('data-wb-direct')) { modal.setAttribute('data-wb-direct', ''); runPreview(modal); }
     else {
       var focusable = modal.querySelector('input, textarea, select, button');
       if (focusable) try { focusable.focus(); } catch (e) {}
@@ -183,7 +267,39 @@
       if (c.type === 'radio') { if (c.checked) args[name] = c.value; return; }
       if (c.type === 'checkbox') { args[name] = c.checked; return; }
       var v = c.value;
-      if (v !== null && String(v).trim() !== '') args[name] = v;
+      /* data-wb-allowempty: a whole-list REPLACE field (the aka/history
+         textareas) where blank is a real value - "clear the list" - not an
+         untouched field to drop. Everything else keeps the blank-means-
+         omitted rule (a blank field never overrides a fixed arg). P2 codex
+         finding, round 3, PR #31: deleting every line used to submit
+         nothing, so the engine refused "nothing to change". */
+      if (v !== null && (String(v).trim() !== '' || c.hasAttribute('data-wb-allowempty'))) {
+        args[name] = v;
+      }
+    });
+    /* A hidden `data-wb-idfield="otherName"` control (set by the lookup
+       click handler below when a result is picked by id) names the
+       plain-text field it supersedes: when both are non-blank, drop the
+       plain-text one so the resolved id travels alone (e.g. a claim's
+       `place` L-id instead of a `place_text` wording). The server treats
+       the two as INDEPENDENT keys (SPEC 15 - they legally coexist and an
+       unsent key is left untouched), so the drop exists to keep a pick
+       from dragging a stale copy of its display label in as `place_text` -
+       not because the pair would be refused. Typing in the visible field
+       clears the paired id (the input handler below), so fresh human text
+       always outranks a stale pick; `data-wb-keeppair` opts a pair out
+       when its builder routes the two values to different verbs. A
+       manually typed plain-text field with no lookup pick is unaffected:
+       the idfield stays blank and collect() already dropped it above. */
+    $all('[data-wb-idfield]', modal).forEach(function (idEl) {
+      var idName = idEl.getAttribute('name');
+      var pairName = idEl.getAttribute('data-wb-idfield');
+      /* data-wb-keeppair: keep the visible text BESIDE the resolved id -
+         for a builder that routes to different verbs wanting different
+         representations (the milestone modal: a claim wants the L-id, a
+         provisional estimate wants the human-readable place text). */
+      if (idEl.hasAttribute('data-wb-keeppair')) return;
+      if (idName && pairName && args[idName] !== undefined) delete args[pairName];
     });
     /* A per-modal builder can rewrite (verb, args) - milestone routing, the
        sex/gender selector, the multi-field name lists. */
@@ -205,13 +321,12 @@
      catch-all - hiding the one message ("reload the page you opened") that
      would actually get the human unstuck. Read that body as text instead and
      reject with it tagged, so the .catch handlers below can tell a real
-     network failure from a readable server refusal and show the right one. */
-  function apiRun(verb, args, dryRun) {
-    return fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
-      body: JSON.stringify({ verb: verb, args: args, dry_run: dryRun })
-    }).then(function (r) {
+     network failure from a readable server refusal and show the right one.
+     Shared by apiRun (JSON body) and the upload handler (multipart body) -
+     both hit the same CSRF/Host gate ahead of their own handler, which
+     answers with this same plain-text shape either way. */
+  function fetchJsonOrRefusal(url, opts) {
+    return fetch(url, opts).then(function (r) {
       var ctype = r.headers.get('content-type') || '';
       if (!r.ok && ctype.indexOf('application/json') === -1) {
         return r.text().then(function (text) {
@@ -224,11 +339,50 @@
     });
   }
 
+  function apiRun(verb, args, dryRun) {
+    return fetchJsonOrRefusal('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
+      body: JSON.stringify({ verb: verb, args: args, dry_run: dryRun })
+    });
+  }
+
+  /* A unified-diff/YAML line is classified independent of its message's
+     `level` - the engine emits every diff line (added or removed) as one
+     'info' message each, so coloring by level alone painted removed lines
+     the same green as added ones. */
+  function classifyDiffLine(line) {
+    if (/^@@.*@@/.test(line)) return 'wb-diff-hunk';
+    if (/^--- /.test(line) || /^\+\+\+ /.test(line)) return 'wb-diff-file';
+    if (/^\+(?!\+\+)/.test(line)) return 'add';
+    if (/^-(?!--)/.test(line)) return 'del';
+    return null;
+  }
+
+  /* Bolds a leading `key:` (YAML frontmatter shape) so a preview reads as
+     field/value pairs rather than a wall of text. Deliberately narrow -
+     the key token allows only word chars/hyphens, so an ordinary prose
+     sentence with a colon in it ("Born: ...") can't get misread since a
+     real prose line has a space before the colon's subject, not right
+     after it. */
+  var YAML_KEY_RE = /^(\s*(?:[+-]\s*)?)([A-Za-z_][\w-]*)(:)(\s.*|)$/;
+  function highlightYamlKey(line) {
+    var m = YAML_KEY_RE.exec(line);
+    if (!m) return esc(line);
+    return esc(m[1]) + '<span class="wb-yaml-key">' + esc(m[2]) + '</span>' + esc(m[3]) + esc(m[4]);
+  }
+
   function renderMessages(result) {
     var out = '';
     (result.messages || []).forEach(function (m) {
-      var cls = m.level === 'error' ? 'del' : (m.level === 'warning' ? 'ctx' : 'add');
-      out += '<span class="' + cls + '">' + esc(m.text) + '</span>';
+      var baseCls = m.level === 'error' ? 'del' : (m.level === 'warning' ? 'ctx' : 'add');
+      (m.text || '').split('\n').forEach(function (line) {
+        var diffCls = classifyDiffLine(line);
+        var cls = diffCls || baseCls;
+        var html = (diffCls === 'wb-diff-hunk' || diffCls === 'wb-diff-file')
+          ? esc(line) : highlightYamlKey(line);
+        out += '<span class="' + cls + '">' + (html || '&nbsp;') + '</span>';
+      });
       if (m.next_step) out += '<span class="ctx">  next: ' + esc(m.next_step) + '</span>';
     });
     return out || '<span class="ctx">(no changes)</span>';
@@ -263,11 +417,19 @@
       if (!c.verb) return;
       if (c.verb === '__unwritable__') {
         var host0 = ensurePreviewStep(modal);
-        host0.innerHTML = '<p class="wb-kicker">No provisional slot</p>' +
-          '<h3>This one needs a source</h3>' +
-          '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
-          'Record it with a source (it becomes a claim), or leave it as a research note ' +
-          'until a record backs it.</span></pre>' +
+        var body0 = (c.args && c.args.reason === 'married-dated')
+          ? '<p class="wb-kicker">The date and place need a source</p>' +
+            '<h3>An unsourced marriage records only the spouse tie</h3>' +
+            '<pre class="wb-diff"><span class="ctx">Without a source there is nowhere to keep a marriage date or ' +
+            'place - applying would silently drop what you typed. Pick a source above (the marriage becomes a ' +
+            'claim carrying the date and place), or clear the Date/Place fields to record just the spouse as an ' +
+            'unsourced family-tie belief.</span></pre>'
+          : '<p class="wb-kicker">No provisional slot</p>' +
+            '<h3>This one needs a source</h3>' +
+            '<pre class="wb-diff"><span class="ctx">An unsourced baptism or burial has no summary slot (owner decision). ' +
+            'Record it with a source (it becomes a claim), or leave it as a research note ' +
+            'until a record backs it.</span></pre>';
+        host0.innerHTML = body0 +
           '<div class="wb-modal-foot"><button type="button" class="btn" data-wb-back>&larr; Back</button>' +
           '<button type="button" class="btn btn-primary" data-wb-close>Close</button></div>';
         showStep(modal, host0);
@@ -277,23 +439,75 @@
     setBusy(modal, true);
     apiRun(c.verb, c.args, dryRun).then(function (result) {
       setBusy(modal, false);
-      if (dryRun) modal._run = c;
+      if (dryRun) {
+        modal._run = c;
+        /* A minting verb's dry run draws a REAL id (mint_ids picks randomly
+           on every call, by design - see person.run_new/claim.run_claim_new)
+           and shows it in the preview diff. Thread that id back into the
+           args Apply will send, so the record Apply actually creates is the
+           SAME one the human just approved, not a second independently-
+           minted id (P2 codex finding, round 5, PR #30). */
+        if (result.ok && result.data) {
+          if (c.verb === 'person.new' && result.data.person_id) {
+            modal._run.args.person_id = result.data.person_id;
+          } else if (c.verb === 'person.add_family' && result.data.new_person_id) {
+            modal._run.args.new_person_id = result.data.new_person_id;
+          } else if (c.verb === 'claim.new' && result.data.claim_id) {
+            modal._run.args.claim_id = result.data.claim_id;
+          } else if (c.verb === 'process.file' && result.data.source_id) {
+            modal._run.args.source_id = result.data.source_id;
+          }
+        }
+      }
       var host = ensurePreviewStep(modal);
       var ok = result.ok !== false && (result._http === 200);
+      /* On a clean preview or a completed apply, most humans want the plain-
+         English summary, not the raw diff - so the diff collapses behind a
+         <details> and a one-line explainer takes its place. A failure (can't
+         apply / nothing written) is the one thing worth reading immediately,
+         so that case stays expanded with no explainer standing in front of it. */
+      var explain = dryRun
+        ? (ok ? '<p class="wb-preview-explain">Below is what the file will look like after this change. '
+              + 'Click <strong>Apply</strong> to write it - your archive updates and the page refreshes.</p>' : '')
+        : (ok ? '<p class="wb-preview-explain">Written to your archive. The page refreshes in a moment.</p>' : '');
+      /* A warning (e.g. "this estimate is superseded by an existing accepted
+         claim, so it will not show anywhere") describes something that will
+         surprise the human even though the write itself succeeded - it must
+         not be buried inside the collapsed technical diff below, or the one
+         write-succeeded-but-nothing-visible-changed case this exists to
+         explain goes right on looking like silent failure. */
+      var warnings = (result.messages || []).filter(function (m) { return m.level === 'warning'; });
+      var warnHtml = warnings.length
+        ? '<div class="wb-warn-callout">' + warnings.map(function (m) {
+            return '<p>' + esc(m.text) + '</p>';
+          }).join('') + '</div>'
+        : '';
+      var diffHtml = '<pre class="wb-diff">' + renderMessages(result) + '</pre>';
+      if (ok) diffHtml = '<details class="wb-diff-details"><summary>Show the technical preview</summary>' + diffHtml + '</details>';
       host.innerHTML =
         '<p class="wb-kicker">' + (dryRun ? 'Dry run - nothing written yet' : (ok ? 'Applied' : 'Not applied')) + '</p>' +
         '<h3>' + (dryRun ? (ok ? 'Preview' : 'Cannot apply yet') : (ok ? 'Done' : 'Nothing was written')) + '</h3>' +
-        '<pre class="wb-diff">' + renderMessages(result) + '</pre>' +
+        explain + warnHtml + diffHtml +
         cliBlock(result) +
         '<div class="wb-modal-foot">' +
         (dryRun
-          ? ('<button type="button" class="btn" data-wb-back>&larr; Back</button>' +
+          /* No Back on a direct modal - its step 0 is an empty shell, so Back
+             would land on a blank dead-end (wireframe: single-step modals
+             foot Cancel + Apply only). data-wb-apply-label lets a verb name
+             its own apply action ('Rebuild' for publish). */
+          ? ((modal.hasAttribute('data-wb-direct') ? '' :
+              '<button type="button" class="btn" data-wb-back>&larr; Back</button>') +
              '<button type="button" class="btn" data-wb-close>Cancel</button>' +
-             (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>Apply</button>' : ''))
+             (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>'
+                   + esc(modal.getAttribute('data-wb-apply-label') || 'Apply') + '</button>' : ''))
           : ('<button type="button" class="btn btn-primary" data-wb-close>' + (ok ? 'Done' : 'Close') + '</button>')) +
         '</div>';
       showStep(modal, host);
-      if (!dryRun && ok) setTimeout(function () { location.reload(); }, 700);
+      if (!dryRun && ok) {
+        var hasWarning = (result.messages || []).some(function (m) { return m.level === 'warning'; });
+        if (hasWarning) reloadOnClose = true;
+        else setTimeout(function () { location.reload(); }, 700);
+      }
     }).catch(function (e) {
       setBusy(modal, false);
       showError(modal, (e && e.wbServerText && e.message) || 'Could not reach fha serve - is it still running?');
@@ -358,6 +572,7 @@
       if (source === '__paste__') source = (pastedId || '').trim();
       var date = args.mdate; delete args.mdate;
       var place = args.mplace; delete args.mplace;
+      var placeId = args.mplace_id; delete args.mplace_id;
       var spouse = args.mspouse; delete args.mspouse;
       var subject = args.person_id;
       var typeMap = { born: 'birth', died: 'death', married: 'marriage',
@@ -370,7 +585,15 @@
                     value: (args.mvalue || claimType + ' of ' + (args.subject_name || subject)),
                     status: 'accepted' };
         if (date) out.date = date;
-        if (place) { if (/^L-/.test(place)) out.place = place; else out.place_text = place; }
+        /* placeId is set only when the lookup resolved a place (collect()
+           drops the paired mplace text arg in that case - see the
+           data-wb-idfield handling there); a plain-typed L-id (any case,
+           no lookup used) is accepted too, since a human copy-pasting one
+           from elsewhere types it in whatever case they found it. Anything
+           else is prose - "the old farmhouse" - never a wikilink: the
+           lookup no longer inserts one into this field. */
+        if (placeId) out.place = placeId;
+        else if (place) { if (/^l-/i.test(place)) out.place = place; else out.place_text = place; }
         out.persons = people.join(',');
         return { verb: 'claim.new', args: out };
       }
@@ -381,9 +604,25 @@
       if (PROVISIONAL_FIELDS.indexOf(claimType) !== -1) {
         var e = { person_id: subject };
         if (date) e[claimType] = date;
+        /* The place travels too (wireframe: the unsourced summary line is
+           '**Born:** <date> - <place>') - as the provisional
+           birth_place/death_place frontmatter beside the date. These fields
+           are FREE TEXT rendered literally, so the human-readable label wins
+           over a picked L-id (which would show as 'L-...' on the summary
+           row - P2 codex finding, round 5, PR #31); the id alone is the
+           fallback when there is no label to prefer. */
+        if (place || placeId) e[claimType + '_place'] = place || placeId;
         return { verb: 'person.estimate', args: e };
       }
       if (mtype === 'married') {
+        /* An unsourced marriage records ONLY the spouse hypothesis -
+           person.relate has no date/place slot, so a typed Date/Place would
+           silently vanish on apply (P2 codex finding, round 6, PR #31).
+           Refuse with the honest explanation instead of dropping the
+           human's data. */
+        if (date || place || placeId) {
+          return { verb: '__unwritable__', args: { reason: 'married-dated' } };
+        }
         return { verb: 'person.relate',
                  args: { person_id: subject, relation_type: 'spouse', target_id: spouse } };
       }
@@ -392,12 +631,24 @@
       return { verb: '__unwritable__', args: { mtype: mtype } };
     },
 
-    /* add-family: relate the subject to a looked-up person. `target_id` is set
-       by the lookup; a bare name with no id lets the engine report a plain miss
-       and the modal note points at minting first. */
+    /* add-family: the combined mint+link verb. A lookup pick fills the hidden
+       target_id (collect() then drops the visible name) -> the server just
+       relates. A typed name with no pick -> the server mints a stub AND
+       relates in one apply, echoing both commands (wireframe person.html
+       dry-run). Vitals fields only matter on the mint path; the server
+       ignores them when target_id is set. */
     add_family: function (args) {
       applySexGender(args);
-      return { verb: 'person.relate', args: args };
+      return { verb: 'person.add_family', args: args };
+    },
+
+    /* add-event: fold the cited-sources <select> + its "another source"
+       escape hatch into claim.new's single source_id key. */
+    add_event: function (args) {
+      var pick = args.source_pick; delete args.source_pick;
+      var manual = args.source_manual; delete args.source_manual;
+      args.source_id = (pick === '__other__') ? (manual || '').trim() : (pick || '');
+      return { verb: 'claim.new', args: args };
     }
   };
 
@@ -429,6 +680,14 @@
     if (opts && opts.kind) url += '&kind=' + encodeURIComponent(opts.kind);
     fetch(url).then(function (r) { return r.json(); }).then(function (j) {
       var rows = (j.results || []).map(function (hit) {
+        /* A full-text hit is a snippet, not a record - it has no page to
+           navigate to and no id worth inserting; render it as a plain note
+           (wireframe: text hits are non-clickable snippets). */
+        if (hit.type === 'text') {
+          return '<li><span class="note"><span class="wb-kind">text</span> ' +
+            esc(hit.label || '') + (hit.detail ? ' <span class="note">' + esc(hit.detail) + '</span>' : '') +
+            '</span></li>';
+        }
         var wikilink = '[[' + hit.id + '|' + (hit.label || hit.id) + ']]';
         return '<li><button type="button" class="wb-hit"' +
           ' data-wb-ref="' + esc(wikilink) + '"' +
@@ -436,12 +695,87 @@
           ' data-wb-ref-id="' + esc(hit.id) + '">' +
           '<span class="wb-kind">' + esc(hit.type) + '</span> ' +
           esc(hit.label || hit.id) + ' <span class="wb-mono">' + esc(hit.id) + '</span>' +
+          /* The disambiguating detail line ('b. 1840~ New York', 'stub',
+             a place hierarchy) - fha find computes it for exactly this,
+             so two same-named people are tellable apart (wireframe). */
+          (hit.detail ? ' <span class="note">' + esc(hit.detail) + '</span>' : '') +
           '</button></li>';
       }).join('');
-      listEl.innerHTML = rows || '<li><span class="note">no matches - type more, or use "+ create"</span></li>';
+      /* Person lookups end with a real '+ create' row (wireframe: typeahead-
+         with-create) - it opens the mint modal with the query as the name.
+         The old no-match copy referenced a control that didn't exist.
+         EXCEPT under data-wb-nocreate (the add-family lookup): opening the
+         standalone mint modal would close the relation modal and create a
+         stub with no tie recorded - there, creation IS the modal's own
+         typed-name path, so the fallback note points back at it (P2 codex
+         finding, round 3, PR #31). */
+      var createRow = '';
+      if (opts && opts.kind === 'person' && q && !opts.nocreate) {
+        createRow = '<li><button type="button" class="wb-hit" data-wb-open="tpl-mint" ' +
+          'data-wb-name="' + esc(q) + '">+ create "' + esc(q) + '" - mint a stub</button></li>';
+      }
+      var emptyNote = (opts && opts.nocreate)
+        ? '<li><span class="note">no match - leave the name typed above and Apply will create them and record the tie</span></li>'
+        : '<li><span class="note">no matches - type more, or check the spelling</span></li>';
+      listEl.innerHTML = (rows + createRow) || emptyNote;
+      /* The search BAR (no kind) gets the wireframe's CLI-parity footer:
+         the search is exactly `fha find --text "<q>"`, said so and copyable. */
+      if ((!opts || !opts.kind) && listEl.closest('.wb-search-results')) {
+        listEl.innerHTML += '<li class="wb-search-echo"><code>fha find --text "' + esc(q) + '"</code>' +
+          '<button type="button" class="btn btn-sm" data-wb-copy>copy</button></li>';
+      }
     }).catch(function () { listEl.innerHTML = '<li><span class="note">lookup failed</span></li>'; });
   }
   var debouncedLookup = debounce(runLookup, 150);
+
+  /* --- resolve raw IDs to names under ID-mode fields ----------------------- */
+  /* A field that holds bare IDs (a claim's People list, a spouse pick, a
+     photo S-id) is unreviewable as "P-6f7g8h9jka" - the human should see WHO
+     that is. This renders a "Name (P-id) · Name (P-id)" line under any
+     [data-wb-refmode="id"] input, resolving each ID through /api/find's
+     bare-ID path (one small GET per unseen ID, cached for the page's life).
+     Non-ID tokens (a typed name) are simply skipped, and the line hides when
+     nothing resolves - purely advisory, never blocks submission. */
+  var idNameCache = {};   /* lowercased id -> label; null while in flight */
+  var ID_TOKEN_RE = /^[pslch]-[0-9a-z]{4,}$/i;
+
+  function renderIdNames(input) {
+    if (!input || !document.body.contains(input)) return;
+    var field = input.closest('.wb-field');
+    if (!field) return;
+    var out = field.querySelector('[data-wb-idnames]');
+    var ids = input.value.split(',').map(function (t) { return t.trim(); })
+      .filter(function (t) { return ID_TOKEN_RE.test(t); });
+    if (!ids.length) {
+      if (out) { out.hidden = true; out.textContent = ''; }
+      return;
+    }
+    if (!out) {
+      out = document.createElement('p');
+      out.className = 'wb-id-names';
+      out.setAttribute('data-wb-idnames', '');
+      input.insertAdjacentElement('afterend', out);
+    }
+    out.hidden = false;
+    out.textContent = ids.map(function (id) {
+      var label = idNameCache[id.toLowerCase()];
+      return label ? (label + ' (' + id + ')') : (id + ' …');
+    }).join('  ·  ');
+    ids.forEach(function (id) {
+      var key = id.toLowerCase();
+      if (idNameCache[key] !== undefined) return;   /* cached or in flight */
+      idNameCache[key] = null;
+      fetch('/api/find?q=' + encodeURIComponent(id) + '&limit=1')
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          var hit = (j.results || [])[0];
+          idNameCache[key] = (hit && hit.label) ? hit.label : '(no record with this ID)';
+          renderIdNames(input);
+        })
+        .catch(function () { delete idNameCache[key]; });
+    });
+  }
+  var debouncedIdNames = debounce(renderIdNames, 200);
 
   /* --- global click handling ---------------------------------------------- */
   document.addEventListener('click', function (e) {
@@ -449,8 +783,16 @@
     if ((t = e.target.closest('[data-wb-view]'))) { setReviewView(t.getAttribute('data-wb-view')); return; }
     if ((t = e.target.closest('[data-wb-reindex]'))) {
       e.preventDefault();
-      apiRun('index.rebuild', {}, false).then(function () { location.reload(); })
-        .catch(function () { location.reload(); });
+      apiRun('index.rebuild', {}, false).then(function (result) {
+        var ok = result.ok !== false && result._http === 200;
+        if (ok) {
+          location.reload();
+        } else {
+          alert((result.messages && result.messages[0] && result.messages[0].text) || 'Could not rebuild the index.');
+        }
+      }).catch(function (e2) {
+        alert((e2 && e2.wbServerText && e2.message) || 'Could not reach fha serve - is it still running?');
+      });
       return;
     }
     if ((t = e.target.closest('[data-wb-open]'))) { e.preventDefault(); openModal(t); return; }
@@ -476,6 +818,11 @@
       var ctrl = rfield && rfield.querySelector('textarea, input.wb-target');
       if (ctrl) {
         var mode = ctrl.getAttribute('data-wb-refmode');   /* 'id' | 'plain' | (wikilink) */
+        /* wb-plain without an explicit refmode means plain too (wireframe
+           rule): a visible place/name field shows the human-readable label,
+           never a raw [[L-...|...]] wikilink - the paired hidden idfield
+           carries the resolved id. */
+        if (!mode && ctrl.classList.contains('wb-plain')) mode = 'plain';
         var ins = mode === 'id' ? t.getAttribute('data-wb-ref-id')
                 : mode === 'plain' ? (t.getAttribute('data-wb-ref-plain') || t.getAttribute('data-wb-ref'))
                 : t.getAttribute('data-wb-ref');
@@ -486,6 +833,9 @@
         /* keep a parallel id field in sync when the visible field shows a name */
         var idTarget = rfield.querySelector('input[data-wb-idfield]');
         if (idTarget) idTarget.value = t.getAttribute('data-wb-ref-id');
+        /* a pick sets .value programmatically (no native input event), so
+           refresh the names-under-the-field line here */
+        if (ctrl.getAttribute && ctrl.getAttribute('data-wb-refmode') === 'id') renderIdNames(ctrl);
       }
       /* a search-bar hit is a navigation, not an insert */
       if (t.closest('.wb-search-results') && t.getAttribute('data-wb-ref-id')) {
@@ -513,7 +863,15 @@
     return '/' + dir + '/' + id.toLowerCase() + '.html';
   }
 
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeModal(); return; }
+    /* A non-native opener carrying role=button (the pedigree's empty ancestor
+       slots) must honor its own ARIA promise: Enter/Space activates it. */
+    if (e.key === 'Enter' || e.key === ' ') {
+      var t = e.target.closest && e.target.closest('[data-wb-open][role="button"]');
+      if (t) { e.preventDefault(); openModal(t); }
+    }
+  });
 
   document.addEventListener('change', function (e) {
     var m = e.target.closest && e.target.closest('.wb-modal');
@@ -526,8 +884,26 @@
     if (q) {
       var panel = q.closest('.wb-lookup');
       var list = panel && panel.querySelector('.wb-lookup-results');
-      if (list) debouncedLookup(q, list, { kind: q.getAttribute('data-wb-kind') });
+      if (list) debouncedLookup(q, list, { kind: q.getAttribute('data-wb-kind'),
+                                           nocreate: q.hasAttribute('data-wb-nocreate') });
       return;
+    }
+    /* A genuine user edit to a lookup-backed field invalidates whatever id a
+       PRIOR pick resolved to - clear the paired hidden idfield so collect()
+       doesn't override the human's just-typed text with a stale selection.
+       Only fires on real typing/paste: setting `.value =` from the pick
+       handler itself does not dispatch a native `input` event, so this
+       never fights the pick that just happened. */
+    if (e.target.classList && e.target.classList.contains('wb-target')) {
+      var wbField = e.target.closest('.wb-field');
+      var idEl = wbField && wbField.querySelector('input[data-wb-idfield]');
+      if (idEl && idEl.value) idEl.value = '';
+    }
+    if (e.target.matches && e.target.matches('textarea[name="text"]')) updateBracketWarning(e.target);
+    if (e.target.matches && e.target.matches('input[data-wb-refmode="id"]')) debouncedIdNames(e.target);
+    /* typing a new landing name updates the '-> inbox/...' preview live */
+    if (e.target.matches && e.target.matches('input[name="filename"]')) {
+      var fm = e.target.closest('.wb-modal'); if (fm) substitute(fm);
     }
     var sb = e.target.closest('.wb-search input[name="wbq"]');
     if (sb) {
@@ -561,7 +937,10 @@
     var openUpload = function (file) {
       pending = file;
       var m = openModal(drop, drop.getAttribute('data-wb-drop-open'));
-      if (m) { var fi = m.querySelector('[name="filename"]'); if (fi) fi.value = file ? file.name : ''; }
+      if (m) {
+        var fi = m.querySelector('[name="filename"]'); if (fi) fi.value = file ? file.name : '';
+        substitute(m);   /* refresh the '-> inbox/...' destination preview */
+      }
     };
     drop.addEventListener('click', function () { if (fileInput) fileInput.click(); });
     if (fileInput) fileInput.addEventListener('change', function () {
@@ -587,11 +966,16 @@
       if (!pending) { showError(modal, 'No file chosen. Close and drop a file again.'); return; }
       var fd = new FormData();
       fd.append('file', pending, pending.name);
+      /* The File field is editable (wireframe): the name left in it is the
+         name that lands in inbox/ - server-side sanitized like any other. */
+      var fname = modal.querySelector('[name="filename"]');
+      if (fname && fname.value.trim() && fname.value.trim() !== pending.name) {
+        fd.append('filename', fname.value.trim());
+      }
       var what = modal.querySelector('[name="what"]'); if (what && what.value.trim()) fd.append('what', what.value);
       var who = modal.querySelector('[name="who"]'); if (who && who.value.trim()) fd.append('who', who.value);
       setBusy(modal, true);
-      fetch('/api/upload', { method: 'POST', headers: { 'X-FHA-CSRF': csrfToken() }, body: fd })
-        .then(function (r) { return r.json().then(function (j) { j._http = r.status; return j; }); })
+      fetchJsonOrRefusal('/api/upload', { method: 'POST', headers: { 'X-FHA-CSRF': csrfToken() }, body: fd })
         .then(function (result) {
           setBusy(modal, false);
           var host = ensurePreviewStep(modal);
@@ -601,10 +985,51 @@
             '<pre class="wb-diff">' + renderMessages(result) + '</pre>' +
             '<div class="wb-modal-foot"><button type="button" class="btn btn-primary" data-wb-close>Done</button></div>';
           showStep(modal, host);
-          if (ok) setTimeout(function () { location.reload(); }, 700);
-        }).catch(function () { setBusy(modal, false); showError(modal, 'Upload failed - is fha serve still running?'); });
+          if (ok) {
+            var hasWarning = (result.messages || []).some(function (m) { return m.level === 'warning'; });
+            if (hasWarning) reloadOnClose = true;
+            else setTimeout(function () { location.reload(); }, 700);
+          }
+        }).catch(function (e) {
+          setBusy(modal, false);
+          showError(modal, (e && e.wbServerText && e.message) || 'Upload failed - is fha serve still running?');
+        });
     });
   }
+
+  /* "browse for the file..." - fha serve opens the OS's own file-picker
+     window (a browser page cannot read a local file's full path) and the
+     chosen path lands in the named field. Nothing is moved or registered by
+     the pick itself; Preview/Apply still gate the actual write. */
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-wb-pickfile]');
+    if (!b) return;
+    e.preventDefault();
+    var modal = b.closest('.wb-modal');
+    var target = modal && modal.querySelector('[name="' + b.getAttribute('data-wb-pickfile') + '"]');
+    if (!target) return;
+    var orig = b.textContent;
+    b.disabled = true;
+    b.textContent = 'a picker window is open - it may be behind this one…';
+    fetchJsonOrRefusal('/api/pickfile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
+      body: '{}'
+    }).then(function (j) {
+      b.disabled = false;
+      b.textContent = orig;
+      if (j.ok === false) {
+        alert((j.messages && j.messages[0] && j.messages[0].text) || 'Could not open a file picker - type the path instead.');
+        return;
+      }
+      var path = j.data && j.data.path;
+      if (path) target.value = path;   /* cancel leaves the field as it was */
+    }).catch(function (err) {
+      b.disabled = false;
+      b.textContent = orig;
+      alert((err && err.wbServerText && err.message) || 'Could not reach fha serve - is it still running?');
+    });
+  });
 
   /* open a file in the OS editor via POST /api/open (buttons with data-wb-open-file) */
   document.addEventListener('click', function (e) {
@@ -612,12 +1037,14 @@
     if (!b) return;
     e.preventDefault();
     var path = b.getAttribute('data-wb-open-file');
-    fetch('/api/open', {
+    fetchJsonOrRefusal('/api/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-FHA-CSRF': csrfToken() },
       body: JSON.stringify({ path: path })
-    }).then(function (r) { return r.json(); }).then(function (j) {
+    }).then(function (j) {
       if (j.ok === false) alert((j.messages && j.messages[0] && j.messages[0].text) || 'Could not open the file.');
-    }).catch(function () { alert('Could not reach fha serve.'); });
+    }).catch(function (e) {
+      alert((e && e.wbServerText && e.message) || 'Could not reach fha serve.');
+    });
   });
 })();

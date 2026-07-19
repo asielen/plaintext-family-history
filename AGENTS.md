@@ -197,7 +197,14 @@ fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>   unsourced
 fha person estimate <P-id> --birth|--death …      provisional, unsourced vitals estimate
 fha person edit|note <P-id> --section … --text …  bounded prose write to Biography/Stories/
                             Research Notes (edit replaces/appends; note is append-only)
+fha person edit-note <P-id> --section … --old-text … --text …   rewrite ONE existing
+                            Stories/Research Notes entry (named by its exact text)
 fha source note <S-id> --text …                   append a note to a source's ## Notes
+fha source edit-note <S-id> --old-text … --text …  rewrite ONE existing ## Notes paragraph
+fha places set <L-id> --coords|--aka|--history …   human-directed place registry edit
+                            (each field a full replace; dry-run diff first)
+fha places note <L-id> --text …                    append a dated research note to a place
+fha places edit-note <L-id> --old-text … --text …  rewrite ONE existing place note
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
 fha views timeline|sources-index|brackets     regenerate views (--format html for a

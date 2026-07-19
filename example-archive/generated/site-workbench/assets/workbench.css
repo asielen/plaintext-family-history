@@ -87,11 +87,32 @@ tr.wb-row-actions td { padding-top: var(--space-2); }
 tr.wb-row-actions .wb-actions { margin-top: 0; }
 .wb-fix { font-family: var(--font-sans); font-size: var(--text-xs); white-space: nowrap; color: var(--accent); }
 
+/* ---- "+" mint-a-stub: follows any named-but-recordless person (wireframe) ---- */
+a.wb-mint { display: inline-flex; align-items: center; justify-content: center;
+  width: 1.05em; height: 1.05em; margin-left: 3px; vertical-align: 1px;
+  font-family: var(--font-sans); font-size: 0.78em; font-weight: 600; line-height: 1;
+  color: var(--accent); border: 1px dashed var(--rule-strong); border-radius: 999px;
+  text-decoration: none; }
+a.wb-mint:hover { border-color: var(--accent); background: var(--surface); }
+
+/* pointer chip: "N review items touch this person" (wireframe) */
+.wb-pointer { font-family: var(--font-sans); font-size: var(--text-xs);
+  border: 1px solid var(--rule-strong); background: var(--surface);
+  padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-5);
+  max-width: var(--measure); }
+
+/* the search dropdown's CLI-parity footer: `fha find --text "..."` + copy */
+.wb-search-echo { display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-xs); border-top: 1px solid var(--rule);
+  padding: var(--space-1) var(--space-2); }
+.wb-search-echo code { background: none; }
+.wb-search-echo code::before { content: "$ "; color: var(--muted); }
+
 /* ---- modal: dry-run -> apply ---- */
 .wb-overlay { position: fixed; inset: 0; background: rgba(42, 36, 32, 0.45); z-index: 70;
   display: flex; align-items: flex-start; justify-content: center;
   padding: 7vh var(--space-4) var(--space-4); overflow: auto; }
-.wb-modal { background: var(--paper); width: 100%; max-width: 36rem;
+.wb-modal { background: var(--paper); width: 100%; max-width: 39rem;
   border: 1px solid var(--rule-strong); border-top: 3px solid var(--ink);
   padding: var(--space-5); }
 .wb-kicker { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600;
@@ -104,11 +125,29 @@ tr.wb-row-actions .wb-actions { margin-top: 0; }
 
 .wb-file { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-soft);
   margin: var(--space-3) 0 var(--space-1); word-break: break-all; }
-pre.wb-diff { margin: 0 0 var(--space-3); white-space: pre-wrap; }
-.wb-diff > span { display: block; }
+.wb-preview-explain { margin: 0 0 var(--space-3); }
+.wb-warn-callout { border: 1px solid var(--ochre); border-left-width: 3px;
+  background: color-mix(in srgb, var(--ochre) 8%, transparent);
+  padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-3); }
+.wb-warn-callout p { margin: 0; font-size: var(--text-sm); }
+.wb-warn-callout p + p { margin-top: var(--space-2); }
+pre.wb-diff { margin: 0 0 var(--space-3); white-space: pre-wrap; font-size: var(--text-xs); }
+.wb-diff > span { display: block; padding: 1px 0; }
 .wb-diff .ctx { color: var(--muted); }
 .wb-diff .add { color: var(--status-accepted-fg); }
 .wb-diff .del { color: var(--status-rejected-fg); }
+.wb-diff .wb-diff-hunk { color: var(--accent); font-weight: 600; margin-top: var(--space-2); }
+.wb-diff .wb-diff-file { color: var(--ink-soft); font-weight: 600; }
+.wb-diff .wb-yaml-key { font-weight: 600; color: var(--ink); }
+
+.wb-diff-details { margin: 0 0 var(--space-3); }
+.wb-diff-details > summary { font-family: var(--font-sans); font-size: var(--text-xs);
+  color: var(--muted); cursor: pointer; list-style: none; }
+.wb-diff-details > summary::-webkit-details-marker { display: none; }
+.wb-diff-details > summary::before { content: "\25B8"; display: inline-block; width: 1em;
+  color: var(--muted); transition: transform 0.15s ease; }
+.wb-diff-details[open] > summary::before { transform: rotate(90deg); }
+.wb-diff-details > summary + pre.wb-diff { margin-top: var(--space-2); }
 
 .wb-cli-label { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
   margin: var(--space-3) 0 var(--space-1); }
@@ -132,12 +171,31 @@ pre.wb-diff { margin: 0 0 var(--space-3); white-space: pre-wrap; }
   border: 1px solid var(--rule-strong); border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3); }
 .wb-field textarea { min-height: 6.5rem; line-height: 1.5; }
+.wb-bracket-warn { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--ochre);
+  margin: var(--space-1) 0 0; }
+.wb-bracket-warn[hidden] { display: none; }
 .wb-radio { display: flex; flex-wrap: wrap; gap: var(--space-4); }
 .wb-radio label { display: flex; gap: 6px; align-items: center;
   font-family: var(--font-serif); font-size: var(--text-sm); color: var(--ink); }
 .wb-row2 { display: flex; gap: var(--space-3); flex-wrap: wrap; }
 .wb-row2 > .wb-field { flex: 1 1 10rem; margin: 0; }
 .wb-optional { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); }
+
+/* ---- append-log entries with their own edit buttons ---- */
+/* The link is always in the layout (space reserved by padding) but only
+   visible while the entry is hovered or the link itself is focused - a log
+   of many notes stays readable, and keyboard users still reach every one. */
+.wb-log-entry { position: relative; max-width: var(--measure); padding-right: 3.5rem; }
+.wb-log-entry a.wb-entry-edit { position: absolute; top: 0; right: 0;
+  font-family: var(--font-sans); font-size: var(--text-xs); color: var(--accent);
+  text-decoration: none; white-space: nowrap; visibility: hidden; }
+.wb-log-entry:hover a.wb-entry-edit, .wb-log-entry a.wb-entry-edit:focus { visibility: visible; }
+.wb-log-entry a.wb-entry-edit:hover { text-decoration: underline; }
+
+/* resolved names under an ID field: "Margaret Cole (P-...) · Thomas (P-...)" */
+.wb-id-names { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
+  margin: var(--space-1) 0 0; }
+.wb-id-names[hidden] { display: none; }
 
 /* ---- inline reference lookup (name -> ID resolver) ---- */
 .wb-lookuptoggle { display: inline-block; margin-top: 5px; font-family: var(--font-sans);
@@ -163,6 +221,8 @@ ul.wb-lookup-results li:first-child { border-top: none; }
 .wb-milestone-add { margin: calc(-1 * var(--space-3)) 0 var(--space-5); }
 .wb-estimate { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
   font-style: italic; margin-left: var(--space-2); }
+.wb-hypothesis-tag { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
+  font-style: italic; margin-left: var(--space-1); }
 
 /* ---- inbox ---- */
 .wb-drop { border: 2px dashed var(--rule-strong); background: var(--surface);

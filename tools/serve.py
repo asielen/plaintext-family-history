@@ -49,6 +49,8 @@ Code map:
   _workbench_context        - the bar/CSRF/counts baked into every page
   gather_review / gather_inbox - the two serve-rendered pages' data
   VERBS + _verb_*           - the /api/run parity table (the one mutation door)
+  run_api_pickfile          - /api/pickfile: native OS file-picker, returns the
+                              chosen path only (a browser page cannot read one)
   _reindex_after            - post-write reindex policy (upsert vs full)
   _ThreadTee                - per-thread stdout/stderr router (process.py's
                               prints, captured without racing concurrent GETs)
@@ -60,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import hmac
 import io
 import json
@@ -109,6 +112,7 @@ import cooccur  # noqa: E402
 import find as find_mod  # noqa: E402
 import index as index_mod  # noqa: E402
 import person  # noqa: E402
+import places as places_mod  # noqa: E402
 import process as process_mod  # noqa: E402
 import source as source_mod  # noqa: E402
 import xref as xref_mod  # noqa: E402
@@ -266,6 +270,10 @@ class ServeState:
         self._mtime_memo: tuple[float, float] | None = None
         self._review_count_memo: tuple[float, int] | None = None
         self._inbox_count_memo: tuple[float, int] | None = None
+        # Guards the native file-picker dialog (/api/pickfile): one at a time,
+        # never under the mutation `lock` - a dialog can sit open for minutes
+        # and must not block writes or page renders while it does.
+        self.pick_lock = threading.Lock()
 
     @property
     def site_title(self) -> str:
@@ -594,7 +602,8 @@ def gather_review(state: ServeState) -> dict:
     if conn is not None:
         try:
             rows = conn.execute(
-                "SELECT c.id, c.type, c.value, c.date_edtf, c.place_text, c.confidence, "
+                "SELECT c.id, c.type, c.value, c.date_edtf, c.place_text, c.place_id, c.confidence, "
+                "c.evidence, c.anchor, c.notes, "
                 "c.source_id, s.title AS source_title "
                 "FROM claims c LEFT JOIN sources s ON c.source_id = s.id "
                 "WHERE c.status = 'suggested' ORDER BY c.source_id, c.id"
@@ -615,22 +624,54 @@ def gather_review(state: ServeState) -> dict:
                 stitle = r['source_title'] or (fmt_id_display(sid) if sid else 'no source')
                 if sid:
                     sources[sid] = stitle
+                # The evidence excerpt + locator the reviewer judges from
+                # (the wireframe's blockquote.citation on every queue item -
+                # without it the queue demands opening each source by hand).
+                excerpt = (r['evidence'] or '').strip()
+                cite_bits = [stitle]
+                if r['anchor']:
+                    cite_bits.append(str(r['anchor']))
+                # Place display: the as-written text, else the registry name
+                # resolved from place_id (the same fallback the site's
+                # `_place_label` gives the source/person claim editors). A
+                # lookup-backed claim carries ONLY place_id, and without this
+                # the queue row said nothing about WHERE and the editor's
+                # visible Place field opened blank while the hidden L-id
+                # silently posted - the reviewer could not see which place
+                # they were accepting (P2 codex finding, round 6, PR #31).
+                place_label = (r['place_text'] or '').strip()
+                if not place_label and r['place_id']:
+                    prow = conn.execute('SELECT name FROM places WHERE id = ?',
+                                        (r['place_id'],)).fetchone()
+                    place_label = ((prow['name'] if prow and prow['name'] else '')
+                                   or fmt_id_display(r['place_id']))
                 items.append({
                     'kind': 'suggested claim',
                     'group_source': sid or 'unsourced',
                     'group_source_title': stitle,
-                    'group_persons': people[:1],
+                    'group_persons': people,
                     'claim_id': fmt_id_display(cid),
                     'headline': r['value'] or f'{r["type"]} claim',
                     'meta': ' - '.join(x for x in (
                         r['type'],
                         f'date {r["date_edtf"]}' if r['date_edtf'] else None,
-                        r['place_text'] or None,
+                        place_label or None,
                         ', '.join(pnames) if pnames else None,
                         f'confidence {r["confidence"]}' if r['confidence'] else None,
                     ) if x),
                     'person_labels': pnames,
                     'actions': 'claim',
+                    'excerpt': excerpt,
+                    'cite': ' - '.join(cite_bits) if excerpt else '',
+                    'note': (r['notes'] or '').strip(),
+                    # Raw (not display-formatted) fields so the "edit & accept"
+                    # modal can prefill with the claim's current data instead
+                    # of opening blank (same gap the biography editor already
+                    # had fixed for it).
+                    'claim_type': r['type'] or '', 'value_raw': r['value'] or '',
+                    'date_raw': r['date_edtf'] or '', 'place_text_raw': place_label,
+                    'place_id_raw': fmt_id_display(r['place_id']) if r['place_id'] else '',
+                    'persons_ids': ','.join(fmt_id_display(pid) for pid in people),
                 })
         except Exception:
             pass
@@ -655,17 +696,31 @@ def gather_review(state: ServeState) -> dict:
                         # Register the source so the review page has a slot to
                         # render this item into (its group_source below).
                         sources.setdefault(ca_src, ca.get('source_title') or fmt_id_display(ca_src))
+                    # Wireframe: the chip is the noun, the headline names the
+                    # relation, the pair rows are headed by their SOURCE titles
+                    # (corroboration is about independent sources - hiding
+                    # which two defeats the judgment), and the meta says what
+                    # matched.
+                    noun = 'contradiction' if kind == 'contradicts' else 'corroboration'
+                    verb_word = 'contradict' if kind == 'contradicts' else 'corroborate'
+                    ca_title = ca.get('source_title') or (fmt_id_display(ca_src) if ca_src else 'no source')
+                    cb_src = cb.get('source_id')
+                    cb_title = cb.get('source_title') or (fmt_id_display(cb_src) if cb_src else 'no source')
                     items.append({
-                        'kind': kind,
+                        'kind': noun,
                         'group_source': ca_src or 'unsourced',
                         'group_source_title': ca.get('source_title') or '',
                         'group_persons': [pid] if pid else [],
                         'claim_a': fmt_id_display(ca['id']),
                         'claim_b': fmt_id_display(cb['id']),
-                        'headline': 'Do these two claims relate?',
+                        'headline': f'Do these two claims {verb_word} each other?',
                         'pair_a': f'{ca.get("value") or ca.get("type")} ({fmt_id_display(ca["id"])})',
                         'pair_b': f'{cb.get("value") or cb.get("type")} ({fmt_id_display(cb["id"])})',
-                        'meta': f'proposed by fha xref - {kind} candidate for {pname}',
+                        'pair_a_source': ca_title,
+                        'pair_b_source': cb_title,
+                        'pairs_with': cb_title,
+                        'meta': (f'proposed by fha xref - {noun} candidate for {pname}'
+                                 f' - matched on person + {ca.get("type") or "claim"} type'),
                         'actions': 'xref',
                     })
     except Exception:
@@ -683,25 +738,74 @@ def gather_review(state: ServeState) -> dict:
                 src_id = src_ids[0] if src_ids else None
                 if src_id:
                     sources.setdefault(src_id, fmt_id_display(src_id))
+                src_title = sources.get(src_id, '') if src_id else ''
+                headline = f'{persons[pa]} & {persons[pb]} appear together'
+                if src_title and not src_title.upper().startswith('S-'):
+                    headline += f' in {src_title}'
                 items.append({
                     'kind': 'co-occurrence',
                     'group_source': src_id or 'unsourced',
-                    'group_source_title': sources.get(src_id, '') if src_id else '',
-                    'group_persons': [pa],
+                    'group_source_title': src_title,
+                    # Both people - the by-person view must list the pair under
+                    # each of them (wireframe note: "real serve would list an
+                    # item under every person it touches").
+                    'group_persons': [pa, pb],
                     'person_a': fmt_id_display(pa),
                     'person_b': fmt_id_display(pb),
                     'source_id': fmt_id_display(src_id) if src_id else '',
-                    'headline': f'{persons[pa]} & {persons[pb]} appear together',
-                    'meta': f'{c.get("source_count", 0)} source(s)',
+                    'headline': headline,
+                    'meta': (f'{c.get("source_count", 0)} source(s) - '
+                             f'{fmt_id_display(pa)} & {fmt_id_display(pb)}'),
                     'actions': 'cooccur',
+                    'pair_title': f'{persons[pa]} & {persons[pb]}',
                 })
     except Exception:
         pass
 
+    # A co-occurrence-only source registered above knows only its S-id; give
+    # its section header the real title (wireframe shows the full source title).
+    # Same pass: whether each by-person header's person has a page to link
+    # ('open person', wireframe) and whether they are a stub.
+    person_rows: dict[str, dict] = {}
+    conn2 = open_index_db(root, ('sources', 'persons'), strict=False)
+    if conn2 is not None:
+        try:
+            for sid, t in list(sources.items()):
+                if t != fmt_id_display(sid):
+                    continue
+                row = conn2.execute('SELECT title FROM sources WHERE id = ?', (sid,)).fetchone()
+                if row and row['title']:
+                    sources[sid] = row['title']
+                    # The co-occurrence loop above froze its headline while
+                    # this source was still the S-id placeholder (a
+                    # co-occurrence-only source has no suggested claim to
+                    # register the real title first), which left its intended
+                    # 'in <title>' suffix dead for exactly the case it
+                    # targets - patch those items now that the title exists.
+                    for it in items:
+                        if (it.get('kind') == 'co-occurrence'
+                                and it.get('group_source') == sid):
+                            it['group_source_title'] = row['title']
+                            suffix = f' in {row["title"]}'
+                            if not it['headline'].endswith(suffix):
+                                it['headline'] += suffix
+            for pid in persons:
+                row = conn2.execute('SELECT tier FROM persons WHERE id = ?', (pid,)).fetchone()
+                if row is not None:
+                    person_rows[pid] = {'has_page': True,
+                                        'stub': (row['tier'] or '') == 'stub'}
+        except Exception:
+            pass
+        finally:
+            conn2.close()
+
     return {
         'items': items,
         'sources': [{'id': sid, 'title': t} for sid, t in sources.items()],
-        'persons': [{'id': pid, 'name': n} for pid, n in persons.items()],
+        'persons': [{'id': pid, 'name': n,
+                     'has_page': person_rows.get(pid, {}).get('has_page', False),
+                     'stub': person_rows.get(pid, {}).get('stub', False)}
+                    for pid, n in persons.items()],
     }
 
 
@@ -794,6 +898,23 @@ def gather_inbox(state: ServeState) -> dict:
                 'files': [p.name], 'open_path': rel, 'process_path': rel, 'sidecar': None,
             })
         consumed.add(p.name)
+
+    # Wireframe (inbox.html): each item is annotated in plain language with
+    # the date it landed, not a machine token - 'a capture bundle from the
+    # browser companion, 2026-06-30' beats 'bundle'.
+    kind_phrases = {
+        'bundle': 'a capture bundle (files that belong together)',
+        'asset+note': 'a file with a note beside it',
+        'note': 'loose notes dropped in by hand',
+        'asset': 'a file waiting for context',
+    }
+    for item in items:
+        item['kind_phrase'] = kind_phrases.get(item['kind'], item['kind'])
+        try:
+            target = inbox / item['name'].rstrip('/')
+            item['landed'] = datetime.date.fromtimestamp(target.stat().st_mtime).isoformat()
+        except OSError:
+            item['landed'] = ''
 
     return {'items': items}
 
@@ -963,32 +1084,133 @@ def _echo_set_living(kw):
     return f'fha person set-living {kw.get("person_id", "?")} {kw.get("value", "?")}'
 
 
+def _verb_set_profile_photo(state, kw, dry_run):
+    return person.run_set_profile_photo(
+        state.archive_root, kw.get('person_id', ''), kw.get('value', ''), dry_run=dry_run)
+
+
+def _echo_set_profile_photo(kw):
+    return f'fha person set-profile-photo {kw.get("person_id", "?")} {_q(kw.get("value", "?"))}'
+
+
 def _verb_person_new(state, kw, dry_run):
     return person.run_new(
         state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
         birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run,
+        birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
         # Threaded back in by the workbench's Apply step from the id its own
         # earlier dry-run preview minted and showed the human, so Apply
         # commits exactly that person instead of `run_new` minting a second,
-        # different P-id (P2 codex finding, round 5, PR #30). The CLI
-        # (`fha person new`) never sends this - the schema key exists only
-        # for this verb's own round-trip.
+        # different P-id (P2 codex finding, round 5, PR #30). The mint '+'
+        # next to a claim-named person with no record passes it too, so the
+        # stub REUSES the P-id every claim already points at (plan-17
+        # wireframe: "every claim that names them keeps pointing at them").
         person_id=kw.get('person_id'))
 
 
 def _echo_person_new(kw):
     parts = ['fha person new', _q(kw.get('name', ''))]
-    for flag in ('sex', 'gender', 'birth', 'death'):
-        if kw.get(flag):
-            parts += [f'--{flag}', _q(kw[flag])]
+    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place'):
+        key = flag.replace('-', '_')
+        if kw.get(key):
+            parts += [f'--{flag}', _q(kw[key])]
     return ' '.join(parts)
 
 
+def _verb_add_family(state, kw, dry_run):
+    """The wireframe's combined add-family flow: link an existing person when
+    the lookup resolved one (`target_id`), else mint a stub from the typed
+    name FIRST and relate the subject to the fresh stub - two engine calls,
+    one button, echoing both commands (exactly the wireframe's dry-run,
+    person.html:316-322). The minted id round-trips via data['new_person_id']
+    so Apply commits the same stub the preview showed.
+
+    Both paths relate with reciprocal=True (owner decision, review
+    2026-07-16): the tie lands on BOTH records - subject and existing person,
+    or subject and fresh stub - so it shows from either person's page. The
+    flag is written into `kw` so the CLI echo names it."""
+    kw['reciprocal'] = True
+    target = str(kw.get('target_id') or '').strip()
+    if target:
+        return person.run_relate(
+            state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
+            target, reciprocal=True, dry_run=dry_run)
+    name = str(kw.get('name') or '').strip()
+    minted = person.run_new(
+        state.archive_root, name, sex=kw.get('sex'), gender=kw.get('gender'),
+        birth=kw.get('birth'), death=kw.get('death'),
+        birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
+        dry_run=dry_run, person_id=kw.get('new_person_id'))
+    if not minted.ok or not minted.data.get('person_id'):
+        return minted
+    new_pid = minted.data['person_id']
+    minted.data['new_person_id'] = new_pid
+    # Dry-run: the stub does not exist on disk yet, so run_relate would refuse
+    # the target as unknown - narrate the second step instead of running it.
+    # Live: the stub was just written, so the relate runs for real.
+    if dry_run:
+        minted.add('info',
+                   f'[dry-run] Would then record {kw.get("relation_type", "?")}: '
+                   f'{new_pid} on {kw.get("person_id", "?")} as a hypothesis '
+                   '(unsourced family-tie belief, SPEC §9), and the mirror-image '
+                   'tie on the new record - it shows from both pages.')
+        return minted
+    related = person.run_relate(
+        state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
+        new_pid, reciprocal=True, dry_run=False)
+    for m in related.messages:
+        minted.messages.append(m)
+    for p in related.changed:
+        minted.note_changed(p)
+    if not related.ok:
+        minted.ok = False
+        minted.exit_code = max(minted.exit_code, related.exit_code)
+        # The combined action failed halfway: the stub is on disk but the tie
+        # it was minted FOR was refused (stale subject page, merged person,
+        # bad relation - run_relate itself is all-or-nothing, so `changed`
+        # empty means the tie landed nowhere). A failed apply must not leave
+        # the archive mutated (P2 codex finding, round 1, PR #31): unlink the
+        # stub written moments ago and report the roll-back, so the human
+        # retries from a clean state instead of collecting orphan records.
+        if not related.changed:
+            stub_path = Path(str(minted.data.get('path') or ''))
+            if stub_path.is_file():
+                with contextlib.suppress(OSError):
+                    stub_path.unlink()
+            if not stub_path.exists():
+                minted.changed = [c for c in minted.changed if c != str(stub_path)]
+                minted.data['status'] = 'refused'
+                minted.data['new_person_id'] = None
+                minted.add('info',
+                           'The new record was rolled back - the family link it '
+                           'was created for could not be recorded, so nothing '
+                           'was kept.')
+    return minted
+
+
+def _echo_add_family(kw):
+    if str(kw.get('target_id') or '').strip():
+        return _echo_relate(kw)
+    mint = _echo_person_new(kw)
+    rel = (f'fha person relate {kw.get("person_id", "?")} '
+           f'--{kw.get("relation_type", "sibling")} <new P-id> --reciprocal')
+    return f'{mint} && {rel}'
+
+
 def _verb_relate(state, kw, dry_run):
+    """Record an unsourced family tie - mirrored on BOTH records by default.
+
+    The workbench default is reciprocal=True (owner decision, review
+    2026-07-16): a tie written to one file only shows on one person's page
+    only, which reads as silent failure from the other tab. An explicit
+    {"reciprocal": false} still records a one-sided belief. The effective
+    value is written back into `kw` so the CLI echo shows the --reciprocal
+    that actually ran."""
+    kw['reciprocal'] = bool(kw.get('reciprocal', True))
     return person.run_relate(
         state.archive_root, kw.get('person_id', ''), kw.get('relation_type', ''),
         kw.get('target_id', ''), subtype=kw.get('subtype'),
-        reciprocal=bool(kw.get('reciprocal', False)), dry_run=dry_run)
+        reciprocal=kw['reciprocal'], dry_run=dry_run)
 
 
 def _echo_relate(kw):
@@ -1004,15 +1226,21 @@ def _echo_relate(kw):
 def _verb_estimate(state, kw, dry_run):
     return person.run_estimate(
         state.archive_root, kw.get('person_id', ''),
-        birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run)
+        birth=kw.get('birth'), death=kw.get('death'),
+        birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
+        dry_run=dry_run)
 
 
 def _echo_estimate(kw):
     parts = ['fha person estimate', kw.get('person_id', '?')]
     if kw.get('birth'):
         parts += ['--birth', _q(kw['birth'])]
+    if kw.get('birth_place'):
+        parts += ['--birth-place', _q(kw['birth_place'])]
     if kw.get('death'):
         parts += ['--death', _q(kw['death'])]
+    if kw.get('death_place'):
+        parts += ['--death-place', _q(kw['death_place'])]
     return ' '.join(parts)
 
 
@@ -1041,6 +1269,18 @@ def _echo_person_note(kw):
             f'{kw.get("section", "?")} --text {_q(kw.get("text", ""))}')
 
 
+def _verb_person_edit_note(state, kw, dry_run):
+    return person.run_edit_note(
+        state.archive_root, kw.get('person_id', ''), kw.get('section', ''),
+        old_text=kw.get('old_text', ''), text=kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_person_edit_note(kw):
+    return (f'fha person edit-note {kw.get("person_id", "?")} --section '
+            f'{kw.get("section", "?")} --old-text {_q(kw.get("old_text", ""))} '
+            f'--text {_q(kw.get("text", ""))}')
+
+
 def _verb_source_note(state, kw, dry_run):
     return source_mod.run_source_note(
         state.archive_root, kw.get('source_id', ''), text=kw.get('text', ''), dry_run=dry_run)
@@ -1048,6 +1288,17 @@ def _verb_source_note(state, kw, dry_run):
 
 def _echo_source_note(kw):
     return f'fha source note {kw.get("source_id", "?")} --text {_q(kw.get("text", ""))}'
+
+
+def _verb_source_edit_note(state, kw, dry_run):
+    return source_mod.run_source_edit_note(
+        state.archive_root, kw.get('source_id', ''),
+        old_text=kw.get('old_text', ''), text=kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_source_edit_note(kw):
+    return (f'fha source edit-note {kw.get("source_id", "?")} '
+            f'--old-text {_q(kw.get("old_text", ""))} --text {_q(kw.get("text", ""))}')
 
 
 # ── Per-thread stdout/stderr routing (process.py's own prints) ────────────────
@@ -1103,6 +1354,68 @@ def _classify_captured_line(line: str) -> str:
     if line.startswith('WARNING'):
         return 'warning'
     return 'info'
+
+
+def _verb_place_set(state, kw, dry_run):
+    """Registry place edit (coordinates / aka / names-over-time) - the place
+    page's edit buttons. The three modals share this one verb, each sending
+    only its own field(s); the engine replaces exactly the fields given.
+    The dry-run preview + the human's own Apply ARE the confirmation the
+    AGENTS.md coordinate rule requires (see places.py's write-backs section)."""
+    coords = None
+    if str(kw.get('lat') or '').strip() or str(kw.get('lon') or '').strip():
+        coords = f"{kw.get('lat', '')}, {kw.get('lon', '')}"
+    aka = kw.get('aka')
+    history = kw.get('history')
+    return places_mod.run_place_set(
+        state.archive_root, kw.get('place_id', ''),
+        coords=coords,
+        # One alias per LINE (the modal's textarea) - never a comma split,
+        # which silently rewrote a single "Washington, D.C." into two
+        # aliases on an untouched round-trip (P2 codex finding, round 2,
+        # PR #31). Mirrors the CLI's repeatable, verbatim --aka.
+        aka=[a.strip() for a in str(aka).split('\n')] if aka is not None else None,
+        history=str(history).split('\n') if history is not None else None,
+        dry_run=dry_run)
+
+
+def _echo_place_set(kw):
+    parts = ['fha places set', kw.get('place_id', '?')]
+    if str(kw.get('lat') or '').strip() or str(kw.get('lon') or '').strip():
+        parts += ['--coords', _q(f'{kw.get("lat", "")}, {kw.get("lon", "")}')]
+    if kw.get('aka') is not None:
+        names = [n.strip() for n in str(kw['aka']).split('\n') if n.strip()]
+        for name in names:
+            parts += ['--aka', _q(name)]
+        if not names:   # an emptied textarea clears the list - `--aka -` is the CLI spelling
+            parts += ['--aka', '-']
+    if kw.get('history') is not None:
+        lines = [ln.strip() for ln in str(kw['history']).split('\n') if ln.strip()]
+        for line in lines:
+            parts += ['--history', _q(line)]
+        if not lines:
+            parts += ['--history', '-']
+    return ' '.join(parts)
+
+
+def _verb_place_note(state, kw, dry_run):
+    return places_mod.run_place_note(
+        state.archive_root, kw.get('place_id', ''), kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_place_note(kw):
+    return f'fha places note {kw.get("place_id", "?")} --text {_q(kw.get("text", ""))}'
+
+
+def _verb_place_edit_note(state, kw, dry_run):
+    return places_mod.run_place_edit_note(
+        state.archive_root, kw.get('place_id', ''),
+        kw.get('old_text', ''), kw.get('text', ''), dry_run=dry_run)
+
+
+def _echo_place_edit_note(kw):
+    return (f'fha places edit-note {kw.get("place_id", "?")} '
+            f'--old-text {_q(kw.get("old_text", ""))} --text {_q(kw.get("text", ""))}')
 
 
 def _verb_process(state, kw, dry_run):
@@ -1231,7 +1544,20 @@ def _echo_capture_path(kw):
 
 def _verb_publish(state, kw, dry_run):
     out_dir = state.archive_root / 'generated' / 'site'
-    return state.site_mod.run_site(state.archive_root, out_dir, linked=False, dry_run=dry_run)
+    result = state.site_mod.run_site(state.archive_root, out_dir, linked=False, dry_run=dry_run)
+    if dry_run:
+        # Wireframe (home.html Publish dry run): tell the human when the
+        # shareable snapshot was last built, so "rebuild or not" is judgeable.
+        try:
+            marker = out_dir / 'index.html'
+            if marker.is_file():
+                built = datetime.date.fromtimestamp(marker.stat().st_mtime).isoformat()
+                result.add('info', f'Last built: {built}.')
+            else:
+                result.add('info', 'Never built yet - this will be the first snapshot.')
+        except OSError:
+            pass
+    return result
 
 
 def _echo_publish(kw):
@@ -1316,20 +1642,49 @@ VERBS: dict[str, dict] = {
                         'run': _verb_dismiss, 'echo': _echo_dismiss, 'reindex': 'none'},
     'person.set-living': {'schema': {'person_id': 'str', 'value': 'str'},
                           'run': _verb_set_living, 'echo': _echo_set_living, 'reindex': 'full'},
+    'person.set-profile-photo': {'schema': {'person_id': 'str', 'value': 'str'},
+                                 'run': _verb_set_profile_photo, 'echo': _echo_set_profile_photo,
+                                 'reindex': 'full'},
     'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
-                             'birth': 'str', 'death': 'str', 'person_id': 'str'},
+                             'birth': 'str', 'death': 'str', 'person_id': 'str',
+                             'birth_place': 'str', 'death_place': 'str'},
                    'run': _verb_person_new, 'echo': _echo_person_new, 'reindex': 'full'},
     'person.relate': {'schema': {'person_id': 'str', 'relation_type': 'str', 'target_id': 'str',
                                 'subtype': 'str', 'reciprocal': 'bool'},
                       'run': _verb_relate, 'echo': _echo_relate, 'reindex': 'full'},
-    'person.estimate': {'schema': {'person_id': 'str', 'birth': 'str', 'death': 'str'},
+    # The wireframe's combined add-family: link an existing person, or mint a
+    # stub from a typed name and relate to it in one apply (two engine calls,
+    # both echoed - the wireframe's own dry-run shows two commands).
+    'person.add_family': {'schema': {'person_id': 'str', 'relation_type': 'str',
+                                    'target_id': 'str', 'name': 'str', 'sex': 'str',
+                                    'gender': 'str', 'birth': 'str', 'birth_place': 'str',
+                                    'death': 'str', 'death_place': 'str',
+                                    'new_person_id': 'str'},
+                          'run': _verb_add_family, 'echo': _echo_add_family, 'reindex': 'full'},
+    'person.estimate': {'schema': {'person_id': 'str', 'birth': 'str', 'death': 'str',
+                                  'birth_place': 'str', 'death_place': 'str'},
                         'run': _verb_estimate, 'echo': _echo_estimate, 'reindex': 'full'},
     'person.edit': {'schema': {'person_id': 'str', 'section': 'str', 'text': 'str', 'append': 'bool'},
                     'run': _verb_person_edit, 'echo': _echo_person_edit, 'reindex': 'full'},
     'person.note': {'schema': {'person_id': 'str', 'section': 'str', 'text': 'str'},
                     'run': _verb_person_note, 'echo': _echo_person_note, 'reindex': 'full'},
+    'person.edit_note': {'schema': {'person_id': 'str', 'section': 'str',
+                                    'old_text': 'str', 'text': 'str'},
+                         'run': _verb_person_edit_note, 'echo': _echo_person_edit_note,
+                         'reindex': 'full'},
     'source.note': {'schema': {'source_id': 'str', 'text': 'str'},
                     'run': _verb_source_note, 'echo': _echo_source_note, 'reindex': 'source'},
+    'source.edit_note': {'schema': {'source_id': 'str', 'old_text': 'str', 'text': 'str'},
+                         'run': _verb_source_edit_note, 'echo': _echo_source_edit_note,
+                         'reindex': 'source'},
+    'place.set': {'schema': {'place_id': 'str', 'lat': 'str', 'lon': 'str',
+                             'aka': 'str', 'history': 'str'},
+                  'run': _verb_place_set, 'echo': _echo_place_set, 'reindex': 'full'},
+    'place.note': {'schema': {'place_id': 'str', 'text': 'str'},
+                   'run': _verb_place_note, 'echo': _echo_place_note, 'reindex': 'full'},
+    'place.edit_note': {'schema': {'place_id': 'str', 'old_text': 'str', 'text': 'str'},
+                        'run': _verb_place_edit_note, 'echo': _echo_place_edit_note,
+                        'reindex': 'full'},
     'process.file': {'schema': {'file': 'str', 'source_type': 'str', 'title': 'str', 'slug': 'str',
                                 'source_id': 'str'},
                      'run': _verb_process, 'echo': _echo_process, 'reindex': 'full'},
@@ -1697,6 +2052,15 @@ def run_api_upload(state: ServeState, filename: str, data: bytes,
     else:
         payload = _msg_payload(True, f'added inbox/{dest.name}'
                                + (' with a note beside it' if len(written) > 1 else ''))
+        # Wireframe (inbox.html Applied step): say what happens next, not just
+        # what landed - the guidance is the difference between an inbox that
+        # teaches and a bare confirmation.
+        payload['messages'].append({
+            'level': 'info',
+            'text': 'It waits there until you click "File as a source...", run '
+                    '`fha process`, or ask Claude to process the inbox.',
+            'next_step': None,
+        })
     if snapshot_error is not None:
         payload['messages'].append({
             'level': 'warning',
@@ -1761,6 +2125,61 @@ def run_api_open(state: ServeState, path: str) -> tuple[int, dict]:
     except Exception as e:  # noqa: BLE001
         return 500, _msg_payload(False, f'could not open the file ({e}). Open it from Explorer instead.')
     return 200, _msg_payload(True, f'opened {resolved.name} in your usual editor.')
+
+
+# The tkinter one-shot behind /api/pickfile. Runs in a SUBPROCESS, not this
+# process: Tk is not thread-safe, and every serve request runs on its own
+# thread - a fresh interpreter per pick sidesteps the whole class of
+# Tk-reused-across-threads crashes for the price of one process spawn.
+# The chosen path is the subprocess's single stdout line ('' on cancel).
+_PICKFILE_SNIPPET = (
+    'import tkinter, tkinter.filedialog\n'
+    'root = tkinter.Tk()\n'
+    'root.withdraw()\n'
+    'root.attributes("-topmost", True)\n'
+    'print(tkinter.filedialog.askopenfilename(parent=root) or "")\n'
+)
+
+
+def run_api_pickfile(state: ServeState) -> tuple[int, dict]:
+    """Open the OS's own file-picker window and return the chosen path.
+
+    Exists because a browser cannot hand a page the full path of a local
+    file (a security rule of every browser) - but the register-by-path flow
+    needs exactly that path, unmoved and uncopied. serve runs on the same
+    machine as the browser, so IT opens the native dialog and passes the
+    choice back. Nothing is read, moved, or registered here - the path just
+    lands in the form field, and registering still goes through the normal
+    capture.path preview/apply.
+
+    One dialog at a time (`state.pick_lock`); a second click while one is
+    open gets a plain pointer to the existing window rather than a stack of
+    dialogs. Machines without tkinter (some minimal Pythons) get a plain
+    "type the path instead" - the text field keeps working either way."""
+    import subprocess
+    if not state.pick_lock.acquire(blocking=False):
+        return 200, _msg_payload(False, 'a file-picker window is already open - look for it '
+                                        'on your desktop (it may be behind this window).')
+    try:
+        proc = subprocess.run(
+            [sys.executable, '-c', _PICKFILE_SNIPPET],
+            capture_output=True, text=True, timeout=600,
+        )
+        if proc.returncode != 0:
+            return 200, _msg_payload(False, 'this computer could not open a file-picker window. '
+                                            'Type or paste the full path into the field instead.')
+        path = (proc.stdout or '').strip()
+        payload = _msg_payload(True, f'picked {path}' if path else 'no file chosen.')
+        payload['data'] = {'path': path}
+        return 200, payload
+    except subprocess.TimeoutExpired:
+        return 200, _msg_payload(False, 'the file-picker window sat unanswered for 10 minutes '
+                                        'and was closed. Click browse again, or type the path.')
+    except Exception as e:  # noqa: BLE001 - a picker failure becomes a plain message
+        return 200, _msg_payload(False, f'could not open a file picker ({e}). Type or paste '
+                                        'the full path into the field instead.')
+    finally:
+        state.pick_lock.release()
 
 
 def _os_open(path: Path) -> None:
@@ -1930,6 +2349,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_upload()
             elif path == '/api/open':
                 self._handle_open()
+            elif path == '/api/pickfile':
+                self._handle_pickfile()
             elif path == '/api/reindex':
                 self._handle_reindex()
             else:
@@ -2000,6 +2421,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         filename, data = parsed['file']
         text = parsed['text']
+        # Wireframe: the File field is editable, so 'IMG_2043.jpg' can land as
+        # a meaningful name. A typed override goes through the exact same
+        # `_sanitize_basename` confinement as the multipart name.
+        typed = (text.get('filename') or '').strip()
+        if typed:
+            filename = typed
         code, payload = run_api_upload(self.state, filename, data,
                                        what=text.get('what', ''), who=text.get('who', ''))
         self._send_json(code, payload)
@@ -2012,6 +2439,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, _msg_payload(False, 'the request body was not valid JSON.'))
             return
         code, payload = run_api_open(self.state, req.get('path', ''))
+        self._send_json(code, payload)
+
+    def _handle_pickfile(self) -> None:
+        # No fields are read from the body, but it must still be drained so a
+        # stray Content-Length can't desync the next keep-alive request (see
+        # `_read_body`'s docstring - same shape as `_handle_reindex`).
+        body = self._read_body(cap=64 * 1024)
+        if body is None:
+            self._send_json(413, _msg_payload(False, 'request too large.'))
+            return
+        code, payload = run_api_pickfile(self.state)
         self._send_json(code, payload)
 
     def _handle_reindex(self) -> None:
@@ -2038,7 +2476,13 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 20
         limit = max(1, min(limit, 50))
-        kinds = [k.strip() for k in kind_raw.split(',')] if kind_raw else None
+        # Same validation the CLI's --kind gets: an unknown kind is a plain
+        # 400 naming the valid list, never a silent empty result set (the
+        # "unknown verb is a plain 400" rule; catches a typo'd data-wb-kind).
+        kinds, kind_err = find_mod._parse_kind_filter(kind_raw or None)
+        if kind_err is not None:
+            self._reject(400, kind_err)
+            return
         results = find_mod.search_json(self.state.archive_root, self.state.fha_config,
                                        q, kinds=kinds, limit=limit)
         self._send_json(200, {'results': results})

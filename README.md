@@ -194,7 +194,11 @@ the milestone 8 static-site generator (`fha site`), the milestone 9
 scaffolding tools (`fha install`/`fha update-tools`), and the milestone 10 working-copy mode (`fha working-copy`).
 Plan 17 (2026-07) added a second front door onto the same tools: `fha serve`, the localhost
 workbench, plus the write-back verbs it drives - `fha claim new`, `fha person new`/`relate`/
-`estimate`/`edit`/`note`, `fha source note`, and `fha find --json`. See `BUILD.md` for the detailed
+`estimate`/`edit`/`note`, `fha source note`, and `fha find --json`. The 2026-07 live review
+round added per-entry note edits (`fha person edit-note`, `fha source edit-note`), the
+human-directed place registry edits (`fha places set`/`note`, with an embedded map and
+research notes on place pages), and workbench conveniences (native file picker,
+reciprocal-by-default family ties). See `BUILD.md` for the detailed
 milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)

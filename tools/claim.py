@@ -4,12 +4,12 @@ claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8
 
   fha claim <C-id> --status accepted|disputed|rejected|needs-review|superseded
                    [--reviewed DATE] [--value "…"] [--date EDTF]
-                   [--type TYPE] [--place L-id | --place-text TEXT]
+                   [--type TYPE] [--place L-id] [--place-text TEXT]
                    [--persons P-id[,P-id...]] [--confidence high|medium|low]
                    [--root PATH] [--dry-run]
 
   fha claim new --source S-id --type TYPE --value TEXT [--date DATE]
-                [--place L-id | --place-text TEXT] [--persons P-id[,P-id...]]
+                [--place L-id] [--place-text TEXT] [--persons P-id[,P-id...]]
                 [--subtype WORD] [--status suggested|accepted]
                 [--confidence high|medium|low] [--dry-run] [--root PATH]
 
@@ -279,7 +279,7 @@ def _validate_field_args(
     `--place`/`--place-text`/`--persons`/`--confidence`/`--date` arguments and
     refuse each malformed value with byte-identical wording; this is the one
     copy of those five checks so the strings cannot drift. The checks run in a
-    fixed order - place/place_text exclusivity, confidence vocabulary, date
+    fixed order - confidence vocabulary, date
     shape, place L-id shape, persons shape + resolvability - matching the order
     `run_claim_new` already used; `run_claim` calls this after its own
     status/type checks, which nudges (only) where its confidence refusal fires
@@ -295,10 +295,11 @@ def _validate_field_args(
         (possibly empty), else None. `run_claim` keeps None as "leave the
         list alone"; `run_claim_new` treats None as the empty list.
     """
-    if place is not None and place_text is not None:
-        return _fail(result, 'failed',
-                     '--place and --place-text are mutually exclusive - use one or the other.'), None, None
-
+    # --place and --place-text may be given together: they are DIFFERENT
+    # facts, not two spellings of one (SPEC §15 - `place:` is the normalized
+    # registry link, `place_text:` the place as written in the source; the
+    # elevation flow's whole point is a claim carrying both). Each flag only
+    # ever touches its own key - see _apply_claim_review.
     if confidence is not None and confidence not in CONFIDENCE_VALUES:
         return _fail(result, 'failed',
                      f'{confidence!r} is not a confidence level. confidence records evidence '
@@ -314,8 +315,8 @@ def _validate_field_args(
     if place is not None and not (is_valid_id(place) and id_type_of(place) == 'L'):
         return _fail(result, 'failed',
                      f'--place {place!r} is not a valid place ID. L-ids look like '
-                     'L-baba9801fa. For a place written a different way, use --place-text '
-                     'instead.'), None, None
+                     'L-baba9801fa. For the place as the source wrote it, use '
+                     '--place-text (the two may be given together).'), None, None
 
     persons_norm: list[str] | None = None
     if persons is not None:
@@ -468,15 +469,12 @@ def _apply_claim_review(
     is only ever passed together with `status` - the caller enforces that, so
     this function does not need to.
 
-    `place`/`place_text` are mutually exclusive in a well-formed claim (the
-    caller validates that); setting one here removes the other if present, so
-    `--place` after an existing `place_text:` leaves the block with exactly
-    one place key, never both. That removal is done UP FRONT, before any line
-    index (status_idx/anchor) is computed - a deletion shifts every following
-    line, so removing after the anchors were fixed would leave a later
-    `insert_after` splicing a key into the wrong place (see the removal block
-    for the corruption this prevents). `persons` REPLACES the whole `persons:`
-    list (not append) - the caller pre-validates every P-id resolves to a record.
+    `place`/`place_text` are independent keys (SPEC §15: the normalized link
+    and the source-as-written wording legally coexist - elevation backfills
+    `place:` while never altering `place_text:`), so each argument sets only
+    its own key and never removes the other. `persons` REPLACES the whole
+    `persons:` list (not append) - the caller pre-validates every P-id
+    resolves to a record.
 
     Edits land at the item's OWN key column, derived from its lines
     (`claim_item_key_indent`): a claim legally written `-   value: farmer` keeps
@@ -628,36 +626,17 @@ def _apply_claim_review(
         item.insert(pos, f'{key_indent}{key}: {value_text}')
         return pos
 
-    def remove_key(key: str) -> None:
-        """Delete one top-level item key entirely - its header line AND any
-        block-style continuation lines it owns (dash or indented form), if
-        present. Used for the place/place_text switch below; a claim legally
-        has `value:` (never place/place_text) as its first/dash key, so this
-        never removes the dash line in practice - and if a hand-edited claim
-        somehow did put place/place_text there, the pre-write guard
-        (`claims_edit_problem`, run by the caller) would catch the resulting
-        malformed block and refuse rather than save it."""
-        idx, _kind, _ = find_key(key)
-        if idx is not None:
-            del item[idx:_value_span_end(idx)]
-
-    # Drop the mutually-exclusive place key FIRST, before any index is
-    # computed. A deletion shifts every following line up by one, so a
-    # remove_key run after status_idx/anchor were fixed would leave those
-    # indices pointing one line too low, and a later insert_after would then
-    # splice a key into the wrong place. That was the 2026-07 stale-anchor
-    # corruption: `--place` against a claim whose `place_text:` sat above a
-    # `notes: |` block spliced `place:` between `notes:` and its continuation
-    # lines - the note silently emptied, its text folded into the place value,
-    # and the block still parsed, so the pre-write guard let it through.
-    # Removing up front, before status_idx/anchor exist, keeps every index
-    # below consistent with the item list the inserts actually mutate.
-    # `place`/`place_text` are mutually exclusive in a well-formed claim, so at
-    # most one of these two removals ever touches a line.
-    if place is not None:
-        remove_key('place_text')
-    if place_text is not None:
-        remove_key('place')
+    # `place:` and `place_text:` are DIFFERENT facts - the normalized
+    # registry link and the place as the source wrote it - and a claim
+    # legally carries both (SPEC §15: elevation backfills `place:` per
+    # claim while "`place_text` itself is never altered"). Each flag below
+    # therefore touches ONLY its own key. This replaces the earlier
+    # switch-removes-the-other behavior, which made any `--place` edit
+    # (including the workbench's untouched-fields claim edit, P2 codex
+    # finding, round 4, PR #31) silently erase the source's own wording.
+    # With no up-front deletion, no line index computed below can go stale
+    # (the 2026-07 stale-anchor corruption came from deleting AFTER anchors
+    # were fixed; there is no deletion at all now).
 
     # 3. status (required on every valid claim). status is now OPTIONAL here
     # (2026-07 compat change: a field-only edit is legal on its own) - when
@@ -694,14 +673,14 @@ def _apply_claim_review(
         else:
             anchor = set_scalar('type', type_, insert_after=anchor)
     if place is not None:
-        # The mutually-exclusive place_text was already removed up front.
+        # Any existing place_text: stays untouched (SPEC §15).
         place_idx, _place_kind, _ = find_key('place')
         if place_idx is not None:
             set_scalar('place', place, insert_after=place_idx)
         else:
             anchor = set_scalar('place', place, insert_after=anchor)
     if place_text is not None:
-        # The mutually-exclusive place was already removed up front.
+        # Any existing place: link stays untouched (SPEC §15).
         pt_idx, _pt_kind, _ = find_key('place_text')
         if pt_idx is not None:
             set_scalar('place_text', _yaml_inline(place_text), insert_after=pt_idx)
@@ -782,8 +761,9 @@ def run_claim(
     before - passing `reviewed` without `status` is refused rather than
     silently ignored, so a human is never left wondering why a date they typed
     did not land. `claim_type == 'relationship'` is refused (see
-    `_claim_type_problem`); `place`/`place_text` are mutually exclusive and
-    each replaces the other's key when switching; `persons` REPLACES the whole
+    `_claim_type_problem`); `place`/`place_text` are independent keys (SPEC
+    §15) - each sets only its own, never removing the other, and both may be
+    given together; `persons` REPLACES the whole
     list and every P-id must already resolve to a record (SPEC §9) or the call
     refuses naming the missing id and the fix. The success message names the
     re-index next step (`fha index`).
@@ -1044,7 +1024,9 @@ def _render_new_claim_lines(
         lines.append(f'  date: {date}')
     if place:
         lines.append(f'  place: {fmt_id_display(normalize_id(place))}')
-    elif place_text:
+    if place_text:
+        # Not an elif: the registry link and the source-as-written wording
+        # are different facts and legally coexist on one claim (SPEC §15).
         lines.append(f'  place_text: {_yaml_inline(place_text)}')
     lines.append(f'  status: {status}')
     lines.append(f'  confidence: {confidence}')
@@ -1332,13 +1314,13 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--type', dest='claim_type', metavar='TYPE', choices=sorted(CLAIM_TYPES),
                    help='Optionally correct the claim type (SPEC §8.2). Changing TO '
                         'relationship is refused - see `fha claim --help`.')
-    place_group = p.add_mutually_exclusive_group()
-    place_group.add_argument('--place', metavar='L-id',
-                             help='Optionally set the place by its registry id - replaces '
-                                  'place_text if one is set.')
-    place_group.add_argument('--place-text', metavar='TEXT', dest='place_text',
-                             help='Optionally set the place as free text - replaces place '
-                                  'if one is set.')
+    p.add_argument('--place', metavar='L-id',
+                   help='Optionally set the normalized place link. An existing '
+                        'place_text: (the place as the source wrote it) is left '
+                        'untouched - the two coexist (SPEC §15).')
+    p.add_argument('--place-text', metavar='TEXT', dest='place_text',
+                   help='Optionally set the place as written in the source. An '
+                        'existing place: link is left untouched.')
     p.add_argument('--persons', metavar='P-id[,P-id...]',
                    help='Optionally REPLACE the whole persons: list, comma-separated P-ids '
                         '(every id must already have a person record).')
@@ -1360,11 +1342,11 @@ def _add_new_arguments(p: argparse.ArgumentParser) -> None:
                    help='The human-readable summary of the assertion.')
     p.add_argument('--date', metavar='DATE',
                    help='When it happened - EDTF (1880-06-15) or plain words like "about 1880".')
-    place_group = p.add_mutually_exclusive_group()
-    place_group.add_argument('--place', metavar='L-id',
-                             help='The place, by its registry id (e.g. L-baba9801fa).')
-    place_group.add_argument('--place-text', metavar='TEXT', dest='place_text',
-                             help='The place as written in the source, when it has no L-id yet.')
+    p.add_argument('--place', metavar='L-id',
+                   help='The place, by its registry id (e.g. L-baba9801fa).')
+    p.add_argument('--place-text', metavar='TEXT', dest='place_text',
+                   help='The place as written in the source - alone when it has no '
+                        'L-id yet, or beside --place to keep the wording too.')
     p.add_argument('--persons', metavar='P-id[,P-id...]',
                    help='Who the claim is about, comma-separated P-ids. Optional, but lint '
                         'will flag the claim until at least one is linked.')

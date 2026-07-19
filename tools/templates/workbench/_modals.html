@@ -36,6 +36,7 @@
         <option>census</option><option>occupation</option><option>education</option>
         <option>military</option><option>immigration</option><option>divorce</option>
         <option>name</option><option>event</option><option>note</option>
+        <option value="" disabled>relationship - not editable here (needs a roles: map; use relate / cooccur)</option>
       </select>
     </div>
     <div class="wb-field">
@@ -56,7 +57,7 @@
       </div>
     </div>
     <div class="wb-field">
-      <label>People <span class="wb-optional">(P-ids, comma-separated)</span></label>
+      <label>People <span class="wb-optional">(pick from the search, or paste P-ids comma-separated)</span></label>
       <input type="text" name="persons" class="wb-target wb-multi" data-wb-refmode="id" value="">
       <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a person&hellip;</button>
       <div class="wb-lookup" hidden>
@@ -123,13 +124,21 @@
     <div class="wb-row2">
       <div class="wb-field"><label>Born <span class="wb-optional">(optional, unsourced)</span></label>
         <input type="text" name="birth" value=""></div>
+      <div class="wb-field"><label>Birth place <span class="wb-optional">(optional)</span></label>
+        <input type="text" name="birth_place" value=""></div>
+    </div>
+    <div class="wb-row2">
       <div class="wb-field"><label>Died <span class="wb-optional">(optional, unsourced)</span></label>
         <input type="text" name="death" value=""></div>
+      <div class="wb-field"><label>Death place <span class="wb-optional">(optional)</span></label>
+        <input type="text" name="death_place" value=""></div>
     </div>
-    <p class="note">This person is already named by the archive's claims - they just have no
-      record of their own yet. A stub gives them a page and a home for notes and stories; every
-      claim that names them keeps pointing at them. Any vitals you add here are <em>unsourced</em>
-      (family knowledge) until a record backs them.</p>
+    <p class="note">Opened from the <em>+</em> next to a name the archive's claims already
+      mention? The stub is written under that person's existing P-id, so every claim naming
+      them keeps pointing at them. Opened from a blank "Add a person&hellip;"? A brand-new P-id
+      is minted - an independent new person. Either way the stub gives them a page and a home
+      for notes and stories, and any vitals you add here are <em>unsourced</em> (family
+      knowledge) until a record backs them.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
@@ -138,16 +147,21 @@
 </template>
 
 {# --- add a family member (relate; mint separately) --- #}
-<template id="tpl-add-family" data-wb-verb="person.relate" data-wb-build="add_family">
+<template id="tpl-add-family" data-wb-verb="person.add_family" data-wb-build="add_family">
   <div class="wb-step">
     <p class="wb-kicker">Add a family member</p>
     <h3>Who, and how do you know?</h3>
     <div class="wb-field">
-      <label>Existing person (search)</label>
-      <input type="text" name="target_id" class="wb-target" data-wb-refmode="id" value="">
-      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; already in the archive? link the existing person</button>
+      <label>Full name</label>
+      <input type="text" name="name" class="wb-target wb-plain" value="" placeholder="Type a name - or pick an existing person from the search below">
+      <input type="hidden" name="target_id" data-wb-idfield="name">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; already in the archive? link to the existing person instead</button>
       <div class="wb-lookup" hidden>
-        <input type="text" class="wb-lookup-q" placeholder="Search existing people&hellip;" data-wb-kind="person">
+        {# data-wb-nocreate: no generic '+ create' row here - it opens the
+           standalone mint modal, which closes THIS one and would create a
+           stub with no family tie. This modal's own typed-name path is the
+           create: leave the name typed above and Apply mints AND links. #}
+        <input type="text" class="wb-lookup-q" placeholder="Search existing people&hellip;" data-wb-kind="person" data-wb-nocreate>
         <ul class="wb-lookup-results"></ul>
       </div>
     </div>
@@ -158,10 +172,35 @@
         <option>spouse</option><option>child</option>
       </select>
     </div>
-    <p class="note">No record names this tie yet, so it is recorded as a <em>hypothesis</em> on
-      this person's record. When a record proves it, the hypothesis graduates to a sourced
-      relationship claim (accepted in Review, like the census ones were). Not in the archive yet?
-      Mint them first with the <em>+</em> next to their name, then come back and link.</p>
+    <div class="wb-field">
+      <label>Sex / gender <span class="wb-optional">(optional)</span></label>
+      <select name="sex">
+        <option selected>Unknown</option><option>Male</option><option>Female</option>
+        <option>Intersex</option><option value="Other">Other&hellip;</option>
+      </select>
+    </div>
+    <div class="wb-field" data-wb-showif="sex:Other">
+      <label>Gender <span class="wb-optional">(free text)</span></label>
+      <input type="text" name="gender_other" value="">
+    </div>
+    <div class="wb-row2">
+      <div class="wb-field"><label>Born <span class="wb-optional">(optional, unsourced)</span></label>
+        <input type="text" name="birth" value=""></div>
+      <div class="wb-field"><label>Birth place <span class="wb-optional">(optional)</span></label>
+        <input type="text" name="birth_place" value=""></div>
+    </div>
+    <div class="wb-row2">
+      <div class="wb-field"><label>Died <span class="wb-optional">(optional, unsourced)</span></label>
+        <input type="text" name="death" value=""></div>
+      <div class="wb-field"><label>Death place <span class="wb-optional">(optional)</span></label>
+        <input type="text" name="death_place" value=""></div>
+    </div>
+    <p class="note">A typed name mints a new stub AND records the tie in one go; a pick from
+      the search links the existing person instead (the vitals fields above only apply to a
+      brand-new stub). Either way the tie is recorded as a <em>hypothesis</em> on BOTH
+      records - add John as Jane's spouse and it shows from John's page too. When a record
+      proves it, the hypothesis graduates to a sourced relationship claim (accepted in
+      Review, like the census ones were).</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
@@ -182,7 +221,7 @@
       </select>
     </div>
     <div class="wb-field" data-wb-showif="mtype:Married">
-      <label>Spouse</label>
+      <label>Spouse <span class="wb-optional">(pick from the lookup, or paste a P-id)</span></label>
       <input type="text" name="mspouse" class="wb-target" data-wb-refmode="id" value="">
       <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a person&hellip;</button>
       <div class="wb-lookup" hidden>
@@ -194,8 +233,14 @@
       <div class="wb-field"><label>Date <span class="wb-optional">(EDTF or plain)</span></label>
         <input type="text" name="mdate" value=""></div>
       <div class="wb-field"><label>Place <span class="wb-optional">(optional)</span></label>
+        {# data-wb-keeppair: the milestone builder needs BOTH values - a
+           sourced milestone becomes a claim and wants the L-id, but an
+           unsourced Born/Died writes the free-text provisional
+           birth_place/death_place, where an L-id would render literally
+           (P2 codex finding, round 5, PR #31). collect() keeps the visible
+           label alongside the picked id; the builder chooses per verb. #}
         <input type="text" name="mplace" class="wb-target wb-plain" value="">
-        <input type="hidden" name="mplace_id" data-wb-idfield="mplace">
+        <input type="hidden" name="mplace_id" data-wb-idfield="mplace" data-wb-keeppair>
         <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
         <div class="wb-lookup" hidden>
           <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">
@@ -215,7 +260,8 @@
       <p class="wb-hint">Pick one of this person's cited sources, or paste an S-id.
         A <strong>sourced</strong> milestone also becomes a claim - so it shows in the Timeline,
         with a footnote. An <strong>unsourced</strong> Born/Died is just the summary line
-        (family knowledge, no footnote); an unsourced Married is recorded as the spouse hypothesis.</p>
+        (family knowledge, no footnote); an unsourced Married is recorded as the spouse
+        hypothesis on both people's records.</p>
     </div>
     <div class="wb-field" data-wb-showif="msource:__paste__">
       <label>Source S-id</label><input type="text" name="msource_id" value="">
@@ -228,11 +274,30 @@
 </template>
 
 {# --- add a timeline event (claim.new) --- #}
-<template id="tpl-add-event" data-wb-verb="claim.new">
+<template id="tpl-add-event" data-wb-verb="claim.new" data-wb-build="add_event">
   <div class="wb-step">
     <p class="wb-kicker">Add a timeline event</p>
     <h3>Events are claims - which source says so?</h3>
-    <div class="wb-field"><label>Source S-id</label><input type="text" name="source_id" value=""></div>
+    <div class="wb-field">
+      <label>Source</label>
+      <select name="source_pick">
+        {% if person is defined %}{% for s in (person.milestone_sources or []) %}
+        <option value="{{ s.id }}"{% if loop.first %} selected{% endif %}>{{ s.id }} - {{ s.title }}</option>
+        {% endfor %}{% endif %}
+        <option value="__other__">another source&hellip;</option>
+      </select>
+      <p class="wb-hint">This person's cited sources, by title - or pick "another source" to
+        search the whole archive / paste an S-id.</p>
+    </div>
+    <div class="wb-field" data-wb-showif="source_pick:__other__">
+      <label>Source S-id</label>
+      <input type="text" name="source_manual" class="wb-target" data-wb-refmode="id" value="">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a source&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search sources&hellip;" data-wb-kind="source">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+    </div>
     <div class="wb-field">
       <label>Type</label>
       <select name="claim_type">
@@ -245,11 +310,24 @@
     <div class="wb-field"><label>What happened</label><input type="text" name="value" value=""></div>
     <div class="wb-row2">
       <div class="wb-field"><label>Date (EDTF)</label><input type="text" name="date" value=""></div>
-      <div class="wb-field"><label>Place</label><input type="text" name="place_text" value=""></div>
+      <div class="wb-field"><label>Place <span class="wb-optional">(text, or resolve to an L-id)</span></label>
+        <input type="text" name="place_text" class="wb-target wb-plain" value="">
+        <input type="hidden" name="place" data-wb-idfield="place_text">
+        <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
+        <div class="wb-lookup" hidden>
+          <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">
+          <ul class="wb-lookup-results"></ul>
+        </div>
+      </div>
     </div>
     <div class="wb-field">
       <label>People <span class="wb-optional">(P-ids, comma-separated)</span></label>
-      <input type="text" name="persons" value="">
+      <input type="text" name="persons" class="wb-target wb-multi" data-wb-refmode="id" value="">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a person&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search people&hellip;" data-wb-kind="person">
+        <ul class="wb-lookup-results"></ul>
+      </div>
     </div>
     <p class="wb-hint">No record at all? Then it isn't a timeline event yet - put it in
       Research Notes (or a hypothesis) until a source backs it. That rule is what keeps every
@@ -265,23 +343,39 @@
 <template id="tpl-add-claim" data-wb-verb="claim.new">
   <div class="wb-step">
     <p class="wb-kicker">Add a claim to this source</p>
-    <h3>A fact this source records</h3>
+    <h3>What does this record say?</h3>
     <div class="wb-field">
       <label>Type</label>
       <select name="claim_type">
         <option>birth</option><option>death</option><option>marriage</option>
-        <option>baptism</option><option>burial</option><option>residence</option>
+        <option>baptism</option><option>burial</option><option selected>residence</option>
         <option>census</option><option>occupation</option><option>education</option>
         <option>military</option><option>immigration</option><option>divorce</option>
-        <option>name</option><option>event</option><option selected>note</option>
+        <option>name</option><option>event</option><option>note</option>
       </select>
     </div>
-    <div class="wb-field"><label>Value</label><input type="text" name="value" value=""></div>
+    <div class="wb-field"><label>The assertion, in plain words</label><input type="text" name="value" value=""></div>
     <div class="wb-row2">
       <div class="wb-field"><label>Date <span class="wb-optional">(optional)</span></label><input type="text" name="date" value=""></div>
-      <div class="wb-field"><label>Place <span class="wb-optional">(optional)</span></label><input type="text" name="place_text" value=""></div>
+      <div class="wb-field"><label>Place <span class="wb-optional">(text, or resolve to an L-id)</span></label>
+        <input type="text" name="place_text" class="wb-target wb-plain" value="">
+        <input type="hidden" name="place" data-wb-idfield="place_text">
+        <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
+        <div class="wb-lookup" hidden>
+          <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">
+          <ul class="wb-lookup-results"></ul>
+        </div>
+      </div>
     </div>
-    <div class="wb-field"><label>People <span class="wb-optional">(P-ids, comma-separated)</span></label><input type="text" name="persons" value=""></div>
+    <div class="wb-field">
+      <label>People <span class="wb-optional">(P-ids, comma-separated)</span></label>
+      <input type="text" name="persons" class="wb-target wb-multi" data-wb-refmode="id" value="">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a person&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search people&hellip;" data-wb-kind="person">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+    </div>
     <div class="wb-field">
       <label>Status</label>
       <select name="status"><option value="accepted" selected>accepted</option><option value="suggested">suggested</option></select>
@@ -309,10 +403,13 @@
         <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
         <ul class="wb-lookup-results"></ul>
       </div>
+      <p class="wb-bracket-warn" hidden></p>
     </div>
-    <p class="note">The <code>![[photo.jpg|caption]]</code> line <em>is</em> the embedded picture.
+    <p class="note">The <code>![[photo.jpg|caption]]</code> line <em>is</em> the embedded picture -
+      edit its caption, swap the filename, or delete the line to remove it.
       <code>[[P-&hellip;]]</code> / <code>[[S-&hellip;]]</code> / <code>[[C-&hellip;]]</code> are the links behind the footnote numbers;
-      <code>[[L-&hellip;|Fairview]]</code> is a place. Serve replaces only this section, never the whole file;
+      <code>[[L-&hellip;|Fairview]]</code> is a place. Use the lookup so you never have to remember an ID.
+      Serve replaces only this section, never the whole file;
       frontmatter, claims and other sections are untouched.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
@@ -356,7 +453,7 @@
 <template id="tpl-living" data-wb-verb="person.set-living">
   <div class="wb-step">
     <p class="wb-kicker">One-field record edit</p>
-    <h3>Is this person living?</h3>
+    <h3>Is {{ person.name if person is defined else 'this person' }} living?</h3>
     <div class="wb-field"><div class="wb-radio">
       <label><input type="radio" name="value" value="false"> deceased</label>
       <label><input type="radio" name="value" value="true"> living</label>
@@ -371,12 +468,87 @@
   </div>
 </template>
 
+{# --- set the profile portrait --- #}
+<template id="tpl-set-photo" data-wb-verb="person.set-profile-photo">
+  <div class="wb-step">
+    <p class="wb-kicker">One-field record edit</p>
+    <h3>Which photo is their portrait?</h3>
+    <div class="wb-field">
+      <label>Photo</label>
+      <input type="text" name="value" class="wb-target" data-wb-refmode="id" value="">
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a photo source&hellip;</button>
+      {#- kind=photo-source: only sources that actually own photo files - a
+          census PDF matching the query is not a portrait candidate. -#}
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search photo sources&hellip;" data-wb-kind="photo-source">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+    </div>
+    <p class="note">A filename, path, or S-id also works typed directly. Shown on this
+      person's page and as their small square in the family tree.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- edit ONE entry of a Stories/Research Notes log (person.edit_note) --- #}
+<template id="tpl-edit-note" data-wb-verb="person.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one entry - the rest of the log is untouched</p>
+    <h3>Edit this entry</h3>
+    <div class="wb-field">
+      <label>The entry, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one entry is replaced - every other note stays exactly as
+      written. If the file changed since this page loaded, the preview says so and nothing
+      is written. To remove an entry entirely, edit the record file itself.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- edit ONE note on a source (source.edit_note) --- #}
+<template id="tpl-edit-source-note" data-wb-verb="source.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note stays exactly as
+      written. If the file changed since this page loaded, the preview says so and nothing
+      is written.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
 {# --- research note on a source --- #}
 <template id="tpl-source-note" data-wb-verb="source.note">
   <div class="wb-step">
     <p class="wb-kicker">Append-only - never overwrites</p>
     <h3>Add a research note to this source</h3>
-    <div class="wb-field"><label>Note</label><textarea name="text"></textarea></div>
+    <div class="wb-field"><label>About this record itself</label><textarea name="text"></textarea></div>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
@@ -391,8 +563,112 @@
     <h3>notes/home.md is yours</h3>
     <div class="wb-field"><label>Homepage intro (markdown)</label>
       <textarea name="text" style="min-height:12rem">{{ intro_raw }}</textarea></div>
-    <p class="note">notes/home.md is yours - same as editing it in any text editor. The homepage
-      rebuilds from it, so this edit survives every future build.</p>
+    <p class="note">notes/home.md is yours - same as editing it in any text editor (Notepad,
+      Obsidian - same file either way). The <code>![[photo.jpg|caption]]</code> line <em>is</em>
+      the embedded picture: recaption or swap it right here. The homepage rebuilds from this
+      file, so the edit survives every future build.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: set coordinates (place.set) --- #}
+<template id="tpl-place-coords" data-wb-verb="place.set">
+  <div class="wb-step">
+    <p class="wb-kicker">The pin anchors this place's identity</p>
+    <h3>Where exactly is this place?</h3>
+    <div class="wb-row2">
+      <div class="wb-field"><label>Latitude</label>
+        <input type="text" name="lat" value="" placeholder="39.8000"></div>
+      <div class="wb-field"><label>Longitude</label>
+        <input type="text" name="lon" value="" placeholder="-95.6000"></div>
+    </div>
+    <p class="note">Jurisdictions and names change; the dirt does not - these coordinates
+      are what keeps this place the same place across renames. Right-click a spot on
+      openstreetmap.org and pick "Show address" to read off its coordinates. The preview
+      shows the exact registry change before anything is written.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: edit the also-known-as list (place.set) --- #}
+<template id="tpl-place-aka" data-wb-verb="place.set">
+  <div class="wb-step">
+    <p class="wb-kicker">Other names this place goes by</p>
+    <h3>Also known as</h3>
+    <div class="wb-field"><label>Names, one per line</label>
+      <textarea name="aka" rows="4" placeholder="Fairview City&#10;Old Fairview" data-wb-allowempty></textarea></div>
+    <p class="note">This replaces the whole list, so keep the names you want. One name
+      per line - a name may itself contain commas ("Washington, D.C."). Spelling
+      variants recorded here help search find the place however a record wrote it.
+      Deleting every line clears the list.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: edit names-over-time (place.set) --- #}
+<template id="tpl-place-history" data-wb-verb="place.set">
+  <div class="wb-step">
+    <p class="wb-kicker">What this place was called, era by era</p>
+    <h3>Names over time</h3>
+    <div class="wb-field"><label>One entry per line: PERIOD | name of that era</label>
+      <textarea name="history" style="min-height:7rem" placeholder="1858/1861 | Fairview, Breton Co., Kansas Territory, USA" data-wb-allowempty></textarea></div>
+    <p class="note">The period is a date or range the archive's way (<code>1858/1861</code>,
+      <code>1854</code>, <code>[..1861]</code>); after the <code>|</code> comes the full name
+      and jurisdiction of that era. This replaces the whole list - keep the lines you
+      want; deleting every line clears it.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: edit ONE research note (place.edit_note) --- #}
+<template id="tpl-edit-place-note" data-wb-verb="place.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note on this place stays
+      exactly as written. If the registry changed since this page loaded, the preview says
+      so and nothing is written.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- place: append a research note (place.note) --- #}
+<template id="tpl-place-note" data-wb-verb="place.note">
+  <div class="wb-step">
+    <p class="wb-kicker">Append-only - never overwrites</p>
+    <h3>Add a research note to this place</h3>
+    <div class="wb-field">
+      <label>What did you learn about this place?</label>
+      <textarea name="text"></textarea>
+    </div>
+    <p class="note">Place notes are background context, not family facts - loose citations
+      ("county history, p. 12", a Wikipedia link) are welcome here. The note lands dated,
+      after whatever is already written.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
@@ -405,12 +681,16 @@
   <div class="wb-step">
     <p class="wb-kicker">Add to the inbox</p>
     <h3>File the drop - and say what it is</h3>
-    <div class="wb-field"><label>File</label><input type="text" name="filename" value="" readonly></div>
+    <div class="wb-field"><label>File <span class="wb-optional">(rename it here if "IMG_2043.jpg" won't mean anything later)</span></label>
+      <input type="text" name="filename" value=""></div>
     <div class="wb-field">
       <label>What is it? (optional, but future-you says thanks)</label>
       <textarea name="what" style="min-height:4rem"></textarea>
     </div>
     <div class="wb-field"><label>Who's involved / when (optional)</label><input type="text" name="who" value=""></div>
+    <p class="note">&rarr; inbox/<span data-wb-sub="filename"></span><br>
+      &rarr; inbox/<span data-wb-sub-stem="filename"></span>.notes.md
+      <span class="wb-optional">(your context, saved as a sidecar note - written only when you give one)</span></p>
     <p class="wb-cli-label">Equivalent:</p>
     <div class="wb-cli"><code># drag into inbox/ in Explorer + a text note beside it - no command needed</code></div>
     <div class="wb-modal-foot">
@@ -425,7 +705,13 @@
   <div class="wb-step">
     <p class="wb-kicker">Register without moving</p>
     <h3>A photo that stays where it is</h3>
-    <div class="wb-field"><label>Path to the photo</label><input type="text" name="path" value=""></div>
+    <div class="wb-field"><label>Path to the photo</label>
+      <input type="text" name="path" value="" placeholder="C:\Photos\1965\reunion.jpg - or browse below">
+      {#- The picker window is opened by fha serve itself (a browser page
+          cannot read a local file's full path) - picking only fills this
+          field; the file is not touched. -#}
+      <button type="button" class="wb-lookuptoggle" data-wb-pickfile="path">&#128193; browse for the file&hellip;</button>
+    </div>
     <div class="wb-field"><label>What is it? (optional)</label><textarea name="note" style="min-height:4rem"></textarea></div>
     <p class="note">Photo-library files are never renamed or moved. Processing writes the durable
       identity <em>into</em> the photo (the embedded <code>SOURCE:</code> keyword) and records
@@ -455,6 +741,33 @@
     <p class="wb-hint">What the button will <em>not</em> do: read the evidence and draft claims
       from it. That judgment step stays in the AI lane - ask Claude to "process the inbox"
       (the <code>process-source</code> skill), or add claims yourself on the new source page.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+{# --- file a bundle as ONE source (process Stage A, bundle variant) --- #}
+<template id="tpl-process-bundle" data-wb-verb="process.file">
+  <div class="wb-step">
+    <p class="wb-kicker">File the bundle as one source (Stage A)</p>
+    <h3>One S-id for files that belong together</h3>
+    <p>The whole folder becomes <em>one</em> source: the primary file carries the record,
+      the notes ride along as its sidecar, and the folder itself dissolves. One click,
+      one source.</p>
+    <div class="wb-field">
+      <label>Source type</label>
+      <select name="source_type">
+        <option>letter</option><option>census</option><option>vital-record</option>
+        <option>newspaper</option><option>photo</option><option selected>interview</option>
+        <option>book</option><option>other</option>
+      </select>
+    </div>
+    <p class="wb-hint">A recording + transcript bundle usually files as <em>interview</em>.
+      Once filed, extracting what the transcript actually says is exactly what the
+      <code>mine-transcript</code> skill is for - ask Claude to "mine this interview" after
+      the filing lands.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>

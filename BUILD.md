@@ -1506,6 +1506,10 @@ fha site --root example-archive
 
 **Place page:** name, coords (map URL - no embedded map), dated `history:`, claims naming it,
 micro-places, people ranked by association frequency.
+*(Amended 2026-07-17, owner decision: the built page now ALSO embeds an OpenStreetMap
+iframe beside the link - it degrades to an empty frame offline - and renders the
+registry's `notes:` prose; workbench mode adds the `fha places set`/`note` edit
+affordances. TOOLING §12 is the current description.)*
 
 **Discoveries page:** render `notes/discoveries.md` as HTML; link P-id and S-id mentions.
 

@@ -9,6 +9,30 @@ living: false
 tags: [brick-wall, railroad]
 created: 2026-06-12
 tier: curated
+relationships:
+  - to: "[[P-075114a0f8|Caleb Comstock Hartley]]"
+    type: parent
+    subtype: biological
+    claim: "[[C-2e6b1f9c45]]"
+  - to: "[[P-d00c678c1a|Chastina Augusta Reed]]"
+    type: parent
+    subtype: biological
+    claim: "[[C-2e6b1f9c45]]"
+  - to: "[[P-cd795c61e0|Margaret A. Cole]]"
+    type: spouse
+    claim: "[[C-60730c8524]]"
+  - to: "[[P-c4b26bb4bc|Ethel Hartley]]"
+    type: child
+    subtype: biological
+    claim: "[[C-bdfbce2a11]]"
+  - to: "[[P-83e768cacb|Frances Hartley]]"
+    type: child
+    subtype: biological
+    claim: "[[C-77a0c5e218]]"
+  - to: "[[P-fa7541e871|Calvin George Hartley]]"
+    type: child
+    subtype: biological
+    claim: "[[C-fa0000001a]]"
 ---
 
 # Thomas Edward Hartley (b. about 1840)

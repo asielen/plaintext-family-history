@@ -10,7 +10,7 @@
         "birth": null,
         "death": null
       },
-      "url": null,
+      "url": "persons/p-075114a0f8.html",
       "photo": "/root/photos/caleb-chastina-hartley.jpg"
     },
     {
@@ -32,7 +32,7 @@
         "birth": null,
         "death": null
       },
-      "url": null,
+      "url": "persons/p-83e768cacb.html",
       "photo": "/root/photos/frances-hartley-winter.jpg"
     },
     {
@@ -43,7 +43,7 @@
         "birth": null,
         "death": null
       },
-      "url": null,
+      "url": "persons/p-c4b26bb4bc.html",
       "photo": "/root/photos/ethel-hartley-portrait.jpg"
     },
     {
@@ -54,7 +54,7 @@
         "birth": null,
         "death": null
       },
-      "url": null,
+      "url": "persons/p-fa7541e871.html",
       "photo": "/root/photos/calvin-hartley-garden.jpg"
     },
     {
@@ -65,7 +65,18 @@
         "birth": null,
         "death": null
       },
-      "url": null,
+      "url": "persons/p-6f7g8h9jka.html",
+      "photo": null
+    },
+    {
+      "p_id": "P-htyn3mpg9g",
+      "name": "Ada Jane Hartley",
+      "sex": "F",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": "persons/p-htyn3mpg9g.html",
       "photo": null
     },
     {
@@ -76,7 +87,7 @@
         "birth": null,
         "death": null
       },
-      "url": null,
+      "url": "persons/p-5e6f7g8h9j.html",
       "photo": null
     },
     {
@@ -98,7 +109,7 @@
         "birth": null,
         "death": null
       },
-      "url": null,
+      "url": "persons/p-0a1b2c3d4e.html",
       "photo": null
     }
   ],
@@ -160,6 +171,19 @@
       "from": "P-fa7541e871",
       "to": "P-6f7g8h9jka",
       "claim_id": "C-fa0000002b",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-fa7541e871",
+      "to": "P-htyn3mpg9g",
+      "claim_id": "C-5taq0e7251",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
