@@ -2391,24 +2391,29 @@ def _add_relate_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _ESTIMATE_DESCRIPTION = """\
-Write a provisional, unsourced birth/death estimate - a starting guess.
+Write a provisional, unsourced birth/death estimate - a starting guess for
+the when, the where, or both.
 
   fha person estimate P-2b3c4d5e6f --birth 1870
   fha person estimate P-2b3c4d5e6f --birth "circa 1870" --death "before 1940"
+  fha person estimate P-2b3c4d5e6f --birth-place "Kansas"   Place only - no date needed
   fha person estimate P-2b3c4d5e6f --birth -             Clear the birth estimate
 
 DATE accepts the archive's exact date form (1870, 1870-06, 188X for "the
 1880s") or plain words ("circa 1870", "before 1940", "the 1880s") - loose
-wording is translated for you. Use - by itself to clear a field. A sourced
-birth/death claim always supersedes this estimate; run `fha claim` once you
-have a source. At least one of --birth/--death is required."""
+wording is translated for you. --birth-place/--death-place record the WHERE
+as free text ("born in Kansas, no idea when" is real family knowledge), with
+or without a date. Use - by itself to clear any field. A sourced birth/death
+claim always supersedes this estimate; run `fha claim` once you have a
+source. At least one of --birth/--death/--birth-place/--death-place is
+required."""
 
 
 def _add_estimate_arguments(sub: argparse._SubParsersAction) -> None:
     """Register the estimate verb on a group subparser (shared by both mains)."""
     es = sub.add_parser(
         'estimate',
-        help='Write a provisional, unsourced birth/death estimate.',
+        help='Write a provisional, unsourced birth/death date and/or place estimate.',
         description=_ESTIMATE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

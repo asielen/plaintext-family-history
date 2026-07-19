@@ -1802,6 +1802,39 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('ped-hypothesis', std)
         self.assertNotIn('Hyp Parent', std)
 
+    def test_hypothesis_spouse_and_child_join_the_chart_wings(self):
+        # P2 codex finding (round 5, PR #31): the add-family flow's spouse/
+        # child hypotheses showed on the family strip but the chart's wings
+        # read only the indexed (claim-backed) relationships table, so the
+        # just-added family member was invisible in the Family chart. In
+        # workbench mode they join the wings as dashed ped-hypothesis cards;
+        # standalone stays claims-only.
+        rel = ('relationships:\n'
+               '  - to: "[[p-bbbbbbbbbb|Hyp Spouse]]"\n'
+               '    type: spouse\n'
+               '    status: hypothesis\n'
+               '  - to: "[[p-cccccccccc|Hyp Child]]"\n'
+               '    type: child\n'
+               '    status: hypothesis')
+        self._seed_person('p-aaaaaaaaaa', name='Subject Person', living='false',
+                          tier='curated', frontmatter_extra=rel)
+        self._seed_person('p-bbbbbbbbbb', name='Hyp Spouse', living='false',
+                          tier='curated')
+        self._seed_person('p-cccccccccc', name='Hyp Child', living='false',
+                          tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('ped-hypothesis', wb)
+        self.assertIn('Hyp Spouse', wb)
+        self.assertIn('Hyp Child', wb)
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        self._run(linked=False)
+        std = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('ped-hypothesis', std)
+        self.assertNotIn('Hyp Spouse', std)
+        self.assertNotIn('Hyp Child', std)
+
     def test_no_workbench_chrome_leaks_into_standalone(self):
         self._seed_person('p-cccccccccc', name='Plain Person', living='false',
                           tier='curated', frontmatter_extra='birth: 1900')

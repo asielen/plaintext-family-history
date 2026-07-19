@@ -233,8 +233,14 @@
       <div class="wb-field"><label>Date <span class="wb-optional">(EDTF or plain)</span></label>
         <input type="text" name="mdate" value=""></div>
       <div class="wb-field"><label>Place <span class="wb-optional">(optional)</span></label>
+        {# data-wb-keeppair: the milestone builder needs BOTH values - a
+           sourced milestone becomes a claim and wants the L-id, but an
+           unsourced Born/Died writes the free-text provisional
+           birth_place/death_place, where an L-id would render literally
+           (P2 codex finding, round 5, PR #31). collect() keeps the visible
+           label alongside the picked id; the builder chooses per verb. #}
         <input type="text" name="mplace" class="wb-target wb-plain" value="">
-        <input type="hidden" name="mplace_id" data-wb-idfield="mplace">
+        <input type="hidden" name="mplace_id" data-wb-idfield="mplace" data-wb-keeppair>
         <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; look up a place&hellip;</button>
         <div class="wb-lookup" hidden>
           <input type="text" class="wb-lookup-q" placeholder="Search places&hellip;" data-wb-kind="place">

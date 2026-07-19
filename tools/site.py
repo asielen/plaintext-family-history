@@ -632,7 +632,7 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     `missing_parent_of` (workbench only, per the plan-17 wireframe's
     `ped-empty[data-wb-open]` cards) maps an empty ancestor slot number to the
     P-id of its known child, so that slot's 'Unknown' becomes a clickable
-    'Unknown — add' that opens 'add family' scoped to the right person -
+    'Unknown - add' that opens 'add family' scoped to the right person -
     never shown when `workbench` is false, matching every other workbench-only
     affordance already gated the same way on this page."""
     spouses = spouses or []
@@ -3343,6 +3343,40 @@ class _SiteBuilder:
 
         spouses = collect('spouse')
         children = collect('child')
+        # Workbench only: spouses/children recorded as frontmatter
+        # `relationships:` hypotheses (the add-family flow's whole output,
+        # never indexed) join the wings too, tagged exactly like the
+        # hypothesis ancestor slots - the chart and the family strip must
+        # agree about who is in the immediate family, and until this the
+        # just-added spouse/child showed on the strip but the chart stayed
+        # unchanged (P2 codex finding, round 5, PR #31). Appended after the
+        # indexed edges: a hypothesis marriage has no date, so it belongs in
+        # the undated tail anyway, and the renderer draws later spouses
+        # dotted - the honest look for an unsourced tie. Standalone and
+        # plain-linked builds never take this branch (unsourced ties do not
+        # publish).
+        if self.workbench:
+            row = self.person_meta.get(pid)
+            meta = None
+            if row is not None:
+                try:
+                    meta = read_record(self.archive_root / row['path'])['meta']
+                except Exception:  # noqa: BLE001 - an unreadable record contributes nothing
+                    meta = None
+            if meta:
+                have = {'spouses': {normalize_id(str(s['id'])) for s in spouses},
+                        'children': {normalize_id(str(c['id'])) for c in children}}
+                wing_of = {'spouses': spouses, 'children': children}
+                for group, target in self._hypothesis_tie_ids_from_meta(meta, pid):
+                    if group not in wing_of or target in have[group]:
+                        continue
+                    if self.person_meta.get(target) is None:
+                        continue
+                    entry = self._chart_entry(target, page_dir)
+                    entry['id'] = target
+                    entry['hypothesis'] = True
+                    wing_of[group].append(entry)
+                    have[group].add(target)
         # Each child's OTHER parent(s), so the renderer can hang the child off
         # the right couple's junction - a person with children by two spouses
         # draws two family brackets, each splitting to its own children. A

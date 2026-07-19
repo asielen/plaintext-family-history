@@ -288,6 +288,11 @@
     $all('[data-wb-idfield]', modal).forEach(function (idEl) {
       var idName = idEl.getAttribute('name');
       var pairName = idEl.getAttribute('data-wb-idfield');
+      /* data-wb-keeppair: keep the visible text BESIDE the resolved id -
+         for a builder that routes to different verbs wanting different
+         representations (the milestone modal: a claim wants the L-id, a
+         provisional estimate wants the human-readable place text). */
+      if (idEl.hasAttribute('data-wb-keeppair')) return;
       if (idName && pairName && args[idName] !== undefined) delete args[pairName];
     });
     /* A per-modal builder can rewrite (verb, args) - milestone routing, the
@@ -587,8 +592,12 @@
         if (date) e[claimType] = date;
         /* The place travels too (wireframe: the unsourced summary line is
            '**Born:** <date> - <place>') - as the provisional
-           birth_place/death_place frontmatter beside the date. */
-        if (placeId || place) e[claimType + '_place'] = placeId || place;
+           birth_place/death_place frontmatter beside the date. These fields
+           are FREE TEXT rendered literally, so the human-readable label wins
+           over a picked L-id (which would show as 'L-...' on the summary
+           row - P2 codex finding, round 5, PR #31); the id alone is the
+           fallback when there is no label to prefer. */
+        if (place || placeId) e[claimType + '_place'] = place || placeId;
         return { verb: 'person.estimate', args: e };
       }
       if (mtype === 'married') {
