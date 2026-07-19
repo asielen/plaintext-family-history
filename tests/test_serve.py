@@ -419,7 +419,11 @@ class ApiRunTests(_ServeCase):
         self.assertIsNotNone(src)
         text = src.read_text(encoding='utf-8')
         self.assertIn('place: L-7c1a9f4e22', text)
-        self.assertNotIn('place_text:', text)
+        # The source-as-written wording survives the id edit (SPEC §15:
+        # backfilling place: never alters place_text; P2 codex finding,
+        # round 4, PR #31 - the old switch-removes-the-other behavior made
+        # any workbench claim edit erase it).
+        self.assertIn('place_text: "Fairview, Kansas"', text)
 
 
 class SnapshotIndexFreshnessTests(_ServeCase):

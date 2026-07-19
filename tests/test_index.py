@@ -484,6 +484,23 @@ class PlaceCoordsTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result.messages, [])
 
+    def test_place_notes_land_in_text_search(self) -> None:
+        # P2 codex finding (round 4, PR #31): text hits come only from
+        # notes_fts, so an `fha places note` entry was undiscoverable by
+        # search the moment it was written. Each place's notes get an fts
+        # row under the registry's own path.
+        self._build(
+            '- id: L-1111111111\n  name: Millbrook\n'
+            '  notes: |\n    Platted by the millwright cooperative in 1858.\n')
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT path FROM notes_fts WHERE notes_fts MATCH 'millwright'").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([r['path'] for r in rows], ['places/places.yaml'])
+
     def _assert_bad_shape(self, coords_line: str) -> None:
         result, rows = self._build(
             f'- id: L-1111111111\n  name: Millbrook\n{coords_line}')

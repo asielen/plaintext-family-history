@@ -916,12 +916,17 @@ class RunClaimNewTests(unittest.TestCase):
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('1880', text)   # a concrete example, not a bare EDTF error
 
-    def test_place_and_place_text_mutually_exclusive(self) -> None:
+    def test_place_and_place_text_coexist_on_a_new_claim(self) -> None:
+        # SPEC §15: place: (the normalized link) and place_text: (the place
+        # as the source wrote it) are different facts and legally coexist -
+        # a new claim may carry both from the start.
         result = claim.run_claim_new(
             self.root, source_id='S-1111111111', claim_type='residence',
             value='Lived somewhere', place='L-baba9801fa', place_text='Topeka')
-        self.assertEqual(result.exit_code, EXIT_FAILURE)
-        self.assertIn('mutually exclusive', ' '.join(m.text for m in result.messages))
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = self.source.read_text(encoding='utf-8')
+        self.assertIn('place: L-baba9801fa', text)
+        self.assertIn('place_text: Topeka', text)
 
     def test_appends_after_existing_claims_with_one_blank_line(self) -> None:
         result = claim.run_claim_new(
@@ -1099,23 +1104,29 @@ class FieldExtensionApplyTests(unittest.TestCase):
                 claims = read_record_from_text(new)
                 self.assertEqual(claims[0]['persons'], ['P-bbbbbbbbbb', 'P-cccccccccc'])
 
-    def test_place_switches_to_place_text_removing_place(self) -> None:
+    def test_place_text_edit_preserves_the_place_link(self) -> None:
+        # SPEC §15: the two place keys are independent facts. Rewording the
+        # source-as-written text must not silently unlink the registry place.
         new, changed = claim._apply_claim_review(
             _indented_block(1, place='L-baba9801fa'), 'C-aa11bb22cc',
             place_text='Fairview City')
         self.assertTrue(changed)
         claims = read_record_from_text(new)
         self.assertEqual(claims[0]['place_text'], 'Fairview City')
-        self.assertNotIn('place', claims[0])
+        self.assertEqual(str(claims[0]['place']), 'L-baba9801fa')
 
-    def test_place_text_switches_to_place_removing_place_text(self) -> None:
+    def test_place_backfill_preserves_place_text(self) -> None:
+        # The elevation flow's per-claim backfill ("place_text itself is
+        # never altered", SPEC §15) - and the workbench claim edit, whose
+        # untouched-fields POST carries only the place id (P2 codex finding,
+        # round 4, PR #31): setting place: must not erase the wording.
         new, changed = claim._apply_claim_review(
             _indented_block(1, place_text='Fairview City'), 'C-aa11bb22cc',
             place='L-baba9801fa')
         self.assertTrue(changed)
         claims = read_record_from_text(new)
         self.assertEqual(str(claims[0]['place']), 'L-baba9801fa')
-        self.assertNotIn('place_text', claims[0])
+        self.assertEqual(claims[0]['place_text'], 'Fairview City')
 
     def test_status_optional_field_only_edit_leaves_status_and_reviewed_untouched(self) -> None:
         new, changed = claim._apply_claim_review(
@@ -1245,9 +1256,10 @@ class StaleAnchorRegressionTests(unittest.TestCase):
                 c = claims[0]
                 # The note survived: both lines, in order, nothing folded away.
                 self.assertEqual(c['notes'].splitlines(), self.NOTES)
-                # The place switched cleanly - the L-id, and no place_text left.
+                # The place link landed - and the source's own wording stays
+                # (SPEC §15: backfill never alters place_text).
                 self.assertEqual(str(c['place']), 'L-baba9801fa')
-                self.assertNotIn('place_text', c)
+                self.assertEqual(c['place_text'], 'Fairview, as written')
                 self.assertEqual(c['status'], 'accepted')
                 self.assertEqual(str(c['reviewed']), '2026-07-12')
                 # The `place:` line sits BEFORE the `notes:` line in the text.
@@ -1274,7 +1286,7 @@ class StaleAnchorRegressionTests(unittest.TestCase):
                 c = claims[0]
                 self.assertEqual(c['notes'].splitlines(), self.NOTES)
                 self.assertEqual(c['place_text'], 'Fairview, Kansas')
-                self.assertNotIn('place', c)
+                self.assertEqual(str(c['place']), 'L-1234567890')
                 new_lines = new.splitlines()
                 pt_line = next(i for i, ln in enumerate(new_lines)
                                if ln.strip().startswith('place_text:'))
@@ -1339,10 +1351,15 @@ class RunClaimFieldEditTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self._claims()['C-aa11bb22cc']['type'], 'baptism')
 
-    def test_place_and_place_text_mutually_exclusive(self) -> None:
+    def test_place_and_place_text_set_together_write_both(self) -> None:
+        # SPEC §15: the normalized link and the source wording coexist, so
+        # one review edit may set both keys at once.
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
                                  place='L-baba9801fa', place_text='Topeka')
-        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        c = self._claims()['C-aa11bb22cc']
+        self.assertEqual(str(c['place']), 'L-baba9801fa')
+        self.assertEqual(c['place_text'], 'Topeka')
 
     def test_reviewed_without_status_refused(self) -> None:
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',

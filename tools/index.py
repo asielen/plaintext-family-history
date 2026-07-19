@@ -566,12 +566,26 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> list[str]:
         lat, lon, coord_warning = _parse_place_coords(place)
         if coord_warning:
             warnings.append(coord_warning)
+        notes_text = str(place.get('notes') or '').strip()
         conn.execute(
             'INSERT OR REPLACE INTO places(id, name, hierarchy, within, lat, lon, notes) '
             'VALUES (?,?,?,?,?,?,?)',
             (pid, place.get('name'), place.get('hierarchy'), place.get('within'),
-             lat, lon, str(place.get('notes') or '').strip() or None),
+             lat, lon, notes_text or None),
         )
+        # Place research notes are prose like any other note, so they join
+        # notes_fts too - the JSON/workbench search reads text hits ONLY from
+        # there, and without this row a word that appears only in an `fha
+        # places note` entry was undiscoverable the moment it was written
+        # (P2 codex finding, round 4, PR #31). The registry file is the
+        # honest path for every place's row; the ranked search dedupes text
+        # hits by path, so a query matching several places' notes still
+        # returns one places.yaml hit.
+        if notes_text:
+            conn.execute(
+                'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+                ('places/places.yaml', notes_text),
+            )
         alt_names = [str(a) for a in (place.get('alt_names') or [])]
         for alt in alt_names:
             conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (pid, alt))
