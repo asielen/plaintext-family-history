@@ -4,6 +4,15 @@
 <article class="inbox">
   <h1>Inbox</h1>
   <p class="ids">the archive's front porch - <code>inbox/</code></p>
+  {#- The same jump-to-the-plain-file strip the person/source pages open with
+      (owner request, review 2026-07-17). This page is backed by the inbox
+      FOLDER, so the strip opens it in the file browser. Always workbench:
+      inbox.html only ever renders inside serve. -#}
+  <div class="wb-record">
+    <span>folder:</span>
+    <code>inbox/</code>
+    <a href="#" data-wb-open-file="inbox">open folder</a>
+  </div>
 
   <p style="max-width:var(--measure)">Drop a scan, a photo, a letter, a PDF. It lands in
   <code>inbox/</code> exactly as if you'd dragged it there in Explorer - and you can attach a

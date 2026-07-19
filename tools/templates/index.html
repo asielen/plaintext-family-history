@@ -18,6 +18,15 @@
 
   <h1>{{ site_title }}{% if workbench %}
     <a class="wb-fix" href="#" data-wb-open="tpl-edit-home" style="font-size:1rem;font-weight:400">edit intro&hellip;</a>{% endif %}</h1>
+  {% if workbench %}
+  {#- The same jump-to-the-plain-file strip the person/source pages open with
+      (owner request, review 2026-07-17): the homepage intro is notes/home.md. -#}
+  <div class="wb-record">
+    <span>record:</span>
+    <code>notes/home.md</code>
+    <a href="#" data-wb-open-file="notes/home.md">open file</a>
+  </div>
+  {% endif %}
   <div class="home-intro">{{ intro }}</div>
 
   {% if tree %}

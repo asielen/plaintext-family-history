@@ -3,6 +3,15 @@
 {% block content %}
 <article class="discoveries">
   <h1>Discoveries</h1>
+  {% if workbench %}
+  {#- The same jump-to-the-plain-file strip the person/source pages open with
+      (owner request, review 2026-07-17): this page renders notes/discoveries.md. -#}
+  <div class="wb-record">
+    <span>record:</span>
+    <code>notes/discoveries.md</code>
+    <a href="#" data-wb-open-file="notes/discoveries.md">open file</a>
+  </div>
+  {% endif %}
   {% if content_html %}
   {{ content_html }}
   {% else %}

@@ -608,7 +608,12 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     that couple's junction before one line splits to that couple's own children -
     the ancestor elbow, mirrored - and children are grouped by which drawn spouse
     is their other parent (each spouse entry carries `id`, each child entry
-    `co_parents`, from `_build_family_wings`). Kids with no drawn co-parent hang
+    `co_parents`, from `_build_family_wings`). Spouses arrive marriage-date-first
+    (`_build_family_wings` orders them), and only the FIRST marriage draws the
+    solid join-then-split bracket; later marriages render dotted
+    (`ped-link-later`) with their children branching at that spouse's own row -
+    see the routing loop's comment for the two geometry collisions that rule
+    also fixes. Kids with no drawn co-parent hang
     off the subject alone, which is also the privacy-safe fallback for a
     redacted co-parent. The subject sits at the left of
     its own group and each ancestor generation steps rightward - the genealogical
@@ -824,23 +829,38 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             junction_x, trunk_x = lane_stations(draw_lane)
             draw_lane += 1
             spouse_y = y_center(spouse_rows[i])
+            # First marriage vs later marriages (owner decision, review
+            # 2026-07-17): the FIRST couple keeps the solid join-then-split
+            # bracket; every LATER couple renders dotted (`ped-link-later`)
+            # and its children branch at that spouse's OWN row. Two reasons
+            # beyond taste: (a) the midpoint of the subject and spouse k
+            # always lands exactly on spouse k-1's row (spouse rows are one
+            # ROW apart), so a midpoint split for a later couple looked like
+            # it emanated from the previous spouse; (b) a later bracket
+            # retracing the first one's horizontal out of the subject card
+            # read as one line that forks, so later brackets attach a few px
+            # lower (clamped inside the card edge).
+            later = i > 0
+            cls = 'ped-link ped-link-later' if later else 'ped-link'
+            attach_y = min(subj_y + 6 * i, subj_y + CH / 2 - 4)
             # The couple bracket: subject and spouse join at the junction...
-            links.append(f'<path class="ped-link" d="M{subj_x:.0f},{subj_y:.0f} '
+            links.append(f'<path class="{cls}" d="M{subj_x:.0f},{attach_y:.0f} '
                          f'H{junction_x:.0f} V{spouse_y:.0f} H{subj_x:.0f}"/>')
             kids = child_groups[i + 1]
             if not kids:
                 continue
-            # ...and only then does one line leave the couple's midpoint and
-            # split to their children - the ancestor elbow, mirrored.
-            mid_y = (subj_y + spouse_y) / 2
+            # ...and only then does one line leave toward the children - from
+            # the couple's midpoint for the first marriage (the ancestor
+            # elbow, mirrored), from the spouse's own row for later ones.
+            branch_y = spouse_y if later else (subj_y + spouse_y) / 2
             child_ys = [y_center(child_row_of[c]) for c in kids]
-            span = child_ys + [mid_y]
-            links.append(f'<path class="ped-link" d="M{junction_x:.0f},{mid_y:.0f} H{trunk_x:.0f}"/>')
+            span = child_ys + [branch_y]
+            links.append(f'<path class="{cls}" d="M{junction_x:.0f},{branch_y:.0f} H{trunk_x:.0f}"/>')
             if len(set(span)) > 1:
-                links.append(f'<path class="ped-link" d="M{trunk_x:.0f},{min(span):.0f} '
+                links.append(f'<path class="{cls}" d="M{trunk_x:.0f},{min(span):.0f} '
                              f'V{max(span):.0f}"/>')
             for cy in child_ys:
-                links.append(f'<path class="ped-link" d="M{col_x(-1) + CW:.0f},{cy:.0f} H{trunk_x:.0f}"/>')
+                links.append(f'<path class="{cls}" d="M{col_x(-1) + CW:.0f},{cy:.0f} H{trunk_x:.0f}"/>')
     elif spouses:
         # No children to route to - a direct bracket at the column's left
         # edge is enough to show the subject and spouse(s) as one family
@@ -2269,9 +2289,11 @@ class _SiteBuilder:
             return out
 
         parent_ids = edge(pid, 'parent')
+        child_ids = edge(pid, 'child')
+        spouse_ids = edge(pid, 'spouse')
         parents = links([(p, pid) for p in parent_ids], None)
-        children = links([(c, pid) for c in edge(pid, 'child')], None)
-        spouses = links([(s, pid) for s in edge(pid, 'spouse')], None)
+        children = links([(c, pid) for c in child_ids], None)
+        spouses = links([(s, pid) for s in spouse_ids], None)
 
         sib_pairs, sib_seen = [], set()
         for par in parent_ids:
@@ -2295,13 +2317,25 @@ class _SiteBuilder:
             # codex finding, round 7, PR #30). Workbench-only: merged in
             # after the accepted groups, never counted for `not self.linked`
             # standalone/redaction purposes (this whole branch never runs there).
-            for key, hyp_links in self._person_hypothesis_ties(pid, page_dir).items():
+            # `claim_backed` lets the merge skip a hypothesis whose tie an
+            # accepted claim already draws - the normal "+ add now, source it
+            # in review later" lifecycle leaves the hypothesis entry in the
+            # record until lint walks the human through linking its claim, and
+            # without the skip the strip would show that person twice.
+            claim_backed = {'parents': set(parent_ids),
+                            'spouses': set(spouse_ids),
+                            'siblings': sib_seen,
+                            'children': set(child_ids)}
+            hyp_groups = self._person_hypothesis_ties(pid, page_dir,
+                                                      skip=claim_backed)
+            for key, hyp_links in hyp_groups.items():
                 groups[key] = groups[key] + hyp_links
         if not any(groups.values()):
             return None
         return groups
 
-    def _person_hypothesis_ties(self, pid: str, page_dir: Path) -> dict[str, list[str]]:
+    def _person_hypothesis_ties(self, pid: str, page_dir: Path,
+                                skip: dict[str, set] | None = None) -> dict[str, list[str]]:
         """Workbench-only companion to `_person_family_strip`: this person's
         OWN `relationships:` entries with `status: hypothesis` (SPEC §9 -
         the whole output of an unsourced `person.relate` / the family
@@ -2312,7 +2346,13 @@ class _SiteBuilder:
         Grouped by the entry's own `type` into the same four keys
         `_person_family_strip` uses, so its caller can merge them straight
         in; each link is tagged "(hypothesis)" so it is never mistaken for
-        a sourced tie."""
+        a sourced tie.
+
+        `skip` maps each group key to the P-ids the caller already shows
+        from claim-backed edges: a hypothesis for a tie a claim already
+        draws is suppressed rather than shown as a duplicate row - the
+        state a normal "+ add first, source it later" lifecycle passes
+        through until lint walks the human through linking the claim."""
         row = self.person_meta.get(pid)
         if row is None:
             return {}
@@ -2336,6 +2376,8 @@ class _SiteBuilder:
                 continue
             target = normalize_id(target_ids[0])
             if target == pid:
+                continue
+            if skip is not None and target in skip.get(group, ()):
                 continue
             # Build the whole raw HTML string first, then wrap it ONCE -
             # `_person_link` returns a plain (already-escaped-at-the-leaves)
@@ -3169,11 +3211,23 @@ class _SiteBuilder:
         restricted) claim behind the edge. `--linked` shows every edge."""
 
         def collect(rel: str) -> list[dict]:
+            # Spouses arrive marriage-date-first: the renderer draws the FIRST
+            # spouse as the solid primary bracket and later ones dotted, so
+            # "first" must mean the earliest marriage, not the luck of id
+            # ordering. `date_start` is the marriage claim's date carried onto
+            # the relationship edge; undated marriages sort after dated ones,
+            # then by id for a stable draw order. Children keep plain id
+            # order - their edges rarely carry dates and nothing downstream
+            # reads meaning into their sequence.
+            if rel == 'spouse':
+                query = ('SELECT other_id FROM relationships '
+                         'WHERE person_id = ? AND rel = ? GROUP BY other_id '
+                         'ORDER BY MIN(date_start) IS NULL, MIN(date_start), other_id')
+            else:
+                query = ('SELECT DISTINCT other_id FROM relationships '
+                         'WHERE person_id = ? AND rel = ? ORDER BY other_id')
             out: list[dict] = []
-            for r in self.conn.execute(
-                'SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = ? '
-                'ORDER BY other_id', (pid, rel),
-            ):
+            for r in self.conn.execute(query, (pid, rel)):
                 other = r['other_id']
                 if other == pid:
                     continue

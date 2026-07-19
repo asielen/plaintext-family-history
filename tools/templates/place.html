@@ -3,6 +3,19 @@
 {% block content %}
 <article class="place">
   <h1>{{ place.name }}</h1>
+  {% if workbench %}
+  {#- The same jump-to-the-plain-file strip the person/source pages open with
+      (owner request, review 2026-07-17). Places have no per-record .md - every
+      place lives as one entry in the registry, so the strip names the registry
+      file and this place's entry id within it. -#}
+  <div class="wb-record">
+    <span>record:</span>
+    <code>places/places.yaml</code>
+    <a href="#" data-wb-open-file="places/places.yaml">open file</a>
+    <span class="wb-sep">&middot;</span>
+    <span>entry <code>{{ place.display_id }}</code></span>
+  </div>
+  {% endif %}
 
   <dl class="meta">
     {% if place.hierarchy %}<dt>Location</dt><dd>{{ place.hierarchy }}</dd>{% endif %}

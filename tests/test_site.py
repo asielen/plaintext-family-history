@@ -1198,8 +1198,10 @@ class FamilyChartTests(_Base):
 
         # Two couples -> two closed brackets (start x == end x), at DIFFERENT
         # junction x-stations so a second marriage never overlaps the first.
+        # (The class is ped-link for the first marriage, ped-link-later for
+        # every later one - the [^"]* absorbs the modifier.)
         brackets = [m for m in re.findall(
-            r'<path class="ped-link" d="M(\d+),(\d+) H(\d+) V(\d+) H(\d+)"/>', page)
+            r'<path class="ped-link[^"]*" d="M(\d+),(\d+) H(\d+) V(\d+) H(\d+)"/>', page)
             if m[0] == m[4]]
         self.assertEqual(len(brackets), 2)
         self.assertNotEqual(brackets[0][2], brackets[1][2])
@@ -1217,9 +1219,9 @@ class FamilyChartTests(_Base):
         # column's right edge; map each child's row to its trunk x.
         children_right = min(x for x, *_rest in
                              [(int(a), b) for a, b, _c in re.findall(
-                                 r'<path class="ped-link" d="M(\d+),(\d+) H(\d+)"/>', page)])
+                                 r'<path class="ped-link[^"]*" d="M(\d+),(\d+) H(\d+)"/>', page)])
         trunk_of = {}
-        for a, b, c in re.findall(r'<path class="ped-link" d="M(\d+),(\d+) H(\d+)"/>', page):
+        for a, b, c in re.findall(r'<path class="ped-link[^"]*" d="M(\d+),(\d+) H(\d+)"/>', page):
             if int(a) == children_right:
                 trunk_of[int(b)] = int(c)
         tick = {name: trunk_of[y_of[name]] for name in ('Kid Dee', 'Kid Eve', 'Kid Eff', 'Kid Gee')}
@@ -1229,6 +1231,62 @@ class FamilyChartTests(_Base):
         self.assertNotEqual(tick['Kid Dee'], tick['Kid Eff'])
         self.assertNotEqual(tick['Kid Dee'], tick['Kid Gee'])
         self.assertNotEqual(tick['Kid Eff'], tick['Kid Gee'])
+
+    def test_later_marriage_renders_dotted_and_branches_at_the_spouse_row(self):
+        # Owner decision (review 2026-07-17): the first marriage keeps the
+        # solid join-then-split bracket; a later marriage's whole lane is
+        # dotted (ped-link-later) and its children branch at that spouse's
+        # OWN row - the subject/spouse-2 midpoint always lands exactly on
+        # spouse 1's row, which read as spouse 1's line. The two brackets
+        # must also leave the subject card at different y so the second
+        # never retraces the first.
+        svg = site._render_pedigree_svg(
+            {1: {'name': 'Subject', 'url': None, 'redacted': False, 'dates': {}}},
+            spouses=[{'name': 'Wife One', 'id': 'p-bbbbbbbbbb', 'url': None, 'dates': {}},
+                     {'name': 'Wife Two', 'id': 'p-cccccccccc', 'url': None, 'dates': {}}],
+            children=[{'name': 'Kid B', 'co_parents': ['p-bbbbbbbbbb'], 'url': None, 'dates': {}},
+                      {'name': 'Kid C', 'co_parents': ['p-cccccccccc'], 'url': None, 'dates': {}}])
+        solid = re.findall(r'<path class="ped-link" d="M(\d+),(\d+) H(\d+) V(\d+) H(\d+)"/>', svg)
+        later = re.findall(r'<path class="ped-link ped-link-later" d="M(\d+),(\d+) H(\d+) V(\d+) H(\d+)"/>', svg)
+        solid_brackets = [m for m in solid if m[0] == m[4]]
+        later_brackets = [m for m in later if m[0] == m[4]]
+        self.assertEqual(len(solid_brackets), 1)
+        self.assertEqual(len(later_brackets), 1)
+        # Different attachment y on the subject card - no retraced segment.
+        self.assertNotEqual(solid_brackets[0][1], later_brackets[0][1])
+        # The later couple's children branch leaves the junction at the
+        # SPOUSE's row (the bracket's own bottom y), rendered dotted too.
+        jx, spouse2_y = later_brackets[0][2], later_brackets[0][3]
+        self.assertIn(f'<path class="ped-link ped-link-later" d="M{jx},{spouse2_y} H', svg)
+        # The first couple's branch still leaves at the couple midpoint.
+        jx1 = solid_brackets[0][2]
+        mid_y = (int(solid_brackets[0][1]) + int(solid_brackets[0][3])) // 2
+        self.assertIn(f'<path class="ped-link" d="M{jx1},{mid_y} H', svg)
+
+    def test_spouses_order_by_marriage_date_not_id(self):
+        # The solid "first marriage" bracket must mean the EARLIEST marriage:
+        # spouse ids here sort z-wife before a-wife by date, the reverse of
+        # their id order, so an id-ordered chart would dot the wrong wife.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Second By Date')
+        self._seed_person('p-cccccccccc', 'First By Date')
+        self.conn.execute(
+            'INSERT INTO relationships(person_id, rel, other_id, claim_id, date_start) '
+            "VALUES ('p-aaaaaaaaaa','spouse','p-bbbbbbbbbb','c-rrrrrrrrrr','1903')")
+        self.conn.execute(
+            'INSERT INTO relationships(person_id, rel, other_id, claim_id, date_start) '
+            "VALUES ('p-aaaaaaaaaa','spouse','p-cccccccccc','c-ssssssssss','1898')")
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        y_of = {}
+        for _x, y, h, inner in re.findall(
+                r'<foreignObject x="(-?\d+)" y="(-?\d+)" width="\d+" height="(\d+)">(.*?)</foreignObject>',
+                page, re.S):
+            m = re.search(r'ped-name[^>]*>([^<]+)<', inner)
+            if m:
+                y_of[m.group(1)] = int(y) + int(h) // 2
+        # Earlier marriage stacks nearer the subject (drawn first).
+        self.assertLess(y_of['First By Date'], y_of['Second By Date'])
 
     def test_family_chart_redacts_living_spouse_and_child_standalone(self):
         # The non-negotiable case: a living spouse/child must never leak a
@@ -1864,6 +1922,48 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('Margaret Cole', std)
         self.assertNotIn('wb-hypothesis-tag', std)
         self.assertNotIn('hypothesis', std)
+
+    def test_record_strip_on_home_and_discoveries_workbench_only(self):
+        # Owner request (review 2026-07-17): every page opens with the same
+        # jump-to-the-plain-file strip the person/source pages have. The home
+        # page is backed by notes/home.md, discoveries by notes/discoveries.md
+        # (place pages carry the identically-gated strip for places.yaml).
+        # None of it may leak into a standalone build (plan-17 symmetry rule).
+        self._seed_person('p-aaaaaaaaaa', 'Anyone', tier='curated')
+        self._run_wb()
+        home = self._read('index.html')
+        self.assertIn('wb-record', home)
+        self.assertIn('notes/home.md', home)
+        self.assertIn('data-wb-open-file="notes/home.md"', home)
+        disc = self._read('discoveries.html')
+        self.assertIn('data-wb-open-file="notes/discoveries.md"', disc)
+
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        self._run(linked=False)
+        self.assertNotIn('wb-record', self._read('index.html'))
+
+    def test_family_strip_hypothesis_suppressed_when_claim_backs_the_same_tie(self):
+        # The normal lifecycle: "+ add" writes a hypothesis first, the tie is
+        # sourced later in review, and the hypothesis entry stays on the record
+        # until lint walks the human through linking its claim. In that window
+        # the strip has BOTH a claim-backed edge and a hypothesis for the same
+        # pair - it must show the person once (the sourced form), never a
+        # duplicate "(hypothesis)" row beside the real one.
+        self._seed_person('p-bbbbbbbbbb', 'Louisa Denton', tier='stub')
+        self._seed_person(
+            'p-aaaaaaaaaa', 'Calvin Hartley', tier='curated',
+            frontmatter_extra=(
+                'relationships:\n'
+                '  - to: "[[P-bbbbbbbbbb|Louisa Denton]]"\n'
+                '    type: spouse\n'
+                '    status: hypothesis'))
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        strip = wb.split('<template id="tpl-confirm">')[0]
+        self.assertIn('Louisa Denton', strip)
+        self.assertNotIn('wb-hypothesis-tag', strip)
 
     def test_edit_biography_modal_empty_when_no_biography_yet(self):
         self._seed_person('p-aaaaaaaaaa', 'No Bio Yet', tier='curated', body='# No Bio Yet\n')
