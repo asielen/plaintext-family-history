@@ -211,13 +211,14 @@ new W107/W115.
 
 ## fha person - implementation status
 
-The deterministic person-field write-back group (TOOLING §3c). Seven verbs ship:
+The deterministic person-field write-back group (TOOLING §3c). Eight verbs ship:
 `set-living` (the `living:` flag every export redaction follows, SPEC §9/§19; `unknown`
 is treated as living); `set-profile-photo` (the record's `profile_photo:` portrait -
 the workbench picker's echoed command); `new` (mint a stub for a person starting from
 nothing, plan 17); `relate` (jot an unsourced family-tie belief); `estimate` (provisional
 birth/death vitals and places); `edit` (replace/append a curated-profile prose section);
-and `note` (append-only Stories/Research Notes). Every verb locates its record by scanning `people/` directly
+`note` (append-only Stories/Research Notes); and `edit-note` (rewrite one existing
+entry, located by its exact current text). Every verb locates its record by scanning `people/` directly
 (`_lib.find_person_record_path`, shared with `fha confirm draft`), so a stale or absent
 index never blocks a write. Nothing flips `living:` automatically - accepting a `death`
 claim only makes the `review-claims` skill *offer* the `set-living` command.
