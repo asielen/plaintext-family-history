@@ -1651,6 +1651,35 @@ class PlaceVerbTests(_ServeCase):
         entry = next(e for e in registry if e['id'] == self.LID)
         self.assertEqual(entry['alt_names'], ['Washington, D.C.', 'Old Fairview'])
 
+    def test_place_aka_empty_clears_the_list(self):
+        # P2 codex finding (round 3, PR #31): an emptied textarea is an
+        # explicit "clear the whole list", submitted as an empty string
+        # (data-wb-allowempty) - the echo spells it the CLI way, `--aka -`.
+        s, d, _h = self.post_run('place.set',
+                                 {'place_id': self.LID, 'aka': ''}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('--aka -', payload['cli_echo'])
+        import yaml as _yaml
+        registry = _yaml.safe_load(
+            (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
+        entry = next(e for e in registry if e['id'] == self.LID)
+        self.assertEqual(entry.get('alt_names'), [])
+
+    def test_place_history_empty_clears_the_list(self):
+        s, d, _h = self.post_run('place.set',
+                                 {'place_id': self.LID, 'history': ''}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('--history -', payload['cli_echo'])
+        import yaml as _yaml
+        registry = _yaml.safe_load(
+            (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
+        entry = next(e for e in registry if e['id'] == self.LID)
+        self.assertEqual(entry.get('history'), [])
+
     def test_place_note_apply_appends_dated_note(self):
         s, d, _h = self.post_run('place.note',
                                  {'place_id': self.LID, 'text': 'Platted 1858.'}, False)

@@ -671,6 +671,29 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertEqual(parsed['L-7c1a9f4e22']['alt_names'],
                          ['Fairview City', 'Old Fairview'])
 
+    def test_set_aka_and_history_empty_lists_clear(self) -> None:
+        # The engine half of the workbench's "delete every line to clear"
+        # (and the CLI's lone `--aka -` / `--history -` sentinel).
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22', aka=[], history=[])
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('alt_names'), [])
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('history'), [])
+
+    def test_cli_dash_sentinel_clears_both_lists(self) -> None:
+        import argparse as _ap
+        import io as _io
+        from contextlib import redirect_stdout
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        args = _ap.Namespace(root=str(self.root), place_id='L-7c1a9f4e22',
+                             coords=None, aka=['-'], history=['-'], dry_run=False)
+        with redirect_stdout(_io.StringIO()):
+            rc = places._cmd_places_set(args)
+        self.assertEqual(rc, 0)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('alt_names'), [])
+        self.assertEqual(parsed['L-7c1a9f4e22'].get('history'), [])
+
     def test_set_aka_name_with_comma_stays_one_alias(self) -> None:
         # P2 codex finding (round 2, PR #31): each name is verbatim - a
         # comma inside it ("Washington, D.C.") must survive the write and

@@ -1479,11 +1479,19 @@ def _cmd_places_set(args: argparse.Namespace) -> int:
         # Each --aka value is ONE name, verbatim - "Washington, D.C." keeps
         # its comma (P2 codex finding, round 2, PR #31: the old comma-split
         # made a comma-bearing alias impossible to record or round-trip).
+        # A lone `--aka -` clears the list (the `fha person estimate` clear
+        # sentinel), so the workbench's emptied-textarea apply has an exact
+        # CLI spelling.
         aka = [str(a).strip() for a in args.aka]
+        if aka == ['-']:
+            aka = []
+    history = getattr(args, 'history', None)
+    if history is not None and [str(h).strip() for h in history] == ['-']:
+        history = []   # lone `--history -` clears the list, same sentinel
     return _emit_place_result(run_place_set(
         archive_root, args.place_id,
         coords=getattr(args, 'coords', None), aka=aka,
-        history=getattr(args, 'history', None),
+        history=history,
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -1560,9 +1568,11 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     set_p.add_argument('--aka', metavar='NAME', action='append',
                        help='One also-known-as name, taken verbatim (commas and all - '
                             '"Washington, D.C." is one name); repeat the flag for more. '
-                            'The given set replaces the old list.')
+                            'The given set replaces the old list; a lone `--aka -` '
+                            'clears it.')
     set_p.add_argument('--history', metavar='"PERIOD | HIERARCHY"', action='append',
-                       help='One names-over-time entry; repeat the flag for more (replaces the old list).')
+                       help='One names-over-time entry; repeat the flag for more (replaces '
+                            'the old list; a lone `--history -` clears it).')
     set_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                        help='Archive root (auto-detected if omitted).')
     set_p.add_argument('--dry-run', action='store_true', dest='dry_run',

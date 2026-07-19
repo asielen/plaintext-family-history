@@ -1770,6 +1770,38 @@ class WorkbenchModeTests(_Base):
         # marker exactly as written (tojson escapes '<' as <).
         self.assertIn('A kept memory. \\u003c!-- AI-ACCEPTED', wb)
 
+    def test_hypothesis_parent_fills_the_pedigree_slot(self):
+        # P2 codex finding (round 3, PR #31): a parent added through the
+        # add-family flow lives only as a frontmatter hypothesis (never
+        # indexed), so the pedigree's slot map - built from indexed
+        # accepted edges - still drew 'Unknown - add' and a second click
+        # minted a duplicate parent stub. In workbench mode the hypothesis
+        # parent occupies the slot, visibly tagged; standalone stays
+        # claims-only.
+        rel = ('relationships:\n'
+               '  - to: "[[p-bbbbbbbbbb|Hyp Parent]]"\n'
+               '    type: parent\n'
+               '    status: hypothesis')
+        self._seed_person('p-aaaaaaaaaa', name='Child Person', living='false',
+                          tier='curated', frontmatter_extra=rel)
+        self._seed_person('p-bbbbbbbbbb', name='Hyp Parent', living='false',
+                          tier='curated')
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('ped-hypothesis', wb)
+        self.assertIn('unsourced hypothesis', wb)
+        # The add-family lookup's generic '+ create' suppression travels on
+        # the modal markup (data-wb-nocreate) - creation belongs to the
+        # modal's own typed-name path (round-3 codex sibling finding).
+        self.assertIn('data-wb-nocreate', wb)
+        # Standalone build of the same archive: the unsourced tie stays home.
+        import shutil as _sh
+        _sh.rmtree(self.out_dir, ignore_errors=True)
+        self._run(linked=False)
+        std = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('ped-hypothesis', std)
+        self.assertNotIn('Hyp Parent', std)
+
     def test_no_workbench_chrome_leaks_into_standalone(self):
         self._seed_person('p-cccccccccc', name='Plain Person', living='false',
                           tier='curated', frontmatter_extra='birth: 1900')

@@ -760,6 +760,13 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                             'title="Create a stub for this ancestor" role="button" tabindex="0"')
         else:
             cls = 'ped-node' + cls_extra
+            if lab.get('hypothesis'):
+                # Workbench-only (the builder only sets the flag there): an
+                # unsourced frontmatter tie fills the slot but is visibly not
+                # a claim-backed edge - dashed like the strip's (hypothesis)
+                # tag, with the lifecycle spelled out on hover.
+                cls += ' ped-hypothesis'
+                div_attrs = ' title="unsourced hypothesis - source it in review"'
             name = html.escape(lab.get('name') or '')
             url = lab.get('url')
             name_el = (f'<a class="ped-name" href="{html.escape(url, quote=True)}">{name}</a>'
@@ -2397,9 +2404,29 @@ class _SiteBuilder:
             meta = read_record(self.archive_root / row['path'])['meta']
         except Exception:  # noqa: BLE001 - an unreadable record just contributes nothing here
             return {}
+        out: dict[str, list[str]] = {}
+        for group, target in self._hypothesis_tie_ids_from_meta(meta, pid):
+            if skip is not None and target in skip.get(group, ()):
+                continue
+            # Build the whole raw HTML string first, then wrap it ONCE -
+            # `_person_link` returns a plain (already-escaped-at-the-leaves)
+            # string, and concatenating a `Markup`-wrapped fragment with a
+            # plain string via `+` would re-escape the plain side, turning
+            # this span's own tags into literal text.
+            link_html = self._person_link(target, page_dir) + ' <span class="wb-hypothesis-tag">(hypothesis)</span>'
+            out.setdefault(group, []).append(self._markup(link_html))
+        return out
+
+    @staticmethod
+    def _hypothesis_tie_ids_from_meta(meta: dict, pid: str) -> list[tuple[str, str]]:
+        """(group, target P-id) pairs for a record's `relationships:` entries
+        with `status: hypothesis` - the shared id-level core of
+        `_person_hypothesis_ties` (family strip) and the pedigree's
+        slot-occupancy check. Groups are the family-strip keys
+        ('parents'/'spouses'/'siblings'/'children')."""
         group_of_type = {'parent': 'parents', 'spouse': 'spouses',
                          'sibling': 'siblings', 'child': 'children'}
-        out: dict[str, list[str]] = {}
+        out: list[tuple[str, str]] = []
         for entry in (meta.get('relationships') or []):
             if not isinstance(entry, dict):
                 continue
@@ -2414,15 +2441,28 @@ class _SiteBuilder:
             target = normalize_id(target_ids[0])
             if target == pid:
                 continue
-            if skip is not None and target in skip.get(group, ()):
-                continue
-            # Build the whole raw HTML string first, then wrap it ONCE -
-            # `_person_link` returns a plain (already-escaped-at-the-leaves)
-            # string, and concatenating a `Markup`-wrapped fragment with a
-            # plain string via `+` would re-escape the plain side, turning
-            # this span's own tags into literal text.
-            link_html = self._person_link(target, page_dir) + ' <span class="wb-hypothesis-tag">(hypothesis)</span>'
-            out.setdefault(group, []).append(self._markup(link_html))
+            out.append((group, target))
+        return out
+
+    def _hypothesis_parent_ids(self, pid: str) -> list[str]:
+        """Workbench-only: parent P-ids this person records as frontmatter
+        `relationships:` hypotheses (never indexed - the `relationships`
+        table carries only accepted-claim-backed edges). The pedigree's
+        slot-occupancy check counts these so a parent just added through
+        the add-family flow fills their slot instead of leaving an
+        'Unknown - add' card that would mint a duplicate stub (P2 codex
+        finding, round 3, PR #31)."""
+        row = self.person_meta.get(pid)
+        if row is None:
+            return []
+        try:
+            meta = read_record(self.archive_root / row['path'])['meta']
+        except Exception:  # noqa: BLE001 - an unreadable record just contributes nothing here
+            return []
+        out: list[str] = []
+        for group, target in self._hypothesis_tie_ids_from_meta(meta, pid):
+            if group == 'parents' and target not in out:
+                out.append(target)
         return out
 
     def _person_photos(self, pid: str, page_dir: Path) -> list[dict]:
@@ -3211,6 +3251,25 @@ class _SiteBuilder:
                                         or not self._has_public_claim(pid, other)):
                     continue
                 parents.append((other, (r['sex'] or '').upper()))
+            # Workbench only: a parent recorded as a frontmatter hypothesis
+            # (the add-family flow's whole output - never indexed) occupies
+            # their slot too. Without this the slot still drew 'Unknown - add'
+            # and a second click minted a duplicate parent stub (P2 codex
+            # finding, round 3, PR #31). The card is tagged so the chart
+            # never passes an unsourced belief off as a claim-backed edge;
+            # standalone/plain-linked builds are untouched (unsourced ties
+            # must not publish).
+            hyp_parents: set[str] = set()
+            if self.workbench:
+                known = {p for p, _ in parents}
+                for hp in self._hypothesis_parent_ids(pid):
+                    if hp in known or hp in hyp_parents:
+                        continue
+                    hrow = self.person_meta.get(hp)
+                    if hrow is None:
+                        continue
+                    hyp_parents.add(hp)
+                    parents.append((hp, (hrow['sex'] or '').upper()))
             father = next((p for p, s in parents if s == 'M'), None)
             mother = next((p for p, s in parents if s == 'F' and p != father), None)
             rest = [p for p, s in parents if p not in (father, mother)]
@@ -3223,6 +3282,8 @@ class _SiteBuilder:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = self._chart_entry(ppid, page_dir)
+                if ppid in hyp_parents:
+                    labels[slot_num]['hypothesis'] = True
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
                     seen.add(ppid)
                     queue.append((slot_num, ppid))

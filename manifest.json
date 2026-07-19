@@ -247,7 +247,7 @@
     {
       "path": "design/styles.css",
       "category": "operating",
-      "sha256": "cc646d7e1f4198b90a062ba8a5544b26b52161eeca57db34658710dd5e1152d4",
+      "sha256": "6ad5e1130868444a69aedcefd4a8521a041a2639b7e6352311ac47b6e3e38b44",
       "spec_version": "1.2"
     },
     {
@@ -611,7 +611,7 @@
     {
       "path": "tools/places.py",
       "category": "operating",
-      "sha256": "cc3102204b7e3eb0dea95fe7d64bc94843f5161aca91879af9e8670164c015d8",
+      "sha256": "3172fd5653c70a83895d772c50d4abd4f68a8511fb877753173bc86d3005dac6",
       "spec_version": "1.2"
     },
     {
@@ -647,13 +647,13 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "1f641cb61c6c4b5e76af1987f88d35ce8ebe767208247e11af85840aac3da8d1",
+      "sha256": "9e5709f7e899f0c0f5f5ea2625d7bac19c12acb8478c40ff73a53fb374d61e5b",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "01595f3500d9f6d8ead82679dc13dbdaa429a94cc4b2c35c5dd6d1268ea7a721",
+      "sha256": "65d378bb3e5ac89d416eed1a0d753489b2ed17e7e1b26e3f98358359ef287a65",
       "spec_version": "1.2"
     },
     {
@@ -749,7 +749,7 @@
     {
       "path": "tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "692abcdfbd9ae859934ed23d91e3117870207989b49568eddec9a59475818761",
+      "sha256": "b05d86fcc6580029b6821d7fcb0cbe1e9c218a562e950498a29dff8a28f93b16",
       "spec_version": "1.2"
     },
     {
@@ -767,7 +767,7 @@
     {
       "path": "tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "681ff25795d2bc4ea2f5beb6f402452de24cc4717e3bd125e55f4de1a8a4f83b",
+      "sha256": "a05cc98169a11198eb803afb86bafb745500b921980d58d2e3b5139b81e542f7",
       "spec_version": "1.2"
     },
     {

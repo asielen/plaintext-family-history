@@ -1357,13 +1357,17 @@ def _echo_place_set(kw):
     if str(kw.get('lat') or '').strip() or str(kw.get('lon') or '').strip():
         parts += ['--coords', _q(f'{kw.get("lat", "")}, {kw.get("lon", "")}')]
     if kw.get('aka') is not None:
-        for name in str(kw['aka']).split('\n'):
-            if name.strip():
-                parts += ['--aka', _q(name.strip())]
+        names = [n.strip() for n in str(kw['aka']).split('\n') if n.strip()]
+        for name in names:
+            parts += ['--aka', _q(name)]
+        if not names:   # an emptied textarea clears the list - `--aka -` is the CLI spelling
+            parts += ['--aka', '-']
     if kw.get('history') is not None:
-        for line in str(kw['history']).split('\n'):
-            if line.strip():
-                parts += ['--history', _q(line.strip())]
+        lines = [ln.strip() for ln in str(kw['history']).split('\n') if ln.strip()]
+        for line in lines:
+            parts += ['--history', _q(line)]
+        if not lines:
+            parts += ['--history', '-']
     return ' '.join(parts)
 
 

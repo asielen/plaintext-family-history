@@ -267,7 +267,15 @@
       if (c.type === 'radio') { if (c.checked) args[name] = c.value; return; }
       if (c.type === 'checkbox') { args[name] = c.checked; return; }
       var v = c.value;
-      if (v !== null && String(v).trim() !== '') args[name] = v;
+      /* data-wb-allowempty: a whole-list REPLACE field (the aka/history
+         textareas) where blank is a real value - "clear the list" - not an
+         untouched field to drop. Everything else keeps the blank-means-
+         omitted rule (a blank field never overrides a fixed arg). P2 codex
+         finding, round 3, PR #31: deleting every line used to submit
+         nothing, so the engine refused "nothing to change". */
+      if (v !== null && (String(v).trim() !== '' || c.hasAttribute('data-wb-allowempty'))) {
+        args[name] = v;
+      }
     });
     /* A hidden `data-wb-idfield="otherName"` control (set by the lookup
        click handler below when a result is picked by id) names the
@@ -664,14 +672,21 @@
       }).join('');
       /* Person lookups end with a real '+ create' row (wireframe: typeahead-
          with-create) - it opens the mint modal with the query as the name.
-         The old no-match copy referenced a control that didn't exist. */
+         The old no-match copy referenced a control that didn't exist.
+         EXCEPT under data-wb-nocreate (the add-family lookup): opening the
+         standalone mint modal would close the relation modal and create a
+         stub with no tie recorded - there, creation IS the modal's own
+         typed-name path, so the fallback note points back at it (P2 codex
+         finding, round 3, PR #31). */
       var createRow = '';
-      if (opts && opts.kind === 'person' && q) {
+      if (opts && opts.kind === 'person' && q && !opts.nocreate) {
         createRow = '<li><button type="button" class="wb-hit" data-wb-open="tpl-mint" ' +
           'data-wb-name="' + esc(q) + '">+ create "' + esc(q) + '" - mint a stub</button></li>';
       }
-      listEl.innerHTML = (rows + createRow) ||
-        '<li><span class="note">no matches - type more, or check the spelling</span></li>';
+      var emptyNote = (opts && opts.nocreate)
+        ? '<li><span class="note">no match - leave the name typed above and Apply will create them and record the tie</span></li>'
+        : '<li><span class="note">no matches - type more, or check the spelling</span></li>';
+      listEl.innerHTML = (rows + createRow) || emptyNote;
       /* The search BAR (no kind) gets the wireframe's CLI-parity footer:
          the search is exactly `fha find --text "<q>"`, said so and copyable. */
       if ((!opts || !opts.kind) && listEl.closest('.wb-search-results')) {
@@ -838,7 +853,8 @@
     if (q) {
       var panel = q.closest('.wb-lookup');
       var list = panel && panel.querySelector('.wb-lookup-results');
-      if (list) debouncedLookup(q, list, { kind: q.getAttribute('data-wb-kind') });
+      if (list) debouncedLookup(q, list, { kind: q.getAttribute('data-wb-kind'),
+                                           nocreate: q.hasAttribute('data-wb-nocreate') });
       return;
     }
     /* A genuine user edit to a lookup-backed field invalidates whatever id a
