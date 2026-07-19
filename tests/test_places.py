@@ -680,6 +680,32 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertEqual(parsed['L-7c1a9f4e22'].get('alt_names'), [])
         self.assertEqual(parsed['L-7c1a9f4e22'].get('history'), [])
 
+    def test_clearing_absent_lists_is_a_no_op(self) -> None:
+        # Final-review finding (PR #31): an untouched Apply of the aka /
+        # names-over-time modal posts an empty field (data-wb-allowempty),
+        # which must NOT write 'alt_names: []' / 'history: []' onto a place
+        # that never had those keys - a no-op action may not mutate the
+        # registry.
+        before = self.registry.read_bytes()
+        result = places.run_place_set(self.root, 'L-9999999999',
+                                      aka=[''], history=[''])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(self.registry.read_bytes(), before)
+        self.assertIn('no change', ' '.join(m.text for m in result.messages))
+
+    def test_history_period_without_name_is_refused(self) -> None:
+        # Final-review finding (PR #31): a 'PERIOD | ' line (period, empty
+        # hierarchy) used to be silently dropped - and since the workbench
+        # prefills a hand-authored period-only registry entry in exactly
+        # that shape, any unrelated history edit silently deleted it. Now a
+        # plain refusal, nothing written.
+        before = self.registry.read_bytes()
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22',
+                                      history=['1900 | '])
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('no place name', result.messages[0].text)
+        self.assertEqual(self.registry.read_bytes(), before)
+
     def test_cli_dash_sentinel_clears_both_lists(self) -> None:
         import argparse as _ap
         import io as _io

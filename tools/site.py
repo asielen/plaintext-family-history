@@ -3388,7 +3388,8 @@ class _SiteBuilder:
             ch['co_parents'] = [
                 r['other_id'] for r in self.conn.execute(
                     "SELECT DISTINCT other_id FROM relationships "
-                    "WHERE person_id = ? AND rel = 'parent'", (ch['id'],))
+                    "WHERE person_id = ? AND rel = 'parent' "
+                    "ORDER BY other_id", (ch['id'],))
                 if r['other_id'] != pid
             ]
         return {'spouses': spouses, 'children': children}

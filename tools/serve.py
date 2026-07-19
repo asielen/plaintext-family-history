@@ -776,6 +776,19 @@ def gather_review(state: ServeState) -> dict:
                 row = conn2.execute('SELECT title FROM sources WHERE id = ?', (sid,)).fetchone()
                 if row and row['title']:
                     sources[sid] = row['title']
+                    # The co-occurrence loop above froze its headline while
+                    # this source was still the S-id placeholder (a
+                    # co-occurrence-only source has no suggested claim to
+                    # register the real title first), which left its intended
+                    # 'in <title>' suffix dead for exactly the case it
+                    # targets - patch those items now that the title exists.
+                    for it in items:
+                        if (it.get('kind') == 'co-occurrence'
+                                and it.get('group_source') == sid):
+                            it['group_source_title'] = row['title']
+                            suffix = f' in {row["title"]}'
+                            if not it['headline'].endswith(suffix):
+                                it['headline'] += suffix
             for pid in persons:
                 row = conn2.execute('SELECT tier FROM persons WHERE id = ?', (pid,)).fetchone()
                 if row is not None:

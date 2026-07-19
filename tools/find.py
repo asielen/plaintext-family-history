@@ -693,6 +693,13 @@ def _find_text(
                 fts_sql.format(table='notes_fts', col='1'), (query,)
             ):
                 rel = row[0]
+                # Registry place notes share one physical file: every place's
+                # notes row carries the path places/places.yaml, so a word
+                # matching several places' notes is still ONE file hit here
+                # (the ranked JSON search already dedupes by path the same
+                # way).
+                if rel in seen_paths:
+                    continue
                 hits.append((rel, row[1]))
                 seen_paths.add(rel)
             for row in conn.execute(

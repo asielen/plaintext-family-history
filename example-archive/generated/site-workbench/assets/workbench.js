@@ -280,11 +280,17 @@
     /* A hidden `data-wb-idfield="otherName"` control (set by the lookup
        click handler below when a result is picked by id) names the
        plain-text field it supersedes: when both are non-blank, drop the
-       plain-text one so only the resolved id travels (e.g. a claim's
-       `place` L-id instead of a `place_text` wikilink - submitting both
-       is a refused mutually-exclusive pair server-side). A manually typed
-       plain-text field with no lookup pick is unaffected: the idfield
-       stays blank and collect() already dropped it above. */
+       plain-text one so the resolved id travels alone (e.g. a claim's
+       `place` L-id instead of a `place_text` wording). The server treats
+       the two as INDEPENDENT keys (SPEC 15 - they legally coexist and an
+       unsent key is left untouched), so the drop exists to keep a pick
+       from dragging a stale copy of its display label in as `place_text` -
+       not because the pair would be refused. Typing in the visible field
+       clears the paired id (the input handler below), so fresh human text
+       always outranks a stale pick; `data-wb-keeppair` opts a pair out
+       when its builder routes the two values to different verbs. A
+       manually typed plain-text field with no lookup pick is unaffected:
+       the idfield stays blank and collect() already dropped it above. */
     $all('[data-wb-idfield]', modal).forEach(function (idEl) {
       var idName = idEl.getAttribute('name');
       var pairName = idEl.getAttribute('data-wb-idfield');

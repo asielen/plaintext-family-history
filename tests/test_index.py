@@ -501,6 +501,24 @@ class PlaceCoordsTests(unittest.TestCase):
             conn.close()
         self.assertEqual([r['path'] for r in rows], ['places/places.yaml'])
 
+    def test_place_note_text_hits_dedupe_to_one_registry_result(self) -> None:
+        # Final-review finding (PR #31): every place's notes row shares the
+        # path places/places.yaml, and the CLI text search appended each FTS
+        # row as its own hit - a word appearing in two places' notes printed
+        # the registry twice and then suppressed the honest file-scan hit.
+        # One physical file, one hit.
+        self._build(
+            '- id: L-1111111111\n  name: Millbrook\n'
+            '  notes: |\n    Platted by the millwright cooperative in 1858.\n'
+            '- id: L-2222222222\n  name: Sawville\n'
+            '  notes: |\n    The millwright families moved here in 1870.\n')
+        from contextlib import redirect_stdout
+        from tools import find as find_mod
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            find_mod.run_find('millwright', self.root, {}, text_mode=True)
+        self.assertEqual(buf.getvalue().count('places/places.yaml'), 1)
+
     def _assert_bad_shape(self, coords_line: str) -> None:
         result, rows = self._build(
             f'- id: L-1111111111\n  name: Millbrook\n{coords_line}')

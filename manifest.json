@@ -551,7 +551,7 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "3bf8475a0cb67461bfe5fd826aba8c6201210a94b6242c71fce35150bd028675",
+      "sha256": "c35ba7af07c1c63c04c27d38c07d1610286179153d3f8b6a5b2d96b6c845d5cb",
       "spec_version": "1.2"
     },
     {
@@ -611,7 +611,7 @@
     {
       "path": "tools/places.py",
       "category": "operating",
-      "sha256": "3172fd5653c70a83895d772c50d4abd4f68a8511fb877753173bc86d3005dac6",
+      "sha256": "fef70ca151f39216d668e4fa34981c648eca8348c224a56d3934f48499652f85",
       "spec_version": "1.2"
     },
     {
@@ -647,13 +647,13 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "176184955a0e46fbf6b2da782ebf7445de0009568b708c83cbedb1ef6707c1ea",
+      "sha256": "5e903c6c51110dc067475b6b157e0d4b8423cdc5e60911624188b862c2884b4b",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "b0287198c6255d6aa26bcc80ec4951443164a80d2d4d173017233fafbab81209",
+      "sha256": "7ebf0311ae9d61d6dd0787a89da6fb65aeeadc0f08f02bb9aec118439ad0325d",
       "spec_version": "1.2"
     },
     {
@@ -767,7 +767,7 @@
     {
       "path": "tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "72c1f55bd8aaf69b67addd352ab4c6663c54dbcd115991fad4ee754a76660d69",
+      "sha256": "ac982c8ec682e2ad8c39b13833772661ab553acd306d90184a67e0ed4258c2ef",
       "spec_version": "1.2"
     },
     {

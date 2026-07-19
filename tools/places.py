@@ -1057,6 +1057,16 @@ def _parse_history_lines(entries: list[str]) -> list[dict] | str:
         if '|' in line:
             period, _, hierarchy = line.partition('|')
             entry = {'period': period.strip(), 'hierarchy': hierarchy.strip()}
+            # A period with no name is refused, not silently dropped: the
+            # workbench prefills an (illegal but hand-authorable) empty
+            # hierarchy as exactly 'PERIOD | ', and a silent drop here would
+            # delete that entry from the registry on the human's next
+            # unrelated history edit.
+            if not entry['hierarchy']:
+                return (f'history entry "{line}" names a period but no place '
+                        'name - write it as "PERIOD | Name, Parent, ..." (the '
+                        'name the place bore then), or delete the line to '
+                        'drop the entry.')
             if not entry['period']:
                 entry.pop('period')
             else:
@@ -1189,9 +1199,15 @@ def run_place_set(
         changed_fields.append(f'coordinates -> [{latlon[0]}, {latlon[1]}]')
     if aka is not None:
         cleaned = [a.strip() for a in aka if str(a).strip()]
-        _set_block_key(block, 'alt_names', indent,
-                       [f'{indent}alt_names: {yaml_inline(cleaned)}'])
-        changed_fields.append('also-known-as -> ' + (', '.join(cleaned) or '(none)'))
+        # An empty replacement of a key that was never there is already
+        # clear: writing 'alt_names: []' onto such a place would mutate the
+        # registry on a no-op apply (the workbench modal posts an empty
+        # field even untouched, by design - data-wb-allowempty).
+        if cleaned or any(re.match(rf'^{re.escape(indent)}alt_names:', ln)
+                          for ln in block):
+            _set_block_key(block, 'alt_names', indent,
+                           [f'{indent}alt_names: {yaml_inline(cleaned)}'])
+            changed_fields.append('also-known-as -> ' + (', '.join(cleaned) or '(none)'))
     if history_entries is not None:
         # Each entry is dumped as ONE flow mapping by yaml itself (not
         # hand-spliced from yaml_inline'd scalars: a hierarchy's own commas
@@ -1205,9 +1221,13 @@ def run_place_set(
             value_lines.append(f'{indent}  - {rendered}')
         if not history_entries:
             value_lines = [f'{indent}history: []']
-        _set_block_key(block, 'history', indent, value_lines)
-        changed_fields.append(f'names-over-time -> {len(history_entries)} entr'
-                              + ('y' if len(history_entries) == 1 else 'ies'))
+        # Same no-op guard as alt_names above: clearing a history that was
+        # never recorded writes nothing.
+        if history_entries or any(re.match(rf'^{re.escape(indent)}history:', ln)
+                                  for ln in block):
+            _set_block_key(block, 'history', indent, value_lines)
+            changed_fields.append(f'names-over-time -> {len(history_entries)} entr'
+                                  + ('y' if len(history_entries) == 1 else 'ies'))
 
     new_text = '\n'.join(lines[:start] + block + lines[end:])
     if text.endswith('\n'):
