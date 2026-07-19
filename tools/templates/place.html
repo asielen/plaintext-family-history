@@ -23,7 +23,7 @@
     <dt>Also known as</dt><dd>{% if place.alt_names %}{{ place.alt_names | join(', ') }}{% else %}<span class="empty">none recorded</span>{% endif %}{% if workbench %}
       <a class="wb-vital-edit" href="#" data-wb-open="tpl-place-aka"
          data-wb-args='{{ {"place_id": place.display_id} | tojson }}'
-         data-wb-prefill='{{ {"aka": place.aka_joined} | tojson }}'>edit&hellip;</a>{% endif %}</dd>
+         data-wb-prefill='{{ {"aka": place.aka_lines} | tojson }}'>edit&hellip;</a>{% endif %}</dd>
     {% endif %}
     {% if place.map_url or workbench %}
     <dt>Map</dt><dd>{% if place.map_url %}<a href="{{ place.map_url }}">View on OpenStreetMap</a>

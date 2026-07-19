@@ -6,7 +6,7 @@ human-directed registry edits (TOOLING §10, SPEC §15).
   fha places lint [--root PATH]
   fha places candidates [--root PATH] [--threshold N]
   fha places geocode [--place L-id] [--all] [--offline] [--root PATH]
-  fha places set L-id [--coords "LAT, LON"] [--aka "A, B"] [--history "PERIOD | HIERARCHY"]...
+  fha places set L-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note L-id --text TEXT [--dry-run]
 
 `fha places lint` checks `places/places.yaml` (via the index's `places`/
@@ -1476,7 +1476,10 @@ def _cmd_places_set(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     aka = None
     if getattr(args, 'aka', None) is not None:
-        aka = [a.strip() for a in str(args.aka).split(',')]
+        # Each --aka value is ONE name, verbatim - "Washington, D.C." keeps
+        # its comma (P2 codex finding, round 2, PR #31: the old comma-split
+        # made a comma-bearing alias impossible to record or round-trip).
+        aka = [str(a).strip() for a in args.aka]
     return _emit_place_result(run_place_set(
         archive_root, args.place_id,
         coords=getattr(args, 'coords', None), aka=aka,
@@ -1509,7 +1512,7 @@ Keep your places tidy, fill in their coordinates, and record what you learn.
   fha places lint                    Check the place registry for problems
   fha places candidates              Recurring place-text worth a registry entry
   fha places geocode (--place L-id | --all)  Fill in coordinates (offline, confirmed one by one)
-  fha places set L-id [--coords "LAT, LON"] [--aka "A, B"] [--history "PERIOD | HIERARCHY"]...
+  fha places set L-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note L-id --text "..."  Append a dated research note to the place
   fha places edit-note L-id --old-text "..." --text "..."  Rewrite one existing note
 
@@ -1554,8 +1557,10 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     set_p.add_argument('place_id', metavar='L-id', help='The place to update.')
     set_p.add_argument('--coords', metavar='"LAT, LON"',
                        help='New coordinates, latitude first - e.g. "39.8000, -95.6000".')
-    set_p.add_argument('--aka', metavar='"A, B"',
-                       help='The complete also-known-as list, comma-separated (replaces the old list).')
+    set_p.add_argument('--aka', metavar='NAME', action='append',
+                       help='One also-known-as name, taken verbatim (commas and all - '
+                            '"Washington, D.C." is one name); repeat the flag for more. '
+                            'The given set replaces the old list.')
     set_p.add_argument('--history', metavar='"PERIOD | HIERARCHY"', action='append',
                        help='One names-over-time entry; repeat the flag for more (replaces the old list).')
     set_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -1621,7 +1626,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     set_p = subs.add_parser('set')
     set_p.add_argument('place_id', metavar='L-id')
     set_p.add_argument('--coords', metavar='"LAT, LON"')
-    set_p.add_argument('--aka', metavar='"A, B"')
+    set_p.add_argument('--aka', metavar='NAME', action='append')
     set_p.add_argument('--history', metavar='"PERIOD | HIERARCHY"', action='append')
     set_p.add_argument('--root', metavar='PATH')
     set_p.add_argument('--dry-run', action='store_true', dest='dry_run')

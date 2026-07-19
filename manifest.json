@@ -157,7 +157,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "949e310a5076047e8b5756476638a3ae303240224f67c3f3c310e8472286de6a",
+      "sha256": "d9e4bab4a7efd3594e3b8ff489a22cbdb805677e5d2f47e5f4a44cac700a647f",
       "spec_version": "1.2"
     },
     {
@@ -455,7 +455,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "6774d63b5bd2b0ec88e68f4c1d2baf49eb00fb425ffac0ca49c0b0bb150ebc2f",
+      "sha256": "b7faca0829b7ef65a382fae1b20e017f05745ca76ec234e5a55d779d99bea198",
       "spec_version": "1.2"
     },
     {
@@ -611,7 +611,7 @@
     {
       "path": "tools/places.py",
       "category": "operating",
-      "sha256": "d3d7eb061841d571a454acd426a8712ba089e66dc4d9f556b728635b49e39743",
+      "sha256": "cc3102204b7e3eb0dea95fe7d64bc94843f5161aca91879af9e8670164c015d8",
       "spec_version": "1.2"
     },
     {
@@ -647,13 +647,13 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "88d1073e84c27207a6132e56953e88cbfe2c36d0213dff3f40803f8cad424800",
+      "sha256": "1f641cb61c6c4b5e76af1987f88d35ce8ebe767208247e11af85840aac3da8d1",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "01da69eeef5dd3aa4085e5726377fa0927b7bd7e3d77e5dba14a3c3b6513f422",
+      "sha256": "01595f3500d9f6d8ead82679dc13dbdaa429a94cc4b2c35c5dd6d1268ea7a721",
       "spec_version": "1.2"
     },
     {
@@ -713,7 +713,7 @@
     {
       "path": "tools/templates/place.html",
       "category": "operating",
-      "sha256": "e0909894ea83c382f2987968f478852a2cfa7c50794248ed112659d3402a6a02",
+      "sha256": "a0062e7520046ca50157f04b3863d7e621dfe617e937e1d28d73c38c16696975",
       "spec_version": "1.2"
     },
     {
@@ -749,7 +749,7 @@
     {
       "path": "tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "e436d3f7094c0e5e854a085336f183fd15e66d87cab45be1c06287a865ad28e6",
+      "sha256": "692abcdfbd9ae859934ed23d91e3117870207989b49568eddec9a59475818761",
       "spec_version": "1.2"
     },
     {

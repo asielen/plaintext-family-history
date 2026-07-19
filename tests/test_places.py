@@ -671,6 +671,16 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertEqual(parsed['L-7c1a9f4e22']['alt_names'],
                          ['Fairview City', 'Old Fairview'])
 
+    def test_set_aka_name_with_comma_stays_one_alias(self) -> None:
+        # P2 codex finding (round 2, PR #31): each name is verbatim - a
+        # comma inside it ("Washington, D.C.") must survive the write and
+        # parse back as ONE alias, never resplit.
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22',
+                                      aka=['Washington, D.C.'])
+        self.assertEqual(result.exit_code, 0)
+        parsed = self._parsed()
+        self.assertEqual(parsed['L-7c1a9f4e22']['alt_names'], ['Washington, D.C.'])
+
     def test_set_history_replaces_from_pipe_lines(self) -> None:
         result = places.run_place_set(
             self.root, 'L-7c1a9f4e22',

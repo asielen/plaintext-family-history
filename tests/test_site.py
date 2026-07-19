@@ -1745,6 +1745,31 @@ class WorkbenchModeTests(_Base):
         self.assertIn('"mplace": "Kansas"', wb)
         self.assertNotIn('"mdate": "1923 - Kansas"', wb)
 
+    def test_note_entry_edit_payload_is_the_as_written_text(self):
+        # P2 codex finding (round 2, PR #31): the per-entry Stories/Research
+        # edit buttons built old_text from the DISPLAY-filtered section, but
+        # person.edit_note matches the exact on-disk paragraph - an entry
+        # carrying an AI-ACCEPTED provenance marker or sitting in a private
+        # fence could never be matched ("entry not found"), and the
+        # replacement seed had the markers laundered away. The payload must
+        # be the entry as written; only the rendered HTML is filtered.
+        body = ('# Priya\n## Stories\n\n'
+                'A kept memory. <!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+                '<!-- private -->\n\n'
+                'A private story.\n\n'
+                '<!-- /private -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'Priya Rao', tier='curated', body=body)
+        self._run_wb()
+        wb = self._read('persons/p-aaaaaaaaaa.html')
+        # Both entries are shown, markers stripped from the rendered prose.
+        rendered = wb.split('<template id="tpl-confirm">')[0]
+        self.assertIn('A kept memory.', rendered)
+        self.assertIn('A private story.', rendered)
+        self.assertNotIn('&lt;!-- AI-ACCEPTED', rendered.split('data-wb-args')[0])
+        # The edit payload (data-wb-args old_text / prefill text) carries the
+        # marker exactly as written (tojson escapes '<' as <).
+        self.assertIn('A kept memory. \\u003c!-- AI-ACCEPTED', wb)
+
     def test_no_workbench_chrome_leaks_into_standalone(self):
         self._seed_person('p-cccccccccc', name='Plain Person', living='false',
                           tier='curated', frontmatter_extra='birth: 1900')

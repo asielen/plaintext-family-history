@@ -2062,20 +2062,24 @@ class _SiteBuilder:
         research_html = _prose_to_html(research, render, embed, drop_private=dp) if research else ''
         # Workbench-only: the same Stories/Research text again, split into
         # its append-log entries so each can carry its own edit button
-        # (owner request, review 2026-07-16). Split AFTER the display
-        # filters above, so a button only ever names an entry the page
-        # actually shows; the edit engine re-finds the entry by its exact
-        # text (person.run_edit_note), so any display/disk drift refuses
-        # with a plain message instead of mis-editing.
+        # (owner request, review 2026-07-16). The DISPLAY list still comes
+        # from the filtered text above (a button only ever names an entry the
+        # page actually shows), but each entry's `raw` - the modal's
+        # old_text/replacement seed - is matched back to the entry AS WRITTEN
+        # on disk: `person.run_edit_note` compares exact paragraphs, so a
+        # `<!-- private -->` fence or `<!-- AI-ACCEPTED -->` marker stripped
+        # for display would make every edit refuse "entry not found" (and
+        # seed a replacement with the markers laundered away - P2 codex
+        # finding, round 2, PR #31).
         stories_entries: list[dict] = []
         research_entries: list[dict] = []
         if self.workbench:
-            stories_entries = [
-                {'html': _prose_to_html(e, render, embed, drop_private=dp), 'raw': e}
-                for e in split_log_entries(stories or '')]
-            research_entries = [
-                {'html': _prose_to_html(e, render, embed, drop_private=dp), 'raw': e}
-                for e in split_log_entries(research or '')]
+            stories_as_written = (rec['stories'] or '')
+            research_as_written = (_extract_section(rec['body'], 'Research Notes') or '')
+            stories_entries = self._log_entries_with_raw(
+                stories or '', stories_as_written, render, embed, dp)
+            research_entries = self._log_entries_with_raw(
+                research or '', research_as_written, render, embed, dp)
         # `bio_as_written` (NOT the fence-processed, draft-stripped `bio`
         # used for the render above) is returned alongside the rendered
         # HTML: it is the exact text `person.edit --section biography`
@@ -2084,6 +2088,30 @@ class _SiteBuilder:
         # silently launder away any of them on a human's small edit.
         return (biography_html, stories_html, research_html, bio_as_written,
                 stories_entries, research_entries)
+
+    def _log_entries_with_raw(self, display_section: str, as_written_section: str,
+                              render, embed, dp: bool) -> list[dict]:
+        """Workbench per-entry edit rows for one Stories/Research append-log.
+
+        Each as-written entry is put through the SAME display filters the
+        whole section got (fence markers stripped in workbench mode,
+        AI-ACCEPTED markers removed, unaccepted drafts dropped) and used as a
+        lookup key, so every shown entry can carry its exact on-disk text as
+        `raw`. An entry the filters would hide never becomes a key (it is not
+        shown, so no button names it); a display entry with no match falls
+        back to its display text, where the edit engine's exact-match rule
+        still refuses plainly rather than mis-editing."""
+        lookup: dict[str, str] = {}
+        for w in split_log_entries(as_written_section or ''):
+            filtered = apply_private_fence(w, drop=False)
+            filtered, problem = strip_unaccepted_drafts(filtered)
+            key = filtered.strip()
+            if problem is None and key and key not in lookup:
+                lookup[key] = w
+        return [
+            {'html': _prose_to_html(e, render, embed, drop_private=dp),
+             'raw': lookup.get(e.strip(), e)}
+            for e in split_log_entries(display_section or '')]
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the
@@ -2910,10 +2938,12 @@ class _SiteBuilder:
             'notes_entries': notes_entries,
             # Workbench-only prefills (template gates on `workbench`): the
             # current values in exactly the plain shapes the edit modals and
-            # `fha places set` speak - "lat, lon", a comma-joined aka list,
-            # one "PERIOD | HIERARCHY" line per history entry.
+            # `fha places set` speak - "lat, lon", one alias per line (a
+            # comma join could not round-trip "Washington, D.C." - P2 codex
+            # finding, round 2, PR #31), one "PERIOD | HIERARCHY" line per
+            # history entry.
             'lat': lat, 'lon': lon,
-            'aka_joined': ', '.join(alt_names),
+            'aka_lines': '\n'.join(alt_names),
             'history_lines': '\n'.join(
                 (f"{h['period']} | {h['hierarchy']}" if h['period'] else h['hierarchy'])
                 for h in history),

@@ -591,9 +591,10 @@
   <div class="wb-step">
     <p class="wb-kicker">Other names this place goes by</p>
     <h3>Also known as</h3>
-    <div class="wb-field"><label>Names, comma-separated</label>
-      <input type="text" name="aka" value="" placeholder="Fairview City, Old Fairview"></div>
-    <p class="note">This replaces the whole list, so keep the names you want. Spelling
+    <div class="wb-field"><label>Names, one per line</label>
+      <textarea name="aka" rows="4" placeholder="Fairview City&#10;Old Fairview"></textarea></div>
+    <p class="note">This replaces the whole list, so keep the names you want. One name
+      per line - a name may itself contain commas ("Washington, D.C."). Spelling
       variants recorded here help search find the place however a record wrote it.
       (To empty the list entirely, edit <code>places/places.yaml</code> by hand.)</p>
     <div class="wb-modal-foot">

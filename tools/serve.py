@@ -1343,7 +1343,11 @@ def _verb_place_set(state, kw, dry_run):
     return places_mod.run_place_set(
         state.archive_root, kw.get('place_id', ''),
         coords=coords,
-        aka=[a.strip() for a in str(aka).split(',')] if aka is not None else None,
+        # One alias per LINE (the modal's textarea) - never a comma split,
+        # which silently rewrote a single "Washington, D.C." into two
+        # aliases on an untouched round-trip (P2 codex finding, round 2,
+        # PR #31). Mirrors the CLI's repeatable, verbatim --aka.
+        aka=[a.strip() for a in str(aka).split('\n')] if aka is not None else None,
         history=str(history).split('\n') if history is not None else None,
         dry_run=dry_run)
 
@@ -1353,7 +1357,9 @@ def _echo_place_set(kw):
     if str(kw.get('lat') or '').strip() or str(kw.get('lon') or '').strip():
         parts += ['--coords', _q(f'{kw.get("lat", "")}, {kw.get("lon", "")}')]
     if kw.get('aka') is not None:
-        parts += ['--aka', _q(kw['aka'])]
+        for name in str(kw['aka']).split('\n'):
+            if name.strip():
+                parts += ['--aka', _q(name.strip())]
     if kw.get('history') is not None:
         for line in str(kw['history']).split('\n'):
             if line.strip():

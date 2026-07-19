@@ -1632,6 +1632,25 @@ class PlaceVerbTests(_ServeCase):
         registry = (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8')
         self.assertIn('coords: [40.1, -95.0]', registry)
 
+    def test_place_aka_one_per_line_round_trips_commas(self):
+        # P2 codex finding (round 2, PR #31): the modal speaks one alias per
+        # LINE, so "Washington, D.C." stays a single alias instead of being
+        # resplit into two on an untouched round-trip. The echo names one
+        # verbatim --aka per name.
+        s, d, _h = self.post_run('place.set',
+                                 {'place_id': self.LID,
+                                  'aka': 'Washington, D.C.\nOld Fairview'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertIn('--aka "Washington, D.C." --aka "Old Fairview"',
+                      payload['cli_echo'])
+        import yaml as _yaml
+        registry = _yaml.safe_load(
+            (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
+        entry = next(e for e in registry if e['id'] == self.LID)
+        self.assertEqual(entry['alt_names'], ['Washington, D.C.', 'Old Fairview'])
+
     def test_place_note_apply_appends_dated_note(self):
         s, d, _h = self.post_run('place.note',
                                  {'place_id': self.LID, 'text': 'Platted 1858.'}, False)
