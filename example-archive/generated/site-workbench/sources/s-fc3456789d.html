@@ -133,23 +133,6 @@
         
       </tr>
     
-      <tr>
-        <td>relationship</td>
-        <td>P-4d5e6f7g8h and P-5e6f7g8h9j: neighbor (co-occurrence confirmed)</td>
-        <td></td>
-        <td></td>
-        <td><a href="../persons/p-4d5e6f7g8h.html">George Arthur Bradford</a>, <a href="../persons/p-5e6f7g8h9j.html">Edith Louise Hartley</a></td>
-        <td><span class="status status-accepted">accepted</span></td>
-        
-        <td class="wb-actions">
-          
-          <a class="wb-fix" href="#" data-wb-open="tpl-claim-edit" data-wb-args='{"claim_id": "C-sz2t3memxt"}'
-             data-wb-prefill='{"claim_type": "relationship", "date": "", "persons": "P-4d5e6f7g8h,P-5e6f7g8h9j", "place": "", "place_text": "", "value": "P-4d5e6f7g8h and P-5e6f7g8h9j: neighbor (co-occurrence confirmed)"}'>fix&hellip;</a>
-          
-        </td>
-        
-      </tr>
-    
     </tbody>
   </table>
   
@@ -797,6 +780,31 @@
     <p class="note">The period is a date or range the archive's way (<code>1858/1861</code>,
       <code>1854</code>, <code>[..1861]</code>); after the <code>|</code> comes the full name
       and jurisdiction of that era. This replaces the whole list - keep the lines you want.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+
+<template id="tpl-edit-place-note" data-wb-verb="place.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note on this place stays
+      exactly as written. If the registry changed since this page loaded, the preview says
+      so and nothing is written.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>

@@ -69,6 +69,17 @@
       "photo": null
     },
     {
+      "p_id": "P-htyn3mpg9g",
+      "name": "Ada Jane Hartley",
+      "sex": "F",
+      "vitals": {
+        "birth": null,
+        "death": null
+      },
+      "url": "persons/p-htyn3mpg9g.html",
+      "photo": null
+    },
+    {
       "p_id": "P-5e6f7g8h9j",
       "name": "Edith Louise Hartley",
       "sex": "F",
@@ -160,6 +171,19 @@
       "from": "P-fa7541e871",
       "to": "P-6f7g8h9jka",
       "claim_id": "C-fa0000002b",
+      "subtype": "biological",
+      "genetic": true,
+      "kind": "genetic",
+      "dates": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "type": "child",
+      "from": "P-fa7541e871",
+      "to": "P-htyn3mpg9g",
+      "claim_id": "C-5taq0e7251",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",

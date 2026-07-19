@@ -40,8 +40,7 @@ created: 2026-06-30
   date: 1895~
   place: L-7c1a9f4e22
   place_text: "Fairview, Kansas"
-  status: accepted
-  reviewed: 2026-07-16
+  status: suggested
   confidence: medium
   information: secondary
   evidence: direct

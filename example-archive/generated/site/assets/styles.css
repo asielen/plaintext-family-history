@@ -308,9 +308,23 @@ ul.files { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: va
 ul.files li { width: 10rem; }
 img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); border-radius: 0;
             background: var(--surface); box-shadow: var(--shadow-photo); }
+.full-size-link { display: block; font-family: var(--font-sans); font-size: var(--text-xs);
+                   margin-top: var(--space-1); }
 .photo-strip { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .photo-strip figure { margin: 0; width: 9rem; }
 .photo-strip figcaption { font-size: var(--text-xs); color: var(--muted); font-style: italic; margin-top: var(--space-1); }
+
+/* Source scan thumbnail at the head of a record - same floated-plate visual
+   language as .person-portrait (sizing, border, shadow), but its own class:
+   this one wraps an <img> + <figcaption> so both stack inside a single float
+   instead of two same-direction floats fighting for position. */
+.source-portrait { float: right; width: 9rem; margin: 0 0 var(--space-4) var(--space-5); text-align: center; }
+.source-portrait img { display: block; width: 100%; height: 11rem; object-fit: cover;
+                        border: 1px solid var(--rule-strong); background: var(--surface-sunken);
+                        box-shadow: var(--shadow-photo); }
+.source-portrait figcaption { font-size: var(--text-xs); color: var(--muted); font-style: italic;
+                               margin-top: var(--space-1); }
+@media (max-width: 32rem) { .source-portrait { width: 7rem; } .source-portrait img { height: 8.5rem; } }
 
 /* Inline states */
 .note     { display: block; color: var(--muted); font-size: var(--text-sm); }
@@ -342,6 +356,12 @@ table.claims th, table.claims td { border: none; border-bottom: 1px solid var(--
 table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-soft);
                font-family: var(--font-sans); font-weight: 600; font-size: var(--text-xs);
                text-transform: uppercase; letter-spacing: var(--tracking-caps); color: var(--muted); }
+
+/* Place-page embedded map (OpenStreetMap iframe). Ruled like a plate, not a
+   card; degrades to an empty ruled frame when offline (the plain map link
+   above it always works). */
+.place-map { margin: var(--space-4) 0 var(--space-6); max-width: var(--measure); }
+.place-map iframe { display: block; width: 100%; height: 20rem; border: 1px solid var(--rule-strong); }
 
 /* Statuses read as words in the status ink, not tinted pills */
 .status { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
@@ -445,11 +465,24 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
              fill: var(--ink); text-anchor: middle; dominant-baseline: middle; }
 a.fan-link, a.fan-link:hover { text-decoration: none; }
 
-/* 8. PEDIGREE — horizontal ancestor chart: subject at the left, each ancestor
-   generation steps right (genealogical convention). Cards are HTML in a
-   <foreignObject> so names wrap/ellipsize and links work; connectors are SVG. */
+/* 8. PEDIGREE — horizontal family chart: children (left) - subject + spouse(s)
+   - parents - grandparents (right); ancestors step right (genealogical
+   convention). Cards are HTML in a <foreignObject> so names wrap/ellipsize and
+   links work; connectors are SVG. */
 .pedigree { display: block; width: 100%; max-width: 620px; height: auto; margin: var(--space-3) auto; }
+/* Size-reduced variant: only added when a children column is present (4
+   columns total). The extra column needs more width than the ancestors-only
+   cap, so it gets a wider ceiling here rather than shrinking illegibly small
+   to fit 620px - the chart itself already tightens its card/row spacing to
+   compensate (site.py `_render_pedigree_svg`). */
+.pedigree.pedigree-family { max-width: 760px; }
 .ped-link { fill: none; stroke: var(--rule-strong); stroke-width: 1.25; }
+/* A 2nd/3rd marriage's whole lane - couple bracket, trunk, child ticks -
+   renders dotted so each family unit reads as one line style (owner decision,
+   review 2026-07-17). Deliberately distinct from the interactive tree's dash
+   vocabulary (6 3 = legal bond, 1 3 = other): this dash means "a later
+   marriage", not a different kind of bond. */
+.ped-link-later { stroke-dasharray: 3 3; }
 .ped-node { box-sizing: border-box; height: 100%; display: flex; flex-direction: column;
             justify-content: center; gap: 1px; padding: 3px 9px; overflow: hidden;
             border: 1px solid var(--rule); background: var(--surface);
@@ -463,6 +496,9 @@ a.fan-link, a.fan-link:hover { text-decoration: none; }
             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 a.ped-name:hover { text-decoration: underline; }
 .ped-empty .ped-name { font-style: italic; color: var(--muted); }
+.ped-empty[data-wb-open] { cursor: pointer; }
+.ped-empty[data-wb-open]:hover { border-color: var(--accent); }
+.ped-empty[data-wb-open]:hover .ped-name { color: var(--accent); }
 .ped-dates { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted); }
 
 /* Collapsible chart sections (native <details>, no script). */

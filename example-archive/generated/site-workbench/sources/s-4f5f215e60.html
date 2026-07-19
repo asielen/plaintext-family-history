@@ -173,29 +173,12 @@
         <td>1989</td>
         <td>daly City</td>
         <td><a href="../persons/p-de957bcda1.html">Thomas Edward Hartley</a></td>
-        <td><span class="status status-accepted">accepted</span></td>
+        <td><span class="status status-rejected">rejected</span></td>
         
         <td class="wb-actions">
           
           <a class="wb-fix" href="#" data-wb-open="tpl-claim-edit" data-wb-args='{"claim_id": "C-1q49bbb6r3"}'
              data-wb-prefill='{"claim_type": "residence", "date": "1989", "persons": "P-de957bcda1", "place": "", "place_text": "daly City", "value": "Lived at 16 Lake Vista"}'>fix&hellip;</a>
-          
-        </td>
-        
-      </tr>
-    
-      <tr>
-        <td>relationship</td>
-        <td>P-83e768cacb and P-c4b26bb4bc: neighbor (co-occurrence confirmed)</td>
-        <td></td>
-        <td></td>
-        <td><a href="../persons/p-83e768cacb.html">Frances Hartley</a>, <a href="../persons/p-c4b26bb4bc.html">Ethel Hartley</a></td>
-        <td><span class="status status-accepted">accepted</span></td>
-        
-        <td class="wb-actions">
-          
-          <a class="wb-fix" href="#" data-wb-open="tpl-claim-edit" data-wb-args='{"claim_id": "C-hark89r5vj"}'
-             data-wb-prefill='{"claim_type": "relationship", "date": "", "persons": "P-83e768cacb,P-c4b26bb4bc", "place": "", "place_text": "", "value": "P-83e768cacb and P-c4b26bb4bc: neighbor (co-occurrence confirmed)"}'>fix&hellip;</a>
           
         </td>
         
@@ -848,6 +831,31 @@
     <p class="note">The period is a date or range the archive's way (<code>1858/1861</code>,
       <code>1854</code>, <code>[..1861]</code>); after the <code>|</code> comes the full name
       and jurisdiction of that era. This replaces the whole list - keep the lines you want.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+
+<template id="tpl-edit-place-note" data-wb-verb="place.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note on this place stays
+      exactly as written. If the registry changed since this page loaded, the preview says
+      so and nothing is written.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>

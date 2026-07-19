@@ -114,7 +114,7 @@
   
   <details class="chart" open>
     <summary class="chart-title">Family</summary>
-    <div class="chart-body"><svg class="pedigree pedigree-family" viewBox="0 0 576 64.0" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Family chart"><path class="ped-link" d="M376,32 H384 V-28 H392"/><path class="ped-link" d="M376,32 H384 V92 H392"/><path class="ped-link" d="M184,32 H192"/><path class="ped-link" d="M192,32 H200"/><foreignObject x="200" y="8" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node ped-self"><a class="ped-name" href="p-d00c678c1a.html">Chastina Augusta Reed</a></div></foreignObject><foreignObject x="392" y="-52" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node ped-empty" data-wb-open="tpl-add-family" data-wb-args='{&quot;person_id&quot;: &quot;P-d00c678c1a&quot;, &quot;relation_type&quot;: &quot;parent&quot;}' data-wb-fill="relation_type=parent" title="Create a stub for this ancestor" role="button" tabindex="0"><span class="ped-name">Unknown &mdash; add</span></div></foreignObject><foreignObject x="392" y="68" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node ped-empty" data-wb-open="tpl-add-family" data-wb-args='{&quot;person_id&quot;: &quot;P-d00c678c1a&quot;, &quot;relation_type&quot;: &quot;parent&quot;}' data-wb-fill="relation_type=parent" title="Create a stub for this ancestor" role="button" tabindex="0"><span class="ped-name">Unknown &mdash; add</span></div></foreignObject><foreignObject x="8" y="8" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node"><a class="ped-name" href="p-de957bcda1.html">Thomas Edward Hartley</a><span class="ped-dates">b. 1840</span></div></foreignObject></svg></div>
+    <div class="chart-body"><svg class="pedigree pedigree-family" viewBox="0 0 608 64.0" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Family chart"><path class="ped-link" d="M392,32 H408 V-28 H424"/><path class="ped-link" d="M392,32 H408 V92 H424"/><path class="ped-link" d="M216,32 H200"/><path class="ped-link" d="M184,32 H200"/><foreignObject x="216" y="8" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node ped-self"><a class="ped-name" href="p-d00c678c1a.html">Chastina Augusta Reed</a></div></foreignObject><foreignObject x="424" y="-52" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node ped-empty" data-wb-open="tpl-add-family" data-wb-args='{&quot;person_id&quot;: &quot;P-d00c678c1a&quot;, &quot;relation_type&quot;: &quot;parent&quot;}' data-wb-fill="relation_type=parent" title="Create a stub for this ancestor" role="button" tabindex="0"><span class="ped-name">Unknown &mdash; add</span></div></foreignObject><foreignObject x="424" y="68" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node ped-empty" data-wb-open="tpl-add-family" data-wb-args='{&quot;person_id&quot;: &quot;P-d00c678c1a&quot;, &quot;relation_type&quot;: &quot;parent&quot;}' data-wb-fill="relation_type=parent" title="Create a stub for this ancestor" role="button" tabindex="0"><span class="ped-name">Unknown &mdash; add</span></div></foreignObject><foreignObject x="8" y="8" width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="ped-node"><a class="ped-name" href="p-de957bcda1.html">Thomas Edward Hartley</a><span class="ped-dates">b. 1840</span></div></foreignObject></svg></div>
   </details>
   
 
@@ -796,6 +796,31 @@
     <p class="note">The period is a date or range the archive's way (<code>1858/1861</code>,
       <code>1854</code>, <code>[..1861]</code>); after the <code>|</code> comes the full name
       and jurisdiction of that era. This replaces the whole list - keep the lines you want.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+
+<template id="tpl-edit-place-note" data-wb-verb="place.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note on this place stays
+      exactly as written. If the registry changed since this page loaded, the preview says
+      so and nothing is written.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>

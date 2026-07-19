@@ -88,22 +88,6 @@ created: 2026-06-14
   notes: >
     Date and place noted by Carol Bradford. Marriage license (not separately located) would
     confirm; treated as high-confidence given that the author was the bride.
-
-- value: "P-4d5e6f7g8h and P-5e6f7g8h9j: neighbor (co-occurrence confirmed)"
-  id: C-sz2t3memxt
-  type: relationship
-  subtype: neighbor
-  persons: [P-4d5e6f7g8h, P-5e6f7g8h9j]
-  roles:
-    neighbor: [P-4d5e6f7g8h, P-5e6f7g8h9j]
-  status: accepted
-  reviewed: 2026-07-16
-  confidence: medium
-  information: secondary
-  evidence: indirect
-  notes: >
-    Social tie (neighbor) suggested by co-occurrence in shared sources and
-    confirmed by a human from this source.
 ```
 
 ## Notes

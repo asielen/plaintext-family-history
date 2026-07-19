@@ -78,7 +78,6 @@ created: 2026-06-12
     parent: [P-de957bcda1, P-cd795c61e0]
   date: 1880-06~
   status: accepted
-  corroborates: [C-fa0000001a]
   reviewed: 2026-06-12
   confidence: medium
   information: secondary
@@ -95,7 +94,6 @@ created: 2026-06-12
     parent: [P-de957bcda1, P-cd795c61e0]
   date: 1880-06~
   status: accepted
-  corroborates: [C-fa0000001a]
   reviewed: 2026-06-12
   confidence: medium
   information: secondary
@@ -118,31 +116,19 @@ created: 2026-06-12
   evidence: indirect
   notes: Parentage placeholder for the example; in a real archive this would rest on a vital record or proof argument, not a census alone.
 
-- value: "P-83e768cacb and P-c4b26bb4bc: neighbor (co-occurrence confirmed)"
-  id: C-hark89r5vj
-  type: relationship
-  subtype: neighbor
-  persons: [P-83e768cacb, P-c4b26bb4bc]
-  roles:
-    neighbor: [P-83e768cacb, P-c4b26bb4bc]
-  status: accepted
-  reviewed: 2026-07-16
-  confidence: medium
-  information: secondary
-  evidence: indirect
-  notes: >
-    Social tie (neighbor) suggested by co-occurrence in shared sources and
-    confirmed by a human from this source.
-
 - value: Lived at 16 Lake Vista
   id: C-1q49bbb6r3
   type: residence
   persons: [P-de957bcda1]
   date: 1989
   place_text: daly City
-  status: accepted
+  status: rejected
   confidence: medium
-  reviewed: 2026-07-16
+  reviewed: 2026-07-17
+  notes: >
+    Test entry typed during a live workbench review session (2026-07-16), not an
+    assertion of this source - the 1989 date cannot belong to a person born about
+    1840. Kept as rejected to preserve the review trail.
 ```
 
 ## Notes

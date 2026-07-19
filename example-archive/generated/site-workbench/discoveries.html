@@ -40,6 +40,12 @@
 
 <article class="discoveries">
   <h1>Discoveries</h1>
+  <div class="wb-record">
+    <span>record:</span>
+    <code>notes/discoveries.md</code>
+    <a href="#" data-wb-open-file="notes/discoveries.md">open file</a>
+  </div>
+  
   
   <p>*Running log of research wins (example archive - fictional). Entries are appended as the report identifies answered questions, first corroborations, and completed profiles.*</p>
   
@@ -660,6 +666,31 @@
     <p class="note">The period is a date or range the archive's way (<code>1858/1861</code>,
       <code>1854</code>, <code>[..1861]</code>); after the <code>|</code> comes the full name
       and jurisdiction of that era. This replaces the whole list - keep the lines you want.</p>
+    <div class="wb-modal-foot">
+      <button type="button" class="btn" data-wb-close>Cancel</button>
+      <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
+    </div>
+  </div>
+</template>
+
+
+<template id="tpl-edit-place-note" data-wb-verb="place.edit_note">
+  <div class="wb-step">
+    <p class="wb-kicker">Rewrite one note - the rest of the log is untouched</p>
+    <h3>Edit this note</h3>
+    <div class="wb-field">
+      <label>The note, as markdown</label>
+      <textarea name="text" class="wb-target" style="min-height:8rem"></textarea>
+      <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
+      <div class="wb-lookup" hidden>
+        <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
+        <ul class="wb-lookup-results"></ul>
+      </div>
+      <p class="wb-bracket-warn" hidden></p>
+    </div>
+    <p class="note">Only this one note is replaced - every other note on this place stays
+      exactly as written. If the registry changed since this page loaded, the preview says
+      so and nothing is written.</p>
     <div class="wb-modal-foot">
       <button type="button" class="btn" data-wb-close>Cancel</button>
       <button type="button" class="btn btn-primary" data-wb-preview>Preview dry run</button>
