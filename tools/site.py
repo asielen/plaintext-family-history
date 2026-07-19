@@ -1934,12 +1934,21 @@ class _SiteBuilder:
                 if t in by_type:
                     continue   # a sourced claim wins - the estimate is superseded
                 est = self._provisional_vital(pid, t)
-                if est:
-                    place = self._provisional_vital(pid, f'{t}_place') or ''
+                place = self._provisional_vital(pid, f'{t}_place') or ''
+                # A place-only estimate (birth_place: with no birth:) is still
+                # a row - the new set-estimate flags write either field alone.
+                # Date and place stay SEPARATE fields all the way down: folding
+                # them into one display string fed the edit modal an `mdate` of
+                # "1923 - Kansas", which `person.estimate` rejects (codex round
+                # 1). The template joins them for display and prefills
+                # mdate/mplace independently.
+                if est or place:
                     summary.append({
                         'label': _VITAL_LABELS[t],
-                        'value': est if not place else f'{est} - {place}',
-                        'place': '',
+                        'value': est or '',
+                        'place': place,
+                        'date_raw': est or '',
+                        'place_raw': place,
                         'source_html': '',
                         'provisional': True,
                         'missing': False,

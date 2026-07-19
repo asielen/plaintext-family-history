@@ -1138,6 +1138,26 @@ def _verb_add_family(state, kw, dry_run):
     if not related.ok:
         minted.ok = False
         minted.exit_code = max(minted.exit_code, related.exit_code)
+        # The combined action failed halfway: the stub is on disk but the tie
+        # it was minted FOR was refused (stale subject page, merged person,
+        # bad relation - run_relate itself is all-or-nothing, so `changed`
+        # empty means the tie landed nowhere). A failed apply must not leave
+        # the archive mutated (P2 codex finding, round 1, PR #31): unlink the
+        # stub written moments ago and report the roll-back, so the human
+        # retries from a clean state instead of collecting orphan records.
+        if not related.changed:
+            stub_path = Path(str(minted.data.get('path') or ''))
+            if stub_path.is_file():
+                with contextlib.suppress(OSError):
+                    stub_path.unlink()
+            if not stub_path.exists():
+                minted.changed = [c for c in minted.changed if c != str(stub_path)]
+                minted.data['status'] = 'refused'
+                minted.data['new_person_id'] = None
+                minted.add('info',
+                           'The new record was rolled back - the family link it '
+                           'was created for could not be recorded, so nothing '
+                           'was kept.')
     return minted
 
 
@@ -2419,7 +2439,13 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 20
         limit = max(1, min(limit, 50))
-        kinds = [k.strip() for k in kind_raw.split(',')] if kind_raw else None
+        # Same validation the CLI's --kind gets: an unknown kind is a plain
+        # 400 naming the valid list, never a silent empty result set (the
+        # "unknown verb is a plain 400" rule; catches a typo'd data-wb-kind).
+        kinds, kind_err = find_mod._parse_kind_filter(kind_raw or None)
+        if kind_err is not None:
+            self._reject(400, kind_err)
+            return
         results = find_mod.search_json(self.state.archive_root, self.state.fha_config,
                                        q, kinds=kinds, limit=limit)
         self._send_json(200, {'results': results})

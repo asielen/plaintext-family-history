@@ -36,8 +36,8 @@
     <dd><span class="empty">not recorded</span>{% if workbench %}
       <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-fill="mtype={{ row.label }}">add</a>{% endif %}</dd>
     {%- else %}
-    <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% if workbench %}
-      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-prefill='{{ {"mtype": row.label, "mdate": row.value} | tojson }}'>edit</a>{% endif %}{% endif %}
+    <dd>{{ row.value }}{% if row.place %}{% if row.value %} - {% endif %}{{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% if workbench %}
+      <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-prefill='{{ {"mtype": row.label, "mdate": row.date_raw, "mplace": row.place_raw} | tojson }}'>edit</a>{% endif %}{% endif %}
       {%- if workbench and not row.provisional and row.claim_id -%}
       {#- A sourced vital's edit opens the CLAIM editor prefilled with the
           claim's own data - editing the actual fact, never minting a

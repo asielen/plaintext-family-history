@@ -2000,6 +2000,15 @@ def _ranked_search(
 
     kind_set = set(kinds) if kinds is not None else None
 
+    # 'photo-source' is a FILTER on source hits, not a result type of its
+    # own: candidates are gathered as if 'source' had been asked for (title
+    # AND alias passes - an alias/stem that finds a source under
+    # `--kind source` must find that same source here), then sources that
+    # own no photo are dropped just before ranking.
+    gen_kinds = kind_set
+    if kind_set is not None and 'photo-source' in kind_set:
+        gen_kinds = (kind_set - {'photo-source'}) | {'source'}
+
     id_norm = normalize_id(q)
     if is_valid_id(id_norm):
         hit = _bare_id_hit(conn, id_norm)
@@ -2018,7 +2027,7 @@ def _ranked_search(
     candidates: dict[str, dict] = {}
 
     def consider(cid: str, type_: str, label: str | None, detail: str, *texts: str | None) -> None:
-        if label is None or (kind_set is not None and type_ not in kind_set):
+        if label is None or (gen_kinds is not None and type_ not in gen_kinds):
             return
         tier = _best_match_tier(q_lower, texts)
         if tier is None:
@@ -2030,7 +2039,7 @@ def _ranked_search(
                 'hit': {'id': cid, 'type': type_, 'label': label, 'detail': detail},
             }
 
-    if kind_set is None or kind_set & {'person', 'source', 'place'}:
+    if gen_kinds is None or gen_kinds & {'person', 'source', 'place'}:
         for alias, canonical_id, _alias_kind in conn.execute(
             "SELECT alias, canonical_id, kind FROM aliases WHERE alias LIKE ? ESCAPE '\\'",
             (pattern,),
@@ -2041,7 +2050,7 @@ def _ranked_search(
             label, detail = _lookup_label_detail(conn, hit_type, canonical_id)
             consider(canonical_id, hit_type, label, detail, alias)
 
-    if kind_set is None or 'person' in kind_set:
+    if gen_kinds is None or 'person' in gen_kinds:
         for row in conn.execute(
             "SELECT id, name, surname, birth, death, tier FROM persons "
             "WHERE name LIKE ? ESCAPE '\\' OR surname LIKE ? ESCAPE '\\'",
@@ -2050,7 +2059,7 @@ def _ranked_search(
             label, detail = _person_label_detail(row)
             consider(row['id'], 'person', label, detail, row['name'], row['surname'])
 
-    if kind_set is None or 'source' in kind_set:
+    if gen_kinds is None or 'source' in gen_kinds:
         for row in conn.execute(
             "SELECT id, title, source_type, date_edtf FROM sources WHERE title LIKE ? ESCAPE '\\'",
             (pattern,),
@@ -2058,30 +2067,24 @@ def _ranked_search(
             label, detail = _source_label_detail(row)
             consider(row['id'], 'source', label, detail, row['title'])
 
-    if kind_set is not None and 'photo-source' in kind_set:
-        # Same title search as 'source', narrowed to sources that own at
-        # least one photo file (or are typed photo outright). The hits stay
-        # type 'source' - 'photo-source' is a filter, not a result type -
-        # so the kind check happens here, not in consider().
-        for row in conn.execute(
-            "SELECT s.id, s.title, s.source_type, s.date_edtf FROM sources s "
-            "WHERE s.title LIKE ? ESCAPE '\\' AND (s.source_type = 'photo' "
-            "OR EXISTS (SELECT 1 FROM source_files sf WHERE sf.source_id = s.id "
-            f"AND ({_PHOTO_FILE_SQL})))",
-            (pattern,),
-        ):
-            label, detail = _source_label_detail(row)
-            tier = _best_match_tier(q_lower, (row['title'],))
-            if label is None or tier is None:
-                continue
-            existing = candidates.get(row['id'])
-            if existing is None or tier < existing['tier']:
-                candidates[row['id']] = {
-                    'tier': tier,
-                    'hit': {'id': row['id'], 'type': 'source', 'label': label, 'detail': detail},
-                }
+    if kind_set is not None and 'photo-source' in kind_set and 'source' not in kind_set:
+        # The photo-ownership filter: keep only source hits typed photo
+        # outright or owning at least one photo file. Applied to the FULL
+        # candidate set (title and alias hits alike) - the round-3 codex
+        # finding was that alias/stem matches skipped this path entirely, so
+        # a search that worked under `--kind source` silently returned
+        # nothing here even when the source owned a photo.
+        for cid in [c for c, v in candidates.items() if v['hit']['type'] == 'source']:
+            owns = conn.execute(
+                "SELECT 1 FROM sources s WHERE s.id = ? AND (s.source_type = 'photo' "
+                "OR EXISTS (SELECT 1 FROM source_files sf WHERE sf.source_id = s.id "
+                f"AND ({_PHOTO_FILE_SQL})))",
+                (cid,),
+            ).fetchone()
+            if owns is None:
+                del candidates[cid]
 
-    if kind_set is None or 'place' in kind_set:
+    if gen_kinds is None or 'place' in gen_kinds:
         for row in conn.execute(
             "SELECT id, name, hierarchy FROM places WHERE name LIKE ? ESCAPE '\\'",
             (pattern,),

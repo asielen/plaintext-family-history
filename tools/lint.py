@@ -107,6 +107,7 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    yaml_inline,
 )
 
 import yaml
@@ -3610,7 +3611,10 @@ def _format_mirror_entry(
         f'    type: {role}',
     ]
     if subtype:
-        lines.append(f'    subtype: {subtype}')
+        # Free text (same field person._relationship_item_lines quotes): a
+        # ': ' or ' #' typed into a claim's subtype long ago must not corrupt
+        # the mirrored record's frontmatter here either.
+        lines.append(f'    subtype: {yaml_inline(subtype)}')
     if claim_id:
         lines.append(f'    claim: "[[{fmt_id_display(claim_id)}]]"')
     return lines

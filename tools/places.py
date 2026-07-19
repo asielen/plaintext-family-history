@@ -112,9 +112,11 @@ from _lib import (
     Result,
     edtf_bounds,
     fmt_id_display,
+    format_edtf_error,
     id_type_of,
     is_valid_id,
     load_fha_yaml,
+    normalize_date,
     normalize_id,
     normalize_place_text,
     open_index_db,
@@ -1033,13 +1035,20 @@ def _parse_coords_text(raw: str) -> tuple[float, float] | str:
     return lat, lon
 
 
-def _parse_history_lines(entries: list[str]) -> list[dict]:
-    """Parse "PERIOD | HIERARCHY" lines into SPEC §15 history entries.
+def _parse_history_lines(entries: list[str]) -> list[dict] | str:
+    """Parse "PERIOD | HIERARCHY" lines into SPEC §15 history entries, or
+    return a plain error string (the `_parse_coords_text` contract).
 
     The workbench textarea and the repeatable --history flag both speak this
     one plain shape: an EDTF period, a pipe, the hierarchy of that era. A
     line with no pipe is taken as a hierarchy with no period (legal - the
-    period is optional in the spec's `{period, hierarchy}` mapping)."""
+    period is optional in the spec's `{period, hierarchy}` mapping).
+
+    The period is validated BEFORE it is written: loose forms are read the
+    same way claim dates are (`normalize_date`: "circa 1858" -> "1858~"),
+    and a period with no clear reading is a refusal - an unreadable period
+    would silently index at the all-time `0001..9999` bounds, scrambling the
+    place page's names-over-time order while looking accepted."""
     out: list[dict] = []
     for raw in entries:
         line = str(raw).strip()
@@ -1050,6 +1059,12 @@ def _parse_history_lines(entries: list[str]) -> list[dict]:
             entry = {'period': period.strip(), 'hierarchy': hierarchy.strip()}
             if not entry['period']:
                 entry.pop('period')
+            else:
+                normalized = normalize_date(entry['period'])
+                if normalized is None:
+                    return (format_edtf_error(entry['period'], field='history period')
+                            + ' Periods may also be a range like "1858/1861".')
+                entry['period'] = normalized
         else:
             entry = {'hierarchy': line}
         if entry.get('hierarchy'):
@@ -1151,11 +1166,16 @@ def run_place_set(
         if isinstance(parsed, str):
             return result_fail(result, 'refused', parsed)
         latlon = parsed
-    history_entries = _parse_history_lines(history) if history is not None else None
-    if history is not None and history_entries == [] and any(str(h).strip() for h in history):
-        return result_fail(result, 'refused',
-                           'no usable history entries - write one per line as '
-                           '"1858/1861 | Fairview, Breton Co., Kansas Territory, USA".')
+    history_entries: list[dict] | None = None
+    if history is not None:
+        parsed_history = _parse_history_lines(history)
+        if isinstance(parsed_history, str):
+            return result_fail(result, 'refused', parsed_history)
+        history_entries = parsed_history
+        if history_entries == [] and any(str(h).strip() for h in history):
+            return result_fail(result, 'refused',
+                               'no usable history entries - write one per line as '
+                               '"1858/1861 | Fairview, Breton Co., Kansas Territory, USA".')
 
     lines = text.splitlines()
     start, end = _locate_place_block(lines, place_id)

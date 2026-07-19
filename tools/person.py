@@ -212,7 +212,6 @@ from _lib import (
     replace_paragraph_in_section,
     resolve_root_arg,
     result_fail,
-    scan_ids_in_tree,
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
@@ -674,8 +673,13 @@ def run_set_profile_photo(
             "field's value, not a real profile_photo field, so it cannot be "
             f'edited safely. Open {path} and add a top-level profile_photo: {val} '
             'line by hand, then run `fha lint`. Nothing was written.')
+    # The filename is free text: a ` #` or `: ` in it (`Grandpa #2.jpg`)
+    # written bare would truncate as a YAML comment or corrupt the header, so
+    # it takes the shared yaml_inline quoting rule like every other free-text
+    # frontmatter write.
+    val_yaml = yaml_inline(val)
     if key_lines:
-        new_lines[key_lines[0]] = _replace_scalar_line(lines[key_lines[0]], 'profile_photo', val)
+        new_lines[key_lines[0]] = _replace_scalar_line(lines[key_lines[0]], 'profile_photo', val_yaml)
     elif 'profile_photo' in before_meta:
         return _refuse(
             'refused',
@@ -686,7 +690,7 @@ def run_set_profile_photo(
         cr = '\r' if lines[start].endswith('\r') else ''
         name_lines = _key_line_indexes(lines, start + 1, end, 'name')
         insert_at = (name_lines[0] + 1) if name_lines else end
-        new_lines.insert(insert_at, f'profile_photo: {val}{cr}')
+        new_lines.insert(insert_at, f'profile_photo: {val_yaml}{cr}')
 
     new_text = '\n'.join(new_lines)
     problem = frontmatter_edit_problem(new_text, before_meta=before_meta,
@@ -959,12 +963,23 @@ def run_new(
         if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
             return _refuse_result(result, 'refused', f'{person_id!r} is not a valid P-id.')
         pid = normalize_id(person_id)
-        if pid in scan_ids_in_tree(archive_root):
+        # Reuse is refused only when a person RECORD already carries this id -
+        # not on any textual mention of it. The workbench's claim-reference
+        # mint '+' passes a P-id that by definition already appears in a
+        # source record's claims (that is the whole point: the stub resolves
+        # those references), so a scan_ids_in_tree() check would refuse every
+        # such mint as stale (P2 codex finding, round 1, PR #31). The
+        # preview/apply staleness this guard exists for - someone else
+        # created the person in between - is exactly "a record file now
+        # exists", which is what this checks.
+        existing = find_person_record_path(archive_root, pid)
+        if existing is not None:
             return _refuse_result(
                 result, 'refused',
-                f'{fmt_id_display(pid)} already exists in the archive - the earlier '
-                'preview is stale (something else changed since). Preview again, '
-                'then apply.')
+                f'{fmt_id_display(pid)} already has a person record at '
+                f'{existing} - nothing to mint. If this came from a preview, '
+                'something else created the record since; review it with '
+                f'`fha find {fmt_id_display(pid)}`.')
     else:
         pid = mint_ids('P', 1, archive_root)[0].lower()
     filename = stub_filename(clean_name, pid)

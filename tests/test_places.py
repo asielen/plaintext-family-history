@@ -683,6 +683,28 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertEqual(hist[0]['period'], '1854/1858')
         self.assertEqual(hist[1]['hierarchy'], 'Fairview, Breton Co., Kansas Territory, USA')
 
+    def test_set_history_refuses_an_unreadable_period(self) -> None:
+        # P2 codex finding (round 1, PR #31): a typo period ("1858??") used to
+        # be written verbatim; edtf_bounds() then indexed it at the all-time
+        # 0001..9999 bounds, silently scrambling names-over-time order.
+        before = self.registry.read_bytes()
+        result = places.run_place_set(
+            self.root, 'L-7c1a9f4e22',
+            history=['1858?? | Fairview, Kansas Territory'])
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('history period', result.messages[0].text)
+        self.assertIn('1858/1861', result.messages[0].text)   # the range example
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_set_history_normalizes_a_loose_period(self) -> None:
+        # Loose human wording is read the same way claim dates are.
+        result = places.run_place_set(
+            self.root, 'L-7c1a9f4e22',
+            history=['circa 1858 | Fairview settlement, Kansas Territory'])
+        self.assertEqual(result.exit_code, 0)
+        hist = self._parsed()['L-7c1a9f4e22']['history']
+        self.assertEqual(hist[0]['period'], '1858~')
+
     def test_set_nothing_refused(self) -> None:
         result = places.run_place_set(self.root, 'L-7c1a9f4e22')
         self.assertEqual(result.exit_code, 3)

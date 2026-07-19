@@ -219,6 +219,19 @@ class FindTests(_ServeCase):
         self.assertIn('id', results[0])
         self.assertIn('type', results[0])
 
+    def test_find_unknown_kind_is_a_plain_400(self):
+        # Same rule as an unknown verb: a typo'd kind must be a named 400,
+        # never a silently empty result set.
+        s, d, _h = self.req('GET', '/api/find?q=Hartley&kind=persno')
+        self.assertEqual(s, 400)
+        self.assertIn('persno', d.decode('utf-8'))
+
+    def test_find_valid_kind_filter_still_works(self):
+        s, d, _h = self.req('GET', '/api/find?q=Hartley&kind=person')
+        self.assertEqual(s, 200)
+        results = json.loads(d)['results']
+        self.assertTrue(all(r['type'] == 'person' for r in results))
+
 
 class ApiRunTests(_ServeCase):
     def test_unknown_verb_400(self):
@@ -1665,8 +1678,9 @@ class ReciprocalRelateTests(_ServeCase):
     B = 'P-c4b26bb4bc'   # Ethel Hartley
 
     def _person_file(self, pid):
-        hits = [p for p in (self.root / 'people').rglob(f'*{pid.lower()}*.md')
-                if '_timeline' not in p.name and '_sources-index' not in p.name
+        hits = [p for p in (self.root / 'people').rglob('*.md')
+                if pid.lower() in p.name.lower()
+                and '_timeline' not in p.name and '_sources-index' not in p.name
                 and '_draft-queue' not in p.name]
         self.assertTrue(hits, f'no record file found for {pid}')
         return hits[0]
@@ -1697,6 +1711,41 @@ class ReciprocalRelateTests(_ServeCase):
         self.assertIn(self.B, a_text)
         # The target's record is byte-identical - no mirror was written.
         self.assertEqual(self._person_file(self.B).read_bytes(), b_before)
+
+
+class AddFamilyRollbackTests(_ServeCase):
+    """person.add_family's typed-name path mints the stub, then relates. A
+    relate refusal must not leave the fresh stub behind as an orphan - a
+    failed combined action may not mutate the archive (P2 codex finding,
+    round 1, PR #31)."""
+
+    A = 'P-6f7g8h9jka'   # Warren Calvin Hartley
+
+    def _stub_names(self):
+        stubs = self.root / 'people' / 'stubs'
+        return {p.name for p in stubs.iterdir()} if stubs.is_dir() else set()
+
+    def test_failed_relate_rolls_the_minted_stub_back(self):
+        before = self._stub_names()
+        s, d, _h = self.post_run('person.add_family',
+                                 {'person_id': self.A, 'relation_type': 'cousin',
+                                  'name': 'Orphan Candidate'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertFalse(payload['ok'])
+        self.assertEqual(self._stub_names(), before)
+        text = ' '.join(m['text'] for m in payload['messages'])
+        self.assertIn('rolled back', text)
+
+    def test_successful_mint_and_relate_keeps_the_stub(self):
+        before = self._stub_names()
+        s, d, _h = self.post_run('person.add_family',
+                                 {'person_id': self.A, 'relation_type': 'sibling',
+                                  'name': 'Kept Sibling'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'])
+        self.assertEqual(len(self._stub_names() - before), 1)
 
 
 class PickFileTests(_ServeCase):

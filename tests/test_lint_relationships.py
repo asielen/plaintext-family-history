@@ -305,6 +305,29 @@ class ReciprocityW116Tests(unittest.TestCase):
         rel = rec['meta']['relationships'][0]
         self.assertEqual(rel['to'], '[[P-aaaaaaaaaa|Ann "Annie" kid]]')
 
+    def test_fix_reciprocal_subtype_with_yaml_chars_is_quoted(self) -> None:
+        # Same sweep, other free-text field: the claim's subtype is whatever a
+        # human once typed (not restricted to the KIN_SUBTYPES vocabulary) - a
+        # ': ' or ' #' in it written bare would corrupt the mirrored record's
+        # frontmatter. person._relationship_item_lines already quotes it; the
+        # lint mirror writer must too.
+        child_f, child_t = _person(
+            CHILD, 'kid', 'ann',
+            relationships=_parent_entry(PARENT, 'Bob Kid', role='parent',
+                                        subtype='"step: half"'))
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT,
+                                        subtype='"step: half"')
+        root = _build({child_f: child_t, parent_f: parent_t, src_rel: src_text})
+        lint.run_lint(root, {}, fix_reciprocal=True)
+        parent_path = root / 'people' / 'stubs' / f'kid__bob_{PARENT}.md'
+
+        from _lib import read_record
+        rec = read_record(parent_path)
+        self.assertEqual(rec['parse_errors'], [])
+        rel = rec['meta']['relationships'][0]
+        self.assertEqual(rel['subtype'], 'step: half')
+
 
 class NeedsSourcingBacklogTests(unittest.TestCase):
     def test_unsourced_and_hypothesis_entries_land_on_backlog(self) -> None:

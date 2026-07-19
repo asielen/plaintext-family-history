@@ -1716,6 +1716,35 @@ class WorkbenchModeTests(_Base):
         # recorded" row with a one-click add (wireframe).
         self.assertIn('not recorded', prov)
 
+    def test_provisional_place_only_estimate_still_gets_a_row(self):
+        # P2 codex finding (round 1, PR #31): a birth_place: with no birth:
+        # (the normal "born in Kansas, no idea when" family knowledge the
+        # set-estimate flags write) used to emit no row at all.
+        self._seed_person('p-dddddddddd', name='Place Only', living='false',
+                          tier='curated', frontmatter_extra='birth_place: Kansas')
+        self._run_wb()
+        wb = self._read('persons/p-dddddddddd.html')
+        self.assertIn('estimate - unsourced', wb)
+        self.assertIn('Kansas', wb)
+
+    def test_provisional_prefill_keeps_date_and_place_separate(self):
+        # The folded display string ("1923 - Kansas") must never reach the
+        # edit modal's mdate field - person.estimate refuses it as a date.
+        # The prefill carries mdate and mplace independently.
+        self._seed_person('p-eeeeeeeeee', name='Date And Place', living='false',
+                          tier='curated',
+                          frontmatter_extra='birth: 1923\nbirth_place: Kansas')
+        self._run_wb()
+        wb = self._read('persons/p-eeeeeeeeee.html')
+        self.assertIn('estimate - unsourced', wb)
+        # Display still joins them for reading...
+        self.assertIn('1923', wb)
+        self.assertIn('Kansas', wb)
+        # ...but the prefill JSON has them as separate fields.
+        self.assertIn('"mdate": "1923"', wb)
+        self.assertIn('"mplace": "Kansas"', wb)
+        self.assertNotIn('"mdate": "1923 - Kansas"', wb)
+
     def test_no_workbench_chrome_leaks_into_standalone(self):
         self._seed_person('p-cccccccccc', name='Plain Person', living='false',
                           tier='curated', frontmatter_extra='birth: 1900')

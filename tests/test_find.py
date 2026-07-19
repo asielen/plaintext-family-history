@@ -1403,6 +1403,30 @@ class SearchJsonPhotoSourceKindTests(unittest.TestCase):
                                    kinds=['photo-source'])
         self.assertEqual([r['id'] for r in results], ['s-3333333333'])
 
+    def test_alias_hits_participate_and_filter_by_photo_ownership(self) -> None:
+        # P2 codex finding (round 1, PR #31): 'photo-source' used to re-run
+        # only the title search, skipping the alias pass entirely - an
+        # alias/stem that found the source under kind 'source' returned
+        # nothing here even when the source owned a photo. It is a FILTER on
+        # the normal source search, not a separate narrower search.
+        _add_alias(self.conn, 'fam-portrait-1900', 's-2222222222')
+        _add_alias(self.conn, 'census-stem-1900', 's-1111111111')
+        self.conn.commit()
+        hits = find.search_json(self.archive_root, {}, 'fam-portrait-1900',
+                                kinds=['photo-source'])
+        self.assertEqual([r['id'] for r in hits], ['s-2222222222'])
+        self.assertEqual(hits[0]['type'], 'source')
+        # The same alias mechanism still applies the photo filter: a
+        # photo-less source found by alias under 'source' is dropped here.
+        self.assertEqual(
+            [r['id'] for r in find.search_json(self.archive_root, {},
+                                               'census-stem-1900', kinds=['source'])],
+            ['s-1111111111'])
+        self.assertEqual(
+            find.search_json(self.archive_root, {}, 'census-stem-1900',
+                             kinds=['photo-source']),
+            [])
+
 
 if __name__ == '__main__':
     unittest.main()
