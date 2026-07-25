@@ -1023,5 +1023,119 @@ class RunIndexRootGuardTests(unittest.TestCase):
                 conn.close()
 
 
+_NEGATED_HUSBAND = '''---
+id: P-hhhhhhhhhh
+name: Henry Fowler
+living: false
+aliases: [P-hhhhhhhhhh, Henry Fowler]
+---
+
+# Henry Fowler
+'''
+
+_NEGATED_WIFE = '''---
+id: P-wwwwwwwwww
+name: Wilma Grant
+living: false
+aliases: [P-wwwwwwwwww, Wilma Grant]
+---
+
+# Wilma Grant
+'''
+
+# One source, two marriage claims: a real (positive) marriage between Henry and
+# a third person, and an accepted but negated "they did NOT marry" claim between
+# Henry and Wilma (SPEC §8.6: a researched negative). Only the positive one may
+# mint spouse edges.
+_NEGATED_MARRIAGE_SOURCE = '''---
+id: S-9999999999
+title: Marriage research
+source_type: other
+---
+
+## Claims
+```yaml
+- id: C-1010101010
+  value: "Henry married Rose, 1901"
+  type: marriage
+  persons: ["[[Henry Fowler]]", "[[Rose Kemp]]"]
+  status: accepted
+  reviewed: 2026-01-01
+  date: 1901
+
+- id: C-2020202020
+  value: "Researched: Henry and Wilma did NOT marry"
+  type: marriage
+  persons: ["[[Henry Fowler]]", "[[Wilma Grant]]"]
+  status: accepted
+  reviewed: 2026-01-01
+  negated: true
+  evidence: negative
+```
+'''
+
+_NEGATED_THIRD = '''---
+id: P-rrrrrrrrrr
+name: Rose Kemp
+living: false
+aliases: [P-rrrrrrrrrr, Rose Kemp]
+---
+
+# Rose Kemp
+'''
+
+
+class NegatedRelationshipDerivationTests(unittest.TestCase):
+    """A negated relationship-bearing claim asserts the ABSENCE of a bond
+    (SPEC §8.6: "we researched and it did NOT happen"). Even when accepted it
+    must never become a graph edge, or a confirmed "these two did not marry"
+    would mint phantom spouse edges that drive family views, relation answers,
+    and Ahnentafel placement. The positive marriage in the same source must
+    still derive normally, so the exclusion is scoped to `negated` alone."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'fowler__henry_P-hhhhhhhhhh.md', _NEGATED_HUSBAND)
+        _write(self.root / 'people' / 'grant__wilma_P-wwwwwwwwww.md', _NEGATED_WIFE)
+        _write(self.root / 'people' / 'kemp__rose_P-rrrrrrrrrr.md', _NEGATED_THIRD)
+        _write(self.root / 'sources' / 'marriage_S-9999999999.md',
+               _NEGATED_MARRIAGE_SOURCE)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _spouse_pairs(self) -> set:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return {
+                tuple(sorted((p, o)))
+                for p, o in conn.execute(
+                    "SELECT person_id, other_id FROM relationships WHERE rel = 'spouse'")
+            }
+        finally:
+            conn.close()
+
+    def test_full_build_excludes_negated_marriage(self) -> None:
+        index.build_index(self.root, {})
+        pairs = self._spouse_pairs()
+        # The positive marriage derives reciprocal spouse edges.
+        self.assertIn(('p-hhhhhhhhhh', 'p-rrrrrrrrrr'), pairs)
+        # The negated marriage produces NO spouse edge in either direction.
+        self.assertNotIn(('p-hhhhhhhhhh', 'p-wwwwwwwwww'), pairs)
+        self.assertFalse(
+            any('p-wwwwwwwwww' in pair for pair in pairs),
+            'negated marriage must not touch the relationships table')
+
+    def test_upsert_source_matches_full_build(self) -> None:
+        # Negation must be honored on the incremental path too, or `fha index
+        # --source` would silently reintroduce the phantom edge (TOOLING §2).
+        index.build_index(self.root, {})
+        full = self._spouse_pairs()
+        status = index.upsert_source(self.root, {}, 's-9999999999')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._spouse_pairs(), full)
+
+
 if __name__ == '__main__':
     unittest.main()

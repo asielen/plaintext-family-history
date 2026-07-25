@@ -1375,10 +1375,17 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     """
     conn.execute('DELETE FROM relationships')
 
+    # Negated claims record a researched negative - "these two did NOT marry",
+    # "no death record found" (SPEC §8.6). They are accepted findings, but they
+    # assert the absence of a bond, so they must never mint a relationship edge
+    # nor end one: a negated marriage would otherwise create phantom spouse
+    # edges, and a negated divorce/death would wrongly close a real spouse edge.
+    # `negated` is stored 0/1 on the claims table (COALESCE guards legacy NULLs).
     rows = conn.execute(
         '''SELECT c.id, c.type, c.subtype, c.date_edtf, c.date_min, c.date_max
            FROM claims c
            WHERE c.status = 'accepted'
+             AND COALESCE(c.negated, 0) = 0
              AND c.type IN ('relationship', 'marriage', 'divorce', 'death')
            ORDER BY CASE c.type WHEN 'divorce' THEN 1 WHEN 'death' THEN 1 ELSE 0 END'''
     ).fetchall()
