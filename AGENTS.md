@@ -69,7 +69,7 @@ Only the human moves a claim to `accepted`, and only with a `reviewed:` date.
 archive records in SPEC formats before the session ends.
 Never rely on conversation history as a store of record.
 3. **Never modify original content.** The only allowed original-file changes are the
-spec-defined documents-root processing rename (via `fha process`) and embedded metadata writes performed through `fha` tools; photos are NEVER renamed.
+spec-defined documents-root processing rename (via `fha process`), the `fha process refile` cross-root correction move (SPEC §12.1's sanctioned correction - rename handled at the crossing), and embedded metadata writes performed through `fha` tools; photos are NEVER renamed while they live in the photos root.
 4. **Never edit generated content.** Files (or sections) beginning
 `<!-- GENERATED ... -->` are rebuilt by tools; regenerate, don't patch.
 5. **Mark your work as AI** where formats allow, and never overwrite human-written text.
@@ -158,7 +158,13 @@ cross-links people, `[[L-xxxx]]` a place, and `[[C-xxxx]]` is the rare claim-lev
 The link carries the immutable ID and may add a readable display after a pipe
 (`[[P-xxxx|Margaret Cole]]`); you can also link by name (`[[Margaret Cole]]`) and the alias
 layer resolves it. Acceptance is lenient - a single-bracket `[S-xxxx]`, a bare ID, or a name
-all still resolve - but **write the `[[ ]]` form**. **Uncited prose is story/context, never
+all still resolve - but **write the `[[ ]]` form**. The anti-pattern to avoid: a bare
+`S-ea61339378` dropped into a sentence - the tools can still resolve it if asked, but it is not
+clickable in Obsidian and is not counted as a citation. In prose, always `[[S-ea61339378]]`
+(better: `[[S-ea61339378|the 1871 marriage notice]]`); bare IDs belong only in structured YAML
+fields and tool arguments. `fha normalize-links` tidies bracketed slips (`[S-…]`, unpinned
+name-links); a fully bare ID has no automated net - write the form right the first time.
+**Uncited prose is story/context, never
 fact** - write accordingly.
 - **Claims:** YAML list under `## Claims` in the source file; schema in SPEC §8.4.
 Required: `id, type, persons, value, status`; `roles:` required for relationship claims.
@@ -185,13 +191,20 @@ fha lint                     verify archive against spec - run after any batch o
 fha index                    rebuild the SQLite query surface (.cache/index.sqlite)
 fha id mint P|S|C|L|H        mint verified IDs
 fha stubs                    create stubs for unresolved person references
-fha claim <C-id> …           the review write-back: move a claim's status and/or correct
-                            a field, stamp reviewed: (only the human moves a claim to accepted)
+fha claim <C-id> [<C-id> …]  the review write-back: move claim status (one C-id, or a
+                            status-only batch - every id checked before any write) and/or
+                            correct a field on one claim, stamp reviewed: (only the human
+                            moves a claim to accepted)
 fha claim new --source S-id --type … --value …    mint a brand-new claim onto a source by hand
-                            (defaults --status accepted; AI callers pass --status suggested)
+                            (defaults --status accepted; AI callers pass --status suggested;
+                            --negated mints a SPEC §8.6 confirmed absence - "researched, did
+                            not happen" - writing negated: true + evidence: negative)
 fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
                             decision (xref/cooccur/dismiss/place/discovery/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
+fha person promote <P-id> [--into FOLDER]   graduate a direct-line stub to curated: tier flip,
+                            couple-folder filing, research-file scaffold; always explicit, never
+                            automatic; non-direct people keep their stub (a legitimate state)
 fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>   unsourced family-tie
                             belief (always status: hypothesis)
 fha person estimate <P-id> --birth|--death …      provisional, unsourced vitals estimate
@@ -200,6 +213,9 @@ fha person edit|note <P-id> --section … --text …  bounded prose write to Bio
 fha person edit-note <P-id> --section … --old-text … --text …   rewrite ONE existing
                             Stories/Research Notes entry (named by its exact text)
 fha source note <S-id> --text …                   append a note to a source's ## Notes
+fha source extract <S-id> [--pages A-B]           dump a source PDF's embedded text layer into
+                            a derived [Page N] companion to mine like a transcript (original
+                            untouched; anchor claims to the PDF's own page numbers)
 fha source edit-note <S-id> --old-text … --text …  rewrite ONE existing ## Notes paragraph
 fha places set <L-id> --coords|--aka|--history …   human-directed place registry edit
                             (each field a full replace; dry-run diff first)
@@ -207,9 +223,14 @@ fha places note <L-id> --text …                    append a dated research not
 fha places edit-note <L-id> --old-text … --text …  rewrite ONE existing place note
 fha process <file|folder>   process an original into a Source (documents: rename;
                             photos: NEVER rename - keyword only; + record scaffold)
+fha process refile <S-id> --to photos|documents
+                            move a misfiled source file ACROSS roots (SPEC 12.1's
+                            sanctioned correction; rename at the crossing; --dry-run)
 fha views timeline|sources-index|brackets     regenerate views (--format html for a
                             printable standalone page under generated/views/)
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default)
+fha reconcile                re-tie moved files to their records (documents by filename S-id,
+                            photos via the catalog) after the human reorganizes; --dry-run first
 fha photoindex find ...      query the photo library (never bulk-read photos/)
 fha photoindex gallery ...   the matching photos as one clickable HTML page under
                             generated/gallery/ (private, disposable, regenerate anytime)
@@ -227,6 +248,10 @@ fha backup                   dated zip of the records, written outside the archi
                             (--include-assets adds the photo/document roots; restore = unzip)
 ```
 
+Text passed to the note verbs (`fha person note/edit-note`, `fha source note/edit-note`,
+`fha places note/edit-note`) and to `fha confirm discovery` is prose - any record ID inside it
+takes the `[[ ]]` wikilink form, never bare (see Citations above).
+
 Execution rules (all tools): run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.
 
 Query the index, not the tree: person/claim/photo questions are SQL or `fha` calls.
@@ -234,7 +259,7 @@ Never bulk-ingest `photos/` or `documents/` into context.
 
 ### Playbooks (workflow skills)
 
-Twelve workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
+Thirteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
 procedures, `fha` invocations and judgment only, no harness APIs (the standard they follow is
 `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the
 human's own words ("process the inbox", "review the census claims", "are these the same
@@ -260,9 +285,13 @@ The process-source skill handles loosely-written notes gracefully; the same rule
 - **Add a source:** confirm the evidence file's location → `fha process` → fill
 frontmatter (SPEC §14) → draft claims (`suggested`) with `anchor:`s → `fha lint`.
 - **Review claims with the human:** take one source's `suggested` list; for each, show
-the claim plus its anchor context; record the human's decision with `fha claim` (which moves the status and stamps `reviewed:` - directing the tool *is* the human's accept); confirm any resulting corroboration/contradiction with `fha confirm xref`; finish with `fha index`, a `fha views timeline`/`draft-queue` refresh for the curated people touched, and `fha lint`.
+the claim plus its anchor context and its source file link (the anchored asset or record path first, the `[[S-id]]` token after) so he can open the evidence alongside; record the human's decision with `fha claim` (which moves the status and stamps `reviewed:` - directing the tool *is* the human's accept; a grouped same-status decision is one batch write, `fha claim C-a C-b … --status X` - grouping is presentation and capture, each claim still gets its own stated decision); confirm any resulting corroboration/contradiction with `fha confirm xref`; finish with `fha index`, a `fha views timeline`/`draft-queue` refresh for the curated people touched, and `fha lint`.
 - **Write or extend a biography:** facts only from `accepted` claims; cite every factual
 sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; cross-link people with `[[P-…]]` links verified to exist.
+Voice follows the archive's biography style - the human's in-session ask, else `fha.yaml`'s
+`biography: style:` (`chronicle` fact-forward, the default | `narrative` story-driven), else
+chronicle; extending existing prose keeps its register. Narrative texture comes only from cited
+claims or clearly-flagged period context - the citation contract is identical in both styles.
 - **Log searches:** when you search an external collection for the human (or execute a
 research-next plan), write the research-log entry (date, repository, collection, terms, result incl. nil).
 Check the log before proposing any search.
@@ -278,7 +307,7 @@ Record your pass in the source's `## AI Passes` block.
 No symlinks.
 In research and migration modes, no new top-level archive folders (tool-building mode may create spec-defined support folders: `tools/`, `tests/`, `.claude/`).
 No bulk renames.
-NEVER rename anything under the photos root.
+NEVER rename or move anything under the photos root (one exception: `fha process refile --to documents` moves a photo OUT of the photos root, renaming it at the crossing - human-confirmed, record updated in the same transaction).
 No editing `places.yaml` coordinates without human confirmation.
 No writing to `.cache/` by hand.
 No deleting anything without explicit instruction - prefer `status: rejected`/`superseded` and `closed` questions, which preserve the research trail.

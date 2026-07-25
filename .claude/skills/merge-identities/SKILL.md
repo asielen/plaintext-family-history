@@ -124,6 +124,9 @@ Thomas Hartley and Thos. Hartley get entered twice?"
 - The merge write is `fha confirm merge`'s alone (SPEC §9 exactly: tombstone rename, four fields, folds,
   relinks) — always dry-run first; the skill never hand-edits a merge and invents no mechanics.
 - Post-merge lint is clean of **new** E016/W107/W115; merged files are renamed-and-kept, never deleted.
+- Any record ID written into prose (a split note on a record, a reason narrated into `## Notes`) is
+  `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in structured fields and tool arguments
+  (_STANDARD.md §11).
 
 ## Done when
 

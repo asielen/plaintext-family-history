@@ -2,7 +2,8 @@
 """
 claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8).
 
-  fha claim <C-id> --status accepted|disputed|rejected|needs-review|superseded
+  fha claim <C-id> [<C-id> ...]
+                   --status accepted|disputed|rejected|needs-review|superseded
                    [--reviewed DATE] [--value "…"] [--date EDTF]
                    [--type TYPE] [--place L-id] [--place-text TEXT]
                    [--persons P-id[,P-id...]] [--confidence high|medium|low]
@@ -10,7 +11,7 @@ claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8
 
   fha claim new --source S-id --type TYPE --value TEXT [--date DATE]
                 [--place L-id] [--place-text TEXT] [--persons P-id[,P-id...]]
-                [--subtype WORD] [--status suggested|accepted]
+                [--subtype WORD] [--status suggested|accepted] [--negated]
                 [--confidence high|medium|low] [--dry-run] [--root PATH]
 
 Two verbs share one file because both are surgical `## Claims` block writers on
@@ -54,6 +55,22 @@ by scanning the `sources/` records directly (the `.md` files are the truth), so
 the command works even when `.cache/index.sqlite` is stale or absent. After a
 write, re-run `fha index` so the new status enters the query surface.
 
+**Batch status moves (2026-07, TOOLING §3b amendment).** The edit verb takes
+SEVERAL C-ids at once - `fha claim C-a C-b C-c --status accepted` - because the
+review gesture "accept 1, 2 and 4" is one human decision per claim delivered in
+one breath, and the tool should meet that gesture with one command, not four
+retypings. The gate: a batch is legal ONLY for a status-only mutation (any of
+the five review statuses - batch-reject and batch-needs-review are as
+legitimate as batch-accept). Any field-edit flag with more than one id is
+refused: a field correction states a new fact about one particular claim, so it
+is inherently per-claim and keeps the surgical single-id form. Validation is
+ALL-OR-NOTHING: every id is checked (shape and existence) before any write, so
+a typo'd id refuses the whole batch rather than applying half a decision.
+Duplicate ids are deduped preserving order (one decision, applied once, said so
+in the output). The live run applies each claim through the SAME single-claim
+surgical write (`run_claim`) in a loop - one write path, never a second one -
+and one `--dry-run` previews every edit in the batch.
+
 **`fha claim new`** mints a brand-new claim onto an EXISTING source record - the
 CLI-driven counterpart to hand-typing a claim item under `## Claims`. It shares
 `_lib.append_claim_to_source` with `fha confirm cooccur` (both mint a claim and
@@ -84,11 +101,12 @@ CODE MAP
     _validate_field_args      - the place/place_text/confidence/date/persons checks
                                 both verbs share verbatim (identical wording)
 
-  fha claim <C-id> (review + field edit)
+  fha claim <C-id> [<C-id> ...] (review + field edit; batch = status-only)
     _find_claim_record        - scan sources/ for the .md holding one C-id
     _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
     _apply_claim_review       - surgical `## Claims` block edit (status/value/date/type/place/persons)
-    run_claim                 - validate, locate, edit, return a Result
+    run_claim                 - validate, locate, edit ONE claim, return a Result
+    run_claim_batch           - dedupe, all-or-nothing validate, loop run_claim
     _cmd_claim
 
   fha claim new (mint onto an existing source)
@@ -146,7 +164,7 @@ from _lib import (
     scan_ids_in_tree,
     scan_person_record_ids,
     sqlite_cache_schema_status,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -163,6 +181,13 @@ REVIEW_STATUSES = ('accepted', 'disputed', 'rejected', 'needs-review', 'supersed
 # a claim OUT of suggested through the other statuses, so minting straight to
 # disputed/rejected/needs-review/superseded makes no sense and stays refused).
 NEW_CLAIM_STATUSES = ('suggested', 'accepted')
+
+# run_claim's two per-call trailer lines, named so `run_claim_batch` can
+# recognise and drop the per-claim repeats (a batch of five accepts should
+# nudge `fha index` once, not five times) without the texts ever drifting
+# apart from what the single-claim path prints.
+_INDEX_REMINDER = 'Reminder: run `fha index` so the new status enters the query surface.'
+_DRY_RUN_TRAILER = '[dry-run] No file written. Re-run without --dry-run to apply.'
 
 # The SHAPE of a claim's `id:` key line (optionally after the list dash).
 # Shape alone is not ownership: a block scalar (`notes: |`) can quote an
@@ -966,11 +991,17 @@ def run_claim(
         result.add('info', f'[dry-run] Would set {summary}')
         for dline in diff:
             result.add('info', dline)
-        result.add('info', f'[dry-run] No file written. Re-run without --dry-run to apply.')
+        result.add('info', _DRY_RUN_TRAILER)
         return result
 
     try:
-        write_text_exact(record_path, reapply_newline(new_text, text))
+        # Atomic (temp + os.replace): a failed write must leave the record
+        # exactly as it was. run_claim_batch loops this function and, on a
+        # failed item, tells the human "the rest were left as they were" and
+        # hands back a retry command - a promise a truncating `write_text_exact`
+        # could not keep, since a mid-write failure (disk full) would leave the
+        # source torn and the advised retry would then read an unparseable file.
+        write_text_exact_atomic(record_path, reapply_newline(new_text, text))
     except OSError as e:
         result.ok = False
         result.exit_code = EXIT_FAILURE
@@ -981,8 +1012,244 @@ def run_claim(
     result.data['status'] = 'ok'
     result.note_changed(record_path)
     result.add('info', f'Set {summary}', path=record_path)
-    result.add('info', 'Reminder: run `fha index` so the new status enters the query surface.',
-               next_step='fha index')
+    result.add('info', _INDEX_REMINDER, next_step='fha index')
+    return result
+
+
+def run_claim_batch(
+    archive_root: Path,
+    *,
+    claim_ids: list[str],
+    status: str | None = None,
+    reviewed: str | None = None,
+    value: str | None = None,
+    date: str | None = None,
+    claim_type: str | None = None,
+    place: str | None = None,
+    place_text: str | None = None,
+    persons: list[str] | None = None,
+    confidence: str | None = None,
+    dry_run: bool = False,
+) -> Result:
+    """The edit verb's front door: one C-id or several, one contract (TOOLING §3b).
+
+    WHY this exists: the review gesture "accept 1, 2 and 4" is one human
+    decision per claim delivered in one breath - during a review-claims
+    session the human states a grouped verdict, and making him retype the
+    command per claim adds friction to exactly the moment the whole pipeline
+    is built around. So the batch form turns that one breath into one command,
+    for ANY of the five review statuses (batch-reject and batch-needs-review
+    are as legitimate as batch-accept).
+
+    The status-only gate: with more than one distinct C-id, any field-edit
+    argument (value/date/claim_type/place/place_text/persons/confidence) is a
+    plain refusal - a field correction states a new fact about one particular
+    claim, so it is inherently per-claim and keeps the surgical single-id
+    form. With exactly one distinct id this function delegates straight to
+    `run_claim` with every argument, so the single-id behavior (field edits
+    included) is bit-for-bit the old contract - callers like `_cmd_claim` can
+    route everything through here.
+
+    ALL-OR-NOTHING validation: every id is checked up front - shape first,
+    then existence (each looked up with the same `sources/` scan the single
+    write uses; a handful of ids on a personal archive keeps that cheap) - and
+    any bad id refuses the WHOLE batch before any write, naming the id and the
+    fix. Half-applied grouped decisions are worse than refused ones: the human
+    said one thing about the group, so the archive should record all of it or
+    none of it. Duplicate ids are deduped preserving order (one decision,
+    applied once) and the dedupe is said in the output.
+
+    The live run applies each claim through `run_claim` in a loop - the ONE
+    surgical write path, never a second writer - collecting each claim's own
+    messages while folding the per-claim `fha index` / dry-run trailers into a
+    single closing line. A mid-loop failure (possible even after validation:
+    a duplicate C-id inside one file, a file that stopped being writable)
+    stops the loop - no write after a known failure - and the output names
+    what was applied, what was not, and the exact command that finishes the
+    rest.
+
+    `data` for a real batch is {'status': 'ok'|'refused'|'no-op'|
+    'invalid-id'|'invalid-status'|'not-found'|'failed', 'claim_ids' (the
+    deduped display list), 'applied' (ids written, or previewed under
+    dry-run), 'reviewed', 'results' (each `run_claim` data dict, in order)};
+    the single-id delegation returns `run_claim`'s data shape unchanged.
+    """
+    result = Result(data={
+        'status': None, 'claim_ids': [], 'applied': [],
+        'reviewed': None, 'results': [],
+    })
+
+    # Dedupe preserving order. A repeated id inside one grouped verdict is
+    # still one decision about one claim - apply it once and say so, rather
+    # than refusing a harmless slip of the tongue.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    duplicates: list[str] = []
+    for raw in claim_ids:
+        key = raw.strip().lower()
+        if key in seen:
+            if raw not in duplicates:
+                duplicates.append(raw)
+            continue
+        seen.add(key)
+        deduped.append(raw)
+
+    if not deduped:
+        return _fail(result, 'failed',
+                     'No claim id given - pass at least one C-id (e.g. C-fd0000001a).')
+
+    if len(deduped) == 1:
+        # One distinct claim: the exact single-id contract, field edits and
+        # all - run_claim owns every check, and its data/messages shape is
+        # preserved so existing callers see no difference.
+        single = run_claim(
+            archive_root, claim_id=deduped[0], status=status, reviewed=reviewed,
+            value=value, date=date, claim_type=claim_type, place=place,
+            place_text=place_text, persons=persons, confidence=confidence,
+            dry_run=dry_run)
+        if duplicates:
+            # Surface the dedupe first, so the human sees why one id "went
+            # missing" before reading the edit itself (add-then-move keeps
+            # Message construction inside Result.add).
+            shown = (fmt_id_display(normalize_id(deduped[0]))
+                     if is_valid_id(deduped[0]) and id_type_of(deduped[0]) == 'C'
+                     else deduped[0])
+            single.add('info', f'{shown} was given more than once - applying it once.')
+            single.messages.insert(0, single.messages.pop())
+        return single
+
+    field_args = (('--value', value), ('--date', date), ('--type', claim_type),
+                  ('--place', place), ('--place-text', place_text),
+                  ('--persons', persons), ('--confidence', confidence))
+    given = [name for name, val in field_args if val is not None]
+    if given:
+        return _fail(result, 'refused',
+                     f'{"/".join(given)} cannot be combined with more than one claim id - '
+                     'a field correction is inherently per-claim (each claim states its own '
+                     'fact), so it takes exactly one C-id. Run '
+                     f'`fha claim <C-id> {given[0]} ...` once per claim that needs the '
+                     'correction, or drop the field flags to change just the status on all '
+                     f'{len(deduped)} claims. Nothing was changed.')
+
+    if status is None:
+        return _fail(result, 'no-op',
+                     f'{len(deduped)} claim ids but no --status. Moving several claims at '
+                     'once is a status move (e.g. `fha claim C-a C-b --status accepted`) - '
+                     'add --status, or edit fields one claim at a time with '
+                     '`fha claim <C-id> ...`.')
+
+    if status not in REVIEW_STATUSES:
+        return _fail(result, 'invalid-status',
+                     f'{status!r} is not a review status. Use one of: '
+                     f'{", ".join(REVIEW_STATUSES)}. Nothing was changed.')
+
+    if reviewed is not None:
+        try:
+            datetime.date.fromisoformat(reviewed)
+        except ValueError:
+            return _fail(result, 'failed',
+                         f'--reviewed {reviewed!r} is not a calendar date. Use YYYY-MM-DD, '
+                         f'e.g. {_today()}.')
+
+    # All-or-nothing gate, part 1: every id must LOOK like a claim id before
+    # anything is touched, so a typo refuses the batch, not half of it.
+    for raw in deduped:
+        if not (is_valid_id(raw) and id_type_of(raw) == 'C'):
+            return _fail(result, 'invalid-id',
+                         f'{raw!r} is not a valid claim ID. C-ids look like C-fd0000001a - '
+                         'a C followed by a dash and 10 characters from the archive '
+                         'alphabet. The whole batch was left unwritten - fix that id and '
+                         're-run.')
+
+    ids = [normalize_id(raw) for raw in deduped]
+    result.data['claim_ids'] = [fmt_id_display(cid) for cid in ids]
+
+    # All-or-nothing gate, part 2: every id must EXIST. Each lookup is the
+    # same sources/ scan run_claim will do again on the write - redundant on
+    # purpose: the batch stays a thin loop over the one write path instead of
+    # threading located-record state into run_claim's signature.
+    missing = [cid for cid in ids if _find_claim_record(archive_root, cid) is None]
+    if missing:
+        shown = ', '.join(fmt_id_display(cid) for cid in missing)
+        return _notfound(
+            result,
+            f'No claim found for: {shown} (searched every source record under '
+            f'{archive_root / "sources"}). The whole batch was left unwritten - check '
+            'the id, then re-run.',
+            next_step='fha find ' + fmt_id_display(missing[0]))
+
+    # One note per distinct claim, however many times (and in whatever case
+    # mix) it was repeated on the command line.
+    noted: set[str] = set()
+    for raw in duplicates:
+        dup_id = normalize_id(raw)
+        if dup_id in noted:
+            continue
+        noted.add(dup_id)
+        result.add('info',
+                   f'{fmt_id_display(dup_id)} was given more than once - '
+                   'applying it once.')
+
+    applied: list[str] = []
+    for pos, cid in enumerate(ids):
+        sub = run_claim(archive_root, claim_id=cid, status=status,
+                        reviewed=reviewed, dry_run=dry_run)
+        for msg in sub.messages:
+            # The per-claim trailers collapse into one closing line below.
+            if msg.text in (_INDEX_REMINDER, _DRY_RUN_TRAILER):
+                continue
+            result.messages.append(msg)
+        for changed_path in sub.changed:
+            if changed_path not in result.changed:
+                result.changed.append(changed_path)
+        result.data['results'].append(sub.data)
+        if sub.exit_code != EXIT_CLEAN:
+            # Stop at the first failure - never keep writing past a known
+            # problem - and hand back the exact command that finishes the rest.
+            # Under dry-run nothing was WRITTEN, only previewed, so the message
+            # says "previewed" and the re-run command carries EVERY id (the
+            # live-run wording would instruct a decision-dropping recovery:
+            # the previewed-but-unwritten claims would silently never apply).
+            # An explicit --reviewed rides along either way, so a finished
+            # batch never ends up split across two review dates.
+            reviewed_part = f' --reviewed {reviewed}' if reviewed else ''
+            level = 'warning' if sub.exit_code == EXIT_WARNINGS else 'error'
+            result.ok = False
+            result.exit_code = sub.exit_code
+            result.data['status'] = sub.data.get('status') or 'failed'
+            result.data['applied'] = applied
+            if dry_run:
+                all_ids = ' '.join(fmt_id_display(c) for c in ids)
+                result.add(level,
+                           f'Stopped at {fmt_id_display(cid)}: {len(applied)} of '
+                           f'{len(ids)} claims previewed - nothing was written '
+                           '(dry-run). Fix the problem above, then re-run '
+                           f'`fha claim {all_ids} --status {status}{reviewed_part} '
+                           '--dry-run` to re-preview the whole batch.')
+            else:
+                not_done = [fmt_id_display(c) for c in ids[pos:]]
+                done_text = ', '.join(applied) if applied else 'none'
+                result.add(level,
+                           f'Stopped at {fmt_id_display(cid)}: {len(applied)} of {len(ids)} '
+                           f'claims applied ({done_text}), the rest left as they were. Fix the '
+                           'problem above, then re-run '
+                           f'`fha claim {" ".join(not_done)} --status {status}{reviewed_part}` '
+                           'for the rest.')
+            return result
+        applied.append(fmt_id_display(cid))
+
+    result.data['status'] = 'ok'
+    result.data['applied'] = applied
+    if result.data['results']:
+        result.data['reviewed'] = result.data['results'][0].get('reviewed')
+    if dry_run:
+        result.add('info',
+                   f'[dry-run] {len(ids)} claims previewed. No file written. '
+                   'Re-run without --dry-run to apply.')
+    else:
+        result.add('info',
+                   'Reminder: run `fha index` so the new statuses enter the query surface.',
+                   next_step='fha index')
     return result
 
 
@@ -992,6 +1259,7 @@ def _render_new_claim_lines(
     cid: str, claim_type: str, value: str, *,
     persons: list[str], date: str | None, place: str | None, place_text: str | None,
     subtype: str | None, status: str, reviewed: str | None, confidence: str,
+    negated: bool = False,
 ) -> list[str]:
     """Build the YAML lines for one brand-new claim item (SPEC §8.4 field order).
 
@@ -1000,16 +1268,20 @@ def _render_new_claim_lines(
     moved into its natural slot right after `type` - SPEC lists subtype among
     the "other optional fields" at the end of the block, but it qualifies
     type, so a human skimming the item reads it more naturally there.
+    `negated: true` sits there too, for the same reason: it inverts what the
+    type asserts (a negated marriage claim means "confirmed never married"),
+    so it must be visible before the reader reaches the value's details.
 
     `confidence` is always written: SPEC §8.5 marks it required on every claim
     (lint E010, the same required set as `persons`), and the same section
     directs tooling to DEFAULT it from source_type rather than leave it
     missing - `run_claim_new` resolves the default (`_lib.default_confidence`)
     or takes the human's --confidence override, so by the time this renderer
-    runs the value is settled. `information`/`evidence`/`notes` are the
-    SPEC-legal fields this verb deliberately leaves unset (lint only pings
-    them informationally); a scope line kept tight to what `run_claim_new`'s
-    signature actually takes.
+    runs the value is settled. `information`/`notes` are SPEC-legal fields
+    this verb deliberately leaves unset (lint only pings them
+    informationally); `evidence` is set exactly when `negated` is - SPEC §8.6
+    pairs a confirmed absence with `evidence: negative`, and writing one
+    without the other would be a half-recorded conclusion.
     """
     lines = [
         f'- value: {_yaml_inline(value)}',
@@ -1018,6 +1290,8 @@ def _render_new_claim_lines(
     ]
     if subtype:
         lines.append(f'  subtype: {_yaml_inline(subtype)}')
+    if negated:
+        lines.append('  negated: true')
     if persons:
         lines.append('  persons: [' + ', '.join(fmt_id_display(p) for p in persons) + ']')
     if date:
@@ -1030,6 +1304,8 @@ def _render_new_claim_lines(
         lines.append(f'  place_text: {_yaml_inline(place_text)}')
     lines.append(f'  status: {status}')
     lines.append(f'  confidence: {confidence}')
+    if negated:
+        lines.append('  evidence: negative')
     if status == 'accepted' and reviewed:
         lines.append(f'  reviewed: {reviewed}')
     return lines
@@ -1048,10 +1324,21 @@ def run_claim_new(
     subtype: str | None = None,
     status: str = 'accepted',
     confidence: str | None = None,
+    negated: bool = False,
     dry_run: bool = False,
     claim_id: str | None = None,
 ) -> Result:
     """Mint a brand-new claim onto an existing source's `## Claims` block.
+
+    `negated=True` mints a SPEC §8.6 confirmed absence - "we researched and it
+    did not happen" - writing `negated: true` plus its §8.6 pairing
+    `evidence: negative` (e.g. `--type marriage --negated --value "no marriage
+    found"` = confirmed never married). This is the authoring path the BACKLOG
+    long noted was missing: the negative fact is a normal claim of its type,
+    so everything downstream already understands it (lint counts a negated
+    marriage toward vitals completeness, xref treats opposite polarity as a
+    contradiction candidate, cooccur/find exclude negated claims from
+    positive-evidence surfaces).
 
     `claim_id` is NOT a CLI flag - `fha claim new` always mints its own id,
     same as before. It exists for a caller (`fha serve`'s claim.new verb)
@@ -1170,10 +1457,16 @@ def run_claim_new(
                    'Pass --confidence high|medium|low to override.')
 
     reviewed = _today() if status == 'accepted' else None
+    if negated:
+        result.add('info',
+                   f'Minting a confirmed ABSENCE (SPEC §8.6): this records that the {claim_type} '
+                   'did NOT happen, after research - written as `negated: true` with '
+                   '`evidence: negative`. Put the searches that justify it in the source record '
+                   '(a proof-argument source is the usual home).')
     item_lines = _render_new_claim_lines(
         cid, claim_type, value, persons=persons_norm, date=normalized_date,
         place=place, place_text=place_text, subtype=subtype, status=status, reviewed=reviewed,
-        confidence=confidence,
+        confidence=confidence, negated=negated,
     )
 
     try:
@@ -1205,7 +1498,8 @@ def run_claim_new(
                    'was still created. Run `fha index` to refresh, or check the id with '
                    f'`fha find {fmt_id_display(normalize_id(place))}`.')
 
-    summary = f'{fmt_id_display(cid)}: {claim_type} ({status}) on {fmt_id_display(sid)}'
+    kind = f'negated {claim_type} (confirmed absence)' if negated else claim_type
+    summary = f'{fmt_id_display(cid)}: {kind} ({status}) on {fmt_id_display(sid)}'
 
     if dry_run:
         result.data['status'] = 'ok'
@@ -1219,7 +1513,9 @@ def run_claim_new(
         return result
 
     try:
-        write_text_exact(source_path, reapply_newline(after, before))
+        # Atomic, same as run_claim: a source record is often the sole copy of
+        # its evidence, so a failed mint must leave it untouched, not truncated.
+        write_text_exact_atomic(source_path, reapply_newline(after, before))
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {source_path}: {e}',
                      next_step='Check the file is not open elsewhere and the folder is writable, then retry.')
@@ -1248,9 +1544,13 @@ def _cmd_claim(args: argparse.Namespace) -> int:
     if getattr(args, 'persons', None):
         persons = [p.strip() for p in args.persons.split(',') if p.strip()]
 
-    result = run_claim(
+    # One front door for one id or several: run_claim_batch delegates a single
+    # distinct id straight to run_claim, so the old single-claim behavior
+    # (field edits included) is unchanged, and a batch gets the status-only
+    # gate plus all-or-nothing validation.
+    result = run_claim_batch(
         archive_root,
-        claim_id=args.claim_id,
+        claim_ids=list(args.claim_ids),
         status=getattr(args, 'status', None),
         reviewed=getattr(args, 'reviewed', None),
         value=getattr(args, 'value', None),
@@ -1290,6 +1590,7 @@ def _cmd_claim_new(args: argparse.Namespace) -> int:
         subtype=getattr(args, 'subtype', None),
         status=args.status,
         confidence=getattr(args, 'confidence', None),
+        negated=bool(getattr(args, 'negated', False)),
         dry_run=bool(getattr(args, 'dry_run', False)),
     )
     for msg in result.messages:
@@ -1300,7 +1601,10 @@ def _cmd_claim_new(args: argparse.Namespace) -> int:
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
-    p.add_argument('claim_id', metavar='C-id', help='The claim to review (e.g. C-fd0000001a).')
+    p.add_argument('claim_ids', metavar='C-id', nargs='+',
+                   help='The claim(s) to review (e.g. C-fd0000001a). Several C-ids apply '
+                        'one status move to each - batches are status-only, and any bad id '
+                        'stops the whole batch before anything is written.')
     p.add_argument('--status', choices=REVIEW_STATUSES,
                    help='The review status to set. At least one of --status/--value/--date/'
                         '--type/--place/--place-text/--persons/--confidence is required.')
@@ -1350,6 +1654,11 @@ def _add_new_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--persons', metavar='P-id[,P-id...]',
                    help='Who the claim is about, comma-separated P-ids. Optional, but lint '
                         'will flag the claim until at least one is linked.')
+    p.add_argument('--negated', action='store_true',
+                   help='Mint a confirmed ABSENCE (SPEC §8.6): "we researched and it did not '
+                        'happen" - e.g. --type marriage --negated --value "no marriage found" '
+                        'records confirmed-never-married. Writes negated: true and its pairing '
+                        'evidence: negative on the claim.')
     p.add_argument('--subtype', metavar='WORD',
                    help='Free-text refinement of the type (e.g. deacon for occupation).')
     p.add_argument('--status', choices=NEW_CLAIM_STATUSES, default='accepted',
@@ -1369,11 +1678,15 @@ Record your verdict on a suggested fact - the human decision point.
 
   fha claim <C-id> --status accepted   Confirm a fact (stamps today's date)
   fha claim <C-id> --status disputed|rejected|needs-review|superseded
+  fha claim C-a C-b C-c --status accepted   One verdict for several claims at once
   fha claim <C-id> --place L-baba9801fa   Correct a field without touching status
 
 Only you move a claim to accepted. Nothing becomes a fact until you decide here.
 At least one of --status/--value/--date/--type/--place/--place-text/--persons/
---confidence is required. Preview any change first with --dry-run.
+--confidence is required. Several C-ids at once move status only - every id is
+checked first, and one bad id stops the whole batch before anything is written;
+field corrections take exactly one claim. Preview any change first with
+--dry-run.
 
 To mint a brand-new claim onto a source, use `fha claim new` (`fha claim new --help`)."""
 
@@ -1400,7 +1713,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     pattern `fha gedcom import` uses (TOOLING §13a2)."""
     p = subs.add_parser(
         'claim',
-        help='Review one claim: set its status and/or correct fields (human-directed write-back)',
+        help='Review claims: move status (one C-id or several) and/or correct fields '
+             '(human-directed write-back)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -94,7 +94,7 @@
     {% for c in place.claims %}
       <tr>
         <td>{{ c.type }}</td>
-        <td>{{ c.value }}</td>
+        <td>{{ c.value }}{% if c.status == 'needs-review' %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if c.parked %} - parked {{ c.parked }}{% endif %}</span>{% elif c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>
         <td>{{ c.date }}</td>
         <td>{{ c.persons_html }}</td>
         <td>{{ c.source_html }}</td>

@@ -83,6 +83,7 @@ a.wb-add:hover { border-color: var(--accent); }
   margin-left: var(--space-2); }
 
 tr.wb-suggested td { background: color-mix(in srgb, var(--ochre) 8%, transparent); }
+tr.wb-needs-review td { background: color-mix(in srgb, var(--status-review-fg) 7%, transparent); }
 tr.wb-row-actions td { padding-top: var(--space-2); }
 tr.wb-row-actions .wb-actions { margin-top: 0; }
 .wb-fix { font-family: var(--font-sans); font-size: var(--text-xs); white-space: nowrap; color: var(--accent); }

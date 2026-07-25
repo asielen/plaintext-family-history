@@ -5,6 +5,7 @@ process.py - fha process: Stage A of the intake pipeline.
   fha process <file> [--type TYPE] [--title "…"] [--date DATE] [--slug SLUG]
                                                                  Process one asset
   fha process <photo> --more <file> ROLE[:copy]                  Attach a file to its source
+  fha process refile <S-id> --to photos|documents [--dest SUB]   Move a filed file across roots
   fha process <file> --dry-run                                   Preview, write nothing
 
 This is the *deterministic* stage of processing an original into a Source
@@ -26,6 +27,16 @@ Two roots, two identity rules (the spine of SPEC §12.1):
 Detection is by extension and by the photos-root mapping in `fha.yaml`: a file
 with a photo extension, or any file living under the resolved photos root, is a
 photo; everything else is a document.
+
+**Refile** (`fha process refile <S-id> --to photos|documents`) is the
+owner-approved carve-out to SPEC 12.1's one-sanctioned-move rule: the
+CROSS-ROOT correction for a filing decision that turned out wrong. It moves
+one of a source's files to the other root, re-establishes the destination
+root's identity carriers (the last-chance rename + SOURCE: keyword going into
+photos; the 13-grammar rename going into documents), and updates the record -
+value-exact inventory rewrite plus a dated Notes provenance line - in one
+transaction. Within-root moves are NOT refile's business (free + healed by
+`fha reconcile`). See `process_refile` for the full contract.
 
 Every mutating path is transactional: each filesystem effect registers an undo,
 and any failure unwinds them in reverse so an interrupted run leaves no partial
@@ -100,9 +111,20 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    process_bundle            - M7.4: dissolve a notes.md bundle into one source
 #    attach_more               - M7.2: attach a file to an existing source
 #
+#  Refile (the sanctioned cross-root correction move)
+#    _stdin_is_interactive     - tty seam for the photo-catalog confirm (tests patch it)
+#    _move_file                - rename with a copy+delete fallback across drives
+#    _rewrite_file_line        - value-exact files: line rewrite (mirrors reconcile.py)
+#    _file_line_count          - refuse-rather-than-corrupt shape guard
+#    _validate_dest_subpath    - --dest containment (no absolutes, no '..', inside the root)
+#    _refile_pick_entry        - choose which files: entry moves (never guesses)
+#    _photo_library_name       - the last-chance rename: restore the pre-processing name
+#    process_refile            - the engine: move + rename + keyword + record update
+#
 #  CLI
 #    _prompt                   - interactive input seam (monkeypatched in tests)
 #    _resolve_input_file       - forgiving FILE/--more lookup: as typed, then under the archive root
+#    build_process_refile_parser / _cmd_refile - the refile subcommand (fha.py intercepts)
 #    register / _run_process / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,9 +135,10 @@ import argparse
 import datetime
 import json
 import re
+import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
@@ -125,16 +148,21 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
+    EXIT_WARNINGS,
     Result,
     PHOTO_EXTENSIONS,
     SOURCE_TYPES,
     FhaConfigError,
     ParsedName,
+    append_paragraph_to_section,
+    claims_edit_problem,
     configure_utf8_stdout,
+    find_source_record_path,
     format_edtf_error,
     format_exiftool_error,
     format_source_type_error,
     fmt_id_display,
+    frontmatter_fence_span,
     grouping_stem,
     id_type_of,
     is_valid_edtf,
@@ -143,9 +171,12 @@ from _lib import (
     mint_ids,
     normalize_date,
     normalize_id,
+    parse_frontmatter_strict,
     parse_media_filename,
     path_to_alias,
     read_record,
+    read_text_exact,
+    reapply_newline,
     resolve_path,
     resolve_root_arg,
     scan_ids_in_tree,
@@ -153,6 +184,7 @@ from _lib import (
     select_variation_primary,
     is_working_copy,
     variant_role,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -524,74 +556,18 @@ def _find_record_for_sid(archive_root: Path, s_id: str) -> Path | None:
 
 
 def _render_file_entry(item: dict) -> list[str]:
-    """Render a parsed files: list item dict as block-style lines.
-
-    Used to re-emit an existing inline-list item (`files: [{file: ..., role:
-    primary}]`) in the same two-space block style a freshly appended entry
-    uses, so converting the key from inline to block form doesn't drop it.
-    """
-    keys = list(item.keys())
-    first, *rest = keys
-    lines = [f'  - {first}: {_yaml_inline(item[first])}']
-    lines += [f'    {k}: {_yaml_inline(item[k])}' for k in rest]
-    return lines
+    """Delegates to the shared `_lib.render_file_entry` (moved there so
+    `fha source extract` appends its derived-artifact entry through the same
+    single renderer; kept as a thin alias for existing call sites/tests)."""
+    from _lib import render_file_entry
+    return render_file_entry(item)
 
 
 def _append_file_entry(record_text: str, entry_lines: list[str]) -> str:
-    """Insert a files: list item into a record's frontmatter (text surgery).
-
-    We edit the text rather than round-tripping the YAML so human comments and
-    field order in an existing record survive untouched (the same discipline as
-    `fha places geocode`'s surgical edits). The new item is appended after the
-    last line of the existing `files:` block; if the record somehow has no
-    `files:` block, one is created just before the closing frontmatter `---`.
-    `entry_lines` are already indented (two spaces for the `- file:` line).
-    """
-    lines = record_text.split('\n')
-
-    # Find frontmatter bounds: first '---' and the next '---'.
-    try:
-        start = lines.index('---')
-        end = lines.index('---', start + 1)
-    except ValueError:
-        raise ValueError('record has no parseable frontmatter')
-
-    files_idx = None
-    for i in range(start + 1, end):
-        if lines[i].rstrip() == 'files:' or lines[i].rstrip().startswith('files:'):
-            files_idx = i
-            break
-
-    if files_idx is None:
-        # No inventory yet - create the block immediately before the closing ---.
-        insert_at = end
-        block = ['files:'] + entry_lines
-        return '\n'.join(lines[:insert_at] + block + lines[insert_at:])
-
-    if lines[files_idx].rstrip() != 'files:':
-        # An inline value ('files: []', 'files: [{file: ..., role: primary}]', …)
-        # is valid YAML but has no block underneath it to append to. Parse out
-        # any existing entries before normalizing to a bare key, so a non-empty
-        # inline list's items are preserved as block items rather than dropped.
-        inline_value = lines[files_idx].split(':', 1)[1].strip()
-        existing_items = yaml.safe_load(inline_value) if inline_value not in ('', '~', 'null') else None
-        lines[files_idx] = 'files:'
-        if existing_items:
-            preserved_lines = []
-            for item in existing_items:
-                preserved_lines.extend(_render_file_entry(item))
-            lines[files_idx + 1:files_idx + 1] = preserved_lines
-            end += len(preserved_lines)
-
-    # Find the end of the files: block: the first line at/after files_idx+1 that
-    # is not indented (a new top-level key) or the closing ---.
-    block_end = end
-    for i in range(files_idx + 1, end):
-        stripped = lines[i]
-        if stripped and not stripped[0].isspace():
-            block_end = i
-            break
-    return '\n'.join(lines[:block_end] + entry_lines + lines[block_end:])
+    """Delegates to the shared `_lib.append_file_entry_to_record` (moved
+    there for `fha source extract`; thin alias for existing call sites)."""
+    from _lib import append_file_entry_to_record
+    return append_file_entry_to_record(record_text, entry_lines)
 
 
 # ── Source-stub sidecar (*.notes.md) ──────────────────────────────────────────
@@ -1194,7 +1170,22 @@ def process_document(
     final_slug = _derive_slug(slug, final_title if title is None else title, file_path)
     ext = file_path.suffix
     new_name = f'{final_slug}_{sid}{ext}'
-    new_path = file_path.with_name(new_name)
+    # Destination: a file the human pre-filed into their own subfolder keeps
+    # its place - the rename is in place (SPEC §12.1: folders are the human's
+    # projection, never the tool's to rearrange). A file sitting at the
+    # documents root TOP level - the flat relocation _relocate_from_inbox
+    # performs, or a hand-drop at the root - files into documents/{type}/
+    # instead, matching the bundle path's _record_subdir destination (owner
+    # decision 2026-07-22): routine inbox processing must not pile every
+    # document into one flat folder. Both sides resolved: the two intake
+    # routes disagree on file_path's form (the CLI path is pre-resolved, the
+    # inbox relocation is not), and an external or '..'-relative documents
+    # root would otherwise never compare equal. DNA never reaches this branch
+    # (refused above unless already under documents/dna/).
+    if file_path.parent.resolve() == documents_root.resolve():
+        new_path = documents_root / _record_subdir(source_type) / new_name
+    else:
+        new_path = file_path.with_name(new_name)
 
     # SPEC §14: proof-argument sources live under sources/proofs/, not a
     # sources/proof-argument/ directory matching the source_type literally.
@@ -1223,36 +1214,51 @@ def process_document(
         stem=file_path.stem if _slugify(file_path.stem) != final_slug else None,
     )
 
+    # When the destination changed folders (root-top -> documents/{type}/),
+    # the preview names the full relative path, not just the new filename.
+    dest_display = (new_name if new_path.parent == file_path.parent
+                    else _rel(new_path, archive_root))
+
     if dry_run:
         print(f'[dry-run] Would mint {sid}')
-        print(f'[dry-run] Would rename {file_path.name} -> {new_name}')
+        print(f'[dry-run] Would rename {file_path.name} -> {dest_display}')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
 
-    undo: list = []
+    # Each undo carries a plain description so a rollback that cannot finish can
+    # name exactly what it left behind - a swallowed undo failure that still
+    # reported "rolled back" is the whole hazard here.
+    undo: list[tuple[str, object]] = []
     try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.rename(new_path)
-        undo.append(lambda: new_path.rename(file_path))
+        undo.append((f'move {new_path.name} back to {file_path.name}',
+                     lambda: new_path.rename(file_path)))
 
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
-        undo.append(lambda: record_path.unlink(missing_ok=True))
+        undo.append((f'delete the half-written record {record_path.name}',
+                     lambda: record_path.unlink(missing_ok=True)))
 
         if sidecar is not None:
             sidecar.unlink()
     except Exception as e:
-        for fn in reversed(undo):
-            try:
-                fn()
-            except Exception:
-                pass
-        print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
+        failed = _run_undo(undo)
+        if failed:
+            print(f'ERROR: processing failed, and the rollback could not finish: {e}',
+                  file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print('The archive may be inconsistent. Run `fha doctor` to see what is '
+                  'off; a file left renamed with no record is re-tied with '
+                  '`fha reconcile`.', file=sys.stderr)
+        else:
+            print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
     print(f'Minted {sid}')
-    print(f'Renamed {file_path.name} -> {new_name}')
+    print(f'Renamed {file_path.name} -> {dest_display}')
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
@@ -1687,16 +1693,32 @@ def process_photo_group(
         if sidecar is not None:
             sidecar.unlink()
     except Exception as e:
+        # Best-effort unwind that keeps its failures instead of swallowing them:
+        # a SOURCE keyword left on a photo after the record is gone is a real
+        # inconsistency, and the owner has to be told when one survives.
+        failed: list[str] = []
         try:
             record_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as undo_exc:
+            failed.append(f'delete the half-written record {record_path.name} ({undo_exc})')
         for m in reversed(embedded):
             try:
-                _run_exiftool_remove_source(m, sid, extra_keywords=per_member_new_people[m] or None)
-            except RuntimeError:
-                pass
-        print(f'ERROR: processing the variation set failed, rolled back: {e}', file=sys.stderr)
+                kw_err = _run_exiftool_remove_source(
+                    m, sid, extra_keywords=per_member_new_people[m] or None)
+            except RuntimeError as kw_exc:
+                kw_err = str(kw_exc)
+            if kw_err is not None:
+                failed.append(f'remove the SOURCE: {sid} keyword from {m.name} ({kw_err})')
+        if failed:
+            print(f'ERROR: processing the variation set failed, and the rollback '
+                  f'could not finish: {e}', file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print(f'The archive may be inconsistent - a photo may still carry a '
+                  f'SOURCE: {sid} keyword pointing at a record that is gone. Run '
+                  '`fha doctor` to see what is off, then clear the keyword as it '
+                  'advises.', file=sys.stderr)
+        else:
+            print(f'ERROR: processing the variation set failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
     print(f'Minted {sid}')
@@ -2055,7 +2077,8 @@ def process_bundle(
             item['dest'].parent.mkdir(parents=True, exist_ok=True)
             src, dest = item['src'], item['dest']
             src.rename(dest)
-            undo.append(lambda s=src, d=dest: d.rename(s))
+            undo.append((f'move {dest.name} back to {src.name}',
+                         lambda s=src, d=dest: d.rename(s)))
             if item['embed']:
                 err = _run_exiftool_embed_source(dest, sid)
                 if err is not None:
@@ -2063,24 +2086,37 @@ def process_bundle(
                 embedded.append((dest, sid))
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
-        undo.append(lambda: record_path.unlink(missing_ok=True))
+        undo.append((f'delete the half-written record {record_path.name}',
+                     lambda: record_path.unlink(missing_ok=True)))
 
         # Dissolve the now-asset-free folder: remove the notes stub, then rmdir.
         notes_path.unlink()
-        undo.append(lambda p=notes_path, text=notes_text: p.write_text(text, encoding='utf-8'))
+        undo.append((f'restore the bundle notes stub {notes_path.name}',
+                     lambda p=notes_path, text=notes_text: p.write_text(text, encoding='utf-8')))
         folder.rmdir()
     except Exception as e:
+        # Keyword removals and the file/record undos are all best-effort, and any
+        # that fail are reported: a file left in its destination or a keyword left
+        # on a photo with no record is a real inconsistency, not a clean rollback.
+        failed: list[str] = []
         for dest, dsid in reversed(embedded):
             try:
-                _run_exiftool_remove_source(dest, dsid)
-            except RuntimeError:
-                pass
-        for fn in reversed(undo):
-            try:
-                fn()
-            except Exception:
-                pass
-        print(f'ERROR: bundle dissolution failed, rolled back: {e}', file=sys.stderr)
+                kw_err = _run_exiftool_remove_source(dest, dsid)
+            except RuntimeError as kw_exc:
+                kw_err = str(kw_exc)
+            if kw_err is not None:
+                failed.append(f'remove the SOURCE: {dsid} keyword from {dest.name} ({kw_err})')
+        failed.extend(_run_undo(undo))
+        if failed:
+            print(f'ERROR: bundle dissolution failed, and the rollback could not '
+                  f'finish: {e}', file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print('The archive may be inconsistent - a file may still sit in its '
+                  'destination or a photo may still carry a SOURCE keyword with no '
+                  'record. Run `fha doctor` to see what is off; `fha reconcile` '
+                  're-ties a stranded file to its record.', file=sys.stderr)
+        else:
+            print(f'ERROR: bundle dissolution failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
     print(f'Minted {sid} for bundle {folder.name}')
@@ -2231,7 +2267,20 @@ def attach_more(
     if copy:
         suffix = f'-{_slugify(copy)}{suffix}'
     new_name = f'{base}{suffix}_{sid}{more_file.suffix}'
-    new_path = more_file.with_name(new_name)
+    # Same destination rule as process_document (M11.2): a pre-filed
+    # attachment renames in place; one sitting at the documents root TOP
+    # level files WITH its source - beside a document primary (honoring
+    # whatever subfolder the human chose for it, or staying flat beside a
+    # legacy flat-filed primary), else into documents/{type}/ (the record
+    # dir name IS _record_subdir(source_type) for every scaffold path).
+    if more_file.parent.resolve() == documents_root.resolve():
+        if _is_under(primary_path, documents_root):
+            dest_dir = primary_path.parent
+        else:
+            dest_dir = documents_root / record_path.parent.name
+        new_path = dest_dir / new_name
+    else:
+        new_path = more_file.with_name(new_name)
     new_alias = path_to_alias(new_path, 'documents', fha_config, archive_root)
     entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']
     if copy:
@@ -2241,8 +2290,11 @@ def attach_more(
     if new_path.exists():
         raise ProcessError(f'destination file already exists: {new_path.name}')
 
+    more_dest_display = (new_name if new_path.parent == more_file.parent
+                         else _rel(new_path, archive_root))
+
     if dry_run:
-        print(f'[dry-run] Would rename {more_file.name} -> {new_name}')
+        print(f'[dry-run] Would rename {more_file.name} -> {more_dest_display}')
         print(f'[dry-run] Would add files: entry (role: {role}) to '
               f'{_rel(record_path, archive_root)}')
         return EXIT_CLEAN
@@ -2254,24 +2306,871 @@ def attach_more(
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
     try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
         more_file.rename(new_path)
-        undo.append(lambda: new_path.rename(more_file))
+        undo.append((f'move {new_path.name} back to {more_file.name}',
+                     lambda: new_path.rename(more_file)))
         new_text = _append_file_entry(old_text, entry)
         record_path.write_text(new_text, encoding='utf-8')
     except Exception as e:
+        # Undo the record entry and the rename best-effort, but keep any failure:
+        # a file left renamed while the record no longer lists it is inconsistent,
+        # so the owner is told rather than shown a false "rolled back".
+        failed: list[str] = []
         try:
             record_path.write_text(old_text, encoding='utf-8')
-        except Exception:
-            pass
-        for fn in reversed(undo):
-            try:
-                fn()
-            except Exception:
-                pass
-        print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
+        except Exception as rec_exc:
+            failed.append(f'restore {record_path.name} ({rec_exc})')
+        failed.extend(_run_undo(undo))
+        if failed:
+            print(f'ERROR: attach failed, and the rollback could not finish: {e}',
+                  file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print('The archive may be inconsistent. Run `fha doctor` to see what is '
+                  'off; `fha reconcile` re-ties a renamed file to its record.',
+                  file=sys.stderr)
+        else:
+            print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
-    print(f'Renamed {more_file.name} -> {new_name}')
+    print(f'Renamed {more_file.name} -> {more_dest_display}')
     print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
+    return EXIT_CLEAN
+
+
+# ── Refile (the sanctioned cross-root correction move) ───────────────────────
+#
+# SPEC §12.1's law is that filing out of the inbox is the ONE sanctioned move
+# of an original, and §13 adds that a filed documents-root file is renamed
+# exactly once while a photos-root file is never renamed at all. `fha process
+# refile` is the owner-approved carve-out (usage feedback item 3, 2026-07-23):
+# the sanctioned CROSS-ROOT correction for a filing decision that turned out
+# wrong - a scan processed as a document that belongs in the photo library, or
+# a photo that is really a record. Within-root reorganization is NOT this verb:
+# that stays free (folders are projection) and `fha reconcile` heals it.
+
+def _stdin_is_interactive() -> bool:
+    """Whether a [y/N] confirmation can actually be answered (tests patch this).
+
+    A seam rather than a bare `sys.stdin.isatty()` call at the use site so the
+    photos->documents confirm gate can be exercised both ways without a TTY.
+    """
+    return sys.stdin.isatty()
+
+
+def _run_undo(undo: list) -> list[str]:
+    """Run undo steps in reverse, best-effort, and return what could NOT be undone.
+
+    Rollback has to be best-effort - a later step still runs after an earlier one
+    fails - but it must never claim more than it actually did. Each entry is a
+    (description, callable) pair, and the description is written for the archive's
+    owner, so a rollback that cannot finish names exactly what it left behind (a
+    file still renamed, a record still on disk) instead of the older silent
+    'rolled back' that hid a half-undone, inconsistent archive from him.
+    """
+    failed: list[str] = []
+    for desc, fn in reversed(undo):
+        try:
+            fn()
+        except Exception as undo_exc:
+            failed.append(f'{desc} ({undo_exc})')
+    return failed
+
+
+def _move_file(src: Path, dest: Path) -> None:
+    """Move one file, falling back to copy+delete across filesystems.
+
+    `Path.rename` is atomic but only works within one filesystem, and refile
+    exists precisely for archives whose documents and photos roots live on
+    different drives (SPEC §12.4 external roots). The fallback copies bytes and
+    timestamps then removes the source; a failed copy removes the partial
+    destination first so an interrupted move never leaves two half-files.
+    """
+    try:
+        src.rename(dest)
+        return
+    except OSError:
+        pass
+    try:
+        shutil.copy2(src, dest)
+    except Exception:
+        # Best-effort: drop the partial copy, but never let a failure to remove
+        # it (a locked handle on Windows) MASK the real copy error - re-raise the
+        # copy failure. A partial that survives is caught by the caller's
+        # residual-partial guard, which checks `dest` after a failed forward move
+        # and names the stray so no rollback is reported as clean.
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    try:
+        src.unlink()
+    except Exception:
+        # The copy landed but the source could not be removed (a locked handle
+        # on Windows, say). Keep the ORIGINAL as the sole copy and drop the
+        # partial destination, so an interrupted move never leaves two files
+        # and the caller's rollback can still remove any folders it created.
+        dest.unlink(missing_ok=True)
+        raise
+
+
+def _scalar_value(raw: str) -> tuple[str, str]:
+    """Split a `file:` line's value region into (value, trailing_comment).
+
+    Quote state is tracked BEFORE any comment split, because a '#' inside a
+    quoted scalar is data, not a comment - the reverse order truncated a
+    legitimately quoted `"documents/x #1.jpg"` at the '#' and made it
+    unmatchable. For a bare scalar the comment must be whitespace-preceded
+    (YAML's own rule), so a '#' touching non-space text stays part of the path.
+
+    The comment region is returned untouched, and NOT because the matcher needs
+    it - matching ignores it - but because refile's `_rewrite_file_line` has to
+    re-append a hand-written inventory note (`# fragile original`) onto the
+    rewritten line; dropping it silently deletes the owner's annotation on a
+    "successful" refile. A deliberate twin of reconcile.py's `_split_file_value`
+    so the two surgical writers read `file:` lines the same way.
+    """
+    s = raw.strip()
+    if not s:
+        return '', ''
+    if s[0] in ('"', "'"):
+        quote = s[0]
+        i = 1
+        while i < len(s):
+            c = s[i]
+            if quote == '"' and c == '\\':
+                i += 2                      # backslash escape in a double quote
+                continue
+            if c == quote:
+                if quote == "'" and i + 1 < len(s) and s[i + 1] == "'":
+                    i += 2                  # '' is an escaped single quote
+                    continue
+                i += 1
+                break
+            i += 1
+        value_repr, trailing = s[:i], s[i:]
+    else:
+        cut = len(s)
+        for j in range(1, len(s)):
+            if s[j] == '#' and s[j - 1] in (' ', '\t'):
+                cut = j
+                break
+        value_repr, trailing = s[:cut].rstrip(), s[cut:]
+    try:
+        value = yaml.safe_load(value_repr)
+    except Exception:
+        value = value_repr
+    if not isinstance(value, str):
+        value = value_repr
+    return value, trailing.strip()
+
+
+def _rewrite_file_line(text: str, old_alias: str, new_alias: str) -> tuple[str, int]:
+    """Rewrite the ONE `file:` line whose VALUE equals `old_alias` exactly.
+
+    A deliberate twin of `reconcile.py`'s private `_rewrite_entry` (see its P2
+    history): the match is value-exact after stripping quotes and trailing
+    comments - never substring containment, which would let a stale 'x.jpg'
+    rewrite grab a sibling 'x.jpg.txt' entry and corrupt it while reporting
+    success. Duplicated here rather than extracted to _lib because tools never
+    import tools and reconcile keeps its own copy; if a third caller appears,
+    extract the shared matcher then.
+
+    Three disciplines beyond value-exact matching, each closing a corruption
+    class a lens found: the scan is bounded to the frontmatter fence, so a body
+    line that happens to read `- file: <alias>` (a Notes bullet) can never be
+    mistaken for the inventory; the replacement is re-emitted through
+    `_yaml_inline`, so a new alias carrying a YAML-hostile character (a photo
+    named `Scan #12.jpg`, or a `--dest` like `Box #3`) is quoted rather than
+    silently truncated at the ' #'; and an alias listed on more than one line
+    refuses rather than guessing which entry to touch.
+
+    The matched line's trailing comment is carried onto the rewrite verbatim -
+    a hand-written note like `# fragile original` is the owner's annotation, and
+    a refile that silently dropped it would be a quiet data loss reported as a
+    success (reconcile.py's `_rewrite_entry` keeps it the same way). Returns
+    (new_text, match_count): the caller refuses on 0 (not found) or >1
+    (ambiguous).
+    """
+    lines = text.split('\n')
+    span = frontmatter_fence_span(lines)
+    if span is None:
+        return text, 0
+    hits: list[int] = []
+    for i in range(span[0] + 1, span[1]):
+        stripped = lines[i].strip()
+        if stripped.startswith('- file:'):
+            value = stripped[len('- file:'):]
+        elif stripped.startswith('file:'):
+            value = stripped[len('file:'):]
+        else:
+            continue
+        if _scalar_value(value)[0] == old_alias:
+            hits.append(i)
+    if len(hits) != 1:
+        return text, len(hits)
+    i = hits[0]
+    line = lines[i]
+    indent = line[:len(line) - len(line.lstrip())]
+    key = '- file:' if line.lstrip().startswith('- file:') else 'file:'
+    _, comment = _scalar_value(line.lstrip()[len(key):])
+    new_line = f'{indent}{key} {_yaml_inline(new_alias)}'
+    if comment:
+        new_line = f'{new_line}  {comment}'
+    lines[i] = new_line
+    return '\n'.join(lines), 1
+
+
+def _file_line_count(text: str) -> int:
+    """Count `file:` inventory lines - the refuse-rather-than-corrupt guard.
+
+    The rewritten record must carry exactly as many `file:` lines as before
+    (reconcile.py's `_apply` discipline); any drift means the surgery touched
+    more than the one entry and the write must be refused, file untouched.
+    """
+    return sum(1 for ln in text.split('\n')
+               if ln.strip().startswith(('file:', '- file:')))
+
+
+def _validate_dest_subpath(root: Path, dest: str, root_label: str) -> Path:
+    """Validate a `--dest SUBPATH` and return the directory it names under `root`.
+
+    Mirrors person.py's `_validate_into_folder` containment discipline: no
+    absolute paths, no '.'/'..' steps, and the resolved result must sit INSIDE
+    the resolved root - the resolve() check is what stops a Windows
+    drive-relative spelling ('C:1880s') and any other escape the string tests
+    cannot see. A leading '{root_label}/' is forgiven (the natural spelling
+    when copying a path out of a record). The directory need not exist yet -
+    refile creates it.
+    """
+    example = '--dest 1880s' if root_label == _PHOTO_DIR else '--dest census'
+    raw = str(dest).strip().replace('\\', '/')
+    if not raw:
+        raise ProcessError(
+            f'--dest needs a folder path under the {root_label} root, e.g. {example}.')
+    if Path(raw).is_absolute() or (len(raw) > 1 and raw[1] == ':'):
+        raise ProcessError(
+            f'--dest {dest!r} is an absolute path - name a folder under the '
+            f'{root_label} root instead, e.g. {example}.')
+    if raw.lower().startswith(root_label + '/'):
+        raw = raw[len(root_label) + 1:]
+    parts = [p for p in raw.strip('/').split('/') if p]
+    if not parts or any(p in ('.', '..') for p in parts):
+        raise ProcessError(
+            f'--dest {dest!r} does not name a folder under the {root_label} root - '
+            f'no ".." or "." steps, e.g. {example}.')
+    if any(p != p.rstrip('. ') for p in parts):
+        raise ProcessError(
+            f'--dest {dest!r} has a folder name ending in a dot or space - '
+            'Windows silently strips those on disk, so the record would name a '
+            f'folder that does not exist. Drop the trailing character, e.g. {example}.')
+    dest_dir = root.joinpath(*parts)
+    try:
+        dest_dir.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        raise ProcessError(
+            f'--dest {dest!r} does not resolve to a folder inside the '
+            f'{root_label} root - name a plain subfolder, e.g. {example}.')
+    return dest_dir
+
+
+def _refile_pick_entry(entries: list[dict], file_name: str | None, record_name: str) -> dict:
+    """Choose which `files:` inventory entry refile moves - never by guessing.
+
+    With `--file NAME`: the entry whose basename (or full stored path) matches,
+    refused with the candidate list when nothing (or more than one thing)
+    matches. Without it: the single non-derived entry, the overwhelmingly
+    common case. Anything else - several files, or only `derived: true`
+    artifacts - refuses and lists the names, because moving the wrong file
+    quietly would be worse than asking. A derived entry (an extracted-text
+    companion, a corrected transcript) may legitimately be refiled, but only
+    when named explicitly; it is never the default pick.
+    """
+    def _posix(entry: dict) -> str:
+        # Normalize a stored alias to POSIX separators before deriving its
+        # basename. Aliases are forward-slash by contract, but a record written
+        # on Windows may carry backslashes ('documents\\letters\\scan.pdf'); on
+        # POSIX, Path('documents\\letters\\scan.pdf').name is the whole string,
+        # so an un-normalized `--file scan.pdf` lookup would miss a listed file
+        # and refuse. Mirrors the reconcile refile selector's normalization.
+        return str(entry['file']).replace('\\', '/')
+
+    def _names() -> str:
+        return ', '.join(PurePosixPath(_posix(e)).name for e in entries)
+
+    if file_name:
+        wanted = str(file_name).replace('\\', '/')
+        matches = [
+            e for e in entries
+            if PurePosixPath(_posix(e)).name == wanted
+            or _posix(e) == wanted
+        ]
+        if not matches:
+            raise ProcessError(
+                f'--file {file_name!r} does not match any file listed by '
+                f'{record_name}. Its files are: {_names()}.')
+        if len(matches) > 1:
+            raise ProcessError(
+                f'--file {file_name!r} matches more than one entry in '
+                f'{record_name} - name the full stored path instead, e.g. '
+                f'--file "{matches[0]["file"]}".')
+        return matches[0]
+
+    candidates = [e for e in entries if not e.get('derived')]
+    if len(candidates) == 1:
+        return candidates[0]
+    raise ProcessError(
+        f'{record_name} lists {len(entries)} files, so the one to move must be '
+        f'named: add --file NAME. Its files are: {_names()}.')
+
+
+def _photo_library_name(src: Path, entry: dict) -> str:
+    """The last-chance rename for a documents->photos crossing.
+
+    After the move the file is a photos-root file and is NEVER renamed again
+    (SPEC §13), so this is the one legal moment to shed the processing name.
+    The recorded `original_filename` wins when present - the exact name the
+    human filed it under. Otherwise the `_{S-id}` suffix is stripped, along
+    with the entry's own `-{role}`/`-{copy}` suffixes per the §13 grammar
+    (`{slug}[-{copy}][-{role}]_{S-id}`), so no S-id jargon lands in the photo
+    library. Stripping is entry-driven, not guessed from the stem, so a slug
+    that legitimately ends in a role-like word is never mangled.
+    """
+    original = entry.get('original_filename')
+    if original:
+        name = str(original)
+        # original_filename is human-editable data used verbatim as a write
+        # target, so it gets the same containment discipline as --dest: a bare
+        # filename only. PureWindowsPath('.name') catches '/', '\\', '..' steps,
+        # and drive-relative 'C:' spellings in one comparison.
+        if not name or PureWindowsPath(name).name != name:
+            raise ProcessError(
+                f'original_filename {name!r} in the record is not a bare '
+                'filename - refile will not follow path separators or drive '
+                'prefixes. Fix the entry by hand to the plain name, then re-run.')
+        return name
+    stem = src.stem
+    m = _FILENAME_SOURCE_ID_RE.search(stem)
+    if m:
+        stem = stem[:m.start()]
+    role = entry.get('role')
+    if role and str(role) != 'primary':
+        suffix = '-' + _slugify(str(role))
+        if stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+    copy = entry.get('copy')
+    if copy:
+        suffix = '-' + _slugify(str(copy))
+        if stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+    return f'{stem or "photo"}{src.suffix}'
+
+
+def process_refile(
+    archive_root: Path,
+    fha_config: dict,
+    source_id: str,
+    *,
+    to: str,
+    file_name: str | None = None,
+    dest: str | None = None,
+    dry_run: bool = False,
+    assume_yes: bool = False,
+) -> int:
+    """Move one of a source's files to the other asset root - the correction verb.
+
+    The sanctioned CROSS-ROOT move (SPEC §12.1 carve-out): a file filed to the
+    wrong root at processing is moved to the right one, its identity carriers
+    re-established for the destination root's rules, and the record updated in
+    the same transaction. Refuses when the file is already under the target
+    root - within-root moves are free and healed by `fha reconcile`, not this.
+
+    documents -> photos (`--to photos`): `--dest` is REQUIRED (the tool never
+    invents photo-library organization); the file is renamed back to its
+    photo-library name (`_photo_library_name` - the one legal rename moment,
+    since photos-root files are never renamed after the crossing) and the
+    `SOURCE:` keyword is embedded where the format supports it. A missing
+    exiftool or an unsupported format WARNS and proceeds - the inventory still
+    carries identity, and refusing would strand the correction.
+
+    photos -> documents (`--to documents`): the move breaks the external photo
+    catalog's knowledge of the file, so it confirms first ([y/N], or --yes);
+    the file is renamed INTO the §13 grammar `{slug}[-{copy}][-{role}]_{S-id}`
+    and lands in `--dest` or `documents/{type}/` (the M11.2 convention). The
+    embedded SOURCE keyword is deliberately NOT stripped - it is harmless in
+    the documents root and stripping would be a second risky write for zero
+    correctness gain. `original_filename` is NOT added to the entry (that
+    would need multi-key entry surgery, out of scope for v1); the dated Notes
+    line carries the old name instead.
+
+    Record updates are one atomic text write: the value-exact `file:` line
+    rewrite (never substring - sibling entries must survive) plus a dated
+    provenance paragraph appended to `## Notes` via the shared
+    `append_paragraph_to_section` engine, both computed BEFORE anything moves
+    so an unmatchable line refuses up front instead of rolling back. Line
+    endings are preserved exactly (read_text_exact/write_text_exact).
+
+    Deliberately out of scope for v1: re-typing (`refile` moves location,
+    never `source_type`), same-root moves (reconcile's domain), and moving the
+    RECORD file between sources/{type}/ directories.
+
+    Returns 0 on success or dry-run, 1 when the record is not found, 3 on any
+    refusal or rolled-back failure (raised as ProcessError for the CLI layer
+    where convenient). Transactional: every filesystem effect registers an
+    undo and any failure unwinds them in reverse.
+    """
+    if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
+        raise ProcessError(
+            f'{source_id!r} is not a valid source ID. S-ids look like '
+            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from the '
+            'archive alphabet (0-9 and lowercase a-z, except i, l, o, u). '
+            'Run `fha find <a word from the title>` to look one up.')
+    sid = fmt_id_display(normalize_id(source_id))
+
+    record_path = find_source_record_path(archive_root, sid)
+    if record_path is None:
+        print(f'No source record found for {sid} under sources/ - check the id '
+              f'with `fha find {sid}`.', file=sys.stderr)
+        return EXIT_WARNINGS
+
+    rec = read_record(record_path)
+    if rec.get('parse_errors'):
+        raise ProcessError(
+            f'{record_path.name} has malformed frontmatter, so its files: '
+            'inventory cannot be trusted. Run `fha lint` and fix it, then re-run.')
+    meta = rec.get('meta') or {}
+    entries = [e for e in (meta.get('files') or []) if isinstance(e, dict) and e.get('file')]
+    if not entries:
+        raise ProcessError(
+            f'{record_path.name} lists no files - nothing to refile. '
+            'A pointer-only source has no asset in the archive.')
+
+    entry = _refile_pick_entry(entries, file_name, record_path.name)
+    stored_alias = str(entry['file'])
+    alias_norm = stored_alias.replace('\\', '/')
+    alias_root = alias_norm.split('/', 1)[0]
+    if alias_root not in ('documents', _PHOTO_DIR):
+        raise ProcessError(
+            f'{record_path.name} stores {stored_alias!r}, which is not under the '
+            'photos or documents root - fix the entry by hand, then re-run.')
+    if alias_root == to:
+        raise ProcessError(
+            f'{Path(alias_norm).name} is already under the {to} root. Refile only '
+            'moves a file ACROSS roots (photos <-> documents); to reorganize '
+            'within a root, move the file in your file browser and run '
+            '`fha reconcile` to re-tie it to its record.')
+
+    src = resolve_path(stored_alias, fha_config, archive_root)
+    if not src.is_file():
+        raise ProcessError(
+            f'{stored_alias} is not on disk. If the {alias_root} folder lives on '
+            'an external drive, plug it in; if the file was moved, run '
+            '`fha reconcile` first so the record points at its real location, '
+            'then re-run.')
+
+    # Plan the destination. Both directions compute everything - destination
+    # directory, final name, record surgery - before any byte moves, so every
+    # refusal happens with the archive untouched.
+    if to == _PHOTO_DIR:
+        photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
+        if not photos_root.is_dir():
+            # The destination root must be REACHABLE before planning. Without this,
+            # the later dest_dir.mkdir(parents=True) would recreate an unplugged
+            # external drive's mount path on the local disk and move the original
+            # into it - hiding the file under the real drive when it reconnects.
+            raise ProcessError(
+                f'the photos root is not reachable at {photos_root} - if it lives '
+                'on an external drive, plug it in, then re-run. (Refusing rather '
+                'than recreating the mount path on the local disk, which would '
+                'strand the file when the drive reconnects.)')
+        if not dest:
+            raise ProcessError(
+                '--dest is required when refiling into the photo library: fha '
+                'never invents photo-library organization - the folder choice is '
+                'yours. Name the subfolder the photo belongs in, e.g. '
+                '--dest 1880s or --dest "Family/Hartley".')
+        dest_dir = _validate_dest_subpath(photos_root, dest, _PHOTO_DIR)
+        new_name = _photo_library_name(src, entry)
+    else:
+        documents_root = resolve_path('documents', fha_config, archive_root)
+        if not documents_root.is_dir():
+            # Same reachability guard as the photos direction: never recreate an
+            # offline root's mount path on the local disk under the moved file.
+            raise ProcessError(
+                f'the documents root is not reachable at {documents_root} - if it '
+                'lives on an external drive, plug it in, then re-run. (Refusing '
+                'rather than recreating the mount path on the local disk, which '
+                'would strand the file when the drive reconnects.)')
+        source_type = str(meta.get('source_type') or _DEFAULT_DOCUMENT_TYPE)
+        if dest:
+            dest_dir = _validate_dest_subpath(documents_root, dest, 'documents')
+        else:
+            dest_dir = documents_root / _record_subdir(source_type)
+        rec_stem = record_path.stem
+        m = _FILENAME_SOURCE_ID_RE.search(rec_stem)
+        slug = rec_stem[:m.start()] if m else _slugify(rec_stem)
+        suffix = ''
+        role = entry.get('role')
+        if role and str(role) != 'primary':
+            suffix = f'-{_slugify(str(role))}'
+        copy = entry.get('copy')
+        if copy:
+            suffix = f'-{_slugify(str(copy))}{suffix}'
+        new_name = f'{slug}{suffix}_{sid}{src.suffix}'
+
+    dest_path = dest_dir / new_name
+    if dest_path.exists():
+        raise ProcessError(
+            f'destination already exists: {_rel(dest_path, archive_root)} - '
+            'move or rename that file first, then re-run.')
+    new_alias = path_to_alias(dest_path, to, fha_config, archive_root)
+
+    # Record surgery, computed up front: the value-exact file: line rewrite
+    # plus the dated Notes provenance paragraph, as ONE new text.
+    old_text = read_text_exact(record_path)
+    rewritten, matched = _rewrite_file_line(old_text, stored_alias, new_alias)
+    if matched == 0:
+        raise ProcessError(
+            f'{record_path.name}: could not find the files: line for '
+            f'{stored_alias!r} - the entry may be spelled differently in the '
+            'raw text. Fix it by hand or run `fha lint`, then re-run. '
+            'Nothing was moved.')
+    if matched > 1:
+        raise ProcessError(
+            f'{record_path.name} lists {stored_alias!r} on more than one files: '
+            'line, so the rewrite cannot know which entry to touch - refusing. '
+            'Fix the duplicate entry by hand (`fha lint` names the spot), then '
+            're-run. Nothing was moved.')
+    if _file_line_count(rewritten) != _file_line_count(old_text):
+        raise ProcessError(
+            f'{record_path.name}: rewriting the files: entry would change the '
+            'shape of its files: list - refusing. Fix the entry by hand '
+            '(`fha lint` names the spot). Nothing was moved.')
+
+    if to == _PHOTO_DIR:
+        note = (f'Refiled {_today()}: {stored_alias} -> {new_alias} '
+                '(fha process refile). The file was living in the records '
+                'drawer but belongs with the photo library.')
+    else:
+        note = (f'Refiled {_today()}: {stored_alias} -> {new_alias} '
+                '(fha process refile). The photo was living in the photo '
+                'library but belongs with the records; it was previously '
+                f'named {src.name}.')
+
+    rew_lines = rewritten.split('\n')
+    bounds = frontmatter_fence_span(rew_lines)
+    body_start = (bounds[1] + 1) if bounds is not None else 0
+    cr = '\r' if '\r\n' in old_text else ''
+    new_lines, _created, _old = append_paragraph_to_section(
+        rew_lines, body_start, 'Notes', note, cr)
+    final_text = '\n'.join(new_lines)
+
+    # Belt-and-braces guards (the run_source_note / claim-writer posture): the
+    # edit must leave a sound Claims block sound, and the rewritten frontmatter
+    # must round-trip to the NEW alias exactly. A value-check, not a parse-check:
+    # a YAML-hostile path (a ' #' that opens a comment) can still PARSE while
+    # silently truncating the value, so the guard confirms the parsed files:
+    # list actually carries new_alias once and no longer carries the old one.
+    if claims_edit_problem(old_text) is None and claims_edit_problem(final_text) is not None:
+        raise ProcessError(
+            f'refusing: the edit would leave {record_path.name}\'s ## Claims '
+            'block broken. Nothing was moved or written - open the record and '
+            'check it by hand, then run `fha lint`.')
+    reparsed = parse_frontmatter_strict(final_text)
+    reparsed_files = ([str(e.get('file', '')) for e in (reparsed.get('files') or [])
+                       if isinstance(e, dict)] if reparsed else [])
+    if reparsed is None or reparsed_files.count(new_alias) != 1 or stored_alias in reparsed_files:
+        raise ProcessError(
+            f'refusing: the new path {new_alias!r} would not survive cleanly in '
+            f'{record_path.name} - use a simpler --dest (letters, digits, '
+            'hyphens). Nothing was moved or written.')
+
+    embed_keyword = to == _PHOTO_DIR
+    keyword_supported = dest_path.suffix.lower() in PHOTO_EXTENSIONS
+
+    if dry_run:
+        if to == 'documents':
+            print('[dry-run] Note: your photo tool (Lightroom) would show this '
+                  'photo as missing after the move - removing it from the '
+                  'catalog stays your job; fha never touches the catalog.')
+        if not dest_dir.exists():
+            print(f'[dry-run] Would create {_rel(dest_dir, archive_root)}/')
+        print(f'[dry-run] Would move {stored_alias} -> {new_alias}')
+        if src.name != new_name:
+            why = ('restoring its photo-library name' if to == _PHOTO_DIR
+                   else 'renaming it into the {slug}_{S-id} grammar')
+            print(f'[dry-run] Would rename {src.name} -> {new_name} at the crossing ({why})')
+        if embed_keyword:
+            if keyword_supported:
+                print(f'[dry-run] Would embed the SOURCE: {sid} keyword in {new_name}')
+            else:
+                print(f'[dry-run] Keywords are not supported for {src.suffix} files - '
+                      'the record\'s files: inventory would carry the identity alone.')
+        print(f'[dry-run] Would rewrite the files: entry in '
+              f'{_rel(record_path, archive_root)}: {stored_alias} -> {new_alias}')
+        print(f'[dry-run] Would add a Notes line: {note}')
+        return EXIT_CLEAN
+
+    # photos -> documents breaks the external catalog's knowledge of the file:
+    # warn, then require a human yes (or --yes) before anything moves.
+    if to == 'documents':
+        print('Your photo tool (Lightroom) will show this photo as missing '
+              'after the move - remove it from your catalog yourself; fha '
+              'never touches the catalog.')
+        if not assume_yes:
+            if not _stdin_is_interactive():
+                raise ProcessError(
+                    'moving a photo out of the photo library needs a '
+                    'confirmation, and there is no one here to ask. Re-run '
+                    'with --yes to confirm.')
+            try:
+                answer = _prompt('Move it out of the photo library? [y/N] ').strip().lower()
+            except EOFError:
+                # No answer is reachable (a closed stdin, or a scheduler run
+                # where isatty() lies). That is truly non-interactive: refuse
+                # with the same crafted cause and next step, not the generic
+                # catch-all's misleading "run fha lint".
+                raise ProcessError(
+                    'moving a photo out of the photo library needs a '
+                    'confirmation, and there is no one here to ask. Re-run '
+                    'with --yes to confirm.')
+            if answer not in ('y', 'yes'):
+                print('Not refiled - nothing changed.')
+                return EXIT_CLEAN
+
+    # Explicit transactional state, not a list of opaque undo lambdas: a rollback
+    # that hits a snag (the asset drive unplugged mid-undo) has to tell the owner
+    # WHERE the file ended up and WHERE the record points, and only named state
+    # can say that. The order below is the fix for the reviewer-named hazard - the
+    # file is moved back BEFORE the record is rewritten, and the record is then
+    # pointed at the file's REAL location, so a rollback that cannot finish still
+    # leaves the file and the record agreeing (a consistent archive) instead of a
+    # record pointing at a now-missing old path while the file sits in the
+    # destination root - a split a file browser never surfaces.
+    created_dirs: list[Path] = []
+    file_moved = False
+    keyword_warning: str | None = None
+    keyword_embedded = False
+    try:
+        # Track which destination folders this run creates, so a rollback can
+        # remove them again (deepest-first, once the file has moved back out).
+        probe = dest_dir
+        while not probe.exists() and probe != probe.parent:
+            created_dirs.append(probe)
+            probe = probe.parent
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        _move_file(src, dest_path)
+        file_moved = True
+
+        if embed_keyword:
+            if not keyword_supported:
+                keyword_warning = (
+                    f'WARNING: keywords are not supported for {src.suffix} files, '
+                    f'so the SOURCE: {sid} keyword was not embedded in {new_name}. '
+                    'The record\'s files: inventory still carries the identity.')
+            else:
+                try:
+                    err = _run_exiftool_embed_source(dest_path, sid)
+                except RuntimeError as e:
+                    keyword_warning = (
+                        f'WARNING: {e}\nThe SOURCE: {sid} keyword was not '
+                        f'embedded in {new_name} - the record\'s files: '
+                        'inventory still carries the identity. Install '
+                        'exiftool and re-process the keyword later.')
+                else:
+                    if err is not None:
+                        keyword_warning = (
+                            f'WARNING: exiftool could not embed the SOURCE '
+                            f'keyword in {new_name}: {err}. The record\'s '
+                            'files: inventory still carries the identity.')
+                    else:
+                        keyword_embedded = True
+
+        # Atomic (temp + os.replace): refile is documented as one atomic
+        # transaction (BUILD M11.6), so a mid-write failure after the asset has
+        # moved must leave the record fully written or untouched, never torn.
+        write_text_exact_atomic(record_path, reapply_newline(final_text, old_text))
+    except Exception as e:
+        # Best-effort rollback that never claims more than it did. Every step is
+        # attempted even when an earlier one fails, failures are collected rather
+        # than swallowed, and the record is written LAST, pointing at wherever the
+        # file actually is now.
+        undone: list[str] = []
+        move_back_error: Exception | None = None
+        keyword_cleanup_error: str | None = None
+
+        # 1. Strip the SOURCE keyword this run embedded, targeting the destination
+        #    where the file still sits (before the move-back), so the removal lands
+        #    on the file's current path and undoes exactly what the embed added.
+        if keyword_embedded:
+            try:
+                kw_err = _run_exiftool_remove_source(dest_path, sid)
+            except RuntimeError as kw_exc:
+                kw_err = str(kw_exc)
+            if kw_err is None:
+                undone.append(f'removed the SOURCE: {sid} keyword from {new_name}')
+            else:
+                # The embed landed but its inverse failed: the file still carries
+                # metadata THIS run added. Keep the error - a rollback that moved
+                # the file home and restored the record is NOT clean while that
+                # keyword remains, and the clean-branch report below must say so
+                # rather than claim "nothing changed".
+                keyword_cleanup_error = kw_err
+
+        # 2. Move the file home. If the asset drive vanished this fails here, and
+        #    file_home stays at the destination so step 3 points the record at the
+        #    file's real location instead of the now-missing old one.
+        file_home = src
+        if file_moved:
+            try:
+                _move_file(dest_path, src)
+                undone.append(f'moved {new_name} back to {_rel(src, archive_root)}')
+            except Exception as move_exc:
+                file_home = dest_path
+                move_back_error = move_exc
+
+        # 3. Point the record at the file's real location. Move-back done -> old
+        #    alias (a full undo); move-back failed -> the file is still in the
+        #    destination, so the record must point THERE to keep the archive
+        #    consistent. Writing the record last means a failed move-back can never
+        #    strand the record on the missing old path.
+        if file_home == src:
+            record_text = old_text
+        else:
+            record_text = reapply_newline(final_text, old_text)
+        record_consistent = True
+        try:
+            # Atomic, same as the forward write: the rollback restore must not
+            # be able to tear the record it is trying to make whole.
+            write_text_exact_atomic(record_path, record_text)
+        except Exception:
+            record_consistent = False
+
+        # 3b. A forward move that failed mid-copy can leave a partial destination
+        #     file that `_move_file` could not remove (a locked handle on Windows).
+        #     It is not `file_moved`, so steps 1-3 never touched it; remove it now,
+        #     and if that still fails, name it so no report below claims a clean
+        #     rollback while an orphan sits in the destination root. Done before
+        #     step 4 so clearing the stray lets a created folder rmdir cleanly.
+        stray_partial: str | None = None
+        if not file_moved and dest_path.exists():
+            try:
+                dest_path.unlink()
+            except OSError:
+                stray_partial = _rel(dest_path, archive_root)
+
+        # 4. Drop any now-empty folders this run created (deepest first). One that
+        #    still holds the stranded file simply stays - it is reported below.
+        for d in reversed(created_dirs):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
+        rel_record = _rel(record_path, archive_root)
+        if move_back_error is None and record_consistent:
+            # File is home AND the record was restored to its pre-refile text:
+            # the only state that is truly a clean, complete rollback. Both
+            # conditions matter - a successful move-back with a FAILED record
+            # restore (below) leaves the record truncated, and calling that
+            # "nothing changed" would send the owner away from a damaged file.
+            print(f'ERROR: refile failed, rolled back: {e}', file=sys.stderr)
+            if undone:
+                print('Undone: ' + '; '.join(undone) + '.', file=sys.stderr)
+            if stray_partial is not None:
+                # The record is back to its original text, but the failed copy's
+                # partial destination could not be removed - name it and the
+                # manual step so this is not read as "nothing changed".
+                print(f'{rel_record} is unchanged, but a partial copy was left at '
+                      f'{stray_partial} and could not be removed automatically - '
+                      f'remove it by hand (e.g. `rm {stray_partial}`), then re-run.',
+                      file=sys.stderr)
+            elif keyword_cleanup_error is not None:
+                # Record and file location are restored, but the SOURCE: keyword
+                # this run embedded could not be stripped - the file at its home
+                # path still carries metadata the failed command added. Name it
+                # and the exact exiftool cleanup instead of "nothing changed".
+                rel_home = _rel(file_home, archive_root)
+                print(f'{rel_record} is unchanged and the file is back at {rel_home}, '
+                      f'but the SOURCE: {sid} keyword this run embedded could not be '
+                      f'removed ({keyword_cleanup_error}) - the file still carries it. '
+                      f'Remove it by hand: `exiftool -keywords-="SOURCE: {sid}" '
+                      f'-overwrite_original_in_place "{rel_home}"`, then re-run.',
+                      file=sys.stderr)
+            else:
+                print(f'Nothing was left changed in {rel_record}.', file=sys.stderr)
+            return EXIT_FAILURE
+
+        if move_back_error is None:
+            # The file is back home, but rewriting the record to its original
+            # text failed, so the record on disk is truncated or half-written
+            # while the file sits at its original location. Never report this as
+            # a clean rollback: name the damaged record and the one recovery that
+            # makes it whole, restoring the pre-refile text from version control
+            # or a backup.
+            rel_src = _rel(src, archive_root)
+            print(f'ERROR: refile failed and the record could not be restored: {e}',
+                  file=sys.stderr)
+            if undone:
+                print('Done during rollback: ' + '; '.join(undone) + '.', file=sys.stderr)
+            print(f'The file is back at its original location ({rel_src}), but '
+                  f'{rel_record} is damaged: its original text could not be written '
+                  'back and the record may be truncated.', file=sys.stderr)
+            print(f'Next: restore {rel_record} from git or a backup (e.g. '
+                  f'`git checkout -- {rel_record}`), then run `fha lint` to confirm '
+                  'the record is whole again.', file=sys.stderr)
+            return EXIT_FAILURE
+
+        # The move-back could not finish. Report the true on-disk state plainly.
+        rel_dest = _rel(dest_path, archive_root)
+        rel_src = _rel(src, archive_root)
+        print(f'ERROR: refile failed, and the file could not be moved back: {e}',
+              file=sys.stderr)
+        print(f'The {alias_root} location did not answer while moving the file '
+              f'home: {move_back_error}', file=sys.stderr)
+        if undone:
+            print('Done during rollback: ' + '; '.join(undone) + '.', file=sys.stderr)
+        if record_consistent:
+            # Healed to a consistent "still refiled" state: file at the destination,
+            # record points at the destination. Honest - the refile stands - and
+            # the reverse command is the one clean way to finish undoing it later.
+            print(f'To keep the archive consistent, the file was LEFT at {rel_dest} '
+                  f'and {rel_record} now points there. Nothing is broken, but the '
+                  'refile you were undoing is still in place.', file=sys.stderr)
+            reverse = f'fha process refile {sid} --to {alias_root}'
+            if alias_root == _PHOTO_DIR:
+                reverse += ' --dest <folder>'
+            print(f'Next: reconnect the {alias_root} location, then run '
+                  f'`{reverse}` to move it back.', file=sys.stderr)
+        else:
+            # Could not even re-point the record: a genuine split. Spell out both
+            # halves and the manual repair so the owner is never left guessing.
+            print(f'WARNING: the archive is now INCONSISTENT: the file is at '
+                  f'{rel_dest}, but {rel_record} still lists {stored_alias} '
+                  f'({rel_src}), which is not where the file is.', file=sys.stderr)
+            print(f'Next: reconnect the {alias_root} location, move {rel_dest} back '
+                  f'to {rel_src} by hand, then run `fha reconcile` to re-tie the '
+                  'record to the file. Run `fha doctor` to confirm it is clean '
+                  'again.', file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f'Refiled {stored_alias} -> {new_alias}')
+    if src.name != new_name:
+        print(f'Renamed {src.name} -> {new_name} at the crossing')
+    if keyword_embedded:
+        print(f'Embedded SOURCE: {sid} in {new_name}')
+    if keyword_warning:
+        print(keyword_warning, file=sys.stderr)
+    print(f'Updated the files: entry and added a Notes line in '
+          f'{_rel(record_path, archive_root)}')
+    print('Next: run `fha index` so searches see the new location, then '
+          '`fha photoindex` to refresh the photo catalog'
+          + (' (this file is new to it).' if to == _PHOTO_DIR
+             else ' (its old row clears on the next scan).'))
+    if to == _PHOTO_DIR:
+        print(f'Your photo tool (Lightroom) does not know about this file yet - '
+              f'import/synchronize {_rel(dest_dir, archive_root)}/ there.')
     return EXIT_CLEAN
 
 
@@ -2398,11 +3297,102 @@ File a new document or photo into the archive with a permanent ID.
 
   fha process <file>                        File one document or photo
   fha process <photo> --more <file> ROLE    Attach another file to its source
+  fha process refile <S-id> --to photos|documents [--dest SUB]
+                                            Move a filed file to the other root
   fha process <file> --dry-run              Preview, write nothing
 
 Documents are renamed with their new ID (the old name is kept as provenance);
 photos are never renamed. This is the deterministic step; drafting claims and
 reviewing them come after, through the process-source and review-claims skills."""
+
+
+_REFILE_CLI_DESCRIPTION = """\
+Move a filed source file to the other asset root - the filing correction.
+
+  fha process refile S-2b3c4d5e6f --to photos --dest 1880s    records drawer -> photo library
+  fha process refile S-2b3c4d5e6f --to documents              photo library -> records drawer
+  fha process refile S-2b3c4d5e6f --file scan-back.jpg --to photos --dest 1880s
+
+Fixes a filing decision after the fact: a scan processed as a document that
+belongs in the photo library, or a photo that is really a record. The file is
+moved, renamed for its new root's rules, and the source record updated, all in
+one transaction. Reorganizing WITHIN a root is not this command - move files
+freely and run `fha reconcile`. Preview with --dry-run first."""
+
+
+def build_process_refile_parser() -> argparse.ArgumentParser:
+    """The `fha process refile` parser, exposed for fha.py's early interception.
+
+    `fha process` takes a positional FILE, so its parser would read 'refile' as
+    a file path and choke on the S-id that follows. The dispatcher intercepts
+    `fha process refile …` before argparse ever sees it and routes it here -
+    the same mechanism `fha claim new` and `fha gedcom import` use
+    (`fha.py::_intercept_process_refile`). `python tools/process.py refile …`
+    reaches it through `_standalone_main`'s own leading-token check.
+    """
+    p = argparse.ArgumentParser(
+        prog='fha process refile',
+        description=_REFILE_CLI_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument('source_id', metavar='S-ID',
+                   help='The source whose file is filed in the wrong root, e.g. S-2b3c4d5e6f')
+    p.add_argument('--to', required=True, choices=('photos', 'documents'),
+                   help='Which root the file belongs in')
+    p.add_argument('--file', metavar='NAME', dest='file_name',
+                   help='Which of the record\'s files to move, by name - needed '
+                        'only when the record lists more than one')
+    p.add_argument('--dest', metavar='SUBPATH',
+                   help='Destination folder under the target root. Required with '
+                        '--to photos (e.g. "1880s" or "Family/Hartley"); with '
+                        '--to documents it defaults to documents/{type}/')
+    p.add_argument('--yes', action='store_true',
+                   help='Skip the photo-catalog confirmation (--to documents)')
+    p.add_argument('--dry-run', action='store_true', help='Preview without writing')
+    p.add_argument('--root', metavar='PATH', help='Archive root')
+    p.set_defaults(func=_cmd_refile)
+    return p
+
+
+def _cmd_refile(args: argparse.Namespace) -> int:
+    """CLI wrapper for `process_refile`: root/config/working-copy gates + rendering.
+
+    Exit codes (the refile contract, narrower than the main process command's):
+    0 success or dry-run, 1 record-not-found or working-copy mode, 3 every
+    refusal and any rolled-back failure. All exceptions are translated to plain
+    text here - no traceback ever reaches the user.
+    """
+    archive_root = resolve_root_arg(args, command='fha process refile')
+    if archive_root is None:
+        return EXIT_FAILURE
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+    if is_working_copy(archive_root):
+        print('fha process refile is not available in working-copy mode - '
+              'the photo and document files are on the main machine. '
+              'Run this command there.', file=sys.stderr)
+        return EXIT_WARNINGS
+    try:
+        return process_refile(
+            archive_root, fha_config, args.source_id,
+            to=args.to,
+            file_name=getattr(args, 'file_name', None),
+            dest=getattr(args, 'dest', None),
+            dry_run=bool(getattr(args, 'dry_run', False)),
+            assume_yes=bool(getattr(args, 'yes', False)),
+        )
+    except (ProcessError, RuntimeError) as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+    except Exception as e:
+        # Planning is read-only, so an unexpected failure here changed nothing;
+        # the transactional block inside process_refile handles its own rollback.
+        print(f'ERROR: refile hit an unexpected problem: {e}. '
+              'Run `fha lint` to check the record, then re-run.', file=sys.stderr)
+        return EXIT_FAILURE
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -2703,6 +3693,13 @@ def _run_process(args: argparse.Namespace) -> int:
 # ── Standalone ────────────────────────────────────────────────────────────────
 
 def _standalone_main(argv: list[str] | None = None) -> int:
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    # 'refile' leads its own subcommand (the S-id follows it), so a leading
+    # token check is enough here; the full flag-tolerant routing for
+    # `fha process [--root …] refile …` lives in fha.py's interceptor.
+    if argv and argv[0] == 'refile':
+        args = build_process_refile_parser().parse_args(argv[1:])
+        return _cmd_refile(args)
     parser = argparse.ArgumentParser(
         prog='fha process',
         description=_CLI_DESCRIPTION,

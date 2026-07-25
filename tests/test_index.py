@@ -888,6 +888,130 @@ class SourceRestrictedTests(unittest.TestCase):
         self.assertEqual(self._restricted_column(), full)
 
 
+_EXTRACT_SID = 'S-7a7a7a7a7a'
+_EXTRACT_SOURCE = '''---
+id: {sid}
+title: County History
+source_type: book
+files:
+  - file: documents/book/county-history_{low}.pdf
+    role: primary
+  - file: documents/book/county-history-extracted-text_{sid}.md
+    role: extracted-text
+    derived: true
+---
+
+## Notes
+A fat county history.
+'''
+_EXTRACT_DUMP = '''# Extracted text - County History [{sid}]
+
+[Page 1]
+Ferdinand Hartley arrived in Marsh Creek in 1854.
+
+[Page 2]
+(no text layer on this page - read it with vision)
+'''
+
+
+class ExtractedTextIndexingTests(unittest.TestCase):
+    """`fha source extract` promises `fha index` makes the dumped PDF text
+    searchable. That promise is kept only if BOTH index paths feed a
+    `role: extracted-text` companion's body into transcripts_fts - the full
+    rebuild AND the incremental upsert, since JSON/workbench search reads text
+    hits from that table. This is the symmetry contract (TOOLING §2): if the
+    two paths disagree, incremental is wrong by definition."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        low = _EXTRACT_SID.lower()
+        _write(self.root / 'sources' / 'book' / f'county-history_{low}.md',
+               _EXTRACT_SOURCE.format(sid=_EXTRACT_SID, low=low))
+        # The dump companion lives beside the PDF under documents/; only its
+        # text body is indexed (the PDF itself is never read by the indexer).
+        _write(self.root / 'documents' / 'book'
+               / f'county-history-extracted-text_{_EXTRACT_SID}.md',
+               _EXTRACT_DUMP.format(sid=_EXTRACT_SID))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _transcript_rows(self) -> list:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return sorted(tuple(r) for r in conn.execute(
+                'SELECT source_id, path FROM transcripts_fts'))
+        finally:
+            conn.close()
+
+    def _matches(self, term: str) -> list:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return [r[0] for r in conn.execute(
+                'SELECT source_id FROM transcripts_fts WHERE content MATCH ?', (term,))]
+        finally:
+            conn.close()
+
+    def test_full_build_populates_transcripts_fts(self) -> None:
+        index.build_index(self.root, {})
+        rows = self._transcript_rows()
+        self.assertEqual(rows, [(
+            's-7a7a7a7a7a',
+            f'documents/book/county-history-extracted-text_{_EXTRACT_SID}.md')])
+        # The dumped text is searchable by a word from inside a page.
+        self.assertEqual(self._matches('Marsh'), ['s-7a7a7a7a7a'])
+
+    def test_malformed_utf8_companion_does_not_empty_the_index(self) -> None:
+        # A non-UTF-8 extracted-text companion (hand-edited or corrupted) must NOT
+        # abort the build. UnicodeDecodeError is a ValueError, not an OSError, so
+        # without the guard it escapes and, on a full rebuild, rolls back over an
+        # already-dropped index - leaving an empty current-schema cache that later
+        # readers accept as fresh. The malformed dump is skipped; the source and
+        # the rest of the index survive.
+        dump = (self.root / 'documents' / 'book'
+                / f'county-history-extracted-text_{_EXTRACT_SID}.md')
+        dump.write_bytes(b'\xff\xfe not valid utf-8 \x80\x81')
+        index.build_index(self.root, {})            # must not raise
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            n_sources = conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0]
+            n_transcripts = conn.execute(
+                'SELECT COUNT(*) FROM transcripts_fts').fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n_sources, 1, 'the source is still indexed (index not emptied)')
+        self.assertEqual(n_transcripts, 0, 'the malformed dump was skipped')
+
+    def test_extracted_text_is_found_through_the_json_ranked_search(self) -> None:
+        # The finding: transcripts_fts is populated, but the JSON/workbench
+        # backend (find._ranked_search, behind search_json + serve.py) queried
+        # only notes_fts - so `fha find --json` could not find extracted PDF
+        # text even after `fha index`. It must query transcripts_fts too.
+        import find
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            hits = find._ranked_search(conn, 'Marsh', ['text'], 20)
+        finally:
+            conn.close()
+        text_hits = [h for h in hits if h['type'] == 'text']
+        self.assertTrue(text_hits, hits)
+        self.assertTrue(any('extracted-text' in h['detail'] for h in text_hits),
+                        text_hits)
+
+    def test_upsert_matches_full_build_and_never_duplicates(self) -> None:
+        index.build_index(self.root, {})
+        full = self._transcript_rows()
+        status = index.upsert_source(self.root, {}, _EXTRACT_SID.lower())
+        self.assertEqual(status, 'indexed')
+        # Symmetric with the full build - and the upsert's DELETE-first step
+        # means re-running it never leaves a duplicate transcript row.
+        self.assertEqual(self._transcript_rows(), full)
+        self.assertEqual(self._matches('Marsh'), ['s-7a7a7a7a7a'])
+
+
 class RunIndexRootGuardTests(unittest.TestCase):
     """`fha index --root <non-archive>` must refuse (exit 3) and create
     NOTHING. Without the guard it globbed missing dirs, minted an empty
@@ -936,6 +1060,120 @@ class RunIndexRootGuardTests(unittest.TestCase):
                     conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0], 1)
             finally:
                 conn.close()
+
+
+_NEGATED_HUSBAND = '''---
+id: P-hhhhhhhhhh
+name: Henry Fowler
+living: false
+aliases: [P-hhhhhhhhhh, Henry Fowler]
+---
+
+# Henry Fowler
+'''
+
+_NEGATED_WIFE = '''---
+id: P-wwwwwwwwww
+name: Wilma Grant
+living: false
+aliases: [P-wwwwwwwwww, Wilma Grant]
+---
+
+# Wilma Grant
+'''
+
+# One source, two marriage claims: a real (positive) marriage between Henry and
+# a third person, and an accepted but negated "they did NOT marry" claim between
+# Henry and Wilma (SPEC §8.6: a researched negative). Only the positive one may
+# mint spouse edges.
+_NEGATED_MARRIAGE_SOURCE = '''---
+id: S-9999999999
+title: Marriage research
+source_type: other
+---
+
+## Claims
+```yaml
+- id: C-1010101010
+  value: "Henry married Rose, 1901"
+  type: marriage
+  persons: ["[[Henry Fowler]]", "[[Rose Kemp]]"]
+  status: accepted
+  reviewed: 2026-01-01
+  date: 1901
+
+- id: C-2020202020
+  value: "Researched: Henry and Wilma did NOT marry"
+  type: marriage
+  persons: ["[[Henry Fowler]]", "[[Wilma Grant]]"]
+  status: accepted
+  reviewed: 2026-01-01
+  negated: true
+  evidence: negative
+```
+'''
+
+_NEGATED_THIRD = '''---
+id: P-rrrrrrrrrr
+name: Rose Kemp
+living: false
+aliases: [P-rrrrrrrrrr, Rose Kemp]
+---
+
+# Rose Kemp
+'''
+
+
+class NegatedRelationshipDerivationTests(unittest.TestCase):
+    """A negated relationship-bearing claim asserts the ABSENCE of a bond
+    (SPEC §8.6: "we researched and it did NOT happen"). Even when accepted it
+    must never become a graph edge, or a confirmed "these two did not marry"
+    would mint phantom spouse edges that drive family views, relation answers,
+    and Ahnentafel placement. The positive marriage in the same source must
+    still derive normally, so the exclusion is scoped to `negated` alone."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'people' / 'fowler__henry_P-hhhhhhhhhh.md', _NEGATED_HUSBAND)
+        _write(self.root / 'people' / 'grant__wilma_P-wwwwwwwwww.md', _NEGATED_WIFE)
+        _write(self.root / 'people' / 'kemp__rose_P-rrrrrrrrrr.md', _NEGATED_THIRD)
+        _write(self.root / 'sources' / 'marriage_S-9999999999.md',
+               _NEGATED_MARRIAGE_SOURCE)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _spouse_pairs(self) -> set:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return {
+                tuple(sorted((p, o)))
+                for p, o in conn.execute(
+                    "SELECT person_id, other_id FROM relationships WHERE rel = 'spouse'")
+            }
+        finally:
+            conn.close()
+
+    def test_full_build_excludes_negated_marriage(self) -> None:
+        index.build_index(self.root, {})
+        pairs = self._spouse_pairs()
+        # The positive marriage derives reciprocal spouse edges.
+        self.assertIn(('p-hhhhhhhhhh', 'p-rrrrrrrrrr'), pairs)
+        # The negated marriage produces NO spouse edge in either direction.
+        self.assertNotIn(('p-hhhhhhhhhh', 'p-wwwwwwwwww'), pairs)
+        self.assertFalse(
+            any('p-wwwwwwwwww' in pair for pair in pairs),
+            'negated marriage must not touch the relationships table')
+
+    def test_upsert_source_matches_full_build(self) -> None:
+        # Negation must be honored on the incremental path too, or `fha index
+        # --source` would silently reintroduce the phantom edge (TOOLING §2).
+        index.build_index(self.root, {})
+        full = self._spouse_pairs()
+        status = index.upsert_source(self.root, {}, 's-9999999999')
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._spouse_pairs(), full)
 
 
 if __name__ == '__main__':

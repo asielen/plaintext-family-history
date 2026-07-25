@@ -24,9 +24,19 @@ If you love an app's tree view, generate a GEDCOM and use it - the truth stays i
 And it works in the other direction too: coming *from* Ancestry (or any app), download your tree as a GEDCOM file and `fha gedcom import` files it - every person becomes a record and every assertion a reviewable suggestion, so years of clicking arrive as leads, not lost work.
 
 ### What happens to my photos?
-They're never renamed or moved by the system (so your catalog stays intact).
+They're never renamed or moved while they live in your photo library (so your catalog stays intact) - the one exception, `fha process refile` for a photo that turned out to be a record, asks you first and reminds you to remove it from your catalog.
 They can live anywhere - an external drive, your existing library - and `fha.yaml` maps to them.
 Identity rides in embedded metadata (a keyword), not the filename, so reorganizing them never breaks anything.
+
+### Does every photo or document need to become a source?
+No. There are three perfectly good resting states, and most files stay in the first forever:
+1. **Just filed.** A photo sits in the photo box - it can still be tagged with who's in it, captioned, and found through the photo index, all without any source record. A scan sits in the scans drawer, findable by its name. Roughly one photo in fifty carries evidence worth more than this; "just filed" is a complete, legitimate state, not a backlog.
+2. **Filed with a note.** Something interesting but not evidentiary - a keepsake, a scenic photo from the farm, a clipping that names no one - can get a *minimal* evidence folder: a title, links to who and where it's about, and a paragraph of notes saying what it is and why it was kept. **No claims required - a source with only notes is completely valid** (the record template says so itself). It then shows up in that person's source list, on the generated site, in family packets, and in full-text search. "Keywords" simply go in that notes paragraph; the notes are searched. This is also how you keep material you *investigated and rejected* - a debunked surname pamphlet, a disproven legend: the notes record the verdict, so neither you nor the assistant ever mistakes it for evidence later, and the fact that it was checked isn't lost.
+3. **Fully worked.** Evidence that asserts checkable facts gets claims drafted, reviewed, and cited.
+Move a file up a rung only when it earns it - the system never nags you about the ones that stay put.
+
+### Is this thing a photo or a document?
+Decide by *where it should live*, not what it looks like: if it belongs in your photo library, it's a photo; everything else - scans, clippings, even a photograph of a document - belongs in the scans drawer. A scanned record saved as a `.jpg` files correctly when its note says what it is (`source_type: census`); and an in-between item like a postcard can keep its picture side in the photo box while its transcription sits in the scans drawer, both under one evidence folder. And if one was filed to the wrong side, it isn't stuck: `fha process refile` moves it over and corrects the paperwork in one step.
 
 ### My family isn't Anglo - mononyms, two surnames, surname-first, an ancestor with only a given name. Does this handle that?
 Yes. The only thing a surname does here is decide where a person sorts in their folder, so families land together. If someone has no surname - a mononym, an enslaved ancestor recorded by a single given name, an Icelandic patronymic, a foundling - they simply sort in a "no surname" group, and their full name, in its true cultural order, lives in the record itself. Two-surname and surname-first systems work the same way: you pick the name to sort by, and the page shows the name however it should really be written.

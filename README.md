@@ -2,7 +2,7 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
-![status](https://img.shields.io/badge/status-milestones_1--10_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestones_1--11_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
@@ -177,7 +177,7 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` - milestones 1-10 complete.**
+**Current: `spec v1.2` - milestones 1-11 complete.**
 
 Everything through the intake pipeline, the static-site generator, the
 installer/update tooling, and working-copy mode is
@@ -191,7 +191,11 @@ for the detectors' confirm/dismiss), the
 and the GEDCOM import on-ramp (`fha gedcom import`),
 the milestone 7 intake tools (`fha process`, `fha capture`, `fha convert-mining`),
 the milestone 8 static-site generator (`fha site`), the milestone 9
-scaffolding tools (`fha install`/`fha update-tools`), and the milestone 10 working-copy mode (`fha working-copy`).
+scaffolding tools (`fha install`/`fha update-tools`), the milestone 10 working-copy mode (`fha working-copy`),
+and the milestone 11 usage-feedback wave - `fha reconcile` (heal moved-document
+inventory paths), `fha source extract` (dump a PDF's text layer into a searchable
+companion), `fha process refile` (the sanctioned cross-root correction move), and
+stub promotion (`fha person promote` / `fha views brackets --fix-promote`).
 Plan 17 (2026-07) added a second front door onto the same tools: `fha serve`, the localhost
 workbench, plus the write-back verbs it drives - `fha claim new`, `fha person new`/`relate`/
 `estimate`/`edit`/`note`, `fha source note`, and `fha find --json`. The 2026-07 live review
@@ -227,6 +231,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] working-copy mode - asset-less plain-text working copies synced to a second machine (toggle with `fha working-copy on/off`, which sets a git-ignored `WORKING_COPY` marker so the mode never syncs back): tools treat absent photos/documents as present-elsewhere (never "missing", never pruned), so you can write narratives and research against existing records anywhere (milestone 10 - SPEC §12.4 / TOOLING §13d)
 - [x] `fha backup` - one-command dated zip snapshot written outside the archive (records-only by default; `--include-assets` packs the mapped photo/document roots), verified after writing, with `fha doctor` reporting the real last-backup date; restore = unzip (2026-07 usability review, plan 04 - TOOLING §13e)
 - [x] `fha serve` - the localhost workbench: a private, editable browser front door onto the same tools, plus `fha claim new` (mint a claim by hand), `fha person new`/`relate`/`estimate`/`edit`/`note`, `fha source note`, and `fha find --json` (machine-readable search) (plan 17 - TOOLING_INTERFACE.md §1b)
+- [x] usage-feedback wave: `fha reconcile` (heal moved-document inventory paths, documents + photos in one command), `fha source extract` (dump a PDF's embedded text layer into a `role: extracted-text` companion, searchable after `fha index`), `fha process refile` (the sanctioned cross-root correction move, documents ⇄ photos), stub promotion (`fha person promote` / `fha views brackets --fix-promote`), grouped claim review (`fha claim` batch), and biography styles (milestone 11 - TOOLING §9/§14, SPEC §12.1/§13)
 
 ## A complementary project
 

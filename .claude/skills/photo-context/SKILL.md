@@ -144,6 +144,9 @@ and never runs over a whole folder or triage list.
   that rule).
 - **Never** run over a folder or a triage list — one photo, or a small, explicitly named batch,
   per human request.
+- **Never** put a record ID in caption text — embedded caption prose carries plain names only, no
+  `S-…`/`P-…` ids and no `[[ ]]` links (_STANDARD.md §11: family members read that text raw wherever
+  the photo travels).
 - **Never** write a caption the human hasn't read verbatim and approved.
 - **Never** touch a human-caption field (`Caption-Abstract` / `XMP-dc:Description`) — the verb
   enforces this; the skill promises it.

@@ -45,15 +45,15 @@ def _add_source(conn, sid, title, path, *, source_type='vital-record', restricte
 
 
 def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
-               source_id='s-0000000001', status='accepted', value='x'):
+               source_id='s-0000000001', status='accepted', value='x', negated=0):
     mn = ''
     if date_edtf:
         from _lib import edtf_bounds
         mn = edtf_bounds(date_edtf)[0]
     conn.execute(
-        'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, value, status) '
-        'VALUES (?,?,?,?,?,?,?,?)',
-        (cid, source_id, ctype, date_edtf, mn, place_text, value, status),
+        'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, '
+        'value, status, negated) VALUES (?,?,?,?,?,?,?,?,?)',
+        (cid, source_id, ctype, date_edtf, mn, place_text, value, status, negated),
     )
     for pos, p in enumerate(persons):
         conn.execute(
@@ -154,6 +154,132 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertTrue(text.rstrip().endswith('<references/>'))
         self.assertIn('== Sources ==', text)
 
+    def _reopen(self):
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def test_needs_review_excluded_from_spacetime_recast_as_research_note(self):
+        # Owner decision 2026-07-22: a parked needs-review claim never stamps
+        # a fact (no spacetime span), but goes out as an open question in
+        # Research Notes so a collaborator can pick it up.
+        conn = self._reopen()
+        _add_claim(conn, 'c-0000000003', 'residence', ['p-0000000001'],
+                   date_edtf='1910', place_text='Topeka', source_id='s-0000000002',
+                   status='needs-review', value='Possibly moved to Topeka')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        text = r['text']
+        # The marriage source now carries TWO dated+placed claims, so its
+        # spacetime entry disappears either way; the parked claim must not
+        # resurrect it, and no span may carry the 1910 date.
+        self.assertNotIn('data-date="1910-01-01"', text)
+        self.assertIn('== Research Notes ==', text)
+        self.assertIn('Unconfirmed: Possibly moved to Topeka (1910)', text)
+        self.assertIn('noted in "Marriage record"', text)
+        # Research Notes precedes the Sources render anchor.
+        self.assertLess(text.index('== Research Notes =='), text.index('<references/>'))
+
+    def test_research_notes_precede_an_authored_sources_section(self):
+        # A profile that authors its own '## Sources' section exports it as
+        # '== Sources ==' with <references/> appended inside it - the minted
+        # Research Notes section must land BEFORE that heading, or the
+        # footnote block renders detached under Research Notes.
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\n## Sources\nSee also the county records office card file.\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_claim(conn, 'c-0000000005', 'residence', ['p-0000000001'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly moved to Topeka')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        text = r['text']
+        self.assertIn('== Research Notes ==', text)
+        self.assertLess(text.index('== Research Notes =='), text.index('== Sources =='))
+        self.assertLess(text.index('== Sources =='), text.index('<references/>'))
+        self.assertIn('county records office', text)   # authored section survives
+
+    def test_research_note_naming_a_restricted_person_is_withheld(self):
+        # A deceased person whose record carries `restricted: by-request` is a
+        # no-override exclusion from public output (SPEC §19) - a parked claim
+        # co-naming them must not export their wording, even though the
+        # living-person guard passes (living: false) and the index has no
+        # person-level restricted column (the record file is the truth).
+        (self.root / 'people' / 'edith.md').write_text(
+            '---\nid: P-0000000003\nname: Edith Kowalski\ntier: stub\n'
+            'living: false\nrestricted: by-request\n---\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000003', 'Edith Kowalski', tier='stub',
+                    path='people/edith.md')
+        _add_claim(conn, 'c-0000000006', 'marriage',
+                   ['p-0000000001', 'p-0000000003'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly married Edith Kowalski in Chicago')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertNotIn('Edith Kowalski', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])
+
+    def test_research_note_naming_a_participant_with_malformed_record_is_withheld(self):
+        # P1 fail-closed: a claim participant whose record becomes MALFORMED
+        # after indexing (read_record returns parse_errors + empty meta, it does
+        # not raise) must be treated as restricted, not read as public because
+        # the empty meta lacks a `restricted:` marker. The parked claim naming
+        # them must NOT publish - otherwise a now-unreadable (possibly living or
+        # restricted) person's details leak into the Research Notes block.
+        (self.root / 'people' / 'edith.md').write_text(
+            '---\nid: P-0000000003\nname: [broken\n---\n',   # unterminated flow seq
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000003', 'Edith Kowalski', tier='stub',
+                    path='people/edith.md')
+        _add_claim(conn, 'c-0000000006', 'marriage',
+                   ['p-0000000001', 'p-0000000003'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly married Edith Kowalski in Chicago')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        # Export still succeeds for the subject - only the tainted bonus item is
+        # dropped - but the participant's claim wording never reaches the wiki.
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('Edith Kowalski', r['text'])
+        self.assertNotIn('Possibly married', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])
+
+    def test_malformed_subject_record_refused(self):
+        # Fail-closed on the SUBJECT: if their own record is malformed, its
+        # `restricted:`/marker fields may be unreadable, so publishing from the
+        # partial parse could leak a record meant to stay private. Refuse.
+        (self.root / 'people' / 'subject.md').write_text(
+            '---\nid: P-0000000001\nname: [broken\n---\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'unreadable-subject')
+        self.assertIsNone(r['text'])
+
+    def test_restricted_source_research_note_withheld(self):
+        conn = self._reopen()
+        _add_source(conn, 's-0000000003', 'Sealed record', 'sources/sealed.md', restricted=1)
+        _add_claim(conn, 'c-0000000004', 'residence', ['p-0000000001'],
+                   source_id='s-0000000003', status='needs-review',
+                   value='Secret whereabouts')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertNotIn('Secret whereabouts', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])   # nothing eligible → no section
+
     def test_person_link_with_wikitree_id(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
         # "Mary Jones [P-...]" folds into a single WikiTree link, not doubled.
@@ -166,6 +292,55 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertIn('class="spacetime" data-loc="Boston" data-date="1900-01-01"', text)
         # The birth sentence (year 1875) must not carry the 1900 marriage date.
         self.assertNotIn('data-date="1900-01-01">He was born', text)
+
+    def test_negated_claim_excluded_from_spacetime_span(self):
+        # A confirmed ABSENCE - "not in Topeka in 1880" - is the only
+        # dated+placed claim on its source, so before the fix _spacetime_index
+        # would stamp data-loc/data-date onto a sentence citing it, machine-
+        # asserting the very presence the claim denies. It must be excluded.
+        src3 = self.root / 'sources' / 'residence.md'
+        src3.write_text(
+            '---\nid: S-0000000003\ntitle: State census\nsource_type: vital-record\n'
+            'citation: "1880 state census, John absent from Topeka."\n---\n',
+            encoding='utf-8',
+        )
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8').replace(
+                'He was born in 1875 [S-0000000001].',
+                'He was born in 1875 [S-0000000001].\n'
+                'He was recorded away from Topeka in 1880 [S-0000000003].'),
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_source(conn, 's-0000000003', 'State census', 'sources/residence.md')
+        _add_claim(conn, 'c-0000000009', 'residence', ['p-0000000001'],
+                   date_edtf='1880', place_text='Topeka', source_id='s-0000000003',
+                   status='accepted', negated=1, value='not resident in Topeka')
+        conn.commit(); conn.close()
+        text = wikitree.run_wikitree(self.root, 'p-0000000001')['text']
+        self.assertNotIn('data-loc="Topeka"', text)
+        self.assertNotIn('data-date="1880-01-01"', text)
+
+    def test_negated_claim_excluded_from_infobox_template(self):
+        # Sibling of the spacetime fix: an infobox template ({{Residence|...}})
+        # is a structured machine-fact, so a negated claim must not emit the
+        # positive field it denies. A positive companion proves the template
+        # DOES render when the claim is not negated.
+        conn = self._reopen()
+        _add_claim(conn, 'c-0000000011', 'residence', ['p-0000000001'],
+                   place_text='Boston', source_id='s-0000000001',
+                   status='accepted', negated=0, value='resident')
+        _add_claim(conn, 'c-0000000012', 'residence', ['p-0000000001'],
+                   place_text='Topeka', source_id='s-0000000002',
+                   status='accepted', negated=1, value='not resident in Topeka')
+        conn.commit()
+        templates = {'residence': {'template': 'Residence', 'fields': {'location': 'place'}}}
+        out = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        conn.close()
+        self.assertIn('{{Residence|location=Boston}}', out)
+        self.assertNotIn('{{Residence|location=Topeka}}', out)
 
     def test_ancestry_template_in_reference(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')

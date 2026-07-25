@@ -4,6 +4,7 @@ person.py - fha person: deterministic person-field write-backs (TOOLING §3c).
 
   fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
                  [--birth DATE] [--death DATE] [--dry-run] [--root PATH]
+  fha person promote <P-id> [--into FOLDER] [--dry-run] [--root PATH]
   fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
   fha person relate <P-id> (--parent|--child|--sibling|--spouse) <P-id2>
                      [--subtype WORD] [--reciprocal] [--dry-run]
@@ -22,15 +23,18 @@ the human's explicit yes) flips the flag with one command.
 
 This module opens the `fha person` namespace for every deterministic
 person-record write-back that used to require a hand edit: `new` (mint a
-brand-new person from nothing), `set-living` (the privacy flag), `relate` (an
-unsourced relationships: belief), `estimate` (the provisional birth:/death:
-fields), and `edit`/`note` (the curated profile's prose sections). The five
-verbs below `new` share one shape: an engine (`run_*`) that validates,
-locates the record by scanning `people/` (never the index), performs surgical
-text edits, and returns a `_lib.Result`; a thin `_cmd_*` renders it. `new` is
-the one exception to "locate": there is no existing record to find, so it
-mints a fresh P-id and writes a brand-new stub instead of editing one - see
-its own design-rule bullet below.
+brand-new person from nothing), `promote` (graduate a stub to curated),
+`set-living` (the privacy flag), `relate` (an unsourced relationships:
+belief), `estimate` (the provisional birth:/death: fields), and `edit`/`note`
+(the curated profile's prose sections). The verbs below `new` share one
+shape: an engine (`run_*`) that validates, locates the record by scanning
+`people/` (never the index), performs surgical text edits, and returns a
+`_lib.Result`; a thin `_cmd_*` renders it. `new` is the one exception to
+"locate": there is no existing record to find, so it mints a fresh P-id and
+writes a brand-new stub instead of editing one - see its own design-rule
+bullet below. `promote` is the one verb whose WRITE is a shared _lib engine
+(`_lib.promote_person_record`) because `fha views brackets --fix-promote`
+batch-applies the identical operation - see its own bullet too.
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
@@ -85,6 +89,19 @@ DESIGN RULES (why the code looks the way it does)
   truth; `_locate_person` refuses and names the surviving record to edit
   instead. `relate` checks BOTH ends (the target of a new tie can be a
   tombstone too).
+- **`promote` is explicit, direct-line-only, and shares one engine.** SPEC §4's
+  stub -> curated graduation is curiosity-driven and human-directed, so this
+  verb (and the previewed `fha views brackets --fix-promote`) is the ONLY way
+  a record leaves people/stubs/ by tool - the narrow carve-out to `fha stubs`'
+  never-moves-a-stub rule. The destination couple folder is DERIVED (never
+  guessed) from root_person via `_lib.build_ahnentafel_map`, which makes this
+  the one verb that hard-requires a fresh index; a person with no derived
+  position is refused plainly (curating non-direct people is an open design
+  decision - their stub is a legitimate permanent state). The three writes
+  (tier flip, move, research scaffold) live in `_lib.promote_person_record`,
+  transactional with rollback, so the single verb and the batch fix cannot
+  drift. The word matters: the DEPRECATED top-level spelling of `fha process`
+  must never be written; the subcommand form `fha person promote` is the name.
 - **`relate` records a belief, not a claim.** Every entry it writes carries
   `status: hypothesis` - unconditionally, no `--status` flag. A sourced edge
   only ever arrives the way SPEC §9 describes: an accepted `relationship`
@@ -142,6 +159,10 @@ CODE MAP
                                  PERSON_SEX_VALUES spelling ('m' -> 'M')
   run_new                      - validate, mint a P-id, render + write the
                                  stub; the one verb that mints instead of locating
+  -- promote --
+  _validate_into_folder        - the --into FOLDER override's plain-refusal gate
+  run_promote                  - decide (already/non-direct/destination), then
+                                 apply via the shared _lib.promote_person_record
   -- relate --
   RELATION_TYPES, _RECIPROCAL_RELATION, KIN_SUBTYPES - the closed vocabularies
   _relationship_entry_exists  - idempotency test: same target id + type already there?
@@ -185,11 +206,17 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FRONT_RE,
+    FhaConfigError,
     INDEX_SCHEMA_VERSION,
     PERSON_SEX_VALUES,
+    AmbiguousCoupleFolderError,
+    PromotionError,
     Result,
     append_paragraph_to_section,
+    build_ahnentafel_map,
     configure_utf8_stdout,
+    couple_folder_for_prefix,
+    couple_folder_prefix,
     create_section_at_eof,
     extract_bare_ids,
     find_person_record_path,
@@ -203,9 +230,12 @@ from _lib import (
     is_valid_edtf,
     is_valid_id,
     lines_end_with_newline,
+    load_fha_yaml,
     mint_ids,
     normalize_date,
     normalize_id,
+    open_index_db,
+    promote_person_record,
     read_text_exact,
     reapply_newline,
     render_stub_content,
@@ -1049,6 +1079,327 @@ def run_new(
                f'Created {fmt_id_display(pid)} ({clean_name}) - people/stubs/{filename}.',
                path=path)
     _add_new_messages()
+    return result
+
+
+# ── promote ──────────────────────────────────────────────────────────────────
+
+def _validate_into_folder(archive_root: Path, into: str) -> tuple[Path | None, str | None]:
+    """Validate a `--into FOLDER` override; return (dest_folder, problem).
+
+    FOLDER names one directory directly under people/ - a bare folder name
+    ('040 Thomas Hartley + Margaret Cole') or the people/-prefixed spelling of
+    the same. Anything else is refused with a plain message: an absolute path
+    or a `..` could land the record outside the archive; a nested path is not
+    how couple folders work (SPEC §12.2: one flat level under people/); and
+    people/stubs/ + people/connections/ are the reserved holding folders a
+    curated person must move OUT of (companion views refuse records parked in
+    either - promoting into one would recreate the dead end this verb exists
+    to end).
+    """
+    raw = str(into).strip().replace('\\', '/')
+    if not raw:
+        return None, '--into needs a folder name, e.g. --into "040 Thomas Hartley + Margaret Cole".'
+    if Path(raw).is_absolute():
+        return None, (f'--into {into!r} is an absolute path - name a folder under '
+                      'people/ instead, e.g. --into "040 Thomas Hartley + Margaret Cole".')
+    if raw.lower().startswith('people/'):
+        raw = raw[len('people/'):]
+    raw = raw.strip('/')
+    if not raw or '/' in raw or raw in ('.', '..'):
+        return None, (f'--into {into!r} does not name one folder directly under '
+                      'people/ - couple folders sit flat there (SPEC §12.2), '
+                      'e.g. --into "040 Thomas Hartley + Margaret Cole".')
+    if raw.lower() in ('stubs', 'connections'):
+        return None, (f'people/{raw.lower()}/ is a reserved holding folder, not a '
+                      'curated home - companion views refuse records parked '
+                      'there, so promoting into it would change nothing. Name '
+                      'a couple folder instead, e.g. --into "040 Thomas '
+                      'Hartley + Margaret Cole".')
+    dest = archive_root / 'people' / raw
+    # Containment check: a Windows drive-relative spelling ('C:040 Foo') or an
+    # NTFS stream-style name survives every string test above yet resolves
+    # outside people/ - the one escape the plain checks cannot see. Resolve
+    # both sides and require the destination to sit DIRECTLY under people/.
+    try:
+        contained = dest.resolve().parent == (archive_root / 'people').resolve()
+    except OSError:
+        contained = False
+    if not contained:
+        return None, (f'--into {into!r} does not resolve to a folder directly '
+                      'under people/ - name a plain couple folder, e.g. '
+                      '--into "040 Thomas Hartley + Margaret Cole".')
+    return dest, None
+
+
+def run_promote(
+    archive_root: Path, person_id: str, into: str | None = None,
+    dry_run: bool = False,
+) -> Result:
+    """Graduate one stub to curated: flip the tier, file the record in its
+    Ahnentafel couple folder, scaffold the research companion; return a Result.
+
+    The curiosity-driven graduation SPEC §4 describes, made a single explicit
+    command - and the one sanctioned tool move of a record out of
+    people/stubs/ (the narrow carve-out to `fha stubs`' placement-is-a-human-
+    act rule; TOOLING §5). It is ALWAYS the human's act: this verb, the
+    previewed `fha views brackets --fix-promote` batch, or a nudge the human
+    answers - never a side effect of accepting a claim.
+
+    V1 SCOPE: DIRECT-LINE ONLY. The destination is derived from `root_person`
+    (fha.yaml) by walking accepted genetic relationship claims through the
+    index (`_lib.build_ahnentafel_map` - the same derivation `fha views
+    brackets` uses, shared through _lib because tools never import tools).
+    A person with no derived position is refused with a plain message:
+    curating non-direct people (FAN club, connections) is an open design
+    decision - a curated record in people/connections/ is currently a dead
+    end (companion views refuse it), and their stub is a legitimate permanent
+    state. `--into FOLDER` overrides the derived destination for a DIRECT-LINE
+    person only (it exists for a future widening); it must name a folder
+    directly under people/ and never a reserved one.
+
+    This is the one person verb that HARD-requires the index (strict
+    freshness): the write's destination is derived from indexed
+    relationships, and moving a file to a stale answer would misfile it. The
+    locate itself still scans disk (`_locate_person`), so the index only ever
+    decides WHERE, never WHETHER the record exists.
+
+    The write is `_lib.promote_person_record` - transactional (any failure
+    rolls back every completed step) and shared verbatim with
+    `--fix-promote`, so a batch promotion and this verb cannot drift.
+    After a live move the index cache is removed (a moved file is invisible
+    to the mtime staleness check - the `fha views brackets --fix` rule).
+
+    `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
+    'refused', 'person_id', 'path', 'new_path', 'position', 'folder',
+    'research_path'}. Exit codes: 0 ok/already/dry-run · 1 not-found (with
+    the `fha find` next step) · 3 every refusal (invalid id, merged
+    tombstone, non-direct person, bad --into, missing root_person, missing/
+    stale index, engine failure - always with nothing left half-written).
+    """
+    result = Result(data={
+        'status': None, 'person_id': None, 'path': None, 'new_path': None,
+        'position': None, 'folder': None, 'research_path': None,
+    })
+
+    located = _locate_person(archive_root, person_id, result)
+    if located is None:
+        return result
+    path, _text, before_meta, pid = located
+    result.data['person_id'] = fmt_id_display(pid)
+    result.data['path'] = str(path)
+
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{name} ({fmt_id_display(pid)})' if name else fmt_id_display(pid)
+
+    people_dir = archive_root / 'people'
+    parent = path.parent
+    in_reserved = (parent.parent == people_dir
+                   and parent.name.lower() in ('stubs', 'connections'))
+    needs_placement = in_reserved or parent == people_dir
+
+    tier = str(before_meta.get('tier') or 'stub').strip().lower()
+    if tier == 'curated' and not needs_placement:
+        # Fully promoted already: curated tier AND filed in a real folder.
+        # (A curated record still parked in stubs/ is a HALF promotion - the
+        # views stub guard refuses it - so that case falls through and the
+        # engine finishes the job instead of no-opping.)
+        result.data['status'] = 'already'
+        result.data['folder'] = parent.name
+        # A curated-and-filed person can still lack the research companion no
+        # other surface will ever scaffold - say so rather than no-op silently.
+        from _lib import research_companion_filename
+        research_name = research_companion_filename(path.name)
+        note = ''
+        if research_name and not (parent / research_name).exists():
+            note = (' (One gap: their research companion file is missing - copy '
+                    'people/_TEMPLATE.research.md into the folder as '
+                    f'{research_name} when you want one.)')
+        result.add('info',
+                   f'{label} is already curated - their record lives in '
+                   f'people/{parent.name}/. Nothing to do.{note}')
+        return result
+
+    if into is not None:
+        dest_override, problem = _validate_into_folder(archive_root, into)
+        if problem is not None:
+            return _refuse_result(result, 'refused', problem)
+    else:
+        dest_override = None
+
+    # ── Derive the Ahnentafel position (required even under --into: v1
+    #    promotes direct-line people only, so the line must be provable) ──────
+    try:
+        fha_cfg = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        return _refuse_result(result, 'refused', str(e))
+    root_person_raw = fha_cfg.get('root_person')
+    if not root_person_raw:
+        return _refuse_result(
+            result, 'refused',
+            'root_person is not set in fha.yaml, so the direct line (and the '
+            'couple-folder number) cannot be derived. Add `root_person: P-…` '
+            '- the person whose ancestors the numbered folders follow - to '
+            'fha.yaml, run `fha index`, then retry. Nothing was written.')
+    root_pid = normalize_id(str(root_person_raw))
+
+    conn = open_index_db(
+        archive_root, ('persons', 'relationships', 'claims'), strict=True)
+    if conn is None:
+        return _refuse_result(
+            result, 'refused',
+            'the couple-folder destination is derived from the index, and '
+            '.cache/index.sqlite is missing, stale, or unreadable. Run '
+            '`fha index`, then retry. Nothing was written.',
+            next_step='fha index')
+    try:
+        if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone() is None:
+            return _refuse_result(
+                result, 'refused',
+                f'root_person {fmt_id_display(root_pid)} (from fha.yaml) has no '
+                'person record in the index, so the direct line cannot be '
+                'derived. Fix root_person in fha.yaml or run `fha stubs`, then '
+                '`fha index`, and retry. Nothing was written.')
+        pid_to_pos = build_ahnentafel_map(conn, root_pid)
+    finally:
+        conn.close()
+
+    pos = pid_to_pos.get(pid)
+    if pos is None:
+        return _refuse_result(
+            result, 'refused',
+            f'{label} is not on the direct ancestral line - no Ahnentafel '
+            'position derives from root_person through accepted relationship '
+            'claims, so there is no couple folder to file them in. Promoting '
+            'people beyond the direct line (siblings, in-laws, the FAN club) '
+            'is an open design decision for now - a curated record in '
+            'people/connections/ is a dead end the views refuse - and their '
+            'stub is a legitimate permanent state, so nothing needs doing. '
+            'If they SHOULD be direct line, a parent link is missing: review '
+            f'their relationship claims with `fha find {fmt_id_display(pid)}`.')
+    result.data['position'] = pos
+
+    if dest_override is not None:
+        dest_folder = dest_override
+    elif not needs_placement:
+        # Already filed in a couple folder: promote in place. If the folder
+        # number disagrees with the derived position, that is W110's job -
+        # this verb never second-guesses an existing filing.
+        dest_folder = parent
+    elif pos == 1:
+        return _refuse_result(
+            result, 'refused',
+            f'{label} sits at Ahnentafel position 1 - the root generation, '
+            'which has no numbered couple folder of its own (the folders '
+            'follow ancestral couples; SPEC §12.2). Name the destination '
+            'yourself: `fha person promote ' + fmt_id_display(pid) +
+            ' --into "002 …"` files them with their parents\' couple.')
+    else:
+        prefix = couple_folder_prefix(pos)
+        try:
+            dest_folder = couple_folder_for_prefix(archive_root, prefix)
+        except AmbiguousCoupleFolderError as e:
+            return _refuse_result(
+                result, 'refused',
+                f'{label} belongs in couple folder {e.prefix:03d}, but two '
+                f'folders share that number: {" and ".join(e.folders)}. Filing '
+                'the record would have to guess which one is the couple\'s '
+                'folder, so promotion is refused rather than split the couple. '
+                'Rename one so the numeric prefixes are unique (a non-ancestral '
+                'marriage takes a letter suffix, e.g. '
+                f'"{e.prefix:03d}b …"; SPEC §12.2), then retry. Nothing was written.')
+        if dest_folder is None:
+            display = name or fmt_id_display(pid)
+            dest_folder = people_dir / f'{str(prefix).zfill(3)} {display}'
+    result.data['folder'] = dest_folder.name
+
+    try:
+        plan = promote_person_record(
+            archive_root, pid, path, dest_folder, dry_run=True)
+    except PromotionError as e:
+        return _refuse_result(result, 'refused', str(e))
+    result.data['new_path'] = str(plan['new_path'])
+    result.data['research_path'] = str(plan['research_path'])
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would promote {label} (Ahnentafel {pos}):')
+        for step in plan['steps']:
+            result.add('info', f'  - {step}')
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        applied = promote_person_record(archive_root, pid, path, dest_folder)
+    except PromotionError as e:
+        return _refuse_result(result, 'refused', str(e))
+
+    result.data['status'] = 'ok'
+    result.note_changed(applied['new_path'])
+    result.add('info',
+               f'{label} is now curated (Ahnentafel {pos}) - record filed in '
+               f'people/{dest_folder.name}/.', path=applied['new_path'])
+    if applied.get('research_move'):
+        result.note_changed(applied['research_path'])
+        result.add('info',
+                   f'Moved the research companion {applied["research_path"].name} '
+                   'into the couple folder with the record - your existing '
+                   'notes travelled with it, nothing was lost.')
+    elif applied['research_create']:
+        result.note_changed(applied['research_path'])
+        result.add('info',
+                   f'Created the research companion {applied["research_path"].name} '
+                   '- Research Notes, Open Questions, Hypotheses, and a '
+                   'Research Log, ready to fill in.')
+    else:
+        result.add('info', 'Research companion already exists - left as is.')
+
+    if applied['move']:
+        # A moved record keeps its mtime relative to the cache, so the
+        # staleness check cannot see the move - drop the cache outright to
+        # force a rebuild (the `fha views brackets --fix` rule).
+        db_path = archive_root / '.cache' / 'index.sqlite'
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError as exc:
+            # The record has ALREADY moved on disk - that archive mutation is
+            # done and irreversible. Only the cache drop failed here (a locked
+            # or read-only .cache/index.sqlite). This is the dangerous half:
+            # a move preserves the record's mtime, so the undeleted index
+            # still passes the freshness check while pointing at the record's
+            # OLD path - queries would silently resolve the person to a file
+            # that no longer exists there. Report the promotion as done but
+            # raise a non-zero warning that names the stale cache and the
+            # exact rebuild command, never letting the unlink traceback escape
+            # to the user (AGENTS_TOOLING: no traceback ever reaches him).
+            reason = exc.strerror or str(exc)
+            return result_fail(
+                result, 'ok-index-stale',
+                f'{label} was promoted (Ahnentafel {pos}) and the record is '
+                f'filed in people/{dest_folder.name}/ - that part worked. But '
+                f'the search index cache could not be cleared ({reason}): '
+                f'{db_path}. The record moved, so the leftover index still '
+                'points at its old location and can look up to date, which '
+                'means searches may quietly go stale until you rebuild it. '
+                f'Delete {db_path} (or just run `fha index`) to rebuild the '
+                'index and clear the stale entry.',
+                exit_code=EXIT_WARNINGS, level='warning',
+                next_step='fha index')
+        result.note_changed(db_path)
+        result.add('info',
+                   'Next: run `fha index` to rebuild the index - the record '
+                   'moved, so the old index cache was removed.',
+                   next_step='fha index')
+    else:
+        result.add('info',
+                   'Next: run `fha index` so queries see the tier change.',
+                   next_step='fha index')
+    result.add('info',
+               'Then generate their companion views: '
+               f'`fha views timeline {fmt_id_display(pid)}`, '
+               f'`fha views sources-index {fmt_id_display(pid)}`, '
+               f'`fha views draft-queue {fmt_id_display(pid)}` '
+               '(or `fha views refresh` for everyone).')
     return result
 
 
@@ -2156,6 +2507,16 @@ def _cmd_set_profile_photo(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_promote(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person promote')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_promote(
+        archive_root, person_id=args.person_id,
+        into=getattr(args, 'into', None),
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _cmd_relate(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha person relate')
     if archive_root is None:
@@ -2232,6 +2593,7 @@ _CLI_DESCRIPTION = """\
 Update a person's record directly - the deterministic person-field write-backs.
 
   fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
+  fha person promote <P-id> [--into FOLDER]
   fha person set-living <P-id> true|false|unknown
   fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>
   fha person estimate <P-id> --birth DATE --death DATE
@@ -2239,11 +2601,13 @@ Update a person's record directly - the deterministic person-field write-backs.
   fha person note <P-id> --section stories|research --text TEXT
   fha person edit-note <P-id> --section stories|research --old-text TEXT --text TEXT
 
-new mints a brand-new person and writes their stub record. set-living marks
-a person as living, passed away, or unknown (drives export privacy). relate
-jots an unsourced family-tie belief. estimate writes a provisional, unsourced
-birth/death date. edit and note add or replace prose in the curated
-profile's Biography, Stories, and Research Notes sections."""
+new mints a brand-new person and writes their stub record. promote graduates
+a direct-line stub to curated (tier flip, couple-folder filing, research
+file). set-living marks a person as living, passed away, or unknown (drives
+export privacy). relate jots an unsourced family-tie belief. estimate writes
+a provisional, unsourced birth/death date. edit and note add or replace
+prose in the curated profile's Biography, Stories, and Research Notes
+sections."""
 
 _NEW_DESCRIPTION = """\
 Mint a brand-new person - the one-command "+ add person" mint.
@@ -2341,6 +2705,43 @@ def _add_set_profile_photo_arguments(sub: argparse._SubParsersAction) -> None:
     sp.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the one-line change without writing.')
     sp.set_defaults(func=_cmd_set_profile_photo)
+
+
+_PROMOTE_DESCRIPTION = """\
+Graduate a stub to a curated person - tier, filing, and research file in one step.
+
+  fha person promote P-2b3c4d5e6f
+  fha person promote P-2b3c4d5e6f --dry-run
+  fha person promote P-2b3c4d5e6f --into "040 Thomas Hartley + Margaret Cole"
+
+Flips the record's tier to curated, moves it out of people/stubs/ into its
+Ahnentafel couple folder (derived from root_person in fha.yaml; the folder is
+created if it does not exist yet), and scaffolds the research companion file
+beside it. Direct-line ancestors only for now: a person with no derived
+Ahnentafel position keeps their stub (a legitimate permanent state) and this
+command says so plainly. --into overrides the destination folder (still under
+people/, never stubs/ or connections/). Requires a fresh index (`fha index`).
+Preview everything first with --dry-run; a failed write rolls itself back."""
+
+
+def _add_promote_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the promote verb on a group subparser (shared by both mains)."""
+    pr = sub.add_parser(
+        'promote',
+        help='Graduate a stub to curated: tier flip, couple-folder filing, research file.',
+        description=_PROMOTE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pr.add_argument('person_id', metavar='P-id',
+                    help='The stub to promote (e.g. P-2b3c4d5e6f).')
+    pr.add_argument('--into', metavar='FOLDER',
+                    help='File the record in this folder under people/ instead '
+                         'of the derived couple folder.')
+    pr.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    pr.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the tier flip, move, and research scaffold without writing.')
+    pr.set_defaults(func=_cmd_promote)
 
 
 _RELATE_DESCRIPTION = """\
@@ -2543,14 +2944,15 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'person' onto the main fha parser."""
     p = subs.add_parser(
         'person',
-        help='Person-record write-backs: set-living, set-profile-photo, relate, '
-             'estimate, edit, note',
+        help='Person-record write-backs: new, promote, set-living, '
+             'set-profile-photo, relate, estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = p.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
+    _add_promote_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
     _add_relate_arguments(sub)
@@ -2571,6 +2973,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = parser.add_subparsers(dest='person_command', metavar='SUBCOMMAND')
     _add_new_arguments(sub)
+    _add_promote_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
     _add_relate_arguments(sub)

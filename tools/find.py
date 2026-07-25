@@ -2114,28 +2114,40 @@ def _ranked_search(
             consider(row['place_id'], 'place', label, detail, row['alt_name'])
 
     if kind_set is None or 'text' in kind_set:
-        try:
-            fts_rows = conn.execute(
-                "SELECT path, snippet(notes_fts, 1, '', '', ' … ', 10) AS snip "
-                'FROM notes_fts WHERE notes_fts MATCH ? LIMIT ?',
-                (q, max(limit * 5, 50)),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            # Not valid FTS5 query syntax (unbalanced quotes, a bare leading
-            # '-' or '*', …) - degrade to no text hits rather than fail the
-            # whole search over one clause of it.
-            fts_rows = []
-        for row in fts_rows:
-            path = row['path']
-            existing = candidates.get(path)
-            if existing is None or _TIER_TEXT < existing['tier']:
-                candidates[path] = {
-                    'tier': _TIER_TEXT,
-                    'hit': {
-                        'id': path, 'type': 'text',
-                        'label': (row['snip'] or '').strip(), 'detail': path,
-                    },
-                }
+        # Both prose (notes_fts) and extracted PDF text (transcripts_fts) are
+        # text hits at the same tier. The workbench and `fha find --json` read
+        # text ONLY here, so transcripts_fts must be queried too - otherwise
+        # `fha source extract`'s dumped page text stays unfindable through the
+        # JSON backend even after `fha index` (the CLI `_text_search` already
+        # searches both tables). The content column differs: notes_fts is
+        # (path, content) so content is col 1; transcripts_fts is
+        # (source_id, path, content) so content is col 2. Hits from both tables
+        # are deduped by path through the shared `candidates` dict below. The
+        # table/column pairs are code literals, never user input.
+        for table, content_col in (('notes_fts', 1), ('transcripts_fts', 2)):
+            try:
+                fts_rows = conn.execute(
+                    f"SELECT path, snippet({table}, {content_col}, '', '', ' … ', 10) AS snip "
+                    f'FROM {table} WHERE {table} MATCH ? LIMIT ?',
+                    (q, max(limit * 5, 50)),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Not valid FTS5 query syntax (unbalanced quotes, a bare leading
+                # '-' or '*', …), or the table is absent in an older index -
+                # degrade to no hits from this table rather than fail the whole
+                # search over one clause of it.
+                fts_rows = []
+            for row in fts_rows:
+                path = row['path']
+                existing = candidates.get(path)
+                if existing is None or _TIER_TEXT < existing['tier']:
+                    candidates[path] = {
+                        'tier': _TIER_TEXT,
+                        'hit': {
+                            'id': path, 'type': 'text',
+                            'label': (row['snip'] or '').strip(), 'detail': path,
+                        },
+                    }
 
     ordered = sorted(candidates.values(), key=lambda c: (c['tier'], c['hit']['label'].lower()))
     return [c['hit'] for c in ordered[:limit]]

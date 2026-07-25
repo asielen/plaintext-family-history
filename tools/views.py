@@ -5,7 +5,7 @@ views.py - fha views: generate view files from the index.
   fha views timeline [P-id | --all-curated] [--format md|html]
   fha views sources-index [P-id | --all-curated | --couple-folders] [--format md|html]
   fha views draft-queue [P-id | --all-curated] [--format md|html]
-  fha views brackets [--fix] [--dry-run]
+  fha views brackets [--fix] [--fix-promote] [--generations N] [--dry-run]
   fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
   fha views clean [--dry-run]
   fha views refresh [--format md|html|both]
@@ -56,8 +56,12 @@ single-file artifact (the photo gallery inherits them; TOOLING §7 D11):
 
 `fha views brackets` is a maintenance view, not a content view.  It reads
 the index to derive expected bracket lists and Ahnentafel positions, then
-reports mismatches as W103/W110 findings.  With --fix it renames folders and
-moves person files; --dry-run previews all changes without writing.
+reports mismatches as W103/W110 findings - and direct-line ancestors still
+filed as stubs as W119 findings (leads, never defects).  With --fix it
+renames folders and moves person files; with --fix-promote it batch-applies
+the shared promote engine (`_lib.promote_person_record` - the same engine
+behind `fha person promote`) to the W119 set under the previewed Apply?
+gate; --dry-run previews all changes without writing.
 
 SPEC §16 defines the companion kinds; TOOLING §7 defines each view's content.
 """
@@ -80,6 +84,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text
+    AmbiguousCoupleFolderError,  # two couple folders share a prefix; refuse, don't guess
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -87,15 +92,22 @@ from _lib import (
     FhaConfigError,
     GeneratedFileParentMissing,  # a companion's parent folder is missing (stale index)
     GeneratedFileRefused,    # shared refusal when a write would clobber a non-generated file
+    PromotionError,       # a --fix-promote promotion refused/failed (rolled back)
     Result,               # the structured-result contract every run_* returns
-    SOCIAL_PARENT_SUBTYPES,   # parent natures shown but NOT numbered (SPEC §12.2)
+    ahnentafel_generation,   # Ahnentafel position → generation depth (--generations cap)
     archive_title,        # masthead/page title from fha.yaml site.archive_name
+    build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote
+    couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections)
+    couple_folder_for_prefix,   # canonical on-disk couple folder for a number, or None
+    couple_folder_prefix,    # position → the even couple-folder number
+    find_person_record_path,   # disk-truth record lookup for --fix-promote applies
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
     format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103
     is_generated_text,    # GENERATED-header ownership test (first non-blank line)
     is_genetic_parent_subtype,
     load_fha_yaml,
     load_view_css,        # cached design/view.css loader -> (css, warning_or_None)
+    promote_person_record,   # the ONE promote engine (tier flip + move + research scaffold)
     render_template,      # load + render a tools/templates/ Jinja2 template (shared)
     nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child
     normalize_id,         # lower-cases IDs for consistent set/dict keying
@@ -173,10 +185,13 @@ def _views_result(
 #    _person_name_from_db         - fetch display name from persons table
 #    _companion_files_in_folder   - disk-scan for all .md files for a person in a folder
 #    _check_w110_ahnentafel       - check 2 (folder rename) and check 3 (file move)
+#    _check_w119_direct_line_stubs - check 4: direct-line ancestors still filed as stubs
+#    _print_promote_preview       - plain-words promotion plans (engine dry runs)
+#    _apply_promotions            - batch-apply _lib.promote_person_record to the W119 set
 #    _compose_folder_renames      - merge W103+W110 renames that share a source folder
 #    _print_bracket_preview       - format the preview diff before any writes
 #    _apply_bracket_fixes         - perform renames/moves after confirmation
-#    _cmd_brackets                - CLI handler: report, preview, fix
+#    _cmd_brackets                - CLI handler: report, preview, fix, fix-promote
 #
 #  Tree view  (_cmd_tree and helpers)
 #    _build_nodes_bulk            - batch TOOLING §7 node dicts for all BFS pids (2 SQL queries)
@@ -569,7 +584,8 @@ def _view_eligible_curated_ids(
             name = row['name'] if row else pid
             print(
                 f"  skipped {pid} ({name}): curated record still under people/{folder}/ - "
-                f"promote it into its couple folder to generate its companion views",
+                f"promote it into its couple folder to generate its companion views "
+                f"(`fha person promote {fmt_id_display(pid)}` finishes the move)",
                 file=sys.stderr,
             )
             continue
@@ -588,7 +604,9 @@ def _empty_curated_views_result(conn: sqlite3.Connection) -> Result:
     if _curated_person_ids(conn):
         print(
             'All curated persons are still under people/stubs/ or people/connections/ - '
-            'nothing was generated; promote them into their couple folders first.',
+            'nothing was generated; promote them into their couple folders first '
+            '(`fha person promote <P-id>` per person, or `fha views brackets '
+            '--fix-promote` for the whole direct line).',
             file=sys.stderr,
         )
         return _views_result(EXIT_WARNINGS, data={'count': 0})
@@ -629,9 +647,11 @@ def _skip_stub_person(
     print(
         f"{pid} ({row['name']}) {reason} - companion views like the {view_name} "
         f"belong to curated people in their couple folder (SPEC §16), so nothing "
-        f"was written. To generate one, promote the record: set `tier: curated` and "
-        f"move it into its couple folder (out of people/stubs/ or people/connections/), "
-        f"then re-run.",
+        f"was written. To generate one, promote the record first - "
+        f"`fha person promote {fmt_id_display(pid)}` does it in one step for a "
+        f"direct-line person (tier, couple-folder filing, research file); "
+        f"otherwise set `tier: curated` and move it out of people/stubs/ or "
+        f"people/connections/ by hand - then re-run.",
         file=sys.stderr,
     )
     return True
@@ -726,13 +746,29 @@ def _decade_from_edtf(date_edtf: str | None) -> str | None:
 
 
 def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
-    """Format one timeline line from a claims query row."""
+    """Format one timeline line from a claims query row.
+
+    A claim that is not settled fact carries a plain-word tag at the end of
+    its line: '[unconfirmed - parked {date}]' for a needs-review claim (the
+    reviewed: date records when the human last looked - the parked state,
+    SPEC §8.1), '[low confidence]' for an accepted claim whose evidence
+    quality is low (SPEC §8.5 keeps status and confidence orthogonal: an
+    accepted low-confidence fact is built on, and flagged as worth
+    corroborating when a better record surfaces). Suggested rows get no tag -
+    they already render under their own 'Unreviewed' header. Requires the
+    query row to carry status/confidence/reviewed alongside the display
+    columns.
+    """
     date_str = row['date_edtf'] or '(undated)'
     place = _place_label(row['place_text'], row['place_id'], conn)
     line = f'{date_str} - {row["type"]}: {row["value"]}'
     if place:
         line += f' @ {place}'
     line += f' {_format_sid(row["source_id"])}'
+    if row['status'] == 'needs-review':
+        line += f' [unconfirmed - parked {row["reviewed"]}]' if row['reviewed'] else ' [unconfirmed]'
+    elif row['status'] == 'accepted' and row['confidence'] == 'low':
+        line += ' [low confidence]'
     return line
 
 
@@ -804,7 +840,8 @@ def _generate_timeline(
     main_rows = conn.execute(
         """
         SELECT DISTINCT c.date_edtf, c.date_min, c.type, c.value,
-               c.place_id, c.place_text, c.source_id
+               c.place_id, c.place_text, c.source_id,
+               c.status, c.confidence, c.reviewed
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         WHERE cp.person_id = ? AND c.status IN ('accepted', 'needs-review')
@@ -818,7 +855,8 @@ def _generate_timeline(
     suggested_rows = conn.execute(
         """
         SELECT DISTINCT c.date_edtf, c.date_min, c.type, c.value,
-               c.place_id, c.place_text, c.source_id
+               c.place_id, c.place_text, c.source_id,
+               c.status, c.confidence, c.reviewed
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         WHERE cp.person_id = ? AND c.status = 'suggested'
@@ -1211,17 +1249,11 @@ def _given_name(full_name: str) -> str:
 
 
 def _couple_folder_dirs(archive_root: Path) -> list[Path]:
-    """Return digit-prefixed directories directly under people/, excluding stubs/connections."""
-    people = archive_root / 'people'
-    if not people.exists():
-        return []
-    excluded = {'stubs', 'connections'}
-    return sorted(
-        e for e in people.iterdir()
-        if e.is_dir()
-        and e.name.lower() not in excluded
-        and re.match(r'^\d', e.name)
-    )
+    """Return digit-prefixed directories directly under people/, excluding
+    stubs/connections. Delegates to `_lib.couple_folder_dirs` - the promote
+    engine walks the same list, so the two can never disagree about what
+    counts as a couple folder."""
+    return couple_folder_dirs(archive_root)
 
 
 def _persons_in_folder(conn: sqlite3.Connection, folder: Path) -> list[str]:
@@ -1246,73 +1278,12 @@ def _persons_in_folder(conn: sqlite3.Connection, folder: Path) -> list[str]:
 def _build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, int]:
     """BFS from root_pid to build {person_id → Ahnentafel position}.
 
-    Seed: root_pid → 1.  Parents of person at position N:
-      sex='M' → 2N (father's slot), sex='F' → 2N+1 (mother's slot).
-      Same-sex or sex='U' pairs: lexicographically-first P-id → 2N (deterministic).
-    Terminates when no accepted parent edges remain (relationships table is
-    derived from accepted claims only - see index.py).
-
-    WHY BFS: Ahnentafel is a breadth-first numbering by definition.  Depth-first
-    would produce the same positions but BFS is the natural traversal shape.
+    Delegates to `_lib.build_ahnentafel_map` - the derivation moved there so
+    `fha person promote` and `fha report` §7b can compute the same positions
+    without importing views (tools never import tools). Behavior is identical;
+    the docstring and algorithm live with the shared function.
     """
-    # Numbering follows only the GENETIC pedigree (SPEC §12.2): a parent edge is
-    # skipped when its claim's nature is an explicit social/legal kind. The nature
-    # lives on the backing claim, so we join relationships → claims by claim_id;
-    # an unset/unknown/legacy nature defaults to genetic (NOT IN the social set),
-    # so a legacy archive numbers exactly as before. DISTINCT collapses the
-    # co-valid case (a biological AND an adoptive edge to the same parent) to the
-    # one surviving genetic edge.
-    social = sorted(SOCIAL_PARENT_SUBTYPES)
-    social_ph = ','.join('?' * len(social))
-    pid_to_pos: dict[str, int] = {root_pid: 1}
-    queue: deque[tuple[str, int]] = deque([(root_pid, 1)])
-
-    while queue:
-        pid, n = queue.popleft()
-        parent_rows = conn.execute(
-            f"""
-            SELECT DISTINCT r.other_id AS pid, p.sex
-            FROM relationships r
-            JOIN persons p ON r.other_id = p.id
-            LEFT JOIN claims c ON r.claim_id = c.id
-            WHERE r.person_id = ? AND r.rel = 'parent'
-              AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
-            """,
-            (pid, *social),
-        ).fetchall()
-
-        parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
-        if not parents:
-            continue
-
-        if len(parents) == 1:
-            p_pid, p_sex = parents[0]
-            pos = 2 * n if p_sex != 'F' else 2 * n + 1
-            if p_pid not in pid_to_pos:
-                pid_to_pos[p_pid] = pos
-                queue.append((p_pid, pos))
-        else:
-            # Take at most 2 parents; ignore additional (data quality issue)
-            p1_pid, p1_sex = parents[0]
-            p2_pid, p2_sex = parents[1]
-            if p1_sex == 'M' and p2_sex != 'M':
-                father, mother = p1_pid, p2_pid
-            elif p2_sex == 'M' and p1_sex != 'M':
-                father, mother = p2_pid, p1_pid
-            elif p1_sex == 'F' and p2_sex != 'F':
-                mother, father = p1_pid, p2_pid
-            elif p2_sex == 'F' and p1_sex != 'F':
-                mother, father = p2_pid, p1_pid
-            else:
-                # Same sex or both U: lex-first takes even slot (2N)
-                sorted_pids = sorted([p1_pid, p2_pid])
-                father, mother = sorted_pids[0], sorted_pids[1]
-            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
-                if pp not in pid_to_pos:
-                    pid_to_pos[pp] = pos
-                    queue.append((pp, pos))
-
-    return pid_to_pos
+    return build_ahnentafel_map(conn, root_pid)
 
 
 def _check_w103_brackets(
@@ -1652,6 +1623,164 @@ def _check_w110_ahnentafel(
     return issues
 
 
+def _check_w119_direct_line_stubs(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    pid_to_pos: dict[str, int],
+    generations: int | None = None,
+) -> list[dict]:
+    """Check 4 (W119): direct-line ancestors still filed as stubs.
+
+    Exactly the people the W110 machinery deliberately skips: a person with a
+    DERIVED Ahnentafel position >= 2 whose record is `tier: stub` or still
+    lives under people/stubs/. Report-only here - promotion is always an
+    explicit act (`--fix-promote`'s previewed gate, or `fha person promote`),
+    never a silent side effect (SPEC §4: curiosity-driven graduation). These
+    are leads, not defects: a stub is a legitimate permanent state, and the
+    wording must read that way.
+
+    `generations` narrows to positions within N generations of the root
+    (parents are generation 1); None means the whole derived line. Each issue
+    dict carries pid/pos/name/dest_folder so `--fix-promote` can apply the
+    promote engine without re-deriving anything.
+
+    WHY DESTINATIONS ARE RESOLVED IN A SECOND PASS: both partners of a couple
+    share ONE couple folder (SPEC §12.2). When BOTH sit at their couple's
+    positions (the even father-slot N and the odd mother-slot N+1) AND that
+    folder does not exist on disk yet, deriving each destination independently
+    against the same pre-promotion state would invent two DIFFERENT new folders
+    (`002 Father` and `002 Mother`), and a batch `--fix-promote` would create
+    both and split the couple. So candidates are gathered first, then grouped by
+    couple prefix: every member of a prefix gets the SAME destination - the
+    existing couple folder if one is on disk, otherwise one new folder named
+    after the even (father-slot) member. That is exactly the folder a normal
+    one-at-a-time `fha person promote` produces (it names a new couple folder
+    after the person being promoted; done father-first, the mother then finds
+    that folder), so promoted couples land where normally-created couples do.
+    The shared destination is baked into every issue dict, so the dry-run
+    preview and the live apply describe the identical folder.
+    """
+    # ── Pass 1: gather the stub candidates (destination deferred to pass 2) ──
+    candidates: list[dict] = []
+    for pid, pos in sorted(pid_to_pos.items(), key=lambda kv: kv[1]):
+        if pos < 2:
+            continue
+        if generations is not None and ahnentafel_generation(pos) > generations:
+            continue
+        row = conn.execute(
+            'SELECT name, tier, status, path FROM persons WHERE id = ?', (pid,),
+        ).fetchone()
+        if row is None:
+            continue   # referenced but recordless (the fha stubs / E005 set)
+        if str(row['status'] or '').lower() == 'merged':
+            continue   # tombstones resolve through merged_into, never promote
+        rel_path = (row['path'] or '').replace('\\', '/')
+        parts = rel_path.split('/')
+        in_stubs = len(parts) >= 3 and parts[0] == 'people' and parts[1].lower() == 'stubs'
+        is_stub_tier = str(row['tier'] or 'stub').lower() != 'curated'
+        if not (is_stub_tier or in_stubs):
+            continue
+        candidates.append({
+            'pid': pid,
+            'pos': pos,
+            'name': row['name'] or fmt_id_display(pid),
+            'path': rel_path,
+            'prefix': couple_folder_prefix(pos),
+        })
+
+    # ── Pass 2: one shared destination folder per couple prefix ─────────────
+    shared_dest: dict[int, Path] = {}
+    for prefix in {c['prefix'] for c in candidates}:
+        existing = couple_folder_for_prefix(archive_root, prefix)
+        if existing is not None:
+            shared_dest[prefix] = existing
+            continue
+        # No folder on disk: name the new one after the even (father-slot)
+        # member. For a couple that is always the lower position (N < N+1), and
+        # for a lone stub it is simply that person - matching single-person
+        # promote, which names the new folder after whoever is promoted.
+        members = [c for c in candidates if c['prefix'] == prefix]
+        namer = min(members, key=lambda c: c['pos'])
+        shared_dest[prefix] = (
+            archive_root / 'people' / f'{str(prefix).zfill(3)} {namer["name"]}')
+
+    issues: list[dict] = []
+    for c in candidates:
+        issues.append({
+            'code': 'W119',
+            'pid': c['pid'],
+            'pos': c['pos'],
+            'name': c['name'],
+            'path': c['path'],
+            'dest_folder': shared_dest[c['prefix']],
+            'msg': (
+                f'W119 {c["path"]}: {c["name"]} (Ahnentafel {c["pos"]}) is a '
+                'direct-line ancestor still filed as a stub - promote with '
+                f'`fha person promote {fmt_id_display(c["pid"])}` or '
+                '`fha views brackets --fix-promote`'
+            ),
+        })
+    return issues
+
+
+def _print_promote_preview(w119: list[dict], archive_root: Path) -> None:
+    """Print the plain-words promotion plan for every W119 candidate.
+
+    Each candidate's plan comes from the promote engine's own dry run, so the
+    preview and the apply can never describe different writes. A candidate
+    whose plan cannot be computed (record vanished since the index was built,
+    unreadable file) previews as a SKIP with the reason.
+    """
+    print('\nStub promotions (W119):')
+    for item in w119:
+        label = f"{item['name']} [{fmt_id_display(item['pid'])}]"
+        record_path = find_person_record_path(archive_root, item['pid'])
+        if record_path is None:
+            print(f'  SKIP  {label}: no record file found on disk - run `fha index`.')
+            continue
+        try:
+            plan = promote_person_record(
+                archive_root, item['pid'], record_path, item['dest_folder'],
+                dry_run=True)
+        except PromotionError as e:
+            print(f'  SKIP  {label}: {e}')
+            continue
+        print(f'  PROMOTE  {label} (Ahnentafel {item["pos"]}):')
+        for step in plan['steps']:
+            print(f'      - {step}')
+
+
+def _apply_promotions(w119: list[dict], archive_root: Path) -> tuple[int, int]:
+    """Apply the promote engine to every W119 candidate; return (applied, failures).
+
+    Each promotion is transactional on its own (the engine rolls back its
+    steps on failure), so one failed person never leaves the others half
+    done - partial success across the batch is reported per person and in the
+    caller's exit code, mirroring `_apply_bracket_fixes`.
+    """
+    applied = failures = 0
+    for item in w119:
+        label = f"{item['name']} [{fmt_id_display(item['pid'])}]"
+        record_path = find_person_record_path(archive_root, item['pid'])
+        if record_path is None:
+            print(f'  ERROR {label}: no record file found on disk - skipped.',
+                  file=sys.stderr)
+            failures += 1
+            continue
+        try:
+            plan = promote_person_record(
+                archive_root, item['pid'], record_path, item['dest_folder'])
+        except PromotionError as e:
+            print(f'  ERROR {label}: {e}', file=sys.stderr)
+            failures += 1
+            continue
+        applied += 1
+        print(f'  PROMOTED  {label}:')
+        for step in plan['steps']:
+            print(f'      - {step}')
+    return applied, failures
+
+
 def _compose_folder_renames(
     w103: list[dict], w110: list[dict]
 ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -1906,30 +2035,63 @@ def _apply_bracket_fixes(
     return failures, False
 
 
-def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -> Result:
-    """Run the bracket/Ahnentafel checks and (with --fix) apply them; return a Result.
+def run_brackets(
+    archive_root: Path,
+    fix: bool = False,
+    dry_run: bool = False,
+    fix_promote: bool = False,
+    generations: int | None = None,
+) -> Result:
+    """Run the bracket/Ahnentafel checks and (with a fix flag) apply them; return a Result.
 
-    Three checks in one pass (TOOLING §7):
+    Four checks in one pass (TOOLING §7):
       1. W103 - refresh stale bracket lists in couple-folder names.
       2. W110 check 2 - rename couple folders whose numeric prefix disagrees
                          with the Ahnentafel-derived number.  (Requires root_person.)
       3. W110 check 3 - move all companion files (profile, research, timeline,
                          sources-index, draft-queue) to the correct folder.
                          (Requires root_person.)
+      4. W119 - direct-line ancestors (derived position >= 2) still filed as
+                 stubs (`tier: stub`, or a record under people/stubs/).
+                 (Requires root_person.  `generations` caps the depth.)
 
-    Without --fix or --dry-run: report only.
-    --dry-run: print findings + full preview of changes, exit without writing.
-    --fix: print preview, prompt Apply? [y/N], then write.
+    Without a fix flag or --dry-run: report only (W119 included - a lead, not
+    a defect).  --dry-run: findings + full preview, exit without writing.
+    --fix: preview the W103/W110 renames/moves, prompt Apply? [y/N], write.
+    --fix-promote: preview the W119 promotions (each plan computed by the
+    promote engine's own dry run), prompt under the SAME Apply? gate, then
+    batch-apply `_lib.promote_person_record` - the one sanctioned tool move
+    out of people/stubs/.  The two fix flags are refused together: a W110
+    folder rename would invalidate the promotion destinations computed in the
+    same pass, so they run as two consecutive invocations instead.
 
     The findings, preview, prompt, and per-rename narration stay inline - the
     interactive Apply? gate is bound to that output and is out of scope to move
     (a deferred Phase-3 concern).  The Result records the outcome: the issue
-    counts in `data` and, on a successful --fix, the dropped index cache in
+    counts in `data` and, on a successful fix, the dropped index cache in
     `changed`.
     """
-    # --fix mutates the tree, so it must never run from a stale index; report-only
-    # and --dry-run are read-only and tolerate a stale index with a warning.
-    conn = open_index_db(archive_root, ('persons',), strict=fix)
+    if fix and fix_promote:
+        print(
+            'ERROR: --fix and --fix-promote cannot run in one pass - a folder '
+            'rename would invalidate the promotion destinations computed with '
+            'it. Run `fha views brackets --fix` first, `fha index`, then '
+            '`fha views brackets --fix-promote`.',
+            file=sys.stderr,
+        )
+        return _views_result(EXIT_FAILURE)
+    if generations is not None and generations < 1:
+        print(
+            'ERROR: --generations takes a positive number of generations '
+            '(1 = parents, 2 = grandparents, …).',
+            file=sys.stderr,
+        )
+        return _views_result(EXIT_FAILURE)
+
+    # A fix run mutates the tree, so it must never run from a stale index;
+    # report-only and --dry-run are read-only and tolerate staleness with a
+    # warning.
+    conn = open_index_db(archive_root, ('persons',), strict=(fix or fix_promote))
     if conn is None:
         return _views_result(EXIT_FAILURE)
 
@@ -1937,7 +2099,7 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
         # ── W103: bracket list check ──────────────────────────────────────
         w103 = _check_w103_brackets(conn, archive_root)
 
-        # ── W110: Ahnentafel placement check ─────────────────────────────
+        # ── W110/W119: Ahnentafel placement + direct-line stub checks ────
         try:
             fha_cfg = load_fha_yaml(archive_root, strict=True)
         except FhaConfigError as e:
@@ -1945,29 +2107,50 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
             return _views_result(EXIT_FAILURE)
         root_person_raw = fha_cfg.get('root_person')
         w110: list[dict] = []
+        w119: list[dict] = []
 
         if root_person_raw:
             root_pid = normalize_id(str(root_person_raw))
             if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone() is None:
                 print(
                     f'WARNING: root_person {root_pid!r} is not in the index - '
-                    'Ahnentafel checks (W110) skipped. Run `fha index` or fix fha.yaml.',
+                    'Ahnentafel checks (W110/W119) skipped. Run `fha index` or fix fha.yaml.',
                     file=sys.stderr,
                 )
             else:
                 pid_to_pos = _build_ahnentafel_map(conn, root_pid)
                 w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
+                try:
+                    w119 = _check_w119_direct_line_stubs(
+                        conn, archive_root, pid_to_pos, generations)
+                except AmbiguousCoupleFolderError as e:
+                    # Two folders share one couple prefix (e.g. '002 Father' and
+                    # '002 Mother'), so the direct-line destinations cannot be
+                    # derived without guessing which folder is the couple's.
+                    # Refuse the whole run rather than file records arbitrarily.
+                    print(
+                        f'ERROR: two couple folders share the prefix '
+                        f'{e.prefix:03d} - {" and ".join(e.folders)}. Direct-line '
+                        'stubs cannot be filed without guessing which one is the '
+                        'couple\'s folder, so the Ahnentafel checks are refused. '
+                        'Rename one so the numeric prefixes are unique (a '
+                        'non-ancestral marriage takes a letter suffix, e.g. '
+                        f'"{e.prefix:03d}b …"; SPEC §12.2), run `fha index`, then '
+                        'retry.',
+                        file=sys.stderr,
+                    )
+                    return _views_result(EXIT_FAILURE)
         else:
             print(
                 'INFO: root_person not set in fha.yaml - '
-                'Ahnentafel checks (W110) skipped.'
+                'Ahnentafel checks (W110/W119) skipped.'
             )
 
         # ── Compose renames that touch the same folder ────────────────────
         w103, w110, w103_suppressed = _compose_folder_renames(w103, w110)
 
-        all_issues = w103 + w110
-        issue_data = {'w103': len(w103), 'w110': len(w110)}
+        all_issues = w103 + w110 + w119
+        issue_data = {'w103': len(w103), 'w110': len(w110), 'w119': len(w119)}
 
         # ── Report ────────────────────────────────────────────────────────
         for item in all_issues:
@@ -1985,8 +2168,88 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
             print('brackets: no issues found.')
             return _views_result(EXIT_CLEAN, data=issue_data)
 
-        if not fix and not dry_run:
+        if not fix and not fix_promote and not dry_run:
             # Report-only mode: findings emitted above, exit with warnings
+            return _views_result(EXIT_WARNINGS, data=issue_data)
+
+        # ── --fix-promote: the W119 promotions under the Apply? gate ─────
+        if fix_promote:
+            if not w119:
+                print('\nNo direct-line stubs to promote (W119 is clear).')
+                return _views_result(
+                    EXIT_WARNINGS if (w103 or w110) else EXIT_CLEAN,
+                    data=issue_data)
+            _print_promote_preview(w119, archive_root)
+            if dry_run:
+                print('\n(dry-run: no changes written)')
+                return _views_result(EXIT_WARNINGS, data=issue_data)
+            try:
+                answer = input('\nApply? [y/N] ').strip().lower()
+            except EOFError:
+                answer = ''
+            if answer != 'y':
+                print('Aborted - no changes written.')
+                return _views_result(EXIT_WARNINGS, data=issue_data)
+
+            applied, failures = _apply_promotions(w119, archive_root)
+            changed: list[str] = []
+            if applied:
+                # A promoted record moved out of stubs/ - a path change the
+                # mtime-based staleness check cannot see (same rationale as
+                # the W110 fix below). Drop the cache to force a rebuild.
+                conn.close()
+                db_path = archive_root / '.cache' / 'index.sqlite'
+                try:
+                    db_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    # The records ALREADY moved on disk - that is done and
+                    # irreversible; only the cache drop failed (a locked or
+                    # read-only .cache/index.sqlite). A move preserves each
+                    # record's mtime, so the undeleted index still passes the
+                    # freshness check while pointing at the OLD stubs/ paths -
+                    # searches can quietly go stale. Report the promotions that
+                    # landed, then warn non-zero naming the stale cache and the
+                    # rebuild command; never let the unlink traceback reach the
+                    # user (AGENTS_TOOLING: no traceback ever reaches him).
+                    reason = exc.strerror or str(exc)
+                    print(
+                        f'\nPromoted {applied} of {len(w119)} - those records '
+                        'moved and are filed under their couple folders. But the '
+                        f'search index cache could not be cleared ({reason}): '
+                        f'{db_path}. The records moved, so the leftover index '
+                        'still points at their old locations and can look up to '
+                        'date, which means searches may quietly go stale until '
+                        f'you rebuild it. Delete {db_path} (or just run '
+                        '`fha index`) to rebuild the index and clear the stale '
+                        'entries.',
+                        file=sys.stderr,
+                    )
+                    return _views_result(
+                        EXIT_WARNINGS,
+                        data={**issue_data, 'index_stale': True,
+                              'promoted': applied, 'failures': failures})
+                changed = [str(db_path)]
+                print(
+                    f'\nPromoted {applied} of {len(w119)}. Run `fha index` to '
+                    'rebuild the index, then `fha views refresh` to generate '
+                    'the new curated people\'s companion views (timeline, '
+                    'sources-index, draft-queue).'
+                )
+            if failures:
+                print(f'{failures} promotion(s) not applied - see stderr.')
+                return _views_result(EXIT_WARNINGS, changed=changed,
+                                     data={**issue_data, 'failures': failures})
+            return _views_result(
+                EXIT_WARNINGS if (w103 or w110) else EXIT_CLEAN,
+                changed=changed, data=issue_data)
+
+        # ── --fix / --dry-run: the W103/W110 renames and moves ────────────
+        if fix and not (w103 or w110):
+            print(
+                '\nNothing here is applied by --fix - the W119 stub promotions '
+                'above are applied with `fha views brackets --fix-promote` '
+                '(previewed, then confirmed).'
+            )
             return _views_result(EXIT_WARNINGS, data=issue_data)
 
         # ── Preview ───────────────────────────────────────────────────────
@@ -2020,7 +2283,30 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
         # Remove the cache outright to force a rebuild before it's next read.
         conn.close()
         db_path = archive_root / '.cache' / 'index.sqlite'
-        db_path.unlink(missing_ok=True)
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError as exc:
+            # The renames/moves ALREADY landed on disk and are irreversible;
+            # only the cache drop failed (a locked or read-only cache). Those
+            # moves keep each file's mtime, so the leftover index looks fresh
+            # while pointing at the OLD paths - searches can quietly go stale.
+            # Report the work that landed and warn non-zero naming the stale
+            # cache and the rebuild command; no traceback reaches the user.
+            reason = exc.strerror or str(exc)
+            print(
+                f'\nThe renames and moves were applied, but the search index '
+                f'cache could not be cleared ({reason}): {db_path}. Those moves '
+                'change record paths without changing their mtimes, so the '
+                'leftover index still points at the old locations and can look '
+                'up to date - searches may quietly go stale until you rebuild '
+                f'it. Delete {db_path} (or just run `fha index`) to rebuild the '
+                'index and clear the stale entries.',
+                file=sys.stderr,
+            )
+            data = {**issue_data, 'index_stale': True}
+            if failures:
+                data['failures'] = failures
+            return _views_result(EXIT_WARNINGS, data=data)
         changed = [str(db_path)]
 
         if failures:
@@ -2048,6 +2334,8 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
         archive_root,
         fix=getattr(args, 'fix', False),
         dry_run=getattr(args, 'dry_run', False),
+        fix_promote=getattr(args, 'fix_promote', False),
+        generations=getattr(args, 'generations', None),
     ).exit_code
 
 
@@ -2082,6 +2370,7 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
         FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id
         WHERE cp.person_id IN ({placeholders})
           AND c.type IN ('birth', 'death') AND c.status = 'accepted'
+          AND COALESCE(c.negated, 0) = 0
         """,
         pids,
     ).fetchall():
@@ -2946,10 +3235,18 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     # ── brackets ──────────────────────────────────────────────────────────────
     br = vsubs.add_parser(
         'brackets',
-        help='Check and refresh couple-folder bracket lists (W103/W110).',
+        help='Check couple-folder bracket lists, Ahnentafel placement, and '
+             'direct-line stubs (W103/W110/W119).',
     )
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
+    br.add_argument('--fix-promote', action='store_true', dest='fix_promote',
+                    help='Promote the direct-line stubs (W119) after a preview '
+                         'and an Apply? confirmation - tier flip, move into the '
+                         'couple folder, research file scaffold.')
+    br.add_argument('--generations', type=int, metavar='N',
+                    help='Only consider direct-line stubs within N generations '
+                         '(1 = parents, 2 = grandparents, …).')
     br.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
@@ -3065,9 +3362,13 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
             extra(p)
         p.set_defaults(func=func)
 
-    br = subs.add_parser('brackets', help='Check and refresh couple-folder bracket lists (W103/W110).')
+    br = subs.add_parser('brackets', help='Check couple-folder bracket lists, Ahnentafel placement, and direct-line stubs (W103/W110/W119).')
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
+    br.add_argument('--fix-promote', action='store_true', dest='fix_promote',
+                    help='Promote the direct-line stubs (W119) after a preview and confirmation.')
+    br.add_argument('--generations', type=int, metavar='N',
+                    help='Only consider direct-line stubs within N generations.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
 

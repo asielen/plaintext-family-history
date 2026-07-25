@@ -1,0 +1,1118 @@
+"""Tests for `fha process refile` - the sanctioned cross-root correction move.
+
+Covers both directions (documents -> photos with the last-chance rename and
+keyword embed; photos -> documents with the catalog confirm and the S13
+grammar rename), the refusal surface (missing/escaping --dest, wrong-root,
+multi-file ambiguity, working copy, missing asset), dry-run zero-writes, and
+transactional rollback. The exiftool seams are replaced by the in-memory
+FakePhotoStore from test_process (the _install_photo_store pattern) so no test
+ever shells out.
+
+Run: py -3.14 -m unittest tests.test_process_refile -v   (from the repo root)
+"""
+
+import contextlib
+import io
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT))
+
+import process
+from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, read_record
+from tests.test_process import FakePhotoStore
+
+SID = 'S-abc123defg'
+
+
+def _make_archive(tmp: Path) -> Path:
+    """A minimal archive root mapping internal photos/ and documents/ roots."""
+    archive = tmp / 'archive'
+    (archive / 'documents' / 'census').mkdir(parents=True)
+    (archive / 'photos' / '1880').mkdir(parents=True)
+    (archive / 'sources' / 'census').mkdir(parents=True)
+    (archive / 'sources' / 'photos').mkdir(parents=True)
+    (archive / 'people').mkdir()
+    (archive / 'notes').mkdir()
+    (archive / 'fha.yaml').write_text(
+        'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8'
+    )
+    return archive
+
+
+def _record_text(alias_lines: str, source_type: str = 'census') -> str:
+    """A minimal but complete S14 source record around the given files: lines."""
+    return (
+        '---\n'
+        f'id: {SID}\n'
+        f'aliases: [{SID}]\n'
+        'title: Campaign card\n'
+        f'source_type: {source_type}\n'
+        'source_class: original\n'
+        'repository: unknown\n'
+        'citation: Campaign card\n'
+        'people: []\n'
+        'files:\n'
+        f'{alias_lines}'
+        'created: 2026-07-01\n'
+        '---\n'
+        '\n'
+        '## Claims\n'
+        '```yaml\n'
+        '```\n'
+        '\n'
+        '## Notes\n'
+        '*(none yet - drafted in the AI pass)*\n'
+    )
+
+
+class ProcessRefileTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.archive = _make_archive(self.tmp)
+        self._orig_read = process._run_exiftool_read_keywords
+        self._orig_embed = process._run_exiftool_embed_source
+        self._orig_remove = process._run_exiftool_remove_source
+        self._orig_prompt = process._prompt
+        self._orig_interactive = process._stdin_is_interactive
+        self._orig_write_text_exact = process.write_text_exact_atomic
+
+    def tearDown(self) -> None:
+        process._run_exiftool_read_keywords = self._orig_read
+        process._run_exiftool_embed_source = self._orig_embed
+        process._run_exiftool_remove_source = self._orig_remove
+        process._prompt = self._orig_prompt
+        process._stdin_is_interactive = self._orig_interactive
+        process.write_text_exact_atomic = self._orig_write_text_exact
+        self._tmp.cleanup()
+
+    # -- fixture builders ------------------------------------------------------
+
+    def _install_photo_store(self) -> FakePhotoStore:
+        store = FakePhotoStore()
+        process._run_exiftool_read_keywords = store.read
+        process._run_exiftool_embed_source = store.embed
+        process._run_exiftool_remove_source = store.remove
+        return store
+
+    def _write_doc_source(self, *, with_original_filename: bool = True) -> tuple[Path, Path]:
+        """A processed document source: asset + record. Returns (asset, record)."""
+        asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = f'  - file: documents/census/campaign-card_{SID}.jpg\n    role: primary\n'
+        if with_original_filename:
+            entry += '    original_filename: campaign-card.jpg\n'
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+        return asset, record
+
+    def _write_doc_source_with_derived(self) -> tuple[Path, Path, Path]:
+        """A processed doc source: a primary scan plus a derived transcript."""
+        card = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
+        card.write_bytes(b'jpegbytes')
+        transcript = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.txt'
+        transcript.write_text('extracted text', encoding='utf-8')
+        entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
+                 '    role: primary\n'
+                 '    original_filename: campaign-card.jpg\n'
+                 f'  - file: documents/census/campaign-card_{SID}.txt\n'
+                 '    role: transcript\n'
+                 '    derived: true\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+        return card, transcript, record
+
+    def _write_photo_source(self) -> tuple[Path, Path]:
+        """A processed photo source: asset + record. Returns (asset, record)."""
+        asset = self.archive / 'photos' / '1880' / 'portrait.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = ('  - file: photos/1880/portrait.jpg\n'
+                 '    role: primary\n'
+                 '    is_primary: true\n')
+        record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
+        record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
+        return asset, record
+
+    def _run(self, argv: list[str]) -> int:
+        return process._standalone_main(['refile'] + argv + ['--root', str(self.archive)])
+
+    def _run_captured(self, argv: list[str]) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = self._run(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def _snapshot_tree(self, root: Path) -> dict[str, tuple[int, int]]:
+        snap: dict[str, tuple[int, int]] = {}
+        for p in sorted(root.rglob('*')):
+            rel = p.relative_to(root).as_posix()
+            if p.is_file():
+                st = p.stat()
+                snap[rel] = (st.st_size, st.st_mtime_ns)
+            else:
+                snap[rel] = (-1, -1)
+        return snap
+
+    # -- documents -> photos ---------------------------------------------------
+
+    def test_doc_to_photo_happy_path(self) -> None:
+        store = self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        rc, out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertTrue(moved.is_file(), 'original_filename should be restored')
+        self.assertIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []))
+
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/campaign-card.jpg')
+        body = record.read_text(encoding='utf-8')
+        self.assertIn('Refiled', body)
+        self.assertIn(f'documents/census/campaign-card_{SID}.jpg -> '
+                      'photos/1880s/campaign-card.jpg', body)
+        self.assertIn('fha index', out)
+        self.assertIn('fha photoindex', out)
+        self.assertIn('Lightroom', out)
+        self.assertNotIn('Traceback', err)
+
+    def test_doc_to_photo_without_original_filename_strips_sid(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_doc_source(with_original_filename=False)
+
+        rc = self._run([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertTrue(moved.is_file(), 'the _S-id suffix should be stripped')
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/campaign-card.jpg')
+
+    def test_doc_to_photo_missing_dest_refused(self) -> None:
+        self._install_photo_store()
+        asset, _record = self._write_doc_source()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--dest', err)
+        self.assertIn('1880s', err)  # the message ships an example
+        self.assertTrue(asset.exists(), 'a refusal must move nothing')
+
+    def test_doc_to_photo_dest_escapes_refused(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before = record.read_bytes()
+
+        for bad_dest in ('../outside', 'a/../../b', str(self.tmp / 'abs')):
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', bad_dest])
+            self.assertEqual(rc, EXIT_FAILURE, f'--dest {bad_dest!r} must refuse')
+            self.assertIn('--dest', err)
+            self.assertNotIn('Traceback', err)
+            self.assertTrue(asset.exists())
+            self.assertEqual(record.read_bytes(), before)
+
+    def test_doc_to_photo_unsupported_format_warns_and_proceeds(self) -> None:
+        self._install_photo_store()
+        asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.pdf'
+        asset.write_bytes(b'%PDF-1.4')
+        entry = (f'  - file: documents/census/campaign-card_{SID}.pdf\n'
+                 '    role: primary\n    original_filename: campaign-card.pdf\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('WARNING', err)
+        self.assertIn('keyword', err.lower())
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.pdf').is_file())
+
+    def test_doc_to_photo_exiftool_absent_warns_and_proceeds(self) -> None:
+        def boom(_path, _sid, extra_keywords=None):
+            raise RuntimeError('exiftool is not installed or not on PATH.')
+        process._run_exiftool_embed_source = boom
+        asset, record = self._write_doc_source()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('WARNING', err)
+        self.assertIn('exiftool', err)
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.jpg').is_file())
+        self.assertIn('photos/1880s/campaign-card.jpg',
+                      record.read_text(encoding='utf-8'))
+
+    # -- photos -> documents ---------------------------------------------------
+
+    def test_photo_to_doc_with_yes(self) -> None:
+        store = self._install_photo_store()
+        asset, record = self._write_photo_source()
+        store.keywords[str(asset)] = [f'SOURCE: {SID}']
+
+        rc, out, _err = self._run_captured([SID, '--to', 'documents', '--yes'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        moved = self.archive / 'documents' / 'photos' / f'portrait_{SID}.jpg'
+        self.assertTrue(moved.is_file(), 'renamed into the {slug}_{S-id} grammar')
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], f'documents/photos/portrait_{SID}.jpg')
+        body = record.read_text(encoding='utf-8')
+        self.assertIn('previously named portrait.jpg', body)
+        # The embedded SOURCE keyword is deliberately NOT stripped.
+        self.assertEqual(store.keywords[str(asset)], [f'SOURCE: {SID}'])
+        self.assertIn('Lightroom', out)
+        self.assertIn('fha index', out)
+
+    def test_photo_to_doc_dest_override(self) -> None:
+        self._install_photo_store()
+        asset, _record = self._write_photo_source()
+
+        rc = self._run([SID, '--to', 'documents', '--yes', '--dest', 'letters'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        self.assertTrue((self.archive / 'documents' / 'letters' / f'portrait_{SID}.jpg').is_file())
+
+    def test_photo_to_doc_noninteractive_without_yes_refused(self) -> None:
+        self._install_photo_store()
+        process._stdin_is_interactive = lambda: False
+        asset, record = self._write_photo_source()
+        before = record.read_bytes()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'documents'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--yes', err)
+        self.assertTrue(asset.exists())
+        self.assertEqual(record.read_bytes(), before)
+
+    def test_photo_to_doc_interactive_decline_changes_nothing(self) -> None:
+        self._install_photo_store()
+        process._stdin_is_interactive = lambda: True
+        process._prompt = lambda _msg: 'n'
+        asset, record = self._write_photo_source()
+        before = record.read_bytes()
+
+        rc, out, _err = self._run_captured([SID, '--to', 'documents'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('nothing changed', out.lower())
+        self.assertTrue(asset.exists())
+        self.assertEqual(record.read_bytes(), before)
+
+    # -- shared refusal surface ------------------------------------------------
+
+    def test_already_under_target_root_names_reconcile(self) -> None:
+        self._install_photo_store()
+        asset, _record = self._write_doc_source()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'documents', '--yes'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('already under the documents root', err)
+        self.assertIn('fha reconcile', err)
+        self.assertTrue(asset.exists())
+
+    def test_multi_file_without_file_flag_lists_candidates(self) -> None:
+        self._install_photo_store()
+        card = self.archive / 'documents' / 'census' / 'card.jpg'
+        card.write_bytes(b'jpegbytes')
+        sidecar = self.archive / 'documents' / 'census' / 'card.jpg.txt'
+        sidecar.write_text('notes', encoding='utf-8')
+        entry = ('  - file: documents/census/card.jpg\n'
+                 '    role: primary\n'
+                 '    original_filename: card.jpg\n'
+                 '  - file: documents/census/card.jpg.txt\n'
+                 '    role: transcript\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--file', err)
+        self.assertIn('card.jpg', err)
+        self.assertIn('card.jpg.txt', err)
+        self.assertTrue(card.exists())
+
+    def test_file_flag_selects_and_siblings_survive_value_exact(self) -> None:
+        # card.jpg's alias is a SUBSTRING of card.jpg.txt's, and the superstring
+        # sibling is listed FIRST so the trap is armed: a first-match substring
+        # rewriter (`old_alias in value`) would grab card.jpg.txt's line before
+        # reaching card.jpg's. The value-exact one must skip it and rewrite the
+        # real target only.
+        self._install_photo_store()
+        card = self.archive / 'documents' / 'census' / 'card.jpg'
+        card.write_bytes(b'jpegbytes')
+        sidecar = self.archive / 'documents' / 'census' / 'card.jpg.txt'
+        sidecar.write_text('notes', encoding='utf-8')
+        entry = ('  - file: documents/census/card.jpg.txt\n'
+                 '    role: transcript\n'
+                 '  - file: documents/census/card.jpg\n'
+                 '    role: primary\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc = self._run([SID, '--file', 'card.jpg', '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(card.exists())
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'card.jpg').is_file())
+        self.assertTrue(sidecar.exists(), 'the unselected sibling never moves')
+        body = record.read_text(encoding='utf-8')
+        self.assertIn('file: photos/1880s/card.jpg\n', body.replace('\r\n', '\n'))
+        self.assertIn('file: documents/census/card.jpg.txt', body)
+
+    def test_file_flag_naming_nothing_lists_what_exists(self) -> None:
+        self._install_photo_store()
+        self._write_doc_source()
+
+        rc, _out, err = self._run_captured(
+            [SID, '--file', 'nope.jpg', '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('nope.jpg', err)
+        self.assertIn(f'campaign-card_{SID}.jpg', err)
+
+    def test_asset_missing_on_disk_names_reconcile(self) -> None:
+        self._install_photo_store()
+        entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
+                 '    role: primary\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('not on disk', err)
+        self.assertIn('fha reconcile', err)
+
+    def test_working_copy_refusal(self) -> None:
+        (self.archive / 'WORKING_COPY').write_text('marker', encoding='utf-8')
+        self._write_doc_source()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('working-copy', err)
+        self.assertIn('main machine', err)
+
+    def test_invalid_id_shape_refused(self) -> None:
+        rc, _out, err = self._run_captured(['notanid', '--to', 'photos', '--dest', 'x'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('not a valid source ID', err)
+        self.assertIn('S-2b3c4d5e6f', err)  # jargon ships an example
+        self.assertNotIn('Traceback', err)
+
+    def test_record_not_found_exits_one_and_names_find(self) -> None:
+        rc, _out, err = self._run_captured(['S-2b3c4d5e6f', '--to', 'photos', '--dest', 'x'])
+
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('fha find S-2b3c4d5e6f', err)
+
+    def test_destination_collision_refused(self) -> None:
+        self._install_photo_store()
+        asset, _record = self._write_doc_source()
+        blocker = self.archive / 'photos' / '1880s'
+        blocker.mkdir()
+        (blocker / 'campaign-card.jpg').write_bytes(b'already here')
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('already exists', err)
+        self.assertTrue(asset.exists())
+
+    # -- dry-run ---------------------------------------------------------------
+
+    def test_dry_run_zero_writes_doc_to_photo(self) -> None:
+        store = self._install_photo_store()
+        self._write_doc_source()
+        before = self._snapshot_tree(self.archive)
+
+        rc, out, _err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s', '--dry-run'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertEqual(store.keywords, {})
+        self.assertIn('Would move', out)
+        self.assertIn('Would rename', out)
+        self.assertIn('Would embed', out)
+        self.assertIn('Would rewrite the files: entry', out)
+        self.assertIn('Would add a Notes line', out)
+
+    def test_dry_run_zero_writes_photo_to_doc(self) -> None:
+        store = self._install_photo_store()
+        self._write_photo_source()
+        before = self._snapshot_tree(self.archive)
+        # No --yes and no interactive answer needed: dry-run never prompts.
+        process._stdin_is_interactive = lambda: False
+
+        rc, out, _err = self._run_captured([SID, '--to', 'documents', '--dry-run'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertEqual(store.keywords, {})
+        self.assertIn('Would move', out)
+        self.assertIn('Lightroom', out)
+        self.assertIn('Would rewrite the files: entry', out)
+
+    # -- transactionality ------------------------------------------------------
+
+    def test_rollback_on_record_write_failure(self) -> None:
+        store = self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before_record = record.read_bytes()
+
+        real_write = self._orig_write_text_exact
+        writes = {'n': 0}
+
+        def flaky_write(path, text):
+            # Fail ONLY the forward record write (triggering rollback); let the
+            # rollback's restore of the original text succeed. This is the clean,
+            # complete rollback: file back home, record whole again. (A restore
+            # write that also failed is the damaged-record case, covered by
+            # test_rollback_record_restore_failure_reports_damaged_record.)
+            writes['n'] += 1
+            if writes['n'] == 1:
+                raise OSError('simulated disk full')
+            return real_write(path, text)
+        process.write_text_exact_atomic = flaky_write
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('rolled back', err)
+        self.assertIn('Nothing was left changed', err)
+        self.assertTrue(asset.exists(), 'the file must be moved back')
+        self.assertEqual(record.read_bytes(), before_record)
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertFalse(moved.exists())
+        self.assertFalse((self.archive / 'photos' / '1880s').exists(),
+                         'a folder this run created is removed again')
+        self.assertNotIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []),
+                         'the just-embedded keyword is rolled back')
+
+    def test_keyword_cleanup_failure_is_named_not_reported_clean(self) -> None:
+        # doc->photos embeds a SOURCE keyword; then the record write fails and
+        # rollback moves the file home and restores the record - but stripping the
+        # just-embedded keyword ALSO fails. That residual metadata must be named
+        # with the exact exiftool cleanup, never reported as "nothing changed".
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before = record.read_bytes()
+        # Keyword removal fails during rollback.
+        process._run_exiftool_remove_source = (
+            lambda p, s_id, extra_keywords=None: 'exiftool: write locked')
+        # Fail the FORWARD record write; let the rollback restore (2nd write) land.
+        real_atomic = process.write_text_exact_atomic
+        rec_writes = {'n': 0}
+
+        def failing_atomic(path, text):
+            if Path(path).name == record.name:
+                rec_writes['n'] += 1
+                if rec_writes['n'] == 1:
+                    raise OSError('simulated disk full on record write')
+            return real_atomic(path, text)
+
+        process.write_text_exact_atomic = failing_atomic
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process.write_text_exact_atomic = real_atomic
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        # Record and file location are restored...
+        self.assertEqual(record.read_bytes(), before)
+        self.assertTrue(asset.exists())
+        # ...but the residual keyword is NAMED with a cleanup step, not "clean".
+        self.assertNotIn('Nothing was left changed', err)
+        self.assertIn(f'SOURCE: {SID}', err)
+        self.assertIn('exiftool', err)
+
+    def test_refile_refuses_when_destination_root_is_offline(self) -> None:
+        # The photos root's external drive is unplugged. Refile must refuse
+        # rather than let dest_dir.mkdir(parents=True) recreate the mount path
+        # on the local disk and bury the moved original under it.
+        import shutil as _shutil
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before = record.read_bytes()
+        _shutil.rmtree(self.archive / 'photos')          # destination root offline
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('photos root is not reachable', err)
+        self.assertEqual(record.read_bytes(), before, 'the record is untouched')
+        self.assertTrue(asset.exists(), 'the original stays put')
+        self.assertFalse((self.archive / 'photos').exists(),
+                         'the offline mount path was NOT recreated on local disk')
+
+    def test_forward_move_partial_that_cannot_be_removed_is_named(self) -> None:
+        # A cross-filesystem forward move whose copy dies mid-write leaves a
+        # partial at the destination; if that partial cannot be removed (a
+        # locked handle on Windows), the rollback must NOT report a clean
+        # "nothing changed" - it must name the stray file and the manual step.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before_record = record.read_bytes()
+        dest = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+
+        real_move = process._move_file
+        real_unlink = Path.unlink
+
+        def fake_move(src: Path, dst: Path) -> None:
+            # Forward move only: drop a partial at the destination, then fail.
+            if src == asset:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(b'partial')
+                raise OSError('simulated cross-fs copy failure')
+            return real_move(src, dst)
+
+        def fake_unlink(self, *a, **k):
+            if self == dest:
+                raise OSError('simulated locked handle')
+            return real_unlink(self, *a, **k)
+
+        process._move_file = fake_move
+        Path.unlink = fake_unlink
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process._move_file = real_move
+            Path.unlink = real_unlink
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('partial copy was left at', err)
+        self.assertIn('campaign-card.jpg', err)
+        self.assertNotIn('Nothing was left changed', err)
+        self.assertEqual(record.read_bytes(), before_record, 'the record is untouched')
+        self.assertTrue(asset.exists(), 'the original is kept')
+
+    def test_rollback_move_back_failure_reports_and_stays_consistent(self) -> None:
+        # The reviewer-named hazard: the record write fails so rollback begins,
+        # then the asset drive disconnects and the file cannot be moved back.
+        # The command must NOT claim a clean rollback. It reports the move-back
+        # failure, leaves the file where it is with the record pointing THERE (a
+        # consistent archive, not a record aimed at a now-missing old path),
+        # names the recovery command, and exits non-zero.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        real_write = self._orig_write_text_exact
+        writes = {'n': 0}
+
+        def flaky_write(path, text):
+            # Fail the forward record write (triggering rollback); let the
+            # rollback's re-point of the record succeed so the archive is healed
+            # to a consistent "still refiled" state.
+            writes['n'] += 1
+            if writes['n'] == 1:
+                raise OSError('simulated disk full on the record write')
+            return real_write(path, text)
+        process.write_text_exact_atomic = flaky_write
+
+        real_move = process._move_file
+
+        def move_back_fails(src, dest):
+            # The forward move into photos/1880s works; the rollback move back
+            # OUT of it fails, as if the drive vanished mid-undo.
+            if Path(src).parent.name == '1880s':
+                raise OSError('simulated drive disconnected during rollback')
+            return real_move(src, dest)
+        process._move_file = move_back_fails
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process._move_file = real_move
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        # It does NOT falsely claim a clean, complete rollback ...
+        self.assertNotIn('refile failed, rolled back:', err)
+        # ... it names the failed step and the true on-disk result.
+        self.assertIn('could not be moved back', err)
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertTrue(moved.is_file(), 'the file is left where the move-back could not reach')
+        self.assertFalse(asset.exists())
+        self.assertIn('photos/1880s/campaign-card.jpg', err)
+        # The record points at the file's real location: file and record agree.
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/campaign-card.jpg')
+        # A concrete recovery command is offered.
+        self.assertIn('fha process refile', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_rollback_double_failure_reports_inconsistency(self) -> None:
+        # Worst case: the record write fails, the file cannot be moved back, AND
+        # re-pointing the record also fails. The command must own up to an
+        # inconsistent archive, name both halves (where the file is, where the
+        # record still points), and give the manual repair - never a clean claim.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        def always_boom(path, text):
+            raise OSError('simulated disk full')
+        process.write_text_exact_atomic = always_boom
+
+        real_move = process._move_file
+
+        def move_back_fails(src, dest):
+            if Path(src).parent.name == '1880s':
+                raise OSError('simulated drive disconnected during rollback')
+            return real_move(src, dest)
+        process._move_file = move_back_fails
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process._move_file = real_move
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('refile failed, rolled back:', err)
+        self.assertIn('INCONSISTENT', err)
+        self.assertIn('fha reconcile', err)
+        self.assertIn('fha doctor', err)
+        # The file is stranded at the destination ...
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.jpg').is_file())
+        self.assertFalse(asset.exists())
+        # ... and the record still names the old location it could not update.
+        self.assertIn(f'documents/census/campaign-card_{SID}.jpg', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_rollback_record_restore_failure_reports_damaged_record(self) -> None:
+        # The reviewer-named hazard: the forward record write fails so rollback
+        # begins, the file IS moved back home, but restoring the record's
+        # original text ALSO fails. The move-back succeeded, yet the record on
+        # disk is now truncated - the command must NOT call this a clean
+        # rollback. It names the damaged record and the recovery (restore from
+        # git or a backup, then `fha lint`), and exits non-zero.
+        store = self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        def always_boom(_path, _text):
+            raise OSError('simulated disk full')
+        process.write_text_exact_atomic = always_boom
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        # It does NOT claim the clean, complete rollback ...
+        self.assertNotIn('Nothing was left changed', err)
+        self.assertNotIn('refile failed, rolled back:', err)
+        # ... it names the damaged record and that the record is damaged.
+        self.assertIn('could not be restored', err)
+        self.assertIn('damaged', err)
+        rel_record = record.relative_to(self.archive).as_posix()
+        self.assertIn(rel_record, err)
+        # The file WAS moved back to its original location.
+        self.assertTrue(asset.exists(), 'the file must be moved back home')
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertFalse(moved.exists())
+        self.assertNotIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []))
+        # The recovery is spelled out: restore from git/backup, then lint.
+        self.assertIn('git', err)
+        self.assertIn('fha lint', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_refile_preserves_trailing_inventory_comment(self) -> None:
+        # A hand-written note on the file: line ('# fragile original') is the
+        # owner's annotation. A successful refile rewrites the path but must
+        # carry the comment onto the new line, never silently drop it.
+        self._install_photo_store()
+        asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = (f'  - file: documents/census/campaign-card_{SID}.jpg  # fragile original\n'
+                 '    role: primary\n'
+                 '    original_filename: campaign-card.jpg\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('Traceback', err)
+        body = record.read_text(encoding='utf-8')
+        # The rewritten inventory line points at the new location AND keeps the note.
+        self.assertIn('- file: photos/1880s/campaign-card.jpg  # fragile original', body)
+        # The comment did not corrupt the value: it parses back to the new path.
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/campaign-card.jpg')
+
+    def test_record_keeps_lf_line_endings(self) -> None:
+        self._install_photo_store()
+        _asset, record = self._write_doc_source()  # written via write_bytes: pure LF
+
+        rc = self._run([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn(b'\r', record.read_bytes())
+
+    # -- CLI plumbing ----------------------------------------------------------
+
+    def test_fha_dispatcher_intercepts_process_refile(self) -> None:
+        self._install_photo_store()
+        asset, _record = self._write_doc_source()
+        import fha
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['process', 'refile', SID, '--to', 'photos',
+                           '--dest', '1880s', '--root', str(self.archive)])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.jpg').is_file())
+
+    def test_fha_dispatcher_dual_position_root(self) -> None:
+        self._install_photo_store()
+        asset, _record = self._write_doc_source()
+        import fha
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['process', '--root', str(self.archive), 'refile', SID,
+                           '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+
+    # -- the confirm gate, accept path -----------------------------------------
+
+    def test_photo_to_doc_interactive_accept_moves_file(self) -> None:
+        # The decline and --yes paths are covered; without this, a confirm gate
+        # that ALWAYS declined would pass the whole suite.
+        self._install_photo_store()
+        process._stdin_is_interactive = lambda: True
+        process._prompt = lambda _msg: 'y'
+        asset, record = self._write_photo_source()
+
+        rc = self._run([SID, '--to', 'documents'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        moved = self.archive / 'documents' / 'photos' / f'portrait_{SID}.jpg'
+        self.assertTrue(moved.is_file())
+        self.assertIn(f'documents/photos/portrait_{SID}.jpg',
+                      record.read_text(encoding='utf-8'))
+
+    def test_eof_at_prompt_refuses_with_yes_hint(self) -> None:
+        # A closed stdin (a scheduler run where isatty() lies, or Ctrl+D) must
+        # get the crafted "re-run with --yes" refusal, NOT the generic
+        # catch-all's misleading "run fha lint".
+        self._install_photo_store()
+        process._stdin_is_interactive = lambda: True
+
+        def eof(_msg):
+            raise EOFError('EOF when reading a line')
+        process._prompt = eof
+        asset, record = self._write_photo_source()
+        before = record.read_bytes()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'documents'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('--yes', err)
+        self.assertNotIn('fha lint', err)
+        self.assertNotIn('Traceback', err)
+        self.assertTrue(asset.exists())
+        self.assertEqual(record.read_bytes(), before)
+
+    # -- derived-entry selection contract --------------------------------------
+
+    def test_derived_entry_never_the_default_pick(self) -> None:
+        self._install_photo_store()
+        card, transcript, _record = self._write_doc_source_with_derived()
+
+        rc = self._run([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(card.exists())
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.jpg').is_file())
+        self.assertTrue(transcript.exists(), 'the derived entry is never the default pick')
+
+    def test_derived_entry_moves_only_when_named(self) -> None:
+        self._install_photo_store()
+        card, transcript, _record = self._write_doc_source_with_derived()
+
+        rc, _out, _err = self._run_captured(
+            [SID, '--file', f'campaign-card_{SID}.txt', '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(transcript.exists())
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.txt').is_file())
+        self.assertTrue(card.exists(), 'the primary stays when the derived file is named')
+
+    # -- S13 rename grammar edges ----------------------------------------------
+
+    def test_doc_to_photo_strips_role_suffix(self) -> None:
+        # No original_filename, role != primary: the -{role} suffix is stripped
+        # along with _{S-id} so no jargon lands in the photo library.
+        self._install_photo_store()
+        asset = self.archive / 'documents' / 'census' / f'campaign-card-back_{SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = (f'  - file: documents/census/campaign-card-back_{SID}.jpg\n'
+                 '    role: back\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc = self._run([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.jpg').is_file())
+
+    def test_photo_to_doc_named_into_grammar_with_role_and_copy(self) -> None:
+        # The {slug}[-{copy}][-{role}]_{S-id} construction with a non-empty
+        # suffix - the only photo fixture elsewhere is role: primary (suffix '').
+        self._install_photo_store()
+        asset = self.archive / 'photos' / '1880' / 'portrait.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = ('  - file: photos/1880/portrait.jpg\n'
+                 '    role: back\n'
+                 '    copy: b\n')
+        record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
+        record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
+
+        rc = self._run([SID, '--to', 'documents', '--yes'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        moved = self.archive / 'documents' / 'photos' / f'portrait-b-back_{SID}.jpg'
+        self.assertTrue(moved.is_file(), 'copy then role suffix, in grammar order')
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'],
+                         f'documents/photos/portrait-b-back_{SID}.jpg')
+
+    # -- YAML-hostile paths: round-trip, not corruption ------------------------
+
+    def test_dest_with_hash_round_trips_not_truncated(self) -> None:
+        # ' #' opens a YAML comment in an unquoted scalar. The new alias must be
+        # quoted so read_record parses back the WHOLE path, not a truncation.
+        self._install_photo_store()
+        _asset, record = self._write_doc_source()
+
+        rc = self._run([SID, '--to', 'photos', '--dest', 'Box #3'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'photos' / 'Box #3' / 'campaign-card.jpg').is_file())
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/Box #3/campaign-card.jpg')
+        self.assertEqual(rec['meta'].get('parse_errors', []), [])
+
+    def test_original_filename_with_hash_round_trips(self) -> None:
+        self._install_photo_store()
+        asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
+                 '    role: primary\n'
+                 "    original_filename: 'Scan #12.jpg'\n")
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc = self._run([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'Scan #12.jpg').is_file())
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/Scan #12.jpg')
+
+    def test_quoted_hash_alias_photo_to_doc_matches(self) -> None:
+        # A photos-root file legitimately keeps a '#' name (SPEC 13, never
+        # renamed), so its record alias is quoted. The rewriter must MATCH it
+        # (quote-strip before comment-split), not refuse spuriously.
+        self._install_photo_store()
+        asset = self.archive / 'photos' / '1880' / 'Scan #12.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = ("  - file: 'photos/1880/Scan #12.jpg'\n"
+                 '    role: primary\n')
+        record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
+        record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
+
+        rc = self._run([SID, '--to', 'documents', '--yes', '--dest', 'letters'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        self.assertTrue((self.archive / 'documents' / 'letters' / f'portrait_{SID}.jpg').is_file())
+
+    # -- record-surgery refusals -----------------------------------------------
+
+    def test_dest_trailing_dot_refused(self) -> None:
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before = record.read_bytes()
+
+        for bad_dest in ('1880s.', '1880s. /sub'):
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', bad_dest])
+            self.assertEqual(rc, EXIT_FAILURE, f'--dest {bad_dest!r} must refuse')
+            self.assertIn('--dest', err)
+            self.assertNotIn('Traceback', err)
+            self.assertTrue(asset.exists())
+            self.assertEqual(record.read_bytes(), before)
+
+    def test_mangled_original_filename_refused(self) -> None:
+        self._install_photo_store()
+        asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
+                 '    role: primary\n'
+                 "    original_filename: '../1880/other.jpg'\n")
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+        before = record.read_bytes()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('original_filename', err)
+        self.assertNotIn('Traceback', err)
+        self.assertTrue(asset.exists())
+        self.assertEqual(record.read_bytes(), before)
+
+    def test_duplicate_file_entry_refused(self) -> None:
+        # The same path listed twice: the rewriter cannot know which entry to
+        # touch, so it refuses rather than half-rewriting the wrong one.
+        self._install_photo_store()
+        card = self.archive / 'documents' / 'census' / 'card.jpg'
+        card.write_bytes(b'jpegbytes')
+        entry = ('  - file: documents/census/card.jpg\n'
+                 '    role: transcript\n'
+                 '    derived: true\n'
+                 '  - file: documents/census/card.jpg\n'
+                 '    role: primary\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+        before = record.read_bytes()
+
+        rc, _out, err = self._run_captured(
+            [SID, '--file', 'card.jpg', '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('more than one', err)
+        self.assertTrue(card.exists())
+        self.assertEqual(record.read_bytes(), before)
+
+    def test_flow_style_frontmatter_with_body_bullet_refuses(self) -> None:
+        # The inventory is flow-style YAML the line matcher cannot see; a body
+        # bullet reads '- file: <same path>'. The scan is fence-bounded, so it
+        # never rewrites the body line - it refuses, archive untouched.
+        self._install_photo_store()
+        card = self.archive / 'documents' / 'census' / 'card.jpg'
+        card.write_bytes(b'jpegbytes')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes((
+            '---\n'
+            f'id: {SID}\n'
+            f'aliases: [{SID}]\n'
+            'title: Campaign card\n'
+            'source_type: census\n'
+            'source_class: original\n'
+            'repository: unknown\n'
+            'citation: Campaign card\n'
+            'people: []\n'
+            'files: [{file: documents/census/card.jpg, role: primary}]\n'
+            'created: 2026-07-01\n'
+            '---\n'
+            '\n'
+            '## Claims\n'
+            '```yaml\n'
+            '```\n'
+            '\n'
+            '## Notes\n'
+            '- file: documents/census/card.jpg\n'
+        ).encode('utf-8'))
+        before = record.read_bytes()
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('could not find the files: line', err)
+        self.assertTrue(card.exists())
+        self.assertEqual(record.read_bytes(), before)
+
+    def test_move_fallback_unlink_failure_leaves_no_stray_copy(self) -> None:
+        # rename fails, copy2 succeeds, src.unlink fails (a locked source on
+        # Windows): the destination copy must be cleaned up and the original
+        # kept, so the run rolls back to exactly one file and no debris.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before_record = record.read_bytes()
+
+        real_rename = Path.rename
+        real_unlink = Path.unlink
+
+        def no_rename(self, target):
+            raise OSError('simulated cross-filesystem rename')
+
+        def locked_unlink(self, *a, **k):
+            if self.name == asset.name:
+                raise PermissionError('simulated locked source')
+            return real_unlink(self, *a, **k)
+
+        Path.rename = no_rename
+        Path.unlink = locked_unlink
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            Path.rename = real_rename
+            Path.unlink = real_unlink
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('rolled back', err)
+        self.assertTrue(asset.exists(), 'the original is kept as the sole copy')
+        self.assertFalse((self.archive / 'photos' / '1880s' / 'campaign-card.jpg').exists(),
+                         'the partial destination copy is cleaned up')
+        self.assertFalse((self.archive / 'photos' / '1880s').exists(),
+                         'a folder this run created is removed again')
+        self.assertEqual(record.read_bytes(), before_record)
+
+
+class RefilePickEntryUnitTests(unittest.TestCase):
+    """`_refile_pick_entry` normalizes a stored alias before basename matching.
+
+    Aliases are forward-slash by contract, but a record written on Windows can
+    carry backslashes ('documents\\letters\\scan.pdf'); on POSIX,
+    Path(alias).name is the whole string, so an un-normalized `--file scan.pdf`
+    lookup would miss a listed file and refuse. Mirrors the reconcile fix.
+    """
+
+    def test_windows_alias_matched_by_basename(self) -> None:
+        entries = [
+            {'file': 'documents\\letters\\scan.pdf', 'role': 'primary'},
+            {'file': 'documents\\letters\\scan.pdf.txt', 'role': 'transcript',
+             'derived': True},
+        ]
+        picked = process._refile_pick_entry(entries, 'scan.pdf', 'letter.md')
+        self.assertEqual(picked['file'], 'documents\\letters\\scan.pdf')
+
+    def test_windows_alias_matched_by_full_posix_path(self) -> None:
+        entries = [{'file': 'documents\\letters\\scan.pdf'}]
+        picked = process._refile_pick_entry(
+            entries, 'documents/letters/scan.pdf', 'letter.md')
+        self.assertEqual(picked['file'], 'documents\\letters\\scan.pdf')
+
+    def test_refusal_lists_normalized_basenames_not_backslash_strings(self) -> None:
+        entries = [
+            {'file': 'documents\\census\\one.pdf'},
+            {'file': 'documents\\census\\two.pdf'},
+        ]
+        with self.assertRaises(process.ProcessError) as ctx:
+            process._refile_pick_entry(entries, 'nope.pdf', 'census.md')
+        msg = str(ctx.exception)
+        self.assertIn('one.pdf', msg)
+        self.assertIn('two.pdf', msg)
+        self.assertNotIn('documents\\census\\one.pdf', msg)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -128,6 +128,95 @@ class _ViewsHtmlBase(unittest.TestCase):
         )
 
 
+_TAG_CLAIMS = f"""- value: "Cur Hartley possibly in Topeka"
+  id: C-4444444444
+  type: residence
+  persons: [{PID}]
+  date: 1892
+  status: needs-review
+  reviewed: 2026-03-01
+  confidence: medium
+  notes: x.
+- value: "Cur Hartley maybe a miller"
+  id: C-5555555555
+  type: occupation
+  persons: [{PID}]
+  date: 1894
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: low
+  notes: x.
+"""
+
+
+class TreeNegatedVitalsTests(_ViewsHtmlBase):
+    """An accepted `--negated` birth/death records a confirmed ABSENCE, so it
+    must not supply the date in a `fha views tree` node (nor overwrite the real
+    vital, depending on row order). Same negated-exclusion class as the
+    gedcom/index/site/lint sweep - here for `_build_nodes_bulk`."""
+
+    def test_negated_birth_excluded_from_tree_node(self) -> None:
+        neg = (f'- value: "no 1799 birth"\n'
+               f'  id: C-9999999999\n'
+               f'  type: birth\n'
+               f'  persons: [{PID}]\n'
+               f'  date: 1799\n'
+               f'  status: accepted\n'
+               f'  reviewed: 2026-01-01\n'
+               f'  negated: true\n'
+               f'  confidence: medium\n'
+               f'  notes: x.\n')
+        src = self.root / 'sources' / 'census' / f'test-census_{SID}.md'
+        text = src.read_text(encoding='utf-8')
+        src.write_text(text.replace('```\n', neg + '```\n', 1), encoding='utf-8')
+        self._reindex()
+
+        from _lib import normalize_id
+        pid = normalize_id(PID)   # _build_nodes_bulk takes BFS-normalized ids
+        conn = open_index_db(self.root, ('persons',))
+        try:
+            nodes = views._build_nodes_bulk(conn, [pid])
+        finally:
+            conn.close()
+        # The real 1880~ birth survives; the negated 1799 never appears.
+        self.assertEqual(nodes[pid]['vitals']['birth'], '1880~')
+        self.assertNotEqual(nodes[pid]['vitals']['birth'], '1799')
+
+
+class TimelineTagTests(_ViewsHtmlBase):
+    """The 2026-07-22 status-surface decision: a not-yet-settled timeline line
+    carries a plain-word tag - '[unconfirmed - parked {date}]' on needs-review,
+    '[low confidence]' on accepted-low - in the .md view and its html twin."""
+
+    def _add_tag_claims(self) -> None:
+        src = self.root / 'sources' / 'census' / f'test-census_{SID}.md'
+        text = src.read_text(encoding='utf-8')
+        src.write_text(text.replace('```\n', _TAG_CLAIMS + '```\n', 1), encoding='utf-8')
+        self._reindex()
+
+    def test_md_timeline_tags_parked_and_low_confidence_lines(self):
+        self._add_tag_claims()
+        res = views.run_timeline(self.root, person_id=PID)
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        self.assertIn('possibly in Topeka', text)
+        self.assertIn('[unconfirmed - parked 2026-03-01]', text)
+        self.assertIn('maybe a miller', text)
+        self.assertIn('[low confidence]', text)
+        # Settled accepted-medium lines stay untagged; the suggested claim
+        # sits under Unreviewed with no tag (the header is its marking).
+        for line in text.splitlines():
+            if 'worked as a clerk' in line or 'born about 1880' in line:
+                self.assertNotIn('[unconfirmed', line)
+                self.assertNotIn('[low confidence]', line)
+
+    def test_html_twin_carries_the_same_tags(self):
+        self._add_tag_claims()
+        res = views.run_timeline(self.root, person_id=PID, fmt='html')
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        self.assertIn('[unconfirmed - parked 2026-03-01]', text)
+        self.assertIn('[low confidence]', text)
+
+
 class HtmlFormatMatrixTests(_ViewsHtmlBase):
     def test_html_lands_under_generated_views_with_marker_before_doctype(self):
         for runner, kind in self._runners():

@@ -37,6 +37,27 @@ photos folder, so it'll often catch this for you first.)
 
 ---
 
+## I filed something in the wrong drawer
+
+You processed a scan as a document but it really belongs in your photo library -
+or a photo turned out to be a record. Don't drag it across yourself; the record
+(and, for photos, the catalog) needs updating along with it. One command does
+the whole correction:
+
+    fha process refile S-xxxxxxxxxx --to photos --dest 1880s --dry-run
+    fha process refile S-xxxxxxxxxx --to photos --dest 1880s
+
+`--dest` names the folder in your photo library where it belongs - that choice
+is always yours. Going the other way (`--to documents`) it asks first, because
+your photo tool (Lightroom) will show the photo as missing afterward - remove
+it from the catalog yourself; the tools never touch it. Either way the file is
+renamed the way its new home expects, the source record is updated, and a dated
+note records the move. Afterward run `fha index` and `fha photoindex`. Moving
+files around WITHIN the documents or photos folder is a different thing - do
+that freely and run `fha reconcile`.
+
+---
+
 ## I edited a record and now something's broken (bad YAML)
 
 **What happened.** The top of each record is structured text (called YAML). A stray quote, a tab,
@@ -180,7 +201,28 @@ keeping, then delete the `.plaintext-backup` folder - you're the only one who de
 touched by an update - your photo locations and place list stay exactly as you left them.) If
 `update-tools` says it can't find your tools, add `--repo PATH` pointing at the folder that holds
 `manifest.json`; if it says "this does not look like an archive," run it from inside your archive
-folder.
+folder. The full update ritual - preview, apply, review, health-check, and the one rule that
+prevents lost work - is [UPDATING.md](UPDATING.md).
+
+---
+
+## I reorganized my documents folder and now the checker complains
+
+**What happened.** You moved filed documents into new folders (which is fine - the drawer is
+yours to arrange), but each evidence folder remembers where its files were, so `fha lint` now
+reports files it can't find ("Inventory file not found on disk").
+
+**Fix.** One command re-ties everything - each filed document carries its ID tag in its name,
+so the system finds it wherever you put it:
+
+```
+python tools/fha.py reconcile --dry-run   # preview what will be re-tied
+python tools/fha.py reconcile             # apply, then run fha index
+```
+
+If it reports a name existing "in more than one place," you have two copies of the same file -
+move or rename the extra one and re-run. If it reports a file "gone," it left the documents
+folder entirely - bring it back, or note in the record that it's lost.
 
 ---
 

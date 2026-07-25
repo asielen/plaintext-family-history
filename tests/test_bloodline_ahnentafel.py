@@ -153,6 +153,89 @@ class GeneticNumberingTests(unittest.TestCase):
         self.assertNotIn(ADOM.lower(), pos)
 
 
+class MultiContributorTests(unittest.TestCase):
+    """Assisted reproduction with THREE genetic contributors: a donor-sperm
+    father and two genetic mothers (donor-egg + surrogate-genetic). The
+    two-slot Ahnentafel model must seat the sperm contributor in the father
+    slot (2n) and one genetic mother - the lowest P-id, deterministically -
+    in the mother slot (2n+1). It must never take the first two unordered SQL
+    rows, which could seat two mothers in both slots and drop the father
+    (SPEC 12.2, TOOLING 7)."""
+
+    SPERM = 'P-mmmmmmmmmm'   # sex M - the only male contributor
+    EGG = 'P-gggggggggg'     # sex F - lower P-id of the two mothers -> wins slot 3
+    SURR = 'P-hhhhhhhhhh'    # sex F - higher P-id -> bracketed, unnumbered
+
+    def _arc(self, reversed_order: bool = False) -> Path:
+        edges = [
+            ('C-3333333333', [self.SPERM], 'donor-sperm'),
+            ('C-4444444444', [self.EGG], 'donor-egg'),
+            ('C-5555555555', [self.SURR], 'surrogate-genetic'),
+        ]
+        if reversed_order:
+            edges = list(reversed(edges))
+        claims = ''.join(_rel_claim(cid, KID, ps, sub) for cid, ps, sub in edges)
+        files = {
+            f'people/stubs/kid__ann_{KID}.md': _ptext(KID, 'Ann Kid'),
+            f'people/stubs/spr__pa_{self.SPERM}.md': _ptext(self.SPERM, 'Pa Sperm', 'M'),
+            f'people/stubs/egg__ma_{self.EGG}.md': _ptext(self.EGG, 'Ma Egg', 'F'),
+            f'people/stubs/sur__ma_{self.SURR}.md': _ptext(self.SURR, 'Ma Surr', 'F'),
+            f'sources/notes/{SID.lower()}.md': _source(SID, claims),
+        }
+        return _build(files, root_person=KID)
+
+    def _positions(self, root: Path) -> dict:
+        index_mod.build_index(root, load_fha_yaml(root))
+        conn = _open(root)
+        try:
+            return views._build_ahnentafel_map(conn, KID.lower())
+        finally:
+            conn.close()
+
+    def _lint_positions(self, root: Path) -> dict:
+        # The lint BFS derives the same Ahnentafel map from the in-memory
+        # registry rather than SQLite; it must apply the identical TOOLING 7
+        # rule, or the W110/W119 lint checks would disagree with views.
+        _f, reg = lint._run_lint_core(root, load_fha_yaml(root))
+        genetic = lint._build_children_of(reg, genetic_only=True)
+        return lint._build_ahnentafel_lint(KID.lower(), genetic, reg)
+
+    def test_sperm_takes_father_slot_lowest_mother_takes_mother_slot(self) -> None:
+        pos = self._positions(self._arc())
+        # Father slot (2) is the sole male genetic contributor - never dropped.
+        self.assertEqual(pos.get(self.SPERM.lower()), 2)
+        # Mother slot (3) is the lowest-P-id of the two genetic mothers.
+        self.assertEqual(pos.get(self.EGG.lower()), 3)
+        # The third contributor takes no numbered slot (shown in brackets).
+        self.assertNotIn(self.SURR.lower(), pos)
+
+    def test_selection_is_independent_of_claim_order(self) -> None:
+        # The same three edges written in opposite order must number identically
+        # - the rule ranks by (sex, P-id), never by SQL row order.
+        forward = self._positions(self._arc(reversed_order=False))
+        backward = self._positions(self._arc(reversed_order=True))
+        for who in (self.SPERM.lower(), self.EGG.lower()):
+            self.assertEqual(forward.get(who), backward.get(who), who)
+        self.assertNotIn(self.SURR.lower(), backward)
+
+    def test_lint_bfs_matches_views_for_three_contributors(self) -> None:
+        # The lint BFS (in-memory registry) must seat the same contributors as
+        # the views/_lib SQLite derivation: sperm -> father slot 2, lowest-P-id
+        # mother -> slot 3, third contributor unnumbered. A divergence here would
+        # make W110/W119 flag the very folders a correct promote produced.
+        pos = self._lint_positions(self._arc())
+        self.assertEqual(pos.get(self.SPERM.lower()), 2)
+        self.assertEqual(pos.get(self.EGG.lower()), 3)
+        self.assertNotIn(self.SURR.lower(), pos)
+
+    def test_lint_bfs_selection_is_independent_of_claim_order(self) -> None:
+        forward = self._lint_positions(self._arc(reversed_order=False))
+        backward = self._lint_positions(self._arc(reversed_order=True))
+        for who in (self.SPERM.lower(), self.EGG.lower()):
+            self.assertEqual(forward.get(who), backward.get(who), who)
+        self.assertNotIn(self.SURR.lower(), backward)
+
+
 class BracketMarkTests(unittest.TestCase):
     """A couple folder with a biological child and an adopted child: both shown,
     the adopted one marked, in both lint (W103) and views (W103)."""

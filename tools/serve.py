@@ -973,6 +973,19 @@ def _coerce(schema: dict, args: dict) -> tuple[dict, str | None]:
 
 
 def _verb_claim_review(state, kw, dry_run):
+    # Grouped review (TOOLING §3b): a `claim_ids` list routes to run_claim_batch,
+    # the same one-breath grouped verdict the CLI reaches - status-only gate,
+    # all-or-nothing validation, and all-ID echo included. A single `claim_id`
+    # keeps the surgical field-edit form. A multi-source batch returns data with
+    # no `source_id`, so _reindex_after correctly falls through to a full rebuild.
+    claim_ids = kw.get('claim_ids')
+    if claim_ids:
+        return claim.run_claim_batch(
+            state.archive_root, claim_ids=list(claim_ids),
+            status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
+            claim_type=kw.get('claim_type'), place=kw.get('place'),
+            place_text=kw.get('place_text'), persons=kw.get('persons'),
+            confidence=kw.get('confidence'), dry_run=dry_run)
     return claim.run_claim(
         state.archive_root, claim_id=kw.get('claim_id', ''),
         status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
@@ -982,7 +995,12 @@ def _verb_claim_review(state, kw, dry_run):
 
 
 def _echo_claim_review(kw):
-    parts = ['fha claim', kw.get('claim_id', '?')]
+    claim_ids = kw.get('claim_ids')
+    # Space-separated, matching the CLI's `nargs='+'` positional: the batch
+    # parser reads several C-ids as separate argv tokens, so a comma join would
+    # emit `fha claim C-a,C-b` - one malformed id that the CLI then refuses,
+    # failing to reproduce the workbench action the echo advertises.
+    parts = ['fha claim', ' '.join(claim_ids) if claim_ids else kw.get('claim_id', '?')]
     if kw.get('status'):
         parts += ['--status', kw['status']]
     if kw.get('value'):
@@ -1009,6 +1027,12 @@ def _verb_claim_new(state, kw, dry_run):
         date=kw.get('date'), place=kw.get('place'), place_text=kw.get('place_text'),
         persons=kw.get('persons'), subtype=kw.get('subtype'),
         status=kw.get('status') or 'accepted', confidence=kw.get('confidence'),
+        # A confirmed absence (SPEC 8.6): the browser front door must reach the
+        # same `--negated` authoring path the CLI does, or the workbench can
+        # advertise "record a confirmed absence" yet be physically unable to
+        # write one. The schema coerces this to a real bool before we see it, so
+        # a missing key reads as False and mints an ordinary positive claim.
+        negated=bool(kw.get('negated', False)),
         dry_run=dry_run,
         # Threaded back in by the workbench's Apply step from the id its own
         # earlier dry-run preview minted and showed the human, so Apply
@@ -1036,6 +1060,11 @@ def _echo_claim_new(kw):
         parts += ['--status', kw['status']]
     if kw.get('confidence'):
         parts += ['--confidence', kw['confidence']]
+    # `--negated` is a bare flag on the CLI, so the echo shows it only when set -
+    # the workbench's "this button is exactly:" line must match the command the
+    # verb will actually run, including the confirmed-absence flag.
+    if kw.get('negated'):
+        parts += ['--negated']
     return ' '.join(parts)
 
 
@@ -1624,14 +1653,15 @@ def _echo_home_edit(kw):
 # key -> (schema, run, echo, reindex-policy). reindex: 'source' (upsert the
 # source named in Result.data, else full), 'full', or 'none'.
 VERBS: dict[str, dict] = {
-    'claim.review': {'schema': {'claim_id': 'str', 'status': 'str', 'value': 'str',
-                               'date': 'str', 'claim_type': 'str', 'place': 'str',
-                               'place_text': 'str', 'persons': 'list', 'confidence': 'str'},
+    'claim.review': {'schema': {'claim_id': 'str', 'claim_ids': 'list', 'status': 'str',
+                               'value': 'str', 'date': 'str', 'claim_type': 'str',
+                               'place': 'str', 'place_text': 'str', 'persons': 'list',
+                               'confidence': 'str'},
                      'run': _verb_claim_review, 'echo': _echo_claim_review, 'reindex': 'source'},
     'claim.new': {'schema': {'source_id': 'str', 'claim_type': 'str', 'value': 'str',
                             'date': 'str', 'place': 'str', 'place_text': 'str',
                             'persons': 'list', 'subtype': 'str', 'status': 'str',
-                            'confidence': 'str', 'claim_id': 'str'},
+                            'confidence': 'str', 'negated': 'bool', 'claim_id': 'str'},
                   'run': _verb_claim_new, 'echo': _echo_claim_new, 'reindex': 'source'},
     'confirm.xref': {'schema': {'claim_a': 'str', 'claim_b': 'str', 'relation': 'str'},
                      'run': _verb_xref, 'echo': _echo_xref, 'reindex': 'full'},

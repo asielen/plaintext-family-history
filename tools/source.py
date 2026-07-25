@@ -4,6 +4,7 @@ source.py - fha source: deterministic source-record write-backs (TOOLING §3c si
 
   fha source note S-id --text TEXT [--dry-run] [--root PATH]
   fha source edit-note S-id --old-text TEXT --text TEXT [--dry-run] [--root PATH]
+  fha source extract S-id [--pages RANGES] [--dry-run] [--root PATH]
 
 A source's `## Notes` section is the human-written free-text channel SPEC §14
 reserves for "the story behind it, context, or where the original is kept" -
@@ -14,9 +15,10 @@ phone, on the porch, mid-research-session, and the tool finds the record,
 appends the sentence as its own paragraph, and touches nothing else.
 
 This module deliberately opens the `fha source` namespace - future
-source-field verbs would live here. Two verbs ship now: `note` (append) and
+source-field verbs would live here. Three verbs ship now: `note` (append),
 `edit-note` (rewrite one existing paragraph - the workbench's per-entry edit
-button; see run_source_edit_note).
+button; see run_source_edit_note), and `extract` (dump a PDF's embedded text
+layer into a derived [Page N]-labeled companion - see run_source_extract).
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
@@ -71,7 +73,10 @@ CODE MAP
   run_source_note             - validate, locate, append; returns a _lib.Result
   run_source_edit_note        - rewrite ONE existing Notes paragraph (matched by
                                 exact text via _lib.replace_paragraph_in_section)
-  _emit / _cmd_source_note / _cmd_source_edit_note / _make_group_help
+  _parse_page_ranges          - '1-60,102' -> validated 1-based page numbers
+  run_source_extract          - PDF text layer -> derived extracted-text companion
+                                (pypdf optional; original never touched; M11.5)
+  _emit / _cmd_source_note / _cmd_source_edit_note / _cmd_source_extract / _make_group_help
   register / _standalone_main
 """
 
@@ -81,17 +86,20 @@ import argparse
 import difflib
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import yaml
 
 from _lib import (
+    EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FRONT_RE,
+    FhaConfigError,
     Result,
+    append_file_entry_to_record,
     append_paragraph_to_section,
     claims_edit_problem,
     configure_utf8_stdout,
@@ -100,13 +108,18 @@ from _lib import (
     frontmatter_fence_span,
     id_type_of,
     is_valid_id,
+    is_working_copy,
+    load_fha_yaml,
     normalize_id,
+    read_record,
     read_text_exact,
     reapply_newline,
     replace_paragraph_in_section,
+    resolve_path,
     resolve_root_arg,
     result_fail,
-    write_text_exact,
+    write_text_exact_atomic,
+    yaml_inline,
 )
 
 configure_utf8_stdout()
@@ -250,7 +263,9 @@ def run_source_note(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text_in))
+        # Atomic: a source record is often the sole copy of its evidence, so a
+        # mid-write failure must leave it untouched, not truncated.
+        write_text_exact_atomic(path, reapply_newline(new_text, text_in))
     except OSError as e:
         return _refuse(
             'refused',
@@ -369,7 +384,9 @@ def run_source_edit_note(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text_in))
+        # Atomic: a source record is often the sole copy of its evidence, so a
+        # mid-write failure must leave it untouched, not truncated.
+        write_text_exact_atomic(path, reapply_newline(new_text, text_in))
     except OSError as e:
         return _refuse(
             'refused',
@@ -393,6 +410,53 @@ def _emit(result: Result) -> int:
         prefix = 'ERROR: ' if msg.level == 'error' else ''
         print(f'{prefix}{msg.text}', file=stream)
     return result.exit_code
+
+
+def _cmd_source_extract(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha source extract')
+    if archive_root is None:
+        return EXIT_FAILURE
+    # strict=True: extraction resolves the PDF's alias through the configured
+    # roots, so a malformed fha.yaml must REFUSE, not degrade to {} and silently
+    # discard external document-root mappings. Permissive load would then resolve
+    # the alias against the internal documents/ skeleton and, if a same-named PDF
+    # happened to sit there, extract that unrelated file's text against this
+    # source - reading the wrong evidence.
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+    return _emit(run_source_extract(
+        archive_root, fha_config, source_id=args.source_id,
+        pages=getattr(args, 'pages', None),
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _add_extract_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the extract verb on a group subparser (shared by both mains)."""
+    x = sub.add_parser(
+        'extract',
+        help="Dump a source PDF's embedded text layer into a derived companion file.",
+        description=('Reads the source\'s PDF (its primary file, or the only PDF '
+                     'it lists) and writes '
+                     'the embedded text layer, page by page, into a '
+                     '[Page N]-labeled companion the assistant can mine like a '
+                     'transcript - seconds instead of reading hundreds of pages '
+                     'by eye. The PDF itself is never touched. Needs the pypdf '
+                     'helper package (python -m pip install pypdf).'),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    x.add_argument('source_id', metavar='S-id',
+                   help='The source whose PDF to extract (e.g. S-2b3c4d5e6f).')
+    x.add_argument('--pages', metavar='RANGES',
+                   help='Only these pages, e.g. `1-60` or `1-60,102,200-210` '
+                        '(default: every page).')
+    x.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                   help='Archive root (auto-detected if omitted).')
+    x.add_argument('--dry-run', action='store_true', dest='dry_run',
+                   help='Preview the dump (page coverage, destination) without writing.')
+    x.set_defaults(func=_cmd_source_extract)
 
 
 def _cmd_source_note(args: argparse.Namespace) -> int:
@@ -422,15 +486,443 @@ def _make_group_help(parser: argparse.ArgumentParser):
 
 
 # User-facing --help text (the module docstring stays developer-facing).
+# ── fha source extract (M11.5) ───────────────────────────────────────────────
+
+_EXTRACT_ROLE = 'extracted-text'
+_NO_TEXT_PLACEHOLDER = '(no text layer on this page - read it with vision)'
+_EXTRACT_ERROR_PLACEHOLDER = '(text extraction FAILED on this page - a parser error, not confirmed absence)'
+# A filed document's name ends `_{S-id}.{ext}` (SPEC §13); the derived file
+# slots its role suffix in front of the id, same grammar --more uses.
+_SID_SUFFIX_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
+
+
+def _parse_page_ranges(spec: str, page_count: int) -> tuple[list[int] | None, str | None]:
+    """'1-5,12' -> sorted 1-based page numbers, or (None, plain problem).
+
+    Ranges are inclusive and 1-based - the way a human reads the PDF viewer's
+    page counter - and validated against the real page count so a typo'd
+    range is a named refusal, never a silent empty selection.
+    """
+    pages: set[int] = set()
+    for part in str(spec).split(','):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.fullmatch(r'(\d+)(?:-(\d+))?', part)
+        if not m:
+            return None, (f'--pages {spec!r} is not a page list - write it like '
+                          '`12`, `1-60`, or `1-60,102,200-210`.')
+        lo = int(m.group(1))
+        hi = int(m.group(2)) if m.group(2) else lo
+        if lo < 1 or hi < lo:
+            return None, (f'--pages {spec!r} has an impossible range ({part}) - '
+                          'pages count from 1 and ranges run low-high.')
+        if hi > page_count:
+            return None, (f'--pages asks for page {hi}, but the PDF has only '
+                          f'{page_count} page(s).')
+        pages.update(range(lo, hi + 1))
+    if not pages:
+        return None, ('--pages selected nothing - write it like `1-60` or '
+                      'leave it off to extract every page.')
+    return sorted(pages), None
+
+
+def run_source_extract(
+    archive_root: Path, fha_config: dict, source_id: str,
+    pages: str | None = None, dry_run: bool = False,
+) -> Result:
+    """Extract a source PDF's embedded text layer into a derived companion file.
+
+    The why (usage-feedback item 1, owner approval 2026-07-23): many archived
+    PDFs - archive.org county histories above all - carry an embedded text
+    layer, and reading 600 pages by vision costs hours that a text dump costs
+    seconds. The dump becomes a `derived: true` inventory entry with
+    `role: extracted-text` beside the original (SPEC §14 models derived
+    companions; SPEC §12.1: the original is never touched - content, name, or
+    location), labeled `[Page N]` in the ORIGINAL's pagination so claims
+    anchored `anchor: "page N"` (SPEC §8.4) line up in any copy. Stage B then
+    mines the dump the way mine-transcript works a transcript.
+
+    Honesty rule: a page with no text layer gets a placeholder line, never
+    silent emptiness; a PDF with NO text on any selected page is a refusal
+    with the vision/OCR next step, and no file is written - an empty derived
+    file would read as "nothing on these pages," which is exactly wrong.
+
+    pypdf is the borrowed engine (SPEC §5: "borrow the hard engines") and an
+    OPTIONAL dependency like Pillow - absent, the verb refuses with the
+    install command, nothing else degrades.
+
+    `data`: {'status': 'ok'|'already'|'dry-run'|'not-found'|'refused'|
+    'no-text'|'failed', 'source_id', 'extract_path', 'pages_selected',
+    'pages_with_text'}. Exit codes: 0 ok/already/dry-run · 1 record or asset
+    not found, working-copy, no text layer · 3 refusals (pypdf absent, bad
+    id, ambiguous PDF, destination exists, unwritable).
+    """
+    result = Result(data={'status': None, 'source_id': None, 'extract_path': None,
+                          'pages_selected': 0, 'pages_with_text': 0})
+
+    if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
+        return result_fail(result, 'refused',
+                           f'{source_id!r} is not a valid source ID - S-ids look '
+                           'like S-fa1234567b.')
+    sid = normalize_id(source_id)
+    result.data['source_id'] = fmt_id_display(sid)
+
+    # Working-copy check BEFORE the optional-import check, on purpose: the PDF
+    # asset is not on a working-copy machine at all, so installing pypdf there
+    # could never make extraction succeed. Refusing with the install command
+    # first would send the user down a dead end - the actionable next step is
+    # "run this on the main archive," and it must win over the pypdf refusal.
+    if is_working_copy(archive_root):
+        result.data['status'] = 'not-found'
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   'This is a working copy - the PDF itself lives on the main '
+                   'machine, so there is nothing here to extract from. Run this '
+                   'on the main archive.')
+        return result
+
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return result_fail(result, 'refused',
+                           'Reading PDF text needs the pypdf helper package, which '
+                           'is not installed. Install it once with '
+                           '`python -m pip install pypdf`, then re-run.')
+
+    record_path = find_source_record_path(archive_root, sid)
+    if record_path is None:
+        result.data['status'] = 'not-found'
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   f'No source record {fmt_id_display(sid)} found under '
+                   f'{archive_root / "sources"}.',
+                   next_step=f'fha find {fmt_id_display(sid)}')
+        return result
+
+    try:
+        rec = read_record(record_path)
+    except Exception:
+        return result_fail(result, 'refused',
+                           f'{record_path.name} could not be parsed - run `fha lint` '
+                           'for the specifics, fix the record, then retry.')
+
+    # read_record does NOT raise on malformed YAML: it reports the problem
+    # through parse_errors and hands back empty or partial meta (the same
+    # channel reconcile.py's _iter_source_records reads). Selecting a PDF from
+    # that half-read metadata is a trap - a damaged record with an unreadable
+    # files: block would fall through to the misleading "lists no PDF" refusal
+    # instead of naming the real cause. So refuse early on parse_errors, before
+    # inspecting files: or choosing a PDF, and point at `fha lint`.
+    if rec.get('parse_errors'):
+        detail = '; '.join(msg for _, msg in rec['parse_errors'])
+        return result_fail(result, 'refused',
+                           f'{record_path.name} has malformed YAML ({detail}) - '
+                           'run `fha lint` for the exact spot, fix the record, '
+                           'then re-run `fha source extract`.')
+    meta = rec.get('meta') or {}
+
+    entries = [e for e in (meta.get('files') or []) if isinstance(e, dict)]
+    if any(str(e.get('role', '')) == _EXTRACT_ROLE for e in entries):
+        existing = next(e for e in entries if str(e.get('role', '')) == _EXTRACT_ROLE)
+        result.data['status'] = 'already'
+        result.add('info',
+                   f'{fmt_id_display(sid)} already has an extracted-text companion '
+                   f'({existing.get("file")}). To re-extract, delete that file and '
+                   'its files: entry first - extraction never overwrites.')
+        return result
+
+    # The PDF to read: the primary entry when it is a PDF, else the single
+    # non-derived PDF in the inventory. Never a derived file (extracting an
+    # extraction is meaningless), never a guess between several.
+    pdf_entries = [
+        e for e in entries
+        if str(e.get('file', '')).lower().endswith('.pdf')
+        and str(e.get('derived', '')).lower() not in ('true', '1')
+    ]
+    primary_pdfs = [e for e in pdf_entries if str(e.get('role', '')) == 'primary']
+    if len(primary_pdfs) > 1:
+        # Two PDFs both marked role: primary is a hand-edit mistake, not a
+        # choice the tool may make for the user - silently taking the first
+        # could attach text dumped from the WRONG PDF, which then anchors
+        # claims to the wrong pages. Refuse and name both so the fix is obvious.
+        shown = ', '.join(str(e.get('file')) for e in primary_pdfs)
+        return result_fail(result, 'refused',
+                           f'{fmt_id_display(sid)} marks more than one PDF as '
+                           f'role: primary ({shown}) - extraction cannot tell which '
+                           'one to read. Leave exactly one PDF marked role: primary '
+                           'in the record, then re-run.')
+    if primary_pdfs:
+        pdf_entry = primary_pdfs[0]
+    elif len(pdf_entries) == 1:
+        pdf_entry = pdf_entries[0]
+    elif not pdf_entries:
+        return result_fail(result, 'refused',
+                           f'{fmt_id_display(sid)} lists no PDF in its files: '
+                           'inventory - this extraction reads PDF text layers only. '
+                           'For an image scan, read it with vision '
+                           '(the process-source page-window doctrine).')
+    else:
+        shown = ', '.join(str(e.get('file')) for e in pdf_entries)
+        return result_fail(result, 'refused',
+                           f'{fmt_id_display(sid)} lists more than one PDF ({shown}) '
+                           'and none is role: primary - mark the one to extract as '
+                           'primary in the record, then re-run.')
+
+    alias = str(pdf_entry.get('file'))
+    pdf_path = resolve_path(alias, fha_config, archive_root)
+    if not pdf_path.exists():
+        result.data['status'] = 'not-found'
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   f'{alias} is not on disk - if it moved within the documents '
+                   'folder, `fha reconcile` re-ties it; if it lives on an external '
+                   'drive, plug it in.')
+        return result
+
+    try:
+        reader = PdfReader(str(pdf_path))
+        if getattr(reader, 'is_encrypted', False):
+            return result_fail(result, 'refused',
+                               f'{pdf_path.name} is password-protected - remove the '
+                               'password with a PDF tool (save an unlocked copy '
+                               'OUTSIDE the archive, then attach it with `fha process '
+                               '--more`), or read the pages with vision instead. The '
+                               'original stays as it is.')
+        page_count = len(reader.pages)
+    except Exception as e:
+        return result_fail(result, 'refused',
+                           f'{pdf_path.name} could not be opened as a PDF ({e}) - '
+                           'check the file opens in a PDF viewer; if it is '
+                           'damaged, restore it from a backup.')
+    if page_count == 0:
+        return result_fail(result, 'refused',
+                           f'{pdf_path.name} has no pages at all - the file may be '
+                           'damaged. Check it opens in a PDF viewer; if not, restore '
+                           'it from a backup.')
+
+    if pages is not None:
+        selected, problem = _parse_page_ranges(pages, page_count)
+        if problem is not None:
+            return result_fail(result, 'refused', problem)
+    else:
+        selected = list(range(1, page_count + 1))
+    result.data['pages_selected'] = len(selected)
+
+    # Destination: beside the original, role-suffixed per the §13 grammar.
+    stem = pdf_path.stem
+    m = _SID_SUFFIX_RE.search(stem)
+    base = stem[:m.start()] if m else stem
+    extract_name = f'{base}-{_EXTRACT_ROLE}_{fmt_id_display(sid)}.md'
+    extract_path = pdf_path.parent / extract_name
+    result.data['extract_path'] = str(extract_path)
+    if extract_path.exists():
+        return result_fail(result, 'refused',
+                           f'{extract_name} already exists beside the PDF - '
+                           'extraction never overwrites. Delete it first if you '
+                           'want a fresh dump.')
+
+    parts: list[str] = [
+        f'# Extracted text - {meta.get("title") or fmt_id_display(sid)} '
+        f'[{fmt_id_display(sid)}]',
+        '',
+        f'Machine-extracted from the embedded text layer of {pdf_path.name} by '
+        '`fha source extract`. A derived working copy - the PDF stays the '
+        "original; page numbers are the PDF's own, so claim anchors "
+        '(`anchor: "page N"`) line up in any copy.',
+        '',
+    ]
+    pages_with_text = 0
+    empty_pages: list[int] = []
+    error_pages: list[int] = []
+    for page_no in selected:
+        parts.append(f'[Page {page_no}]')
+        try:
+            text = (reader.pages[page_no - 1].extract_text() or '').strip()
+        except Exception as page_exc:
+            # A parser failure on ONE page is not "this page has no text" - it is
+            # an unknown. Recording it as empty would let a pypdf error masquerade
+            # as confirmed absence and quietly drop real evidence, so it is tracked
+            # separately, marked distinctly in the dump, and surfaced as a warning.
+            error_pages.append(page_no)
+            parts.append(f'{_EXTRACT_ERROR_PLACEHOLDER} ({page_exc})')
+            parts.append('')
+            continue
+        if text:
+            pages_with_text += 1
+            parts.append(text)
+        else:
+            empty_pages.append(page_no)
+            parts.append(_NO_TEXT_PLACEHOLDER)
+        parts.append('')
+    result.data['pages_with_text'] = pages_with_text
+    result.data['error_pages'] = error_pages
+
+    if pages_with_text == 0:
+        if error_pages:
+            # Not a scanned-image PDF - the extractor FAILED. Refuse rather than
+            # write a dump that labels every page as empty: a parser error read
+            # as confirmed absence would send the human away from real evidence.
+            shown = (', '.join(str(p) for p in error_pages[:10])
+                     + (' …' if len(error_pages) > 10 else ''))
+            result.data['status'] = 'extract-error'
+            result.exit_code = EXIT_WARNINGS
+            result.add('warning',
+                       f'{pdf_path.name}: text extraction FAILED on every selected '
+                       f'page ({shown}) - a parser error, not confirmed absence of '
+                       'text, so nothing was written (an empty dump would wrongly '
+                       'read as "nothing on these pages"). The PDF may be damaged or '
+                       'use an unsupported encoding; try repairing/re-saving it, or '
+                       'read the pages with vision.')
+            return result
+        result.data['status'] = 'no-text'
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   f'{pdf_path.name} has no embedded text layer on any of the '
+                   f'{len(selected)} selected page(s) - it is a scanned-image '
+                   'PDF. Nothing was written (an empty dump would read as '
+                   '"nothing on these pages", which is wrong). Read the pages '
+                   'with vision instead (the process-source page-window '
+                   'doctrine), or OCR the PDF first.')
+        return result
+
+    # The dump lives beside the PDF, so its alias is the PDF's alias directory
+    # plus the new filename. Normalize separators to forward slashes FIRST:
+    # a stored alias may use Windows backslashes ('documents\census\x.pdf'),
+    # and on POSIX Path() does not treat '\' as a separator, so Path(alias).parent
+    # would be '.' and the recorded entry would collapse to a BARE filename.
+    # Indexing then resolves that from the archive root and cannot find the dump.
+    # PurePosixPath on the already-normalized alias keeps the full
+    # 'documents/.../<name>' form on every platform and for every root segment.
+    alias_dir = PurePosixPath(alias.replace('\\', '/')).parent
+    entry_file = str(alias_dir / extract_name)
+    entry_lines = [
+        f'  - file: {yaml_inline(entry_file)}',
+        f'    role: {_EXTRACT_ROLE}',
+        '    derived: true',
+    ]
+
+    coverage = (f'{pages_with_text} of {len(selected)} selected page(s) carry text'
+                + (f' (no text layer on: '
+                   f'{", ".join(str(p) for p in empty_pages[:10])}'
+                   f'{" …" if len(empty_pages) > 10 else ""})' if empty_pages else '')
+                + (f' (extraction FAILED on: '
+                   f'{", ".join(str(p) for p in error_pages[:10])}'
+                   f'{" …" if len(error_pages) > 10 else ""})' if error_pages else ''))
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would write {extract_name} - {coverage}.')
+        result.add('info', f'[dry-run] Would add a files: entry (role: '
+                           f'{_EXTRACT_ROLE}, derived: true) to {record_path.name}.')
+        result.add('info', '[dry-run] Nothing written. Re-run without --dry-run to apply.')
+        return result
+
+    # Write atomically (temp file + os.replace) rather than straight into
+    # extract_path: a mid-write failure - the disk fills, the process is killed -
+    # must not leave a partial dump behind. A truncating write would, and the
+    # existence guard above would then refuse the very retry this failure message
+    # tells the user to make, stranding them on an incomplete, uninventoried file
+    # they have to hunt down and delete by hand. The atomic helper leaves the
+    # destination either absent or complete, never torn.
+    try:
+        write_text_exact_atomic(extract_path, '\n'.join(parts))
+    except OSError as e:
+        return result_fail(result, 'failed',
+                           f'could not write {extract_name}: {e} - check the folder '
+                           'is writable, then retry (nothing was left behind).')
+
+    before: str | None = None
+    try:
+        before = read_text_exact(record_path)
+        after = append_file_entry_to_record(before, entry_lines)
+        # Atomic, matching the extract write above: the record is often the sole
+        # copy of its evidence, so a mid-write failure must leave it untouched.
+        write_text_exact_atomic(record_path, reapply_newline(after, before))
+    except Exception as e:
+        # Roll back BOTH sides of the partial write. The stray dump's cleanup
+        # must NEVER be able to skip the record restore: on Windows a virus
+        # scanner or backup tool can hold the just-written dump open and make
+        # unlink() raise, and the record - possibly left half-written by the
+        # truncating write above - is the one that MUST come back. So guard the
+        # unlink on its own and press on to the restore either way.
+        stray_dump: Path | None = None
+        try:
+            extract_path.unlink(missing_ok=True)
+        except OSError:
+            stray_dump = extract_path
+
+        # The atomic write above leaves the record either fully updated or
+        # untouched, never torn - but if it landed the new entry before some
+        # LATER step raised, restore the pristine text we still hold (the
+        # attach_more discipline), also atomically, and only claim a clean
+        # rollback when the restore actually landed.
+        restored = before is None
+        if before is not None:
+            try:
+                write_text_exact_atomic(record_path, before)
+                restored = True
+            except OSError:
+                restored = False
+
+        problems: list[str] = []
+        if stray_dump is not None:
+            problems.append(
+                f'the extracted-text file {stray_dump.name} was written but could '
+                'not be removed (a virus scanner or backup tool may be holding it '
+                f'open) - delete {stray_dump} by hand once nothing is using it')
+        if not restored:
+            problems.append(
+                f'the record {record_path.name} could not be restored, so it may be '
+                'left partially written - restore it from git or your last backup '
+                'before doing anything else')
+
+        if not problems:
+            return result_fail(result, 'failed',
+                               f'could not add the files: entry to {record_path.name} '
+                               f'({e}) - nothing was kept (the dump and the record '
+                               'edit were both rolled back).')
+        return result_fail(result, 'failed',
+                           f'could not add the files: entry to {record_path.name} '
+                           f'({e}), and cleanup did not fully finish: '
+                           + '; '.join(problems) + '.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(extract_path)
+    result.note_changed(record_path)
+    result.add('info', f'Wrote {extract_name} - {coverage}.')
+    result.add('info', f'Added a files: entry (role: {_EXTRACT_ROLE}, derived: true) '
+                       f'to {record_path.name}.')
+    if error_pages:
+        # Some pages carried text, so the dump is worth keeping - but a page the
+        # extractor errored on is marked FAILED (not empty) in it, and the run
+        # exits nonzero so the failure is not mistaken for confirmed absence.
+        shown = (', '.join(str(p) for p in error_pages[:10])
+                 + (' …' if len(error_pages) > 10 else ''))
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   f'Text extraction FAILED on page(s) {shown} - marked as errors '
+                   'in the dump (not "no text"). Read those pages with vision; do '
+                   'not treat them as blank.')
+    result.add('info',
+               'Next: mine the dump like a transcript, anchoring every claim '
+               '`anchor: "page N"`; run `fha index` so search sees the text.',
+               next_step='fha index')
+    return result
+
+
 _CLI_DESCRIPTION = """\
 Update a source record directly - the deterministic source-field write-backs.
 
   fha source note S-2b3c4d5e6f --text "..."
   fha source edit-note S-2b3c4d5e6f --old-text "..." --text "..."
+  fha source extract S-2b3c4d5e6f [--pages 1-60]
 
 note appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
-text) and leaves the rest untouched."""
+text) and leaves the rest untouched; extract dumps the source PDF's embedded
+text layer into a derived [Page N]-labeled companion file (needs the pypdf
+helper package)."""
 
 _NOTE_DESCRIPTION = """\
 Add a note to a source - appended to the end of its ## Notes section.
@@ -499,7 +991,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'source' onto the main fha parser."""
     p = subs.add_parser(
         'source',
-        help='Source-record write-backs: note (append) and edit-note (rewrite one)',
+        help='Source-record write-backs: note (append), edit-note (rewrite one), '
+             'extract (PDF text layer)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -507,6 +1000,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest='source_command', metavar='SUBCOMMAND')
     _add_note_arguments(sub)
     _add_edit_note_arguments(sub)
+    _add_extract_arguments(sub)
     p.set_defaults(func=_make_group_help(p))
     return p
 
@@ -521,6 +1015,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest='source_command', metavar='SUBCOMMAND')
     _add_note_arguments(sub)
     _add_edit_note_arguments(sub)
+    _add_extract_arguments(sub)
     parser.set_defaults(func=_make_group_help(parser))
     args = parser.parse_args(argv)
     return args.func(args) or 0

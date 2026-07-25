@@ -82,11 +82,13 @@ class _Base(unittest.TestCase):
                 'INSERT INTO source_people(source_id, person_id) VALUES (?,?)', (sid, pid))
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
-                    place_text=None, persons=()):
+                    place_text=None, persons=(), confidence=None, reviewed=None, negated=0):
         self.conn.execute(
-            'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text) '
-            'VALUES (?,?,?,?,?,?,?,?)',
-            (cid, sid, ctype, value, status, date_edtf, (date_edtf or '')[:4] + '-01-01' if date_edtf else None, place_text),
+            'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text, '
+            'confidence, reviewed, negated) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            (cid, sid, ctype, value, status, date_edtf, (date_edtf or '')[:4] + '-01-01' if date_edtf else None, place_text,
+             confidence, reviewed, negated),
         )
         for pos, pid in enumerate(persons):
             self.conn.execute(
@@ -97,11 +99,12 @@ class _Base(unittest.TestCase):
             'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
             (pid, rel, other, 'c-rrrrrrrrrr'))
 
-    def _run(self, *, linked=False, dry_run=False):
+    def _run(self, *, linked=False, dry_run=False, workbench=False):
         self.conn.commit()
         future = time.time() + 5
         os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
-        return site.run_site(self.archive_root, self.out_dir, linked=linked, dry_run=dry_run)
+        return site.run_site(self.archive_root, self.out_dir, linked=linked, dry_run=dry_run,
+                             workbench=workbench)
 
     def _read(self, relpath):
         return (self.out_dir / relpath).read_text(encoding='utf-8')
@@ -126,9 +129,12 @@ class SourcePageTests(_Base):
         self.assertIn('status-suggested', html)                  # all statuses shown w/ badge
         self.assertIn('../persons/p-aaaaaaaaaa.html', html)      # person link in People column
 
-    def test_standalone_excludes_unreviewed_and_rejected_claims(self):
-        # P2-2: a public snapshot shows only accepted + needs-review; --linked
-        # (developer preview) shows every status with its badge.
+    def test_standalone_shows_accepted_only_linked_shows_everything(self):
+        # Owner decision 2026-07-22: the public snapshot publishes settled
+        # facts only - accepted claims. needs-review (the parked verdict,
+        # SPEC §8.1) is research state, withheld along with suggested and
+        # rejected. --linked (developer preview / workbench) shows every
+        # status with its badge.
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
         self._seed_source('s-1111111111', 'Mixed Source', people=('p-aaaaaaaaaa',))
         self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Accepted fact',
@@ -142,13 +148,36 @@ class SourcePageTests(_Base):
         self._run(linked=False)
         public = self._read('sources/s-1111111111.html')
         self.assertIn('Accepted fact', public)
-        self.assertIn('Under review', public)
-        self.assertNotIn('AI draft guess', public)        # suggested withheld
+        self.assertNotIn('Under review', public)           # needs-review withheld (parked, not fact)
+        self.assertNotIn('AI draft guess', public)         # suggested withheld
         self.assertNotIn('Known wrong', public)            # rejected withheld
         self._run(linked=True)
         dev = self._read('sources/s-1111111111.html')
-        self.assertIn('AI draft guess', dev)               # linked shows everything
+        self.assertIn('Under review', dev)                 # linked shows everything
+        self.assertIn('AI draft guess', dev)
         self.assertIn('Known wrong', dev)
+
+    def test_accepted_low_confidence_claim_flagged_on_source_page(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Thin Source', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'occupation', 'Maybe a miller',
+                         status='accepted', confidence='low', persons=('p-aaaaaaaaaa',))
+        self._run(linked=False)
+        public = self._read('sources/s-1111111111.html')
+        self.assertIn('Maybe a miller', public)             # accepted-low still publishes
+        self.assertIn('flag-low', public)                   # ...flagged, not silent
+        self.assertIn('low confidence', public)
+
+    def test_workbench_marks_needs_review_rows(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Mixed Source', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Under review',
+                         status='needs-review', reviewed='2026-03-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True, workbench=True)
+        wb = self._read('sources/s-1111111111.html')
+        self.assertIn('wb-needs-review', wb)                # tinted row
+        self.assertIn('status-needs-review', wb)            # status word badge
 
     def test_missing_asset_listed_not_linked(self):
         self._seed_source('s-1111111111', 'Has Asset')
@@ -230,6 +259,19 @@ class PersonPageTests(_Base):
         # Stories section rendered
         self.assertIn('A tale worth keeping.', html)
 
+    def test_negated_vital_not_rendered_as_positive_summary(self):
+        # A --negated birth ("not born 1900") is a confirmed absence, not a
+        # settled headline fact: `_person_summary` must not render it as
+        # `Born 1900`, which would assert the very thing the claim denies.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', 'not born 1900',
+                         status='accepted', date_edtf='1900', persons=('p-aaaaaaaaaa',),
+                         negated=1)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('<dt>Born</dt>', html)
+
     def test_biography_token_swap(self):
         self._setup_thomas()
         self._run(linked=True)
@@ -240,13 +282,31 @@ class PersonPageTests(_Base):
         self.assertNotIn('9999999999', html)                     # unresolved source id hidden, never shown raw
 
     def test_timeline_excludes_suggested_includes_needs_review(self):
+        # Linked/workbench timelines keep needs-review claims - clearly marked
+        # as unconfirmed (owner decision 2026-07-22).
         self._setup_thomas()
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
         self.assertIn('Lived in Fairview', html)                 # needs-review present
+        self.assertIn('flag-unconfirmed', html)                  # ...and marked
         self.assertNotIn('Bookkeeper (unreviewed)', html)        # suggested excluded from timeline
         self.assertIn('1840s', html)                             # decade grouping
         self.assertIn('1880s', html)
+
+    def test_public_timeline_is_accepted_only_with_low_confidence_flag(self):
+        # The published standalone timeline shows settled facts only; an
+        # accepted low-confidence fact publishes with its flag (owner decision
+        # 2026-07-22: "sometimes that's the best we ever get").
+        self._setup_thomas()
+        self._seed_claim('c-5555555555', 's-1111111111', 'occupation', 'Perhaps a miller',
+                         status='accepted', confidence='low', date_edtf='1885',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('Lived in Fairview', html)              # needs-review withheld publicly
+        self.assertNotIn('flag-unconfirmed', html)
+        self.assertIn('Perhaps a miller', html)                  # accepted-low publishes
+        self.assertIn('flag-low', html)                          # ...flagged
 
     def test_family_and_source_footnotes(self):
         self._setup_thomas()

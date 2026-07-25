@@ -370,7 +370,7 @@ Plus an informational **needs-sourcing backlog** (not a finding, never moves the
 
 **Done when:**
 ```sh
-fha lint --root example-archive              # exits 1; baseline W101 + W102 (TOOLING §15)
+fha lint --root example-archive              # exits 1; the documented baseline (canonical list: TOOLING §15)
 fha lint --root tests/fixtures/broken-W103  # fires W103
 # repeat for each W code that has a broken fixture
 ```
@@ -503,7 +503,7 @@ write: `All accepted claims are cited in the profile.`
 fha views timeline P-de957bcda1 --root example-archive   # file generated; GENERATED header
 fha views sources-index --all-curated --couple-folders --root example-archive
 fha views draft-queue P-de957bcda1 --root example-archive  # non-empty (profile is sparse)
-fha lint --root example-archive   # still exits 1 (baseline W101 + W102); W105 does not fire on GENERATED files
+fha lint --root example-archive   # still exits 1 (documented baseline, TOOLING §15); W105 does not fire on GENERATED files
 ```
 
 ---
@@ -513,7 +513,7 @@ fha lint --root example-archive   # still exits 1 (baseline W101 + W102); W105 d
 **One PR.** Extend `tools/views.py` with `brackets`; stub `tree`, `clean`, `refresh` as
 "not yet implemented" so the CLI is coherent (TOOLING §7).
 
-**`fha views brackets [--fix] [--dry-run]`** - folder maintenance, three concerns in one pass:
+**`fha views brackets [--fix] [--dry-run]`** - folder maintenance, originally three concerns in one pass (a fourth, W119 direct-line stub promotion via `--fix-promote`, joined in M11.4):
 
 1. *Bracket list refresh (W103)*: walk `people/` for couple folders (dirs starting with digits
    directly under `people/` or `people/connections/`). Parse current `[child, …]` suffix.
@@ -588,7 +588,7 @@ fha views tree P-de957bcda1 --mode descendants --format json --root example-arch
 # valid JSON; vitals populated; edges carry claim_id
 fha views tree P-de957bcda1 --mode ancestors --format dot --root example-archive
 fha views clean --root example-archive --dry-run    # lists GENERATED files
-fha views refresh --root example-archive            # regenerates all; lint still exits 1 (baseline W101 + W102)
+fha views refresh --root example-archive            # regenerates all; lint still exits 1 (documented baseline, TOOLING §15)
 ```
 
 ---
@@ -1482,8 +1482,10 @@ fha site --root example-archive --linked
 **One PR.** Extend `tools/site.py` (TOOLING §12).
 
 **Person page (curated):** summary block (accepted vitals); biography HTML (using the
-prose converter and token-swap from M8.1); timeline (same index query as
-`fha views timeline`); sources index (same query as `fha views sources-index`); photo strip
+prose converter and token-swap from M8.1); timeline (same shape as
+`fha views timeline`'s chronology - statuses split by audience since the 2026-07-22
+decision: standalone accepted-only with low-confidence flags, linked/workbench keeps
+needs-review marked); sources index (same query as `fha views sources-index`); photo strip
 (from `photo_people`); Stories; Friends & Family (relationship edges).
 
 **Person-page redaction:** `living`/`unknown` → "Living Person", no person page generated
@@ -1757,11 +1759,132 @@ fha working-copy off --root my-copy  # WARNS + confirms (are the originals reall
 
 ---
 
+## Layer 11 - Path healing (Milestone 11 - ✓ shipped 2026-07-22)
+
+### M11.1 - `fha reconcile` (✓ shipped)
+
+The general disk↔record path healer TOOLING §9 designed alongside `photoindex
+reconcile`, built to that section's contract (owner approval 2026-07-22).
+Documents side: every source record `files:` entry under the documents alias
+whose path no longer resolves is re-matched by its filename (the `_{S-id}`
+name is the identity carrier; filed documents are renamed exactly once) - a
+unique hit rewrites the entry line-surgically, a duplicate name is reported
+ambiguous (never guessed), a vanished file is reported missing, and on-disk
+S-id files no record lists are reported with the `fha process --more` attach
+path. Photos side: delegates to `photoindex.run_reconcile` when
+`.cache/photos.sqlite` exists (report.py's orchestrator import precedent), so
+one command reconciles every file type. `--dry-run` previews every re-tie;
+working-copy mode is a clean no-op, and an unreachable documents root warns
+(exit 1) without mass-flagging anything as missing. A file that was moved AND
+renamed still heals when its S-id survives in the new name (the §9 embedded-ID
+re-match); a corrupt/old-schema photo catalog is an error naming the rebuild,
+never mistaken for a clean one. Lint E011's message now names `fha reconcile`
+as the fix.
+Tests: `tests/test_reconcile.py` (heal round-trip incl. dry-run zero-writes
+and idempotent re-run, ambiguous/missing/unlisted buckets, missing-fixture
+skip, working-copy no-op, unreachable root).
+
+### M11.2 - inbox singles file into `documents/{type}/` (✓ shipped)
+
+`fha process` on a single documents-root file sitting at the root TOP level
+(the flat inbox relocation, or a hand-drop at the root) renames it into
+`documents/{type}/` - the same `_record_subdir` destination bundles always
+used - instead of leaving it flat (owner decision 2026-07-22; TOOLING §6
+step 2). A file the human pre-filed into any subfolder still renames in
+place: folders stay the human's projection. Tests: destination assertions in
+`tests/test_process.py` incl. `test_root_top_document_files_into_type_subfolder`.
+
+### M11.3 - `fha claim` batch status moves (✓ shipped 2026-07-22)
+
+The review verb's positional now takes one or more C-ids (`nargs='+'`, the
+`fha confirm place` precedent): `fha claim C-a C-b C-c --status accepted`
+applies one status move to each - the review gesture "accept 1, 2 and 4" is
+one human decision per claim delivered in one breath. The batch is
+status-only (any field-edit flag with more than one id is a plain refusal -
+a field correction is inherently per-claim) and all-or-nothing (every id
+validated for shape and existence before any write; one bad id refuses the
+whole batch naming the id and the fix). Duplicates are deduped preserving
+order with a note; one `--dry-run` previews every edit; the live run loops
+the existing surgical single-claim write (`run_claim_batch` delegating to
+`run_claim` - no second write path), folds the per-claim `fha index`
+reminders into one, and stops at the first mid-loop failure naming what was
+applied and the exact command that finishes the rest. Single-id behavior,
+`fha claim new`, and fha.py's early interception are unchanged; both parsers
+(the fha subparser and standalone `tools/claim.py`) share `_add_arguments`,
+so both accept the batch. Tests: `RunClaimBatchTests` +
+`ClaimBatchCliRoutingTests` in `tests/test_claim.py`.
+
+### M11.4 - stub promotion (✓ shipped 2026-07-23)
+
+The three-piece promotion surface sharing ONE engine (`_lib.promote_person_record`:
+tier flip + stubs/-exit move + SPEC §16 research scaffold, transactional with
+rollback; Ahnentafel derivation extracted to `_lib.build_ahnentafel_map` with
+views delegating): `fha person promote <P-id> [--into] [--dry-run]` (ninth
+person verb; v1 direct-line only, non-direct refused plainly as an open design
+decision), `fha views brackets` check 4 / W119 + `--fix-promote` +
+`--generations` (report-only default; batch-applies the engine under the
+existing Apply? gate; refused combined with `--fix`), lint's report-only W119
+mirror (warning severity, lead-worded), and `fha report` §7b promotion
+candidates (`promotion: claims_threshold:`, default 5). New
+`archive-template/people/_TEMPLATE.research.md`; `today` narrates §7b,
+`write-biography` offers promote-first on a stub target, `review-claims`
+nudges once at close-out. Promotion is always explicit - never fired by claim
+acceptance. Live-archive first run: W119 fires for every derived direct-line
+stub at once (the example archive gains ten - now part of the documented lint
+baseline in `_STANDARD.md` §9). Tests: test_person, test_views_brackets_promote,
+test_lint, test_report.
+
+### M11.5 - `fha source extract` (✓ shipped 2026-07-23)
+
+The large-PDF on-ramp (usage-feedback item 1, owner approval): dump a source
+PDF's embedded text layer into a derived `[Page N]`-labeled companion filed
+beside the original (`role: extracted-text, derived: true` in the record
+inventory - SPEC §14's derived-companion model; the original is never
+touched, SPEC §12.1). Page labels use the PDF's own pagination so
+`anchor: "page N"` claims (SPEC §8.4) line up in any copy; a text-less page
+gets an honest placeholder; an all-image PDF refuses toward vision/OCR with
+nothing written. pypdf ships as the second optional dependency (Pillow
+precedent; the verb alone refuses with the install command when absent -
+AGENTS_TOOLING dependency list amended with owner approval).
+`_append_file_entry` moved to `_lib.append_file_entry_to_record` (process.py
+delegates; made CRLF-tolerant in the move) so extract appends its inventory
+entry through the same single pathway. `--pages 1-60,102` narrows;
+`--dry-run` previews coverage; re-runs are a clean `already` no-op. Tests:
+`tests/test_source_extract.py` on hand-rolled minimal PDFs (skip cleanly
+without pypdf; the install-refusal path is tested pypdf-free).
+
+### M11.6 - `fha process refile` (✓ shipped 2026-07-23)
+
+The cross-root filing correction (usage-feedback item 3, owner approval incl.
+the SPEC §12.1/§13 carve-out): move one of a source's files between the
+documents and photos roots when the original filing decision was wrong.
+Record located by S-id tree scan; the single non-derived inventory entry (or
+`--file NAME`) moves; already-under-target-root refuses toward `fha
+reconcile`. Into photos: `--dest` required (containment-validated, the
+person.py `--into` discipline), the last-chance rename restores
+`original_filename` (else strips the `_{S-id}`/role/copy suffixes), and the
+`SOURCE:` keyword embeds through process.py's own exiftool seams - absent
+exiftool or a non-keyword format warns and proceeds. Into documents: [y/N]
+confirm (or `--yes`; non-interactive without it refuses) because Lightroom
+will see the photo as missing; rename INTO the §13 grammar; the embedded
+keyword deliberately stays. Record surgery is one atomic write: a value-exact
+`file:` line rewrite (reconcile.py's matcher, duplicated per
+tools-never-import-tools) plus a dated `## Notes` provenance paragraph via
+`_lib.append_paragraph_to_section`, line endings preserved; the whole run is
+transactional with reverse-order undo, and `--dry-run` previews every step.
+CLI: intercepted in `fha.py` before argparse (the `fha claim new` pattern),
+since process's parser takes a positional FILE. Exits 0 ok/dry-run ·
+1 not-found/working-copy · 3 refusals. Tests: `tests/test_process_refile.py`
+(25 cases: both directions, the refusal surface, dry-run zero-writes,
+rollback, dispatcher interception).
+
+---
+
 ## Testing invariants (all PRs)
 
 Every PR must leave `fha lint --root example-archive` exiting 1 with only the documented
-baseline warnings (TOOLING.md §15 - currently W101, Thomas Hartley's intentionally absent death
-record, and W102, one suggested claim staged as review-demo material). No new errors or warnings
+baseline warnings (the canonical list lives in TOOLING.md §15 - per M11.4 it currently
+comprises W101, W102, and ten W119 direct-line-stub leads). No new errors or warnings
 may appear.
 Broken fixtures in `tests/fixtures/broken-{CODE}/` must continue to fire their targeted code.
 Any new lint code being implemented in that PR requires a new broken fixture for it.

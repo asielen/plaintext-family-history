@@ -292,6 +292,38 @@ class ApiRunTests(_ServeCase):
         self.req('GET', '/')
         self.assertTrue(self.state.marker.exists())
 
+    def test_live_claim_review_batch_flips_multiple(self):
+        # The grouped-review verdict (TOOLING §3b) must reach the workbench API,
+        # not only the CLI: a claim_ids list routes through run_claim_batch, so
+        # API/workbench callers can accept several claims in one status-only call
+        # and get the all-ID echo. Previously claim.review took a single claim_id.
+        import sqlite3
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            ids = [r[0] for r in conn.execute(
+                "SELECT id FROM claims WHERE status != 'accepted' LIMIT 2").fetchall()]
+        finally:
+            conn.close()
+        self.assertEqual(len(ids), 2, 'fixture needs two non-accepted claims')
+        s, d, _h = self.post_run(
+            'claim.review', {'claim_ids': ids, 'status': 'accepted'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertIn('--status accepted', payload['cli_echo'])
+        for cid in ids:                                  # echo names every id
+            self.assertIn(cid, payload['cli_echo'])
+        # Both landed as accepted in their source records.
+        for cid in ids:
+            found = False
+            for f in (self.root / 'sources').rglob('*.md'):
+                t = f.read_text(encoding='utf-8')
+                if cid.lower() in t.lower():
+                    self.assertIn('status: accepted', t)
+                    found = True
+                    break
+            self.assertTrue(found, f'{cid} not found in any source record')
+
     def test_reindex_failure_after_a_successful_write_is_a_warning_not_a_false_failure(self):
         # P2 codex finding (round 5, PR #30): the engine write and its
         # follow-up reindex/snapshot-invalidation used to share one
@@ -360,6 +392,29 @@ class ApiRunTests(_ServeCase):
         payload = json.loads(d)
         self.assertTrue(payload['ok'], payload)
         self.assertEqual(payload['data']['claim_id'], previewed)
+
+    def test_claim_new_forwards_negated_to_confirmed_absence(self):
+        # P2 finding (PR #32): the `--negated` authoring path (a SPEC 8.6
+        # confirmed absence) existed only on the CLI - the claim.new verb
+        # rejected `negated` as an unexpected field, so the browser front door
+        # could not write the confirmed-absence claim the change advertises,
+        # even though it drives the same engine. Applying claim.new with
+        # negated=True must land `negated: true` and its pairing
+        # `evidence: negative`, exactly like `fha claim new --negated`.
+        row = self.a_suggested_claim()
+        sid = row[1]
+        args = {'source_id': sid, 'claim_type': 'marriage',
+                'value': 'no marriage found after research', 'negated': True}
+        s, d, _h = self.post_run('claim.new', args, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        matches = [f for f in (self.root / 'sources').rglob('*.md')
+                   if 'no marriage found after research' in f.read_text(encoding='utf-8')]
+        self.assertEqual(len(matches), 1, matches)
+        text = matches[0].read_text(encoding='utf-8')
+        self.assertIn('negated: true', text)
+        self.assertIn('evidence: negative', text)
 
     def test_process_file_apply_reuses_the_previewed_minted_source_id(self):
         # P2 codex finding (round 7, PR #30): same preview/apply mismatch as
@@ -1363,6 +1418,36 @@ class EchoTests(unittest.TestCase):
         })
         self.assertNotIn('--confidence', echo)
 
+    def test_claim_new_schema_accepts_and_coerces_negated(self):
+        # P2 finding (PR #32): before this fix `negated` was not in the
+        # claim.new schema, so _coerce rejected it as an unexpected field and
+        # the workbench could never send it. Lock in that the verb now accepts
+        # it AND coerces it to a real bool (both a JSON bool and a string-form
+        # 'true' from a JSON-less client), so it reaches run_claim_new intact.
+        schema = serve.VERBS['claim.new']['schema']
+        self.assertEqual(schema.get('negated'), 'bool')
+        clean, err = serve._coerce(schema, {
+            'source_id': 'S-fa1234567b', 'claim_type': 'marriage',
+            'value': 'no marriage found', 'negated': True})
+        self.assertIsNone(err)
+        self.assertIs(clean['negated'], True)
+        clean2, err2 = serve._coerce(schema, {'source_id': 'S-fa1234567b', 'negated': 'true'})
+        self.assertIsNone(err2)
+        self.assertIs(clean2['negated'], True)
+
+    def test_echo_claim_new_includes_negated_when_set(self):
+        echo = serve._echo_claim_new({
+            'source_id': 'S-fa1234567b', 'claim_type': 'marriage',
+            'value': 'no marriage found', 'negated': True,
+        })
+        self.assertIn('--negated', echo)
+
+    def test_echo_claim_new_omits_negated_when_absent(self):
+        echo = serve._echo_claim_new({
+            'source_id': 'S-fa1234567b', 'claim_type': 'birth', 'value': '1870',
+        })
+        self.assertNotIn('--negated', echo)
+
     def test_echo_capture_path_includes_title_when_given(self):
         echo = serve._echo_capture_path(
             {'path': '/library/grandma.jpg', 'title': "Grandma's Wedding"})
@@ -1401,6 +1486,27 @@ class EchoTests(unittest.TestCase):
         # than the previewed action.
         echo = serve._echo_claim_review({'claim_id': 'C-fa1234567b', 'date': 'June 1923'})
         self.assertIn('"June 1923"', echo)
+
+    def test_echo_claim_review_batch_ids_are_space_separated_and_reparse(self):
+        # P2 codex finding (round 8): the batch echo joined ids with commas, but
+        # the CLI positional is space-separated `nargs='+'`, so `fha claim C-a,C-b`
+        # is ONE malformed id the CLI refuses - the copyable command could not
+        # reproduce the workbench batch action. The echo must space-separate, and
+        # re-parse to both ids through the real CLI parser.
+        import argparse
+        import shlex
+        import claim
+        ids = ['C-1a2b3c4d5e', 'C-2b3c4d5e6f']
+        echo = serve._echo_claim_review({'claim_ids': ids, 'status': 'accepted'})
+        # No comma-joined id blob in the command word (before the first flag).
+        self.assertNotIn(',', echo.split('--', 1)[0])
+        self.assertIn('--status accepted', echo)
+        # The emitted command re-parses to BOTH ids through the real CLI positional.
+        parser = argparse.ArgumentParser()
+        claim._add_arguments(parser)
+        tokens = shlex.split(echo)[2:]     # drop the leading 'fha' 'claim'
+        ns = parser.parse_args(tokens)
+        self.assertEqual(ns.claim_ids, ids)
 
     def test_echo_claim_new_quotes_a_plain_words_date(self):
         echo = serve._echo_claim_new({

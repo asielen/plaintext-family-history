@@ -10,6 +10,7 @@
 |---|---|
 | [GETTING_STARTED.md](GETTING_STARTED.md) | Your first day: install Python/exiftool/the AI assistant, make your archive, file your first document |
 | [SETUP_FROM_ZIP.md](SETUP_FROM_ZIP.md) | The git-free path - you got a zip, no GitHub account, set it up from a folder |
+| [UPDATING.md](UPDATING.md) | A newer version came out - the two-minute update ritual, and the one rule that prevents lost work |
 | [CHEATSHEET.md](CHEATSHEET.md) | One printable page: the daily loop, the few commands, how to write an uncertain date, where things live |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Something went wrong - symptom → cause → exact fix for the edge cases |
 | [FILING_CABINET.md](FILING_CABINET.md) | The system explained as the paper filing cabinet you already know |

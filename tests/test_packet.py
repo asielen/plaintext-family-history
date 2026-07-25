@@ -38,11 +38,13 @@ def _make_photos_db(archive_root: Path) -> sqlite3.Connection:
 
 
 def _insert_claim(conn, cid, source_id, ctype, value, *, date_edtf=None,
-                  place_text=None, status='accepted', persons=()):
+                  place_text=None, status='accepted', persons=(),
+                  confidence=None, reviewed=None):
     conn.execute(
-        '''INSERT INTO claims(id, source_id, type, date_edtf, place_text, value, status)
-           VALUES (?,?,?,?,?,?,?)''',
-        (cid, source_id, ctype, date_edtf, place_text, value, status),
+        '''INSERT INTO claims(id, source_id, type, date_edtf, place_text, value, status,
+                              confidence, reviewed)
+           VALUES (?,?,?,?,?,?,?,?,?)''',
+        (cid, source_id, ctype, date_edtf, place_text, value, status, confidence, reviewed),
     )
     for pos, pid in enumerate(persons):
         conn.execute(
@@ -203,6 +205,33 @@ class PacketTests(unittest.TestCase):
             names = zf.namelist()
         self.assertTrue(any(n.endswith('README.txt') for n in names))
         self.assertTrue(any(n.endswith('file1.txt') for n in names))
+
+    def test_timeline_tags_parked_and_low_confidence_claims(self):
+        # Owner decision 2026-07-22: a packet is family research material, so
+        # needs-review claims stay in its timeline - tagged, same words as
+        # fha views timeline - and an accepted-low claim carries its flag.
+        self._seed_person()
+        self._seed_source('s-1111111111', 'Source One', asset_rel='documents/other/file1.txt')
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth', 'born 1900',
+                      date_edtf='1900', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-1111111111', 'residence', 'maybe Topeka',
+                      date_edtf='1905', status='needs-review', reviewed='2026-03-01',
+                      persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-cccccccccc', 's-1111111111', 'occupation', 'maybe a miller',
+                      date_edtf='1910', confidence='low', persons=['p-aaaaaaaaaa'])
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        text = (result['packet_dir'] / 'timeline.md').read_text(encoding='utf-8')
+        self.assertIn('maybe Topeka', text)
+        self.assertIn('[unconfirmed - parked 2026-03-01]', text)
+        self.assertIn('maybe a miller', text)
+        self.assertIn('[low confidence]', text)
+        for line in text.splitlines():
+            if 'born 1900' in line:
+                self.assertNotIn('[unconfirmed', line)
+                self.assertNotIn('[low confidence]', line)
 
     def test_missing_source_asset_reported_in_readme_and_messages(self):
         self._seed_person()

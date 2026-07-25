@@ -20,6 +20,38 @@ worse than none, so citation discipline is the product. See [`../_STANDARD.md`](
 "Draft Margaret's bio", "write up Thomas", "extend this profile now that the census is in." Always scoped
 to one person.
 
+## Voice: two styles, one citation contract
+
+The bio's *facts* are fixed by the contract below; its *voice* is the human's choice between two named
+styles (owner decision 2026-07-22 — SPEC §16 fixes structure and citation density, both style-invariant,
+so voice is a skills-layer setting, not a spec matter):
+
+- **`chronicle`** (the default) — era-by-era and fact-forward: plain, warm, terse. A careful cousin's
+  record of what happened, in order. The voice this skill has always had.
+- **`narrative`** — story-driven: the same cited facts woven with scene-setting and period context
+  ("Kansas in 1875 was still sod-house country…"). Every factual sentence still cites its `[[S-…]]`;
+  the extra texture comes ONLY from cited claims or clearly-flagged general context — **never invented
+  scenes, dialogue, weather, or interior states** (AGENTS.md §"Speculation and storytelling": an
+  invented detail in a family story becomes family truth in one generation).
+
+**Resolving which to use** — first match wins:
+
+1. **The human's ask this session.** Translate his words, never quiz him (_STANDARD.md §4): "tell it
+   like a story" → narrative; "just the facts" → chronicle. An ask that fits neither maps to the
+   nearest style, honoring his phrasing inside that style's rules.
+2. **The archive default** — a `biography:` block in `fha.yaml` (read the file directly, the same way
+   the site tools read their `site:` block; no tool call needed):
+   ```yaml
+   biography:
+     style: narrative      # chronicle | narrative
+   ```
+3. **Neither?** If the profile already carries drafted prose, match its register — the AI-DRAFT /
+   AI-ACCEPTED markers record which style wrote it (step 4). Otherwise ask ONE plain question —
+   "straight chronicle, or more of a story?" — and default to **chronicle** if he waves it off.
+
+Extending an existing biography keeps the register already on the page unless the human asks to change
+it — a profile half chronicle, half narrative reads as two authors fighting.
+
 ## The contract for this skill (state it before you start)
 
 - **Facts only from `accepted` claims.** A `suggested` claim is not yet a fact — it never becomes a
@@ -42,11 +74,19 @@ to one person.
    fha views draft-queue <P-id>      # the uncited-accepted-claim writing backlog
    fha find <P-id>                    # the person's record, claims, and existing profile
    ```
+   If the target person is still a **stub** (`tier: stub`, or their record sits in `people/stubs/` —
+   the draft-queue view refuses them either way), offer `fha person promote <P-id>` first: a biography
+   belongs on a curated profile in its couple folder. Run it only on the human's yes (preview with
+   `--dry-run`), then `fha index` and continue. If promote refuses because the person is **not on the
+   direct line**, say so plainly — curating non-direct people is a pending design decision, so their
+   facts stay in claims and `## Stories` for now — and stop here rather than drafting a bio the views
+   can't carry.
    Read the person `.md`: note the existing biography prose (human and any prior AI-DRAFT) so you draft
    around it, not over it. The draft queue tells you which sources' accepted facts still need prose.
 
 2. **Draft the prose — facts only from accepted claims, each sentence cited.**
-   - Write in a plain, warm, factual voice — a careful cousin, not a machine, not a novelist.
+   - Write in the resolved style's voice (see "Voice" above) — always a careful cousin, never a
+     machine; narrative adds cited or clearly-flagged texture, never invention.
    - **Every factual sentence carries its source** as a `[[S-…]]` link: *"He worked as a bookkeeper for
      the Plains Junction Railroad by 1880 [[S-4f5f215e60]]."*
    - The **summary block** (the vitals line at the top) takes one citation per fact-line; the **body**
@@ -67,15 +107,18 @@ to one person.
    ```markdown
    {new biographical prose, every factual sentence cited}
 
-   <!-- AI-DRAFT 2026-07-01 {your-model-id} - biography drafted from accepted census + marriage claims -->
+   <!-- AI-DRAFT 2026-07-01 {your-model-id} - biography drafted (chronicle) from accepted census + marriage claims -->
    ```
-   Place the marker at the end of the block you wrote. Leave any existing human-written paragraph exactly
+   Name the style in the marker note — that is how a later session matches the register without
+   re-asking (_STANDARD.md §7: sessions are an interface, not memory). Place the marker at the end of
+   the block you wrote. Leave any existing human-written paragraph exactly
    as it is — add your paragraphs before/after it, never edit inside it. Never touch a `<!-- GENERATED …
    -->` section (the timeline, sources-index, and draft-queue views are regenerated by their tools).
 
 5. **Record the AI pass** on the **source record(s)** you drew the accepted facts from — that is the
    spec-defined home for `## AI Passes` (SPEC §14; a biography pass is provenance for which sourced facts
-   it used), per the shape ({date, model, harness, task, outputs, human_reviewed}). There is no
+   it used), per the shape ({date, model, harness, task, outputs, human_reviewed}). Name the style in
+   the task text ("biography drafted (narrative) from …"), matching the marker. There is no
    person-level `## AI Passes` block, so record it on the source(s), not on the profile or research file.
 
 6. **On the human's acceptance — and only then — flip the markers with the tool.**
@@ -104,6 +147,9 @@ to one person.
 
 - No fact from a `suggested` claim; no unverified `[[P-…]]`/`[[S-…]]` link; no edit below a GENERATED
   header; no overwrite of human text.
+- **The citation contract is style-invariant.** Narrative style never invents scenes, dialogue,
+  weather, or interior states — its color is cited claims or clearly-flagged period context, nothing
+  else. A style choice changes the voice, never what counts as a fact.
 - New prose stays AI-DRAFT until `fha confirm draft`; acceptance is the human's gesture, not a hand-edit.
 - Uncited prose reads as context/story, never as fact.
 - **AI-DRAFT prose never publishes until accepted.** `fha site` and `fha wikitree` both exclude a
@@ -120,5 +166,9 @@ to one person.
   existing human text untouched.
 - Every `[[P-…]]`/`[[S-…]]` resolves — post-run `fha lint` shows no **E004**.
 - Acceptance flips markers via `fha confirm draft`, not by hand-editing.
+- A session drafting in **each named style** keeps the identical citation density (every factual
+  sentence cited) and the lint baseline; the AI-DRAFT marker and the AI-pass task both name the style
+  used, and with no session ask and no `fha.yaml` `biography:` block the voice is `chronicle` —
+  byte-for-byte the skill's old default behavior.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

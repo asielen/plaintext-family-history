@@ -1699,8 +1699,373 @@ class PersonNewVerbsCliTests(unittest.TestCase):
     def test_group_help_lists_all_six_verbs(self) -> None:
         rc, out, _ = self._run(['person', '--root', str(self.root)])
         self.assertEqual(rc, 2)
-        for verb in ('new', 'set-living', 'relate', 'estimate', 'edit', 'note'):
+        for verb in ('new', 'promote', 'set-living', 'relate', 'estimate', 'edit', 'note'):
             self.assertIn(verb, out)
+
+
+# ── promote ───────────────────────────────────────────────────────────────────
+
+# The promote fixture family: a small direct line derived from accepted
+# relationship claims. KID (curated, position 1) anchors root_person; PA/MA
+# are the parents (positions 2/3), GPA the paternal grandfather (position 4),
+# FRIEND is off the line, and TOMB is a merged tombstone.
+P_KID = 'P-1aaaaaaaaa'
+P_PA = 'P-1bbbbbbbbb'
+P_MA = 'P-1ccccccccc'
+P_GPA = 'P-1ddddddddd'
+P_FRIEND = 'P-1eeeeeeeee'
+P_TOMB = 'P-1fffffffff'
+S_REL = 'S-1aaaaaaaaa'
+PROMOTE_FOLDER = '002 Pa Line + Ma Line'
+
+
+def _promote_person_text(pid: str, name: str, sex: str = 'U', tier: str = 'stub') -> str:
+    return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+            f'tier: {tier}\n---\n\n# {name}\n\n## Biography\n\nx\n')
+
+
+def _promote_rel_claim(cid: str, child: str, parents: list[str]) -> str:
+    plist = ', '.join(parents)
+    persons = ', '.join([child] + parents)
+    return (
+        f'- value: "{child} child of {plist}"\n'
+        f'  id: {cid}\n  type: relationship\n  subtype: biological\n'
+        f'  persons: [{persons}]\n  roles:\n'
+        f'    child: {child}\n    parent: [{plist}]\n'
+        f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+        f'  information: primary\n  evidence: direct\n  notes: x.\n'
+    )
+
+
+class PromoteTests(unittest.TestCase):
+    """`fha person promote` - the stub -> curated graduation verb.
+
+    Happy path (tier flipped surgically, record moved into the derived couple
+    folder, research companion scaffolded from the template), the missing-
+    folder creation path, --dry-run zero-writes, rollback when a step fails
+    partway, and every refusal arm: unknown id (exit 1 + `fha find`), invalid
+    id shape, merged tombstone, already-curated no-op (exit 0), the v1
+    non-direct refusal (plain words, stub stays a legitimate state), missing
+    root_person, missing index, and --into validation. Fixtures only.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'people' / PROMOTE_FOLDER).mkdir(parents=True)
+        (self.root / 'sources' / 'notes').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text(
+            f'root_person: {P_KID}\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        (self.root / 'people' / PROMOTE_FOLDER / f'line__kid_{P_KID}.md').write_text(
+            _promote_person_text(P_KID, 'Kid Line', 'F', 'curated'), encoding='utf-8')
+        self.pa_stub = self.root / 'people' / 'stubs' / f'line__pa_{P_PA}.md'
+        self.pa_stub.write_text(
+            _promote_person_text(P_PA, 'Pa Line', 'M'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'line__ma_{P_MA}.md').write_text(
+            _promote_person_text(P_MA, 'Ma Line', 'F'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'line__gpa_{P_GPA}.md').write_text(
+            _promote_person_text(P_GPA, 'Gpa Line', 'M'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'far__frank_{P_FRIEND}.md').write_text(
+            _promote_person_text(P_FRIEND, 'Frank Far', 'M'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'gone__tom_{P_TOMB}.md').write_text(
+            f'---\nid: {P_TOMB}\nname: Tom Gone\nliving: false\ntier: stub\n'
+            f'status: merged\nmerged_into: {P_PA}\n---\n', encoding='utf-8')
+        claims = (_promote_rel_claim('C-1aaaaaaaaa', P_KID, [P_PA, P_MA])
+                  + _promote_rel_claim('C-1bbbbbbbbb', P_PA, [P_GPA]))
+        (self.root / 'sources' / 'notes' / f'rel_{S_REL.lower()}.md').write_text(
+            f'---\nid: {S_REL}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+        self._reindex()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _reindex(self) -> None:
+        import index as index_mod
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def _tree_snapshot(self) -> dict[str, bytes]:
+        return {
+            str(p.relative_to(self.root)): p.read_bytes()
+            for p in sorted((self.root / 'people').rglob('*.md'))
+        }
+
+    def test_happy_path_flips_moves_and_scaffolds(self) -> None:
+        res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['status'], 'ok')
+        self.assertEqual(res.data['position'], 2)
+        self.assertEqual(res.data['folder'], PROMOTE_FOLDER)
+        # The record left stubs/ and landed in the existing 002 folder.
+        self.assertFalse(self.pa_stub.exists())
+        new_path = self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md'
+        self.assertTrue(new_path.exists())
+        rec = read_record(new_path)
+        self.assertEqual(str(rec['meta'].get('tier')), 'curated')
+        # Only the tier line changed - name/sex/living survive byte-faithfully.
+        self.assertIn('name: Pa Line', new_path.read_text(encoding='utf-8'))
+        # The research companion exists, scaffolded from the template grammar.
+        research = self.root / 'people' / PROMOTE_FOLDER / f'line__pa_research_{P_PA}.md'
+        self.assertTrue(research.exists())
+        text = research.read_text(encoding='utf-8')
+        self.assertIn(f'id: {P_PA}', text)
+        for heading in ('## Research Notes', '## Open Questions',
+                        '## Hypotheses', '## Research Log'):
+            self.assertIn(heading, text)
+        self.assertNotIn('P-__________', text)
+        # Follow-ups name the three views and fha index; the moved record
+        # dropped the index cache (a move is mtime-invisible).
+        all_text = ' '.join(m.text for m in res.messages)
+        for follow in ('fha index', 'fha views timeline', 'fha views sources-index',
+                       'fha views draft-queue'):
+            self.assertIn(follow, all_text)
+        self.assertFalse((self.root / '.cache' / 'index.sqlite').exists())
+
+    def test_creates_missing_couple_folder(self) -> None:
+        res = person.run_promote(self.root, P_GPA)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['position'], 4)
+        folder = self.root / 'people' / '004 Gpa Line'
+        self.assertTrue((folder / f'line__gpa_{P_GPA}.md').exists())
+        self.assertTrue((folder / f'line__gpa_research_{P_GPA}.md').exists())
+
+    def test_dry_run_writes_nothing(self) -> None:
+        before = self._tree_snapshot()
+        res = person.run_promote(self.root, P_PA, dry_run=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['status'], 'dry-run')
+        self.assertEqual(self._tree_snapshot(), before)
+        self.assertTrue((self.root / '.cache' / 'index.sqlite').exists())
+        self.assertFalse(res.changed)
+        preview = ' '.join(m.text for m in res.messages)
+        self.assertIn('tier: stub -> curated', preview)
+        self.assertIn('research companion', preview)
+
+    def test_rolls_back_when_the_move_fails(self) -> None:
+        before = self._tree_snapshot()
+        with mock.patch('_lib.shutil.move', side_effect=OSError('disk full')):
+            res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertEqual(res.data['status'], 'refused')
+        # The tier flip was undone; the tree is byte-identical to before.
+        self.assertEqual(self._tree_snapshot(), before)
+        self.assertIn('tier: stub', self.pa_stub.read_text(encoding='utf-8'))
+
+    def test_unknown_person_exits_1_with_find(self) -> None:
+        res = person.run_promote(self.root, 'P-9zzzzzzzzz')
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['status'], 'not-found')
+        self.assertIn('fha find', res.messages[0].text)
+
+    def test_invalid_id_refused(self) -> None:
+        res = person.run_promote(self.root, 'nonsense')
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertEqual(res.data['status'], 'refused')
+
+    def test_merged_tombstone_refused(self) -> None:
+        res = person.run_promote(self.root, P_TOMB)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertEqual(res.data['status'], 'merged')
+
+    def test_already_curated_is_a_clean_no_op(self) -> None:
+        res = person.run_promote(self.root, P_KID)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['status'], 'already')
+        self.assertIn(PROMOTE_FOLDER, res.messages[0].text)
+        self.assertFalse(res.changed)
+
+    def test_non_direct_person_refused_plainly(self) -> None:
+        res = person.run_promote(self.root, P_FRIEND)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertEqual(res.data['status'], 'refused')
+        msg = res.messages[0].text
+        self.assertIn('direct', msg)
+        self.assertIn('legitimate', msg)
+        # The stub is untouched.
+        self.assertTrue(
+            (self.root / 'people' / 'stubs' / f'far__frank_{P_FRIEND}.md').exists())
+
+    def test_missing_root_person_refused(self) -> None:
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('root_person', res.messages[0].text)
+        self.assertTrue(self.pa_stub.exists())
+
+    def test_missing_index_refused_naming_fha_index(self) -> None:
+        (self.root / '.cache' / 'index.sqlite').unlink()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('fha index', res.messages[0].text)
+        self.assertTrue(self.pa_stub.exists())
+
+    def test_into_absolute_path_refused(self) -> None:
+        res = person.run_promote(self.root, P_PA, into=str(self.root / 'elsewhere'))
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('people/', res.messages[0].text)
+
+    def test_into_reserved_folder_refused(self) -> None:
+        for reserved in ('stubs', 'people/connections'):
+            res = person.run_promote(self.root, P_PA, into=reserved)
+            self.assertEqual(res.exit_code, EXIT_FAILURE, reserved)
+            self.assertIn('reserved', res.messages[0].text)
+        self.assertTrue(self.pa_stub.exists())
+
+    def test_into_nested_path_refused(self) -> None:
+        res = person.run_promote(self.root, P_PA, into='a/b')
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+
+    def test_into_overrides_destination_for_direct_line(self) -> None:
+        res = person.run_promote(self.root, P_PA, into='040 Somewhere Else')
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertTrue(
+            (self.root / 'people' / '040 Somewhere Else' / f'line__pa_{P_PA}.md').exists())
+
+    def test_into_does_not_bypass_the_direct_line_rule(self) -> None:
+        res = person.run_promote(self.root, P_FRIEND, into='040 Somewhere Else')
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertEqual(res.data['status'], 'refused')
+
+    def test_finishes_a_half_promotion(self) -> None:
+        # tier: curated by hand but never moved out of stubs/ - the state the
+        # views stub guard refuses. promote finishes the job instead of no-op.
+        self.pa_stub.write_text(
+            _promote_person_text(P_PA, 'Pa Line', 'M', tier='curated'),
+            encoding='utf-8')
+        self._reindex()
+        res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(res.data['status'], 'ok')
+        self.assertFalse(self.pa_stub.exists())
+        self.assertTrue(
+            (self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md').exists())
+
+    def test_promote_in_place_when_already_in_a_couple_folder(self) -> None:
+        # A stub-tier record already filed in a couple folder: flip + scaffold
+        # beside it, no move (folder disagreements stay W110's job).
+        misfiled = self.root / 'people' / PROMOTE_FOLDER / f'line__ma_{P_MA}.md'
+        (self.root / 'people' / 'stubs' / f'line__ma_{P_MA}.md').rename(misfiled)
+        self._reindex()
+        res = person.run_promote(self.root, P_MA)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertTrue(misfiled.exists())
+        self.assertEqual(str(read_record(misfiled)['meta'].get('tier')), 'curated')
+        self.assertTrue(
+            (self.root / 'people' / PROMOTE_FOLDER / f'line__ma_research_{P_MA}.md').exists())
+
+    def test_ambiguous_couple_folder_refused_names_both(self) -> None:
+        # Two folders share prefix 002 (a hand-organization mistake). Promotion
+        # must refuse rather than file the record into an arbitrary half of the
+        # couple, and the message names BOTH folders and the rename fix.
+        (self.root / 'people' / '002 Someone Else').mkdir()
+        res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertEqual(res.data['status'], 'refused')
+        msg = res.messages[-1].text
+        self.assertIn(PROMOTE_FOLDER, msg)
+        self.assertIn('002 Someone Else', msg)
+        self.assertIn('rename', msg.lower())
+        # Nothing moved - the stub is untouched.
+        self.assertTrue(self.pa_stub.exists())
+
+    def test_existing_companion_beside_stub_is_moved_not_duplicated(self) -> None:
+        # A hand-written companion sits beside the stub. Promotion must MOVE it
+        # to the destination (notes travel with the record), not scaffold a
+        # blank one and strand the populated one in stubs/.
+        companion = self.root / 'people' / 'stubs' / f'line__pa_research_{P_PA}.md'
+        companion.write_text('MY HAND NOTES', encoding='utf-8')
+        self._reindex()   # the new companion file makes the prior index stale
+        res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        moved = self.root / 'people' / PROMOTE_FOLDER / f'line__pa_research_{P_PA}.md'
+        self.assertTrue(moved.exists())
+        self.assertEqual(moved.read_text(encoding='utf-8'), 'MY HAND NOTES')
+        self.assertFalse(companion.exists(), 'stub companion must be vacated')
+        comps = list((self.root / 'people').rglob('*_research_*.md'))
+        self.assertEqual(len(comps), 1, f'companion duplicated: {comps}')
+        all_text = ' '.join(m.text for m in res.messages)
+        self.assertIn('Moved the research companion', all_text)
+
+    def _unlink_only_index_fails(self):
+        """A Path.unlink patch that raises for the index cache, else works.
+
+        The bug under test is a cache-invalidation unlink that fires AFTER the
+        record has already moved. We must fail ONLY that unlink (a locked or
+        read-only .cache/index.sqlite), not the moves the promotion itself
+        performs, so the archive mutation still reaches disk and we exercise
+        the exact post-mutation failure window.
+        """
+        real_unlink = Path.unlink
+
+        def fake_unlink(self, *args, **kwargs):
+            if self.name == 'index.sqlite':
+                raise PermissionError(13, 'Permission denied')
+            return real_unlink(self, *args, **kwargs)
+
+        return mock.patch.object(Path, 'unlink', fake_unlink)
+
+    def test_cache_unlink_failure_after_move_warns_without_traceback(self) -> None:
+        # The record moves, then the index-cache drop fails. The promotion
+        # already succeeded on disk and cannot be rolled back, so the result
+        # is a NON-ZERO warning (not a hard refusal) that names the stale
+        # cache path and the rebuild command - never a leaked traceback.
+        stale_cache = self.root / '.cache' / 'index.sqlite'
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self._unlink_only_index_fails():
+                res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['status'], 'ok-index-stale')
+        # The promotion itself landed: the record left stubs/ for the folder.
+        self.assertFalse(self.pa_stub.exists())
+        self.assertTrue(
+            (self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md').exists())
+        # The stale cache is still on disk (the unlink failed) - the message
+        # must own that fact and point at the fix.
+        self.assertTrue(stale_cache.exists())
+        msg = res.messages[-1].text
+        self.assertIn('index.sqlite', msg)
+        self.assertIn('promoted', msg)
+        self.assertIn('fha index', msg)
+        self.assertEqual(res.messages[-1].next_step, 'fha index')
+        # No traceback leaked to stderr.
+        self.assertNotIn('Traceback', err.getvalue())
+
+    def test_cache_unlink_failure_on_half_promotion_still_warns(self) -> None:
+        # The dangerous half the finding calls out: tier already curated by
+        # hand, so the move preserves the record mtime and an undeleted index
+        # can pass the freshness check while holding the OLD path. If the
+        # cache drop fails here, silence would be worst - assert we still warn.
+        self.pa_stub.write_text(
+            _promote_person_text(P_PA, 'Pa Line', 'M', tier='curated'),
+            encoding='utf-8')
+        self._reindex()
+        stale_cache = self.root / '.cache' / 'index.sqlite'
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self._unlink_only_index_fails():
+                res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['status'], 'ok-index-stale')
+        self.assertFalse(self.pa_stub.exists())
+        self.assertTrue(
+            (self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md').exists())
+        self.assertTrue(stale_cache.exists())
+        self.assertIn('index.sqlite', res.messages[-1].text)
+
+    def test_cli_dry_run_via_fha(self) -> None:
+        import fha
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main(['person', 'promote', P_PA, '--dry-run',
+                           '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        self.assertIn('[dry-run]', out.getvalue())
+        self.assertTrue(self.pa_stub.exists())
 
 
 if __name__ == '__main__':

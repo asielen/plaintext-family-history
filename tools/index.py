@@ -351,6 +351,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
 
 _RELATIONSHIPS_SOCIAL_SUBTYPES = {'friend', 'associate', 'neighbor'}
 
+# Mirrors source.py's `_EXTRACT_ROLE`: the files: role that `fha source extract`
+# stamps on a PDF's dumped text layer. Its body is fed into transcripts_fts so
+# JSON/workbench search can reach inside the dump (see _index_source). Kept as a
+# literal here rather than imported from source.py to avoid a build-tool import
+# reaching into a write-tool module; the two must stay in step.
+_EXTRACTED_TEXT_ROLE = 'extracted-text'
+
 
 # ── Build helpers ─────────────────────────────────────────────────────────────
 
@@ -1054,6 +1061,40 @@ def _index_source(
             (sid, file_path, role, None, derived, orig_name, exists),
         )
 
+        # Extracted-text companion (role: extracted-text, from `fha source
+        # extract`): feed its body into transcripts_fts so JSON/workbench search
+        # reaches inside the dumped page text - the extract command's success
+        # message promises `fha index` makes the dump searchable, and this is
+        # where that promise is kept. This runs inside _index_source, which BOTH
+        # build_index and upsert_source call, so full-rebuild and incremental
+        # stay symmetric (upsert drops this source's transcripts_fts rows first).
+        # Guarded on the file being on disk: a working copy that never synced
+        # the dump simply has nothing to read, and skipping is the graceful
+        # answer - a full build on the main archive fills it in.
+        if role == _EXTRACTED_TEXT_ROLE and resolved.exists():
+            try:
+                dump_text = resolved.read_text(encoding='utf-8')
+            except OSError:
+                dump_text = ''
+            except UnicodeDecodeError:
+                # A hand-edited or corrupted companion that is not valid UTF-8 must
+                # NOT abort the whole build. UnicodeDecodeError is a ValueError, not
+                # an OSError, so without this it escapes here; on a full rebuild the
+                # source-indexing transaction then rolls back over an ALREADY-dropped
+                # index, leaving a current-schema cache with zero records that later
+                # readers accept as fresh. Skip the malformed dump with a named
+                # warning - the rest of the source still indexes.
+                print(f'WARNING: {file_path} is not valid UTF-8 and was skipped for '
+                      'transcript search - re-save it as UTF-8, then re-run '
+                      '`fha index`.', file=sys.stderr)
+                dump_text = ''
+            if dump_text.strip():
+                conn.execute(
+                    'INSERT INTO transcripts_fts(source_id, path, content) '
+                    'VALUES (?,?,?)',
+                    (sid, file_path, dump_text),
+                )
+
     # Claims
     for claim in rec['claims']:
         if not isinstance(claim, dict):
@@ -1346,10 +1387,17 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     """
     conn.execute('DELETE FROM relationships')
 
+    # Negated claims record a researched negative - "these two did NOT marry",
+    # "no death record found" (SPEC §8.6). They are accepted findings, but they
+    # assert the absence of a bond, so they must never mint a relationship edge
+    # nor end one: a negated marriage would otherwise create phantom spouse
+    # edges, and a negated divorce/death would wrongly close a real spouse edge.
+    # `negated` is stored 0/1 on the claims table (COALESCE guards legacy NULLs).
     rows = conn.execute(
         '''SELECT c.id, c.type, c.subtype, c.date_edtf, c.date_min, c.date_max
            FROM claims c
            WHERE c.status = 'accepted'
+             AND COALESCE(c.negated, 0) = 0
              AND c.type IN ('relationship', 'marriage', 'divorce', 'death')
            ORDER BY CASE c.type WHEN 'divorce' THEN 1 WHEN 'death' THEN 1 ELSE 0 END'''
     ).fetchall()

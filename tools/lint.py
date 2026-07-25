@@ -141,12 +141,14 @@ import yaml
 #    _process_person_file        - index one person file + file-level checks
 #    _process_source_file        - index one source file + file-level checks + claims
 #
-#  Bracket / Ahnentafel checks (W103, W110)
+#  Bracket / Ahnentafel checks (W103, W110, W119)
 #    _build_child_edges          - parent → {child → {nature,…}} from accepted claims
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
 #    _check_bracket_lists        - W103: stale couple-folder bracket lists
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
 #    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder
+#    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
+#                                   (report-only lead; brackets --fix-promote applies)
 #
 #  Relationship reconciliation (W115, W116)
 #    _check_relationships_reconciliation - sourced relationships: entry vs claim
@@ -1131,7 +1133,9 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                         f'file {file_path_str!r} is missing'))
             else:
                 findings.append(Finding('E', 'E011', path,
-                    f'Inventory file not found on disk: {file_path_str!r}'))
+                    f'Inventory file not found on disk: {file_path_str!r} - if the '
+                    'file was moved within the documents folder, `fha reconcile` '
+                    're-ties it automatically (preview with --dry-run)'))
     registry.source_inventory[sid] = inventory_paths
 
     # W102: suggested-claim backlog
@@ -1144,7 +1148,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     _collect_token_refs(rec['body'], path, registry)
 
 
-# ── Bracket and Ahnentafel checks (W103, W110) ───────────────────────────────
+# ── Bracket and Ahnentafel checks (W103, W110, W119) ─────────────────────────
 
 def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     """parent_pid → {child_pid: {subtype, …}} from accepted parent/child claims.
@@ -1298,6 +1302,11 @@ def _build_ahnentafel_lint(
     in children_of[P].
 
     Determinism on same-sex / unknown pairs: lex-first P-id takes the even slot.
+    With three or more genetic contributors (assisted reproduction), the two
+    Ahnentafel slots are filled by the documented TOOLING 7 rule, not by the two
+    lowest-P-id parents - see the multi-parent branch below. This must stay in
+    step with build_ahnentafel_map in _lib.py, which does the same selection from
+    the SQLite relationships table.
     """
     # Build child_pid → {parent_pids} from children_of for quick upward lookup
     parents_of: dict[str, set[str]] = {}
@@ -1322,21 +1331,30 @@ def _build_ahnentafel_lint(
                 pid_to_pos[pp] = pos
                 queue.append((pp, pos))
         else:
-            # Take at most 2 parents; ignore additional (data quality issue)
-            p1, p2 = parent_pids[0], parent_pids[1]
-            s1 = str(registry.person_meta.get(p1, {}).get('sex', 'U') or 'U')
-            s2 = str(registry.person_meta.get(p2, {}).get('sex', 'U') or 'U')
-            if s1 == 'M' and s2 != 'M':
-                father, mother = p1, p2
-            elif s2 == 'M' and s1 != 'M':
-                father, mother = p2, p1
-            elif s1 == 'F' and s2 != 'F':
-                mother, father = p1, p2
-            elif s2 == 'F' and s1 != 'F':
-                mother, father = p2, p1
-            else:
-                sorted_pair = sorted([p1, p2])
-                father, mother = sorted_pair[0], sorted_pair[1]
+            # Two or more genetic parent edges - assisted reproduction (e.g. a
+            # donor-egg mother, a surrogate-genetic mother, and a donor-sperm
+            # father). The two-slot Ahnentafel model numbers exactly one
+            # contributor per slot (father 2n, mother 2n+1). Taking the two
+            # lowest-P-id parents could seat two female contributors in both
+            # slots and drop the sperm contributor, so apply the TOOLING 7 rule:
+            # rank each contributor for each slot by (sex-fitness, P-id) - father
+            # prefers M, then U, then F; mother prefers F, then U, then M; P-id
+            # breaks ties. Extra contributors beyond the two slots are left
+            # unnumbered (the bracket list shows them). This reproduces the old
+            # two-parent behaviour for every sex combination while staying
+            # deterministic for three or more, matching _lib.build_ahnentafel_map.
+            def _sex_of(pp: str) -> str:
+                return str(registry.person_meta.get(pp, {}).get('sex', 'U') or 'U')
+
+            def _father_rank(pp: str) -> tuple[int, str]:
+                return ({'M': 0, 'U': 1, 'F': 2}.get(_sex_of(pp), 1), pp)
+
+            def _mother_rank(pp: str) -> tuple[int, str]:
+                return ({'F': 0, 'U': 1, 'M': 2}.get(_sex_of(pp), 1), pp)
+
+            father = min(parent_pids, key=_father_rank)
+            mother = min((pp for pp in parent_pids if pp != father),
+                         key=_mother_rank)
             for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
                 if pp not in pid_to_pos:
                     pid_to_pos[pp] = pos
@@ -1345,7 +1363,7 @@ def _build_ahnentafel_lint(
     return pid_to_pos
 
 
-def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> None:
+def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> dict[str, int]:
     """W110: direct-line person files in the wrong couple folder.
 
     Requires root_person in fha.yaml.  Builds the Ahnentafel map from the
@@ -1354,10 +1372,14 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     (or position−1 if they hold the odd/mother slot).
 
     Skips persons in people/connections/ or people/stubs/.
+
+    Returns the derived {P-id: position} map (empty when root_person is absent
+    or unresolvable) so the W119 direct-line-stub check right after it reads
+    the same derivation instead of running the BFS twice.
     """
     root_person_raw = registry.fha_config.get('root_person')
     if not root_person_raw:
-        return
+        return {}
 
     root_pid = normalize_id(str(root_person_raw))
     if not registry.has_person(root_pid):
@@ -1365,7 +1387,7 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             f'root_person {root_pid!r} has no person record - '
             'Ahnentafel placement checks (W110) skipped; '
             'fix root_person in fha.yaml or run fha stubs'))
-        return
+        return {}
     # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
     # and legal parent edges are shown in the bracket list but never numbered.
     children_of = _build_children_of(registry, genetic_only=True)
@@ -1408,6 +1430,54 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
                 f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
                 f'expected prefix {expected_prefix}; '
                 f'run `fha views brackets --fix` to correct'))
+
+    return pid_to_pos
+
+
+def _check_direct_line_stubs(
+    registry: Registry, findings: list[Finding], pid_to_pos: dict[str, int]
+) -> None:
+    """W119: direct-line ancestors still filed as stubs - a lead, never a defect.
+
+    The mirror of `fha views brackets` check 4 (the established
+    lint-detects / brackets-fixes split W103 and W110 already follow): any
+    person with a DERIVED Ahnentafel position >= 2 whose record is
+    `tier: stub` or still lives under people/stubs/. These are exactly the
+    people the W110 placement machinery deliberately skips, and on a live
+    archive this fires for every not-yet-curated ancestor at once - which is
+    the POINT (it is the research-lead surface `fha report` §7b narrates),
+    so the severity is warning, permanently: a stub is a legitimate state
+    (SPEC §4) and the graduation is always the human's explicit act. The fix
+    named is the previewed batch (`fha views brackets --fix-promote`) or the
+    single-person verb; lint itself never promotes anyone.
+
+    `pid_to_pos` comes from `_check_ahnentafel_placement` (empty when
+    root_person is absent/unresolvable - that condition already carries its
+    own W110 note, so this check stays silent rather than doubling it).
+    """
+    for pid, pos in sorted(pid_to_pos.items(), key=lambda kv: kv[1]):
+        if pos < 2:
+            continue
+        meta = registry.person_meta.get(pid)
+        if meta is None:
+            continue   # referenced but recordless - the E005 / fha stubs set
+        if str(meta.get('status', '')) == 'merged':
+            continue
+        profile_paths = registry.person_profile_paths.get(pid, [])
+        if not profile_paths:
+            continue
+        profile = profile_paths[0]
+        in_stubs = profile.parent.name.lower() == 'stubs'
+        is_stub_tier = str(meta.get('tier') or 'stub').strip().lower() != 'curated'
+        if not (is_stub_tier or in_stubs):
+            continue
+        name = str(meta.get('name', pid))
+        display_pid = pid[0].upper() + pid[1:]
+        findings.append(Finding('W', 'W119', profile,
+            f'{name} (Ahnentafel {pos}) is a direct-line ancestor still filed '
+            'as a stub - a research lead, not a defect; when you are ready to '
+            'curate them, run `fha views brackets --fix-promote` (previewed, '
+            f'confirmed) or `fha person promote {display_pid}`'))
 
 
 # ── Cross-file checks ─────────────────────────────────────────────────────────
@@ -1985,7 +2055,13 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
         living = str(meta.get('living', 'unknown'))
 
         person_claims = _get_person_accepted_claims(pid, registry)
-        claimed_types = {str(c.get('type', '')) for c in person_claims}
+        # Positive-fact set only: a negated claim ("not born in 1900") is a
+        # confirmed absence, not a settled vital, so it must not satisfy the
+        # birth/death completeness check below. The marriage branch keeps its
+        # own explicit negated-marriage rule (a negated marriage IS a
+        # completeness signal - "never married").
+        claimed_types = {str(c.get('type', '')) for c in person_claims
+                         if c.get('negated') not in (True, 'true')}
 
         missing_vitals = []
         for vital in ('birth', 'marriage', 'death'):
@@ -2049,7 +2125,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     _check_bracket_lists(registry, findings)
 
     # W110: direct-line person in wrong Ahnentafel couple folder
-    _check_ahnentafel_placement(registry, findings)
+    # W119: direct-line ancestor still filed as a stub (reads W110's derived map)
+    pid_to_pos = _check_ahnentafel_placement(registry, findings)
+    _check_direct_line_stubs(registry, findings, pid_to_pos)
 
     # W104: summary line without supporting accepted claim (handled in E013 pass)
     # W105: hand-edits under GENERATED header
@@ -2643,14 +2721,21 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
     """{(P-id, 'birth'|'death')} for every accepted vital claim naming a person.
 
     A sourced, accepted vital claim SUPERSEDES the provisional `birth:`/`death:`
-    field, so the needs-sourcing backlog stops listing that field once one exists."""
+    field, so the needs-sourcing backlog stops listing that field once one exists.
+
+    Negated claims do NOT supersede: a `--negated` birth ("not born in 1900")
+    is a confirmed absence, not the settled date the provisional field records,
+    so it must not silence the needs-sourcing reminder for a real provisional
+    date. Same polarity rule as the W101 vitals-gap check above."""
     out: set[tuple[str, str]] = set()
     for claims in registry.source_claims.values():
         for claim in claims:
             if not isinstance(claim, dict):
                 continue
             ctype = str(claim.get('type', ''))
-            if ctype in PROVISIONAL_VITAL_FIELDS and str(claim.get('status', '')) == 'accepted':
+            if (ctype in PROVISIONAL_VITAL_FIELDS
+                    and str(claim.get('status', '')) == 'accepted'
+                    and claim.get('negated') not in (True, 'true')):
                 for ppid in _claim_person_ids(claim, registry.alias_map):
                     out.add((ppid, ctype))
     return out
@@ -3781,7 +3866,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'as an alias) and for id-less claims inside sources (with --dry-run to preview)')
     p.add_argument('--fix-reciprocal', action='store_true',
                    help='Add the missing mirror edge for each W116 (with --dry-run to preview)')
-    # NOTE: --fix-inventory (an E011 documents-inventory fixer) was removed while
+    # NOTE: the real E011 fixer shipped as the standalone `fha reconcile`
+    # (reconcile.py, TOOLING §9) - deliberately NOT re-added here as a fix
+    # flag: one owner per mutation, and E011's message names the tool.
+    # Original note kept below for the history of the removal:
+    # --fix-inventory (an E011 documents-inventory fixer) was removed while
     # unimplemented - a flag that only printed a warning taught users flags might
     # be decorative. Re-add it here with the real fixer when it is built.
     p.set_defaults(func=_run_lint)

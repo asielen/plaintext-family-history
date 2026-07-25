@@ -835,6 +835,64 @@ class NeedsSourcingBacklogTests(unittest.TestCase):
         self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l])
 
 
+class NegatedVitalPolarityTests(unittest.TestCase):
+    """A negated claim is a confirmed ABSENCE, never a positive vital: it must
+    not satisfy the W101 vitals-gap check nor supersede a provisional date's
+    needs-sourcing reminder. The negated-MARRIAGE completeness rule ("never
+    married" IS a completeness signal) is the one exception and stays."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _person(self, extra: str) -> None:
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\ntier: curated\n'
+            f'living: false\n{extra}---\n\n# Sam Rivera\n', encoding='utf-8')
+
+    def _source(self, claims_yaml: str) -> None:
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(
+            _claims_source(claims_yaml), encoding='utf-8')
+
+    def test_negated_birth_does_not_satisfy_w101_vitals_gap(self) -> None:
+        self._person('birth:\ndeath:\n')
+        self._source(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: not born 1900\n  status: accepted\n  confidence: high\n'
+            '  negated: true\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w101 = [f for f in findings if f.code == 'W101']
+        self.assertEqual(len(w101), 1, findings)
+        self.assertIn('birth', w101[0].message)
+
+    def test_positive_birth_still_satisfies_w101(self) -> None:
+        # Control: a NON-negated accepted birth claim DOES satisfy the gap.
+        self._person('birth:\ndeath:\n')
+        self._source(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: born 1900\n  status: accepted\n  confidence: high\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w101 = [f for f in findings if f.code == 'W101']
+        self.assertTrue(w101)
+        self.assertNotIn('birth', w101[0].message)
+        self.assertIn('death', w101[0].message)
+
+    def test_negated_birth_does_not_supersede_provisional_sourcing(self) -> None:
+        self._person('birth: 1985~\n')
+        self._source(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: not born 1985\n  status: accepted\n  confidence: high\n'
+            '  negated: true\n')
+        backlog = lint.run_lint(self.root, {}).data['backlog']
+        self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l], backlog)
+
+
 class _SurgeryBase(unittest.TestCase):
     """Shared scaffolding for the fix-mode surgery tests: one named person and
     one source file whose bytes the test controls exactly (write_bytes, so
@@ -1345,6 +1403,83 @@ class AliasMergeTests(unittest.TestCase):
         self.assertEqual((self.root / 'people' / 'Grandpa Bob.md').read_text(encoding='utf-8'), before)
         self.assertTrue(any('refused to mint' in l for l in result.data['progress']),
                         result.data['progress'])
+
+
+class DirectLineStubW119Tests(unittest.TestCase):
+    """W119: direct-line ancestors still filed as stubs (the lint mirror of
+    `fha views brackets` check 4 - the established lint-detects /
+    brackets-fixes split W103/W110 follow).
+
+    Warning severity always - on a live archive this fires for every
+    not-yet-curated ancestor at once, and it must read as a research lead
+    (SPEC §4: a stub is a legitimate permanent state), never a defect. The
+    message names `fha views brackets --fix-promote` as the applying fix.
+    """
+
+    KID = 'P-3aaaaaaaaa'
+    PA = 'P-3bbbbbbbbb'
+    FRIEND = 'P-3ccccccccc'
+    SID = 'S-3aaaaaaaaa'
+
+    def _ptext(self, pid: str, name: str, sex: str = 'U', tier: str = 'stub') -> str:
+        return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: {tier}\n---\n\n# {name}\n\n## Biography\n\nx\n')
+
+    def _build(self, *, root_person: bool = True, pa_tier: str = 'stub',
+               pa_in_stubs: bool = True) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / 'people' / 'stubs').mkdir(parents=True)
+        (root / 'people' / '002 Pa Mirror').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        cfg = f'root_person: {self.KID}\n' if root_person else ''
+        (root / 'fha.yaml').write_text(
+            cfg + 'roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / '002 Pa Mirror' / f'mirror__kid_{self.KID}.md').write_text(
+            self._ptext(self.KID, 'Kid Mirror', 'F', 'curated'), encoding='utf-8')
+        pa_dir = (root / 'people' / 'stubs') if pa_in_stubs else (root / 'people' / '002 Pa Mirror')
+        (pa_dir / f'mirror__pa_{self.PA}.md').write_text(
+            self._ptext(self.PA, 'Pa Mirror', 'M', pa_tier), encoding='utf-8')
+        (root / 'people' / 'stubs' / f'far__frank_{self.FRIEND}.md').write_text(
+            self._ptext(self.FRIEND, 'Frank Far', 'M'), encoding='utf-8')
+        claim = (
+            f'- value: "{self.KID} child of {self.PA}"\n'
+            f'  id: C-3aaaaaaaaa\n  type: relationship\n  subtype: biological\n'
+            f'  persons: [{self.KID}, {self.PA}]\n  roles:\n'
+            f'    child: {self.KID}\n    parent: [{self.PA}]\n'
+            f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n  evidence: direct\n  notes: x.\n'
+        )
+        (root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claim}```\n', encoding='utf-8')
+        return root
+
+    def _w119(self, root: Path) -> list:
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W119']
+
+    def test_direct_line_stub_warns_naming_fix_promote(self) -> None:
+        w119 = self._w119(self._build())
+        self.assertEqual(len(w119), 1)   # PA only - never off-line FRIEND
+        f = w119[0]
+        self.assertEqual(f.severity, 'W')
+        self.assertIn('research lead, not a defect', f.message)
+        self.assertIn('fha views brackets --fix-promote', f.message)
+        self.assertIn(f'fha person promote {self.PA}', f.message)
+
+    def test_curated_record_parked_in_stubs_still_flagged(self) -> None:
+        # A half promotion (tier flipped by hand, never moved) is still W119.
+        w119 = self._w119(self._build(pa_tier='curated', pa_in_stubs=True))
+        self.assertEqual(len(w119), 1)
+
+    def test_fully_curated_ancestor_is_clean(self) -> None:
+        w119 = self._w119(self._build(pa_tier='curated', pa_in_stubs=False))
+        self.assertEqual(w119, [])
+
+    def test_no_root_person_stays_silent(self) -> None:
+        w119 = self._w119(self._build(root_person=False))
+        self.assertEqual(w119, [])
 
 
 if __name__ == '__main__':

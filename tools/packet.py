@@ -949,6 +949,13 @@ def _build_timeline_text(
     than `fha views timeline`'s decade grouping (no GENERATED header, no decade
     headers) - this is a one-shot export artifact, not a tracked archive view.
 
+    A packet is family research material, not publication (the README says
+    so), so needs-review claims stay IN - but tagged the same plain words the
+    timeline views use: '[unconfirmed - parked {date}]' on a parked
+    needs-review claim, '[low confidence]' on an accepted claim whose
+    evidence is thin (owner decision 2026-07-22; the public site, by
+    contrast, is accepted-only).
+
     pids carries the survivor plus any merged-away aliases (SPEC §9) so
     claims still attached to an old id still surface here.
     """
@@ -961,7 +968,7 @@ def _build_timeline_text(
         rows = conn.execute(
             f"""
             SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value,
-                   c.place_text, c.source_id
+                   c.place_text, c.source_id, c.status, c.confidence, c.reviewed
             FROM claim_persons cp
             JOIN claims c ON cp.claim_id = c.id
             WHERE cp.person_id IN ({pid_placeholders}) AND c.status IN ('accepted', 'needs-review')
@@ -984,8 +991,12 @@ def _build_timeline_text(
         line = f'- {date_str} - {row["type"]}: {row["value"]}'
         if row['place_text']:
             line += f' @ {row["place_text"]}'
-        line += f' [{fmt_id_display(row["source_id"])}]\n'
-        lines.append(line)
+        line += f' [{fmt_id_display(row["source_id"])}]'
+        if row['status'] == 'needs-review':
+            line += f' [unconfirmed - parked {row["reviewed"]}]' if row['reviewed'] else ' [unconfirmed]'
+        elif row['status'] == 'accepted' and row['confidence'] == 'low':
+            line += ' [low confidence]'
+        lines.append(line + '\n')
     return ''.join(lines)
 
 
