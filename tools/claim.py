@@ -164,7 +164,7 @@ from _lib import (
     scan_ids_in_tree,
     scan_person_record_ids,
     sqlite_cache_schema_status,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -995,7 +995,13 @@ def run_claim(
         return result
 
     try:
-        write_text_exact(record_path, reapply_newline(new_text, text))
+        # Atomic (temp + os.replace): a failed write must leave the record
+        # exactly as it was. run_claim_batch loops this function and, on a
+        # failed item, tells the human "the rest were left as they were" and
+        # hands back a retry command - a promise a truncating `write_text_exact`
+        # could not keep, since a mid-write failure (disk full) would leave the
+        # source torn and the advised retry would then read an unparseable file.
+        write_text_exact_atomic(record_path, reapply_newline(new_text, text))
     except OSError as e:
         result.ok = False
         result.exit_code = EXIT_FAILURE
@@ -1507,7 +1513,9 @@ def run_claim_new(
         return result
 
     try:
-        write_text_exact(source_path, reapply_newline(after, before))
+        # Atomic, same as run_claim: a source record is often the sole copy of
+        # its evidence, so a failed mint must leave it untouched, not truncated.
+        write_text_exact_atomic(source_path, reapply_newline(after, before))
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {source_path}: {e}',
                      next_step='Check the file is not open elsewhere and the folder is writable, then retry.')

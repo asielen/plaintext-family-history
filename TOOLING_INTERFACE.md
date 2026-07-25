@@ -97,7 +97,7 @@ The 2026-07 usability review added three skills and the `today` connection-react
 
 ## 3. Build status & milestones
 
-The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all twelve SKILL.md files, including the 2026-07 usability-review wave (`find-photos`, `share-and-export`, `photo-context` - the last closing the one-entry backlog). Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
+The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all thirteen SKILL.md files, including the 2026-07 usability-review wave (`find-photos`, `share-and-export`, `photo-context`) and the `import-notes` legacy-notes on-ramp. Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, exactly as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
 
 The workbench harness configuration (§1) is not "built" in the tool-suite sense - it is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script). Its "build" is keeping those conventions accurate as the harness landscape changes.
 

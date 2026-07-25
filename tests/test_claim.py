@@ -1492,6 +1492,39 @@ class RunClaimBatchTests(unittest.TestCase):
         for cid in self.BOTH:
             self.assertEqual(rec[cid]['status'], 'needs-review')
 
+    def test_batch_write_failure_leaves_the_rest_untouched(self) -> None:
+        # A later item's write failing must leave THAT claim exactly as it was,
+        # and the batch must say so. The promise rests on run_claim writing
+        # atomically (write_text_exact_atomic) - a truncating write that died
+        # mid-write would leave the source torn, and the advised retry would
+        # then read an unparseable file. Patching that writer is what proves it
+        # is wired in: a regression to the non-atomic writer would bypass this
+        # patch, write the second claim, and fail the untouched assertion.
+        before = {c['id']: str(c['status'])
+                  for c in read_record(self.source)['claims']}
+        orig = claim.write_text_exact_atomic
+        calls = {'n': 0}
+
+        def flaky(path, text):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise OSError('simulated disk full on the second write')
+            return orig(path, text)
+        claim.write_text_exact_atomic = flaky
+        try:
+            result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                           status='accepted', reviewed='2026-07-20')
+        finally:
+            claim.write_text_exact_atomic = orig
+
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(len(result['applied']), 1)   # only the first landed
+        rec = self._claims()
+        self.assertEqual(rec[self.BOTH[0]]['status'], 'accepted')
+        self.assertEqual(str(rec[self.BOTH[1]]['status']), before[self.BOTH[1]])
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('left as they were', text)
+
     def test_multi_id_with_field_flag_refused_nothing_written(self) -> None:
         before = self.source.read_text(encoding='utf-8')
         result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),

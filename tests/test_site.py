@@ -82,13 +82,13 @@ class _Base(unittest.TestCase):
                 'INSERT INTO source_people(source_id, person_id) VALUES (?,?)', (sid, pid))
 
     def _seed_claim(self, cid, sid, ctype, value, *, status='accepted', date_edtf=None,
-                    place_text=None, persons=(), confidence=None, reviewed=None):
+                    place_text=None, persons=(), confidence=None, reviewed=None, negated=0):
         self.conn.execute(
             'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, place_text, '
-            'confidence, reviewed) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?)',
+            'confidence, reviewed, negated) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
             (cid, sid, ctype, value, status, date_edtf, (date_edtf or '')[:4] + '-01-01' if date_edtf else None, place_text,
-             confidence, reviewed),
+             confidence, reviewed, negated),
         )
         for pos, pid in enumerate(persons):
             self.conn.execute(
@@ -258,6 +258,19 @@ class PersonPageTests(_Base):
         self.assertIn('Married', html)
         # Stories section rendered
         self.assertIn('A tale worth keeping.', html)
+
+    def test_negated_vital_not_rendered_as_positive_summary(self):
+        # A --negated birth ("not born 1900") is a confirmed absence, not a
+        # settled headline fact: `_person_summary` must not render it as
+        # `Born 1900`, which would assert the very thing the claim denies.
+        self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', 'not born 1900',
+                         status='accepted', date_edtf='1900', persons=('p-aaaaaaaaaa',),
+                         negated=1)
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertNotIn('<dt>Born</dt>', html)
 
     def test_biography_token_swap(self):
         self._setup_thomas()

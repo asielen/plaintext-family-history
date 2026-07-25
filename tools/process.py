@@ -2393,7 +2393,15 @@ def _move_file(src: Path, dest: Path) -> None:
     try:
         shutil.copy2(src, dest)
     except Exception:
-        dest.unlink(missing_ok=True)
+        # Best-effort: drop the partial copy, but never let a failure to remove
+        # it (a locked handle on Windows) MASK the real copy error - re-raise the
+        # copy failure. A partial that survives is caught by the caller's
+        # residual-partial guard, which checks `dest` after a failed forward move
+        # and names the stray so no rollback is reported as clean.
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
     try:
         src.unlink()
@@ -3008,6 +3016,19 @@ def process_refile(
         except Exception:
             record_consistent = False
 
+        # 3b. A forward move that failed mid-copy can leave a partial destination
+        #     file that `_move_file` could not remove (a locked handle on Windows).
+        #     It is not `file_moved`, so steps 1-3 never touched it; remove it now,
+        #     and if that still fails, name it so no report below claims a clean
+        #     rollback while an orphan sits in the destination root. Done before
+        #     step 4 so clearing the stray lets a created folder rmdir cleanly.
+        stray_partial: str | None = None
+        if not file_moved and dest_path.exists():
+            try:
+                dest_path.unlink()
+            except OSError:
+                stray_partial = _rel(dest_path, archive_root)
+
         # 4. Drop any now-empty folders this run created (deepest first). One that
         #    still holds the stranded file simply stays - it is reported below.
         for d in reversed(created_dirs):
@@ -3026,7 +3047,16 @@ def process_refile(
             print(f'ERROR: refile failed, rolled back: {e}', file=sys.stderr)
             if undone:
                 print('Undone: ' + '; '.join(undone) + '.', file=sys.stderr)
-            print(f'Nothing was left changed in {rel_record}.', file=sys.stderr)
+            if stray_partial is not None:
+                # The record is back to its original text, but the failed copy's
+                # partial destination could not be removed - name it and the
+                # manual step so this is not read as "nothing changed".
+                print(f'{rel_record} is unchanged, but a partial copy was left at '
+                      f'{stray_partial} and could not be removed automatically - '
+                      f'remove it by hand (e.g. `rm {stray_partial}`), then re-run.',
+                      file=sys.stderr)
+            else:
+                print(f'Nothing was left changed in {rel_record}.', file=sys.stderr)
             return EXIT_FAILURE
 
         if move_back_error is None:

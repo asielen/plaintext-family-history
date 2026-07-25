@@ -2055,7 +2055,13 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
         living = str(meta.get('living', 'unknown'))
 
         person_claims = _get_person_accepted_claims(pid, registry)
-        claimed_types = {str(c.get('type', '')) for c in person_claims}
+        # Positive-fact set only: a negated claim ("not born in 1900") is a
+        # confirmed absence, not a settled vital, so it must not satisfy the
+        # birth/death completeness check below. The marriage branch keeps its
+        # own explicit negated-marriage rule (a negated marriage IS a
+        # completeness signal - "never married").
+        claimed_types = {str(c.get('type', '')) for c in person_claims
+                         if c.get('negated') not in (True, 'true')}
 
         missing_vitals = []
         for vital in ('birth', 'marriage', 'death'):
@@ -2715,14 +2721,21 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
     """{(P-id, 'birth'|'death')} for every accepted vital claim naming a person.
 
     A sourced, accepted vital claim SUPERSEDES the provisional `birth:`/`death:`
-    field, so the needs-sourcing backlog stops listing that field once one exists."""
+    field, so the needs-sourcing backlog stops listing that field once one exists.
+
+    Negated claims do NOT supersede: a `--negated` birth ("not born in 1900")
+    is a confirmed absence, not the settled date the provisional field records,
+    so it must not silence the needs-sourcing reminder for a real provisional
+    date. Same polarity rule as the W101 vitals-gap check above."""
     out: set[tuple[str, str]] = set()
     for claims in registry.source_claims.values():
         for claim in claims:
             if not isinstance(claim, dict):
                 continue
             ctype = str(claim.get('type', ''))
-            if ctype in PROVISIONAL_VITAL_FIELDS and str(claim.get('status', '')) == 'accepted':
+            if (ctype in PROVISIONAL_VITAL_FIELDS
+                    and str(claim.get('status', '')) == 'accepted'
+                    and claim.get('negated') not in (True, 'true')):
                 for ppid in _claim_person_ids(claim, registry.alias_map):
                     out.add((ppid, ctype))
     return out

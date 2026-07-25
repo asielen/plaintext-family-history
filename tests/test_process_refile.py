@@ -504,6 +504,47 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertNotIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []),
                          'the just-embedded keyword is rolled back')
 
+    def test_forward_move_partial_that_cannot_be_removed_is_named(self) -> None:
+        # A cross-filesystem forward move whose copy dies mid-write leaves a
+        # partial at the destination; if that partial cannot be removed (a
+        # locked handle on Windows), the rollback must NOT report a clean
+        # "nothing changed" - it must name the stray file and the manual step.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before_record = record.read_bytes()
+        dest = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+
+        real_move = process._move_file
+        real_unlink = Path.unlink
+
+        def fake_move(src: Path, dst: Path) -> None:
+            # Forward move only: drop a partial at the destination, then fail.
+            if src == asset:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(b'partial')
+                raise OSError('simulated cross-fs copy failure')
+            return real_move(src, dst)
+
+        def fake_unlink(self, *a, **k):
+            if self == dest:
+                raise OSError('simulated locked handle')
+            return real_unlink(self, *a, **k)
+
+        process._move_file = fake_move
+        Path.unlink = fake_unlink
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process._move_file = real_move
+            Path.unlink = real_unlink
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('partial copy was left at', err)
+        self.assertIn('campaign-card.jpg', err)
+        self.assertNotIn('Nothing was left changed', err)
+        self.assertEqual(record.read_bytes(), before_record, 'the record is untouched')
+        self.assertTrue(asset.exists(), 'the original is kept')
+
     def test_rollback_move_back_failure_reports_and_stays_consistent(self) -> None:
         # The reviewer-named hazard: the record write fails so rollback begins,
         # then the asset drive disconnects and the file cannot be moved back.

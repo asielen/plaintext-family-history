@@ -1876,6 +1876,12 @@ class _SiteBuilder:
         accepted claim per type wins, with `ORDER BY c.id` making that pick
         deterministic (row order otherwise varies by rowid and churns the
         committed example fixtures between rebuilds).
+
+        Negated claims are excluded (COALESCE(c.negated, 0) = 0): a confirmed
+        absence - a `--negated` birth minted as "not born in 1900" - is not a
+        settled headline fact, and rendering it as `Born 1900` would assert the
+        very thing the claim denies. Same posture as wikitree's spacetime and
+        template exclusions.
         """
         living_filter = (
             '' if self.linked else
@@ -1889,6 +1895,7 @@ class _SiteBuilder:
             "FROM claims c "
             "JOIN claim_persons cp ON c.id = cp.claim_id "
             f"WHERE cp.person_id = ? AND c.status = 'accepted' "
+            "AND COALESCE(c.negated, 0) = 0 "
             f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter} "
             "ORDER BY c.id",
             (pid,),
@@ -3121,11 +3128,16 @@ class _SiteBuilder:
 
     def _person_vitals(self, pid: str) -> dict:
         """First accepted birth/death `date_edtf` for a person, for tree labels.
-        Mirrors `fha views tree`'s node vitals (TOOLING §7 D3)."""
+        Mirrors `fha views tree`'s node vitals (TOOLING §7 D3).
+
+        Negated claims are excluded (COALESCE(c.negated, 0) = 0): a negated
+        birth/death is a confirmed absence, not a date to label a pedigree node
+        with. Same posture as `_person_summary`."""
         vitals = {'birth': None, 'death': None}
         for r in self.conn.execute(
             "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
-            "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted'",
+            "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted' "
+            "AND COALESCE(c.negated, 0) = 0",
             (pid,),
         ):
             # Standalone: show a (deceased) person's date even when its source is

@@ -835,6 +835,64 @@ class NeedsSourcingBacklogTests(unittest.TestCase):
         self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l])
 
 
+class NegatedVitalPolarityTests(unittest.TestCase):
+    """A negated claim is a confirmed ABSENCE, never a positive vital: it must
+    not satisfy the W101 vitals-gap check nor supersede a provisional date's
+    needs-sourcing reminder. The negated-MARRIAGE completeness rule ("never
+    married" IS a completeness signal) is the one exception and stays."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _person(self, extra: str) -> None:
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\ntier: curated\n'
+            f'living: false\n{extra}---\n\n# Sam Rivera\n', encoding='utf-8')
+
+    def _source(self, claims_yaml: str) -> None:
+        (self.root / 'sources' / 'test_S-1111111111.md').write_text(
+            _claims_source(claims_yaml), encoding='utf-8')
+
+    def test_negated_birth_does_not_satisfy_w101_vitals_gap(self) -> None:
+        self._person('birth:\ndeath:\n')
+        self._source(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: not born 1900\n  status: accepted\n  confidence: high\n'
+            '  negated: true\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w101 = [f for f in findings if f.code == 'W101']
+        self.assertEqual(len(w101), 1, findings)
+        self.assertIn('birth', w101[0].message)
+
+    def test_positive_birth_still_satisfies_w101(self) -> None:
+        # Control: a NON-negated accepted birth claim DOES satisfy the gap.
+        self._person('birth:\ndeath:\n')
+        self._source(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: born 1900\n  status: accepted\n  confidence: high\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w101 = [f for f in findings if f.code == 'W101']
+        self.assertTrue(w101)
+        self.assertNotIn('birth', w101[0].message)
+        self.assertIn('death', w101[0].message)
+
+    def test_negated_birth_does_not_supersede_provisional_sourcing(self) -> None:
+        self._person('birth: 1985~\n')
+        self._source(
+            '- id: C-1111111111\n  type: birth\n  persons: [P-1111111111]\n'
+            '  value: not born 1985\n  status: accepted\n  confidence: high\n'
+            '  negated: true\n')
+        backlog = lint.run_lint(self.root, {}).data['backlog']
+        self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l], backlog)
+
+
 class _SurgeryBase(unittest.TestCase):
     """Shared scaffolding for the fix-mode surgery tests: one named person and
     one source file whose bytes the test controls exactly (write_bytes, so
