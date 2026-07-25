@@ -1302,6 +1302,11 @@ def _build_ahnentafel_lint(
     in children_of[P].
 
     Determinism on same-sex / unknown pairs: lex-first P-id takes the even slot.
+    With three or more genetic contributors (assisted reproduction), the two
+    Ahnentafel slots are filled by the documented TOOLING 7 rule, not by the two
+    lowest-P-id parents - see the multi-parent branch below. This must stay in
+    step with build_ahnentafel_map in _lib.py, which does the same selection from
+    the SQLite relationships table.
     """
     # Build child_pid → {parent_pids} from children_of for quick upward lookup
     parents_of: dict[str, set[str]] = {}
@@ -1326,21 +1331,30 @@ def _build_ahnentafel_lint(
                 pid_to_pos[pp] = pos
                 queue.append((pp, pos))
         else:
-            # Take at most 2 parents; ignore additional (data quality issue)
-            p1, p2 = parent_pids[0], parent_pids[1]
-            s1 = str(registry.person_meta.get(p1, {}).get('sex', 'U') or 'U')
-            s2 = str(registry.person_meta.get(p2, {}).get('sex', 'U') or 'U')
-            if s1 == 'M' and s2 != 'M':
-                father, mother = p1, p2
-            elif s2 == 'M' and s1 != 'M':
-                father, mother = p2, p1
-            elif s1 == 'F' and s2 != 'F':
-                mother, father = p1, p2
-            elif s2 == 'F' and s1 != 'F':
-                mother, father = p2, p1
-            else:
-                sorted_pair = sorted([p1, p2])
-                father, mother = sorted_pair[0], sorted_pair[1]
+            # Two or more genetic parent edges - assisted reproduction (e.g. a
+            # donor-egg mother, a surrogate-genetic mother, and a donor-sperm
+            # father). The two-slot Ahnentafel model numbers exactly one
+            # contributor per slot (father 2n, mother 2n+1). Taking the two
+            # lowest-P-id parents could seat two female contributors in both
+            # slots and drop the sperm contributor, so apply the TOOLING 7 rule:
+            # rank each contributor for each slot by (sex-fitness, P-id) - father
+            # prefers M, then U, then F; mother prefers F, then U, then M; P-id
+            # breaks ties. Extra contributors beyond the two slots are left
+            # unnumbered (the bracket list shows them). This reproduces the old
+            # two-parent behaviour for every sex combination while staying
+            # deterministic for three or more, matching _lib.build_ahnentafel_map.
+            def _sex_of(pp: str) -> str:
+                return str(registry.person_meta.get(pp, {}).get('sex', 'U') or 'U')
+
+            def _father_rank(pp: str) -> tuple[int, str]:
+                return ({'M': 0, 'U': 1, 'F': 2}.get(_sex_of(pp), 1), pp)
+
+            def _mother_rank(pp: str) -> tuple[int, str]:
+                return ({'F': 0, 'U': 1, 'M': 2}.get(_sex_of(pp), 1), pp)
+
+            father = min(parent_pids, key=_father_rank)
+            mother = min((pp for pp in parent_pids if pp != father),
+                         key=_mother_rank)
             for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
                 if pp not in pid_to_pos:
                     pid_to_pos[pp] = pos
