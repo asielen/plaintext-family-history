@@ -570,7 +570,7 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "c35ba7af07c1c63c04c27d38c07d1610286179153d3f8b6a5b2d96b6c845d5cb",
+      "sha256": "561dce90a072bc3a48aeba04c149bd91dd2ec61080172d7c17bc94d76ce79312",
       "spec_version": "1.2"
     },
     {
@@ -636,13 +636,13 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "996ece7b7504b2b119a63a702cce9ee760354d63b8f9582ec114de6b8e9be8d7",
+      "sha256": "e55315f360e93ce64f46c2cd3bfd4bcfbfa001b4c198858583d959c6039b6f91",
       "spec_version": "1.2"
     },
     {
       "path": "tools/reconcile.py",
       "category": "operating",
-      "sha256": "e43598fe80a2e1f47f306fd5eb0f706c756845eda0cc3958dde94076899d5fd5",
+      "sha256": "55209f047c6d6277d9fa0abab30c40e4c421f1d1c28c6e28f57d99137d5a8f45",
       "spec_version": "1.2"
     },
     {
@@ -684,7 +684,7 @@
     {
       "path": "tools/source.py",
       "category": "operating",
-      "sha256": "c51fb9c7a42d9d03c39dbcb19f5eea74e53e4b85765c702f23838ed3b73eb6c9",
+      "sha256": "25d44f78256882e441c72f0ff121e83b1f28c47cb46994708cc0f418336dd7f7",
       "spec_version": "1.2"
     },
     {
