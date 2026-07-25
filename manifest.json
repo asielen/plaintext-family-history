@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-24",
+  "generated": "2026-07-25",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -181,7 +181,7 @@
     {
       "path": "design/custom.css",
       "category": "skeleton",
-      "sha256": "ec5e92d69db34dd4d6d97dc600e71197b56d7dc889ed68e0c66d7ade106fc512",
+      "sha256": "817986f1e6e096e29f0ea598dac2bbde2b98c917b2862ea34ac6c64544946e20",
       "spec_version": "1.2"
     },
     {
@@ -454,7 +454,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "c61c433f73b99e42338196f41502d396ca73a13e6722bd55f77060ea9dfa7c35",
+      "sha256": "e256a4c74bc6a97a719009b68a8c8010c4d772131cf817c7f1689f81df05b1e1",
       "spec_version": "1.2"
     },
     {
