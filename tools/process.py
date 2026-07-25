@@ -1227,25 +1227,34 @@ def process_document(
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
 
-    undo: list = []
+    # Each undo carries a plain description so a rollback that cannot finish can
+    # name exactly what it left behind - a swallowed undo failure that still
+    # reported "rolled back" is the whole hazard here.
+    undo: list[tuple[str, object]] = []
     try:
         new_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.rename(new_path)
-        undo.append(lambda: new_path.rename(file_path))
+        undo.append((f'move {new_path.name} back to {file_path.name}',
+                     lambda: new_path.rename(file_path)))
 
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
-        undo.append(lambda: record_path.unlink(missing_ok=True))
+        undo.append((f'delete the half-written record {record_path.name}',
+                     lambda: record_path.unlink(missing_ok=True)))
 
         if sidecar is not None:
             sidecar.unlink()
     except Exception as e:
-        for fn in reversed(undo):
-            try:
-                fn()
-            except Exception:
-                pass
-        print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
+        failed = _run_undo(undo)
+        if failed:
+            print(f'ERROR: processing failed, and the rollback could not finish: {e}',
+                  file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print('The archive may be inconsistent. Run `fha doctor` to see what is '
+                  'off; a file left renamed with no record is re-tied with '
+                  '`fha reconcile`.', file=sys.stderr)
+        else:
+            print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
     print(f'Minted {sid}')
@@ -1684,16 +1693,32 @@ def process_photo_group(
         if sidecar is not None:
             sidecar.unlink()
     except Exception as e:
+        # Best-effort unwind that keeps its failures instead of swallowing them:
+        # a SOURCE keyword left on a photo after the record is gone is a real
+        # inconsistency, and the owner has to be told when one survives.
+        failed: list[str] = []
         try:
             record_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as undo_exc:
+            failed.append(f'delete the half-written record {record_path.name} ({undo_exc})')
         for m in reversed(embedded):
             try:
-                _run_exiftool_remove_source(m, sid, extra_keywords=per_member_new_people[m] or None)
-            except RuntimeError:
-                pass
-        print(f'ERROR: processing the variation set failed, rolled back: {e}', file=sys.stderr)
+                kw_err = _run_exiftool_remove_source(
+                    m, sid, extra_keywords=per_member_new_people[m] or None)
+            except RuntimeError as kw_exc:
+                kw_err = str(kw_exc)
+            if kw_err is not None:
+                failed.append(f'remove the SOURCE: {sid} keyword from {m.name} ({kw_err})')
+        if failed:
+            print(f'ERROR: processing the variation set failed, and the rollback '
+                  f'could not finish: {e}', file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print(f'The archive may be inconsistent - a photo may still carry a '
+                  f'SOURCE: {sid} keyword pointing at a record that is gone. Run '
+                  '`fha doctor` to see what is off, then clear the keyword as it '
+                  'advises.', file=sys.stderr)
+        else:
+            print(f'ERROR: processing the variation set failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
     print(f'Minted {sid}')
@@ -2052,7 +2077,8 @@ def process_bundle(
             item['dest'].parent.mkdir(parents=True, exist_ok=True)
             src, dest = item['src'], item['dest']
             src.rename(dest)
-            undo.append(lambda s=src, d=dest: d.rename(s))
+            undo.append((f'move {dest.name} back to {src.name}',
+                         lambda s=src, d=dest: d.rename(s)))
             if item['embed']:
                 err = _run_exiftool_embed_source(dest, sid)
                 if err is not None:
@@ -2060,24 +2086,37 @@ def process_bundle(
                 embedded.append((dest, sid))
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path.write_text(text, encoding='utf-8')
-        undo.append(lambda: record_path.unlink(missing_ok=True))
+        undo.append((f'delete the half-written record {record_path.name}',
+                     lambda: record_path.unlink(missing_ok=True)))
 
         # Dissolve the now-asset-free folder: remove the notes stub, then rmdir.
         notes_path.unlink()
-        undo.append(lambda p=notes_path, text=notes_text: p.write_text(text, encoding='utf-8'))
+        undo.append((f'restore the bundle notes stub {notes_path.name}',
+                     lambda p=notes_path, text=notes_text: p.write_text(text, encoding='utf-8')))
         folder.rmdir()
     except Exception as e:
+        # Keyword removals and the file/record undos are all best-effort, and any
+        # that fail are reported: a file left in its destination or a keyword left
+        # on a photo with no record is a real inconsistency, not a clean rollback.
+        failed: list[str] = []
         for dest, dsid in reversed(embedded):
             try:
-                _run_exiftool_remove_source(dest, dsid)
-            except RuntimeError:
-                pass
-        for fn in reversed(undo):
-            try:
-                fn()
-            except Exception:
-                pass
-        print(f'ERROR: bundle dissolution failed, rolled back: {e}', file=sys.stderr)
+                kw_err = _run_exiftool_remove_source(dest, dsid)
+            except RuntimeError as kw_exc:
+                kw_err = str(kw_exc)
+            if kw_err is not None:
+                failed.append(f'remove the SOURCE: {dsid} keyword from {dest.name} ({kw_err})')
+        failed.extend(_run_undo(undo))
+        if failed:
+            print(f'ERROR: bundle dissolution failed, and the rollback could not '
+                  f'finish: {e}', file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print('The archive may be inconsistent - a file may still sit in its '
+                  'destination or a photo may still carry a SOURCE keyword with no '
+                  'record. Run `fha doctor` to see what is off; `fha reconcile` '
+                  're-ties a stranded file to its record.', file=sys.stderr)
+        else:
+            print(f'ERROR: bundle dissolution failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
     print(f'Minted {sid} for bundle {folder.name}')
@@ -2269,20 +2308,29 @@ def attach_more(
     try:
         new_path.parent.mkdir(parents=True, exist_ok=True)
         more_file.rename(new_path)
-        undo.append(lambda: new_path.rename(more_file))
+        undo.append((f'move {new_path.name} back to {more_file.name}',
+                     lambda: new_path.rename(more_file)))
         new_text = _append_file_entry(old_text, entry)
         record_path.write_text(new_text, encoding='utf-8')
     except Exception as e:
+        # Undo the record entry and the rename best-effort, but keep any failure:
+        # a file left renamed while the record no longer lists it is inconsistent,
+        # so the owner is told rather than shown a false "rolled back".
+        failed: list[str] = []
         try:
             record_path.write_text(old_text, encoding='utf-8')
-        except Exception:
-            pass
-        for fn in reversed(undo):
-            try:
-                fn()
-            except Exception:
-                pass
-        print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
+        except Exception as rec_exc:
+            failed.append(f'restore {record_path.name} ({rec_exc})')
+        failed.extend(_run_undo(undo))
+        if failed:
+            print(f'ERROR: attach failed, and the rollback could not finish: {e}',
+                  file=sys.stderr)
+            print('Could not undo: ' + '; '.join(failed) + '.', file=sys.stderr)
+            print('The archive may be inconsistent. Run `fha doctor` to see what is '
+                  'off; `fha reconcile` re-ties a renamed file to its record.',
+                  file=sys.stderr)
+        else:
+            print(f'ERROR: attach failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
     print(f'Renamed {more_file.name} -> {more_dest_display}')
     print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
@@ -2307,6 +2355,25 @@ def _stdin_is_interactive() -> bool:
     photos->documents confirm gate can be exercised both ways without a TTY.
     """
     return sys.stdin.isatty()
+
+
+def _run_undo(undo: list) -> list[str]:
+    """Run undo steps in reverse, best-effort, and return what could NOT be undone.
+
+    Rollback has to be best-effort - a later step still runs after an earlier one
+    fails - but it must never claim more than it actually did. Each entry is a
+    (description, callable) pair, and the description is written for the archive's
+    owner, so a rollback that cannot finish names exactly what it left behind (a
+    file still renamed, a record still on disk) instead of the older silent
+    'rolled back' that hid a half-undone, inconsistent archive from him.
+    """
+    failed: list[str] = []
+    for desc, fn in reversed(undo):
+        try:
+            fn()
+        except Exception as undo_exc:
+            failed.append(f'{desc} ({undo_exc})')
+    return failed
 
 
 def _move_file(src: Path, dest: Path) -> None:
@@ -2792,24 +2859,30 @@ def process_refile(
                 print('Not refiled - nothing changed.')
                 return EXIT_CLEAN
 
-    undo: list = []
+    # Explicit transactional state, not a list of opaque undo lambdas: a rollback
+    # that hits a snag (the asset drive unplugged mid-undo) has to tell the owner
+    # WHERE the file ended up and WHERE the record points, and only named state
+    # can say that. The order below is the fix for the reviewer-named hazard - the
+    # file is moved back BEFORE the record is rewritten, and the record is then
+    # pointed at the file's REAL location, so a rollback that cannot finish still
+    # leaves the file and the record agreeing (a consistent archive) instead of a
+    # record pointing at a now-missing old path while the file sits in the
+    # destination root - a split a file browser never surfaces.
+    created_dirs: list[Path] = []
+    file_moved = False
     keyword_warning: str | None = None
     keyword_embedded = False
     try:
         # Track which destination folders this run creates, so a rollback can
-        # remove them again (shallowest registered first; reversed undo order
-        # then removes deepest-first, after the file has moved back out).
-        missing_dirs: list[Path] = []
+        # remove them again (deepest-first, once the file has moved back out).
         probe = dest_dir
         while not probe.exists() and probe != probe.parent:
-            missing_dirs.append(probe)
+            created_dirs.append(probe)
             probe = probe.parent
         dest_dir.mkdir(parents=True, exist_ok=True)
-        for d in reversed(missing_dirs):
-            undo.append(lambda d=d: d.rmdir())
 
         _move_file(src, dest_path)
-        undo.append(lambda: _move_file(dest_path, src))
+        file_moved = True
 
         if embed_keyword:
             if not keyword_supported:
@@ -2834,17 +2907,102 @@ def process_refile(
                             'files: inventory still carries the identity.')
                     else:
                         keyword_embedded = True
-                        undo.append(lambda: _run_exiftool_remove_source(dest_path, sid))
 
-        undo.append(lambda: write_text_exact(record_path, old_text))
         write_text_exact(record_path, reapply_newline(final_text, old_text))
     except Exception as e:
-        for fn in reversed(undo):
+        # Best-effort rollback that never claims more than it did. Every step is
+        # attempted even when an earlier one fails, failures are collected rather
+        # than swallowed, and the record is written LAST, pointing at wherever the
+        # file actually is now.
+        undone: list[str] = []
+        move_back_error: Exception | None = None
+
+        # 1. Strip the SOURCE keyword this run embedded, targeting the destination
+        #    where the file still sits (before the move-back), so the removal lands
+        #    on the file's current path and undoes exactly what the embed added.
+        if keyword_embedded:
             try:
-                fn()
-            except Exception:
+                kw_err = _run_exiftool_remove_source(dest_path, sid)
+            except RuntimeError as kw_exc:
+                kw_err = str(kw_exc)
+            if kw_err is None:
+                undone.append(f'removed the SOURCE: {sid} keyword from {new_name}')
+
+        # 2. Move the file home. If the asset drive vanished this fails here, and
+        #    file_home stays at the destination so step 3 points the record at the
+        #    file's real location instead of the now-missing old one.
+        file_home = src
+        if file_moved:
+            try:
+                _move_file(dest_path, src)
+                undone.append(f'moved {new_name} back to {_rel(src, archive_root)}')
+            except Exception as move_exc:
+                file_home = dest_path
+                move_back_error = move_exc
+
+        # 3. Point the record at the file's real location. Move-back done -> old
+        #    alias (a full undo); move-back failed -> the file is still in the
+        #    destination, so the record must point THERE to keep the archive
+        #    consistent. Writing the record last means a failed move-back can never
+        #    strand the record on the missing old path.
+        if file_home == src:
+            record_text = old_text
+        else:
+            record_text = reapply_newline(final_text, old_text)
+        record_consistent = True
+        try:
+            write_text_exact(record_path, record_text)
+        except Exception:
+            record_consistent = False
+
+        # 4. Drop any now-empty folders this run created (deepest first). One that
+        #    still holds the stranded file simply stays - it is reported below.
+        for d in reversed(created_dirs):
+            try:
+                d.rmdir()
+            except OSError:
                 pass
-        print(f'ERROR: refile failed, rolled back: {e}', file=sys.stderr)
+
+        rel_record = _rel(record_path, archive_root)
+        if move_back_error is None:
+            # File is home and the record points home: a clean, complete rollback.
+            print(f'ERROR: refile failed, rolled back: {e}', file=sys.stderr)
+            if undone:
+                print('Undone: ' + '; '.join(undone) + '.', file=sys.stderr)
+            print(f'Nothing was left changed in {rel_record}.', file=sys.stderr)
+            return EXIT_FAILURE
+
+        # The move-back could not finish. Report the true on-disk state plainly.
+        rel_dest = _rel(dest_path, archive_root)
+        rel_src = _rel(src, archive_root)
+        print(f'ERROR: refile failed, and the file could not be moved back: {e}',
+              file=sys.stderr)
+        print(f'The {alias_root} location did not answer while moving the file '
+              f'home: {move_back_error}', file=sys.stderr)
+        if undone:
+            print('Done during rollback: ' + '; '.join(undone) + '.', file=sys.stderr)
+        if record_consistent:
+            # Healed to a consistent "still refiled" state: file at the destination,
+            # record points at the destination. Honest - the refile stands - and
+            # the reverse command is the one clean way to finish undoing it later.
+            print(f'To keep the archive consistent, the file was LEFT at {rel_dest} '
+                  f'and {rel_record} now points there. Nothing is broken, but the '
+                  'refile you were undoing is still in place.', file=sys.stderr)
+            reverse = f'fha process refile {sid} --to {alias_root}'
+            if alias_root == _PHOTO_DIR:
+                reverse += ' --dest <folder>'
+            print(f'Next: reconnect the {alias_root} location, then run '
+                  f'`{reverse}` to move it back.', file=sys.stderr)
+        else:
+            # Could not even re-point the record: a genuine split. Spell out both
+            # halves and the manual repair so the owner is never left guessing.
+            print(f'WARNING: the archive is now INCONSISTENT: the file is at '
+                  f'{rel_dest}, but {rel_record} still lists {stored_alias} '
+                  f'({rel_src}), which is not where the file is.', file=sys.stderr)
+            print(f'Next: reconnect the {alias_root} location, move {rel_dest} back '
+                  f'to {rel_src} by hand, then run `fha reconcile` to re-tie the '
+                  'record to the file. Run `fha doctor` to confirm it is clean '
+                  'again.', file=sys.stderr)
         return EXIT_FAILURE
 
     print(f'Refiled {stored_alias} -> {new_alias}')

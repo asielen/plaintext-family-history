@@ -492,6 +492,95 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertNotIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []),
                          'the just-embedded keyword is rolled back')
 
+    def test_rollback_move_back_failure_reports_and_stays_consistent(self) -> None:
+        # The reviewer-named hazard: the record write fails so rollback begins,
+        # then the asset drive disconnects and the file cannot be moved back.
+        # The command must NOT claim a clean rollback. It reports the move-back
+        # failure, leaves the file where it is with the record pointing THERE (a
+        # consistent archive, not a record aimed at a now-missing old path),
+        # names the recovery command, and exits non-zero.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        real_write = self._orig_write_text_exact
+        writes = {'n': 0}
+
+        def flaky_write(path, text):
+            # Fail the forward record write (triggering rollback); let the
+            # rollback's re-point of the record succeed so the archive is healed
+            # to a consistent "still refiled" state.
+            writes['n'] += 1
+            if writes['n'] == 1:
+                raise OSError('simulated disk full on the record write')
+            return real_write(path, text)
+        process.write_text_exact = flaky_write
+
+        real_move = process._move_file
+
+        def move_back_fails(src, dest):
+            # The forward move into photos/1880s works; the rollback move back
+            # OUT of it fails, as if the drive vanished mid-undo.
+            if Path(src).parent.name == '1880s':
+                raise OSError('simulated drive disconnected during rollback')
+            return real_move(src, dest)
+        process._move_file = move_back_fails
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process._move_file = real_move
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        # It does NOT falsely claim a clean, complete rollback ...
+        self.assertNotIn('refile failed, rolled back:', err)
+        # ... it names the failed step and the true on-disk result.
+        self.assertIn('could not be moved back', err)
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertTrue(moved.is_file(), 'the file is left where the move-back could not reach')
+        self.assertFalse(asset.exists())
+        self.assertIn('photos/1880s/campaign-card.jpg', err)
+        # The record points at the file's real location: file and record agree.
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/campaign-card.jpg')
+        # A concrete recovery command is offered.
+        self.assertIn('fha process refile', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_rollback_double_failure_reports_inconsistency(self) -> None:
+        # Worst case: the record write fails, the file cannot be moved back, AND
+        # re-pointing the record also fails. The command must own up to an
+        # inconsistent archive, name both halves (where the file is, where the
+        # record still points), and give the manual repair - never a clean claim.
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        def always_boom(path, text):
+            raise OSError('simulated disk full')
+        process.write_text_exact = always_boom
+
+        real_move = process._move_file
+
+        def move_back_fails(src, dest):
+            if Path(src).parent.name == '1880s':
+                raise OSError('simulated drive disconnected during rollback')
+            return real_move(src, dest)
+        process._move_file = move_back_fails
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process._move_file = real_move
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('refile failed, rolled back:', err)
+        self.assertIn('INCONSISTENT', err)
+        self.assertIn('fha reconcile', err)
+        self.assertIn('fha doctor', err)
+        # The file is stranded at the destination ...
+        self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.jpg').is_file())
+        self.assertFalse(asset.exists())
+        # ... and the record still names the old location it could not update.
+        self.assertIn(f'documents/census/campaign-card_{SID}.jpg', err)
+        self.assertNotIn('Traceback', err)
+
     def test_record_keeps_lf_line_endings(self) -> None:
         self._install_photo_store()
         _asset, record = self._write_doc_source()  # written via write_bytes: pure LF
