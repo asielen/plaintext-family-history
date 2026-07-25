@@ -1642,8 +1642,25 @@ def _check_w119_direct_line_stubs(
     (parents are generation 1); None means the whole derived line. Each issue
     dict carries pid/pos/name/dest_folder so `--fix-promote` can apply the
     promote engine without re-deriving anything.
+
+    WHY DESTINATIONS ARE RESOLVED IN A SECOND PASS: both partners of a couple
+    share ONE couple folder (SPEC §12.2). When BOTH sit at their couple's
+    positions (the even father-slot N and the odd mother-slot N+1) AND that
+    folder does not exist on disk yet, deriving each destination independently
+    against the same pre-promotion state would invent two DIFFERENT new folders
+    (`002 Father` and `002 Mother`), and a batch `--fix-promote` would create
+    both and split the couple. So candidates are gathered first, then grouped by
+    couple prefix: every member of a prefix gets the SAME destination - the
+    existing couple folder if one is on disk, otherwise one new folder named
+    after the even (father-slot) member. That is exactly the folder a normal
+    one-at-a-time `fha person promote` produces (it names a new couple folder
+    after the person being promoted; done father-first, the mother then finds
+    that folder), so promoted couples land where normally-created couples do.
+    The shared destination is baked into every issue dict, so the dry-run
+    preview and the live apply describe the identical folder.
     """
-    issues: list[dict] = []
+    # ── Pass 1: gather the stub candidates (destination deferred to pass 2) ──
+    candidates: list[dict] = []
     for pid, pos in sorted(pid_to_pos.items(), key=lambda kv: kv[1]):
         if pos < 2:
             continue
@@ -1662,22 +1679,43 @@ def _check_w119_direct_line_stubs(
         is_stub_tier = str(row['tier'] or 'stub').lower() != 'curated'
         if not (is_stub_tier or in_stubs):
             continue
-        name = row['name'] or fmt_id_display(pid)
-        prefix = couple_folder_prefix(pos)
-        dest = couple_folder_for_prefix(archive_root, prefix)
-        if dest is None:
-            dest = archive_root / 'people' / f'{str(prefix).zfill(3)} {name}'
-        issues.append({
-            'code': 'W119',
+        candidates.append({
             'pid': pid,
             'pos': pos,
-            'name': name,
+            'name': row['name'] or fmt_id_display(pid),
             'path': rel_path,
-            'dest_folder': dest,
+            'prefix': couple_folder_prefix(pos),
+        })
+
+    # ── Pass 2: one shared destination folder per couple prefix ─────────────
+    shared_dest: dict[int, Path] = {}
+    for prefix in {c['prefix'] for c in candidates}:
+        existing = couple_folder_for_prefix(archive_root, prefix)
+        if existing is not None:
+            shared_dest[prefix] = existing
+            continue
+        # No folder on disk: name the new one after the even (father-slot)
+        # member. For a couple that is always the lower position (N < N+1), and
+        # for a lone stub it is simply that person - matching single-person
+        # promote, which names the new folder after whoever is promoted.
+        members = [c for c in candidates if c['prefix'] == prefix]
+        namer = min(members, key=lambda c: c['pos'])
+        shared_dest[prefix] = (
+            archive_root / 'people' / f'{str(prefix).zfill(3)} {namer["name"]}')
+
+    issues: list[dict] = []
+    for c in candidates:
+        issues.append({
+            'code': 'W119',
+            'pid': c['pid'],
+            'pos': c['pos'],
+            'name': c['name'],
+            'path': c['path'],
+            'dest_folder': shared_dest[c['prefix']],
             'msg': (
-                f'W119 {rel_path}: {name} (Ahnentafel {pos}) is a direct-line '
-                'ancestor still filed as a stub - promote with '
-                f'`fha person promote {fmt_id_display(pid)}` or '
+                f'W119 {c["path"]}: {c["name"]} (Ahnentafel {c["pos"]}) is a '
+                'direct-line ancestor still filed as a stub - promote with '
+                f'`fha person promote {fmt_id_display(c["pid"])}` or '
                 '`fha views brackets --fix-promote`'
             ),
         })

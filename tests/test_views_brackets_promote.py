@@ -12,6 +12,7 @@ the other bracket fixes use. Fixtures only.
 
 import contextlib
 import io
+import shutil
 import sys
 import tempfile
 import unittest
@@ -23,7 +24,14 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import views
 import index as index_mod
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, load_fha_yaml, read_record
+from _lib import (
+    EXIT_CLEAN,
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    load_fha_yaml,
+    normalize_id,
+    read_record,
+)
 
 KID = 'P-2aaaaaaaaa'
 PA = 'P-2bbbbbbbbb'
@@ -201,6 +209,89 @@ class FixPromoteTests(BracketsPromoteBase):
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
         self.assertIn('--fix-promote', out)
         self.assertEqual(len(self._stub_names()), 4)
+
+
+GMA = 'P-2fffffffff'
+
+
+class W119SharedCoupleFolderTests(BracketsPromoteBase):
+    """Both partners of a couple are stubs and their couple folder does not
+    exist yet.
+
+    Extends the base line so PA's parents are a full couple: GPA (pos 4, the
+    father slot) and GMA (pos 5, the mother slot), both stubs, with no `004`
+    folder anywhere on disk. This is the split-couple regression: deriving each
+    destination against the pre-promotion state used to invent `004 Gpa Deep`
+    for one and `004 Gma Deep` for the other, so `--fix-promote` created two
+    folders and split the couple. Both must instead land in ONE folder, named
+    the way a normal one-at-a-time promote would name it.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Add GMA as a stub and make PA a child of GPA + GMA (was GPA only), so
+        # GMA derives to Ahnentafel position 5, GPA stays at 4 - a couple whose
+        # 004 folder does not exist.
+        (self.root / 'people' / 'stubs' / f'deep__gma_{GMA}.md').write_text(
+            _ptext(GMA, 'Gma Deep', 'F'), encoding='utf-8')
+        claims = (_rel_claim('C-2aaaaaaaaa', KID, [PA, MA])
+                  + _rel_claim('C-2bbbbbbbbb', PA, [GPA, GMA]))
+        (self.root / 'sources' / 'notes' / f'rel_{SID.lower()}.md').write_text(
+            f'---\nid: {SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+        # The index is incremental and keys on file mtime; rewriting the source
+        # within the same second would be skipped. Drop the cache for a clean
+        # full rebuild so GMA's pos-5 parent edge is picked up.
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+
+    def _root_dirs(self) -> list[str]:
+        return sorted(p.name for p in (self.root / 'people').iterdir() if p.is_dir())
+
+    def test_check_gives_both_partners_one_shared_destination(self) -> None:
+        # Unit-level: the check function must hand both pos-4 and pos-5 the same
+        # dest_folder, and that folder must be the even-slot (GPA) name - what a
+        # single `fha person promote GPA` would create.
+        conn = views.open_index_db(self.root, ('persons',))
+        try:
+            # The index stores IDs lowercased; the map is keyed on those, so
+            # seed with the normalized root and compare on normalized IDs.
+            pid_to_pos = views._build_ahnentafel_map(conn, normalize_id(KID))
+            issues = views._check_w119_direct_line_stubs(conn, self.root, pid_to_pos)
+        finally:
+            conn.close()
+        by_pid = {normalize_id(i['pid']): i for i in issues}
+        self.assertIn(normalize_id(GPA), by_pid)
+        self.assertIn(normalize_id(GMA), by_pid)
+        self.assertEqual(
+            by_pid[normalize_id(GPA)]['dest_folder'],
+            by_pid[normalize_id(GMA)]['dest_folder'])
+        self.assertEqual(by_pid[normalize_id(GPA)]['dest_folder'].name, '004 Gpa Deep')
+
+    def test_fix_promote_lands_the_couple_in_one_folder(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            res, _out, _err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        # Exactly one 004-prefixed folder, holding BOTH partners' records.
+        prefixed = [d for d in self._root_dirs() if d.startswith('004')]
+        self.assertEqual(prefixed, ['004 Gpa Deep'], prefixed)
+        shared = self.root / 'people' / '004 Gpa Deep'
+        gpa_rec = shared / f'deep__gpa_{GPA}.md'
+        gma_rec = shared / f'deep__gma_{GMA}.md'
+        self.assertTrue(gpa_rec.exists(), gpa_rec)
+        self.assertTrue(gma_rec.exists(), gma_rec)
+        self.assertEqual(str(read_record(gpa_rec)['meta'].get('tier')), 'curated')
+        self.assertEqual(str(read_record(gma_rec)['meta'].get('tier')), 'curated')
+        # No stray split folder for the mother slot.
+        self.assertNotIn('004 Gma Deep', self._root_dirs())
+
+    def test_dry_run_preview_names_the_shared_folder_for_both(self) -> None:
+        # Dry-run and live must agree: the preview names the one shared folder
+        # for both partners, so no dry-run vs live divergence.
+        res, out, _err = self._run(fix_promote=True, dry_run=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('004 Gpa Deep', out)
+        self.assertNotIn('004 Gma Deep', out)
 
 
 if __name__ == '__main__':
