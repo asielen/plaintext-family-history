@@ -230,6 +230,42 @@ class ReconcileTests(unittest.TestCase):
         meta = read_record(self.record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/letters/{DOC}')
 
+    def test_interrupted_heal_write_leaves_record_intact(self) -> None:
+        # P1 (atomic heal write): a write that dies mid-stream - disk full, the
+        # process killed - must never leave the source record half-written. The
+        # heal goes through write_text_exact_atomic, which writes a sibling temp
+        # and os.replace()s it, so an OSError raised from the write means the
+        # target was never touched. We simulate that failure and assert the
+        # record's ORIGINAL bytes survive whole (not truncated), the record is
+        # reported by name, and the run ends in a warning, not a clean exit.
+        moved = self.root / 'documents' / 'letters' / DOC
+        moved.parent.mkdir(parents=True)
+        moved.write_text('x', encoding='utf-8')
+        before = self.record.read_text(encoding='utf-8')
+
+        original = reconcile.write_text_exact_atomic
+
+        def boom(path, text):
+            # Mimic a truncation-point failure: an atomic writer must NOT have
+            # touched the target, so we raise before writing anything.
+            raise OSError(28, 'No space left on device')
+
+        reconcile.write_text_exact_atomic = boom
+        try:
+            result = self._run()
+        finally:
+            reconcile.write_text_exact_atomic = original
+
+        # The record is byte-for-byte what it was - never truncated or partial.
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        # Nothing counted as healed, and the run warns rather than reporting clean.
+        self.assertEqual(result['healed'], 0)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any(self.record.name in w and 'could not be written' in w
+                            for w in warnings),
+                        f'expected a named write-failure warning, got: {warnings}')
+
     def test_malformed_record_is_skipped_with_a_named_warning(self) -> None:
         # P2 (parse_errors): read_record reports malformed YAML through its
         # parse_errors field rather than raising. The old code read that as

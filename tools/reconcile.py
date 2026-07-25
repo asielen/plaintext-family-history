@@ -81,7 +81,7 @@ from _lib import (
     reapply_newline,
     resolve_path,
     resolve_root_arg,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -350,6 +350,15 @@ def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
     actually have been found. Any mismatch leaves that record untouched and
     reports it BY NAME - a half-healed record is worse than a stale one, and
     a silent skip is worse than either, because the human stops looking.
+
+    Every record write here (both the heal and the round-trip restore) goes
+    through write_text_exact_atomic, never a truncating write: a moved-file
+    heal must never be able to leave the source record - often the only copy
+    of that ancestor - half-written when the disk fills or the process dies
+    mid-write. The atomic writer only ever leaves the old bytes or the new
+    bytes on disk, so a raised OSError means the original still stands and the
+    'nothing healed' message it triggers is always literally true.
+
     Returns the number of entries actually rewritten (the caller reports this
     as the healed count, never the planned count).
     """
@@ -384,9 +393,18 @@ def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
                        'the entry by hand (`fha lint` names the spot).')
             continue
         try:
-            write_text_exact(rec_path, reapply_newline(after, before))
+            # Atomic sibling-temp replacement, never a truncating write: the
+            # record is often the SOLE copy of that ancestor, so a write that
+            # dies mid-stream (disk full, interrupted) must leave the original
+            # bytes intact, not a half-written file. write_text_exact_atomic
+            # raises only when the target was never touched, so the `- skipped`
+            # message below is always true - the record still reads as `before`.
+            write_text_exact_atomic(rec_path, reapply_newline(after, before))
         except OSError as e:
-            result.add('warning', f'cannot write {rec_path.name}: {e} - skipped.')
+            result.add('warning',
+                       f'{rec_path.name}: could not be written ({e}) - left as it '
+                       'was, nothing healed. Free up disk space or fix the '
+                       'permissions, then re-run `fha reconcile`.')
             continue
         # Round-trip guard: re-read the record we just wrote and confirm every
         # healed path parses back to exactly the alias we intended. A value
@@ -405,7 +423,11 @@ def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
         intended = {new.replace('\\', '/') for _old, new in pairs}
         if reparsed.get('parse_errors') or not intended <= healed_aliases:
             try:
-                write_text_exact(rec_path, before)
+                # Restore is atomic too: recovering from a bad round-trip must
+                # not itself be able to truncate the record. A failed restore
+                # here leaves the just-written (but wrong) text in place, which
+                # the error below tells the human to fix from backup or git.
+                write_text_exact_atomic(rec_path, before)
             except OSError as e:
                 result.add('error',
                            f'{rec_path.name}: a heal did not read back correctly '
