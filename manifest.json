@@ -163,7 +163,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "d9efeb841c61928b638dc75eed6a1e5e1fd0a52c0459aa67b976271f7e1cb661",
+      "sha256": "8e2d252e0fcd28be3a5e9d71004f1871cbf10fdf40d8282a916b18830a9bcb18",
       "spec_version": "1.2"
     },
     {
@@ -474,13 +474,13 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "f3f0857b41dcac81dd3f44e410a80300d2cb38dbc099dde2677544b08232f8ba",
+      "sha256": "90cbda317977bcfec18d5b548381add1f0d5253f6ae392624f9734190eb39bd6",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "6848d63b9ecabaa73651e3c7fcdb543232fcfd8a9154c5df25734ae2dfe41eac",
+      "sha256": "9e2901e578140fbfd49d6264c4592c91bcccaf2b615e320da98299edfbcb519e",
       "spec_version": "1.2"
     },
     {
@@ -576,7 +576,7 @@
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "4ea94d41dc9f6d1ee9a6ddf883e9513ebb2ad21b17e06f910a4dcb57da8be8a4",
+      "sha256": "feea271e3524d47ca2fff48a6c854d8c188c4b490e222e34582cea495d02da97",
       "spec_version": "1.2"
     },
     {
@@ -594,7 +594,7 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "dbd3bd0db38877cde0af0d17006afa0d932bb5a8af6c6f82271eaf6fbb4ff45d",
+      "sha256": "146e5dd3089d3dc0e04f4f5dbef2f6fa26f25513e3b6226771065ce8eb14cabd",
       "spec_version": "1.2"
     },
     {
@@ -636,13 +636,13 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "e55315f360e93ce64f46c2cd3bfd4bcfbfa001b4c198858583d959c6039b6f91",
+      "sha256": "5d26d2d30156540fc74a1f5769368acc1e1449dbf23d924a6b1527b5013c4dbc",
       "spec_version": "1.2"
     },
     {
       "path": "tools/reconcile.py",
       "category": "operating",
-      "sha256": "55209f047c6d6277d9fa0abab30c40e4c421f1d1c28c6e28f57d99137d5a8f45",
+      "sha256": "03936d2494a693a854c02c5cba70c1dc5880a889263f9c016427eeb794078725",
       "spec_version": "1.2"
     },
     {
@@ -672,7 +672,7 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "8884c7c3568b9b5c2d1e933f1d103a93155a5d838094be39afc83be20a2e0173",
+      "sha256": "0dba7cd4de4cd5bde3fb85a111641180878894c6c644fbc38af9592db51721bd",
       "spec_version": "1.2"
     },
     {
