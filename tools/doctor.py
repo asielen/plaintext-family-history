@@ -12,7 +12,7 @@ Checks (in order):
   1. Archive root present, fha.yaml parses              [fatal exit 2 if bad]
   2. Mapped roots (photos/, documents/, …) reachable
   3. exiftool on PATH
-  4. Python deps (PyYAML; Jinja2/Pillow for `fha site`)
+  4. Python deps (PyYAML; Jinja2/Pillow for `fha site`; pypdf for `fha source extract`)
   5. Index freshness    (.cache/index.sqlite vs newest record mtime)
   6. Photoindex freshness  (.cache/photos.sqlite vs photos root mtime)
   7. Lint summary       (E/W counts, import-and-call, no shell-out)
@@ -653,6 +653,18 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         )
         checks.append({'id': 'pillow', 'status': 'info', 'detail': 'not installed (optional)',
                        'next_step': 'python -m pip install pillow'})
+    # pypdf mirrors Pillow's posture: purely optional (`fha source extract`
+    # PDF text layers, M11.5) - absence is informational, never a warning.
+    if _ilu.find_spec('pypdf') is not None:
+        lines.append(f'pypdf (fha source extract): {_OK}  next: no action needed')
+        checks.append({'id': 'pypdf', 'status': 'ok', 'detail': 'installed', 'next_step': None})
+    else:
+        lines.append(
+            'pypdf (fha source extract): not installed (optional)  '
+            'next: `python -m pip install pypdf` to dump PDF text layers'
+        )
+        checks.append({'id': 'pypdf', 'status': 'info', 'detail': 'not installed (optional)',
+                       'next_step': 'python -m pip install pypdf'})
     lines.append('')
 
     idx_status, idx_delta = _index_freshness(archive_root)

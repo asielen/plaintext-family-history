@@ -45,6 +45,23 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    This mints the `S-id`, files the asset (documents-root: rename to the `{slug}_{S-id}` grammar;
    photos-root: write the `SOURCE: S-id` keyword, **never rename**), and scaffolds the `sources/…` record.
 
+   **Photo or document?** The root is a management fact, not a content judgment: if it lives (or belongs)
+   in the human's photo library, it goes to the photos root; everything else — scans, clippings, a
+   photograph *of* a record — goes to the documents root. A stub note's `source_type:` hint (e.g.
+   `source_type: census` on a `.jpg` scan) routes it to the documents root at intake; **without a hint the
+   file extension decides**, so set the hint when filing a scanned record saved as an image, or a scanned
+   letter will land in the photo library. When genuinely unsure, ask the human one plain question ("is
+   this one for the photo albums, or the records drawer?"). Note that many border cases need no choice at
+   all: a photos-root postcard and its documents-root transcription can share one source record (bundle or
+   `--more`). A file the human pre-filed into any documents subfolder keeps its place — `fha process`
+   renames in place, and folder organization inside the documents root is his to choose (SPEC §12.1:
+   folders are projection); an inbox single with no chosen spot files into `documents/{type}/`. If he
+   reorganizes filed documents later, `fha reconcile --dry-run` then `fha reconcile` re-ties every
+   moved file to its record. If a past run filed something in the wrong root outright,
+   `fha process refile <S-id> --to photos|documents` is the sanctioned cross-root correction — it
+   moves the file, handles the rename/keyword at the crossing, and updates the record (preview
+   with `--dry-run` first).
+
 2. **If the item is a source stub, it seeds the record and is consumed** (SPEC §12.1):
    - A **`*.notes.md` sidecar** or a **bundle folder** carries a hint block (`source_type`, `source_date`,
      `people` name-hints, `files` roles) plus freeform prose. Its frontmatter pre-fills the §14 record;
@@ -55,11 +72,37 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 
 ### Stage B — the AI draft (judgment)
 
-3. **Read the evidence — with your eyes when you have them.** Read the document text, or *look at* the
-   scan / photo if your harness can view images, or read the note. **If you cannot view images, say so
-   plainly and work from the sidecar notes and filename/keyword hints — never guess at what a scan
-   shows.** Query the index for context; **never bulk-read** the asset trees — this one file is the
-   subject, the rest of the library is `fha` calls.
+3. **Read the evidence — embedded text first, then your eyes.** The reading order is: what the file
+   already says about itself, then the file itself.
+   - **Embedded metadata first.** A photos-root image often already carries text: a **Caption** is a
+     verbatim transcription of what is written on or with the photo — treat it as evidence; an AI
+     summary (a `UserComment` beginning `AI: `) is machine-written — unverified context, never fact.
+     The photo index has already scraped both — read them rather than re-deriving what an earlier pass
+     captured: `fha photoindex find` prints the Caption; a prior AI summary surfaces only in
+     `fha photoindex set-summary --dry-run`'s old → new preview (`find` never prints it).
+   - Then read the document text, or *look at* the scan / photo if your harness can view images, or read
+     the note. **If you cannot view images, say so plainly and work from the embedded metadata, sidecar
+     notes, and filename/keyword hints — never guess at what a scan shows.** Query the index for context;
+     **never bulk-read** the asset trees — this one file is the subject, the rest of the library is `fha`
+     calls.
+
+   **Large multi-page documents** (a long PDF, a county history, a probate file) are worked in windows,
+   not swallowed whole — and never a reason to stall:
+   - **Text layer first:** many archived PDFs carry an embedded text layer — `fha source extract <S-id>
+     --dry-run` previews the coverage, and the live run writes a `[Page N]`-labeled companion you mine
+     like a transcript in seconds instead of vision-reading hundreds of pages. An all-image PDF refuses
+     honestly; fall back to the page windows below.
+   - Read in **page windows** (~20 pages at a time), not the whole file at once.
+   - Anchor every claim to the **original's pagination** — `anchor: "page 214"` (SPEC §8.4 sanctions
+     page anchors) — so the reviewer can find the spot in any copy.
+   - **Log coverage as you go** in the record's `## Notes` — `fha source note <S-id> --text "Mined pages
+     1-60 for family mentions; 61 onward not yet read."` — so the work resumes cleanly next session
+     instead of restarting.
+   - Only family-relevant pages become claims; the rest staying un-mined is a legitimate permanent state
+     (SPEC §4), not a backlog.
+   - A transcription or excerpt that exists as its own file attaches to the same source — `fha process
+     <primary> --more FILE transcript` — then mine *that* the way `mine-transcript` works a transcript,
+     keeping page anchors.
 
 4. **Resolve every named person and place against the index — propose, don't guess.**
    ```
@@ -109,6 +152,22 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
       task: "draft claims from 1880 census scan", outputs: [C-…, C-…], human_reviewed: false}
    ```
 
+   **When nothing is claim-worthy, that is a complete outcome, not a failure.** Some items are part of
+   the family record without asserting a checkable fact — a scenic photo, a keepsake, a clipping that
+   names no one. A source with no claims is completely valid (the source template says so in as many
+   words). Give it its discoverability surface instead: fill the record's `people:`/`places:` frontmatter
+   links, write a `## Notes` paragraph saying what it is and why it was kept (this prose is full-text
+   searched — it is where "keywords" go), delete the empty `## Claims` block or leave it out, record the
+   AI pass with `outputs: []` (step 7), and **skip the `review-claims` hand-off** — there is nothing to
+   review. Close with `fha index` and `fha lint` yourself, since the review close-out won't run.
+
+   One flavor of this deserves special respect: **material kept because it was investigated and
+   rejected** — a debunked lineage pamphlet, a mail-order surname history, a disproven family legend.
+   Its record's title/Notes say it is not evidence, and that verdict is the human's research conclusion.
+   **A later pass never re-reads such a source and drafts claims from it** — doing so would graft the
+   rejected material back onto the tree. If new evidence genuinely reopens the question, that is the
+   human's call to make, recorded in the Notes, before any claim is drafted.
+
 ### Stage C — hand off to the gate
 
 8. **Hand off to `review-claims`** for this source. That skill walks each drafted claim with the human,
@@ -124,6 +183,10 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   types EDTF.
 - At most **one** plain question on a genuinely ambiguous hedge — never a refusal, never a lecture.
 - The stub/bundle is consumed into the record; the photos root is never renamed.
+- Any record ID written into `## Notes`/`## Stories` prose is `[[ ]]`-wrapped, `[[ID|Name]]` preferred;
+  bare IDs only inside the claims YAML block, frontmatter lists, and tool arguments (_STANDARD.md §11).
+- Never force a claim out of an item that asserts nothing — the zero-claims exit above is the correct
+  path, not a fallback.
 
 ## Done when
 
@@ -132,6 +195,8 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   and a hand-off into `review-claims`.
 - A loosely-written note (approximate dates, informal spellings) processes without a hard refusal;
   un-mappable prose lands in `## Notes`; informal dates are translated to EDTF in the drafted claims.
+- An item with nothing claim-worthy exits cleanly by the zero-claims path: `people:`/`places:` filled,
+  context in `## Notes`, AI pass recorded with `outputs: []`, no review hand-off, no forced claims.
 - Every drafted claim is `suggested` (no claim is `accepted` at this stage).
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

@@ -30,7 +30,9 @@ python tools/fha.py report   --root my-family-archive   # the review queue + res
 python tools/fha.py find --text "Rose Hartley" --root my-family-archive   # search everything
 python tools/fha.py doctor   --root my-family-archive   # health check - run this when stuck
 python tools/fha.py lint     --root my-family-archive   # "is my archive shaped right?"
+python tools/fha.py reconcile --dry-run --root my-family-archive  # after reorganizing documents: preview re-ties, run without --dry-run to apply
 python tools/fha.py backup   --root my-family-archive   # dated zip beside the archive - restore = unzip
+python tools/fha.py update-tools --dry-run --repo . --root my-family-archive  # preview a tools update (docs/UPDATING.md)
 python tools/fha.py relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
 python tools/fha.py views timeline P-aaaa --format html --root my-family-archive   # a printable one-page timeline (lands in generated/views/)
 python tools/fha.py photoindex gallery --person P-aaaa --root my-family-archive   # a clickable page of someone's photos - double-click to open (lands in generated/gallery/)
@@ -97,7 +99,7 @@ photo viewer - no tool required, now or in fifty years.
 ## Three rules that keep you safe
 
 1. **Nothing becomes a fact until *you* accept it.** The assistant only ever *suggests*.
-2. **Photos are never renamed.** Drop them in as-is; identity rides in hidden metadata, not the name.
+2. **Photos are never renamed in your library.** Drop them in as-is; identity rides in hidden metadata, not the name.
 3. **Mark anything private with `restricted`.** A person, a fact, a source, or an old name -
    restricted material stays in your archive but never leaves in anything you share.
 

@@ -36,7 +36,7 @@
     <dd><span class="empty">not recorded</span>{% if workbench %}
       <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-fill="mtype={{ row.label }}">add</a>{% endif %}</dd>
     {%- else %}
-    <dd>{{ row.value }}{% if row.place %}{% if row.value %} - {% endif %}{{ row.place }}{% endif %} {{ row.source_html }}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% if workbench %}
+    <dd>{{ row.value }}{% if row.place %}{% if row.value %} - {% endif %}{{ row.place }}{% endif %} {{ row.source_html }}{% if row.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}{% if row.provisional %}<span class="wb-estimate">estimate - unsourced</span>{% if workbench %}
       <a class="wb-vital-edit" href="#" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}' data-wb-prefill='{{ {"mtype": row.label, "mdate": row.date_raw, "mplace": row.place_raw} | tojson }}'>edit</a>{% endif %}{% endif %}
       {%- if workbench and not row.provisional and row.claim_id -%}
       {#- A sourced vital's edit opens the CLAIM editor prefilled with the
@@ -94,7 +94,7 @@
       {% if group.decade %}<h3>{{ group.decade }}</h3>{% endif %}
       <ul>
         {% for e in group.entries %}
-        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place %} @ {{ e.place }}{% endif %} {{ e.source_html }}</li>
+        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place %} @ {{ e.place }}{% endif %} {{ e.source_html }}{% if e.status == 'needs-review' %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
         {% endfor %}
       </ul>
     {% endfor %}

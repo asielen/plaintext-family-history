@@ -322,8 +322,27 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
         self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
-        renamed = list((self.archive / 'documents').glob('note_S-*.txt'))
+        # Owner decision 2026-07-22: an inbox single files into documents/{type}/
+        # (default 'other'), never flat at the documents root top level.
+        renamed = list((self.archive / 'documents' / 'other').glob('note_S-*.txt'))
         self.assertEqual(len(renamed), 1)
+
+    def test_root_top_document_files_into_type_subfolder(self) -> None:
+        # A hand-drop at the documents root TOP level files into
+        # documents/{type}/ at processing (owner decision 2026-07-22) - the
+        # counterpart of the in-place rename a pre-filed subfolder file gets
+        # (test_document_sidecar_as_input_processes_companion_asset above).
+        asset = self.archive / 'documents' / 'deed.txt'
+        asset.write_text('deed body', encoding='utf-8')
+
+        rc = self._run([str(asset), '--type', 'census'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(asset.exists())
+        renamed = list((self.archive / 'documents' / 'census').glob('deed_S-*.txt'))
+        self.assertEqual(len(renamed), 1)
+        # The record's inventory alias carries the subfolder path.
+        record = next((self.archive / 'sources' / 'census').glob('deed_S-*.md'))
+        self.assertIn('documents/census/deed_S-', record.read_text(encoding='utf-8'))
 
     def test_sidecar_and_companion_relocated_out_of_inbox(self) -> None:
         # The `fha capture --asset` case: a stub + its companion both staged in
@@ -338,7 +357,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(sidecar)])
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
-        renamed = list((self.archive / 'documents').glob('newspaper-clipping_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'other').glob('newspaper-clipping_S-*.txt'))
         self.assertEqual(len(renamed), 1)
         records = list((self.archive / 'sources').rglob('*_S-*.md'))
         self.assertEqual(len(records), 1)
@@ -356,7 +375,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual(list((self.archive / 'inbox').iterdir()), [])
         self.assertEqual(list((self.archive / 'photos').glob('census*')), [])
-        renamed = list((self.archive / 'documents').glob('census_S-*.jpg'))
+        renamed = list((self.archive / 'documents' / 'census').glob('census_S-*.jpg'))
         self.assertEqual(len(renamed), 1)
         records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
         self.assertEqual(len(records), 1)
@@ -491,7 +510,9 @@ class ProcessTestCase(unittest.TestCase):
             rc = self._run([str(asset), '--dry-run'])
         self.assertEqual(rc, EXIT_CLEAN)
         preview = out.getvalue()
-        self.assertIn('Would rename record.jpg -> fairview-census-page_S-', preview)
+        self.assertRegex(
+            preview,
+            r'Would rename record\.jpg -> documents[\/]census[\/]fairview-census-page_S-')
         self.assertIn('Would scaffold sources/census/fairview-census-page_S-', preview)
         self.assertIn('Would delete stub record.notes.md', preview)
         self.assertEqual(self._snapshot_tree(self.archive), before)  # zero writes
@@ -501,7 +522,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         records = list((self.archive / 'sources' / 'census').glob('fairview-census-page_S-*.md'))
         self.assertEqual(len(records), 1)
-        renamed = list((self.archive / 'documents').glob('fairview-census-page_S-*.jpg'))
+        renamed = list((self.archive / 'documents' / 'census').glob('fairview-census-page_S-*.jpg'))
         self.assertEqual(len(renamed), 1)
         self.assertFalse(sidecar.exists())  # stub consumed, as previewed
 
@@ -905,6 +926,27 @@ class ProcessTestCase(unittest.TestCase):
         self.assertFalse(page2.exists())
         attached = list((self.archive / 'documents' / 'census').glob(f'*page-2*_{sid}.txt'))
         self.assertEqual(len(attached), 1)
+
+    def test_more_root_top_attachment_files_beside_its_primary(self) -> None:
+        # M11.2 symmetry: an attachment sitting at the documents root TOP
+        # level files WITH its source - beside the primary, in whatever
+        # subfolder the human chose for it - never left flat at the root.
+        page1 = self.archive / 'documents' / 'census' / 'page1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        sid = renamed1.stem.split('_')[-1]
+
+        loose = self.archive / 'documents' / 'loose-page.txt'
+        loose.write_text('p2', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(loose), 'page-2'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(loose.exists())
+        attached = list((self.archive / 'documents' / 'census').glob(f'*page-2*_{sid}.txt'))
+        self.assertEqual(len(attached), 1)
+        # nothing left flat at the root top
+        self.assertEqual([p for p in (self.archive / 'documents').iterdir()
+                          if p.is_file()], [])
 
     # ── classification + slug units ──────────────────────────────────────────
 
@@ -1726,7 +1768,7 @@ class InputPathResolutionTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())  # relocated out of inbox and renamed
-        renamed = list((self.archive / 'documents').glob('scan-note_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'other').glob('scan-note_S-*.txt'))
         self.assertEqual(len(renamed), 1)
 
     def test_cwd_hit_wins_over_archive_root_candidate(self) -> None:
@@ -1764,7 +1806,7 @@ class InputPathResolutionTestCase(unittest.TestCase):
             rc = self._run(['inbox/photo-note.txt'])
 
         self.assertEqual(rc, EXIT_CLEAN)
-        renamed = list((self.archive / 'documents').glob('photo-note_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'other').glob('photo-note_S-*.txt'))
         self.assertEqual(len(renamed), 1)
 
     def test_both_miss_error_names_both_searched_locations(self) -> None:

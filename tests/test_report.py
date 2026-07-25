@@ -247,6 +247,24 @@ class ReportTests(unittest.TestCase):
         self.assertIn('No discoveries since last session.', md)
         self.assertIn('No new sources or persons since last session.', md)
 
+    def test_second_look_lists_parked_and_low_confidence_claims(self) -> None:
+        # §1b (owner decision 2026-07-22): parked needs-review claims and
+        # accepted low-confidence claims surface as revisit leads - counts
+        # plus the oldest few, not the whole backlog.
+        result = report.run_report(self.archive_root, {}, full=True, section='second-look')
+        md = result['markdown']
+        self.assertIn('## 1b. Worth a second look', md)
+        # Fixture source one carries the needs-review birth claim (parked bucket).
+        self.assertIn('**Parked (1):**', md)
+        self.assertIn('Born 1900', md)
+
+    def test_second_look_reports_nothing_when_all_settled(self) -> None:
+        (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
+            _SOURCE_ONE_ACCEPTED, encoding='utf-8'
+        )
+        result = report.run_report(self.archive_root, {}, full=True, section='second-look')
+        self.assertIn('Nothing waiting on a second look.', result['markdown'])
+
     def test_section_filter_prints_only_that_section(self) -> None:
         result = report.run_report(self.archive_root, {}, full=True, section='review-queue')
         md = result['markdown']
@@ -501,6 +519,221 @@ class ReportArchiveNotesTests(unittest.TestCase):
         result = report.run_report(
             self.archive_root, {}, full=True, section='review-queue')
         self.assertIn('Archive notes', result['markdown'])
+
+
+_RESEARCH_SAME_HEADING_MD = '''# Research - Test Person
+
+## Open Questions
+
+## Q: When was Test Person born?
+- origin: human
+- status: answered [[S-1111111111]]
+- refs: [P-aaaaaaaaaa]
+'''
+
+
+class QuestionNamespacingTests(unittest.TestCase):
+    """
+    The same `## Q:` heading in two files must not shadow.  _parse_questions
+    keys by '{file} :: {heading}' so a heading that recurs across
+    notes/questions.md and a person research file (easy at hundreds of
+    questions) keeps both entries; display and old-snapshot comparison use
+    the plain heading.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'people').mkdir(parents=True)
+        (self.archive_root / 'notes').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_same_heading_in_two_files_keeps_both_questions(self) -> None:
+        (self.archive_root / 'notes' / 'questions.md').write_text(
+            _QUESTIONS_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'people' / 'test__person_research_P-aaaaaaaaaa.md').write_text(
+            _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
+        )
+        questions = report._parse_questions(self.archive_root)
+        same_heading = [
+            info for info in questions.values()
+            if info['heading'] == 'When was Test Person born?'
+        ]
+        self.assertEqual(len(same_heading), 2)
+        statuses = {info['file']: info['status'] for info in same_heading}
+        self.assertEqual(statuses['notes/questions.md'], 'open')
+        self.assertTrue(
+            statuses['people/test__person_research_P-aaaaaaaaaa.md'].startswith('answered')
+        )
+
+    def test_discoveries_show_plain_heading_and_accept_old_snapshot_keys(self) -> None:
+        heading = 'When was Test Person born?'
+        key = f'notes/questions.md :: {heading}'
+        base = {
+            'claim_status_by_id': {},
+            'claim_links': [],
+            'vitals_gap_person_ids': [],
+            'relationships': [],
+            'e009_messages': [],
+        }
+        current = {**base, 'question_status_by_heading': {key: 'answered [[S-1111111111]]'}}
+
+        # A snapshot written before the namespacing keyed this question by its
+        # bare heading; it must still count as previously answered, so the
+        # question is not re-announced once after a tools update.
+        prev_old_format = {
+            **base, 'question_status_by_heading': {heading: 'answered [[S-1111111111]]'},
+        }
+        lines = report._section_discoveries(None, prev_old_format, current)
+        self.assertEqual(lines, ['No discoveries since last session.'])
+
+        # With no prior answer it announces - displaying the plain heading,
+        # never the internal '{file} :: ' prefix.
+        lines = report._section_discoveries(
+            None, {**base, 'question_status_by_heading': {}}, current
+        )
+        self.assertIn('**Questions newly answered:**', lines)
+        self.assertIn(f'- {heading} - answered [[S-1111111111]]', lines)
+        self.assertFalse(any('notes/questions.md ::' in line for line in lines))
+
+    def test_discoveries_disambiguate_duplicate_headings_with_file(self) -> None:
+        heading = 'When was Test Person born?'
+        k1 = f'notes/questions.md :: {heading}'
+        k2 = f'people/test__person_research_P-aaaaaaaaaa.md :: {heading}'
+        base = {
+            'claim_status_by_id': {},
+            'claim_links': [],
+            'vitals_gap_person_ids': [],
+            'relationships': [],
+            'e009_messages': [],
+        }
+        current = {
+            **base,
+            'question_status_by_heading': {k1: 'answered [[S-1111111111]]', k2: 'open'},
+        }
+        lines = report._section_discoveries(
+            None, {**base, 'question_status_by_heading': {}}, current
+        )
+        # Same heading text lives in two files, so the announced one carries
+        # its file to stay tellable-apart from its twin.
+        self.assertIn(
+            f'- {heading} (notes/questions.md) - answered [[S-1111111111]]', lines
+        )
+
+
+class PromotionCandidatesTests(unittest.TestCase):
+    """Section 7b (promotion-candidates): direct-line stubs offer the promote
+    verb; claim-heavy non-direct stubs are noted but stay stubs (the
+    connections design fork); the threshold reads fha.yaml's
+    `promotion.claims_threshold` (default 5); empty state is one plain line.
+    Stateless - nothing here depends on the snapshot."""
+
+    KID = 'P-4aaaaaaaaa'
+    PA = 'P-4bbbbbbbbb'
+    FRIEND = 'P-4ccccccccc'
+    SID = 'S-4aaaaaaaaa'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'people' / '002 Kid Folder').mkdir(parents=True)
+        (self.root / 'sources' / 'notes').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _person(self, pid: str, name: str, sex: str = 'U', tier: str = 'stub') -> str:
+        return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: {tier}\n---\n\n# {name}\n\n## Biography\n\nx\n')
+
+    def _build(self, *, threshold_line: str = '', friend_claims: int = 6) -> dict:
+        (self.root / 'fha.yaml').write_text(
+            f'root_person: {self.KID}\n{threshold_line}'
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'people' / '002 Kid Folder' / f'kid__k_{self.KID}.md').write_text(
+            self._person(self.KID, 'Kid Person', 'F', 'curated'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'pa__p_{self.PA}.md').write_text(
+            self._person(self.PA, 'Pa Person', 'M'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'woodbury__frank_{self.FRIEND}.md').write_text(
+            self._person(self.FRIEND, 'Frank S. Woodbury', 'M'), encoding='utf-8')
+        rel = (
+            f'- value: "{self.KID} child of {self.PA}"\n'
+            f'  id: C-4aaaaaaaaa\n  type: relationship\n  subtype: biological\n'
+            f'  persons: [{self.KID}, {self.PA}]\n  roles:\n'
+            f'    child: {self.KID}\n    parent: [{self.PA}]\n'
+            f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n  evidence: direct\n  notes: x.\n'
+        )
+        occ = ''.join(
+            f'- value: "occupation {i}"\n'
+            f'  id: C-4bbbbbbb{i:02d}\n  type: occupation\n'
+            f'  persons: [{self.FRIEND}]\n'
+            f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n  evidence: direct\n  notes: x.\n'
+            for i in range(friend_claims)
+        )
+        (self.root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{rel}{occ}```\n', encoding='utf-8')
+        import _lib
+        return _lib.load_fha_yaml(self.root)
+
+    def _section(self, cfg: dict) -> list[str]:
+        result = report.run_report(self.root, cfg, full=True)
+        return result['sections']['promotion-candidates']
+
+    def test_registry_carries_the_7b_row(self) -> None:
+        self.assertIn(('promotion-candidates', '7b', 'Promotion candidates'),
+                      report.SECTIONS)
+
+    def test_lists_direct_line_stub_and_threshold_stub(self) -> None:
+        cfg = self._build()
+        body = '\n'.join(self._section(cfg))
+        # Direct-line bucket offers the verb.
+        self.assertIn('Direct-line ancestors still filed as stubs (1)', body)
+        self.assertIn('Pa Person', body)
+        self.assertIn(f'fha person promote {self.PA}', body)
+        # The claim-heavy non-direct stub is noted but stays a stub.
+        self.assertIn('Frank S. Woodbury', body)
+        self.assertIn('6 accepted claims and no curated profile', body)
+        self.assertIn('stays a stub for now', body)
+        self.assertNotIn(f'fha person promote {self.FRIEND}', body)
+
+    def test_threshold_reads_fha_yaml(self) -> None:
+        cfg = self._build(
+            threshold_line='promotion:\n  claims_threshold: 9\n', friend_claims=6)
+        body = '\n'.join(self._section(cfg))
+        # 6 accepted claims no longer crosses a threshold of 9.
+        self.assertNotIn('Frank S. Woodbury', body)
+        self.assertIn('Pa Person', body)   # the direct-line bucket is unaffected
+
+    def test_bad_threshold_falls_back_with_a_note(self) -> None:
+        cfg = self._build(
+            threshold_line='promotion:\n  claims_threshold: lots\n', friend_claims=6)
+        body = '\n'.join(self._section(cfg))
+        self.assertIn('using the default 5', body)
+        self.assertIn('Frank S. Woodbury', body)
+
+    def test_empty_state_is_one_plain_line(self) -> None:
+        cfg = self._build(friend_claims=1)
+        # Curate Pa properly so nothing qualifies.
+        src = self.root / 'people' / 'stubs' / f'pa__p_{self.PA}.md'
+        (self.root / 'people' / '002 Kid Folder' / src.name).write_text(
+            src.read_text(encoding='utf-8').replace('tier: stub', 'tier: curated'),
+            encoding='utf-8')
+        src.unlink()
+        body = self._section(cfg)
+        self.assertEqual(len(body), 1)
+        self.assertIn('No promotion candidates', body[0])
+
+    def test_full_report_renders_the_7b_heading(self) -> None:
+        cfg = self._build()
+        result = report.run_report(self.root, cfg, full=True)
+        self.assertIn('## 7b. Promotion candidates', result['markdown'])
 
 
 if __name__ == '__main__':

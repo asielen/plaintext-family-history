@@ -1,6 +1,6 @@
 # Skill-authoring standard
 
-**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so twelve skills
+**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so thirteen skills
 written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they
 record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) — the
 reference skill — and obey the rules below. Design lives in
@@ -141,8 +141,10 @@ it in a real session against `example-archive/`** and confirming three things:
    overwritten.
 2. It **degrades gracefully** on messy input (infer, or ask one plain question — never hard-fail).
 3. **`fha lint --root example-archive` still exits 1 with only the documented baseline warnings**
-   afterward — currently **W101** (Thomas Hartley's death record is deliberately absent) and **W102**
-   (one suggested claim staged on the family-portrait source as review-demo material) — nothing the
+   afterward — currently **W101** (Thomas Hartley's death record is deliberately absent), **W102**
+   (one suggested claim staged on the family-portrait source as review-demo material), and **ten
+   W119** direct-line-stub leads (the example's direct line is deliberately mostly uncurated,
+   exercising the promotion surface) — nothing the
    skill wrote introduced a new error or warning, and nothing "resolved" a staged item by accepting a
    claim without a human. This list is the canonical baseline for the skills layer (it mirrors
    TOOLING.md §15); each skill's "Done when" references it instead of restating the codes.
@@ -174,6 +176,8 @@ description: >
 2. …
 
 ## Guardrails
+- Any record ID written into prose is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in
+  structured fields and tool arguments (_STANDARD.md §11).
 - {The specific "never" lines for this skill.}
 
 ## Done when
@@ -182,3 +186,24 @@ description: >
 
 Every skill in this folder is an instance of this skeleton. If a new skill can't be written as one, that
 is a signal it wants a capability a tool should own — see §6.
+
+## 11. IDs on the page
+
+Any record ID a skill writes into **prose** — biography or story text, `## Notes` paragraphs, hypotheses,
+open questions, place history, discovery text, a claim's free-text `notes:` — is always wikilink-wrapped:
+`[[S-xxxx]]`, or better `[[S-xxxx|the 1880 census]]` so the genealogist reads names, not codes (SPEC §18;
+AGENTS.md §"Format quick reference"). A bare `S-xxxx` dropped in a sentence is dead text — not clickable
+in Obsidian, invisible to the citation index. The tools are forgiving on *read* (a bare ID still
+resolves), but a skill always *writes* the `[[ ]]` form.
+
+Bare IDs are correct **only** in structured slots: claims-block YAML fields (`persons:`, `place:`,
+`corroborates:`…), bare-ID frontmatter lists, and tool arguments (`--refs S-…,P-…`, `fha claim C-…`).
+The inverse rule binds embedded caption text: prose written into a photo's caption or AI summary
+carries **no** record IDs — plain names only, because family members read that text raw wherever the
+photo travels. (Record IDs do live in photo metadata, but only as the structured `SOURCE: S-…` and
+bare-`P-id` *keywords* of SPEC §20, which the tools write and parse — never in caption prose.)
+
+A write-heavy skill ends its close-out with a tidy pass — `fha normalize-links --dry-run` — which
+catches bracketed slips (a legacy `[S-…]` cite, an unpinned `[[Name]]` link). A completely bare ID in
+prose has **no** automated net yet, so write the `[[ ]]` form at draft time — the guardrail above is
+the only defense.

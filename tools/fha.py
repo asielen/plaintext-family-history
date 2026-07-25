@@ -27,7 +27,7 @@ COMMANDS = (
     'relate', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
     'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
     'person', 'source', 'site', 'serve', 'install', 'update-tools', 'working-copy',
-    'normalize-links', 'backup',
+    'normalize-links', 'backup', 'reconcile',
 )
 
 
@@ -455,6 +455,79 @@ def _intercept_claim_new(argv: list[str]) -> int | None:
     return args.func(args)
 
 
+def _intercept_process_refile(argv: list[str]) -> int | None:
+    """
+    Early interception for `fha process refile …` (the cross-root correction).
+
+    process.py's parser takes a positional FILE plus flags, so argparse would
+    read 'refile' as a file path and fail on the S-id that follows. Routed here
+    first instead, the same mechanism `fha claim new` and `fha gedcom import`
+    use. `fha process <file> …` continues to behave exactly as before.
+
+    Returns an exit code when the first two command tokens are
+    `process refile`, or None to let normal argparse handling proceed.
+    """
+    global_root: str | None = None
+    command_idx: int | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--debug':
+            i += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and i + 1 < len(argv):
+                global_root = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            i += 1
+            continue
+        if tok.startswith('--spec-root='):
+            i += 1
+            continue
+        command_idx = i
+        break
+
+    if command_idx is None or argv[command_idx] != 'process':
+        return None
+
+    # Skip any flags between 'process' and the next positional (mirrors
+    # _intercept_claim_new's dual-position --root convention).
+    j = command_idx + 1
+    while j < len(argv):
+        tok = argv[j]
+        if tok == '--debug':
+            j += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and j + 1 < len(argv):
+                global_root = argv[j + 1]
+            j += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            j += 1
+            continue
+        if tok.startswith('--spec-root='):
+            j += 1
+            continue
+        break
+    if j >= len(argv) or argv[j] != 'refile':
+        return None
+
+    from process import build_process_refile_parser
+    subargv = [tok for tok in argv[j + 1:] if tok != '--debug']
+    # Honor a --root supplied before the 'refile' word when the subcommand
+    # didn't set its own.
+    if global_root and '--root' not in subargv \
+            and not any(t.startswith('--root=') for t in subargv):
+        subargv += ['--root', global_root]
+    args = build_process_refile_parser().parse_args(subargv)
+    return args.func(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for `fha` (or `python tools/fha.py`).
@@ -508,6 +581,12 @@ def main(argv: list[str] | None = None) -> int:
         if result is not None:
             return result
 
+        # Intercept 'process refile' before argparse: the process parser takes
+        # a positional FILE and must stay unchanged (TOOLING §6).
+        result = _intercept_process_refile(argv_list)
+        if result is not None:
+            return result
+
         # Lazy imports: keep them inside main() for the reason above.
         from id import register as id_register
         from index import register as index_register
@@ -537,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         from working_copy import register as working_copy_register
         from normalize_links import register as normalize_links_register
         from backup import register as backup_register
+        from reconcile import register as reconcile_register
         # 'site' shadows Python's stdlib site module (already cached in
         # sys.modules at interpreter startup), so `from site import …` would
         # find the wrong module. Load tools/site.py by path under a private name.
@@ -574,6 +654,7 @@ def main(argv: list[str] | None = None) -> int:
         working_copy_register(subs)
         normalize_links_register(subs)
         backup_register(subs)
+        reconcile_register(subs)
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))

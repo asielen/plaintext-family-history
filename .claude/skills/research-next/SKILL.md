@@ -42,7 +42,9 @@ now?", "any leads on Margaret's parents?"
    ```
    fha report
    ```
-   The report already carries much of what you need: **§3** vitals gaps (W101), **§7** open hypotheses,
+   The report already carries much of what you need: **§1b** worth-a-second-look claims (parked
+   needs-review claims and accepted low-confidence facts — both are corroboration targets, see step 3),
+   **§3** vitals gaps (W101), **§7** open hypotheses,
    and — critically — **§5 search-log awareness**, which annotates leads "already searched (date)" and
    flags nils older than the horizon as worth re-running. Read §5 first: it is the log guardrail surfaced
    for you. Note **§5b** is *answerable* questions — open questions that already have a closeable answer (a
@@ -60,7 +62,12 @@ now?", "any leads on Margaret's parents?"
    months (*"…but that nil is over two years old now, and FamilySearch has added Kansas records since, so
    it's worth another pass"*).
 
-3. **Combine gaps + questions + hypotheses with historical context into ranked leads.** For each open
+3. **Combine gaps + questions + hypotheses — and thin facts — with historical context into ranked
+   leads.** An **accepted claim with `confidence: low`** is a lead too (SPEC §8.5: the human is building
+   on it without being certain): propose the record that would corroborate or supersede it — *"Thomas's
+   bookkeeper occupation rests on one low-confidence directory mention; the 1885 Kansas state census
+   would confirm it."* A **parked needs-review claim** (report §1b) works the same way: name what would
+   settle it. For each open
    thread, name a concrete lead: the record set, the holding repository, and the search terms — steered by
    what actually existed for that time and place:
    - *"Thomas has no death record and the 1880 census puts him in Fairview about age 40, so he likely died
@@ -78,14 +85,25 @@ now?", "any leads on Margaret's parents?"
    ## Hypotheses
    - id: H-…
      hypothesis: "Thomas Hartley died in Breton County between 1911 and 1925"
-     basis: "1880 census age ~40 in Fairview; no later record; Kansas death registration began 1911"
+     basis: "1880 census ([[S-…]]) age ~40 in Fairview; no later record; Kansas death registration began 1911"
      verify: "Kansas State death index, Breton County 1911–1925"
      origin: agent
      status: open
    ```
    A hypothesis is a lead with a shape, never a claim. It carries `status: open` and
    `origin: agent`; an `H-id` never converts to a `C-id` — verification later mints a *new* claim and links
-   both ways (AGENTS.md §"Format quick reference").
+   both ways (AGENTS.md §"Format quick reference"). **Any ID cited inside `basis:`/`verify:` — or in a
+   later dated update to this hypothesis — is always the `[[S-…]]`/`[[C-…]]`/`[[P-…]]` wikilink form, never
+   a bare or single-bracket ID** (AGENTS.md §"Format quick reference" Citations: "acceptance is lenient...
+   but write the `[[ ]]` form"). This applies inside the `## Hypotheses` list itself — it is a plain markdown
+   list (the fence around the example above is display formatting only), unlike a source's `## Claims`
+   block, which *is* fenced and keeps IDs bare (SPEC §8): a hypothesis's prose fields are read by a human
+   and should resolve as links in Obsidian, where a link inside a real fence would not.
+   When a newly processed source turns up evidence bearing on an **already-open** hypothesis, don't leave it
+   for the next session to notice: append a dated paragraph under the hypothesis (`**Update (YYYY-MM-DD):**
+   …`, citing the new source/claim with `[[ ]]` links) rather than editing the hypothesis's own fields in
+   place — the hypothesis's original `basis`/`verify` stay as first written; the update is the new
+   information layered on top, same as the research log pattern in step 6.
 
 5. **Emit a plan-shaped list.** Present the leads as a short ranked plan the human can act on — top pick
    first, each with its record set / repository / terms / why. End with the single best next move.

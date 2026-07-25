@@ -11,7 +11,7 @@ The source of truth.
 *Example: the `my-family-archive` folder on your computer - every record in it opens in Notepad, today or in fifty years.*
 
 **Asset** - an actual file (photo, scan, recording, transcript).
-Shares its source's ID once processed; photos are never renamed.
+Shares its source's ID once processed; photos are never renamed while they live in the photo library.
 *Example: `rose-wedding-1955.jpg` keeps that filename forever; once processed it belongs to source `S-7f3a9c2b1d`.*
 
 **Bloodline** - the genetic line the family-tree numbers follow. When a parent is adoptive, a step-parent, or a guardian, that bond is real and shown everywhere it should be - but the pedigree *numbering* counts only the genetic parents, so an adopted child doesn't accidentally land in the wrong branch of the blood tree. Both kinds of parent stay visible; only the numbering is blood-aware.
@@ -85,7 +85,8 @@ No ID yet.
 **Status lifecycle** - `suggested → needs-review → accepted | disputed | rejected | superseded`.
 Human review is the only gate to `accepted`.
 AI output always starts at `suggested`.
-*Example: the assistant's guess at a birthplace sits at `needs-review` until you say "yes" - then, and only then, it becomes `accepted`.*
+`needs-review` is both a waypoint and a legitimate resting place: where a drafted fact waits for your look, *and* the verdict you give when you've looked and can't settle it yet ("possible - but I want a second record before I ink it"). A parked claim stays active and keeps matching against new evidence, and its review date shows when you last weighed it. `disputed` is different - it marks a claim your sources actively contradict.
+*Example: the assistant's guess at a birthplace sits at `needs-review` until you say "yes" - then, and only then, it becomes `accepted`. Or you look at it, stay unsure, and deliberately leave it parked at `needs-review` - a recorded "not proven yet," not a forgotten one.*
 
 **Stub (person)** - a person record with frontmatter only (an ID and a name).
 A permanent, legitimate state for people referenced but not yet researched.

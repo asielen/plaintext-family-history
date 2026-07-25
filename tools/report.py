@@ -56,7 +56,7 @@ CODE MAP
 
   Snapshot
     _load_snapshot / _write_snapshot  - .cache/last_report.json read/write
-    _parse_questions            - notes/questions.md -> {heading: {status, refs, block}}
+    _parse_questions            - questions.md + research files -> {file :: heading: {...}}
     _vitals_gap_pids            - W101 findings -> sorted P-id list (via registry paths)
     _build_snapshot             - current-state snapshot dict from the just-refreshed index
 
@@ -65,6 +65,8 @@ CODE MAP
                                     newly-answered questions, vitals gaps closed,
                                     newly confirmed relationship edges
     _section_review_queue        - §1: W102 backlog, grouped by source
+    _section_second_look         - §1b: parked needs-review + accepted-low-confidence
+                                    claims, counts + oldest few
     _section_new_since_last      - §2: source/claim/person id set diff vs snapshot
     _section_vitals_gaps         - §3: W101 findings, formatted
     _section_contradictions      - §4: E009 findings, formatted
@@ -73,6 +75,8 @@ CODE MAP
     _section_photo_triage        - §6: photoindex.run_triage embed
     _section_place_candidates    - §6b: places.run_candidates() embed
     _section_hypotheses          - §7: open hypotheses + draft-queue backlog
+    _section_promotion_candidates - §7b: direct-line stubs + claim-heavy stubs
+                                    (the fha person promote surface; stateless)
     _section_possible_connections - §8: cooccur.run_cooccur top candidates
 
   Rendering / orchestration
@@ -100,6 +104,7 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    build_ahnentafel_map,
     extract_token_ids,
     FhaConfigError,
     Result,
@@ -122,6 +127,7 @@ import photoindex
 SECTIONS: list[tuple[str, str, str]] = [
     ('discoveries', '0', 'Discoveries since last session'),
     ('review-queue', '1', 'Review queue'),
+    ('second-look', '1b', 'Worth a second look'),
     ('new-since-last', '2', 'New since last session'),
     ('vitals-gaps', '3', 'Vitals gaps'),
     ('contradictions', '4', 'Contradictions'),
@@ -130,6 +136,7 @@ SECTIONS: list[tuple[str, str, str]] = [
     ('photo-triage', '6', 'Photo processing triage'),
     ('place-candidates', '6b', 'Place candidates'),
     ('hypotheses', '7', 'Hypotheses & draft queues'),
+    ('promotion-candidates', '7b', 'Promotion candidates'),
     ('possible-connections', '8', 'Possible connections'),
 ]
 _SECTION_KEYS = {key for key, _num, _title in SECTIONS}
@@ -189,7 +196,8 @@ def _parse_question_blocks(text: str) -> dict[str, dict]:
 def _parse_questions(archive_root: Path) -> dict[str, dict]:
     """
     Parse notes/questions.md AND every person research file's
-    `## Open Questions` block into {heading: {'status', 'refs', 'block'}}.
+    `## Open Questions` block into {key: {'status', 'refs', 'block',
+    'heading', 'file'}}, keyed by '{relative file path} :: {heading}'.
 
     Mirrors `fha lint`'s E009 question-scanning scope exactly: lint.py's
     `_has_question_for` checks both `registry.questions_content`
@@ -200,17 +208,28 @@ def _parse_questions(archive_root: Path) -> dict[str, dict]:
     question set lint does, or a question logged only in a person's research
     file would never get a closure proposal here.
 
-    Headings are kept as the dict key as before; in theory two files could
-    use the same heading text and one would shadow the other, but in
-    practice question headings are unique free text, so this is treated as
-    a non-issue rather than namespaced by file.
+    Keys are namespaced by file because the same heading text easily recurs
+    across files once questions number in the hundreds ("When was he born?"
+    on two research sheets), and a plain-heading dict would silently shadow
+    one question with the other. The display text lives in each entry's
+    'heading' field. A duplicate heading *within* one file still collides
+    (last one wins) - acceptable, since a single file's headings sit side by
+    side where the human edits them.
     """
     out: dict[str, dict] = {}
+
+    def _merge(qpath: Path, text: str) -> None:
+        try:
+            rel = qpath.relative_to(archive_root).as_posix()
+        except ValueError:
+            rel = qpath.as_posix()
+        for heading, info in _parse_question_blocks(text).items():
+            out[f'{rel} :: {heading}'] = {**info, 'heading': heading, 'file': rel}
 
     path = archive_root / 'notes' / 'questions.md'
     if path.exists():
         try:
-            out.update(_parse_question_blocks(path.read_text(encoding='utf-8')))
+            _merge(path, path.read_text(encoding='utf-8'))
         except OSError:
             pass
 
@@ -222,7 +241,7 @@ def _parse_questions(archive_root: Path) -> dict[str, dict]:
                     text = rpath.read_text(encoding='utf-8')
                 except OSError:
                     continue
-                out.update(_parse_question_blocks(text))
+                _merge(rpath, text)
 
     return out
 
@@ -370,14 +389,31 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
 
     prev_q = prev.get('question_status_by_heading', {})
     cur_q = current['question_status_by_heading']
+
+    def _q_prev_status(key: str) -> str:
+        # Keys are '{file} :: {heading}' (see _parse_questions); a snapshot
+        # written before the namespacing keyed by bare heading, so fall back
+        # to it - otherwise every already-answered question would re-announce
+        # as "newly answered" once after a tools update.
+        return prev_q.get(key) or prev_q.get(key.split(' :: ', 1)[-1], '')
+
     newly_answered = sorted(
         h for h, status in cur_q.items()
-        if status.startswith('answered') and not prev_q.get(h, '').startswith('answered')
+        if status.startswith('answered') and not _q_prev_status(h).startswith('answered')
     )
     if newly_answered:
+        # Display the plain heading; when the same heading text exists in more
+        # than one file (the case the namespaced keys preserve), append the
+        # file so the two lines stay tellable-apart.
+        heading_counts: dict[str, int] = {}
+        for k in cur_q:
+            plain = k.split(' :: ', 1)[-1]
+            heading_counts[plain] = heading_counts.get(plain, 0) + 1
         lines.append('**Questions newly answered:**')
         for h in newly_answered:
-            lines.append(f'- {h} - {cur_q[h]}')
+            plain = h.split(' :: ', 1)[-1]
+            label = plain if heading_counts.get(plain, 1) == 1 else f'{plain} ({h.split(" :: ", 1)[0]})'
+            lines.append(f'- {label} - {cur_q[h]}')
 
     prev_gaps = set(prev.get('vitals_gap_person_ids', []))
     cur_gaps = set(current['vitals_gap_person_ids'])
@@ -444,6 +480,67 @@ def _section_review_queue(conn) -> list[str]:
         for c in claims:
             lines.append(f"    - {fmt_id_display(c['id'])} {c['type']}: {c['value']}")
     return lines
+
+
+# ── Section 1b: Worth a second look ──────────────────────────────────────────
+
+_SECOND_LOOK_SHOWN = 3   # oldest few per bucket - a briefing, not a backlog dump
+
+
+def _second_look_person(conn, cid: str) -> str:
+    row = conn.execute(
+        'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY position LIMIT 1',
+        (cid,)).fetchone()
+    return _person_label(conn, row['person_id']) if row else '(no person linked)'
+
+
+def _section_second_look(conn) -> list[str]:
+    """Claims worth revisiting someday, in two buckets (owner decision
+    2026-07-22): parked needs-review claims (looked at, could not settle -
+    the SPEC §8.1 parked verdict; the reviewed: date says when) and accepted
+    claims with low confidence (built on, but ripe for superseding when a
+    better record turns up - SPEC §8.5 keeps status and confidence
+    orthogonal). Counts plus the oldest few only, honoring the report's
+    no-flood rule (§15a) - ranking the full set into concrete leads is
+    research-next's job, and none of this is a defect list (§14a
+    alarm-blindness: these are leads, not errors).
+    """
+    lines: list[str] = []
+
+    parked = conn.execute(
+        "SELECT id, type, value, reviewed FROM claims WHERE status = 'needs-review' "
+        "ORDER BY CASE WHEN reviewed IS NULL OR reviewed = '' THEN 1 ELSE 0 END, reviewed ASC, id ASC",
+    ).fetchall()
+    if parked:
+        lines.append(
+            f'**Parked ({len(parked)}):** looked at, not settled yet - '
+            'these resurface when a new source corroborates or contradicts them.'
+        )
+        for c in parked[:_SECOND_LOOK_SHOWN]:
+            when = f"parked {c['reviewed']}" if c['reviewed'] else 'no review date'
+            lines.append(
+                f"- {_second_look_person(conn, c['id'])}: {c['type']}: {c['value']} ({when})")
+        if len(parked) > _SECOND_LOOK_SHOWN:
+            lines.append(f'- … and {len(parked) - _SECOND_LOOK_SHOWN} more')
+
+    thin = conn.execute(
+        "SELECT id, type, value, reviewed FROM claims "
+        "WHERE status = 'accepted' AND confidence = 'low' "
+        "ORDER BY CASE WHEN reviewed IS NULL OR reviewed = '' THEN 1 ELSE 0 END, reviewed ASC, id ASC",
+    ).fetchall()
+    if thin:
+        lines.append(
+            f'**Accepted on thin evidence ({len(thin)}):** low-confidence facts you are '
+            'building on - each is a lead for corroboration, and a better record would '
+            'supersede it.'
+        )
+        for c in thin[:_SECOND_LOOK_SHOWN]:
+            lines.append(
+                f"- {_second_look_person(conn, c['id'])}: {c['type']}: {c['value']}")
+        if len(thin) > _SECOND_LOOK_SHOWN:
+            lines.append(f'- … and {len(thin) - _SECOND_LOOK_SHOWN} more')
+
+    return lines or ['Nothing waiting on a second look.']
 
 
 # ── Section 2: New since last session ────────────────────────────────────────
@@ -675,8 +772,18 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
     if not open_qs:
         return ['No open questions.']
 
+    # When the same heading text is open in more than one file, suffix the
+    # file so the proposal lines stay tellable-apart (headings recur across
+    # research sheets once questions number in the hundreds).
+    heading_counts: dict[str, int] = {}
+    for info in open_qs.values():
+        heading_counts[info['heading']] = heading_counts.get(info['heading'], 0) + 1
+
     lines: list[str] = []
-    for heading, info in sorted(open_qs.items()):
+    for _key, info in sorted(open_qs.items()):
+        heading = info['heading']
+        if heading_counts[heading] > 1:
+            heading = f"{heading} ({info['file']})"
         proposal = None
         for cid in (r for r in info['refs'] if r.startswith('c-')):
             row = conn.execute('SELECT status, source_id FROM claims WHERE id=?', (cid,)).fetchone()
@@ -853,6 +960,140 @@ def _section_hypotheses(conn, archive_root: Path) -> list[str]:
     return lines
 
 
+# ── Section 7b: Promotion candidates ──────────────────────────────────────────
+
+_PROMOTION_SHOWN = 5   # top few per bucket - a briefing, not a backlog dump
+_PROMOTION_DEFAULT_THRESHOLD = 5   # fha.yaml promotion.claims_threshold default
+
+
+def _stub_person_rows(conn) -> dict[str, dict]:
+    """Every not-yet-curated person in the index: {P-id: {'name','pos'?}}.
+
+    "Stub" here means what the promote machinery means: `tier` is not curated,
+    OR the record still lives under people/stubs/ (a half promotion - tier
+    flipped by hand but never filed). Merged tombstones are excluded: they
+    resolve through merged_into and are never promoted.
+    """
+    out: dict[str, dict] = {}
+    for r in conn.execute('SELECT id, name, tier, status, path FROM persons'):
+        if str(r['status'] or '').lower() == 'merged':
+            continue
+        parts = (r['path'] or '').replace('\\', '/').split('/')
+        in_stubs = len(parts) >= 3 and parts[0] == 'people' and parts[1].lower() == 'stubs'
+        if str(r['tier'] or 'stub').lower() != 'curated' or in_stubs:
+            out[r['id']] = {'name': r['name'] or fmt_id_display(r['id'])}
+    return out
+
+
+def _section_promotion_candidates(conn, fha_config: dict) -> list[str]:
+    """Stubs that have earned a real page - the report side of the promotion
+    surface (`fha person promote` / `fha views brackets --fix-promote`).
+
+    Two buckets, both stateless (computed live from the index, no snapshot):
+      (a) the W119 set - direct-line ancestors (derived Ahnentafel position
+          >= 2, via the shared `_lib.build_ahnentafel_map` over accepted
+          relationship claims from `root_person`, exactly how brackets
+          computes it) whose record is still a stub; closest generations
+          first, each offering the promote verb;
+      (b) any stub whose accepted-claim count has reached the threshold -
+          the "Frank keeps turning up" signal that a person has earned
+          curation regardless of line. The threshold reads from fha.yaml's
+          `promotion:` block, key `claims_threshold`, DEFAULT 5:
+
+              promotion:
+                claims_threshold: 5
+
+          A non-numeric value falls back to the default with a plain note.
+          A non-direct claim-heavy stub stays a stub for now - curating
+          people beyond the direct line is an open design decision (a
+          curated record in people/connections/ is a dead end the views
+          refuse) - so its line says that instead of offering the verb.
+
+    Leads, never defects (§14a alarm-blindness): counts plus the top few,
+    no flood, and nothing here writes or proposes an automatic write -
+    promotion is always the human's explicit act.
+    """
+    # Shape-aware read: `promotion:` may legitimately be absent, a mapping
+    # (the documented form), or - in a loosely hand-edited fha.yaml - a bare
+    # scalar. A non-mapping must never crash the report; a numeric scalar is
+    # leniently read as the threshold itself, anything else falls back with
+    # the plain note below.
+    promo = fha_config.get('promotion')
+    if isinstance(promo, dict):
+        raw_threshold = promo.get('claims_threshold', _PROMOTION_DEFAULT_THRESHOLD)
+    elif promo is None:
+        raw_threshold = _PROMOTION_DEFAULT_THRESHOLD
+    else:
+        raw_threshold = promo
+    lines: list[str] = []
+    try:
+        threshold = int(raw_threshold)
+    except (TypeError, ValueError):
+        threshold = _PROMOTION_DEFAULT_THRESHOLD
+        lines.append(
+            f'(promotion.claims_threshold in fha.yaml is {raw_threshold!r}, not a '
+            f'number - using the default {_PROMOTION_DEFAULT_THRESHOLD}.)')
+
+    stubs = _stub_person_rows(conn)
+    accepted_counts = {
+        r['person_id']: r['n'] for r in conn.execute(
+            "SELECT cp.person_id AS person_id, COUNT(DISTINCT c.id) AS n "
+            "FROM claim_persons cp JOIN claims c ON c.id = cp.claim_id "
+            "WHERE c.status = 'accepted' GROUP BY cp.person_id"
+        )
+    }
+
+    # Bucket (a): direct-line stubs, closest generations first.
+    pid_to_pos: dict[str, int] = {}
+    root_person_raw = fha_config.get('root_person')
+    if root_person_raw:
+        root_pid = normalize_id(str(root_person_raw))
+        if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone():
+            pid_to_pos = build_ahnentafel_map(conn, root_pid)
+    direct = sorted(
+        ((pid, pos) for pid, pos in pid_to_pos.items()
+         if pos >= 2 and pid in stubs),
+        key=lambda kv: kv[1])
+    if direct:
+        lines.append(
+            f'**Direct-line ancestors still filed as stubs ({len(direct)}):** '
+            'each has a place in the numbered folders waiting for them.')
+        for pid, pos in direct[:_PROMOTION_SHOWN]:
+            n = accepted_counts.get(pid, 0)
+            claims_note = f', {n} accepted claim(s)' if n else ''
+            lines.append(
+                f'- {_person_label(conn, pid)} - Ahnentafel {pos}{claims_note} - '
+                f'promote with `fha person promote {fmt_id_display(pid)}`')
+        if len(direct) > _PROMOTION_SHOWN:
+            lines.append(f'- … and {len(direct) - _PROMOTION_SHOWN} more '
+                         '(`fha views brackets --fix-promote` previews the whole batch)')
+
+    # Bucket (b): claim-heavy stubs beyond bucket (a).
+    direct_pids = {pid for pid, _pos in direct}
+    heavy = sorted(
+        ((pid, n) for pid, n in accepted_counts.items()
+         if n >= threshold and pid in stubs and pid not in direct_pids),
+        key=lambda kv: (-kv[1], kv[0]))
+    if heavy:
+        lines.append(
+            f'**Stubs that keep turning up ({len(heavy)} with {threshold}+ '
+            'accepted claims):** no curated page yet, but the evidence is piling up.')
+        for pid, n in heavy[:_PROMOTION_SHOWN]:
+            # Direct-line stubs were routed to bucket (a) above, so everyone
+            # here is off the line (or the line is underivable - no
+            # root_person): the honest note is that they stay a stub for now.
+            lines.append(f'- {_person_label(conn, pid)} has {n} accepted claims '
+                         'and no curated profile - stays a stub for now '
+                         '(curating people beyond the direct line is a future '
+                         'decision)')
+        if len(heavy) > _PROMOTION_SHOWN:
+            lines.append(f'- … and {len(heavy) - _PROMOTION_SHOWN} more')
+
+    return lines or [
+        'No promotion candidates - no direct-line ancestor is still a stub, '
+        f'and no stub has {threshold} or more accepted claims.']
+
+
 # ── Section 8: Possible connections (fha cooccur) ─────────────────────────────
 
 def _section_possible_connections(archive_root: Path) -> list[str]:
@@ -1006,6 +1247,7 @@ def run_report(
         bodies = {
             'discoveries': _section_discoveries(conn, prev, current),
             'review-queue': _section_review_queue(conn),
+            'second-look': _section_second_look(conn),
             'new-since-last': _section_new_since_last(prev, current),
             'vitals-gaps': _section_vitals_gaps(findings, registry),
             'contradictions': _section_contradictions(findings),
@@ -1014,6 +1256,7 @@ def run_report(
             'photo-triage': _section_photo_triage(archive_root, fha_config, photo_scan_error),
             'place-candidates': _section_place_candidates(archive_root, fha_config),
             'hypotheses': _section_hypotheses(conn, archive_root),
+            'promotion-candidates': _section_promotion_candidates(conn, fha_config),
             'possible-connections': _section_possible_connections(archive_root),
         }
 

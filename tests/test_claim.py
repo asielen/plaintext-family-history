@@ -17,6 +17,13 @@ scalar must never draw the review edit onto the quoting claim (finding 2 - the
 old shape-only span match made `fha claim` refuse a perfectly reviewable
 claim), and a pre-existing duplicate claim id refuses with the E001 repair
 path, not the "would hide every claim" corruption wording (finding 15).
+
+Batch status moves (TOOLING §3b amendment, 2026-07) are covered by
+RunClaimBatchTests and ClaimBatchCliRoutingTests: several C-ids move status
+together (any of the five review statuses), the batch is status-only (a field
+flag with more than one id refuses with nothing written), validation is
+all-or-nothing (one unknown id refuses the whole batch before any write),
+one --dry-run previews every edit, and duplicate ids are deduped with a note.
 """
 
 import contextlib
@@ -916,6 +923,36 @@ class RunClaimNewTests(unittest.TestCase):
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('1880', text)   # a concrete example, not a bare EDTF error
 
+    def test_negated_mints_confirmed_absence_with_evidence_pairing(self) -> None:
+        # SPEC §8.6: a confirmed absence is a normal claim of its type with
+        # negated: true PAIRED with evidence: negative - the flag writes both,
+        # since one without the other is a half-recorded conclusion.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='marriage',
+            value='No marriage found - negative searches assembled here',
+            persons=['P-aaaaaaaaaa'], negated=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        # The lenient record parser may keep the YAML literal as the string
+        # 'true'; every consumer (index.py, lint.py) accepts both forms.
+        self.assertIn(rec['negated'], (True, 'true'))
+        self.assertEqual(rec['evidence'], 'negative')
+        self.assertEqual(rec['status'], 'accepted')
+        self.assertEqual(str(rec['reviewed']), claim._today())
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('ABSENCE', text)
+
+    def test_positive_claim_carries_no_negated_or_evidence_keys(self) -> None:
+        # The pairing is written exactly when --negated is given - a positive
+        # claim must not grow either key.
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='marriage',
+            value='Married at Fairview', persons=['P-aaaaaaaaaa'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertNotIn('negated', rec)
+        self.assertNotIn('evidence', rec)
+
     def test_place_and_place_text_coexist_on_a_new_claim(self) -> None:
         # SPEC §15: place: (the normalized link) and place_text: (the place
         # as the source wrote it) are different facts and legally coexist -
@@ -1051,6 +1088,19 @@ class ClaimNewCliRoutingTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         claims = read_record(self.source)['claims']
         self.assertTrue(any(c['value'] == 'via standalone' for c in claims))
+
+    def test_negated_flag_reaches_the_engine_through_fha_main(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'new', '--source', 'S-1111111111', '--type', 'marriage',
+                          '--value', 'no marriage found', '--negated', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = read_record(self.source)['claims']
+        minted = [c for c in claims if c['value'] == 'no marriage found']
+        self.assertEqual(len(minted), 1)
+        self.assertIn(minted[0]['negated'], (True, 'true'))
+        self.assertEqual(minted[0]['evidence'], 'negative')
 
     def test_standalone_flat_verb_still_works(self) -> None:
         rc = claim._standalone_main(['C-aa11bb22cc', '--status', 'accepted', '--root', str(self.root)])
@@ -1379,6 +1429,325 @@ class RunClaimFieldEditTests(unittest.TestCase):
         result = claim.run_claim(self.root, claim_id='C-bb22cc33dd', status='rejected')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self._claims()['C-bb22cc33dd']['status'], 'rejected')
+
+
+# ── Batch status moves (TOOLING §3b amendment): run_claim_batch ─────────────────
+
+class RunClaimBatchTests(unittest.TestCase):
+    """The review gesture "accept 1, 2 and 4" is one human decision per claim
+    delivered in one breath - the batch form turns it into one command. The
+    gates under test: status-only (a field correction is inherently per-claim),
+    all-or-nothing validation (one bad id refuses the whole batch before any
+    write), dedupe with a note, one preview per --dry-run batch."""
+
+    BOTH = ('C-aa11bb22cc', 'C-bb22cc33dd')
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_batch_accept_stamps_reviewed_on_each(self) -> None:
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', reviewed='2026-07-20')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['applied'], list(self.BOTH))
+        rec = self._claims()
+        for cid in self.BOTH:
+            self.assertEqual(rec[cid]['status'], 'accepted')
+            self.assertEqual(str(rec[cid]['reviewed']), '2026-07-20')
+        self.assertEqual(result.changed, [str(self.source)])
+
+    def test_batch_accept_defaults_reviewed_to_today_on_each(self) -> None:
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()
+        for cid in self.BOTH:
+            self.assertEqual(str(rec[cid]['reviewed']), claim._today())
+        self.assertEqual(result['reviewed'], claim._today())
+
+    def test_batch_reject_works_any_status_is_legal(self) -> None:
+        # Batch-reject (and batch-needs-review) are as legitimate as
+        # batch-accept: the gate is status-ONLY, not accept-only.
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='rejected')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()
+        for cid in self.BOTH:
+            self.assertEqual(rec[cid]['status'], 'rejected')
+
+    def test_batch_needs_review_works(self) -> None:
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='needs-review')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()
+        for cid in self.BOTH:
+            self.assertEqual(rec[cid]['status'], 'needs-review')
+
+    def test_multi_id_with_field_flag_refused_nothing_written(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', value='corrected')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('--value', text)
+        self.assertIn('per-claim', text)
+
+    def test_multi_id_with_confidence_refused_too(self) -> None:
+        # Every field flag hits the same gate, not just --value.
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', confidence='high')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        self.assertIn('--confidence', ' '.join(m.text for m in result.messages))
+
+    def test_one_unknown_id_refuses_the_whole_batch_before_any_write(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(
+            self.root, claim_ids=['C-aa11bb22cc', 'C-0000000000'], status='accepted')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['status'], 'not-found')
+        self.assertEqual(result.changed, [])
+        # ALL-or-nothing: the known first claim was not touched either.
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['status'], 'suggested')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('C-0000000000', text)
+        self.assertTrue(any(m.next_step and 'fha find' in m.next_step
+                            for m in result.messages))
+
+    def test_one_malformed_id_refuses_the_whole_batch(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(
+            self.root, claim_ids=['C-aa11bb22cc', 'C-bad'], status='accepted')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'invalid-id')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        self.assertIn('C-bad', ' '.join(m.text for m in result.messages))
+
+    def test_dry_run_batch_writes_nothing_and_previews_each(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result.changed, [])
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        text = ' '.join(m.text for m in result.messages)
+        for cid in self.BOTH:
+            self.assertIn(cid, text)
+        self.assertIn('[dry-run]', text)
+        # One closing trailer for the whole batch, not one per claim.
+        trailers = [m for m in result.messages if 'Re-run without --dry-run' in m.text]
+        self.assertEqual(len(trailers), 1)
+
+    def test_duplicate_id_deduped_preserving_order_with_a_note(self) -> None:
+        result = claim.run_claim_batch(
+            self.root, claim_ids=['C-aa11bb22cc', 'C-bb22cc33dd', 'C-AA11BB22CC'],
+            status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['applied'], list(self.BOTH))
+        self.assertEqual(len(result['results']), 2)
+        rec = self._claims()
+        for cid in self.BOTH:
+            self.assertEqual(rec[cid]['status'], 'accepted')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('more than once', text)
+
+    def test_duplicates_of_one_claim_behave_as_single_id(self) -> None:
+        # After dedupe only one distinct claim remains, so this is the plain
+        # single-claim contract (run_claim's data shape) plus the dedupe note.
+        result = claim.run_claim_batch(
+            self.root, claim_ids=['C-aa11bb22cc', 'C-aa11bb22cc'], status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['claim_id'], 'C-aa11bb22cc')
+        self.assertEqual(self._claims()['C-aa11bb22cc']['status'], 'accepted')
+        self.assertIn('more than once', result.messages[0].text)
+
+    def test_multi_id_without_status_refused(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH))
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result['status'], 'no-op')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        self.assertIn('--status', ' '.join(m.text for m in result.messages))
+
+    def test_batch_bad_reviewed_date_refused_before_any_write(self) -> None:
+        before = self.source.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted', reviewed='not-a-date')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+
+    def test_single_id_through_the_batch_front_door_is_unchanged(self) -> None:
+        # _cmd_claim now routes every call through run_claim_batch; a single
+        # id must keep run_claim's exact data shape and behavior.
+        result = claim.run_claim_batch(self.root, claim_ids=['C-aa11bb22cc'],
+                                       status='rejected')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['claim_id'], 'C-aa11bb22cc')
+        self.assertEqual(result['before_status'], 'suggested')
+        self.assertEqual(self._claims()['C-aa11bb22cc']['status'], 'rejected')
+
+    def test_single_id_field_edit_through_the_batch_front_door_still_legal(self) -> None:
+        # The status-only gate binds BATCHES; one id keeps its field edits.
+        result = claim.run_claim_batch(self.root, claim_ids=['C-aa11bb22cc'],
+                                       place_text='Topeka')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['place_text'], 'Topeka')
+
+    def test_index_reminder_appears_once_for_the_whole_batch(self) -> None:
+        result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
+                                       status='accepted')
+        reminders = [m for m in result.messages if 'fha index' in m.text]
+        self.assertEqual(len(reminders), 1)
+
+    def _write_duplicate_source(self) -> Path:
+        # A pre-existing E001 duplicate C-id on the SECOND batch member: it
+        # passes the up-front existence gate but run_claim refuses it
+        # mid-loop - the one realistic route into the stop branch.
+        path = self.root / 'sources' / 'other' / 'dup-source_S-2222222222.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '---\nid: S-2222222222\ntitle: Dup Source\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n'
+            '- value: "Fact one"\n  id: C-dd44ee55ff\n  type: note\n'
+            '  persons: [P-aaaaaaaaaa]\n  status: suggested\n  confidence: medium\n'
+            '- value: "Fact two"\n  id: C-ee55ff66gh\n  type: note\n'
+            '  persons: [P-aaaaaaaaaa]\n  status: suggested\n  confidence: medium\n'
+            '- value: "Fact two twin"\n  id: C-ee55ff66gh\n  type: note\n'
+            '  persons: [P-aaaaaaaaaa]\n  status: suggested\n  confidence: medium\n'
+            '```\n', encoding='utf-8')
+        return path
+
+    def test_live_mid_batch_stop_names_applied_and_finish_command(self) -> None:
+        dup = self._write_duplicate_source()
+        result = claim.run_claim_batch(
+            self.root, claim_ids=['C-dd44ee55ff', 'C-ee55ff66gh'],
+            status='accepted')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result['applied'], ['C-dd44ee55ff'])
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('Stopped at C-ee55ff66gh', text)
+        self.assertIn('1 of 2 claims applied (C-dd44ee55ff)', text)
+        # The finish command carries ONLY the unapplied ids.
+        self.assertIn('`fha claim C-ee55ff66gh --status accepted`', text)
+        self.assertNotIn('fha claim C-dd44ee55ff', text)
+        claims = read_record(dup)['claims']
+        self.assertEqual(claims[0]['status'], 'accepted')     # applied stays applied
+        self.assertEqual(claims[1]['status'], 'suggested')    # refused stays untouched
+        self.assertEqual(claims[2]['status'], 'suggested')
+
+    def test_dry_run_mid_batch_stop_says_previewed_with_full_rerun(self) -> None:
+        # The stop branch under --dry-run must never claim anything was
+        # "applied" nor print a recovery command that drops the previewed
+        # ids - a human following it would silently lose the first decision.
+        dup = self._write_duplicate_source()
+        before = dup.read_text(encoding='utf-8')
+        result = claim.run_claim_batch(
+            self.root, claim_ids=['C-dd44ee55ff', 'C-ee55ff66gh'],
+            status='accepted', reviewed='2026-07-20', dry_run=True)
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(dup.read_text(encoding='utf-8'), before)   # zero writes
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('nothing was written (dry-run)', text)
+        self.assertNotIn('claims applied', text)
+        self.assertIn(
+            '`fha claim C-dd44ee55ff C-ee55ff66gh --status accepted '
+            '--reviewed 2026-07-20 --dry-run`', text)
+
+    def test_empty_id_list_is_a_plain_refusal(self) -> None:
+        result = claim.run_claim_batch(self.root, claim_ids=[], status='accepted')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertTrue(result.messages)
+
+
+# ── Batch status moves: CLI routing (both parsers) ──────────────────────────────
+
+class ClaimBatchCliRoutingTests(unittest.TestCase):
+    """The batch positional must work through BOTH parsers - the fha subparser
+    (register/_add_arguments) and the standalone tools/claim.py parser - and
+    must not disturb the `fha claim new` early interception in fha.py."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self) -> dict:
+        return {c['id']: c for c in read_record(self.source)['claims']}
+
+    def test_fha_main_batch_accept(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'C-aa11bb22cc', 'C-bb22cc33dd',
+                           '--status', 'accepted', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = self._claims()
+        self.assertEqual(rec['C-aa11bb22cc']['status'], 'accepted')
+        self.assertEqual(rec['C-bb22cc33dd']['status'], 'accepted')
+
+    def test_fha_main_batch_with_field_flag_refused(self) -> None:
+        import fha
+        before = self.source.read_text(encoding='utf-8')
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'C-aa11bb22cc', 'C-bb22cc33dd',
+                           '--status', 'accepted', '--value', 'nope',
+                           '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertEqual(self.source.read_text(encoding='utf-8'), before)
+        self.assertIn('per-claim', err.getvalue())
+
+    def test_standalone_batch(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = claim._standalone_main(['C-aa11bb22cc', 'C-bb22cc33dd',
+                                         '--status', 'needs-review',
+                                         '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = self._claims()
+        self.assertEqual(rec['C-aa11bb22cc']['status'], 'needs-review')
+        self.assertEqual(rec['C-bb22cc33dd']['status'], 'needs-review')
+
+    def test_fha_main_single_id_still_byte_compatible(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'C-aa11bb22cc', '--status', 'accepted',
+                           '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self._claims()['C-aa11bb22cc']['status'], 'accepted')
+
+    def test_claim_new_interception_still_routes_before_the_batch_parser(self) -> None:
+        import fha
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fha.main(['claim', 'new', '--source', 'S-1111111111', '--type', 'note',
+                           '--value', 'still intercepted', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        claims = read_record(self.source)['claims']
+        self.assertTrue(any(c['value'] == 'still intercepted' for c in claims))
 
 
 if __name__ == '__main__':

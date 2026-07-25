@@ -128,6 +128,9 @@ source directly, not the HTML.
   is this skill's alone.
 - **Never** write a source change without showing it and getting an explicit yes — one confirmation per
   change, no batch-accept-by-silence.
+- Any record ID folded into prose (a person record, `notes/home.md`, free text routed to a source) is
+  `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in structured fields and tool arguments
+  (_STANDARD.md §11).
 - **Never** overwrite the human's existing `custom.css`, `home.md`, or record prose — append and merge
   around it — and **never** edit below a `GENERATED` header; route a "fix" that landed on a generated block
   to its upstream record instead.

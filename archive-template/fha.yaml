@@ -33,6 +33,22 @@
 #   photos: /Users/you/Pictures/Lightroom     # Mac
 #   documents: documents
 #
+# ── Biography voice (optional) ──
+#   How the assistant's drafted biographies read. The facts and citations are
+#   identical either way - this only sets the voice. You can always override
+#   in the moment by asking ("tell it like a story" / "just the facts").
+#
+# biography:
+#   style: chronicle    # chronicle (era-by-era, fact-forward - the default) | narrative (story-driven)
+
+# ── Promotion nudges (optional) ──
+#   When a not-yet-curated person accumulates this many accepted facts, the
+#   report and review sessions start suggesting a real profile for them.
+#   Suggestions only - nothing is ever promoted without your say-so.
+#
+# promotion:
+#   claims_threshold: 5    # default 5 when the key is absent
+
 # ── Active configuration (the defaults; edit these to match your setup) ──
 roots:
   photos: photos

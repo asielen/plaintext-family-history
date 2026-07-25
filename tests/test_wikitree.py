@@ -154,6 +154,91 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertTrue(text.rstrip().endswith('<references/>'))
         self.assertIn('== Sources ==', text)
 
+    def _reopen(self):
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def test_needs_review_excluded_from_spacetime_recast_as_research_note(self):
+        # Owner decision 2026-07-22: a parked needs-review claim never stamps
+        # a fact (no spacetime span), but goes out as an open question in
+        # Research Notes so a collaborator can pick it up.
+        conn = self._reopen()
+        _add_claim(conn, 'c-0000000003', 'residence', ['p-0000000001'],
+                   date_edtf='1910', place_text='Topeka', source_id='s-0000000002',
+                   status='needs-review', value='Possibly moved to Topeka')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        text = r['text']
+        # The marriage source now carries TWO dated+placed claims, so its
+        # spacetime entry disappears either way; the parked claim must not
+        # resurrect it, and no span may carry the 1910 date.
+        self.assertNotIn('data-date="1910-01-01"', text)
+        self.assertIn('== Research Notes ==', text)
+        self.assertIn('Unconfirmed: Possibly moved to Topeka (1910)', text)
+        self.assertIn('noted in "Marriage record"', text)
+        # Research Notes precedes the Sources render anchor.
+        self.assertLess(text.index('== Research Notes =='), text.index('<references/>'))
+
+    def test_research_notes_precede_an_authored_sources_section(self):
+        # A profile that authors its own '## Sources' section exports it as
+        # '== Sources ==' with <references/> appended inside it - the minted
+        # Research Notes section must land BEFORE that heading, or the
+        # footnote block renders detached under Research Notes.
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\n## Sources\nSee also the county records office card file.\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_claim(conn, 'c-0000000005', 'residence', ['p-0000000001'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly moved to Topeka')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        text = r['text']
+        self.assertIn('== Research Notes ==', text)
+        self.assertLess(text.index('== Research Notes =='), text.index('== Sources =='))
+        self.assertLess(text.index('== Sources =='), text.index('<references/>'))
+        self.assertIn('county records office', text)   # authored section survives
+
+    def test_research_note_naming_a_restricted_person_is_withheld(self):
+        # A deceased person whose record carries `restricted: by-request` is a
+        # no-override exclusion from public output (SPEC §19) - a parked claim
+        # co-naming them must not export their wording, even though the
+        # living-person guard passes (living: false) and the index has no
+        # person-level restricted column (the record file is the truth).
+        (self.root / 'people' / 'edith.md').write_text(
+            '---\nid: P-0000000003\nname: Edith Kowalski\ntier: stub\n'
+            'living: false\nrestricted: by-request\n---\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000003', 'Edith Kowalski', tier='stub',
+                    path='people/edith.md')
+        _add_claim(conn, 'c-0000000006', 'marriage',
+                   ['p-0000000001', 'p-0000000003'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly married Edith Kowalski in Chicago')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertNotIn('Edith Kowalski', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])
+
+    def test_restricted_source_research_note_withheld(self):
+        conn = self._reopen()
+        _add_source(conn, 's-0000000003', 'Sealed record', 'sources/sealed.md', restricted=1)
+        _add_claim(conn, 'c-0000000004', 'residence', ['p-0000000001'],
+                   source_id='s-0000000003', status='needs-review',
+                   value='Secret whereabouts')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertNotIn('Secret whereabouts', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])   # nothing eligible → no section
+
     def test_person_link_with_wikitree_id(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
         # "Mary Jones [P-...]" folds into a single WikiTree link, not doubled.

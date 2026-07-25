@@ -11,6 +11,17 @@ roots:
   photos: photos
   documents: documents
 
+# Biography voice for the write-biography skill: chronicle (era-by-era,
+# fact-forward - the default) or narrative (story-driven). Facts and
+# citations are identical either way; a session ask overrides this.
+biography:
+  style: chronicle
+
+# Promotion nudges (report §7b + review close-out): suggest a curated profile
+# once a stub holds this many accepted claims. Suggestions only.
+promotion:
+  claims_threshold: 5
+
 # Ahnentafel root: the person at position #1 in the numbering tree.
 # All ancestor Ahnentafel numbers are derived from this person via relationship claims.
 # Even-numbered folders (002, 004, …) are ancestral couple folders; the root person's

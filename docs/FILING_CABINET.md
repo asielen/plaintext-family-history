@@ -16,12 +16,21 @@ discontinued. Here's the whole thing, drawer by drawer.
 | `places/` | **The gazetteer card** | A single list of every place you've touched - where it is, and what it was called when. One card per real spot on the map, forever. |
 | `notes/` | **Your research legal pad** | Open questions, half-formed leads, "check the 1901 census for this branch." Thinking in progress, not filed conclusions. |
 | `photos/` | **The photo boxes** | Your actual pictures, kept in whatever order you already like. Never relabeled, never reshuffled by the system - it reads from the box, it doesn't rearrange it. |
-| `documents/` | **The scans drawer** | The actual scan and recording files the `sources/` folders point at - certificates, clippings, audio, transcripts. |
+| `documents/` | **The scans drawer** | The actual scan and recording files the `sources/` folders point at - certificates, clippings, audio, transcripts. Lay it out in any folders you like - by type, by family line, by decade - anything you place in a folder keeps its spot when it's processed (something dropped loose at the drawer's top level gets filed into a type folder for you), and you can rearrange the drawer whenever you like: the ID tag in each filed item's name ties it to its evidence folder, and one command (`fha reconcile`, or just ask the assistant) re-ties everything after a reshuffle. |
 | `fha.yaml` | **The label that says where the boxes are** | One small card noting which drive or shelf the photo boxes and scans drawer actually live on (they're often too big for the cabinet itself). |
 
 > `photos/`, `documents/`, and `inbox/` are often kept on an external drive instead of inside the
 > cabinet - they're the big, heavy items. `fha.yaml` is the note that says where they went. The
 > light, durable paper - `sources/`, `people/`, `places/`, `notes/` - stays in the cabinet.
+
+**Photo box or scans drawer?** The split is about *management*, not content: if it lives (or
+belongs) in your photo library, it's a photo; everything else - including a photograph *of* a
+document - goes in the scans drawer. When you drop a scanned record that happens to be a `.jpg`
+into the pile, say what it is in the note that travels with it (e.g. `source_type: census`) so it
+files into the right drawer. And plenty of in-between things need no choice at all: a postcard can
+keep its picture side in the photo box while its typed-up transcription sits in the scans drawer -
+both filed under the same evidence folder - and if something does land in the wrong drawer,
+`fha process refile` moves it to the other one and corrects the paperwork in one step.
 
 A couple divider's label also lists that couple's children, and it quietly flags anything worth
 seeing at a glance - a child who joined by adoption rather than birth (`Ruth (adopted)`), or a
@@ -46,6 +55,29 @@ The archive just makes them automatic.
 
 That single distinction - ink vs. pencil, proven vs. guessed - is the honesty the whole system is
 built to protect.
+
+---
+
+## Where does a note go?
+
+Research produces four kinds of paper, and each has a home:
+
+- **Something someone asserted** - "Aunt Mary said the farm burned in 1922" - is *evidence*. It
+  goes in the pile (`inbox/`), gets filed as a source, and its assertions become claims you can
+  review. Even a half-page of jotted memories counts; the note itself is the document.
+- **Something to find out** - "check the 1901 census for this branch" - is an *open question*. If
+  it's about one person, it goes on that person's research sheet; only truly general questions go
+  on the shared question log (`notes/questions.md`). That split is what keeps the question log
+  readable even at hundreds of open questions.
+- **Something you believe but can't prove yet** - "maybe this is the same John as the 1881
+  census" - is a *hypothesis*: a pencil note on the person's research sheet, with a line about
+  what evidence would settle it.
+- **A search you already ran** - even one that found nothing - goes in the *research log*, so you
+  (and the assistant) never re-run it blind.
+
+Everything else - working notes that span people, draft write-ups - lives on the legal pad
+(`notes/research/`). You can hand the assistant a pile of old notes and sort them into these homes
+together, one chunk at a time.
 
 ---
 

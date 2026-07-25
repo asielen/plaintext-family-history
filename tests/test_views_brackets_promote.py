@@ -1,0 +1,207 @@
+"""
+test_views_brackets_promote.py - brackets check 4 (W119) and --fix-promote.
+
+W119 flags direct-line ancestors (derived Ahnentafel position >= 2) whose
+record is still a stub - `tier: stub`, or a record parked under
+people/stubs/ - exactly the people the W110 machinery deliberately skips.
+Report-only by default (a lead, never a defect); `--generations N` narrows
+the depth; `--fix-promote` batch-applies the shared promote engine
+(`_lib.promote_person_record`) under the same previewed Apply? [y/N] gate
+the other bracket fixes use. Fixtures only.
+"""
+
+import contextlib
+import io
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+
+import views
+import index as index_mod
+from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, load_fha_yaml, read_record
+
+KID = 'P-2aaaaaaaaa'
+PA = 'P-2bbbbbbbbb'
+MA = 'P-2ccccccccc'
+GPA = 'P-2ddddddddd'
+FRIEND = 'P-2eeeeeeeee'
+SID = 'S-2aaaaaaaaa'
+FOLDER = '002 Pa Deep + Ma Deep'
+
+
+def _ptext(pid: str, name: str, sex: str = 'U', tier: str = 'stub') -> str:
+    return (f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+            f'tier: {tier}\n---\n\n# {name}\n\n## Biography\n\nx\n')
+
+
+def _rel_claim(cid: str, child: str, parents: list[str]) -> str:
+    plist = ', '.join(parents)
+    persons = ', '.join([child] + parents)
+    return (
+        f'- value: "{child} child of {plist}"\n'
+        f'  id: {cid}\n  type: relationship\n  subtype: biological\n'
+        f'  persons: [{persons}]\n  roles:\n'
+        f'    child: {child}\n    parent: [{plist}]\n'
+        f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+        f'  information: primary\n  evidence: direct\n  notes: x.\n'
+    )
+
+
+class BracketsPromoteBase(unittest.TestCase):
+    """Direct line: KID (curated, in the 002 folder) <- PA+MA <- GPA (PA's
+    father). PA, MA, GPA are stubs in people/stubs/; FRIEND is off the line."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'people' / FOLDER).mkdir(parents=True)
+        (self.root / 'sources' / 'notes').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text(
+            f'root_person: {KID}\nroots:\n  documents: documents\n',
+            encoding='utf-8')
+        (self.root / 'people' / FOLDER / f'deep__kid_{KID}.md').write_text(
+            _ptext(KID, 'Kid Deep', 'F', 'curated'), encoding='utf-8')
+        for pid, name, sex in ((PA, 'Pa Deep', 'M'), (MA, 'Ma Deep', 'F'),
+                               (GPA, 'Gpa Deep', 'M')):
+            slug = name.split()[0].lower()
+            (self.root / 'people' / 'stubs' / f'deep__{slug}_{pid}.md').write_text(
+                _ptext(pid, name, sex), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'far__frank_{FRIEND}.md').write_text(
+            _ptext(FRIEND, 'Frank Far', 'M'), encoding='utf-8')
+        claims = (_rel_claim('C-2aaaaaaaaa', KID, [PA, MA])
+                  + _rel_claim('C-2bbbbbbbbb', PA, [GPA]))
+        (self.root / 'sources' / 'notes' / f'rel_{SID.lower()}.md').write_text(
+            f'---\nid: {SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+        self._reindex()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _reindex(self) -> None:
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def _run(self, **kwargs):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            res = views.run_brackets(self.root, **kwargs)
+        return res, out.getvalue(), err.getvalue()
+
+    def _stub_names(self) -> list[str]:
+        return sorted(p.name for p in (self.root / 'people' / 'stubs').iterdir())
+
+
+class W119ReportTests(BracketsPromoteBase):
+    def test_report_only_flags_all_direct_line_stubs(self) -> None:
+        res, out, _err = self._run()
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['w119'], 3)   # PA, MA, GPA - not FRIEND, not KID
+        self.assertIn('W119', out)
+        self.assertIn('still filed as a stub', out)
+        self.assertIn('fha person promote', out)
+        self.assertNotIn(FRIEND, out)
+        # Report-only: nothing moved, nothing written.
+        self.assertEqual(len(self._stub_names()), 4)
+
+    def test_generations_cap_narrows_the_set(self) -> None:
+        res, out, _err = self._run(generations=1)
+        self.assertEqual(res.data['w119'], 2)   # parents only; GPA (gen 2) out
+        self.assertNotIn(GPA, out)
+
+    def test_generations_must_be_positive(self) -> None:
+        res, _out, err = self._run(generations=0)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('--generations', err)
+
+    def test_fix_and_fix_promote_together_refused(self) -> None:
+        res, _out, err = self._run(fix=True, fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('--fix-promote', err)
+        self.assertEqual(len(self._stub_names()), 4)
+
+    def test_clean_when_promoted_records_are_curated(self) -> None:
+        # Hand-promote everyone (tier + location); W119 must then be silent.
+        for pid, slug in ((PA, 'pa'), (MA, 'ma')):
+            src = self.root / 'people' / 'stubs' / f'deep__{slug}_{pid}.md'
+            dst = self.root / 'people' / FOLDER / src.name
+            dst.write_text(src.read_text(encoding='utf-8').replace(
+                'tier: stub', 'tier: curated'), encoding='utf-8')
+            src.unlink()
+        gpa_folder = self.root / 'people' / '004 Gpa Deep'
+        gpa_folder.mkdir()
+        src = self.root / 'people' / 'stubs' / f'deep__gpa_{GPA}.md'
+        (gpa_folder / src.name).write_text(
+            src.read_text(encoding='utf-8').replace('tier: stub', 'tier: curated'),
+            encoding='utf-8')
+        src.unlink()
+        self._reindex()
+        res, _out, _err = self._run()
+        self.assertEqual(res.data['w119'], 0)
+
+
+class FixPromoteTests(BracketsPromoteBase):
+    def test_dry_run_previews_and_writes_nothing(self) -> None:
+        res, out, _err = self._run(fix_promote=True, dry_run=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('Stub promotions (W119):', out)
+        self.assertIn('dry-run: no changes written', out)
+        self.assertEqual(len(self._stub_names()), 4)
+        self.assertTrue((self.root / '.cache' / 'index.sqlite').exists())
+
+    def test_declined_gate_writes_nothing(self) -> None:
+        with mock.patch('builtins.input', return_value='n'):
+            res, out, _err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('Aborted - no changes written.', out)
+        self.assertEqual(len(self._stub_names()), 4)
+
+    def test_apply_promotes_the_whole_set(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            res, out, _err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        # Only the off-line FRIEND stays a stub.
+        self.assertEqual(self._stub_names(), [f'far__frank_{FRIEND}.md'])
+        # PA and MA landed in the existing 002 folder; GPA got a new 004 folder.
+        for pid, slug in ((PA, 'pa'), (MA, 'ma')):
+            rec = self.root / 'people' / FOLDER / f'deep__{slug}_{pid}.md'
+            self.assertTrue(rec.exists(), rec)
+            self.assertEqual(str(read_record(rec)['meta'].get('tier')), 'curated')
+            self.assertTrue(
+                (self.root / 'people' / FOLDER / f'deep__{slug}_research_{pid}.md').exists())
+        gpa_rec = self.root / 'people' / '004 Gpa Deep' / f'deep__gpa_{GPA}.md'
+        self.assertTrue(gpa_rec.exists())
+        # The index cache was dropped (moves are mtime-invisible) and the
+        # follow-ups name the reindex and the views regeneration.
+        self.assertFalse((self.root / '.cache' / 'index.sqlite').exists())
+        self.assertIn('fha index', out)
+        self.assertIn('fha views refresh', out)
+
+    def test_partial_failure_reports_and_exits_warnings(self) -> None:
+        # One record vanishes between the index build and the apply - the
+        # batch must promote the others, count the failure, and exit 1.
+        (self.root / 'people' / 'stubs' / f'deep__ma_{MA}.md').unlink()
+        with mock.patch('builtins.input', return_value='y'):
+            res, _out, err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data.get('failures'), 1)
+        self.assertIn('ERROR', err)
+        self.assertTrue(
+            (self.root / 'people' / FOLDER / f'deep__pa_{PA}.md').exists())
+
+    def test_plain_fix_does_not_promote(self) -> None:
+        # --fix owns W103/W110 only; with only W119 present it says so plainly.
+        with mock.patch('builtins.input', return_value='y'):
+            res, out, _err = self._run(fix=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('--fix-promote', out)
+        self.assertEqual(len(self._stub_names()), 4)
+
+
+if __name__ == '__main__':
+    unittest.main()

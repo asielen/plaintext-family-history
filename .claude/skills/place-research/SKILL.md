@@ -93,6 +93,8 @@ these three 'Fairview City' mentions be one place?"
 - Registry entries are minted/merged via `fha confirm place`, never by hand-editing `places.yaml`.
 - Dated `history:` and place notes read as context; a bare fact still carries a source.
 - Extend existing registry entries; never overwrite a human's `hierarchy`/`alt_names`/`notes`.
+- Any record ID written into place notes or history prose is `[[ ]]`-wrapped, `[[ID|Name]]` preferred;
+  bare IDs only in structured registry fields and tool arguments (_STANDARD.md §11).
 
 ## Done when
 

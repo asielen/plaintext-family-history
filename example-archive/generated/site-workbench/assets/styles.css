@@ -372,6 +372,14 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 .status-rejected, .status-superseded { color: var(--status-rejected-fg); text-decoration: line-through; }
 .status-rejected::before, .status-superseded::before { content: ""; }
 
+/* Claim flags — the same words-not-pills rule, for a fact that is not yet
+   settled: "low confidence" on an accepted-but-thin fact, "unconfirmed" on a
+   parked needs-review claim (workbench/linked surfaces only). */
+.claim-flag { font-family: var(--font-sans); font-size: var(--text-xs); white-space: nowrap; }
+.flag-low { color: var(--muted); }
+.flag-low::before { content: "\2248\00a0"; }        /* ≈ almost-equal: close, not proven */
+.flag-unconfirmed { color: var(--status-review-fg); font-style: italic; }
+
 
 /* 7. FAMILY TREE — index-entry nodes; branch color as a name underline (not a card) */
 

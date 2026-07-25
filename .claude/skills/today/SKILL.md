@@ -61,9 +61,14 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    - **§3 Vitals gaps** — people missing a birth/marriage/death. *"Thomas Hartley still has no death
      record."* (This is the archive's one known gap; don't alarm him with it.)
    - **§8 Possible connections** — co-occurrence leads, clearly flagged as *leads, never facts*.
-   - Mention §2 (new since last time), §5b (answerable questions), §6b (place candidates), §7
-     (hypotheses / draft queues) only when they hold something worth acting on. Don't read empty
-     sections aloud.
+   - Mention §1b (worth a second look — parked claims and thin facts to revisit when a new record
+     surfaces; frame as "someday" leads, never chores), §2 (new since last time), §5b (answerable
+     questions), §6b (place candidates), §7 (hypotheses / draft queues), §7b (promotion candidates —
+     people who've earned a real page: a direct-line ancestor still a stub, or a stub that keeps
+     turning up in accepted facts; frame as someday-leads — *"Frank keeps showing up — nine accepted
+     facts and still a stub"*. For a direct-line person the graduation is `fha person promote`, run
+     only on the human's say-so; a non-direct claim-heavy stub just stays a stub for now — the report
+     says so itself) only when they hold something worth acting on. Don't read empty sections aloud.
 
 4. **Offer exactly one next action.** End by naming the single best next step and offering to start it —
    usually a `review-claims` session on the oldest backlog, or `process-source` on the inbox:
@@ -122,6 +127,8 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
   separate `fha index` / `fha lint`; and `today` is read-only, so no `fha xref` either (that's
   `review-claims`' job, not this briefing's).
 - Speak the report, don't dump it: a briefing with one clear next step, not a wall of sections.
+- Any record ID in the text of a confirmed discovery is `[[ ]]`-wrapped, `[[ID|Name]]` preferred — the
+  structured `--refs` list takes bare IDs, but IDs *inside the sentence* follow _STANDARD.md §11.
 
 ## Done when
 

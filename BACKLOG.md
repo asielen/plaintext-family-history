@@ -89,11 +89,6 @@ tool-only fix.
   person. Genealogically a baptism/burial is strong evidence of the vital; the
   check could treat them as partial satisfaction (or emit a softer note).
 
-- **Confirmed-absence (negative) claims have no authoring tool.** SPEC §8.6
-  negative facts ("no military service found") must currently be hand-written;
-  there is no `fha`-tool path to mint one. A future `fha confirm absence` (or a
-  flag on an existing verb) would close the gap.
-
 ---
 
 *Source: the spec-accuracy + philosophy audit (see git history around the

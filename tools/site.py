@@ -1607,12 +1607,15 @@ class _SiteBuilder:
                         e, render, embed, drop_private=not self.linked)), 'raw': e}
                     for e in split_log_entries(notes_text)]
 
-        # A standalone snapshot publishes only the archive's current position -
-        # accepted + needs-review. `suggested` (unreviewed AI drafts; "your
-        # suggestions are not facts") and `rejected`/`superseded` (known not
-        # current) are withheld from public output, matching the timeline's
-        # rule. `--linked` (developer preview) shows every status with its badge.
-        status_filter = '' if self.linked else "AND status IN ('accepted', 'needs-review')"
+        # A standalone snapshot publishes only settled facts - accepted claims
+        # (any confidence; the badge carries a low-confidence indicator).
+        # `needs-review` is research state ("looked at it, can't settle it
+        # yet" - the parked verdict, SPEC §8.1), not publishable fact, so it
+        # is withheld from public output along with `suggested` (unreviewed
+        # AI drafts) and `rejected`/`superseded` (known not current) - owner
+        # decision 2026-07-22. `--linked` (developer preview / workbench)
+        # shows every status with its badge.
+        status_filter = '' if self.linked else "AND status = 'accepted'"
         living_filter = (
             '' if self.linked else
             "AND NOT EXISTS ("
@@ -1622,7 +1625,7 @@ class _SiteBuilder:
         )
         claims = []
         for c in self.conn.execute(
-            'SELECT id, type, value, date_edtf, place_id, place_text, status FROM claims c '
+            'SELECT id, type, value, date_edtf, place_id, place_text, status, confidence FROM claims c '
             f'WHERE source_id = ? {status_filter} {living_filter} ORDER BY '
             "CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min ASC",
             (sid,),
@@ -1639,6 +1642,7 @@ class _SiteBuilder:
                 'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
+                'confidence': c['confidence'] or '',
                 # Workbench-only: the C-id drives the inline claim actions. Never
                 # used in standalone output (the template gates on `workbench`).
                 'claim_id': fmt_id_display(c['id']),
@@ -1669,7 +1673,11 @@ class _SiteBuilder:
             'portrait': portrait,
             # Workbench-only (template gates on `workbench`): S-id + record path,
             # the record-bar suggested-claims pointer, and the ## Notes render.
-            'source_id': fmt_id_display(sid), 'record_relpath': row['path'],
+            # as_posix: the index stores the path with the building OS's
+            # separators; the rendered page (and the committed example
+            # fixtures) must not vary by platform.
+            'source_id': fmt_id_display(sid),
+            'record_relpath': str(row['path']).replace('\\', '/'),
             'suggested_count': sum(1 for c in claims if c['status'] == 'suggested'),
             'notes_html': notes_html,
             'notes_entries': notes_entries,
@@ -1790,7 +1798,10 @@ class _SiteBuilder:
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
             # "open file" button and living value for the "change..." affordance.
-            'record_relpath': row['path'],
+            # replace: keep the emitted path platform-independent (the index
+            # stores the building OS's separators; committed fixtures must not
+            # churn between machines).
+            'record_relpath': str(row['path']).replace('\\', '/'),
             'living': (row['living'] or 'unknown'),
             'milestone_sources': self._person_milestone_sources(pid) if self.workbench else [],
             'biography_raw': biography_raw if self.workbench else '',
@@ -1856,7 +1867,16 @@ class _SiteBuilder:
         return alts, tags
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
-        """Accepted vital claims as the summary block (birth/death/marriage/…)."""
+        """Accepted vital claims as the summary block (birth/death/marriage/…).
+
+        Accepted-only in EVERY mode, deliberately - unlike the timeline, where
+        the workbench also shows needs-review marked. The summary block is the
+        person's settled headline facts; a parked vital belongs in the
+        timeline (tagged) and the review surfaces, not the headline. First
+        accepted claim per type wins, with `ORDER BY c.id` making that pick
+        deterministic (row order otherwise varies by rowid and churns the
+        committed example fixtures between rebuilds).
+        """
         living_filter = (
             '' if self.linked else
             "AND NOT EXISTS ("
@@ -1865,10 +1885,12 @@ class _SiteBuilder:
             ")"
         )
         rows = self.conn.execute(
-            "SELECT c.id, type, value, date_edtf, place_id, place_text, source_id FROM claims c "
+            "SELECT c.id, type, value, date_edtf, place_id, place_text, source_id, confidence "
+            "FROM claims c "
             "JOIN claim_persons cp ON c.id = cp.claim_id "
             f"WHERE cp.person_id = ? AND c.status = 'accepted' "
-            f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter}",
+            f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter} "
+            "ORDER BY c.id",
             (pid,),
         ).fetchall()
         claim_persons: dict[str, str] = {}
@@ -1904,6 +1926,7 @@ class _SiteBuilder:
                     'value': r['date_edtf'] or r['value'] or '',
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
+                    'confidence': r['confidence'] or '',
                     'provisional': False,
                     'missing': False,
                 }
@@ -2121,9 +2144,18 @@ class _SiteBuilder:
             for e in split_log_entries(display_section or '')]
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
-        """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the
-        same query and shape as `fha views timeline`'s main chronology; suggested
-        claims are excluded from the published timeline)."""
+        """The person's claims grouped by decade (TOOLING §12; same shape as
+        `fha views timeline`'s main chronology). Statuses diverge by audience
+        (owner decision 2026-07-22): the published standalone timeline shows
+        accepted claims only (with a low-confidence indicator - SPEC §8.5's
+        "sometimes that's the best we ever get" facts publish, flagged);
+        linked/workbench also shows needs-review claims, clearly marked as
+        unconfirmed. Suggested claims never render here in any mode. (`fha
+        views timeline`, the private research artifact, keeps needs-review
+        with the same wording - the divergence is public-vs-working surface,
+        not two rules.)"""
+        status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
+                         else "c.status = 'accepted'")
         living_filter = (
             '' if self.linked else
             "AND NOT EXISTS ("
@@ -2132,9 +2164,10 @@ class _SiteBuilder:
             ")"
         )
         rows = self.conn.execute(
-            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id "
+            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id, "
+            "c.status, c.confidence, c.reviewed "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
-            f"WHERE cp.person_id = ? AND c.status IN ('accepted','needs-review') {living_filter} "
+            f"WHERE cp.person_id = ? AND {status_filter} {living_filter} "
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (pid,),
         ).fetchall()
@@ -2160,6 +2193,8 @@ class _SiteBuilder:
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'], 'value': r['value'],
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
+                'status': r['status'], 'confidence': r['confidence'] or '',
+                'parked': r['reviewed'] or '',
             })
         if entries:
             groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
@@ -2173,7 +2208,7 @@ class _SiteBuilder:
         cite, in reading order); any remaining sources that cite the person but are
         not referenced inline are appended so the list stays complete. The same
         two-table UNION as `fha views sources-index`."""
-        status_filter = '' if self.linked else "AND c.status IN ('accepted','needs-review')"
+        status_filter = '' if self.linked else "AND c.status = 'accepted'"
         rows = self.conn.execute(
             f'SELECT DISTINCT c.source_id FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
             f'WHERE cp.person_id = ? {status_filter} '
@@ -2237,15 +2272,25 @@ class _SiteBuilder:
         (restricted / DNA / by-request / publication_ok:false). A relationship
         evidenced only by a source withheld because it names a living person is
         still shown - the living person is redacted elsewhere, but the deceased
-        pair's relationship is not (only living people are redacted outright)."""
+        pair's relationship is not (only living people are redacted outright).
+
+        Standalone, only an ACCEPTED claim can vouch for a tie (owner decision
+        2026-07-22: the public site publishes settled facts only) - a pair whose
+        every backing claim is still needs-review is withheld until one is
+        accepted. The query still fetches needs-review rows so the no-claims
+        fallback below stays correct: a tie with parked evidence is "claimed
+        but unsettled" (hidden), NOT "no claims at all" (a YAML-only belief,
+        which renders as such)."""
         rows = self.conn.execute(
-            "SELECT c.id, c.source_id FROM claims c "
+            "SELECT c.id, c.source_id, c.status FROM claims c "
             "JOIN claim_persons cp1 ON c.id = cp1.claim_id AND cp1.person_id = ? "
             "JOIN claim_persons cp2 ON c.id = cp2.claim_id AND cp2.person_id = ? "
             "WHERE c.status IN ('accepted','needs-review')",
             (pid1, pid2),
         ).fetchall()
         for r in rows:
+            if not self.linked and r['status'] != 'accepted':
+                continue
             if normalize_id(str(r['id'])) in self.restricted_claims:
                 continue
             if not self._source_hard_restricted(r['source_id']):
@@ -2901,9 +2946,14 @@ class _SiteBuilder:
             "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
             ")"
         )
+        # Same audience split as the person timeline (owner decision 2026-07-22):
+        # public = accepted only; linked/workbench keeps needs-review, marked.
+        place_status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
+                               else "c.status = 'accepted'")
         claim_rows = self.conn.execute(
-            "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.source_id FROM claims c "
-            f"WHERE c.place_id = ? AND c.status IN ('accepted','needs-review') {living_filter} "
+            "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.source_id, "
+            "c.status, c.confidence, c.reviewed FROM claims c "
+            f"WHERE c.place_id = ? AND {place_status_filter} {living_filter} "
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (lid,),
         ).fetchall()
@@ -2932,6 +2982,8 @@ class _SiteBuilder:
                 'persons_html': self._markup(
                     ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)),
                 'source_html': self._markup(self._source_link(c['source_id'], page_dir)) if c['source_id'] else '',
+                'status': c['status'], 'confidence': c['confidence'] or '',
+                'parked': c['reviewed'] or '',
             })
 
         # People-frequency list: links only, redacted persons omitted entirely.

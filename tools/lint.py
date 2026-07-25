@@ -141,12 +141,14 @@ import yaml
 #    _process_person_file        - index one person file + file-level checks
 #    _process_source_file        - index one source file + file-level checks + claims
 #
-#  Bracket / Ahnentafel checks (W103, W110)
+#  Bracket / Ahnentafel checks (W103, W110, W119)
 #    _build_child_edges          - parent → {child → {nature,…}} from accepted claims
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
 #    _check_bracket_lists        - W103: stale couple-folder bracket lists
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
 #    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder
+#    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
+#                                   (report-only lead; brackets --fix-promote applies)
 #
 #  Relationship reconciliation (W115, W116)
 #    _check_relationships_reconciliation - sourced relationships: entry vs claim
@@ -1131,7 +1133,9 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                         f'file {file_path_str!r} is missing'))
             else:
                 findings.append(Finding('E', 'E011', path,
-                    f'Inventory file not found on disk: {file_path_str!r}'))
+                    f'Inventory file not found on disk: {file_path_str!r} - if the '
+                    'file was moved within the documents folder, `fha reconcile` '
+                    're-ties it automatically (preview with --dry-run)'))
     registry.source_inventory[sid] = inventory_paths
 
     # W102: suggested-claim backlog
@@ -1144,7 +1148,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     _collect_token_refs(rec['body'], path, registry)
 
 
-# ── Bracket and Ahnentafel checks (W103, W110) ───────────────────────────────
+# ── Bracket and Ahnentafel checks (W103, W110, W119) ─────────────────────────
 
 def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     """parent_pid → {child_pid: {subtype, …}} from accepted parent/child claims.
@@ -1345,7 +1349,7 @@ def _build_ahnentafel_lint(
     return pid_to_pos
 
 
-def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> None:
+def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> dict[str, int]:
     """W110: direct-line person files in the wrong couple folder.
 
     Requires root_person in fha.yaml.  Builds the Ahnentafel map from the
@@ -1354,10 +1358,14 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     (or position−1 if they hold the odd/mother slot).
 
     Skips persons in people/connections/ or people/stubs/.
+
+    Returns the derived {P-id: position} map (empty when root_person is absent
+    or unresolvable) so the W119 direct-line-stub check right after it reads
+    the same derivation instead of running the BFS twice.
     """
     root_person_raw = registry.fha_config.get('root_person')
     if not root_person_raw:
-        return
+        return {}
 
     root_pid = normalize_id(str(root_person_raw))
     if not registry.has_person(root_pid):
@@ -1365,7 +1373,7 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             f'root_person {root_pid!r} has no person record - '
             'Ahnentafel placement checks (W110) skipped; '
             'fix root_person in fha.yaml or run fha stubs'))
-        return
+        return {}
     # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
     # and legal parent edges are shown in the bracket list but never numbered.
     children_of = _build_children_of(registry, genetic_only=True)
@@ -1408,6 +1416,54 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
                 f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
                 f'expected prefix {expected_prefix}; '
                 f'run `fha views brackets --fix` to correct'))
+
+    return pid_to_pos
+
+
+def _check_direct_line_stubs(
+    registry: Registry, findings: list[Finding], pid_to_pos: dict[str, int]
+) -> None:
+    """W119: direct-line ancestors still filed as stubs - a lead, never a defect.
+
+    The mirror of `fha views brackets` check 4 (the established
+    lint-detects / brackets-fixes split W103 and W110 already follow): any
+    person with a DERIVED Ahnentafel position >= 2 whose record is
+    `tier: stub` or still lives under people/stubs/. These are exactly the
+    people the W110 placement machinery deliberately skips, and on a live
+    archive this fires for every not-yet-curated ancestor at once - which is
+    the POINT (it is the research-lead surface `fha report` §7b narrates),
+    so the severity is warning, permanently: a stub is a legitimate state
+    (SPEC §4) and the graduation is always the human's explicit act. The fix
+    named is the previewed batch (`fha views brackets --fix-promote`) or the
+    single-person verb; lint itself never promotes anyone.
+
+    `pid_to_pos` comes from `_check_ahnentafel_placement` (empty when
+    root_person is absent/unresolvable - that condition already carries its
+    own W110 note, so this check stays silent rather than doubling it).
+    """
+    for pid, pos in sorted(pid_to_pos.items(), key=lambda kv: kv[1]):
+        if pos < 2:
+            continue
+        meta = registry.person_meta.get(pid)
+        if meta is None:
+            continue   # referenced but recordless - the E005 / fha stubs set
+        if str(meta.get('status', '')) == 'merged':
+            continue
+        profile_paths = registry.person_profile_paths.get(pid, [])
+        if not profile_paths:
+            continue
+        profile = profile_paths[0]
+        in_stubs = profile.parent.name.lower() == 'stubs'
+        is_stub_tier = str(meta.get('tier') or 'stub').strip().lower() != 'curated'
+        if not (is_stub_tier or in_stubs):
+            continue
+        name = str(meta.get('name', pid))
+        display_pid = pid[0].upper() + pid[1:]
+        findings.append(Finding('W', 'W119', profile,
+            f'{name} (Ahnentafel {pos}) is a direct-line ancestor still filed '
+            'as a stub - a research lead, not a defect; when you are ready to '
+            'curate them, run `fha views brackets --fix-promote` (previewed, '
+            f'confirmed) or `fha person promote {display_pid}`'))
 
 
 # ── Cross-file checks ─────────────────────────────────────────────────────────
@@ -2049,7 +2105,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     _check_bracket_lists(registry, findings)
 
     # W110: direct-line person in wrong Ahnentafel couple folder
-    _check_ahnentafel_placement(registry, findings)
+    # W119: direct-line ancestor still filed as a stub (reads W110's derived map)
+    pid_to_pos = _check_ahnentafel_placement(registry, findings)
+    _check_direct_line_stubs(registry, findings, pid_to_pos)
 
     # W104: summary line without supporting accepted claim (handled in E013 pass)
     # W105: hand-edits under GENERATED header
@@ -3781,7 +3839,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'as an alias) and for id-less claims inside sources (with --dry-run to preview)')
     p.add_argument('--fix-reciprocal', action='store_true',
                    help='Add the missing mirror edge for each W116 (with --dry-run to preview)')
-    # NOTE: --fix-inventory (an E011 documents-inventory fixer) was removed while
+    # NOTE: the real E011 fixer shipped as the standalone `fha reconcile`
+    # (reconcile.py, TOOLING §9) - deliberately NOT re-added here as a fix
+    # flag: one owner per mutation, and E011's message names the tool.
+    # Original note kept below for the history of the removal:
+    # --fix-inventory (an E011 documents-inventory fixer) was removed while
     # unimplemented - a flag that only printed a warning taught users flags might
     # be decorative. Re-add it here with the real fixer when it is built.
     p.set_defaults(func=_run_lint)

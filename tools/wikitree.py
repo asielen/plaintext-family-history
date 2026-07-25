@@ -312,6 +312,12 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
     annotation needs one place and one date, and a source contributing several
     placed/dated claims (a census naming residence, occupation, …) can't be
     reduced to one without guessing.
+
+    Accepted claims only (owner decision 2026-07-22): a spacetime span stamps
+    a place and date onto a published sentence as fact, and a needs-review
+    claim - the parked, looked-at-but-unsettled state (SPEC §8.1) - must not
+    do that. Parked claims reach WikiTree another way: recast as open
+    questions in the Research Notes section (`_research_notes_lines`).
     """
     rows = conn.execute(
         """
@@ -319,7 +325,7 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         WHERE cp.person_id = ?
-          AND c.status IN ('accepted', 'needs-review')
+          AND c.status = 'accepted'
           AND c.date_edtf IS NOT NULL AND c.date_edtf != ''
           AND ((c.place_text IS NOT NULL AND c.place_text != '')
                OR (c.place_id IS NOT NULL AND c.place_id != ''))
@@ -763,10 +769,16 @@ def _claim_attr(conn: sqlite3.Connection, claim: sqlite3.Row, attr: str) -> str:
 
 
 def _render_templates(
-    conn: sqlite3.Connection, pid: str, templates: dict,
+    conn: sqlite3.Connection, archive_root: Path, pid: str, templates: dict,
     restricted_claims: set[str] | None = None,
 ) -> list[str]:
-    """Render infobox templates for the subject from the claim-type hooks file."""
+    """Render infobox templates for the subject from the claim-type hooks file.
+
+    Skips any claim naming a record-restricted person (same
+    `_claim_names_restricted_person` guard as the Research Notes items - a
+    template field can carry a claim's value/place text, and this generated
+    surface is never seen by the body-prose privacy scans).
+    """
     if not templates:
         return []
     rows = conn.execute(
@@ -784,6 +796,9 @@ def _render_templates(
     ).fetchall()
     if restricted_claims:
         rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
+    person_cache: dict[str, bool] = {}
+    rows = [r for r in rows
+            if not _claim_names_restricted_person(conn, archive_root, r['id'], person_cache)]
     out: list[str] = []
     for c in rows:
         spec = templates.get(c['type'])
@@ -803,6 +818,104 @@ def _render_templates(
         if rendered not in out:
             out.append(rendered)
     return out
+
+
+def _claim_names_restricted_person(
+    conn: sqlite3.Connection, archive_root: Path, claim_id: str,
+    cache: dict[str, bool],
+) -> bool:
+    """True when any person named on the claim carries a record-file
+    `restricted` marker (any value, including by-request).
+
+    The index has no person-level restricted column (same constraint
+    `_restricted_person_refs` documents), so each named person's record is
+    read once and memoized in `cache`. This guards generated surfaces the
+    body-prose privacy scans never see (Research Notes items, infobox
+    templates): there the right posture is a silent withhold, not a refusal
+    naming the person - these are optional generated items, not authored
+    prose the human must clean up. An unreadable person record counts as
+    restricted (fail closed): dropping a bonus item costs nothing, leaking
+    a name cannot be undone.
+    """
+    rows = conn.execute(
+        'SELECT p.id, p.path FROM claim_persons cp JOIN persons p ON cp.person_id = p.id '
+        'WHERE cp.claim_id = ?', (claim_id,)).fetchall()
+    for row in rows:
+        person_id = row['id']
+        if person_id not in cache:
+            if not row['path']:
+                cache[person_id] = False
+            else:
+                try:
+                    value = read_record(archive_root / row['path'])['meta'].get('restricted')
+                    cache[person_id] = _is_restricted_value(value)
+                except Exception:
+                    cache[person_id] = True
+        if cache[person_id]:
+            return True
+    return False
+
+
+def _research_notes_lines(
+    conn: sqlite3.Connection, archive_root: Path, pid: str,
+    restricted_claims: set[str] | None = None,
+) -> list[str]:
+    """Recast the subject's parked needs-review claims as open research
+    questions for WikiTree collaborators (owner decision 2026-07-22).
+
+    WikiTree's convention keeps uncertain or conflicting information in a
+    Research Notes section, and the point of exporting there is
+    collaboration - so a claim the archive has looked at but cannot settle
+    (the parked verdict, SPEC §8.1) goes out as a question another
+    researcher can pick up, never as fact. The facts elsewhere in the
+    export stay accepted-only.
+
+    Privacy mirrors `_render_templates`' source guards (restricted / DNA /
+    publication_ok:false withhold the item entirely - the claim's wording
+    likely derives from the withheld source), plus: a restricted claim
+    never exports, a claim naming any living or possibly-living person is
+    withheld (the subject is already confirmed deceased by the export's
+    refusal gate, but a parked claim can name others), and a claim naming a
+    person whose RECORD carries a restricted marker - deceased by-request
+    people included - is withheld via `_claim_names_restricted_person`
+    (the body-prose restricted scans never see these generated items, so
+    the guard lives here). Sources are named in plain text, not via the
+    <ref> machinery - that stays reserved for cited facts.
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT c.id, c.value, c.date_edtf, c.date_min, s.title AS source_title
+        FROM claim_persons cp
+        JOIN claims c ON cp.claim_id = c.id
+        LEFT JOIN sources s ON s.id = c.source_id
+        WHERE cp.person_id = ? AND c.status = 'needs-review'
+          AND COALESCE(s.restricted, 0) = 0
+          AND COALESCE(s.source_type, '') != 'dna'
+          AND COALESCE(s.publication_ok, 1) != 0
+          AND NOT EXISTS (
+            SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id
+            WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')
+          )
+        ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
+                 c.date_min ASC
+        """,
+        (pid,),
+    ).fetchall()
+    if restricted_claims:
+        rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
+    person_cache: dict[str, bool] = {}
+    rows = [r for r in rows
+            if not _claim_names_restricted_person(conn, archive_root, r['id'], person_cache)]
+    items: list[str] = []
+    for r in rows:
+        line = f"* Unconfirmed: {r['value']}"
+        if r['date_edtf']:
+            line += f" ({r['date_edtf']})"
+        if r['source_title']:
+            line += f' - noted in "{r["source_title"]}"'
+        line += '. Not yet verified - corroboration welcome.'
+        items.append(line)
+    return items
 
 
 def _wikitree_payload(archive_root: Path, pid: str) -> dict:
@@ -968,7 +1081,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                 citation = _source_reference(archive_root, row)
                 ref_defs.append(f'<ref name="{fid}">{citation}</ref>')
 
-        template_lines = _render_templates(conn, pid, templates, claim_restricted)
+        template_lines = _render_templates(conn, archive_root, pid, templates, claim_restricted)
 
         out: list[str] = []
         out.append('<div name="references" style="display: none">')
@@ -985,6 +1098,39 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         while body_lines and not body_lines[-1].strip():
             body_lines.pop()
         out.extend(body_lines)
+
+        # Parked needs-review claims go out as open questions in Research
+        # Notes - WikiTree's home for uncertain information - so collaborators
+        # can pick them up (owner decision 2026-07-22). If the profile already
+        # carries a human-authored '## Research Notes' (exported by
+        # _convert_heading as '== Research Notes =='), the questions append to
+        # the END of that section rather than minting a duplicate heading -
+        # the same dedup discipline the Sources check below applies.
+        research_items = _research_notes_lines(conn, archive_root, pid, claim_restricted)
+        if research_items:
+            intro = ('These are open questions from the family archive - looked at, '
+                     'not yet settled. If you can confirm or refute one, please do:')
+            rn_re = re.compile(r'^==\s*Research Notes\s*==\s*$')
+            existing = next((i for i, ln in enumerate(out) if rn_re.match(ln)), None)
+            if existing is not None:
+                section_end = next(
+                    (i for i in range(existing + 1, len(out)) if out[i].startswith('== ')),
+                    len(out))
+                out[section_end:section_end] = ['', intro] + research_items
+            else:
+                # Mint the section BEFORE a profile-authored '== Sources =='
+                # when one exists - Research Notes must precede Sources so the
+                # trailing <references/> anchor stays attached to the Sources
+                # heading (WikiTree renders the footnote block wherever that
+                # anchor sits). No authored Sources -> append; the payload
+                # code below then mints '== Sources ==' + <references/> after.
+                block = ['', '== Research Notes ==', intro] + research_items
+                src_re = re.compile(r'^==\s*Sources\s*==\s*$')
+                src_at = next((i for i, ln in enumerate(out) if src_re.match(ln)), None)
+                if src_at is not None:
+                    out[src_at:src_at] = block + ['']
+                else:
+                    out.extend(block)
 
         # Sources section ends with <references/> (the dialect's render anchor).
         if not any(re.match(r'^==\s*Sources\s*==', ln) for ln in body_lines):

@@ -275,6 +275,15 @@ Everything is plain text or standard image files. You can open any of it with No
 or a photo viewer - no tool required, now or in fifty years. The tools only ever help; they're
 never the thing holding your archive together.
 
+Your `documents/` drawer (wherever `fha.yaml` says it lives) is yours to lay out: make any
+folders you like inside it - by type, by family line, by decade - anything you place in a
+folder keeps its spot when it's processed (something dropped loose at the drawer's top level
+gets filed into a type folder for you), and you can rearrange it later too: the ID tag in each
+filed item's name ties it to its evidence folder, so after a reshuffle one command
+(`python tools/fha.py reconcile`, or just ask the assistant) re-ties every moved file. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
+you're not sure where a stray research note belongs, the "Where does a note go?" list in
+[`FILING_CABINET.md`](FILING_CABINET.md) answers it in four lines.
+
 ---
 
 ## A note on the example archive
@@ -292,6 +301,8 @@ your own. Poke around in it freely; none of it is real genealogy, so you can't b
   [`CHEATSHEET.md`](CHEATSHEET.md) - print it and keep it by the keyboard.
 - Hit a snag? [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) maps each common "something went wrong"
   to its exact fix.
+- A newer version of the project came out? [`UPDATING.md`](UPDATING.md) is the two-minute update
+  ritual - your records are never part of it.
 - New to filing research at all? [`FILING_CABINET.md`](FILING_CABINET.md) explains the whole
   archive as the paper filing cabinet you already know.
 - Want the deeper "why" behind files-not-a-database and human-approved facts?

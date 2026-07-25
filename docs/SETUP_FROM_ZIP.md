@@ -139,6 +139,10 @@ tells the tools which archive folder to use; `tools/fha.py` is the tool program 
 
 ## Keeping up to date (still no git)
 
+This section's copy-over method needs no tools at all. If your archive carries its own tools
+(the assisted `fha install` way below), the full update ritual - preview, apply, review,
+health-check - lives in [UPDATING.md](UPDATING.md) instead.
+
 When a newer version of the project comes out, you don't need git for that either. Download the
 new zip, unzip it, and copy its `tools/` folder (plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`,
 `AGENTS_TOOLING.md`, `CLAUDE.md`) over the old ones in your workshop. **Never touch your

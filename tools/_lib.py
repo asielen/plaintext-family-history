@@ -51,8 +51,10 @@ import itertools
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +146,19 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
 #    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
+#
+#  Ahnentafel derivation + stub promotion (the shared promote engine)
+#    build_ahnentafel_map      - index BFS: {P-id → Ahnentafel position} (SPEC §12.2)
+#    ahnentafel_generation     - position → generation depth (the --generations cap)
+#    couple_folder_prefix      - position → the even couple-folder number
+#    couple_folder_dirs        - digit-prefixed dirs under people/ (not stubs/connections)
+#    couple_folder_for_prefix  - canonical on-disk couple folder for a number, or None
+#    research_template_text / render_research_content - the SPEC §16 research scaffold
+#    research_companion_filename - {slug}_{P-id}.md → {slug}_research_{P-id}.md
+#    PromotionError            - promotion refused/failed (rolled back), plain message
+#    promote_person_record     - the ONE engine: tier flip + move + research scaffold,
+#                                 transactional, shared by person promote and
+#                                 views brackets --fix-promote
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
 #    extract_bare_ids          - all bare IDs from a text block
@@ -2438,6 +2453,79 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────
 
+def render_file_entry(item: dict) -> list[str]:
+    """Render a parsed files: list item dict as block-style frontmatter lines.
+
+    Shared by `fha process` (bundle/--more/inline-list normalization) and
+    `fha source extract` (appending a derived-artifact entry) - one renderer,
+    so every tool that writes a files: item emits the identical two-space
+    block style and quoting.
+    """
+    keys = list(item.keys())
+    first, *rest = keys
+    lines = [f'  - {first}: {yaml_inline(item[first])}']
+    lines += [f'    {k}: {yaml_inline(item[k])}' for k in rest]
+    return lines
+
+
+def append_file_entry_to_record(record_text: str, entry_lines: list[str]) -> str:
+    """Insert a files: list item into a record's frontmatter (text surgery).
+
+    The text is edited rather than YAML round-tripped so human comments and
+    field order survive untouched (the same discipline as `fha places
+    geocode`'s surgical edits). The new item is appended after the last line
+    of the existing `files:` block; a record with no `files:` block gets one
+    created just before the closing frontmatter `---`; an inline-list value
+    (`files: [...]`) is normalized to block form with its existing items
+    preserved. `entry_lines` are already indented (two spaces for the
+    `- file:` line). Moved here from process.py so `fha source extract` can
+    append its derived-artifact entry through the same single pathway.
+    """
+    lines = record_text.split('\n')
+
+    # CRLF-faithful both ways: a byte-faithful read (read_text_exact) leaves
+    # '\r' on every line of a CRLF-authored record, so the fence scan strips
+    # it for comparison AND every line this helper INTRODUCES carries the
+    # record's own ending - otherwise a CRLF record would come out with a
+    # bare-LF island exactly where the edit landed.
+    cr = '\r' if '\r\n' in record_text else ''
+    entry_lines = [ln.rstrip('\r') + cr for ln in entry_lines]
+    fence_idx = [i for i, ln in enumerate(lines) if ln.rstrip('\r') == '---']
+    if len(fence_idx) < 2:
+        raise ValueError('record has no parseable frontmatter')
+    start, end = fence_idx[0], fence_idx[1]
+
+    files_idx = None
+    for i in range(start + 1, end):
+        if lines[i].rstrip() == 'files:' or lines[i].rstrip().startswith('files:'):
+            files_idx = i
+            break
+
+    if files_idx is None:
+        insert_at = end
+        block = ['files:' + cr] + entry_lines
+        return '\n'.join(lines[:insert_at] + block + lines[insert_at:])
+
+    if lines[files_idx].rstrip() != 'files:':
+        inline_value = lines[files_idx].split(':', 1)[1].strip()
+        existing_items = yaml.safe_load(inline_value) if inline_value not in ('', '~', 'null') else None
+        lines[files_idx] = 'files:' + cr
+        if existing_items:
+            preserved_lines = []
+            for item in existing_items:
+                preserved_lines.extend(ln + cr for ln in render_file_entry(item))
+            lines[files_idx + 1:files_idx + 1] = preserved_lines
+            end += len(preserved_lines)
+
+    block_end = end
+    for i in range(files_idx + 1, end):
+        stripped = lines[i]
+        if stripped and not stripped[0].isspace():
+            block_end = i
+            break
+    return '\n'.join(lines[:block_end] + entry_lines + lines[block_end:])
+
+
 def is_working_copy(archive_root: str | Path) -> bool:
     """Return True if the archive is in working-copy mode.
 
@@ -3455,6 +3543,454 @@ def render_stub_content(
     lines.append('tier: stub')
     lines.append('---')
     return '\n'.join(lines) + '\n'
+
+
+# ── Ahnentafel derivation + stub promotion (the shared promote engine) ────────
+#
+# The Ahnentafel walk (SPEC §12.2) and the "graduate a stub to curated"
+# operation are each needed by more than one tool: `fha views brackets` derives
+# positions for W110/W119 and applies `--fix-promote`; `fha person promote` is
+# the single-person verb; `fha report` lists promotion candidates (§7b).
+# Tools never import tools, so the one shared derivation and the one shared
+# mutation engine live here (the `mint_ids`/`find_person_record_path`
+# rationale). Promotion is ALWAYS an explicit human act - a verb the human
+# runs, or a previewed fix he confirms - never a side effect of accepting a
+# claim (SPEC §4: hand-labor scales with curiosity; TOOLING §5's
+# placement-is-a-human-act rule carves out exactly this engine).
+
+def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, int]:
+    """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
+
+    Seed: root_pid -> 1.  Parents of person at position N:
+      sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
+      Same-sex or sex='U' pairs: lexicographically-first P-id -> 2N (deterministic).
+    Terminates when no accepted parent edges remain (the relationships table is
+    derived from accepted claims only - see index.py).
+
+    WHY BFS: Ahnentafel is a breadth-first numbering by definition.  Depth-first
+    would produce the same positions but BFS is the natural traversal shape.
+    Moved here verbatim from views.py so person.py and report.py can derive the
+    same positions without importing views (lint keeps its own registry-backed
+    twin, `_build_ahnentafel_lint`, because lint never reads the index).
+    """
+    # Numbering follows only the GENETIC pedigree (SPEC §12.2): a parent edge is
+    # skipped when its claim's nature is an explicit social/legal kind. The nature
+    # lives on the backing claim, so we join relationships → claims by claim_id;
+    # an unset/unknown/legacy nature defaults to genetic (NOT IN the social set),
+    # so a legacy archive numbers exactly as before. DISTINCT collapses the
+    # co-valid case (a biological AND an adoptive edge to the same parent) to the
+    # one surviving genetic edge.
+    social = sorted(SOCIAL_PARENT_SUBTYPES)
+    social_ph = ','.join('?' * len(social))
+    pid_to_pos: dict[str, int] = {root_pid: 1}
+    queue: deque[tuple[str, int]] = deque([(root_pid, 1)])
+
+    while queue:
+        pid, n = queue.popleft()
+        parent_rows = conn.execute(
+            f"""
+            SELECT DISTINCT r.other_id AS pid, p.sex
+            FROM relationships r
+            JOIN persons p ON r.other_id = p.id
+            LEFT JOIN claims c ON r.claim_id = c.id
+            WHERE r.person_id = ? AND r.rel = 'parent'
+              AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+            """,
+            (pid, *social),
+        ).fetchall()
+
+        parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        if not parents:
+            continue
+
+        if len(parents) == 1:
+            p_pid, p_sex = parents[0]
+            pos = 2 * n if p_sex != 'F' else 2 * n + 1
+            if p_pid not in pid_to_pos:
+                pid_to_pos[p_pid] = pos
+                queue.append((p_pid, pos))
+        else:
+            # Take at most 2 parents; ignore additional (data quality issue)
+            p1_pid, p1_sex = parents[0]
+            p2_pid, p2_sex = parents[1]
+            if p1_sex == 'M' and p2_sex != 'M':
+                father, mother = p1_pid, p2_pid
+            elif p2_sex == 'M' and p1_sex != 'M':
+                father, mother = p2_pid, p1_pid
+            elif p1_sex == 'F' and p2_sex != 'F':
+                mother, father = p1_pid, p2_pid
+            elif p2_sex == 'F' and p1_sex != 'F':
+                mother, father = p2_pid, p1_pid
+            else:
+                # Same sex or both U: lex-first takes even slot (2N)
+                sorted_pids = sorted([p1_pid, p2_pid])
+                father, mother = sorted_pids[0], sorted_pids[1]
+            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
+                if pp not in pid_to_pos:
+                    pid_to_pos[pp] = pos
+                    queue.append((pp, pos))
+
+    return pid_to_pos
+
+
+def ahnentafel_generation(pos: int) -> int:
+    """Generation depth of an Ahnentafel position: root (1) -> 0, parents
+    (2-3) -> 1, grandparents (4-7) -> 2, and so on.  Positions in generation g
+    span 2**g .. 2**(g+1)-1, so the depth is the bit length minus one - the
+    arithmetic behind every `--generations N` cap."""
+    return max(int(pos).bit_length() - 1, 0)
+
+
+def couple_folder_prefix(pos: int) -> int:
+    """The couple-folder number for a direct-line position: the even (male-slot)
+    Ahnentafel number - a person at odd position N files in folder N-1
+    (SPEC §12.2: the wife is implicitly 2n+1)."""
+    return pos if pos % 2 == 0 else pos - 1
+
+
+def couple_folder_dirs(archive_root: str | Path) -> list[Path]:
+    """Digit-prefixed directories directly under people/, excluding stubs/
+    and connections/ - the couple-folder candidates every Ahnentafel check
+    walks. Shared by views (W103/W110/W119) and the promote engine so the two
+    can never disagree about what counts as a couple folder."""
+    people = Path(archive_root) / 'people'
+    if not people.exists():
+        return []
+    excluded = {'stubs', 'connections'}
+    return sorted(
+        e for e in people.iterdir()
+        if e.is_dir()
+        and e.name.lower() not in excluded
+        and re.match(r'^\d', e.name)
+    )
+
+
+def couple_folder_for_prefix(archive_root: str | Path, prefix: int) -> Path | None:
+    """The canonical on-disk couple folder for a numeric prefix, or None.
+
+    Canonical means digits then a literal space ('040 Thomas …'); suffix
+    folders ('040b Thomas …') share the number but are a direct ancestor's
+    NON-ancestral marriages (SPEC §12.2), never the destination for a
+    direct-line person's files. The digit string is compared as an int so
+    zero-padding differences ('40 ' vs '040 ') cannot split a couple."""
+    for folder in couple_folder_dirs(archive_root):
+        m = re.match(r'^(\d+) ', folder.name)
+        if m and int(m.group(1)) == int(prefix):
+            return folder
+    return None
+
+
+# The built-in research scaffold, used when no _TEMPLATE.research.md is found
+# (an archive installed before the template shipped). Kept in step with
+# archive-template/people/_TEMPLATE.research.md by tests/test_person.py; the
+# section set is SPEC §16's research-file body verbatim.
+RESEARCH_TEMPLATE_FALLBACK = '''---
+id: P-__________
+created: 2026-01-01
+---
+
+## Research Notes
+
+*(working notes - what you are chasing and why)*
+
+## Open Questions
+
+*(what you do not know yet)*
+
+## Hypotheses
+
+*(testable beliefs, not yet facts - a guess is never a claim)*
+
+## Research Log
+
+*(searches you have run, including empty ones, so nothing is fruitlessly re-searched)*
+'''
+
+
+def research_template_text(archive_root: str | Path) -> str:
+    """The research-companion template text (SPEC §16), from the nearest source.
+
+    Looks for `people/_TEMPLATE.research.md` inside the archive first (where
+    `fha install`/`fha update-tools` place it, and where a human may have
+    customized it), then the public repo's `archive-template/people/` (the
+    development / fixtures-in-repo case, resolved relative to this file), and
+    finally falls back to the built-in scaffold so promotion never fails just
+    because an older install predates the template."""
+    candidates = [
+        Path(archive_root) / 'people' / '_TEMPLATE.research.md',
+        Path(__file__).resolve().parent.parent / 'archive-template' / 'people' / '_TEMPLATE.research.md',
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding='utf-8')
+        except OSError:
+            continue
+    return RESEARCH_TEMPLATE_FALLBACK
+
+
+def render_research_content(pid: str, archive_root: str | Path) -> str:
+    """Fill the research template for one person: real P-id, today's date,
+    hand-instruction comments stripped.
+
+    The template doubles as a hand-copy seed (its `#` comment lines teach a
+    human what the file is for) and the machine scaffold `fha person promote`
+    writes; the machine copy substitutes the `P-__________` placeholder and
+    the `created:` date and drops the frontmatter's full-line comments, so a
+    scaffolded file starts clean while the template stays instructive.
+    Comment-stripping is bounded to the frontmatter on purpose: in the body a
+    leading `#` is a markdown heading, not a comment."""
+    text = research_template_text(archive_root)
+    text = re.sub(r'^id:.*$', f'id: {fmt_id_display(pid)}', text, count=1, flags=re.M)
+    text = re.sub(r'^created:.*$', f'created: {datetime.date.today().isoformat()}',
+                  text, count=1, flags=re.M)
+    lines = text.split('\n')
+    span = frontmatter_fence_span(lines)
+    if span is not None:
+        start, end = span
+        kept = (lines[:start + 1]
+                + [ln for ln in lines[start + 1:end] if not ln.lstrip().startswith('#')]
+                + lines[end:])
+        lines = kept
+    return '\n'.join(lines)
+
+
+# Person record filename: `{slug}_{P-id}.md` (SPEC §13). Captures the slug and
+# the id AS WRITTEN so a companion filename can be derived case-faithfully.
+_PERSON_RECORD_FILENAME_RE = re.compile(
+    r'^(?P<slug>.+)_(?P<pid>P-[0-9a-hjkmnp-tv-z]{10})\.md$', re.I)
+
+
+def research_companion_filename(record_filename: str) -> str | None:
+    """`{slug}_{P-id}.md` -> `{slug}_research_{P-id}.md` (SPEC §13's `kind`
+    slot), or None when the record filename does not carry the id suffix (a
+    pre-machine hand-named record - the caller refuses plainly)."""
+    m = _PERSON_RECORD_FILENAME_RE.match(record_filename)
+    if not m:
+        return None
+    return f"{m.group('slug')}_research_{m.group('pid')}.md"
+
+
+class PromotionError(Exception):
+    """A stub promotion could not be (or was not) applied.
+
+    Carries a plain-language message naming the cause and the fix. When the
+    engine raises this after starting to write, every completed step has
+    already been rolled back - the record is byte-for-byte where it started.
+    """
+
+
+def promote_person_record(
+    archive_root: Path,
+    pid: str,
+    record_path: Path,
+    dest_folder: Path,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Promote one stub person record to curated - the ONE mutation engine
+    behind `fha person promote` and `fha views brackets --fix-promote`.
+
+    Three writes, applied together or not at all:
+      1. flip the record's `tier:` to curated (surgical single-line edit,
+         vetted by `frontmatter_edit_problem` before anything is written);
+      2. move the record file into `dest_folder` when it currently sits in a
+         reserved folder (people/stubs/ or people/connections/) or loose under
+         people/ - the one sanctioned tool move out of stubs/ (TOOLING §5's
+         carve-out); a record already inside `dest_folder` is left in place;
+      3. scaffold the `_research` companion (SPEC §16) beside it, only if
+         absent, from the `_TEMPLATE.research.md` grammar.
+
+    Steps already satisfied are skipped, so the engine is idempotent and also
+    FINISHES a half-promotion (a record hand-flipped to curated but still
+    parked in stubs/, the dead end the views stub guard refuses).
+
+    WHY ROLLBACK-BY-HAND rather than a temp-dir dance: the three writes touch
+    at most three paths, all inside people/, and each has an exact inverse
+    (rewrite old bytes / move back / delete the fresh scaffold / remove the
+    folder this run created). On any OSError the inverses run in reverse
+    order and PromotionError is raised - the archive is never left mid-move.
+
+    The caller owns the DECISION layer: deriving/validating `dest_folder`
+    (Ahnentafel, --into), the merged-tombstone and already-curated refusals,
+    and every human-facing Result/preview. This function owns the WRITE.
+    Returns {'status', 'tier_flip', 'move', 'old_path', 'new_path',
+    'research_path', 'research_create', 'folder_create', 'steps'} - `steps`
+    is the plain-words list a preview prints verbatim. `dry_run` computes the
+    identical plan and writes nothing.
+    """
+    pid = normalize_id(pid)
+
+    try:
+        text = read_text_exact(record_path)
+    except OSError as e:
+        raise PromotionError(
+            f'cannot read {record_path}: {e}. Check the file is not open in '
+            'another program and try again.') from e
+
+    fm = FRONT_RE.match(text)
+    meta = None
+    if fm is not None:
+        try:
+            meta = yaml.safe_load(fm.group(1))
+        except yaml.YAMLError:
+            meta = None
+    if not isinstance(meta, dict):
+        raise PromotionError(
+            f'the header of {record_path.name} does not read as YAML, so it '
+            f'cannot be promoted safely. Open {record_path}, fix the header by '
+            'hand (run `fha lint` to see the problem line), then retry. '
+            'Nothing was written.')
+    if is_merged_meta(meta):
+        raise PromotionError(
+            f'{record_path.name} is a merged tombstone - readers resolve '
+            'through its merged_into: pointer, so it is never promoted. '
+            'Nothing was written.')
+
+    name = str(meta.get('name') or '').strip() or fmt_id_display(pid)
+    tier = str(meta.get('tier') or 'stub').strip().lower()
+    needs_flip = tier != 'curated'
+
+    # ── Plan step 1: the tier flip (build + vet the rewrite, write nothing) ──
+    new_text = text
+    if needs_flip:
+        lines = text.split('\n')
+        bounds = frontmatter_fence_span(lines)
+        if bounds is None:
+            raise PromotionError(
+                f'could not locate the frontmatter fences in {record_path.name} '
+                f'to edit safely. Open {record_path} and set tier: curated by '
+                'hand, then run `fha lint`. Nothing was written.')
+        start, end = bounds
+        pattern = re.compile(r'tier:(?=\s|$)')
+        tier_lines = [i for i in range(start + 1, end) if pattern.match(lines[i])]
+        new_lines = list(lines)
+        if len(tier_lines) > 1:
+            raise PromotionError(
+                f'{record_path.name} has more than one top-level tier: line in '
+                'its header, so the right one to edit cannot be chosen safely. '
+                f'Fix the duplicate by hand, then retry. Nothing was written.')
+        if tier_lines:
+            # Swap only the value; keep any trailing `# comment` and a CRLF.
+            m = re.match(r'^(tier:)([ \t]*)([^#]*?)([ \t]*)(#.*?)?(\r?)$',
+                         lines[tier_lines[0]])
+            comment, cr = (m.group(5), m.group(6)) if m else (None, '')
+            if comment:
+                sep = m.group(4) or '  '
+                new_lines[tier_lines[0]] = f'tier: curated{sep}{comment}{cr}'
+            else:
+                new_lines[tier_lines[0]] = f'tier: curated{cr}'
+        else:
+            # Key absent (legal for a hand-made record): append in the stub
+            # scaffold's field order - tier is the last field before the fence.
+            cr = '\r' if lines[start].endswith('\r') else ''
+            new_lines.insert(end, f'tier: curated{cr}')
+        new_text = '\n'.join(new_lines)
+        problem = frontmatter_edit_problem(
+            new_text, before_meta=meta, changed_keys={'tier'})
+        if problem is None:
+            after_meta = yaml.safe_load(FRONT_RE.match(new_text).group(1))
+            if str(after_meta.get('tier') or '').strip().lower() != 'curated':
+                problem = (f'the tier would read {after_meta.get("tier")!r} '
+                           'instead of curated')
+        if problem is not None:
+            raise PromotionError(
+                f'refusing to promote {name}: {problem}, so saving could '
+                f'corrupt the record. Open {record_path} and set tier: curated '
+                'by hand, then run `fha lint`. Nothing was written.')
+
+    # ── Plan step 2: the move ────────────────────────────────────────────────
+    needs_move = record_path.parent.resolve() != dest_folder.resolve()
+    new_record_path = (dest_folder / record_path.name) if needs_move else record_path
+    if needs_move and new_record_path.exists():
+        raise PromotionError(
+            f'a file named {record_path.name} already exists in '
+            f'{dest_folder.name}/ - refusing to overwrite it. Compare the two '
+            f'files (`fha find {fmt_id_display(pid)}`), resolve the duplicate, '
+            'then retry. Nothing was written.')
+    folder_create = needs_move and not dest_folder.exists()
+
+    # ── Plan step 3: the research companion ──────────────────────────────────
+    research_name = research_companion_filename(record_path.name)
+    if research_name is None:
+        raise PromotionError(
+            f'{record_path.name} does not carry its P-id in the filename, so '
+            'the research companion cannot be named. Run `fha lint --fix-ids` '
+            'to formalize the filename first. Nothing was written.')
+    research_path = dest_folder / research_name if needs_move else record_path.parent / research_name
+    research_create = not research_path.exists()
+
+    # ── The plain-words plan (previews print these verbatim) ─────────────────
+    def _rel(p: Path) -> str:
+        try:
+            return p.relative_to(archive_root).as_posix()
+        except ValueError:
+            return str(p)
+
+    steps: list[str] = []
+    if needs_flip:
+        steps.append(f'set tier: stub -> curated in {record_path.name}')
+    if needs_move:
+        suffix = ' (creating the folder)' if folder_create else ''
+        steps.append(f'move {_rel(record_path)} -> {_rel(new_record_path)}{suffix}')
+    if research_create:
+        steps.append(f'create the research companion {_rel(research_path)}')
+    else:
+        steps.append(f'research companion already exists ({_rel(research_path)}) - left as is')
+
+    plan = {
+        'status': 'dry-run' if dry_run else 'ok',
+        'tier_flip': needs_flip,
+        'move': needs_move,
+        'old_path': record_path,
+        'new_path': new_record_path,
+        'research_path': research_path,
+        'research_create': research_create,
+        'folder_create': folder_create,
+        'steps': steps,
+    }
+    if dry_run:
+        return plan
+
+    # ── Apply, with rollback on any failure ──────────────────────────────────
+    wrote_flip = moved = wrote_research = made_folder = False
+    try:
+        if folder_create:
+            dest_folder.mkdir(parents=True)
+            made_folder = True
+        if needs_flip:
+            write_text_exact(record_path, reapply_newline(new_text, text))
+            wrote_flip = True
+        if needs_move:
+            shutil.move(str(record_path), str(new_record_path))
+            moved = True
+        if research_create:
+            research_path.write_text(
+                render_research_content(pid, archive_root), encoding='utf-8')
+            wrote_research = True
+    except OSError as e:
+        # Undo in reverse order; best-effort (a rollback failure is reported
+        # inside the raised message rather than swallowed).
+        rollback_notes: list[str] = []
+        for action in ('research', 'move', 'flip', 'folder'):
+            try:
+                if action == 'research' and wrote_research:
+                    research_path.unlink()
+                elif action == 'move' and moved:
+                    shutil.move(str(new_record_path), str(record_path))
+                elif action == 'flip' and wrote_flip:
+                    write_text_exact(record_path, text)
+                elif action == 'folder' and made_folder:
+                    dest_folder.rmdir()
+            except OSError as undo_err:
+                rollback_notes.append(f'could not undo the {action} step ({undo_err})')
+        detail = ('; '.join(rollback_notes) + ' - run `fha lint` to check the record'
+                  ) if rollback_notes else 'every completed step was undone'
+        raise PromotionError(
+            f'promoting {name} failed partway ({e}); {detail}. '
+            'Nothing is left half-promoted unless noted above.') from e
+
+    return plan
 
 
 # Matches the `_{S-id}.md` suffix in a source record filename; used by

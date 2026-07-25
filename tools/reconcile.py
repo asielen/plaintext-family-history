@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""
+reconcile.py - fha reconcile: heal record inventory paths after files move (TOOLING §9).
+
+  fha reconcile [--root PATH] [--dry-run] [--with-exif]
+
+The archive's law is that folder location is never truth: a documents-root
+file carries its S-id in its filename, and the path stored in its source
+record's `files:` inventory is a refreshable pointer, not an identity
+(SPEC §12.1: "folders are projection; the record, not the path, is the
+identity"). But until this tool existed, the pointer could only be refreshed
+by hand: drag a filed document into a new subfolder and lint E011 flags the
+record until someone edits its YAML. This tool is the one-command heal that
+makes free reorganization real - rearrange the documents tree in any file
+browser, run `fha reconcile`, and every moved file is re-tied to its record.
+
+How it heals (TOOLING §9): for every source record `files:` entry under the
+documents alias whose stored path no longer resolves on disk, the documents
+root is searched for a file with the SAME NAME (filed documents are renamed
+exactly once, at processing - a moved file keeps its `{slug}_{S-id}` name, so
+the basename IS the identity match; this is the documents-side analog of the
+photo side's embedded SOURCE: keyword re-match):
+
+  - exactly one file with that name  -> the entry's path is rewritten to the
+    new location (previewed under --dry-run, applied otherwise);
+  - two or more files with that name -> ambiguous, reported for the human -
+    the tool never guesses which one the record means;
+  - none                             -> reported missing, with the next step.
+
+A reverse pass reports on-disk files whose filename carries an S-id that no
+record inventory lists (TOOLING §9 "log as new"), grouped by source, naming
+`fha process --more` as the attach path. The photos side of the same drift is
+`fha photoindex reconcile`'s machinery; when a photo catalog exists this tool
+runs it too (pass-through of --dry-run/--with-exif), so one command reconciles
+every file type - the §9 contract. Importing photoindex here follows
+report.py's orchestrator precedent (a tool whose whole job is running other
+tools' engines does import them; ordinary tools still never do).
+
+Record writes are line-surgical: only the one `file:` line whose value is the
+stale path changes, and the rewritten text must still carry the same number of
+`file:` lines or the write is refused (file untouched, cause named) - the same
+refuse-rather-than-corrupt posture the claims writers take. Working-copy mode
+is a clean no-op: assets live on the main machine (SPEC §12.4), so there is
+nothing here to reconcile against.
+
+CODE MAP
+--------
+  _iter_source_records   - yield (path, meta) for every parseable sources/ record
+  _disk_index            - basename -> [paths] map of every documents-root file
+  _plan                  - compute healed/ambiguous/missing/unlisted, no writes
+  _rewrite_entry         - line-surgical file: path rewrite inside one record text
+  _apply                 - group heals per record, rewrite, refuse on any drift
+  run_reconcile          - engine: plan + (unless dry-run) apply + photos side
+  _cmd_reconcile         - CLI rendering of the Result
+  register / _standalone_main - fha subcommand + python tools/reconcile.py entry
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _lib import (
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    Result,
+    is_working_copy,
+    normalize_id,
+    parse_filename,
+    path_to_alias,
+    read_record,
+    read_text_exact,
+    reapply_newline,
+    resolve_path,
+    resolve_root_arg,
+    write_text_exact,
+)
+
+import photoindex
+
+
+def _iter_source_records(archive_root: Path, result: Result):
+    """Yield (record_path, meta) for every parseable record under sources/.
+
+    An unparseable record gets one warning naming it and is skipped rather
+    than failing the whole run - reconcile's job is healing paths, and a
+    record lint already flags must not block healing every other record.
+    """
+    sources_dir = archive_root / 'sources'
+    if not sources_dir.is_dir():
+        return
+    for rec_path in sorted(sources_dir.rglob('*.md')):
+        try:
+            meta = read_record(rec_path).get('meta') or {}
+        except Exception:
+            result.add('warning',
+                       f'{rec_path.name} could not be parsed - skipped. '
+                       'Run `fha lint` for the specifics.')
+            continue
+        yield rec_path, meta
+
+
+def _disk_index(documents_root: Path) -> dict[str, list[Path]]:
+    """Map basename -> every file with that name under the documents root.
+
+    One walk, reused for both the heal match (find a moved file by its name)
+    and the reverse unlisted pass - the tree is walked exactly once per run.
+    """
+    by_name: dict[str, list[Path]] = {}
+    for p in documents_root.rglob('*'):
+        if p.is_file():
+            by_name.setdefault(p.name, []).append(p)
+    return by_name
+
+
+def _plan(
+    archive_root: Path, fha_config: dict, documents_root: Path, result: Result,
+) -> dict:
+    """Compute the reconcile plan without writing anything.
+
+    Returns {'heals': {record_path: [(old_alias, new_alias), ...]},
+    'ambiguous': [...], 'missing': [...], 'unlisted': {sid: [alias, ...]}}.
+    Only documents-alias entries are considered (the photos side has its own
+    identity carrier and machinery); an entry whose `status:` is
+    missing-fixture is a deliberate fixture state, never healed or flagged.
+    """
+    by_name = _disk_index(documents_root)
+    by_sid: dict[str, list[Path]] = {}
+    for paths in by_name.values():
+        for p in paths:
+            parsed = parse_filename(p)
+            if parsed and parsed.get('id_type') == 'S':
+                by_sid.setdefault(normalize_id(parsed['id_str']), []).append(p)
+
+    heals: dict[Path, list[tuple[str, str]]] = {}
+    ambiguous: list[str] = []
+    missing: list[str] = []
+
+    # Pass 1 - collect every record and every listed alias FIRST. The heal
+    # logic below excludes already-listed files from S-id fallback matches and
+    # the reverse pass keys off this set, so it must be complete before any
+    # record is judged (a streaming build would let an early record match a
+    # file a later record legitimately lists).
+    records = list(_iter_source_records(archive_root, result))
+    listed_aliases: set[str] = set()
+    for _rec_path, meta in records:
+        for entry in (meta.get('files') or []):
+            if isinstance(entry, dict) and entry.get('file'):
+                listed_aliases.add(str(entry['file']).replace('\\', '/'))
+
+    # Pass 2 - judge each stale entry. A planned heal's NEW alias joins
+    # listed_aliases immediately: the reverse pass must treat the post-heal
+    # state as the truth (else every successful heal would false-alarm as an
+    # unlisted file), and later fallback matches must not grab a file an
+    # earlier heal already claimed.
+    for rec_path, meta in records:
+        for entry in (meta.get('files') or []):
+            if not isinstance(entry, dict):
+                continue
+            alias = str(entry.get('file', '') or '')
+            if not alias:
+                continue
+            if alias.replace('\\', '/').split('/', 1)[0] != 'documents':
+                continue
+            if str(entry.get('status', '')) == 'missing-fixture':
+                continue
+            if resolve_path(alias, fha_config, archive_root).exists():
+                continue
+            candidates = by_name.get(Path(alias).name, [])
+            if len(candidates) == 1:
+                new_alias = path_to_alias(candidates[0], 'documents',
+                                          fha_config, archive_root)
+                heals.setdefault(rec_path, []).append((alias, new_alias))
+                listed_aliases.add(new_alias.replace('\\', '/'))
+                continue
+            if candidates:
+                shown = ', '.join(
+                    path_to_alias(c, 'documents', fha_config, archive_root)
+                    for c in sorted(candidates))
+                ambiguous.append(
+                    f'{rec_path.name}: {Path(alias).name!r} exists in more than one '
+                    f'place ({shown}) - move or rename the extra copy, then re-run.')
+                continue
+            # No file with that name anywhere. TOOLING §9's contract is
+            # re-match by the embedded ID, so fall back to the S-id in the
+            # stored filename: a file that was moved AND renamed (renaming a
+            # filed original is forbidden, but reality drifts) still carries
+            # its identity. Only a file no record lists may claim the match.
+            parsed = parse_filename(Path(alias))
+            sid_carriers: list[Path] = []
+            if parsed and parsed.get('id_type') == 'S':
+                sid_carriers = [
+                    p for p in by_sid.get(normalize_id(parsed['id_str']), [])
+                    if path_to_alias(p, 'documents', fha_config, archive_root)
+                       .replace('\\', '/') not in listed_aliases
+                ]
+            if len(sid_carriers) == 1:
+                new_alias = path_to_alias(sid_carriers[0], 'documents',
+                                          fha_config, archive_root)
+                heals.setdefault(rec_path, []).append((alias, new_alias))
+                listed_aliases.add(new_alias.replace('\\', '/'))
+            elif sid_carriers:
+                shown = ', '.join(
+                    path_to_alias(c, 'documents', fha_config, archive_root)
+                    for c in sorted(sid_carriers))
+                ambiguous.append(
+                    f'{rec_path.name}: nothing is named {Path(alias).name!r} any '
+                    f'more, and more than one unlisted file carries its ID '
+                    f'({shown}) - move or rename the extras, then re-run.')
+            else:
+                missing.append(
+                    f'{rec_path.name}: {alias!r} is gone - no file with that name '
+                    'or its ID anywhere in the documents folder. If it moved '
+                    'outside the archive, bring it back; if it is truly gone, '
+                    "note that in the record's ## Notes.")
+
+    # Reverse pass (TOOLING §9 "log as new"): on-disk S-id files no record
+    # lists - judged against the POST-heal alias set built above.
+    unlisted: dict[str, list[str]] = {}
+    for sid, paths in by_sid.items():
+        for p in paths:
+            alias = path_to_alias(p, 'documents', fha_config, archive_root)
+            if alias.replace('\\', '/') not in listed_aliases:
+                unlisted.setdefault(sid, []).append(alias)
+
+    return {'heals': heals, 'ambiguous': ambiguous, 'missing': missing,
+            'unlisted': unlisted}
+
+
+def _rewrite_entry(text: str, old_alias: str, new_alias: str) -> tuple[str, bool]:
+    """Rewrite ONE `file:` line's stale path in a record's text, surgically.
+
+    Matches a line whose `file:` VALUE equals the stored path exactly (after
+    stripping quotes and any trailing comment) - never substring containment,
+    which would let a stale 'x.pdf' rewrite grab a valid 'x.pdf.txt' sidecar
+    entry and corrupt it while reporting success. Key order, quoting,
+    comments, and every other line survive untouched. Returns
+    (new_text, changed).
+    """
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('- file:'):
+            value = stripped[len('- file:'):]
+        elif stripped.startswith('file:'):
+            value = stripped[len('file:'):]
+        else:
+            continue
+        value = value.split('#', 1)[0].strip().strip('"\'')
+        if value == old_alias:
+            lines[i] = line.replace(old_alias, new_alias, 1)
+            return '\n'.join(lines), True
+    return text, False
+
+
+def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
+           result: Result) -> int:
+    """Apply the planned rewrites, one record at a time, refusing on drift.
+
+    The refuse-rather-than-corrupt guard: the rewritten text must contain the
+    same number of `file:` lines as before, and every planned old path must
+    actually have been found. Any mismatch leaves that record untouched and
+    reports it BY NAME - a half-healed record is worse than a stale one, and
+    a silent skip is worse than either, because the human stops looking.
+    Returns the number of entries actually rewritten (the caller reports this
+    as the healed count, never the planned count).
+    """
+    def _file_line_count(text: str) -> int:
+        return sum(1 for ln in text.split('\n')
+                   if ln.strip().startswith(('file:', '- file:')))
+
+    applied = 0
+    for rec_path, pairs in sorted(heals.items()):
+        try:
+            before = read_text_exact(rec_path)
+        except OSError as e:
+            result.add('warning', f'cannot read {rec_path.name}: {e} - skipped.')
+            continue
+        after = before
+        ok = True
+        for old_alias, new_alias in pairs:
+            after, changed = _rewrite_entry(after, old_alias, new_alias)
+            if not changed:
+                result.add('warning',
+                           f'{rec_path.name}: could not find the line for '
+                           f'{old_alias!r} - record left untouched. Fix it by '
+                           'hand or run `fha lint` for the shape.')
+                ok = False
+                break
+        if not ok:
+            continue
+        if _file_line_count(after) != _file_line_count(before):
+            result.add('warning',
+                       f'{rec_path.name}: the rewrite would have changed the '
+                       'shape of its files: list - record left untouched. Fix '
+                       'the entry by hand (`fha lint` names the spot).')
+            continue
+        try:
+            write_text_exact(rec_path, reapply_newline(after, before))
+        except OSError as e:
+            result.add('warning', f'cannot write {rec_path.name}: {e} - skipped.')
+            continue
+        result.note_changed(rec_path)
+        applied += len(pairs)
+        for old_alias, new_alias in pairs:
+            result.add('info', f'Re-tied {old_alias} -> {new_alias} ({rec_path.name})')
+    return applied
+
+
+def _finalize(result: Result) -> Result:
+    """Set the exit code from the collected messages (Result does not derive
+    it): any error is 3, anything left needing a human is 1, else 0."""
+    if any(m.level == 'error' for m in result.messages):
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+    elif any(m.level == 'warning' for m in result.messages):
+        result.exit_code = EXIT_WARNINGS
+    return result
+
+
+def run_reconcile(
+    archive_root: Path, fha_config: dict, *,
+    dry_run: bool = False, with_exif: bool = False,
+) -> Result:
+    """Engine: heal documents-side inventory drift, then the photo catalog.
+
+    Returns a Result whose data carries {'status', 'healed', 'ambiguous',
+    'missing', 'unlisted'} counts. Exit code follows the messages: clean run
+    or clean heal is 0; anything left needing a human (ambiguous names,
+    genuinely missing files, unlisted S-id files) is a warning, exit 1.
+    Working-copy mode no-ops cleanly - the assets live on the main machine.
+    """
+    result = Result(data={'status': 'ok', 'healed': 0, 'ambiguous': 0,
+                          'missing': 0, 'unlisted': 0})
+
+    if is_working_copy(archive_root):
+        result.data['status'] = 'working-copy'
+        result.add('info',
+                   'This is a working copy - the actual files live on the main '
+                   'machine, so there is nothing to reconcile here. Run '
+                   '`fha reconcile` on the main archive.')
+        return _finalize(result)
+
+    documents_root = resolve_path('documents', fha_config, archive_root)
+    if not documents_root.is_dir():
+        # An unplugged external drive must not read as "everything vanished" -
+        # the same posture photoindex reconcile takes for its root.
+        result.add('warning',
+                   f'The documents folder is not reachable at {documents_root} - '
+                   'nothing checked. If it lives on an external drive, plug it '
+                   'in; if the location changed, update roots: in fha.yaml.')
+        return _finalize(result)
+
+    plan = _plan(archive_root, fha_config, documents_root, result)
+    heals, ambiguous = plan['heals'], plan['ambiguous']
+    missing, unlisted = plan['missing'], plan['unlisted']
+    heal_count = sum(len(v) for v in heals.values())
+    result.data.update({'healed': heal_count, 'ambiguous': len(ambiguous),
+                        'missing': len(missing), 'unlisted': len(unlisted)})
+
+    if dry_run:
+        for rec_path, pairs in sorted(heals.items()):
+            for old_alias, new_alias in pairs:
+                result.add('info',
+                           f'[dry-run] Would re-tie {old_alias} -> {new_alias} '
+                           f'({rec_path.name})')
+    else:
+        # Report what actually landed, not what was planned - a refused
+        # rewrite must not inflate the healed count.
+        result.data['healed'] = _apply(archive_root, heals, result)
+
+    for line in ambiguous:
+        result.add('warning', line)
+    for line in missing:
+        result.add('warning', line)
+    for sid, aliases in sorted(unlisted.items()):
+        shown = ', '.join(sorted(aliases))
+        result.add('warning',
+                   f'{shown} carries {sid.upper()} but that record does not list it - '
+                   'attach it with `fha process <primary-file> --more FILE role`, '
+                   'or add a files: entry to the record.')
+
+    if heal_count and not dry_run:
+        result.add('info',
+                   'Run `fha index` so searches see the new locations, and '
+                   '`fha lint` to confirm everything is tied down.')
+    elif not (heal_count or ambiguous or missing or unlisted):
+        result.add('info', 'Documents all tied to their records - nothing to heal.')
+
+    # Photos side (TOOLING §9: one command reconciles every file type). Only
+    # when a catalog exists - an archive that never built one should not fail.
+    if (archive_root / '.cache' / 'photos.sqlite').exists():
+        photo_result = photoindex.run_reconcile(
+            archive_root, fha_config, with_exif=with_exif, dry_run=dry_run)
+        for msg in photo_result.messages:
+            result.add(msg.level, f'photos: {msg.text}',
+                       next_step=getattr(msg, 'next_step', None))
+        for p in photo_result.changed:
+            result.note_changed(Path(p))
+        # The photoindex engine reports through its data dict (its own CLI
+        # renders it); summarize here so this front door is never silent
+        # about work it did or found - and never mistakes a failure for a
+        # clean catalog.
+        d = photo_result.data or {}
+        photo_status = str(d.get('status') or '')
+        if photo_status in ('absent', 'unreadable'):
+            # The catalog exists on disk but photoindex refused it (corrupt,
+            # or an older schema). Keyed off status, not ok alone - the
+            # unreachable-root case below is also ok=False but is a warning.
+            result.add('error',
+                       f'photos: the photo catalog (.cache/photos.sqlite) is '
+                       f'{photo_status} - photo paths not checked. Rebuild it '
+                       'with `fha photoindex`, then re-run `fha reconcile`.')
+        elif not photo_result.messages:
+            if not d.get('root_found', True):
+                result.add('warning',
+                           'photos: the photos folder is not reachable - photo '
+                           'paths not checked. Plug in the drive or fix roots: '
+                           'in fha.yaml.')
+            else:
+                rematched = len(d.get('rematched') or [])
+                photo_missing = len(d.get('missing') or [])
+                new_count = int(d.get('new_count') or 0)
+                if rematched or photo_missing or new_count:
+                    level = 'warning' if (photo_missing or new_count) else 'info'
+                    verb = 'would be re-tied' if dry_run else 're-tied'
+                    prefix = '[dry-run] ' if dry_run else ''
+                    result.add(level,
+                               f'photos: {prefix}{rematched} {verb}, '
+                               f'{photo_missing} missing, {new_count} new - run '
+                               '`fha photoindex reconcile` for the per-file detail.')
+                else:
+                    result.add('info',
+                               'photos: catalog matches the photo folder - nothing to heal.')
+    else:
+        result.add('info',
+                   'No photo catalog (.cache/photos.sqlite) - photo paths not '
+                   'checked. Run `fha photoindex` first if you want them covered.')
+
+    return _finalize(result)
+
+
+# -- CLI ----------------------------------------------------------------------
+
+_CLI_DESCRIPTION = (
+    'Re-tie moved files to their records. Rearrange the documents folder any '
+    'way you like, then run this: every filed document is found again by the '
+    'ID in its name and its record updated. Photos are reconciled too when a '
+    'photo catalog exists. Preview with --dry-run first.'
+)
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    from _lib import load_fha_yaml
+    result = run_reconcile(
+        archive_root, load_fha_yaml(archive_root),
+        dry_run=bool(getattr(args, 'dry_run', False)),
+        with_exif=bool(getattr(args, 'with_exif', False)),
+    )
+    for msg in result.messages:
+        stream = sys.stderr if msg.level == 'error' else sys.stdout
+        prefix = 'ERROR: ' if msg.level == 'error' else ''
+        print(f'{prefix}{msg.text}', file=stream)
+    return result.exit_code
+
+
+def register(subparsers: argparse._SubParsersAction) -> None:
+    p = subparsers.add_parser(
+        'reconcile',
+        help='Re-tie moved documents (and photos) to their records',
+        description=_CLI_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument('--root', metavar='PATH', help='Archive root')
+    p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                   help='Preview every re-tie without writing anything')
+    p.add_argument('--with-exif', action='store_true', dest='with_exif',
+                   help='Photos side: also read embedded keywords to re-match '
+                        'moved photos (needs exiftool; see fha photoindex reconcile)')
+    p.set_defaults(func=_cmd_reconcile)
+
+
+def _standalone_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog='fha reconcile',
+        description=_CLI_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument('--root', metavar='PATH', help='Archive root')
+    parser.add_argument('--dry-run', action='store_true', dest='dry_run',
+                        help='Preview every re-tie without writing anything')
+    parser.add_argument('--with-exif', action='store_true', dest='with_exif',
+                        help='Photos side: also read embedded keywords to re-match '
+                             'moved photos (needs exiftool)')
+    args = parser.parse_args(argv)
+    return _cmd_reconcile(args)
+
+
+if __name__ == '__main__':
+    raise SystemExit(_standalone_main())

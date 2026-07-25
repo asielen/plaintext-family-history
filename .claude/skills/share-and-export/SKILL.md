@@ -144,5 +144,5 @@ for "import my Ancestry tree into here" — see Guardrails.
   by-request` is never overridden.
 - An "import my tree" request is met with a hand-off, not an export.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
-  (`_STANDARD.md` §9 — W101 + W102) — export artifacts land under `out/` or `generated/`, outside
+  (`_STANDARD.md` §9) — export artifacts land under `out/` or `generated/`, outside
   the record trees, so nothing new is flagged.

@@ -66,7 +66,7 @@ roots:
 ```
 
 **3. An existing photo library** (e.g. a Lightroom or Photos folder you already keep). Leave it
-exactly where it is and point at it - the archive reads from it, never moves or renames it:
+exactly where it is and point at it - the archive reads from it and never reorganizes it:
 
 ```yaml
 roots:

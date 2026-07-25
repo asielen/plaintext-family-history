@@ -34,13 +34,13 @@
     <thead><tr><th>Type</th><th>Value</th><th>Date</th><th>Place</th><th>People</th><th>Status</th>{% if workbench %}<th></th>{% endif %}</tr></thead>
     <tbody>
     {% for c in source.claims %}
-      <tr{% if workbench and c.status == 'suggested' %} class="wb-suggested"{% endif %}>
+      <tr{% if workbench and c.status == 'suggested' %} class="wb-suggested"{% elif workbench and c.status == 'needs-review' %} class="wb-needs-review"{% endif %}>
         <td>{{ c.type }}</td>
         <td>{{ c.value }}</td>
         <td>{{ c.date }}</td>
         <td>{{ c.place }}</td>
         <td>{{ c.persons_html }}</td>
-        <td><span class="status status-{{ c.status }}">{{ c.status }}</span></td>
+        <td><span class="status status-{{ c.status }}">{{ c.status }}</span>{% if c.status == 'accepted' and c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>
         {% if workbench %}
         <td class="wb-actions">
           {% if c.status == 'suggested' %}

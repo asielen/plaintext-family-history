@@ -28,6 +28,7 @@ gate to `accepted`.**
 | [`photo-context`](photo-context/SKILL.md) | **authored** | Invoked-only caption improvement: gather what the archive knows about a photo (people, relationships, event, place), draft a better summary, and — only after the human approves the exact text — write it AI-marked via `fha photoindex set-summary`. Human captions are never overwritten; never automatic, never bulk. Design history: [DESIGN.md](photo-context/DESIGN.md). | Opus |
 | [`find-photos`](find-photos/SKILL.md) | **authored** | The photo front door: resolve "show me grandma's photos" to the right filters, answer from the photo index in plain language (one line per physical photo), offer a clickable `fha photoindex gallery` page. Read-only; identification hands off to `tag-person`'s own prompt. | Sonnet |
 | [`share-and-export`](share-and-export/SKILL.md) | **authored** | The guided sharing path: pick the right exporter (packet / gedcom / site / wikitree / backup) for the recipient, speak the privacy defaults in plain words before running, preview first, then report what went out and what stayed home. Import is not this skill. | Opus |
+| [`import-notes`](import-notes/SKILL.md) | **authored** | The legacy-notes on-ramp: chunk a pile of freeform notes, propose a home per chunk under FILING_CABINET's routing rule (evidence → inbox → `process-source`; question / hypothesis / research-log entry / `notes/research/`), write only on the human's confirmed ruling. Drafts no claims; originals preserved by default, a scraps file dissolves only on explicit say-so after everything landed. | Opus |
 
 Statuses track [`BUILD_INTERFACE.md`](../../BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
 verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session
@@ -40,8 +41,9 @@ check** against `example-archive/` (capture the transcript).
   with a human decision; every AI pass recorded in `## AI Passes`; AI-DRAFT markers for prose; never edit
   below a GENERATED header or overwrite human text.
 - No skill imports another; the only cross-skill links are the documented hand-offs into `review-claims`
-  (from `process-source` always, and from `mine-transcript` when the human reviews right away) — hand-offs,
-  not code dependencies.
+  (from `process-source` whenever it drafted claims — its zero-claims exit skips review — and from
+  `mine-transcript` when the human reviews right away) and `import-notes`' hand-off of evidence into
+  `process-source` (its inbox items enter the normal intake path) — hand-offs, not code dependencies.
 - Verification is behavioral — run the skill against `example-archive/` and confirm the documented writes,
   graceful degradation, and that `fha lint` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).
