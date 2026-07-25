@@ -45,15 +45,15 @@ def _add_source(conn, sid, title, path, *, source_type='vital-record', restricte
 
 
 def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
-               source_id='s-0000000001', status='accepted', value='x'):
+               source_id='s-0000000001', status='accepted', value='x', negated=0):
     mn = ''
     if date_edtf:
         from _lib import edtf_bounds
         mn = edtf_bounds(date_edtf)[0]
     conn.execute(
-        'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, value, status) '
-        'VALUES (?,?,?,?,?,?,?,?)',
-        (cid, source_id, ctype, date_edtf, mn, place_text, value, status),
+        'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, '
+        'value, status, negated) VALUES (?,?,?,?,?,?,?,?,?)',
+        (cid, source_id, ctype, date_edtf, mn, place_text, value, status, negated),
     )
     for pos, p in enumerate(persons):
         conn.execute(
@@ -292,6 +292,55 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertIn('class="spacetime" data-loc="Boston" data-date="1900-01-01"', text)
         # The birth sentence (year 1875) must not carry the 1900 marriage date.
         self.assertNotIn('data-date="1900-01-01">He was born', text)
+
+    def test_negated_claim_excluded_from_spacetime_span(self):
+        # A confirmed ABSENCE - "not in Topeka in 1880" - is the only
+        # dated+placed claim on its source, so before the fix _spacetime_index
+        # would stamp data-loc/data-date onto a sentence citing it, machine-
+        # asserting the very presence the claim denies. It must be excluded.
+        src3 = self.root / 'sources' / 'residence.md'
+        src3.write_text(
+            '---\nid: S-0000000003\ntitle: State census\nsource_type: vital-record\n'
+            'citation: "1880 state census, John absent from Topeka."\n---\n',
+            encoding='utf-8',
+        )
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8').replace(
+                'He was born in 1875 [S-0000000001].',
+                'He was born in 1875 [S-0000000001].\n'
+                'He was recorded away from Topeka in 1880 [S-0000000003].'),
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_source(conn, 's-0000000003', 'State census', 'sources/residence.md')
+        _add_claim(conn, 'c-0000000009', 'residence', ['p-0000000001'],
+                   date_edtf='1880', place_text='Topeka', source_id='s-0000000003',
+                   status='accepted', negated=1, value='not resident in Topeka')
+        conn.commit(); conn.close()
+        text = wikitree.run_wikitree(self.root, 'p-0000000001')['text']
+        self.assertNotIn('data-loc="Topeka"', text)
+        self.assertNotIn('data-date="1880-01-01"', text)
+
+    def test_negated_claim_excluded_from_infobox_template(self):
+        # Sibling of the spacetime fix: an infobox template ({{Residence|...}})
+        # is a structured machine-fact, so a negated claim must not emit the
+        # positive field it denies. A positive companion proves the template
+        # DOES render when the claim is not negated.
+        conn = self._reopen()
+        _add_claim(conn, 'c-0000000011', 'residence', ['p-0000000001'],
+                   place_text='Boston', source_id='s-0000000001',
+                   status='accepted', negated=0, value='resident')
+        _add_claim(conn, 'c-0000000012', 'residence', ['p-0000000001'],
+                   place_text='Topeka', source_id='s-0000000002',
+                   status='accepted', negated=1, value='not resident in Topeka')
+        conn.commit()
+        templates = {'residence': {'template': 'Residence', 'fields': {'location': 'place'}}}
+        out = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        conn.close()
+        self.assertIn('{{Residence|location=Boston}}', out)
+        self.assertNotIn('{{Residence|location=Topeka}}', out)
 
     def test_ancestry_template_in_reference(self):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')

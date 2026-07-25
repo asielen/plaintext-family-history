@@ -138,7 +138,7 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
@@ -2578,15 +2578,24 @@ def _refile_pick_entry(entries: list[dict], file_name: str | None, record_name: 
     companion, a corrected transcript) may legitimately be refiled, but only
     when named explicitly; it is never the default pick.
     """
+    def _posix(entry: dict) -> str:
+        # Normalize a stored alias to POSIX separators before deriving its
+        # basename. Aliases are forward-slash by contract, but a record written
+        # on Windows may carry backslashes ('documents\\letters\\scan.pdf'); on
+        # POSIX, Path('documents\\letters\\scan.pdf').name is the whole string,
+        # so an un-normalized `--file scan.pdf` lookup would miss a listed file
+        # and refuse. Mirrors the reconcile refile selector's normalization.
+        return str(entry['file']).replace('\\', '/')
+
     def _names() -> str:
-        return ', '.join(Path(str(e['file'])).name for e in entries)
+        return ', '.join(PurePosixPath(_posix(e)).name for e in entries)
 
     if file_name:
         wanted = str(file_name).replace('\\', '/')
         matches = [
             e for e in entries
-            if Path(str(e['file'])).name == wanted
-            or str(e['file']).replace('\\', '/') == wanted
+            if PurePosixPath(_posix(e)).name == wanted
+            or _posix(e) == wanted
         ]
         if not matches:
             raise ProcessError(

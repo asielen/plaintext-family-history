@@ -318,6 +318,12 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
     claim - the parked, looked-at-but-unsettled state (SPEC §8.1) - must not
     do that. Parked claims reach WikiTree another way: recast as open
     questions in the Research Notes section (`_research_notes_lines`).
+
+    Negated claims are excluded (COALESCE(c.negated, 0) = 0): a confirmed
+    *absence* - "not in Topeka in 1880" - is the one dated+placed fact on its
+    source often enough that including it would stamp `data-loc`/`data-date`
+    onto a sentence, machine-asserting the very presence the claim denies.
+    Same posture as the relationship-derivation exclusion in `index.py`.
     """
     rows = conn.execute(
         """
@@ -326,6 +332,7 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
         JOIN claims c ON cp.claim_id = c.id
         WHERE cp.person_id = ?
           AND c.status = 'accepted'
+          AND COALESCE(c.negated, 0) = 0
           AND c.date_edtf IS NOT NULL AND c.date_edtf != ''
           AND ((c.place_text IS NOT NULL AND c.place_text != '')
                OR (c.place_id IS NOT NULL AND c.place_id != ''))
@@ -819,6 +826,11 @@ def _render_templates(
     `_claim_names_restricted_person` guard as the Research Notes items - a
     template field can carry a claim's value/place text, and this generated
     surface is never seen by the body-prose privacy scans).
+
+    Negated claims are excluded (COALESCE(c.negated, 0) = 0), same as
+    `_spacetime_index`: an infobox template ({{Birth|place=...}}) is a
+    structured machine-fact, so a negated claim - "not born in Topeka" -
+    would emit the positive field the claim denies.
     """
     if not templates:
         return []
@@ -829,6 +841,7 @@ def _render_templates(
         JOIN claims c ON cp.claim_id = c.id
         JOIN sources s ON s.id = c.source_id
         WHERE cp.person_id = ? AND c.status = 'accepted'
+          AND COALESCE(c.negated, 0) = 0
           AND COALESCE(s.restricted, 0) = 0
           AND COALESCE(s.source_type, '') != 'dna'
           AND COALESCE(s.publication_ok, 1) != 0

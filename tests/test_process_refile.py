@@ -980,5 +980,42 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertEqual(record.read_bytes(), before_record)
 
 
+class RefilePickEntryUnitTests(unittest.TestCase):
+    """`_refile_pick_entry` normalizes a stored alias before basename matching.
+
+    Aliases are forward-slash by contract, but a record written on Windows can
+    carry backslashes ('documents\\letters\\scan.pdf'); on POSIX,
+    Path(alias).name is the whole string, so an un-normalized `--file scan.pdf`
+    lookup would miss a listed file and refuse. Mirrors the reconcile fix.
+    """
+
+    def test_windows_alias_matched_by_basename(self) -> None:
+        entries = [
+            {'file': 'documents\\letters\\scan.pdf', 'role': 'primary'},
+            {'file': 'documents\\letters\\scan.pdf.txt', 'role': 'transcript',
+             'derived': True},
+        ]
+        picked = process._refile_pick_entry(entries, 'scan.pdf', 'letter.md')
+        self.assertEqual(picked['file'], 'documents\\letters\\scan.pdf')
+
+    def test_windows_alias_matched_by_full_posix_path(self) -> None:
+        entries = [{'file': 'documents\\letters\\scan.pdf'}]
+        picked = process._refile_pick_entry(
+            entries, 'documents/letters/scan.pdf', 'letter.md')
+        self.assertEqual(picked['file'], 'documents\\letters\\scan.pdf')
+
+    def test_refusal_lists_normalized_basenames_not_backslash_strings(self) -> None:
+        entries = [
+            {'file': 'documents\\census\\one.pdf'},
+            {'file': 'documents\\census\\two.pdf'},
+        ]
+        with self.assertRaises(process.ProcessError) as ctx:
+            process._refile_pick_entry(entries, 'nope.pdf', 'census.md')
+        msg = str(ctx.exception)
+        self.assertIn('one.pdf', msg)
+        self.assertIn('two.pdf', msg)
+        self.assertNotIn('documents\\census\\one.pdf', msg)
+
+
 if __name__ == '__main__':
     unittest.main()
