@@ -150,6 +150,38 @@
     }
   }
 
+  /* The "confirmed absence" (negated) toggle for the add-a-claim modal.
+     It rides on the claim.new form so the browser can author a SPEC 8.6
+     negative fact - "we researched and it did not happen" - the same
+     `fha claim new ... --negated` the CLI already offers. collect() turns any
+     checkbox into a real boolean arg by name, so wiring is just this control:
+     checked sends negated:true (schema keeps it a bool, echo appends --negated
+     and run_claim_new writes `negated: true` + `evidence: negative`), unchecked
+     sends negated:false and mints an ordinary positive claim. Scoped to
+     tpl-add-claim so the milestone/add-event flows keep their own shape. */
+  function addNegatedToggle(modal, tpl) {
+    if (!tpl || tpl.id !== 'tpl-add-claim') return;
+    var step = modal.querySelector('.wb-step');
+    if (!step) return;
+    var field = document.createElement('div');
+    field.className = 'wb-field';
+    var label = document.createElement('label');
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.name = 'negated';
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(' Confirmed absence (this did NOT happen, after research)'));
+    var hint = document.createElement('p');
+    hint.className = 'wb-hint';
+    hint.textContent = 'Records a negative fact - e.g. type "marriage" with this checked = '
+      + 'confirmed never married. Writes negated: true and evidence: negative.';
+    field.appendChild(label);
+    field.appendChild(hint);
+    var foot = step.querySelector('.wb-modal-foot');
+    if (foot) step.insertBefore(field, foot);
+    else step.appendChild(field);
+  }
+
   function openModal(btn, tplId) {
     var tpl = document.getElementById(tplId || btn.getAttribute('data-wb-open'));
     if (!tpl) return null;
@@ -162,6 +194,7 @@
     modal.setAttribute('role', 'dialog');
     modal.setAttribute('aria-modal', 'true');
     modal.appendChild(tpl.content.cloneNode(true));
+    addNegatedToggle(modal, tpl);
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     document.body.style.overflow = 'hidden';

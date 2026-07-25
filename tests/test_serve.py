@@ -361,6 +361,29 @@ class ApiRunTests(_ServeCase):
         self.assertTrue(payload['ok'], payload)
         self.assertEqual(payload['data']['claim_id'], previewed)
 
+    def test_claim_new_forwards_negated_to_confirmed_absence(self):
+        # P2 finding (PR #32): the `--negated` authoring path (a SPEC 8.6
+        # confirmed absence) existed only on the CLI - the claim.new verb
+        # rejected `negated` as an unexpected field, so the browser front door
+        # could not write the confirmed-absence claim the change advertises,
+        # even though it drives the same engine. Applying claim.new with
+        # negated=True must land `negated: true` and its pairing
+        # `evidence: negative`, exactly like `fha claim new --negated`.
+        row = self.a_suggested_claim()
+        sid = row[1]
+        args = {'source_id': sid, 'claim_type': 'marriage',
+                'value': 'no marriage found after research', 'negated': True}
+        s, d, _h = self.post_run('claim.new', args, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        matches = [f for f in (self.root / 'sources').rglob('*.md')
+                   if 'no marriage found after research' in f.read_text(encoding='utf-8')]
+        self.assertEqual(len(matches), 1, matches)
+        text = matches[0].read_text(encoding='utf-8')
+        self.assertIn('negated: true', text)
+        self.assertIn('evidence: negative', text)
+
     def test_process_file_apply_reuses_the_previewed_minted_source_id(self):
         # P2 codex finding (round 7, PR #30): same preview/apply mismatch as
         # person.new/claim.new above, for `process.file` - the dry-run
@@ -1362,6 +1385,36 @@ class EchoTests(unittest.TestCase):
             'source_id': 'S-fa1234567b', 'claim_type': 'birth', 'value': '1870',
         })
         self.assertNotIn('--confidence', echo)
+
+    def test_claim_new_schema_accepts_and_coerces_negated(self):
+        # P2 finding (PR #32): before this fix `negated` was not in the
+        # claim.new schema, so _coerce rejected it as an unexpected field and
+        # the workbench could never send it. Lock in that the verb now accepts
+        # it AND coerces it to a real bool (both a JSON bool and a string-form
+        # 'true' from a JSON-less client), so it reaches run_claim_new intact.
+        schema = serve.VERBS['claim.new']['schema']
+        self.assertEqual(schema.get('negated'), 'bool')
+        clean, err = serve._coerce(schema, {
+            'source_id': 'S-fa1234567b', 'claim_type': 'marriage',
+            'value': 'no marriage found', 'negated': True})
+        self.assertIsNone(err)
+        self.assertIs(clean['negated'], True)
+        clean2, err2 = serve._coerce(schema, {'source_id': 'S-fa1234567b', 'negated': 'true'})
+        self.assertIsNone(err2)
+        self.assertIs(clean2['negated'], True)
+
+    def test_echo_claim_new_includes_negated_when_set(self):
+        echo = serve._echo_claim_new({
+            'source_id': 'S-fa1234567b', 'claim_type': 'marriage',
+            'value': 'no marriage found', 'negated': True,
+        })
+        self.assertIn('--negated', echo)
+
+    def test_echo_claim_new_omits_negated_when_absent(self):
+        echo = serve._echo_claim_new({
+            'source_id': 'S-fa1234567b', 'claim_type': 'birth', 'value': '1870',
+        })
+        self.assertNotIn('--negated', echo)
 
     def test_echo_capture_path_includes_title_when_given(self):
         echo = serve._echo_capture_path(

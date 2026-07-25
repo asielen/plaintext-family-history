@@ -1009,6 +1009,12 @@ def _verb_claim_new(state, kw, dry_run):
         date=kw.get('date'), place=kw.get('place'), place_text=kw.get('place_text'),
         persons=kw.get('persons'), subtype=kw.get('subtype'),
         status=kw.get('status') or 'accepted', confidence=kw.get('confidence'),
+        # A confirmed absence (SPEC 8.6): the browser front door must reach the
+        # same `--negated` authoring path the CLI does, or the workbench can
+        # advertise "record a confirmed absence" yet be physically unable to
+        # write one. The schema coerces this to a real bool before we see it, so
+        # a missing key reads as False and mints an ordinary positive claim.
+        negated=bool(kw.get('negated', False)),
         dry_run=dry_run,
         # Threaded back in by the workbench's Apply step from the id its own
         # earlier dry-run preview minted and showed the human, so Apply
@@ -1036,6 +1042,11 @@ def _echo_claim_new(kw):
         parts += ['--status', kw['status']]
     if kw.get('confidence'):
         parts += ['--confidence', kw['confidence']]
+    # `--negated` is a bare flag on the CLI, so the echo shows it only when set -
+    # the workbench's "this button is exactly:" line must match the command the
+    # verb will actually run, including the confirmed-absence flag.
+    if kw.get('negated'):
+        parts += ['--negated']
     return ' '.join(parts)
 
 
@@ -1631,7 +1642,7 @@ VERBS: dict[str, dict] = {
     'claim.new': {'schema': {'source_id': 'str', 'claim_type': 'str', 'value': 'str',
                             'date': 'str', 'place': 'str', 'place_text': 'str',
                             'persons': 'list', 'subtype': 'str', 'status': 'str',
-                            'confidence': 'str', 'claim_id': 'str'},
+                            'confidence': 'str', 'negated': 'bool', 'claim_id': 'str'},
                   'run': _verb_claim_new, 'echo': _echo_claim_new, 'reindex': 'source'},
     'confirm.xref': {'schema': {'claim_a': 'str', 'claim_b': 'str', 'relation': 'str'},
                      'run': _verb_xref, 'echo': _echo_xref, 'reindex': 'full'},
