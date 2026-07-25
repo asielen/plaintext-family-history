@@ -480,7 +480,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "cbd55dc5f1da7fff0f8414ef37a33f8fc93cf7cc6b83fcfeb621d020181b178c",
+      "sha256": "6848d63b9ecabaa73651e3c7fcdb543232fcfd8a9154c5df25734ae2dfe41eac",
       "spec_version": "1.2"
     },
     {
@@ -642,7 +642,7 @@
     {
       "path": "tools/reconcile.py",
       "category": "operating",
-      "sha256": "3a668c32e645b159fe323a02ba59afda9513bb878ca7d424a1234ea2428fadd1",
+      "sha256": "e43598fe80a2e1f47f306fd5eb0f706c756845eda0cc3958dde94076899d5fd5",
       "spec_version": "1.2"
     },
     {
@@ -684,7 +684,7 @@
     {
       "path": "tools/source.py",
       "category": "operating",
-      "sha256": "607ee8b22d93c85ca8b8ba59eb2fd73607603f80e7062a2bc871fc06e2ed4487",
+      "sha256": "c51fb9c7a42d9d03c39dbcb19f5eea74e53e4b85765c702f23838ed3b73eb6c9",
       "spec_version": "1.2"
     },
     {
@@ -804,7 +804,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "d67647c3b5f91e24f96baf490cd254f4cb7cf91194182e77b76a74365b57a8cc",
+      "sha256": "d548b237b3109c63051b0afa134658e0966478099dc68fb2a81085c14eadf557",
       "spec_version": "1.2"
     },
     {
