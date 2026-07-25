@@ -48,6 +48,7 @@ CODE MAP
   _iter_source_records   - yield (path, meta) for every parseable sources/ record
   _disk_index            - basename -> [paths] map of every documents-root file
   _plan                  - compute healed/ambiguous/missing/unlisted, no writes
+  _split_file_value      - split a file: line into (unquoted path, comment)
   _rewrite_entry         - line-surgical file: path rewrite inside one record text
   _apply                 - group heals per record, rewrite, refuse on any drift
   run_reconcile          - engine: plan + (unless dry-run) apply + photos side
@@ -61,13 +62,17 @@ import argparse
 import sys
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    FhaConfigError,
     Result,
     is_working_copy,
+    load_fha_yaml,
     normalize_id,
     parse_filename,
     path_to_alias,
@@ -77,6 +82,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     write_text_exact,
+    yaml_inline,
 )
 
 import photoindex
@@ -88,19 +94,36 @@ def _iter_source_records(archive_root: Path, result: Result):
     An unparseable record gets one warning naming it and is skipped rather
     than failing the whole run - reconcile's job is healing paths, and a
     record lint already flags must not block healing every other record.
+
+    read_record does NOT raise on malformed YAML: it reports the problem
+    through its `parse_errors` field and hands back an empty `meta` (the
+    same channel process.py and lint.py read). Yielding that empty meta
+    would silently drop the record's real files: inventory - the record's
+    documents would then be judged "unlisted" and the human told to attach
+    files that are in fact already listed. So parse_errors is checked
+    explicitly here and the record skipped BEFORE it can pollute the reverse
+    inventory, exactly as if the read had raised.
     """
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
         return
     for rec_path in sorted(sources_dir.rglob('*.md')):
         try:
-            meta = read_record(rec_path).get('meta') or {}
+            rec = read_record(rec_path)
         except Exception:
             result.add('warning',
                        f'{rec_path.name} could not be parsed - skipped. '
                        'Run `fha lint` for the specifics.')
             continue
-        yield rec_path, meta
+        if rec.get('parse_errors'):
+            detail = '; '.join(msg for _, msg in rec['parse_errors'])
+            result.add('warning',
+                       f'{rec_path.name} has malformed YAML ({detail}) - '
+                       'skipped, so its files were not checked or healed. Fix '
+                       'the record (`fha lint` names the spot), then re-run '
+                       '`fha reconcile`.')
+            continue
+        yield rec_path, rec.get('meta') or {}
 
 
 def _disk_index(documents_root: Path) -> dict[str, list[Path]]:
@@ -230,28 +253,90 @@ def _plan(
             'unlisted': unlisted}
 
 
+def _split_file_value(raw: str) -> tuple[str, str]:
+    """Split a `file:` line's value region into (path, trailing_comment).
+
+    `raw` is everything on the line after the `file:` key. The stored path may
+    be a bare scalar or a YAML-quoted scalar, optionally trailed by a ` #...`
+    comment. The scan tracks quote state so a `#` INSIDE quotes stays part of
+    the path: a valid alias like `documents/Box #3/letter.pdf` is only legal
+    when quoted, and the earlier `value.split('#')[0]` truncated it at the
+    first hash - the same class of bug this whole fix targets, just on the
+    read side. `path` is the unquoted value (via the real YAML loader, so
+    escapes resolve correctly); `trailing_comment` is the untouched comment
+    region (its `#...`), preserved so a hand-written note survives the rewrite.
+    """
+    s = raw.strip()
+    if not s:
+        return '', ''
+    if s[0] in ('"', "'"):
+        quote = s[0]
+        i = 1
+        while i < len(s):
+            c = s[i]
+            if quote == '"' and c == '\\':
+                i += 2                      # backslash escape in a double quote
+                continue
+            if c == quote:
+                if quote == "'" and i + 1 < len(s) and s[i + 1] == "'":
+                    i += 2                  # '' is an escaped single quote
+                    continue
+                i += 1
+                break
+            i += 1
+        value_repr, trailing = s[:i], s[i:]
+    else:
+        # Bare scalar: a YAML comment must be whitespace-preceded, so a `#`
+        # touching non-space text is data, not a comment.
+        cut = len(s)
+        for j in range(1, len(s)):
+            if s[j] == '#' and s[j - 1] in (' ', '\t'):
+                cut = j
+                break
+        value_repr, trailing = s[:cut].rstrip(), s[cut:]
+    try:
+        path = yaml.safe_load(value_repr)
+    except Exception:
+        path = value_repr
+    if not isinstance(path, str):
+        path = value_repr
+    comment = trailing.strip()
+    return path, comment
+
+
 def _rewrite_entry(text: str, old_alias: str, new_alias: str) -> tuple[str, bool]:
     """Rewrite ONE `file:` line's stale path in a record's text, surgically.
 
     Matches a line whose `file:` VALUE equals the stored path exactly (after
-    stripping quotes and any trailing comment) - never substring containment,
+    unquoting and dropping any trailing comment) - never substring containment,
     which would let a stale 'x.pdf' rewrite grab a valid 'x.pdf.txt' sidecar
-    entry and corrupt it while reporting success. Key order, quoting,
-    comments, and every other line survive untouched. Returns
+    entry and corrupt it while reporting success. The healed value is re-emitted
+    through `yaml_inline`, the one shared scalar-quoting rule every surgical
+    writer uses, so a new path carrying YAML-significant characters (a ` #`
+    comment marker, a leading `-`, a `: `) is quoted and reads back whole. A
+    raw string splice, by contrast, wrote `documents/Box #3/letter.pdf`
+    UNQUOTED, and the next parse silently truncated it at ` #` to
+    `documents/Box`, detaching the source from its document while reporting the
+    heal as a success. The `- ` list marker, indentation, and any trailing
+    comment survive untouched; only the value token changes. Returns
     (new_text, changed).
     """
     lines = text.split('\n')
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('- file:'):
-            value = stripped[len('- file:'):]
+            key = '- file:'
         elif stripped.startswith('file:'):
-            value = stripped[len('file:'):]
+            key = 'file:'
         else:
             continue
-        value = value.split('#', 1)[0].strip().strip('"\'')
+        value, comment = _split_file_value(stripped[len(key):])
         if value == old_alias:
-            lines[i] = line.replace(old_alias, new_alias, 1)
+            indent = line[:len(line) - len(line.lstrip())]
+            new_line = f'{indent}{key} {yaml_inline(new_alias)}'
+            if comment:
+                new_line = f'{new_line}  {comment}'
+            lines[i] = new_line
             return '\n'.join(lines), True
     return text, False
 
@@ -302,6 +387,37 @@ def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
             write_text_exact(rec_path, reapply_newline(after, before))
         except OSError as e:
             result.add('warning', f'cannot write {rec_path.name}: {e} - skipped.')
+            continue
+        # Round-trip guard: re-read the record we just wrote and confirm every
+        # healed path parses back to exactly the alias we intended. A value
+        # that needed quoting but slipped through unquoted (e.g. a folder named
+        # `Box #3`) would report exit 0 and count as healed while YAML had
+        # actually truncated it at ` #` - a silent source-to-document detach.
+        # Verifying against the real parser is the only honest proof the write
+        # says what it means. On any mismatch the file is restored to its
+        # pre-heal bytes (never left half-written) and reported by name.
+        reparsed = read_record(rec_path)
+        healed_aliases = {
+            str(e.get('file', '')).replace('\\', '/')
+            for e in (reparsed.get('meta', {}).get('files') or [])
+            if isinstance(e, dict)
+        }
+        intended = {new.replace('\\', '/') for _old, new in pairs}
+        if reparsed.get('parse_errors') or not intended <= healed_aliases:
+            try:
+                write_text_exact(rec_path, before)
+            except OSError as e:
+                result.add('error',
+                           f'{rec_path.name}: a heal did not read back correctly '
+                           f'AND restoring the original failed ({e}) - the record '
+                           'may be half-written. Restore it from backup or git, '
+                           'then run `fha lint`.')
+                continue
+            result.add('warning',
+                       f'{rec_path.name}: the re-tied path did not read back '
+                       'correctly (likely a folder or filename containing a '
+                       "'#' or ':') - record left as it was, nothing healed. "
+                       'Fix the entry by hand, then run `fha lint`.')
             continue
         result.note_changed(rec_path)
         applied += len(pairs)
@@ -457,9 +573,22 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
-    from _lib import load_fha_yaml
+    # Load fha.yaml STRICTLY: reconcile's whole job is comparing the documents/
+    # photos roots against what records list, and those roots may live outside
+    # the archive via `roots:` mappings. A permissive load turns a malformed
+    # fha.yaml into {}, which silently discards those mappings - reconcile would
+    # then scan the empty internal `documents/` skeleton and report every real
+    # file "missing" (or heal against unrelated internal files). Failing loudly
+    # here is the only safe posture; the message names the fix.
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        print('Fix fha.yaml (or run `fha doctor` for a check), then re-run '
+              '`fha reconcile`.', file=sys.stderr)
+        return EXIT_FAILURE
     result = run_reconcile(
-        archive_root, load_fha_yaml(archive_root),
+        archive_root, fha_config,
         dry_run=bool(getattr(args, 'dry_run', False)),
         with_exif=bool(getattr(args, 'with_exif', False)),
     )

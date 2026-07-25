@@ -17,8 +17,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import argparse
+import contextlib
+import io
+
 import reconcile
-from _lib import EXIT_CLEAN, EXIT_WARNINGS, load_fha_yaml, read_record
+from _lib import (
+    EXIT_CLEAN,
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    load_fha_yaml,
+    read_record,
+)
 
 SID = 'S-1a2b3c4d5e'
 DOC = f'letter_{SID.lower()}.pdf'
@@ -167,6 +177,93 @@ class ReconcileTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result['healed'], 0)
         self.assertEqual(result['missing'], 0)
+
+    def test_move_into_folder_with_hash_is_quoted_and_round_trips(self) -> None:
+        # P1: a valid destination folder containing ' #' (e.g. 'Box #3') must
+        # be re-emitted as a QUOTED YAML scalar. The old raw-string splice
+        # wrote it bare, and the next parse read only 'documents/Box' - YAML
+        # treats ' #3/...' as a comment - silently detaching the source from
+        # its document while reporting exit 0 and counting the entry healed.
+        dest = self.root / 'documents' / 'Box #3'
+        dest.mkdir()
+        (dest / DOC).write_text('x', encoding='utf-8')
+
+        applied = self._run()
+        self.assertEqual(applied.exit_code, EXIT_CLEAN)
+        self.assertEqual(applied['healed'], 1)
+        self.assertEqual(applied['unlisted'], 0)
+        self.assertFalse([m.text for m in applied.messages if m.level == 'warning'])
+        # The record must read back the WHOLE path, not a '#'-truncated stub.
+        meta = read_record(self.record)['meta']
+        self.assertEqual(meta['files'][0]['file'], f'documents/Box #3/{DOC}')
+        self.assertEqual(meta['files'][0]['role'], 'primary')
+        # And a second run finds nothing to heal - the source stayed attached.
+        self.assertEqual(self._run().exit_code, EXIT_CLEAN)
+
+    def test_move_into_folder_with_colon_round_trips(self) -> None:
+        # Same P1 class via a different YAML-significant character: a ': ' in a
+        # path would make YAML read it as a nested mapping unless quoted.
+        dest = self.root / 'documents' / 'Notes: 1920'
+        dest.mkdir()
+        (dest / DOC).write_text('x', encoding='utf-8')
+        applied = self._run()
+        self.assertEqual(applied.exit_code, EXIT_CLEAN)
+        self.assertEqual(applied['healed'], 1)
+        meta = read_record(self.record)['meta']
+        self.assertEqual(meta['files'][0]['file'], f'documents/Notes: 1920/{DOC}')
+
+    def test_comment_on_file_line_survives_a_heal(self) -> None:
+        # The rewrite promises to preserve a trailing comment on the file:
+        # line. The comment splitter is now quote-aware, so this must hold.
+        self.record.write_text(
+            f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\n'
+            f'files:\n  - file: documents/{DOC}  # scanned original\n'
+            f'    role: primary\n---\n\n## Notes\nx.\n', encoding='utf-8')
+        moved = self.root / 'documents' / 'letters' / DOC
+        moved.parent.mkdir(parents=True)
+        moved.write_text('x', encoding='utf-8')
+        applied = self._run()
+        self.assertEqual(applied.exit_code, EXIT_CLEAN)
+        self.assertEqual(applied['healed'], 1)
+        raw = self.record.read_text(encoding='utf-8')
+        self.assertIn('# scanned original', raw)
+        meta = read_record(self.record)['meta']
+        self.assertEqual(meta['files'][0]['file'], f'documents/letters/{DOC}')
+
+    def test_malformed_record_is_skipped_with_a_named_warning(self) -> None:
+        # P2 (parse_errors): read_record reports malformed YAML through its
+        # parse_errors field rather than raising. The old code read that as
+        # empty meta and yielded it silently - dropping the record's files:
+        # inventory. The record must instead be skipped WITH a warning that
+        # names it and points at the fix.
+        (self.root / 'documents' / DOC).write_text('x', encoding='utf-8')
+        other_sid = 'S-9z8y7x6w5v'
+        other_doc = f'deed_{other_sid.lower()}.pdf'
+        (self.root / 'documents' / other_doc).write_text('x', encoding='utf-8')
+        bad = self.root / 'sources' / 'deed' / f'deed_{other_sid.lower()}.md'
+        bad.parent.mkdir(parents=True)
+        bad.write_text(
+            f'---\nid: {other_sid}\ntitle: "unterminated\n'
+            f'files:\n  - file: documents/{other_doc}\n---\n\n## Notes\ny.\n',
+            encoding='utf-8')
+        result = self._run()
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('malformed YAML' in w and bad.name in w
+                            for w in warnings),
+                        f'expected a named skip warning, got: {warnings}')
+
+    def test_malformed_config_stops_before_planning(self) -> None:
+        # P2 (strict config): a malformed fha.yaml must halt reconcile with a
+        # plain cause + next command, never fall back to {} and scan the empty
+        # internal skeleton (which would report every real file missing).
+        (self.root / 'fha.yaml').write_text('roots: : : bad\n', encoding='utf-8')
+        args = argparse.Namespace(root=str(self.root), dry_run=False,
+                                  with_exif=False)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = reconcile._cmd_reconcile(args)
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn('fha.yaml', err.getvalue())
 
     def test_working_copy_is_a_clean_no_op(self) -> None:
         (self.root / 'WORKING_COPY').write_text('', encoding='utf-8')
