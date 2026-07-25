@@ -294,5 +294,58 @@ class W119SharedCoupleFolderTests(BracketsPromoteBase):
         self.assertNotIn('004 Gma Deep', out)
 
 
+class AmbiguousCoupleFolderTests(BracketsPromoteBase):
+    """Two folders share one couple prefix - brackets must refuse, not guess."""
+
+    def test_report_refuses_and_names_both_folders(self) -> None:
+        # PA (pos 2) and MA (pos 3) share couple prefix 2. Add a second '002 …'
+        # folder so the prefix maps to two folders; the Ahnentafel checks cannot
+        # derive a destination without guessing, so the run is refused.
+        (self.root / 'people' / '002 Dupe Folder').mkdir()
+        res, _out, err = self._run()
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn(FOLDER, err)
+        self.assertIn('002 Dupe Folder', err)
+        self.assertIn('fha index', err)
+        self.assertNotIn('Traceback', err)
+        # Nothing was promoted.
+        self.assertEqual(len(self._stub_names()), 4)
+
+
+class FixPromoteCacheUnlinkTests(BracketsPromoteBase):
+    """The batch --fix-promote path must survive a failed index-cache drop the
+    same way the single-person path does: report the promotions that landed and
+    return a non-zero warning naming the stale cache, never a traceback."""
+
+    def _unlink_only_index_fails(self):
+        real_unlink = Path.unlink
+
+        def fake_unlink(self, *args, **kwargs):
+            if self.name == 'index.sqlite':
+                raise PermissionError(13, 'Permission denied')
+            return real_unlink(self, *args, **kwargs)
+
+        return mock.patch.object(Path, 'unlink', fake_unlink)
+
+    def test_batch_unlink_failure_warns_nonzero_without_traceback(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            with self._unlink_only_index_fails():
+                res, out, err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertTrue(res.data.get('index_stale'))
+        self.assertEqual(res.data.get('promoted'), 3)   # PA, MA, GPA
+        # The records really moved on disk despite the cache-drop failure.
+        self.assertTrue(
+            (self.root / 'people' / FOLDER / f'deep__pa_{PA}.md').exists())
+        # The stale cache is still present (the unlink failed) and the message
+        # owns that, naming the file and the rebuild command - no traceback.
+        self.assertTrue((self.root / '.cache' / 'index.sqlite').exists())
+        combined = out + err
+        self.assertIn('Promoted', combined)
+        self.assertIn('index.sqlite', combined)
+        self.assertIn('fha index', combined)
+        self.assertNotIn('Traceback', combined)
+
+
 if __name__ == '__main__':
     unittest.main()

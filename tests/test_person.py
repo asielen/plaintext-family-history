@@ -1958,6 +1958,39 @@ class PromoteTests(unittest.TestCase):
         self.assertTrue(
             (self.root / 'people' / PROMOTE_FOLDER / f'line__ma_research_{P_MA}.md').exists())
 
+    def test_ambiguous_couple_folder_refused_names_both(self) -> None:
+        # Two folders share prefix 002 (a hand-organization mistake). Promotion
+        # must refuse rather than file the record into an arbitrary half of the
+        # couple, and the message names BOTH folders and the rename fix.
+        (self.root / 'people' / '002 Someone Else').mkdir()
+        res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertEqual(res.data['status'], 'refused')
+        msg = res.messages[-1].text
+        self.assertIn(PROMOTE_FOLDER, msg)
+        self.assertIn('002 Someone Else', msg)
+        self.assertIn('rename', msg.lower())
+        # Nothing moved - the stub is untouched.
+        self.assertTrue(self.pa_stub.exists())
+
+    def test_existing_companion_beside_stub_is_moved_not_duplicated(self) -> None:
+        # A hand-written companion sits beside the stub. Promotion must MOVE it
+        # to the destination (notes travel with the record), not scaffold a
+        # blank one and strand the populated one in stubs/.
+        companion = self.root / 'people' / 'stubs' / f'line__pa_research_{P_PA}.md'
+        companion.write_text('MY HAND NOTES', encoding='utf-8')
+        self._reindex()   # the new companion file makes the prior index stale
+        res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        moved = self.root / 'people' / PROMOTE_FOLDER / f'line__pa_research_{P_PA}.md'
+        self.assertTrue(moved.exists())
+        self.assertEqual(moved.read_text(encoding='utf-8'), 'MY HAND NOTES')
+        self.assertFalse(companion.exists(), 'stub companion must be vacated')
+        comps = list((self.root / 'people').rglob('*_research_*.md'))
+        self.assertEqual(len(comps), 1, f'companion duplicated: {comps}')
+        all_text = ' '.join(m.text for m in res.messages)
+        self.assertIn('Moved the research companion', all_text)
+
     def _unlink_only_index_fails(self):
         """A Path.unlink patch that raises for the index cache, else works.
 

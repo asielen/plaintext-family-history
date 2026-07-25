@@ -84,6 +84,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text
+    AmbiguousCoupleFolderError,  # two couple folders share a prefix; refuse, don't guess
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -2119,8 +2120,26 @@ def run_brackets(
             else:
                 pid_to_pos = _build_ahnentafel_map(conn, root_pid)
                 w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
-                w119 = _check_w119_direct_line_stubs(
-                    conn, archive_root, pid_to_pos, generations)
+                try:
+                    w119 = _check_w119_direct_line_stubs(
+                        conn, archive_root, pid_to_pos, generations)
+                except AmbiguousCoupleFolderError as e:
+                    # Two folders share one couple prefix (e.g. '002 Father' and
+                    # '002 Mother'), so the direct-line destinations cannot be
+                    # derived without guessing which folder is the couple's.
+                    # Refuse the whole run rather than file records arbitrarily.
+                    print(
+                        f'ERROR: two couple folders share the prefix '
+                        f'{e.prefix:03d} - {" and ".join(e.folders)}. Direct-line '
+                        'stubs cannot be filed without guessing which one is the '
+                        'couple\'s folder, so the Ahnentafel checks are refused. '
+                        'Rename one so the numeric prefixes are unique (a '
+                        'non-ancestral marriage takes a letter suffix, e.g. '
+                        f'"{e.prefix:03d}b …"; SPEC §12.2), run `fha index`, then '
+                        'retry.',
+                        file=sys.stderr,
+                    )
+                    return _views_result(EXIT_FAILURE)
         else:
             print(
                 'INFO: root_person not set in fha.yaml - '
@@ -2180,7 +2199,35 @@ def run_brackets(
                 # the W110 fix below). Drop the cache to force a rebuild.
                 conn.close()
                 db_path = archive_root / '.cache' / 'index.sqlite'
-                db_path.unlink(missing_ok=True)
+                try:
+                    db_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    # The records ALREADY moved on disk - that is done and
+                    # irreversible; only the cache drop failed (a locked or
+                    # read-only .cache/index.sqlite). A move preserves each
+                    # record's mtime, so the undeleted index still passes the
+                    # freshness check while pointing at the OLD stubs/ paths -
+                    # searches can quietly go stale. Report the promotions that
+                    # landed, then warn non-zero naming the stale cache and the
+                    # rebuild command; never let the unlink traceback reach the
+                    # user (AGENTS_TOOLING: no traceback ever reaches him).
+                    reason = exc.strerror or str(exc)
+                    print(
+                        f'\nPromoted {applied} of {len(w119)} - those records '
+                        'moved and are filed under their couple folders. But the '
+                        f'search index cache could not be cleared ({reason}): '
+                        f'{db_path}. The records moved, so the leftover index '
+                        'still points at their old locations and can look up to '
+                        'date, which means searches may quietly go stale until '
+                        f'you rebuild it. Delete {db_path} (or just run '
+                        '`fha index`) to rebuild the index and clear the stale '
+                        'entries.',
+                        file=sys.stderr,
+                    )
+                    return _views_result(
+                        EXIT_WARNINGS,
+                        data={**issue_data, 'index_stale': True,
+                              'promoted': applied, 'failures': failures})
                 changed = [str(db_path)]
                 print(
                     f'\nPromoted {applied} of {len(w119)}. Run `fha index` to '
@@ -2236,7 +2283,30 @@ def run_brackets(
         # Remove the cache outright to force a rebuild before it's next read.
         conn.close()
         db_path = archive_root / '.cache' / 'index.sqlite'
-        db_path.unlink(missing_ok=True)
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError as exc:
+            # The renames/moves ALREADY landed on disk and are irreversible;
+            # only the cache drop failed (a locked or read-only cache). Those
+            # moves keep each file's mtime, so the leftover index looks fresh
+            # while pointing at the OLD paths - searches can quietly go stale.
+            # Report the work that landed and warn non-zero naming the stale
+            # cache and the rebuild command; no traceback reaches the user.
+            reason = exc.strerror or str(exc)
+            print(
+                f'\nThe renames and moves were applied, but the search index '
+                f'cache could not be cleared ({reason}): {db_path}. Those moves '
+                'change record paths without changing their mtimes, so the '
+                'leftover index still points at the old locations and can look '
+                'up to date - searches may quietly go stale until you rebuild '
+                f'it. Delete {db_path} (or just run `fha index`) to rebuild the '
+                'index and clear the stale entries.',
+                file=sys.stderr,
+            )
+            data = {**issue_data, 'index_stale': True}
+            if failures:
+                data['failures'] = failures
+            return _views_result(EXIT_WARNINGS, data=data)
         changed = [str(db_path)]
 
         if failures:

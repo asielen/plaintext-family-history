@@ -105,6 +105,35 @@ class AtomicWriteTests(unittest.TestCase):
         # Read with translation disabled: CRLF must survive byte-for-byte.
         self.assertEqual(read_text_exact(target), payload)
 
+    def test_existing_target_mode_is_preserved(self) -> None:
+        # A group-readable record must not silently drop to owner-only when the
+        # atomic write installs mkstemp's 0600 temp inode as the record.
+        d = Path(tempfile.mkdtemp())
+        target = d / 'rec.md'
+        target.write_text('ORIGINAL', encoding='utf-8')
+        os.chmod(target, 0o644)
+        write_text_exact_atomic(target, 'NEW CONTENT')
+        mode = os.stat(target).st_mode & 0o777
+        self.assertEqual(mode, 0o644,
+                         f'expected 0o644 preserved, got {oct(mode)}')
+        self.assertEqual(target.read_text(encoding='utf-8'), 'NEW CONTENT')
+
+    def test_new_file_uses_umask_default_not_0600(self) -> None:
+        # A brand-new record (a scaffolded research companion) must match what a
+        # plain open(..., 'w') would leave under the umask, never the 0600
+        # mkstemp hands us.
+        d = Path(tempfile.mkdtemp())
+        target = d / 'fresh.md'
+        old_umask = os.umask(0o022)
+        try:
+            write_text_exact_atomic(target, 'NEW')
+        finally:
+            os.umask(old_umask)
+        mode = os.stat(target).st_mode & 0o777
+        self.assertEqual(mode, 0o644,
+                         f'expected 0o666 & ~022 = 0o644, got {oct(mode)}')
+        self.assertNotEqual(mode, 0o600, 'must not inherit mkstemp 0600')
+
 
 class PromotionRollbackTests(unittest.TestCase):
     def test_failed_companion_write_restores_stub_and_leaves_no_partial(self) -> None:
@@ -152,6 +181,69 @@ class PromotionRollbackTests(unittest.TestCase):
         self.assertFalse(record_path.exists(), 'original stub path is vacated')
         companions = list(dest.glob('*_research_*.md'))
         self.assertEqual(len(companions), 1, 'companion scaffolded once')
+
+
+class ExistingCompanionMoveTests(unittest.TestCase):
+    """A hand-written companion beside the stub must travel WITH the record,
+    not be left behind while a blank one is scaffolded at the destination."""
+
+    def _companion_name(self) -> str:
+        return f'kid__ann_research_{KID}.md'
+
+    def test_existing_companion_is_moved_not_duplicated(self) -> None:
+        root, record_path, dest = _archive()
+        companion = record_path.parent / self._companion_name()
+        companion.write_text('MY HAND-WRITTEN NOTES', encoding='utf-8')
+
+        plan = promote_person_record(root, KID, record_path, dest)
+        self.assertTrue(plan['research_move'], 'plan must mark a move')
+        self.assertFalse(plan['research_create'], 'must not scaffold a new one')
+
+        # The populated companion now sits at the destination with its notes,
+        # and nothing is left behind in stubs/.
+        moved_companion = dest / self._companion_name()
+        self.assertTrue(moved_companion.exists())
+        self.assertEqual(moved_companion.read_text(encoding='utf-8'),
+                         'MY HAND-WRITTEN NOTES')
+        self.assertFalse(companion.exists(), 'stub companion must be vacated')
+        # Exactly one companion exists across the archive - not duplicated.
+        all_companions = list((root / 'people').rglob('*_research_*.md'))
+        self.assertEqual(len(all_companions), 1, f'duplicated: {all_companions}')
+
+    def test_moved_companion_rolls_back_to_source_on_later_failure(self) -> None:
+        # Force the record MOVE to fail AFTER the companion move would run? No -
+        # the companion move is the last write, so fail it and confirm the
+        # record move and tier flip roll back and the companion never left.
+        # Instead we fail the record move here to exercise the move-companion
+        # inverse: make shutil.move fail on the RECORD move (second call).
+        root, record_path, dest = _archive()
+        companion = record_path.parent / self._companion_name()
+        companion.write_text('KEEP ME HERE', encoding='utf-8')
+
+        real_move = _lib.shutil.move
+        calls = {'n': 0}
+
+        def failing_move(src, dst):
+            calls['n'] += 1
+            # First move is the record; let it through. The companion move is
+            # the second - fail it to trigger rollback of the record move.
+            if calls['n'] == 2:
+                raise OSError('simulated failure moving companion')
+            return real_move(src, dst)
+
+        _lib.shutil.move = failing_move
+        try:
+            with self.assertRaises(PromotionError):
+                promote_person_record(root, KID, record_path, dest)
+        finally:
+            _lib.shutil.move = real_move
+
+        # Record restored to stubs/ and companion still beside it with its notes.
+        self.assertTrue(record_path.exists(), 'record must be moved back')
+        self.assertTrue(companion.exists(), 'companion must stay in stubs/')
+        self.assertEqual(companion.read_text(encoding='utf-8'), 'KEEP ME HERE')
+        self.assertEqual([p.name for p in dest.iterdir()], [],
+                         'destination folder must be empty after rollback')
 
 
 if __name__ == '__main__':

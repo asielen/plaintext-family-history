@@ -209,6 +209,7 @@ from _lib import (
     FhaConfigError,
     INDEX_SCHEMA_VERSION,
     PERSON_SEX_VALUES,
+    AmbiguousCoupleFolderError,
     PromotionError,
     Result,
     append_paragraph_to_section,
@@ -1295,7 +1296,18 @@ def run_promote(
             ' --into "002 …"` files them with their parents\' couple.')
     else:
         prefix = couple_folder_prefix(pos)
-        dest_folder = couple_folder_for_prefix(archive_root, prefix)
+        try:
+            dest_folder = couple_folder_for_prefix(archive_root, prefix)
+        except AmbiguousCoupleFolderError as e:
+            return _refuse_result(
+                result, 'refused',
+                f'{label} belongs in couple folder {e.prefix:03d}, but two '
+                f'folders share that number: {" and ".join(e.folders)}. Filing '
+                'the record would have to guess which one is the couple\'s '
+                'folder, so promotion is refused rather than split the couple. '
+                'Rename one so the numeric prefixes are unique (a non-ancestral '
+                'marriage takes a letter suffix, e.g. '
+                f'"{e.prefix:03d}b …"; SPEC §12.2), then retry. Nothing was written.')
         if dest_folder is None:
             display = name or fmt_id_display(pid)
             dest_folder = people_dir / f'{str(prefix).zfill(3)} {display}'
@@ -1327,7 +1339,13 @@ def run_promote(
     result.add('info',
                f'{label} is now curated (Ahnentafel {pos}) - record filed in '
                f'people/{dest_folder.name}/.', path=applied['new_path'])
-    if applied['research_create']:
+    if applied.get('research_move'):
+        result.note_changed(applied['research_path'])
+        result.add('info',
+                   f'Moved the research companion {applied["research_path"].name} '
+                   'into the couple folder with the record - your existing '
+                   'notes travelled with it, nothing was lost.')
+    elif applied['research_create']:
         result.note_changed(applied['research_path'])
         result.add('info',
                    f'Created the research companion {applied["research_path"].name} '

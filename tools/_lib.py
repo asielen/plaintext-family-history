@@ -154,6 +154,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    couple_folder_prefix      - position → the even couple-folder number
 #    couple_folder_dirs        - digit-prefixed dirs under people/ (not stubs/connections)
 #    couple_folder_for_prefix  - canonical on-disk couple folder for a number, or None
+#    AmbiguousCoupleFolderError - two folders share one prefix; caller must refuse
 #    research_template_text / render_research_content - the SPEC §16 research scaffold
 #    research_companion_filename - {slug}_{P-id}.md → {slug}_research_{P-id}.md
 #    PromotionError            - promotion refused/failed (rolled back), plain message
@@ -1069,7 +1070,12 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
     atomic step. On any failure the original is left exactly as it was and the
     temp file is removed, so callers can set their 'wrote it' flag AFTER this
     returns and trust that a raise means the target was never touched. Newline
-    handling mirrors `write_text_exact` (`newline=''` - no CRLF translation)."""
+    handling mirrors `write_text_exact` (`newline=''` - no CRLF translation).
+
+    PERMISSIONS: the record ends up with the temp file's mode, so the mode is
+    fixed up before the replace - an existing target keeps its own permissions,
+    a new record gets the plain-open umask default. See the inline note; without
+    it a promotion would quietly demote a group-readable record to owner-only."""
     path = Path(path)
     # Temp file must share the target's directory so os.replace is a same-
     # filesystem rename (atomic); a cross-device temp would fall back to a
@@ -1082,6 +1088,23 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
+        # os.replace installs THIS temp inode as the record, and mkstemp made it
+        # 0600 (owner-only). Left alone that silently strips a normal 0644 /
+        # group-readable record to owner-only during the tier flip, and other
+        # family members or a backup job in a shared archive lose read access.
+        # Match what a plain write_text_exact (open(..., 'w')) would leave: an
+        # EXISTING target keeps its own mode; a NEW record gets the umask default
+        # (0o666 & ~umask), never the 0600 mkstemp handed us.
+        try:
+            target_mode = os.stat(str(path)).st_mode
+        except FileNotFoundError:
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(tmp_name, 0o666 & ~umask)
+        else:
+            # Carry the permission bits (incl. setgid/sticky, so a group-shared
+            # archive folder's inheritance survives) onto the temp before it lands.
+            os.chmod(tmp_name, target_mode & 0o7777)
         os.replace(tmp_name, str(path))
     except OSError:
         # The replace never happened, so the original (if any) still stands;
@@ -3725,6 +3748,26 @@ def couple_folder_dirs(archive_root: str | Path) -> list[Path]:
     )
 
 
+class AmbiguousCoupleFolderError(Exception):
+    """Two or more canonical couple folders share one numeric prefix.
+
+    A hand-organization mistake - e.g. both '002 Father' and '002 Mother'
+    carry prefix 2 when SPEC §12.2 wants ONE folder per ancestral couple. With
+    the prefix pointing at two folders, filing a direct-line person's record
+    would have to guess which one, and a wrong guess splits or mixes the
+    couple. The engine cannot pick safely, so it raises this instead of
+    silently taking the lexicographically first folder; callers name the
+    conflicting folders and tell the human to rename one so prefixes are
+    unique. Carries `prefix` (the int) and `folders` (the on-disk names)."""
+
+    def __init__(self, prefix: int, folders: list[str]):
+        self.prefix = int(prefix)
+        self.folders = list(folders)
+        super().__init__(
+            f'couple-folder prefix {self.prefix} matches more than one folder: '
+            + ', '.join(self.folders))
+
+
 def couple_folder_for_prefix(archive_root: str | Path, prefix: int) -> Path | None:
     """The canonical on-disk couple folder for a numeric prefix, or None.
 
@@ -3732,12 +3775,24 @@ def couple_folder_for_prefix(archive_root: str | Path, prefix: int) -> Path | No
     folders ('040b Thomas …') share the number but are a direct ancestor's
     NON-ancestral marriages (SPEC §12.2), never the destination for a
     direct-line person's files. The digit string is compared as an int so
-    zero-padding differences ('40 ' vs '040 ') cannot split a couple."""
+    zero-padding differences ('40 ' vs '040 ') cannot split a couple.
+
+    Returns the one match, or None when none exist. When TWO OR MORE canonical
+    folders share the prefix (a hand-organization mistake like '002 Father'
+    beside '002 Mother'), returning either one would silently file a record
+    into an arbitrary half of the couple, so this raises
+    `AmbiguousCoupleFolderError` naming the conflict and lets the caller refuse
+    plainly instead of guessing."""
+    matches = []
     for folder in couple_folder_dirs(archive_root):
         m = re.match(r'^(\d+) ', folder.name)
         if m and int(m.group(1)) == int(prefix):
-            return folder
-    return None
+            matches.append(folder)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise AmbiguousCoupleFolderError(prefix, [f.name for f in matches])
+    return matches[0]
 
 
 # The built-in research scaffold, used when no _TEMPLATE.research.md is found
@@ -3858,26 +3913,30 @@ def promote_person_record(
          reserved folder (people/stubs/ or people/connections/) or loose under
          people/ - the one sanctioned tool move out of stubs/ (TOOLING §5's
          carve-out); a record already inside `dest_folder` is left in place;
-      3. scaffold the `_research` companion (SPEC §16) beside it, only if
-         absent, from the `_TEMPLATE.research.md` grammar.
+      3. settle the `_research` companion (SPEC §16): if a hand-written one
+         already sits beside the SOURCE record and the record is moving, MOVE
+         it to the destination so its notes travel with the record; if one
+         already sits at the destination, leave it; otherwise scaffold a fresh
+         blank one from the `_TEMPLATE.research.md` grammar.
 
     Steps already satisfied are skipped, so the engine is idempotent and also
     FINISHES a half-promotion (a record hand-flipped to curated but still
     parked in stubs/, the dead end the views stub guard refuses).
 
-    WHY ROLLBACK-BY-HAND rather than a temp-dir dance: the three writes touch
-    at most three paths, all inside people/, and each has an exact inverse
-    (rewrite old bytes / move back / delete the fresh scaffold / remove the
-    folder this run created). On any OSError the inverses run in reverse
-    order and PromotionError is raised - the archive is never left mid-move.
+    WHY ROLLBACK-BY-HAND rather than a temp-dir dance: the writes touch a
+    handful of paths, all inside people/, and each has an exact inverse
+    (rewrite old bytes / move the record back / move the companion back or
+    delete the fresh scaffold / remove the folder this run created). On any
+    OSError the inverses run in reverse order and PromotionError is raised -
+    the archive is never left mid-move.
 
     The caller owns the DECISION layer: deriving/validating `dest_folder`
     (Ahnentafel, --into), the merged-tombstone and already-curated refusals,
     and every human-facing Result/preview. This function owns the WRITE.
     Returns {'status', 'tier_flip', 'move', 'old_path', 'new_path',
-    'research_path', 'research_create', 'folder_create', 'steps'} - `steps`
-    is the plain-words list a preview prints verbatim. `dry_run` computes the
-    identical plan and writes nothing.
+    'research_path', 'research_source_path', 'research_create', 'research_move',
+    'folder_create', 'steps'} - `steps` is the plain-words list a preview
+    prints verbatim. `dry_run` computes the identical plan and writes nothing.
     """
     pid = normalize_id(pid)
 
@@ -3977,8 +4036,20 @@ def promote_person_record(
             f'{record_path.name} does not carry its P-id in the filename, so '
             'the research companion cannot be named. Run `fha lint --fix-ids` '
             'to formalize the filename first. Nothing was written.')
-    research_path = dest_folder / research_name if needs_move else record_path.parent / research_name
-    research_create = not research_path.exists()
+    source_research_path = record_path.parent / research_name
+    research_path = (dest_folder / research_name) if needs_move else source_research_path
+    # Three mutually exclusive fates for the companion:
+    #   MOVE   - a hand-written companion already sits beside the SOURCE record
+    #            (people/stubs/) and the record is moving. It must travel WITH
+    #            the record; otherwise promotion scaffolds a blank one at the
+    #            destination and strands the populated notes in stubs/, which
+    #            reads as "the notes were lost" and splits the person's files.
+    #   SKIP   - a companion already sits at the DESTINATION (an idempotent
+    #            re-run, or a promote-in-place): leave it exactly as it is.
+    #   CREATE - no companion anywhere: scaffold a fresh blank one.
+    research_move = (needs_move and source_research_path.exists()
+                     and not research_path.exists())
+    research_create = not research_path.exists() and not research_move
 
     # ── The plain-words plan (previews print these verbatim) ─────────────────
     def _rel(p: Path) -> str:
@@ -3993,7 +4064,11 @@ def promote_person_record(
     if needs_move:
         suffix = ' (creating the folder)' if folder_create else ''
         steps.append(f'move {_rel(record_path)} -> {_rel(new_record_path)}{suffix}')
-    if research_create:
+    if research_move:
+        steps.append(
+            f'move the research companion {_rel(source_research_path)} -> '
+            f'{_rel(research_path)} (your notes travel with the record)')
+    elif research_create:
         steps.append(f'create the research companion {_rel(research_path)}')
     else:
         steps.append(f'research companion already exists ({_rel(research_path)}) - left as is')
@@ -4005,7 +4080,9 @@ def promote_person_record(
         'old_path': record_path,
         'new_path': new_record_path,
         'research_path': research_path,
+        'research_source_path': source_research_path,
         'research_create': research_create,
+        'research_move': research_move,
         'folder_create': folder_create,
         'steps': steps,
     }
@@ -4019,7 +4096,7 @@ def promote_person_record(
     # AFTER the call returns: a raise means the step did not happen, so the
     # rollback correctly skips undoing it - no truncated sole record, no
     # untracked half-written companion file.
-    wrote_flip = moved = wrote_research = made_folder = False
+    wrote_flip = moved = wrote_research = made_folder = moved_research = False
     try:
         if folder_create:
             dest_folder.mkdir(parents=True)
@@ -4030,7 +4107,12 @@ def promote_person_record(
         if needs_move:
             shutil.move(str(record_path), str(new_record_path))
             moved = True
-        if research_create:
+        if research_move:
+            # An existing hand-written companion travels with the record instead
+            # of being re-scaffolded (its inverse restores it to the source dir).
+            shutil.move(str(source_research_path), str(research_path))
+            moved_research = True
+        elif research_create:
             write_text_exact_atomic(
                 research_path, render_research_content(pid, archive_root))
             wrote_research = True
@@ -4040,10 +4122,12 @@ def promote_person_record(
         # itself atomic so an interrupted rollback cannot truncate the record it
         # is trying to save.
         rollback_notes: list[str] = []
-        for action in ('research', 'move', 'flip', 'folder'):
+        for action in ('research', 'research_move', 'move', 'flip', 'folder'):
             try:
                 if action == 'research' and wrote_research:
                     research_path.unlink()
+                elif action == 'research_move' and moved_research:
+                    shutil.move(str(research_path), str(source_research_path))
                 elif action == 'move' and moved:
                     shutil.move(str(new_record_path), str(record_path))
                 elif action == 'flip' and wrote_flip:
