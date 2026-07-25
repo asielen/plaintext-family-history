@@ -86,7 +86,7 @@ import argparse
 import difflib
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -584,11 +584,26 @@ def run_source_extract(
         return result
 
     try:
-        meta = read_record(record_path).get('meta') or {}
+        rec = read_record(record_path)
     except Exception:
         return result_fail(result, 'refused',
                            f'{record_path.name} could not be parsed - run `fha lint` '
                            'for the specifics, fix the record, then retry.')
+
+    # read_record does NOT raise on malformed YAML: it reports the problem
+    # through parse_errors and hands back empty or partial meta (the same
+    # channel reconcile.py's _iter_source_records reads). Selecting a PDF from
+    # that half-read metadata is a trap - a damaged record with an unreadable
+    # files: block would fall through to the misleading "lists no PDF" refusal
+    # instead of naming the real cause. So refuse early on parse_errors, before
+    # inspecting files: or choosing a PDF, and point at `fha lint`.
+    if rec.get('parse_errors'):
+        detail = '; '.join(msg for _, msg in rec['parse_errors'])
+        return result_fail(result, 'refused',
+                           f'{record_path.name} has malformed YAML ({detail}) - '
+                           'run `fha lint` for the exact spot, fix the record, '
+                           'then re-run `fha source extract`.')
+    meta = rec.get('meta') or {}
 
     entries = [e for e in (meta.get('files') or []) if isinstance(e, dict)]
     if any(str(e.get('role', '')) == _EXTRACT_ROLE for e in entries):
@@ -729,8 +744,18 @@ def run_source_extract(
                    'doctrine), or OCR the PDF first.')
         return result
 
+    # The dump lives beside the PDF, so its alias is the PDF's alias directory
+    # plus the new filename. Normalize separators to forward slashes FIRST:
+    # a stored alias may use Windows backslashes ('documents\census\x.pdf'),
+    # and on POSIX Path() does not treat '\' as a separator, so Path(alias).parent
+    # would be '.' and the recorded entry would collapse to a BARE filename.
+    # Indexing then resolves that from the archive root and cannot find the dump.
+    # PurePosixPath on the already-normalized alias keeps the full
+    # 'documents/.../<name>' form on every platform and for every root segment.
+    alias_dir = PurePosixPath(alias.replace('\\', '/')).parent
+    entry_file = str(alias_dir / extract_name)
     entry_lines = [
-        f'  - file: {yaml_inline(str(Path(alias).parent / extract_name).replace(chr(92), "/"))}',
+        f'  - file: {yaml_inline(entry_file)}',
         f'    role: {_EXTRACT_ROLE}',
         '    derived: true',
     ]

@@ -299,6 +299,41 @@ class SourceExtractTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
         self.assertTrue(any('pip install pypdf' in m.text for m in result.messages))
 
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_windows_alias_entry_normalizes_to_forward_slash_documents(self) -> None:
+        # A stored alias written with Windows separators must still produce a
+        # 'documents/.../<name>' entry, never a bare filename. On POSIX,
+        # Path('documents\\book\\x.pdf').parent is '.', which would collapse the
+        # dump's entry to just the filename and send indexing to the wrong place.
+        self._write_record(
+            f'files:\n  - file: documents\\book\\county-history_{SID.lower()}.pdf\n'
+            '    role: primary\n')
+        self.pdf.write_bytes(_minimal_pdf(['Hartley arrived 1854']))
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        entry = read_record(self.record)['meta']['files'][-1]
+        self.assertEqual(entry['role'], 'extracted-text')
+        self.assertEqual(entry['file'],
+                         f'documents/book/county-history-extracted-text_{SID}.md')
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_malformed_yaml_record_refuses_naming_lint_not_no_pdf(self) -> None:
+        # read_record reports malformed frontmatter through parse_errors and
+        # hands back partial meta; the tool must refuse on that, naming the
+        # record and `fha lint`, rather than falling through to the misleading
+        # "lists no PDF" refusal built from the half-read inventory.
+        self.pdf.write_bytes(_minimal_pdf(['Hartley arrived 1854']))
+        self.record.write_text(
+            f'---\nid: {SID}\ntitle: County History\nsource_type: book\n'
+            'files: [broken\n---\n\n## Notes\nDamaged frontmatter.\n',
+            encoding='utf-8')
+        result = self._run()
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        joined = ' '.join(m.text for m in result.messages)
+        self.assertIn('malformed YAML', joined)
+        self.assertIn('fha lint', joined)
+        self.assertNotIn('lists no PDF', joined)
+
 
 if __name__ == '__main__':
     unittest.main()
