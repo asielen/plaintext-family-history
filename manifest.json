@@ -151,7 +151,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "f593ef2f04e3c320d374d427d2f941b6b3175a57b53e6a49878676a0e497ffdc",
+      "sha256": "238c1d5cbabe59d1554053958be7358ab58588e97bfedf12de7e10e2abc7a387",
       "spec_version": "1.2"
     },
     {
@@ -642,7 +642,7 @@
     {
       "path": "tools/reconcile.py",
       "category": "operating",
-      "sha256": "03936d2494a693a854c02c5cba70c1dc5880a889263f9c016427eeb794078725",
+      "sha256": "c5a076b46c5af8cf6d83a9a5179fef961b53e5565259ba126b0722906a4c71e5",
       "spec_version": "1.2"
     },
     {
@@ -672,7 +672,7 @@
     {
       "path": "tools/serve.py",
       "category": "operating",
-      "sha256": "0dba7cd4de4cd5bde3fb85a111641180878894c6c644fbc38af9592db51721bd",
+      "sha256": "22f761038ce861ff8c8c89a09be62d5cb8e657686d2d99c6697ee28b20083a5d",
       "spec_version": "1.2"
     },
     {
@@ -684,7 +684,7 @@
     {
       "path": "tools/source.py",
       "category": "operating",
-      "sha256": "25d44f78256882e441c72f0ff121e83b1f28c47cb46994708cc0f418336dd7f7",
+      "sha256": "468ba44c17b927febeb1eca7f5c45403e2e8ab38b556c8120e877d2d18281ddf",
       "spec_version": "1.2"
     },
     {
@@ -798,7 +798,7 @@
     {
       "path": "tools/views.py",
       "category": "operating",
-      "sha256": "cc066bd7bfa332844c72894fbc9254c791db42cff315c87d00a9511c8d0bc3e9",
+      "sha256": "d369ee8fd32a3fcc0eb1d6081c81295e4f0e43cf981fcc78da2af4b6e1a4f19e",
       "spec_version": "1.2"
     },
     {
