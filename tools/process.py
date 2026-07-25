@@ -2406,20 +2406,55 @@ def _move_file(src: Path, dest: Path) -> None:
         raise
 
 
-def _scalar_value(raw: str) -> str:
-    """The scalar value of a `file:` line, quote- and comment-aware.
+def _scalar_value(raw: str) -> tuple[str, str]:
+    """Split a `file:` line's value region into (value, trailing_comment).
 
-    A '#' inside a quoted scalar is data, not a comment, so quotes are stripped
-    BEFORE any comment split - the reverse order truncated a legitimately
-    quoted `"documents/x #1.jpg"` at the '#' and made it unmatchable. An
-    unquoted value keeps the trailing-comment strip.
+    Quote state is tracked BEFORE any comment split, because a '#' inside a
+    quoted scalar is data, not a comment - the reverse order truncated a
+    legitimately quoted `"documents/x #1.jpg"` at the '#' and made it
+    unmatchable. For a bare scalar the comment must be whitespace-preceded
+    (YAML's own rule), so a '#' touching non-space text stays part of the path.
+
+    The comment region is returned untouched, and NOT because the matcher needs
+    it - matching ignores it - but because refile's `_rewrite_file_line` has to
+    re-append a hand-written inventory note (`# fragile original`) onto the
+    rewritten line; dropping it silently deletes the owner's annotation on a
+    "successful" refile. A deliberate twin of reconcile.py's `_split_file_value`
+    so the two surgical writers read `file:` lines the same way.
     """
-    value = raw.strip()
-    if value[:1] in ('"', "'"):
-        quote = value[0]
-        end = value.find(quote, 1)
-        return value[1:end] if end != -1 else value.strip('"\'')
-    return value.split('#', 1)[0].strip()
+    s = raw.strip()
+    if not s:
+        return '', ''
+    if s[0] in ('"', "'"):
+        quote = s[0]
+        i = 1
+        while i < len(s):
+            c = s[i]
+            if quote == '"' and c == '\\':
+                i += 2                      # backslash escape in a double quote
+                continue
+            if c == quote:
+                if quote == "'" and i + 1 < len(s) and s[i + 1] == "'":
+                    i += 2                  # '' is an escaped single quote
+                    continue
+                i += 1
+                break
+            i += 1
+        value_repr, trailing = s[:i], s[i:]
+    else:
+        cut = len(s)
+        for j in range(1, len(s)):
+            if s[j] == '#' and s[j - 1] in (' ', '\t'):
+                cut = j
+                break
+        value_repr, trailing = s[:cut].rstrip(), s[cut:]
+    try:
+        value = yaml.safe_load(value_repr)
+    except Exception:
+        value = value_repr
+    if not isinstance(value, str):
+        value = value_repr
+    return value, trailing.strip()
 
 
 def _rewrite_file_line(text: str, old_alias: str, new_alias: str) -> tuple[str, int]:
@@ -2440,7 +2475,12 @@ def _rewrite_file_line(text: str, old_alias: str, new_alias: str) -> tuple[str, 
     `_yaml_inline`, so a new alias carrying a YAML-hostile character (a photo
     named `Scan #12.jpg`, or a `--dest` like `Box #3`) is quoted rather than
     silently truncated at the ' #'; and an alias listed on more than one line
-    refuses rather than guessing which entry to touch. Returns
+    refuses rather than guessing which entry to touch.
+
+    The matched line's trailing comment is carried onto the rewrite verbatim -
+    a hand-written note like `# fragile original` is the owner's annotation, and
+    a refile that silently dropped it would be a quiet data loss reported as a
+    success (reconcile.py's `_rewrite_entry` keeps it the same way). Returns
     (new_text, match_count): the caller refuses on 0 (not found) or >1
     (ambiguous).
     """
@@ -2457,7 +2497,7 @@ def _rewrite_file_line(text: str, old_alias: str, new_alias: str) -> tuple[str, 
             value = stripped[len('file:'):]
         else:
             continue
-        if _scalar_value(value) == old_alias:
+        if _scalar_value(value)[0] == old_alias:
             hits.append(i)
     if len(hits) != 1:
         return text, len(hits)
@@ -2465,7 +2505,11 @@ def _rewrite_file_line(text: str, old_alias: str, new_alias: str) -> tuple[str, 
     line = lines[i]
     indent = line[:len(line) - len(line.lstrip())]
     key = '- file:' if line.lstrip().startswith('- file:') else 'file:'
-    lines[i] = f'{indent}{key} {_yaml_inline(new_alias)}'
+    _, comment = _scalar_value(line.lstrip()[len(key):])
+    new_line = f'{indent}{key} {_yaml_inline(new_alias)}'
+    if comment:
+        new_line = f'{new_line}  {comment}'
+    lines[i] = new_line
     return '\n'.join(lines), 1
 
 
@@ -2964,12 +3008,36 @@ def process_refile(
                 pass
 
         rel_record = _rel(record_path, archive_root)
-        if move_back_error is None:
-            # File is home and the record points home: a clean, complete rollback.
+        if move_back_error is None and record_consistent:
+            # File is home AND the record was restored to its pre-refile text:
+            # the only state that is truly a clean, complete rollback. Both
+            # conditions matter - a successful move-back with a FAILED record
+            # restore (below) leaves the record truncated, and calling that
+            # "nothing changed" would send the owner away from a damaged file.
             print(f'ERROR: refile failed, rolled back: {e}', file=sys.stderr)
             if undone:
                 print('Undone: ' + '; '.join(undone) + '.', file=sys.stderr)
             print(f'Nothing was left changed in {rel_record}.', file=sys.stderr)
+            return EXIT_FAILURE
+
+        if move_back_error is None:
+            # The file is back home, but rewriting the record to its original
+            # text failed, so the record on disk is truncated or half-written
+            # while the file sits at its original location. Never report this as
+            # a clean rollback: name the damaged record and the one recovery that
+            # makes it whole, restoring the pre-refile text from version control
+            # or a backup.
+            rel_src = _rel(src, archive_root)
+            print(f'ERROR: refile failed and the record could not be restored: {e}',
+                  file=sys.stderr)
+            if undone:
+                print('Done during rollback: ' + '; '.join(undone) + '.', file=sys.stderr)
+            print(f'The file is back at its original location ({rel_src}), but '
+                  f'{rel_record} is damaged: its original text could not be written '
+                  'back and the record may be truncated.', file=sys.stderr)
+            print(f'Next: restore {rel_record} from git or a backup (e.g. '
+                  f'`git checkout -- {rel_record}`), then run `fha lint` to confirm '
+                  'the record is whole again.', file=sys.stderr)
             return EXIT_FAILURE
 
         # The move-back could not finish. Report the true on-disk state plainly.

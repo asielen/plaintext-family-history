@@ -475,14 +475,26 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset, record = self._write_doc_source()
         before_record = record.read_bytes()
 
-        def boom(_path, _text):
-            raise OSError('simulated disk full')
-        process.write_text_exact = boom
+        real_write = self._orig_write_text_exact
+        writes = {'n': 0}
+
+        def flaky_write(path, text):
+            # Fail ONLY the forward record write (triggering rollback); let the
+            # rollback's restore of the original text succeed. This is the clean,
+            # complete rollback: file back home, record whole again. (A restore
+            # write that also failed is the damaged-record case, covered by
+            # test_rollback_record_restore_failure_reports_damaged_record.)
+            writes['n'] += 1
+            if writes['n'] == 1:
+                raise OSError('simulated disk full')
+            return real_write(path, text)
+        process.write_text_exact = flaky_write
 
         rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('rolled back', err)
+        self.assertIn('Nothing was left changed', err)
         self.assertTrue(asset.exists(), 'the file must be moved back')
         self.assertEqual(record.read_bytes(), before_record)
         moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
@@ -580,6 +592,65 @@ class ProcessRefileTestCase(unittest.TestCase):
         # ... and the record still names the old location it could not update.
         self.assertIn(f'documents/census/campaign-card_{SID}.jpg', err)
         self.assertNotIn('Traceback', err)
+
+    def test_rollback_record_restore_failure_reports_damaged_record(self) -> None:
+        # The reviewer-named hazard: the forward record write fails so rollback
+        # begins, the file IS moved back home, but restoring the record's
+        # original text ALSO fails. The move-back succeeded, yet the record on
+        # disk is now truncated - the command must NOT call this a clean
+        # rollback. It names the damaged record and the recovery (restore from
+        # git or a backup, then `fha lint`), and exits non-zero.
+        store = self._install_photo_store()
+        asset, record = self._write_doc_source()
+
+        def always_boom(_path, _text):
+            raise OSError('simulated disk full')
+        process.write_text_exact = always_boom
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        # It does NOT claim the clean, complete rollback ...
+        self.assertNotIn('Nothing was left changed', err)
+        self.assertNotIn('refile failed, rolled back:', err)
+        # ... it names the damaged record and that the record is damaged.
+        self.assertIn('could not be restored', err)
+        self.assertIn('damaged', err)
+        rel_record = record.relative_to(self.archive).as_posix()
+        self.assertIn(rel_record, err)
+        # The file WAS moved back to its original location.
+        self.assertTrue(asset.exists(), 'the file must be moved back home')
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        self.assertFalse(moved.exists())
+        self.assertNotIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []))
+        # The recovery is spelled out: restore from git/backup, then lint.
+        self.assertIn('git', err)
+        self.assertIn('fha lint', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_refile_preserves_trailing_inventory_comment(self) -> None:
+        # A hand-written note on the file: line ('# fragile original') is the
+        # owner's annotation. A successful refile rewrites the path but must
+        # carry the comment onto the new line, never silently drop it.
+        self._install_photo_store()
+        asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
+        asset.write_bytes(b'jpegbytes')
+        entry = (f'  - file: documents/census/campaign-card_{SID}.jpg  # fragile original\n'
+                 '    role: primary\n'
+                 '    original_filename: campaign-card.jpg\n')
+        record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
+        record.write_bytes(_record_text(entry).encode('utf-8'))
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('Traceback', err)
+        body = record.read_text(encoding='utf-8')
+        # The rewritten inventory line points at the new location AND keeps the note.
+        self.assertIn('- file: photos/1880s/campaign-card.jpg  # fragile original', body)
+        # The comment did not corrupt the value: it parses back to the new path.
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/campaign-card.jpg')
 
     def test_record_keeps_lf_line_endings(self) -> None:
         self._install_photo_store()
