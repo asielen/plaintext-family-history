@@ -54,6 +54,7 @@ import secrets
 import shutil
 import sqlite3
 import sys
+import tempfile
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -1051,6 +1052,45 @@ def write_text_exact(path: str | Path, text: str) -> None:
     write half of a round-trip even when the read half preserved it."""
     with Path(path).open('w', encoding='utf-8', newline='') as f:
         f.write(text)
+
+
+def write_text_exact_atomic(path: str | Path, text: str) -> None:
+    """Crash-safe `write_text_exact`: the target is only ever the old bytes or
+    the new bytes, never a torn half.
+
+    `write_text_exact` opens the target in `'w'` mode, which truncates it before
+    the first byte is written - so a write that dies partway (disk full, the
+    process killed, an interrupted promotion) leaves the record truncated on
+    disk. For a person record that is often the SOLE copy of that ancestor, a
+    half-written file is the archive's worst outcome, and the promotion writer
+    below reports 'nothing was left half-promoted' - a promise a truncating
+    write cannot keep. This writes the full text to a sibling temp file, flushes
+    it to the platter (`fsync`), then `os.replace`s it over the target in one
+    atomic step. On any failure the original is left exactly as it was and the
+    temp file is removed, so callers can set their 'wrote it' flag AFTER this
+    returns and trust that a raise means the target was never touched. Newline
+    handling mirrors `write_text_exact` (`newline=''` - no CRLF translation)."""
+    path = Path(path)
+    # Temp file must share the target's directory so os.replace is a same-
+    # filesystem rename (atomic); a cross-device temp would fall back to a
+    # non-atomic copy. The leading dot keeps the stray temp hidden and out of
+    # record globs if the process is killed between fsync and replace.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f'.{path.name}.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, str(path))
+    except OSError:
+        # The replace never happened, so the original (if any) still stands;
+        # drop the partial temp so no untracked file is left behind.
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def reapply_newline(text: str, like: str) -> str:
@@ -3595,6 +3635,7 @@ def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, i
             LEFT JOIN claims c ON r.claim_id = c.id
             WHERE r.person_id = ? AND r.rel = 'parent'
               AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+            ORDER BY r.other_id
             """,
             (pid, *social),
         ).fetchall()
@@ -3610,21 +3651,40 @@ def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, i
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
         else:
-            # Take at most 2 parents; ignore additional (data quality issue)
-            p1_pid, p1_sex = parents[0]
-            p2_pid, p2_sex = parents[1]
-            if p1_sex == 'M' and p2_sex != 'M':
-                father, mother = p1_pid, p2_pid
-            elif p2_sex == 'M' and p1_sex != 'M':
-                father, mother = p2_pid, p1_pid
-            elif p1_sex == 'F' and p2_sex != 'F':
-                mother, father = p1_pid, p2_pid
-            elif p2_sex == 'F' and p1_sex != 'F':
-                mother, father = p2_pid, p1_pid
-            else:
-                # Same sex or both U: lex-first takes even slot (2N)
-                sorted_pids = sorted([p1_pid, p2_pid])
-                father, mother = sorted_pids[0], sorted_pids[1]
+            # Two or more genetic parent edges - assisted reproduction (a
+            # donor-egg mother plus a surrogate-genetic mother plus a
+            # donor-sperm father), or a co-valid biological/surrogate-genetic
+            # pair. The two-slot Ahnentafel model (SPEC 12.2, TOOLING 7) numbers
+            # exactly one contributor per slot: the father slot is 2n, the
+            # mother slot 2n+1. Taking the first two SQL rows would let two
+            # female contributors land in both slots and drop the sperm
+            # contributor entirely, and the choice would swing with row order.
+            #
+            # TOOLING 7 fixes the rule: "The parent with sex: M takes position
+            # 2n, sex: F takes 2n+1; for same-sex or sex: U pairs the
+            # first-encountered parent (by P-id, deterministic) takes the lower
+            # slot. Where two genetic contributors share a role ... the genetic
+            # contributor anchors the number and the other is shown beside it."
+            # So we rank every contributor for each slot by (sex-fitness, P-id):
+            # the father slot prefers M, then U, then F; the mother slot prefers
+            # F, then U, then M; P-id breaks every tie so runs always agree.
+            # The father-slot winner is chosen first and removed, then the
+            # mother-slot winner from the rest. Extra contributors beyond the two
+            # slots are intentionally left unnumbered here - `fha views brackets`
+            # lists them beside the couple. This reproduces the old two-parent
+            # behaviour exactly for every sex combination while staying
+            # deterministic for three or more contributors.
+            def _father_rank(edge: tuple[str, str]) -> tuple[int, str]:
+                pid_, sex_ = edge
+                return ({'M': 0, 'U': 1, 'F': 2}.get(sex_, 1), pid_)
+
+            def _mother_rank(edge: tuple[str, str]) -> tuple[int, str]:
+                pid_, sex_ = edge
+                return ({'F': 0, 'U': 1, 'M': 2}.get(sex_, 1), pid_)
+
+            father = min(parents, key=_father_rank)[0]
+            remaining = [e for e in parents if e[0] != father]
+            mother = min(remaining, key=_mother_rank)[0]
             for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
                 if pp not in pid_to_pos:
                     pid_to_pos[pp] = pos
@@ -3953,24 +4013,32 @@ def promote_person_record(
         return plan
 
     # ── Apply, with rollback on any failure ──────────────────────────────────
+    # Every write below is atomic (write_text_exact_atomic: temp file + fsync +
+    # os.replace), so a write that dies partway leaves the target untouched and
+    # nothing partial on disk. That is what lets each 'wrote it' flag be set
+    # AFTER the call returns: a raise means the step did not happen, so the
+    # rollback correctly skips undoing it - no truncated sole record, no
+    # untracked half-written companion file.
     wrote_flip = moved = wrote_research = made_folder = False
     try:
         if folder_create:
             dest_folder.mkdir(parents=True)
             made_folder = True
         if needs_flip:
-            write_text_exact(record_path, reapply_newline(new_text, text))
+            write_text_exact_atomic(record_path, reapply_newline(new_text, text))
             wrote_flip = True
         if needs_move:
             shutil.move(str(record_path), str(new_record_path))
             moved = True
         if research_create:
-            research_path.write_text(
-                render_research_content(pid, archive_root), encoding='utf-8')
+            write_text_exact_atomic(
+                research_path, render_research_content(pid, archive_root))
             wrote_research = True
     except OSError as e:
         # Undo in reverse order; best-effort (a rollback failure is reported
-        # inside the raised message rather than swallowed).
+        # inside the raised message rather than swallowed). The restore write is
+        # itself atomic so an interrupted rollback cannot truncate the record it
+        # is trying to save.
         rollback_notes: list[str] = []
         for action in ('research', 'move', 'flip', 'folder'):
             try:
@@ -3979,7 +4047,7 @@ def promote_person_record(
                 elif action == 'move' and moved:
                     shutil.move(str(new_record_path), str(record_path))
                 elif action == 'flip' and wrote_flip:
-                    write_text_exact(record_path, text)
+                    write_text_exact_atomic(record_path, text)
                 elif action == 'folder' and made_folder:
                     dest_folder.rmdir()
             except OSError as undo_err:
