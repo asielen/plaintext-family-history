@@ -285,6 +285,10 @@ class ReciprocityW116Tests(unittest.TestCase):
         self.assertEqual(_codes(findings, 'W116'), [])
         self.assertEqual(_codes(findings, 'W115'), [])
 
+    @unittest.skipIf(sys.platform == 'win32',
+                     'a \'"\' in a filename is illegal on NTFS, so the fixture '
+                     'cannot be created here (the escaping logic is exercised '
+                     'on Linux/CI).')
     def test_fix_reciprocal_owner_name_with_quote_is_escaped(self) -> None:
         # Sweep of PR #30's YAML-quoting review fixes: `owner_name` is read
         # from an EXISTING person record, never validated by this fixer - a

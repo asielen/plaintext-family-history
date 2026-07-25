@@ -277,6 +277,10 @@ class ReconcileTests(unittest.TestCase):
         # And a second run finds nothing to heal - the source stayed attached.
         self.assertEqual(self._run().exit_code, EXIT_CLEAN)
 
+    @unittest.skipIf(sys.platform == 'win32',
+                     "a ':' in a directory name is illegal on NTFS (reserved "
+                     'for alternate data streams), so the fixture cannot be '
+                     'created here (the reconcile logic is exercised on Linux/CI).')
     def test_move_into_folder_with_colon_round_trips(self) -> None:
         # Same P1 class via a different YAML-significant character: a ': ' in a
         # path would make YAML read it as a nested mapping unless quoted.

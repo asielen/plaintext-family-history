@@ -105,6 +105,10 @@ class AtomicWriteTests(unittest.TestCase):
         # Read with translation disabled: CRLF must survive byte-for-byte.
         self.assertEqual(read_text_exact(target), payload)
 
+    @unittest.skipIf(sys.platform == 'win32',
+                     'POSIX file-mode bits: Windows reports 0o666 for any '
+                     'writable file, so umask/mode preservation cannot be '
+                     'asserted here (this is validated on Linux/CI).')
     def test_existing_target_mode_is_preserved(self) -> None:
         # A group-readable record must not silently drop to owner-only when the
         # atomic write installs mkstemp's 0600 temp inode as the record.
@@ -118,6 +122,9 @@ class AtomicWriteTests(unittest.TestCase):
                          f'expected 0o644 preserved, got {oct(mode)}')
         self.assertEqual(target.read_text(encoding='utf-8'), 'NEW CONTENT')
 
+    @unittest.skipIf(sys.platform == 'win32',
+                     'POSIX umask semantics: Windows has no umask/mode bits, '
+                     'so this cannot be asserted here (validated on Linux/CI).')
     def test_new_file_uses_umask_default_not_0600(self) -> None:
         # A brand-new record (a scaffolded research companion) must match what a
         # plain open(..., 'w') would leave under the umask, never the 0600
