@@ -351,6 +351,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
 
 _RELATIONSHIPS_SOCIAL_SUBTYPES = {'friend', 'associate', 'neighbor'}
 
+# Mirrors source.py's `_EXTRACT_ROLE`: the files: role that `fha source extract`
+# stamps on a PDF's dumped text layer. Its body is fed into transcripts_fts so
+# JSON/workbench search can reach inside the dump (see _index_source). Kept as a
+# literal here rather than imported from source.py to avoid a build-tool import
+# reaching into a write-tool module; the two must stay in step.
+_EXTRACTED_TEXT_ROLE = 'extracted-text'
+
 
 # ── Build helpers ─────────────────────────────────────────────────────────────
 
@@ -1053,6 +1060,28 @@ def _index_source(
                VALUES (?,?,?,?,?,?,?,1)''',
             (sid, file_path, role, None, derived, orig_name, exists),
         )
+
+        # Extracted-text companion (role: extracted-text, from `fha source
+        # extract`): feed its body into transcripts_fts so JSON/workbench search
+        # reaches inside the dumped page text - the extract command's success
+        # message promises `fha index` makes the dump searchable, and this is
+        # where that promise is kept. This runs inside _index_source, which BOTH
+        # build_index and upsert_source call, so full-rebuild and incremental
+        # stay symmetric (upsert drops this source's transcripts_fts rows first).
+        # Guarded on the file being on disk: a working copy that never synced
+        # the dump simply has nothing to read, and skipping is the graceful
+        # answer - a full build on the main archive fills it in.
+        if role == _EXTRACTED_TEXT_ROLE and resolved.exists():
+            try:
+                dump_text = resolved.read_text(encoding='utf-8')
+            except OSError:
+                dump_text = ''
+            if dump_text.strip():
+                conn.execute(
+                    'INSERT INTO transcripts_fts(source_id, path, content) '
+                    'VALUES (?,?,?)',
+                    (sid, file_path, dump_text),
+                )
 
     # Claims
     for claim in rec['claims']:

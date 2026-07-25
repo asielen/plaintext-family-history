@@ -201,6 +201,46 @@ class SourceExtractTests(unittest.TestCase):
         self.assertTrue(any('more than one PDF' in m.text for m in result.messages))
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_two_primary_pdfs_refuse_never_guess(self) -> None:
+        # Two non-derived PDFs both marked role: primary is a hand-edit mistake.
+        # Taking the first would risk attaching text from the WRONG PDF, so the
+        # tool must refuse and name both files rather than guess.
+        self._write_record(
+            f'files:\n  - file: documents/book/a_{SID.lower()}.pdf\n    role: primary\n'
+            f'  - file: documents/book/b_{SID.lower()}.pdf\n    role: primary\n')
+        (self.root / 'documents' / 'book' / f'a_{SID.lower()}.pdf').write_bytes(
+            _minimal_pdf(['A text']))
+        (self.root / 'documents' / 'book' / f'b_{SID.lower()}.pdf').write_bytes(
+            _minimal_pdf(['B text']))
+        result = self._run()
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(any('more than one PDF' in m.text
+                            and 'role: primary' in m.text for m in result.messages))
+        self.assertTrue(any(f'a_{SID.lower()}.pdf' in m.text for m in result.messages))
+        self.assertTrue(any(f'b_{SID.lower()}.pdf' in m.text for m in result.messages))
+        # Nothing was written: no dump, no inventory growth.
+        self.assertEqual(len(read_record(self.record)['meta']['files']), 2)
+
+    def test_working_copy_refuses_before_pypdf_check(self) -> None:
+        # On a working copy the PDF is not present, so "install pypdf" is a dead
+        # end - the actionable answer is "run on the main archive." That guard
+        # must win even when pypdf is absent, so simulate both here.
+        (self.root / 'WORKING_COPY').write_text('', encoding='utf-8')
+        saved = sys.modules.get('pypdf')
+        sys.modules['pypdf'] = None
+        try:
+            result = self._run()
+        finally:
+            if saved is not None:
+                sys.modules['pypdf'] = saved
+            else:
+                sys.modules.pop('pypdf', None)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertTrue(any('working copy' in m.text and 'main archive' in m.text
+                            for m in result.messages))
+        self.assertFalse(any('pip install pypdf' in m.text for m in result.messages))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_crlf_record_gains_no_mixed_line_endings(self) -> None:
         # The inventory append must carry the record's OWN line ending - a
         # CRLF-authored record previously came back with a bare-LF island

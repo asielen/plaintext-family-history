@@ -888,6 +888,91 @@ class SourceRestrictedTests(unittest.TestCase):
         self.assertEqual(self._restricted_column(), full)
 
 
+_EXTRACT_SID = 'S-7a7a7a7a7a'
+_EXTRACT_SOURCE = '''---
+id: {sid}
+title: County History
+source_type: book
+files:
+  - file: documents/book/county-history_{low}.pdf
+    role: primary
+  - file: documents/book/county-history-extracted-text_{sid}.md
+    role: extracted-text
+    derived: true
+---
+
+## Notes
+A fat county history.
+'''
+_EXTRACT_DUMP = '''# Extracted text - County History [{sid}]
+
+[Page 1]
+Ferdinand Hartley arrived in Marsh Creek in 1854.
+
+[Page 2]
+(no text layer on this page - read it with vision)
+'''
+
+
+class ExtractedTextIndexingTests(unittest.TestCase):
+    """`fha source extract` promises `fha index` makes the dumped PDF text
+    searchable. That promise is kept only if BOTH index paths feed a
+    `role: extracted-text` companion's body into transcripts_fts - the full
+    rebuild AND the incremental upsert, since JSON/workbench search reads text
+    hits from that table. This is the symmetry contract (TOOLING §2): if the
+    two paths disagree, incremental is wrong by definition."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        low = _EXTRACT_SID.lower()
+        _write(self.root / 'sources' / 'book' / f'county-history_{low}.md',
+               _EXTRACT_SOURCE.format(sid=_EXTRACT_SID, low=low))
+        # The dump companion lives beside the PDF under documents/; only its
+        # text body is indexed (the PDF itself is never read by the indexer).
+        _write(self.root / 'documents' / 'book'
+               / f'county-history-extracted-text_{_EXTRACT_SID}.md',
+               _EXTRACT_DUMP.format(sid=_EXTRACT_SID))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _transcript_rows(self) -> list:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return sorted(tuple(r) for r in conn.execute(
+                'SELECT source_id, path FROM transcripts_fts'))
+        finally:
+            conn.close()
+
+    def _matches(self, term: str) -> list:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return [r[0] for r in conn.execute(
+                'SELECT source_id FROM transcripts_fts WHERE content MATCH ?', (term,))]
+        finally:
+            conn.close()
+
+    def test_full_build_populates_transcripts_fts(self) -> None:
+        index.build_index(self.root, {})
+        rows = self._transcript_rows()
+        self.assertEqual(rows, [(
+            's-7a7a7a7a7a',
+            f'documents/book/county-history-extracted-text_{_EXTRACT_SID}.md')])
+        # The dumped text is searchable by a word from inside a page.
+        self.assertEqual(self._matches('Marsh'), ['s-7a7a7a7a7a'])
+
+    def test_upsert_matches_full_build_and_never_duplicates(self) -> None:
+        index.build_index(self.root, {})
+        full = self._transcript_rows()
+        status = index.upsert_source(self.root, {}, _EXTRACT_SID.lower())
+        self.assertEqual(status, 'indexed')
+        # Symmetric with the full build - and the upsert's DELETE-first step
+        # means re-running it never leaves a duplicate transcript row.
+        self.assertEqual(self._transcript_rows(), full)
+        self.assertEqual(self._matches('Marsh'), ['s-7a7a7a7a7a'])
+
+
 class RunIndexRootGuardTests(unittest.TestCase):
     """`fha index --root <non-archive>` must refuse (exit 3) and create
     NOTHING. Without the guard it globbed missing dirs, minted an empty

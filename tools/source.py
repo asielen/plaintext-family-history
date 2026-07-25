@@ -551,14 +551,11 @@ def run_source_extract(
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
 
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        return result_fail(result, 'refused',
-                           'Reading PDF text needs the pypdf helper package, which '
-                           'is not installed. Install it once with '
-                           '`python -m pip install pypdf`, then re-run.')
-
+    # Working-copy check BEFORE the optional-import check, on purpose: the PDF
+    # asset is not on a working-copy machine at all, so installing pypdf there
+    # could never make extraction succeed. Refusing with the install command
+    # first would send the user down a dead end - the actionable next step is
+    # "run this on the main archive," and it must win over the pypdf refusal.
     if is_working_copy(archive_root):
         result.data['status'] = 'not-found'
         result.exit_code = EXIT_WARNINGS
@@ -567,6 +564,14 @@ def run_source_extract(
                    'machine, so there is nothing here to extract from. Run this '
                    'on the main archive.')
         return result
+
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return result_fail(result, 'refused',
+                           'Reading PDF text needs the pypdf helper package, which '
+                           'is not installed. Install it once with '
+                           '`python -m pip install pypdf`, then re-run.')
 
     record_path = find_source_record_path(archive_root, sid)
     if record_path is None:
@@ -604,6 +609,17 @@ def run_source_extract(
         and str(e.get('derived', '')).lower() not in ('true', '1')
     ]
     primary_pdfs = [e for e in pdf_entries if str(e.get('role', '')) == 'primary']
+    if len(primary_pdfs) > 1:
+        # Two PDFs both marked role: primary is a hand-edit mistake, not a
+        # choice the tool may make for the user - silently taking the first
+        # could attach text dumped from the WRONG PDF, which then anchors
+        # claims to the wrong pages. Refuse and name both so the fix is obvious.
+        shown = ', '.join(str(e.get('file')) for e in primary_pdfs)
+        return result_fail(result, 'refused',
+                           f'{fmt_id_display(sid)} marks more than one PDF as '
+                           f'role: primary ({shown}) - extraction cannot tell which '
+                           'one to read. Leave exactly one PDF marked role: primary '
+                           'in the record, then re-run.')
     if primary_pdfs:
         pdf_entry = primary_pdfs[0]
     elif len(pdf_entries) == 1:
@@ -745,7 +761,18 @@ def run_source_extract(
         after = append_file_entry_to_record(before, entry_lines)
         write_text_exact(record_path, reapply_newline(after, before))
     except Exception as e:
-        extract_path.unlink(missing_ok=True)
+        # Roll back BOTH sides of the partial write. The stray dump's cleanup
+        # must NEVER be able to skip the record restore: on Windows a virus
+        # scanner or backup tool can hold the just-written dump open and make
+        # unlink() raise, and the record - possibly left half-written by the
+        # truncating write above - is the one that MUST come back. So guard the
+        # unlink on its own and press on to the restore either way.
+        stray_dump: Path | None = None
+        try:
+            extract_path.unlink(missing_ok=True)
+        except OSError:
+            stray_dump = extract_path
+
         # write_text_exact is a truncating write, so a mid-write failure can
         # leave the RECORD partial - restore the pristine text we still hold
         # (the attach_more discipline) and only claim a clean rollback when
@@ -757,16 +784,28 @@ def run_source_extract(
                 restored = True
             except OSError:
                 restored = False
-        if restored:
+
+        problems: list[str] = []
+        if stray_dump is not None:
+            problems.append(
+                f'the extracted-text file {stray_dump.name} was written but could '
+                'not be removed (a virus scanner or backup tool may be holding it '
+                f'open) - delete {stray_dump} by hand once nothing is using it')
+        if not restored:
+            problems.append(
+                f'the record {record_path.name} could not be restored, so it may be '
+                'left partially written - restore it from git or your last backup '
+                'before doing anything else')
+
+        if not problems:
             return result_fail(result, 'failed',
                                f'could not add the files: entry to {record_path.name} '
                                f'({e}) - nothing was kept (the dump and the record '
                                'edit were both rolled back).')
         return result_fail(result, 'failed',
                            f'could not add the files: entry to {record_path.name} '
-                           f'({e}) - AND the record could not be restored, so it may '
-                           'be left partially written. Restore it from git or your '
-                           'last backup before doing anything else.')
+                           f'({e}), and cleanup did not fully finish: '
+                           + '; '.join(problems) + '.')
 
     result.data['status'] = 'ok'
     result.note_changed(extract_path)
