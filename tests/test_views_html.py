@@ -149,6 +149,40 @@ _TAG_CLAIMS = f"""- value: "Cur Hartley possibly in Topeka"
 """
 
 
+class TreeNegatedVitalsTests(_ViewsHtmlBase):
+    """An accepted `--negated` birth/death records a confirmed ABSENCE, so it
+    must not supply the date in a `fha views tree` node (nor overwrite the real
+    vital, depending on row order). Same negated-exclusion class as the
+    gedcom/index/site/lint sweep - here for `_build_nodes_bulk`."""
+
+    def test_negated_birth_excluded_from_tree_node(self) -> None:
+        neg = (f'- value: "no 1799 birth"\n'
+               f'  id: C-9999999999\n'
+               f'  type: birth\n'
+               f'  persons: [{PID}]\n'
+               f'  date: 1799\n'
+               f'  status: accepted\n'
+               f'  reviewed: 2026-01-01\n'
+               f'  negated: true\n'
+               f'  confidence: medium\n'
+               f'  notes: x.\n')
+        src = self.root / 'sources' / 'census' / f'test-census_{SID}.md'
+        text = src.read_text(encoding='utf-8')
+        src.write_text(text.replace('```\n', neg + '```\n', 1), encoding='utf-8')
+        self._reindex()
+
+        from _lib import normalize_id
+        pid = normalize_id(PID)   # _build_nodes_bulk takes BFS-normalized ids
+        conn = open_index_db(self.root, ('persons',))
+        try:
+            nodes = views._build_nodes_bulk(conn, [pid])
+        finally:
+            conn.close()
+        # The real 1880~ birth survives; the negated 1799 never appears.
+        self.assertEqual(nodes[pid]['vitals']['birth'], '1880~')
+        self.assertNotEqual(nodes[pid]['vitals']['birth'], '1799')
+
+
 class TimelineTagTests(_ViewsHtmlBase):
     """The 2026-07-22 status-surface decision: a not-yet-settled timeline line
     carries a plain-word tag - '[unconfirmed - parked {date}]' on needs-review,

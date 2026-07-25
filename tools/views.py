@@ -2370,6 +2370,7 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
         FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id
         WHERE cp.person_id IN ({placeholders})
           AND c.type IN ('birth', 'death') AND c.status = 'accepted'
+          AND COALESCE(c.negated, 0) = 0
         """,
         pids,
     ).fetchall():

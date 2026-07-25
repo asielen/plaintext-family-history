@@ -996,7 +996,11 @@ def _verb_claim_review(state, kw, dry_run):
 
 def _echo_claim_review(kw):
     claim_ids = kw.get('claim_ids')
-    parts = ['fha claim', ','.join(claim_ids) if claim_ids else kw.get('claim_id', '?')]
+    # Space-separated, matching the CLI's `nargs='+'` positional: the batch
+    # parser reads several C-ids as separate argv tokens, so a comma join would
+    # emit `fha claim C-a,C-b` - one malformed id that the CLI then refuses,
+    # failing to reproduce the workbench action the echo advertises.
+    parts = ['fha claim', ' '.join(claim_ids) if claim_ids else kw.get('claim_id', '?')]
     if kw.get('status'):
         parts += ['--status', kw['status']]
     if kw.get('value'):

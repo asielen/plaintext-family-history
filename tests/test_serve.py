@@ -1487,6 +1487,27 @@ class EchoTests(unittest.TestCase):
         echo = serve._echo_claim_review({'claim_id': 'C-fa1234567b', 'date': 'June 1923'})
         self.assertIn('"June 1923"', echo)
 
+    def test_echo_claim_review_batch_ids_are_space_separated_and_reparse(self):
+        # P2 codex finding (round 8): the batch echo joined ids with commas, but
+        # the CLI positional is space-separated `nargs='+'`, so `fha claim C-a,C-b`
+        # is ONE malformed id the CLI refuses - the copyable command could not
+        # reproduce the workbench batch action. The echo must space-separate, and
+        # re-parse to both ids through the real CLI parser.
+        import argparse
+        import shlex
+        import claim
+        ids = ['C-1a2b3c4d5e', 'C-2b3c4d5e6f']
+        echo = serve._echo_claim_review({'claim_ids': ids, 'status': 'accepted'})
+        # No comma-joined id blob in the command word (before the first flag).
+        self.assertNotIn(',', echo.split('--', 1)[0])
+        self.assertIn('--status accepted', echo)
+        # The emitted command re-parses to BOTH ids through the real CLI positional.
+        parser = argparse.ArgumentParser()
+        claim._add_arguments(parser)
+        tokens = shlex.split(echo)[2:]     # drop the leading 'fha' 'claim'
+        ns = parser.parse_args(tokens)
+        self.assertEqual(ns.claim_ids, ids)
+
     def test_echo_claim_new_quotes_a_plain_words_date(self):
         echo = serve._echo_claim_new({
             'source_id': 'S-fa1234567b', 'claim_type': 'birth', 'value': '1870',

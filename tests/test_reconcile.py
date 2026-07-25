@@ -217,6 +217,34 @@ class ReconcileTests(unittest.TestCase):
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('--more', text)
 
+    def test_malformed_records_document_is_not_reported_unlisted(self) -> None:
+        # P2 codex finding (round 8): a malformed source record is skipped, so
+        # its aliases never enter listed_aliases - but its on-disk document
+        # (carrying the same S-id in its name) must NOT then be advertised as an
+        # unlisted "attach me" orphan, because the unreadable record already
+        # lists it. The malformed record's filename S-id is reserved and the
+        # reverse pass suppresses unlisted conclusions for it until the YAML is fixed.
+        (self.root / 'documents' / DOC).write_text('x', encoding='utf-8')   # self.record clean
+        SID_B = 'S-9z8y7x6w5v'
+        # A malformed record (unterminated quote in the frontmatter) whose
+        # filename still carries SID_B, plus its on-disk document.
+        (self.root / 'sources' / 'letter' / f'other_{SID_B.lower()}.md').write_text(
+            f'---\nid: {SID_B}\ntitle: "unterminated\nsource_type: letter\n'
+            f'files:\n  - file: documents/other_{SID_B.lower()}.pdf\n    role: primary\n'
+            '---\n\n## Notes\ny.\n', encoding='utf-8')
+        (self.root / 'documents' / f'other_{SID_B.lower()}.pdf').write_text(
+            'y', encoding='utf-8')
+
+        result = self._run()
+
+        # The malformed record is warned about, but its document is NOT flagged
+        # unlisted (nor is an attach path advised for it).
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['unlisted'], 0)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('malformed YAML', text)
+        self.assertNotIn('--more', text)
+
     def test_missing_fixture_entry_is_left_alone(self) -> None:
         (self.root / 'documents' / DOC).write_text('x', encoding='utf-8')
         self._write_record(

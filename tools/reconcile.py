@@ -88,7 +88,21 @@ from _lib import (
 import photoindex
 
 
-def _iter_source_records(archive_root: Path, result: Result):
+def _record_filename_sid(rec_path: Path) -> str | None:
+    """The S-id carried in a source record's `{slug}_{S-id}.md` filename, or None.
+
+    The filename suffix carries identity even when the YAML body cannot be read,
+    so a malformed record's S-id is still recoverable from its name - used to
+    reserve that id during the reverse pass.
+    """
+    parsed = parse_filename(rec_path.name)
+    if parsed and parsed.get('id_type') == 'S':
+        return normalize_id(parsed['id_str'])
+    return None
+
+
+def _iter_source_records(archive_root: Path, result: Result,
+                         malformed_sids: 'set[str] | None' = None):
     """Yield (record_path, meta) for every parseable record under sources/.
 
     An unparseable record gets one warning naming it and is skipped rather
@@ -103,6 +117,13 @@ def _iter_source_records(archive_root: Path, result: Result):
     files that are in fact already listed. So parse_errors is checked
     explicitly here and the record skipped BEFORE it can pollute the reverse
     inventory, exactly as if the read had raised.
+
+    Skipping alone is NOT enough for the reverse pass, though: the skipped
+    record's aliases never enter `listed_aliases`, so its on-disk file (which
+    carries the same S-id in ITS name) would still be reported "unlisted" and
+    the human told to attach a file the unreadable record already lists. So the
+    skipped record's filename S-id is added to `malformed_sids`, and the reverse
+    pass suppresses unlisted conclusions for those ids until the YAML is fixed.
     """
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
@@ -111,11 +132,19 @@ def _iter_source_records(archive_root: Path, result: Result):
         try:
             rec = read_record(rec_path)
         except Exception:
+            if malformed_sids is not None:
+                sid = _record_filename_sid(rec_path)
+                if sid:
+                    malformed_sids.add(sid)
             result.add('warning',
                        f'{rec_path.name} could not be parsed - skipped. '
                        'Run `fha lint` for the specifics.')
             continue
         if rec.get('parse_errors'):
+            if malformed_sids is not None:
+                sid = _record_filename_sid(rec_path)
+                if sid:
+                    malformed_sids.add(sid)
             detail = '; '.join(msg for _, msg in rec['parse_errors'])
             result.add('warning',
                        f'{rec_path.name} has malformed YAML ({detail}) - '
@@ -167,7 +196,8 @@ def _plan(
     # the reverse pass keys off this set, so it must be complete before any
     # record is judged (a streaming build would let an early record match a
     # file a later record legitimately lists).
-    records = list(_iter_source_records(archive_root, result))
+    malformed_sids: set[str] = set()
+    records = list(_iter_source_records(archive_root, result, malformed_sids))
     listed_aliases: set[str] = set()
     for _rec_path, meta in records:
         for entry in (meta.get('files') or []):
@@ -277,6 +307,13 @@ def _plan(
     # lists - judged against the POST-heal alias set built above.
     unlisted: dict[str, list[str]] = {}
     for sid, paths in by_sid.items():
+        if sid in malformed_sids:
+            # A source record with this S-id EXISTS but could not be parsed
+            # (already warned above). Its inventory is unreadable, so its own
+            # on-disk files must NOT be advertised as unlisted "attach me"
+            # orphans - that would tell the human to attach a file the
+            # unreadable record already lists. Suppress until the YAML is fixed.
+            continue
         for p in paths:
             alias = path_to_alias(p, 'documents', fha_config, archive_root)
             if alias.replace('\\', '/') not in listed_aliases:

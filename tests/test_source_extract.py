@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import source as source_mod
-from _lib import EXIT_CLEAN, EXIT_WARNINGS, load_fha_yaml, read_record
+from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, load_fha_yaml, read_record
 
 try:
     import pypdf  # noqa: F401 - availability probe only
@@ -93,6 +93,28 @@ class SourceExtractTests(unittest.TestCase):
 
     def _run(self, **kw):
         return source_mod.run_source_extract(self.root, self.config, SID, **kw)
+
+    def test_malformed_config_with_external_root_refuses_not_degrades(self) -> None:
+        # P2 codex finding (round 8): `_cmd_source_extract` loaded fha.yaml
+        # permissively, so a malformed config silently degraded to {} and
+        # discarded external document-root mappings - then resolved the PDF alias
+        # against the internal documents/ skeleton and could extract an unrelated
+        # same-named PDF's text against this source. With strict=True it refuses.
+        import argparse
+        import contextlib
+        import io
+        # Maps documents to an EXTERNAL root, but the YAML is malformed
+        # (inconsistent indentation) - strict load must raise, not degrade to {}.
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: /mnt/external/docs\n   photos: photos\n',
+            encoding='utf-8')
+        args = argparse.Namespace(root=str(self.root), source_id=SID,
+                                  pages=None, dry_run=False)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = source_mod._cmd_source_extract(args)
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertTrue(err.getvalue().strip(), 'the config problem must be named')
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_extracts_text_pages_and_appends_derived_entry(self) -> None:

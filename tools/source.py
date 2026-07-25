@@ -97,6 +97,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FRONT_RE,
+    FhaConfigError,
     Result,
     append_file_entry_to_record,
     append_paragraph_to_section,
@@ -415,8 +416,19 @@ def _cmd_source_extract(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha source extract')
     if archive_root is None:
         return EXIT_FAILURE
+    # strict=True: extraction resolves the PDF's alias through the configured
+    # roots, so a malformed fha.yaml must REFUSE, not degrade to {} and silently
+    # discard external document-root mappings. Permissive load would then resolve
+    # the alias against the internal documents/ skeleton and, if a same-named PDF
+    # happened to sit there, extract that unrelated file's text against this
+    # source - reading the wrong evidence.
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
     return _emit(run_source_extract(
-        archive_root, load_fha_yaml(archive_root), source_id=args.source_id,
+        archive_root, fha_config, source_id=args.source_id,
         pages=getattr(args, 'pages', None),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
