@@ -170,6 +170,47 @@ class PromotionRollbackTests(unittest.TestCase):
         companions = list((root / 'people').rglob('*_research_*.md'))
         self.assertEqual(companions, [], f'stray companion: {companions}')
 
+    def test_failed_moveback_never_creates_duplicate_record(self) -> None:
+        # The flip and move succeed, a later step fails, and during rollback the
+        # move-BACK itself fails (a re-locked destination). The tier-flip undo
+        # must then target where the profile actually IS - not blindly recreate
+        # the old path, which (because the atomic writer creates a missing target)
+        # would leave the curated profile in the destination AND a second stub
+        # with the same P-id at the vacated old path.
+        root, record_path, dest = _archive()
+        real_move = _lib.shutil.move
+        real_atomic = _lib.write_text_exact_atomic
+
+        def failing_atomic(path, text):
+            if '_research' in Path(path).name:
+                raise OSError('simulated disk full during companion write')
+            return real_atomic(path, text)
+
+        def failing_move(src, dst):
+            # Fail only the rollback move-BACK (out of the destination folder).
+            if Path(src).parent == dest:
+                raise OSError('simulated locked destination during move-back')
+            return real_move(src, dst)
+
+        _lib.write_text_exact_atomic = failing_atomic
+        _lib.shutil.move = failing_move
+        try:
+            with self.assertRaises(PromotionError):
+                promote_person_record(root, KID, record_path, dest)
+        finally:
+            _lib.write_text_exact_atomic = real_atomic
+            _lib.shutil.move = real_move
+
+        # Exactly ONE record for this P-id survives - never a duplicate.
+        records = list((root / 'people').rglob(f'*{KID}*.md'))
+        self.assertEqual(len(records), 1, f'expected one record, got {records}')
+        # It is the profile still stranded in the destination (move-back failed),
+        # with the tier flip undone in place (old stub bytes), and the old path
+        # was NOT recreated.
+        self.assertEqual(records[0].parent, dest)
+        self.assertIn('tier: stub', records[0].read_text(encoding='utf-8'))
+        self.assertFalse(record_path.exists(), 'no duplicate stub at the old path')
+
     def test_clean_promotion_still_succeeds(self) -> None:
         # Guardrail: the atomic rewrite did not break the happy path.
         root, record_path, dest = _archive()

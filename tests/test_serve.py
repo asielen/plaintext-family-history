@@ -292,6 +292,38 @@ class ApiRunTests(_ServeCase):
         self.req('GET', '/')
         self.assertTrue(self.state.marker.exists())
 
+    def test_live_claim_review_batch_flips_multiple(self):
+        # The grouped-review verdict (TOOLING §3b) must reach the workbench API,
+        # not only the CLI: a claim_ids list routes through run_claim_batch, so
+        # API/workbench callers can accept several claims in one status-only call
+        # and get the all-ID echo. Previously claim.review took a single claim_id.
+        import sqlite3
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            ids = [r[0] for r in conn.execute(
+                "SELECT id FROM claims WHERE status != 'accepted' LIMIT 2").fetchall()]
+        finally:
+            conn.close()
+        self.assertEqual(len(ids), 2, 'fixture needs two non-accepted claims')
+        s, d, _h = self.post_run(
+            'claim.review', {'claim_ids': ids, 'status': 'accepted'}, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertIn('--status accepted', payload['cli_echo'])
+        for cid in ids:                                  # echo names every id
+            self.assertIn(cid, payload['cli_echo'])
+        # Both landed as accepted in their source records.
+        for cid in ids:
+            found = False
+            for f in (self.root / 'sources').rglob('*.md'):
+                t = f.read_text(encoding='utf-8')
+                if cid.lower() in t.lower():
+                    self.assertIn('status: accepted', t)
+                    found = True
+                    break
+            self.assertTrue(found, f'{cid} not found in any source record')
+
     def test_reindex_failure_after_a_successful_write_is_a_warning_not_a_false_failure(self):
         # P2 codex finding (round 5, PR #30): the engine write and its
         # follow-up reindex/snapshot-invalidation used to share one

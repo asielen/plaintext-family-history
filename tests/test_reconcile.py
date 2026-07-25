@@ -357,6 +357,37 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(result['status'], 'working-copy')
         self.assertTrue(any('main machine' in m.text for m in result.messages))
 
+    def test_basename_already_listed_by_another_record_is_not_healed(self) -> None:
+        # A unique on-disk basename that ANOTHER record already lists must not be
+        # grabbed as a heal - that would rewrite this record onto the other's
+        # original and point two records at the same asset. The conflict is
+        # reported; the stale entry is left for the human to fix.
+        SID_B = 'S-9z8y7x6w5v'
+        moved = self.root / 'documents' / 'moved' / DOC
+        moved.parent.mkdir(parents=True)
+        moved.write_text('x', encoding='utf-8')
+        # Record B correctly lists the file at its real location.
+        record_b = self.root / 'sources' / 'letter' / f'other_{SID_B.lower()}.md'
+        record_b.write_text(
+            f'---\nid: {SID_B}\ntitle: Other\nsource_type: letter\n'
+            f'files:\n  - file: documents/moved/{DOC}\n    role: primary\n'
+            '---\n\n## Notes\ny.\n', encoding='utf-8')
+        # Record A (self.record) still lists the stale documents/{DOC}, which is
+        # not on disk - its basename matches the file record B already lists.
+        before_a = self.record.read_text(encoding='utf-8')
+        before_b = record_b.read_text(encoding='utf-8')
+
+        result = self._run()
+
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['healed'], 0)
+        self.assertTrue(
+            any('already listed by another record' in m.text for m in result.messages),
+            [m.text for m in result.messages])
+        # Neither record was rewritten.
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before_a)
+        self.assertEqual(record_b.read_text(encoding='utf-8'), before_b)
+
     def test_unreachable_documents_root_warns_without_mass_flagging(self) -> None:
         (self.root / 'fha.yaml').write_text(
             'roots:\n  photos: photos\n  documents: Q:/no/such/drive\n', encoding='utf-8')

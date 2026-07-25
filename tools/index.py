@@ -1076,6 +1076,18 @@ def _index_source(
                 dump_text = resolved.read_text(encoding='utf-8')
             except OSError:
                 dump_text = ''
+            except UnicodeDecodeError:
+                # A hand-edited or corrupted companion that is not valid UTF-8 must
+                # NOT abort the whole build. UnicodeDecodeError is a ValueError, not
+                # an OSError, so without this it escapes here; on a full rebuild the
+                # source-indexing transaction then rolls back over an ALREADY-dropped
+                # index, leaving a current-schema cache with zero records that later
+                # readers accept as fresh. Skip the malformed dump with a named
+                # warning - the rest of the source still indexes.
+                print(f'WARNING: {file_path} is not valid UTF-8 and was skipped for '
+                      'transcript search - re-save it as UTF-8, then re-run '
+                      '`fha index`.', file=sys.stderr)
+                dump_text = ''
             if dump_text.strip():
                 conn.execute(
                     'INSERT INTO transcripts_fts(source_id, path, content) '

@@ -4141,6 +4141,15 @@ def promote_person_record(
         # itself atomic so an interrupted rollback cannot truncate the record it
         # is trying to save.
         rollback_notes: list[str] = []
+        # Track where the profile physically IS as rollback proceeds. If the flip
+        # ran, the profile was moved to new_record_path (when needs_move) - and the
+        # move-inverse below only returns it to record_path if it actually succeeds.
+        # The flip-undo must target the profile's real location, never blindly
+        # record_path: after a FAILED move-back the old path is absent, and the
+        # atomic writer creates a missing target, so writing there would leave the
+        # curated profile at new_record_path AND a second stub with the same P-id
+        # at the old path.
+        profile_path = new_record_path if moved else record_path
         for action in ('research', 'research_move', 'move', 'flip', 'folder'):
             try:
                 if action == 'research' and wrote_research:
@@ -4149,8 +4158,19 @@ def promote_person_record(
                     shutil.move(str(research_path), str(source_research_path))
                 elif action == 'move' and moved:
                     shutil.move(str(new_record_path), str(record_path))
+                    profile_path = record_path      # move-back succeeded
                 elif action == 'flip' and wrote_flip:
-                    write_text_exact_atomic(record_path, text)
+                    # Undo the tier flip at wherever the profile actually is. If the
+                    # move-back above failed, profile_path is still new_record_path
+                    # (holding the flipped text) - rewrite the old text THERE, so
+                    # rollback never conjures a duplicate record at the absent old
+                    # path. A profile that is nowhere expected is named, not created.
+                    if profile_path.exists():
+                        write_text_exact_atomic(profile_path, text)
+                    else:
+                        rollback_notes.append(
+                            'could not undo the flip step (the profile is not at '
+                            f'{_rel(profile_path)})')
                 elif action == 'folder' and made_folder:
                     dest_folder.rmdir()
             except OSError as undo_err:

@@ -438,6 +438,7 @@ def _load_vitals(
         WHERE cp.person_id IN ({placeholders})
           AND c.type IN ('birth', 'death')
           AND c.status = 'accepted'
+          AND COALESCE(c.negated, 0) = 0
           AND {_public_source_filter_sql()}
         ORDER BY
             CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
@@ -496,6 +497,7 @@ def _load_marriages(
         FROM claims c
         JOIN sources s ON s.id = c.source_id
         WHERE c.type = 'marriage' AND c.status = 'accepted'
+          AND COALESCE(c.negated, 0) = 0
           AND {_public_source_filter_sql()}
         """
     ).fetchall()

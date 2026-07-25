@@ -358,7 +358,7 @@ Dice-roll fallback documented in output of `fha id --help` (hand-minting: any 10
 ## 4a. `fha find` - the universal locator
 
 `fha find <ID>` answers "where does this thing live?" for **any** ID - necessary because photos aren't renamed, so disk search alone can't locate a photo by S-id.
-Output by type: **S-id** → record path, every asset file (paths resolved through `fha.yaml`, located via filename for documents / inventory+keyword for photos), citation sites, claim count by status. **P-id** → person file, couple folder, claims naming them, photo count (via §9 resolution), citation sites. **C-id** → its source record + line, status, links in/out. **L-id/H-id** → record + every reference. `fha find <text>` falls through to text search (records, notes, and configured documents root; photo captions when photoindex is fresh; transcripts deferred).
+Output by type: **S-id** → record path, every asset file (paths resolved through `fha.yaml`, located via filename for documents / inventory+keyword for photos), citation sites, claim count by status. **P-id** → person file, couple folder, claims naming them, photo count (via §9 resolution), citation sites. **C-id** → its source record + line, status, links in/out. **L-id/H-id** → record + every reference. `fha find <text>` falls through to text search (records, notes, and configured documents root; photo captions when photoindex is fresh; extracted PDF text via `transcripts_fts`).
 (`fha id check` is an alias.)
 
 **`fha find --related <ID>`** - "show me everything adjacent to this," for **any** ID type, ranked, pure query over the index (no schema change).
@@ -374,7 +374,7 @@ What counts as *adjacent* depends on what you point at - each type has a natural
 "Who and what was active 1869-1874."
 Combinable with a **P-id, L-id, or S-id**: `--related <L-id> --date 187X` = the place, narrowed to a decade; `--related <S-id> --date 187X` narrows a source's claims by status to the same window. C/H neighborhoods ignore `--date` (a single claim's own `date_edtf` already pins it to one point, and a hypothesis isn't meaningfully time-sliced).
 
-**`fha find --text "…"`** - full-text search across record bodies and notes, plus the **photo/document index** caption/comment/keyword fields (§9) when the photoindex is fresh.  (The `transcripts_fts` table is provisioned but not yet populated - transcript search is deferred; see D7.)
+**`fha find --text "…"`** - full-text search across record bodies and notes, plus the **photo/document index** caption/comment/keyword fields (§9) when the photoindex is fresh, plus **extracted PDF text** (the `transcripts_fts` table, populated by `fha index` from `role: extracted-text` companions; see D7).
 Returns hits with their record or asset and context.
 Cheap because the corpus is plain text plus the two SQLite FTS tables; one query spans prose and media metadata.
 
@@ -385,7 +385,7 @@ For bare `fha find <ID>` and `--text`, the index is used when present; if stale,
 
 **Design decision D4 (implemented BUILD.md M4.3):** `--related` and `--related --date` are fully implemented, after `fha xref` and `fha cooccur` populated the corroborates/contradicts and social-edge data the neighborhood view depends on. They are a pure read query over the index - no schema change, no writes.
 
-**Design decision D7 (implemented milestone 2):** `fha find --text` searches record bodies and notes (via FTS tables plus a re.search pass) and **photo/document captions** when `.cache/photos.sqlite` is verifiably fresh (present, schema OK, newer than the photos root).  When the photoindex is absent, stale, or unreadable, captions are skipped and the tool prints an explicit note.  The `transcripts_fts` table is provisioned but transcript content is **not yet populated** - transcript search is deferred to a later milestone.
+**Design decision D7 (implemented; transcript search shipped M11.5):** `fha find --text` searches record bodies and notes (via FTS tables plus a re.search pass) and **photo/document captions** when `.cache/photos.sqlite` is verifiably fresh (present, schema OK, newer than the photos root).  When the photoindex is absent, stale, or unreadable, captions are skipped and the tool prints an explicit note.  The `transcripts_fts` table is now **populated** by `fha index` from every `role: extracted-text` companion (`fha source extract`'s PDF text dumps), and both the CLI text search and the JSON/workbench backend (`find._ranked_search` → `search_json`, used by `fha find --json` and `fha serve`) query it, so extracted PDF text is searchable everywhere after `fha index`.
 
 **Design decision D9 (implemented milestone 2 audit):** A stale index is still preferable to a bare tree scan for `fha find <ID>` because it preserves structured reports (person companions, claim summaries, source inventories, citation rows) after generated views change mtimes. Staleness is surfaced as a warning; an absent or unreadable index falls back to grep-style scanning outright, and a stale index that has no row for the requested ID also falls back to a scan (the record may have been added after the last `fha index` run) rather than reporting a false "not found".
 
@@ -1045,7 +1045,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha find <ID\|text>` (T C) | "Where does this live?" Records + assets + citations for any ID; FTS for text. |
 | `fha find --related <ID>` (T C) | "What's adjacent to this?" Neighborhood of any ID - person/place/source/claim/hypothesis - ranked, with provenance. The connection-discovery primitive. |
 | `fha find --related --date <EDTF>` (T C) | The time neighborhood: everyone/everything active in a date range. Combinable with an ID. |
-| `fha find --text "…"` (T C) | Full-text search across record bodies, notes, and documents root; photo captions when photoindex is fresh. (`transcripts_fts` provisioned but not yet populated.) |
+| `fha find --text "…"` (T C) | Full-text search across record bodies, notes, and documents root; photo captions when photoindex is fresh; extracted PDF text via `transcripts_fts` (populated by `fha index`, queried by CLI and JSON/workbench search). |
 | `fha find --json <ID\|text>` (T C) | Machine-readable result list (§4a) - a ranked search returning `[{id,type,label,detail}]`, the reference-resolver backend `fha serve`'s search box also calls. `--kind`/`--limit` narrow it. |
 | `fha search <words>` (T C) | The plainest search verb, for a human who never read the docs; identical to `fha find --text`. The positional phrase is joined with spaces, so `fha search rose hartley` works unquoted. |
 | `fha relate <P-A> <P-B>` (T C) | "How are these two related?" The blood relationship (cousin/removal) and the shortest social path between any two people, derived from accepted relationship claims. |

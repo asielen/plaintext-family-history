@@ -204,19 +204,41 @@ def _plan(
             if resolve_path(alias, fha_config, archive_root).exists():
                 continue
             candidates = by_name.get(basename, [])
-            if len(candidates) == 1:
-                new_alias = path_to_alias(candidates[0], 'documents',
+            # Exclude on-disk files another record already lists: healing onto one
+            # would rewrite this entry to another source's original and point two
+            # records at the same asset (reconcile would then report success).
+            # Mirrors the embedded-ID fallback's listed_aliases filter below.
+            unclaimed = [
+                c for c in candidates
+                if path_to_alias(c, 'documents', fha_config, archive_root)
+                   .replace('\\', '/') not in listed_aliases
+            ]
+            if len(unclaimed) == 1:
+                new_alias = path_to_alias(unclaimed[0], 'documents',
                                           fha_config, archive_root)
                 heals.setdefault(rec_path, []).append((alias, new_alias))
                 listed_aliases.add(new_alias.replace('\\', '/'))
                 continue
+            if len(unclaimed) >= 2:
+                shown = ', '.join(
+                    path_to_alias(c, 'documents', fha_config, archive_root)
+                    for c in sorted(unclaimed))
+                ambiguous.append(
+                    f'{rec_path.name}: {basename!r} exists in more than one '
+                    f'place ({shown}) - move or rename the extra copy, then re-run.')
+                continue
             if candidates:
+                # Every same-named file on disk is already listed by another
+                # record - a stale or duplicated inventory entry, not a heal.
+                # Report the conflict; never rewrite onto a claimed original.
                 shown = ', '.join(
                     path_to_alias(c, 'documents', fha_config, archive_root)
                     for c in sorted(candidates))
                 ambiguous.append(
-                    f'{rec_path.name}: {basename!r} exists in more than one '
-                    f'place ({shown}) - move or rename the extra copy, then re-run.')
+                    f'{rec_path.name}: {basename!r} is already listed by another '
+                    f'record ({shown}) - reconcile will not point two records at '
+                    'the same file. Fix the duplicate inventory entry by hand, '
+                    'then re-run.')
                 continue
             # No file with that name anywhere. TOOLING §9's contract is
             # re-match by the embedded ID, so fall back to the S-id in the

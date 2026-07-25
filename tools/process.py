@@ -2998,6 +2998,7 @@ def process_refile(
         # file actually is now.
         undone: list[str] = []
         move_back_error: Exception | None = None
+        keyword_cleanup_error: str | None = None
 
         # 1. Strip the SOURCE keyword this run embedded, targeting the destination
         #    where the file still sits (before the move-back), so the removal lands
@@ -3009,6 +3010,13 @@ def process_refile(
                 kw_err = str(kw_exc)
             if kw_err is None:
                 undone.append(f'removed the SOURCE: {sid} keyword from {new_name}')
+            else:
+                # The embed landed but its inverse failed: the file still carries
+                # metadata THIS run added. Keep the error - a rollback that moved
+                # the file home and restored the record is NOT clean while that
+                # keyword remains, and the clean-branch report below must say so
+                # rather than claim "nothing changed".
+                keyword_cleanup_error = kw_err
 
         # 2. Move the file home. If the asset drive vanished this fails here, and
         #    file_home stays at the destination so step 3 points the record at the
@@ -3077,6 +3085,18 @@ def process_refile(
                 print(f'{rel_record} is unchanged, but a partial copy was left at '
                       f'{stray_partial} and could not be removed automatically - '
                       f'remove it by hand (e.g. `rm {stray_partial}`), then re-run.',
+                      file=sys.stderr)
+            elif keyword_cleanup_error is not None:
+                # Record and file location are restored, but the SOURCE: keyword
+                # this run embedded could not be stripped - the file at its home
+                # path still carries metadata the failed command added. Name it
+                # and the exact exiftool cleanup instead of "nothing changed".
+                rel_home = _rel(file_home, archive_root)
+                print(f'{rel_record} is unchanged and the file is back at {rel_home}, '
+                      f'but the SOURCE: {sid} keyword this run embedded could not be '
+                      f'removed ({keyword_cleanup_error}) - the file still carries it. '
+                      f'Remove it by hand: `exiftool -keywords-="SOURCE: {sid}" '
+                      f'-overwrite_original_in_place "{rel_home}"`, then re-run.',
                       file=sys.stderr)
             else:
                 print(f'Nothing was left changed in {rel_record}.', file=sys.stderr)

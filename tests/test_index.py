@@ -962,6 +962,27 @@ class ExtractedTextIndexingTests(unittest.TestCase):
         # The dumped text is searchable by a word from inside a page.
         self.assertEqual(self._matches('Marsh'), ['s-7a7a7a7a7a'])
 
+    def test_malformed_utf8_companion_does_not_empty_the_index(self) -> None:
+        # A non-UTF-8 extracted-text companion (hand-edited or corrupted) must NOT
+        # abort the build. UnicodeDecodeError is a ValueError, not an OSError, so
+        # without the guard it escapes and, on a full rebuild, rolls back over an
+        # already-dropped index - leaving an empty current-schema cache that later
+        # readers accept as fresh. The malformed dump is skipped; the source and
+        # the rest of the index survive.
+        dump = (self.root / 'documents' / 'book'
+                / f'county-history-extracted-text_{_EXTRACT_SID}.md')
+        dump.write_bytes(b'\xff\xfe not valid utf-8 \x80\x81')
+        index.build_index(self.root, {})            # must not raise
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            n_sources = conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0]
+            n_transcripts = conn.execute(
+                'SELECT COUNT(*) FROM transcripts_fts').fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(n_sources, 1, 'the source is still indexed (index not emptied)')
+        self.assertEqual(n_transcripts, 0, 'the malformed dump was skipped')
+
     def test_extracted_text_is_found_through_the_json_ranked_search(self) -> None:
         # The finding: transcripts_fts is populated, but the JSON/workbench
         # backend (find._ranked_search, behind search_json + serve.py) queried

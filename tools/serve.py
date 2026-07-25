@@ -973,6 +973,19 @@ def _coerce(schema: dict, args: dict) -> tuple[dict, str | None]:
 
 
 def _verb_claim_review(state, kw, dry_run):
+    # Grouped review (TOOLING §3b): a `claim_ids` list routes to run_claim_batch,
+    # the same one-breath grouped verdict the CLI reaches - status-only gate,
+    # all-or-nothing validation, and all-ID echo included. A single `claim_id`
+    # keeps the surgical field-edit form. A multi-source batch returns data with
+    # no `source_id`, so _reindex_after correctly falls through to a full rebuild.
+    claim_ids = kw.get('claim_ids')
+    if claim_ids:
+        return claim.run_claim_batch(
+            state.archive_root, claim_ids=list(claim_ids),
+            status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
+            claim_type=kw.get('claim_type'), place=kw.get('place'),
+            place_text=kw.get('place_text'), persons=kw.get('persons'),
+            confidence=kw.get('confidence'), dry_run=dry_run)
     return claim.run_claim(
         state.archive_root, claim_id=kw.get('claim_id', ''),
         status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
@@ -982,7 +995,8 @@ def _verb_claim_review(state, kw, dry_run):
 
 
 def _echo_claim_review(kw):
-    parts = ['fha claim', kw.get('claim_id', '?')]
+    claim_ids = kw.get('claim_ids')
+    parts = ['fha claim', ','.join(claim_ids) if claim_ids else kw.get('claim_id', '?')]
     if kw.get('status'):
         parts += ['--status', kw['status']]
     if kw.get('value'):
@@ -1635,9 +1649,10 @@ def _echo_home_edit(kw):
 # key -> (schema, run, echo, reindex-policy). reindex: 'source' (upsert the
 # source named in Result.data, else full), 'full', or 'none'.
 VERBS: dict[str, dict] = {
-    'claim.review': {'schema': {'claim_id': 'str', 'status': 'str', 'value': 'str',
-                               'date': 'str', 'claim_type': 'str', 'place': 'str',
-                               'place_text': 'str', 'persons': 'list', 'confidence': 'str'},
+    'claim.review': {'schema': {'claim_id': 'str', 'claim_ids': 'list', 'status': 'str',
+                               'value': 'str', 'date': 'str', 'claim_type': 'str',
+                               'place': 'str', 'place_text': 'str', 'persons': 'list',
+                               'confidence': 'str'},
                      'run': _verb_claim_review, 'echo': _echo_claim_review, 'reindex': 'source'},
     'claim.new': {'schema': {'source_id': 'str', 'claim_type': 'str', 'value': 'str',
                             'date': 'str', 'place': 'str', 'place_text': 'str',

@@ -48,15 +48,15 @@ def _parent_child(conn, parent, child, ds='1900-01-01', de='1900-12-31'):
 
 
 def _add_claim(conn, cid, ctype, persons, date_edtf='', place_id=None, place_text=None,
-               source_id='s-0000000001', status='accepted', value='x'):
+               source_id='s-0000000001', status='accepted', value='x', negated=0):
     mn = ''
     if date_edtf:
         from _lib import edtf_bounds
         mn = edtf_bounds(date_edtf)[0]
     conn.execute(
-        'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_id, place_text, value, status) '
-        'VALUES (?,?,?,?,?,?,?,?,?)',
-        (cid, source_id, ctype, date_edtf, mn, place_id, place_text, value, status),
+        'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_id, place_text, value, status, negated) '
+        'VALUES (?,?,?,?,?,?,?,?,?,?)',
+        (cid, source_id, ctype, date_edtf, mn, place_id, place_text, value, status, negated),
     )
     for pos, p in enumerate(persons):
         conn.execute(
@@ -178,6 +178,33 @@ class GedcomExportTests(unittest.TestCase):
         self.assertIn('1 MARR', r['text'])
         self.assertIn('0 @S1@ SOUR', r['text'])
         self.assertIn('Birth cert', r['text'])
+
+    def test_negated_vitals_and_marriage_not_exported(self):
+        # A --negated claim records a confirmed ABSENCE, never a positive fact.
+        # It must not surface as a BIRT/DEAT/MARR event, which another genealogy
+        # app would read as a real event; and an earlier-dated negated birth must
+        # not evict the real one. (Same negated-exclusion sweep as index/site/lint.)
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        _add_claim(conn, 'c-0000000010', 'birth', ['p-0000000001'],
+                   date_edtf='1800', place_text='Nowhere',
+                   source_id='s-0000000001', negated=1)
+        _add_claim(conn, 'c-0000000011', 'death', ['p-0000000001'],
+                   date_edtf='1850', place_text='Nowhere',
+                   source_id='s-0000000001', negated=1)
+        _add_claim(conn, 'c-0000000012', 'marriage', ['p-0000000001', 'p-0000000002'],
+                   date_edtf='1899', place_text='Nowhere',
+                   source_id='s-0000000002', negated=1)
+        conn.commit()
+        conn.close()
+
+        r = gedcom.run_gedcom(self.root, 'p-0000000001', mode='ancestors')
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('2 DATE 2 MAR 1875', r['text'])   # real birth still wins
+        self.assertNotIn('1800', r['text'])             # negated birth excluded
+        self.assertNotIn('1 DEAT', r['text'])           # negated death not emitted
+        self.assertNotIn('Nowhere', r['text'])          # no negated place leaks
+        self.assertEqual(r['text'].count('1 MARR'), 1)  # only the real marriage
 
     def test_restricted_vital_fact_not_exported(self):
         conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))

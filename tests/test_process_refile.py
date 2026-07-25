@@ -504,6 +504,43 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertNotIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []),
                          'the just-embedded keyword is rolled back')
 
+    def test_keyword_cleanup_failure_is_named_not_reported_clean(self) -> None:
+        # doc->photos embeds a SOURCE keyword; then the record write fails and
+        # rollback moves the file home and restores the record - but stripping the
+        # just-embedded keyword ALSO fails. That residual metadata must be named
+        # with the exact exiftool cleanup, never reported as "nothing changed".
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before = record.read_bytes()
+        # Keyword removal fails during rollback.
+        process._run_exiftool_remove_source = (
+            lambda p, s_id, extra_keywords=None: 'exiftool: write locked')
+        # Fail the FORWARD record write; let the rollback restore (2nd write) land.
+        real_atomic = process.write_text_exact_atomic
+        rec_writes = {'n': 0}
+
+        def failing_atomic(path, text):
+            if Path(path).name == record.name:
+                rec_writes['n'] += 1
+                if rec_writes['n'] == 1:
+                    raise OSError('simulated disk full on record write')
+            return real_atomic(path, text)
+
+        process.write_text_exact_atomic = failing_atomic
+        try:
+            rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+        finally:
+            process.write_text_exact_atomic = real_atomic
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        # Record and file location are restored...
+        self.assertEqual(record.read_bytes(), before)
+        self.assertTrue(asset.exists())
+        # ...but the residual keyword is NAMED with a cleanup step, not "clean".
+        self.assertNotIn('Nothing was left changed', err)
+        self.assertIn(f'SOURCE: {SID}', err)
+        self.assertIn('exiftool', err)
+
     def test_refile_refuses_when_destination_root_is_offline(self) -> None:
         # The photos root's external drive is unplugged. Refile must refuse
         # rather than let dest_dir.mkdir(parents=True) recreate the mount path
