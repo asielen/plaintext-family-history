@@ -192,6 +192,14 @@ class MultiContributorTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _lint_positions(self, root: Path) -> dict:
+        # The lint BFS derives the same Ahnentafel map from the in-memory
+        # registry rather than SQLite; it must apply the identical TOOLING 7
+        # rule, or the W110/W119 lint checks would disagree with views.
+        _f, reg = lint._run_lint_core(root, load_fha_yaml(root))
+        genetic = lint._build_children_of(reg, genetic_only=True)
+        return lint._build_ahnentafel_lint(KID.lower(), genetic, reg)
+
     def test_sperm_takes_father_slot_lowest_mother_takes_mother_slot(self) -> None:
         pos = self._positions(self._arc())
         # Father slot (2) is the sole male genetic contributor - never dropped.
@@ -206,6 +214,23 @@ class MultiContributorTests(unittest.TestCase):
         # - the rule ranks by (sex, P-id), never by SQL row order.
         forward = self._positions(self._arc(reversed_order=False))
         backward = self._positions(self._arc(reversed_order=True))
+        for who in (self.SPERM.lower(), self.EGG.lower()):
+            self.assertEqual(forward.get(who), backward.get(who), who)
+        self.assertNotIn(self.SURR.lower(), backward)
+
+    def test_lint_bfs_matches_views_for_three_contributors(self) -> None:
+        # The lint BFS (in-memory registry) must seat the same contributors as
+        # the views/_lib SQLite derivation: sperm -> father slot 2, lowest-P-id
+        # mother -> slot 3, third contributor unnumbered. A divergence here would
+        # make W110/W119 flag the very folders a correct promote produced.
+        pos = self._lint_positions(self._arc())
+        self.assertEqual(pos.get(self.SPERM.lower()), 2)
+        self.assertEqual(pos.get(self.EGG.lower()), 3)
+        self.assertNotIn(self.SURR.lower(), pos)
+
+    def test_lint_bfs_selection_is_independent_of_claim_order(self) -> None:
+        forward = self._lint_positions(self._arc(reversed_order=False))
+        backward = self._lint_positions(self._arc(reversed_order=True))
         for who in (self.SPERM.lower(), self.EGG.lower()):
             self.assertEqual(forward.get(who), backward.get(who), who)
         self.assertNotIn(self.SURR.lower(), backward)
