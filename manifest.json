@@ -139,7 +139,7 @@
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "7bb822a02015a2081bbc1c58902e187166821afaaca90198cd59643f17c83ba7",
+      "sha256": "023068e37beb5fbe0d08ccfebfd7bd0bab4aed32f8d061d81d9fa409efa6ee12",
       "spec_version": "1.2"
     },
     {
@@ -163,7 +163,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "526a29b5b8d8e9e1bc1f638c2641eda19dc5454aeb2fd5103bf276e2752da36b",
+      "sha256": "d9efeb841c61928b638dc75eed6a1e5e1fd0a52c0459aa67b976271f7e1cb661",
       "spec_version": "1.2"
     },
     {
@@ -175,7 +175,7 @@
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "fd563da94e8e139cae40bfc3d91248103d8eae3d043fecaa3ab178bfe13e1b65",
+      "sha256": "9f3122ab366eb0d6820ca59963a25d125070139b2403c83d520c55f1df12de37",
       "spec_version": "1.2"
     },
     {
@@ -534,7 +534,7 @@
     {
       "path": "tools/claim.py",
       "category": "operating",
-      "sha256": "6f953600302b3c958decabb1531be777e8c7473ed0599a2e68c4e633013a708a",
+      "sha256": "bbdeff0d2148ac89647f1c6fcb14fb84038093e347cfb3e6d916f431442ce9e1",
       "spec_version": "1.2"
     },
     {
@@ -600,7 +600,7 @@
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "ff202027cf4fcc2a4f5f228ca6da7411a0a930593cc673d0310d225bfb8ddd60",
+      "sha256": "2c9e8c90f7e03e286cb41d6ee1d5f03ed155f9948250370d7e9c9d50e38761cd",
       "spec_version": "1.2"
     },
     {
@@ -636,7 +636,7 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "fae261814c30ca5b1214cf0d742955295a498aea36b59deaf6d294488b785761",
+      "sha256": "996ece7b7504b2b119a63a702cce9ee760354d63b8f9582ec114de6b8e9be8d7",
       "spec_version": "1.2"
     },
     {
@@ -678,7 +678,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "98a0af59faca68ce4bee55d161e35953045e43c2f40c0072f4a41ae17ad19b6b",
+      "sha256": "61de1b6edfc6761fabecf4c43d8a7563c482d094f3f6f5b6006f2bf4d63bd4bf",
       "spec_version": "1.2"
     },
     {
