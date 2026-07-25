@@ -4038,6 +4038,25 @@ def promote_person_record(
             'to formalize the filename first. Nothing was written.')
     source_research_path = record_path.parent / research_name
     research_path = (dest_folder / research_name) if needs_move else source_research_path
+    # REFUSE the two-file split: a POPULATED companion sits beside the stub AND
+    # another companion already sits at the destination (two DIFFERENT files -
+    # e.g. after a hand-repaired partial promotion). Neither MOVE nor CREATE
+    # below fires in that case, so promotion would keep the destination file and
+    # silently STRAND the source companion (with its notes) under people/stubs/ -
+    # a split, silent orphaning of the human's notes. There is no safe automatic
+    # merge (only the human knows which notes are canonical), so we stop in the
+    # PLAN phase - before any write - and hand the reconcile back to the human.
+    # This is caught here rather than as the ordinary destination-only SKIP,
+    # which is safe precisely because no source companion is being left behind.
+    if (needs_move and source_research_path.exists() and research_path.exists()
+            and source_research_path.resolve() != research_path.resolve()):
+        raise PromotionError(
+            f'{name} has TWO research companions and promotion cannot choose '
+            f'between them: one beside the stub at {source_research_path} and '
+            f'one already at the destination {research_path}. Promoting would '
+            'keep the destination file and strand the stub one - with its '
+            'notes - under people/stubs/. Merge the notes into one of these two '
+            'files, delete the other, then retry. Nothing was written.')
     # Three mutually exclusive fates for the companion:
     #   MOVE   - a hand-written companion already sits beside the SOURCE record
     #            (people/stubs/) and the record is moving. It must travel WITH

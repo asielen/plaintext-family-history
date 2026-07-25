@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -186,13 +186,24 @@ def _plan(
             alias = str(entry.get('file', '') or '')
             if not alias:
                 continue
-            if alias.replace('\\', '/').split('/', 1)[0] != 'documents':
+            # Stored aliases are forward-slash by contract, but a record may
+            # carry a Windows-style path (e.g. 'documents\\letters\\scan_S-….pdf').
+            # On POSIX, Path('documents\\letters\\x.pdf') is ONE segment whose
+            # .name is the whole backslash string, so an un-normalized basename
+            # lookup or parse_filename would miss the moved file and report it
+            # both missing AND unlisted. Normalize to POSIX separators once, up
+            # front, and use it for every basename/S-id parse below. (resolve_path
+            # already normalizes internally, so the prefix check and .exists()
+            # resolve are safe on the raw alias.)
+            alias_posix = alias.replace('\\', '/')
+            basename = PurePosixPath(alias_posix).name
+            if alias_posix.split('/', 1)[0] != 'documents':
                 continue
             if str(entry.get('status', '')) == 'missing-fixture':
                 continue
             if resolve_path(alias, fha_config, archive_root).exists():
                 continue
-            candidates = by_name.get(Path(alias).name, [])
+            candidates = by_name.get(basename, [])
             if len(candidates) == 1:
                 new_alias = path_to_alias(candidates[0], 'documents',
                                           fha_config, archive_root)
@@ -204,7 +215,7 @@ def _plan(
                     path_to_alias(c, 'documents', fha_config, archive_root)
                     for c in sorted(candidates))
                 ambiguous.append(
-                    f'{rec_path.name}: {Path(alias).name!r} exists in more than one '
+                    f'{rec_path.name}: {basename!r} exists in more than one '
                     f'place ({shown}) - move or rename the extra copy, then re-run.')
                 continue
             # No file with that name anywhere. TOOLING §9's contract is
@@ -212,7 +223,7 @@ def _plan(
             # stored filename: a file that was moved AND renamed (renaming a
             # filed original is forbidden, but reality drifts) still carries
             # its identity. Only a file no record lists may claim the match.
-            parsed = parse_filename(Path(alias))
+            parsed = parse_filename(alias_posix)
             sid_carriers: list[Path] = []
             if parsed and parsed.get('id_type') == 'S':
                 sid_carriers = [
@@ -230,7 +241,7 @@ def _plan(
                     path_to_alias(c, 'documents', fha_config, archive_root)
                     for c in sorted(sid_carriers))
                 ambiguous.append(
-                    f'{rec_path.name}: nothing is named {Path(alias).name!r} any '
+                    f'{rec_path.name}: nothing is named {basename!r} any '
                     f'more, and more than one unlisted file carries its ID '
                     f'({shown}) - move or rename the extras, then re-run.')
             else:

@@ -228,6 +228,47 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertNotIn('Edith Kowalski', r['text'])
         self.assertNotIn('== Research Notes ==', r['text'])
 
+    def test_research_note_naming_a_participant_with_malformed_record_is_withheld(self):
+        # P1 fail-closed: a claim participant whose record becomes MALFORMED
+        # after indexing (read_record returns parse_errors + empty meta, it does
+        # not raise) must be treated as restricted, not read as public because
+        # the empty meta lacks a `restricted:` marker. The parked claim naming
+        # them must NOT publish - otherwise a now-unreadable (possibly living or
+        # restricted) person's details leak into the Research Notes block.
+        (self.root / 'people' / 'edith.md').write_text(
+            '---\nid: P-0000000003\nname: [broken\n---\n',   # unterminated flow seq
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000003', 'Edith Kowalski', tier='stub',
+                    path='people/edith.md')
+        _add_claim(conn, 'c-0000000006', 'marriage',
+                   ['p-0000000001', 'p-0000000003'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly married Edith Kowalski in Chicago')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        # Export still succeeds for the subject - only the tainted bonus item is
+        # dropped - but the participant's claim wording never reaches the wiki.
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('Edith Kowalski', r['text'])
+        self.assertNotIn('Possibly married', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])
+
+    def test_malformed_subject_record_refused(self):
+        # Fail-closed on the SUBJECT: if their own record is malformed, its
+        # `restricted:`/marker fields may be unreadable, so publishing from the
+        # partial parse could leak a record meant to stay private. Refuse.
+        (self.root / 'people' / 'subject.md').write_text(
+            '---\nid: P-0000000001\nname: [broken\n---\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'unreadable-subject')
+        self.assertIsNone(r['text'])
+
     def test_restricted_source_research_note_withheld(self):
         conn = self._reopen()
         _add_source(conn, 's-0000000003', 'Sealed record', 'sources/sealed.md', restricted=1)

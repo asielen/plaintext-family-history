@@ -128,6 +128,55 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(meta['files'][0]['file'],
                          f'documents/letters/renamed_{SID.lower()}.pdf')
 
+    def test_backslash_alias_entry_is_healed_not_missing_or_unlisted(self) -> None:
+        # A record may carry a valid Windows-style alias with backslash
+        # separators. On POSIX, Path('documents\\letters\\x.pdf').name keeps the
+        # WHOLE backslash string, so the basename lookup misses the moved file.
+        # The separators must be normalized to forward slashes before matching,
+        # and the heal must rewrite to the canonical forward-slash alias.
+        self._write_record(f'documents\\letters\\{DOC}')
+        moved = self.root / 'documents' / 'moved' / DOC
+        moved.parent.mkdir(parents=True)
+        moved.write_text('x', encoding='utf-8')
+
+        applied = self._run()
+        self.assertEqual(applied.exit_code, EXIT_CLEAN)
+        self.assertEqual(applied['healed'], 1)
+        self.assertEqual(applied['missing'], 0)
+        self.assertEqual(applied['unlisted'], 0)
+        self.assertFalse([m.text for m in applied.messages if m.level == 'warning'])
+        meta = read_record(self.record)['meta']
+        self.assertEqual(meta['files'][0]['file'], f'documents/moved/{DOC}')
+        self.assertEqual(meta['files'][0]['role'], 'primary')
+
+    def test_backslash_front_and_back_heal_by_basename_not_ambiguous(self) -> None:
+        # Two files of ONE source share its S-id (a front and a back). With
+        # backslash aliases, an un-normalized basename lookup misses BOTH, so
+        # each entry falls through to the S-id fallback - which sees two
+        # carriers for the shared S-id and falsely reports each as ambiguous,
+        # healing nothing. Normalizing the separators first lets each entry
+        # match its own unique basename and heal cleanly.
+        back = f'letter-back_{SID.lower()}.pdf'
+        self.record.write_text(
+            f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\n'
+            f'files:\n'
+            f'  - file: documents\\old\\{DOC}\n    role: primary\n'
+            f'  - file: documents\\old\\{back}\n    role: back\n'
+            f'---\n\n## Notes\nx.\n', encoding='utf-8')
+        dest = self.root / 'documents' / '1920s'
+        dest.mkdir()
+        (dest / DOC).write_text('x', encoding='utf-8')
+        (dest / back).write_text('x', encoding='utf-8')
+
+        applied = self._run()
+        self.assertEqual(applied.exit_code, EXIT_CLEAN)
+        self.assertEqual(applied['healed'], 2)
+        self.assertEqual(applied['ambiguous'], 0)
+        self.assertEqual(applied['unlisted'], 0)
+        aliases = {f['file'] for f in read_record(self.record)['meta']['files']}
+        self.assertEqual(aliases,
+                         {f'documents/1920s/{DOC}', f'documents/1920s/{back}'})
+
     def test_corrupt_photo_catalog_is_an_error_not_a_clean_report(self) -> None:
         (self.root / 'documents' / DOC).write_text('x', encoding='utf-8')
         cache = self.root / '.cache'

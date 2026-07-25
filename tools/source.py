@@ -118,6 +118,7 @@ from _lib import (
     resolve_root_arg,
     result_fail,
     write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -773,12 +774,19 @@ def run_source_extract(
         result.add('info', '[dry-run] Nothing written. Re-run without --dry-run to apply.')
         return result
 
+    # Write atomically (temp file + os.replace) rather than straight into
+    # extract_path: a mid-write failure - the disk fills, the process is killed -
+    # must not leave a partial dump behind. A truncating write would, and the
+    # existence guard above would then refuse the very retry this failure message
+    # tells the user to make, stranding them on an incomplete, uninventoried file
+    # they have to hunt down and delete by hand. The atomic helper leaves the
+    # destination either absent or complete, never torn.
     try:
-        extract_path.write_text('\n'.join(parts), encoding='utf-8')
+        write_text_exact_atomic(extract_path, '\n'.join(parts))
     except OSError as e:
         return result_fail(result, 'failed',
                            f'could not write {extract_name}: {e} - check the folder '
-                           'is writable, then retry.')
+                           'is writable, then retry (nothing was left behind).')
 
     before: str | None = None
     try:

@@ -285,6 +285,44 @@ class SourceExtractTests(unittest.TestCase):
             (self.pdf.parent / f'county-history-extracted-text_{SID}.md').exists())
         self.assertTrue(any('rolled back' in m.text for m in result.messages))
 
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_dump_write_failure_leaves_no_partial_to_block_retry(self) -> None:
+        # The initial dump write goes through write_text_exact_atomic, so a
+        # mid-write failure (the disk fills as os.replace lands the temp) must
+        # leave NO extract_path behind. Otherwise the existence guard above the
+        # write would refuse the retry the failure message tells the user to
+        # make, stranding them on an incomplete, uninventoried file they would
+        # have to hunt down and delete by hand. Fail the REAL helper's os.replace
+        # so its own cleanup runs exactly as run_source_extract invokes it.
+        import _lib
+        self.pdf.write_bytes(_minimal_pdf(['Some text']))
+        record_before = self.record.read_bytes()
+        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        real_replace = _lib.os.replace
+
+        def failing_replace(src, dst, *a, **k):
+            if Path(dst) == out:
+                raise OSError('simulated disk full')
+            return real_replace(src, dst, *a, **k)
+
+        _lib.os.replace = failing_replace
+        try:
+            result = self._run()
+        finally:
+            _lib.os.replace = real_replace
+        # A plain failure, not a traceback.
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(any('could not write' in m.text for m in result.messages))
+        # No partial dump survives, so the existence guard cannot block a retry.
+        self.assertFalse(out.exists())
+        # No stray temp file left in the folder either.
+        strays = list(out.parent.glob('.*.tmp'))
+        self.assertEqual(strays, [], f'stray temp files left behind: {strays}')
+        # The dump write failed before the record edit, so the record is intact
+        # and its inventory gained nothing.
+        self.assertEqual(self.record.read_bytes(), record_before)
+        self.assertEqual(len(read_record(self.record)['meta']['files']), 1)
+
     def test_missing_pypdf_refuses_with_install_command(self) -> None:
         self.pdf.write_bytes(b'%PDF-1.4\n%%EOF\n')
         saved = sys.modules.get('pypdf')

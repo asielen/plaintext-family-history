@@ -246,5 +246,103 @@ class ExistingCompanionMoveTests(unittest.TestCase):
                          'destination folder must be empty after rollback')
 
 
+class TwoCompanionConflictTests(unittest.TestCase):
+    """A populated companion beside the stub AND another already at the
+    destination is a split the engine must NOT resolve silently: moving the
+    record would keep the destination file and strand the stub one under
+    people/stubs/. Promotion must REFUSE and hand the reconcile to the human.
+
+    The ordinary single-companion cases (MOVE / SKIP / CREATE) must be
+    untouched, so each is re-asserted here alongside the refusal."""
+
+    def _companion_name(self) -> str:
+        return f'kid__ann_research_{KID}.md'
+
+    def test_two_companions_refuse_and_write_nothing(self) -> None:
+        root, record_path, dest = _archive()
+        cname = self._companion_name()
+        source_companion = record_path.parent / cname
+        dest_companion = dest / cname
+        source_companion.write_text('STUB-SIDE NOTES', encoding='utf-8')
+        dest_companion.write_text('DEST-SIDE NOTES', encoding='utf-8')
+
+        with self.assertRaises(PromotionError) as ctx:
+            promote_person_record(root, KID, record_path, dest)
+        msg = str(ctx.exception)
+        # The message names BOTH companion paths so the human can reconcile.
+        self.assertIn(str(source_companion), msg)
+        self.assertIn(str(dest_companion), msg)
+
+        # Nothing moved or written: record still in stubs/ as a stub, both
+        # companions intact with their original notes.
+        self.assertTrue(record_path.exists(), 'record must stay in stubs/')
+        self.assertEqual(record_path.read_text(encoding='utf-8'), STUB_RECORD)
+        self.assertFalse((dest / record_path.name).exists(),
+                         'no record written to destination')
+        self.assertEqual(source_companion.read_text(encoding='utf-8'),
+                         'STUB-SIDE NOTES')
+        self.assertEqual(dest_companion.read_text(encoding='utf-8'),
+                         'DEST-SIDE NOTES')
+
+    def test_two_companions_refuse_in_dry_run_too(self) -> None:
+        # The check lives in the PLAN phase, so a preview surfaces it and still
+        # writes nothing - the human learns of the conflict before committing.
+        root, record_path, dest = _archive()
+        cname = self._companion_name()
+        source_companion = record_path.parent / cname
+        dest_companion = dest / cname
+        source_companion.write_text('STUB-SIDE NOTES', encoding='utf-8')
+        dest_companion.write_text('DEST-SIDE NOTES', encoding='utf-8')
+
+        with self.assertRaises(PromotionError):
+            promote_person_record(root, KID, record_path, dest, dry_run=True)
+        self.assertEqual(source_companion.read_text(encoding='utf-8'),
+                         'STUB-SIDE NOTES')
+        self.assertEqual(dest_companion.read_text(encoding='utf-8'),
+                         'DEST-SIDE NOTES')
+
+    def test_only_destination_companion_skips_and_still_promotes(self) -> None:
+        # SKIP: a companion at the destination but NONE beside the stub. No
+        # source file is stranded, so this stays the ordinary skip - the record
+        # still promotes and the destination companion is left exactly as is.
+        root, record_path, dest = _archive()
+        cname = self._companion_name()
+        dest_companion = dest / cname
+        dest_companion.write_text('DEST NOTES', encoding='utf-8')
+
+        plan = promote_person_record(root, KID, record_path, dest)
+        self.assertEqual(plan['status'], 'ok')
+        self.assertFalse(plan['research_move'], 'no companion to move')
+        self.assertFalse(plan['research_create'], 'destination one is kept')
+        self.assertTrue((dest / record_path.name).exists(), 'record promoted')
+        self.assertFalse(record_path.exists(), 'stub path vacated')
+        self.assertEqual(dest_companion.read_text(encoding='utf-8'),
+                         'DEST NOTES', 'destination companion untouched')
+
+    def test_only_source_companion_moves(self) -> None:
+        # MOVE: a companion beside the stub, none at the destination -> it
+        # travels with the record. (Mirror of ExistingCompanionMoveTests, kept
+        # here so the three-fate matrix reads in one place.)
+        root, record_path, dest = _archive()
+        cname = self._companion_name()
+        source_companion = record_path.parent / cname
+        source_companion.write_text('TRAVELING NOTES', encoding='utf-8')
+
+        plan = promote_person_record(root, KID, record_path, dest)
+        self.assertTrue(plan['research_move'])
+        self.assertFalse(plan['research_create'])
+        self.assertFalse(source_companion.exists(), 'source vacated')
+        self.assertEqual((dest / cname).read_text(encoding='utf-8'),
+                         'TRAVELING NOTES')
+
+    def test_no_companion_creates(self) -> None:
+        # CREATE: none anywhere -> a fresh blank companion is scaffolded once.
+        root, record_path, dest = _archive()
+        plan = promote_person_record(root, KID, record_path, dest)
+        self.assertFalse(plan['research_move'])
+        self.assertTrue(plan['research_create'])
+        self.assertEqual(len(list(dest.glob('*_research_*.md'))), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
