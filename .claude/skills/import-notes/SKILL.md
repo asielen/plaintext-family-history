@@ -36,11 +36,16 @@ is worked file by file.
 - **Every write is a confirmed routing.** The skill proposes a home per chunk; the human rules on
   each. A grouped reply ("file 1–6 as proposed, 7 is a question") is one decision per chunk —
   grouping is presentation, never judgment. An unruled chunk stays unfiled.
-- **The original is preserved by default.** The pile is never deleted, rewritten, or reordered; the
-  one permitted touch is an appended, clearly-marked progress line. Dissolving a scraps file
-  happens only when every chunk has landed and the human explicitly says to.
-- **Sessions are an interface, not memory** (_STANDARD.md §7): a half-imported pile leaves a dated
-  resume marker in the pile or the source record, so next session picks up where this one stopped.
+- **The original is never modified.** The pile is never edited, rewritten, reordered, renamed, or
+  moved - not even to append a progress line (AGENTS.md L71: originals are never modified in
+  content, name, or location, and never deleted by tools). Dissolving applies only to a throwaway
+  scratch file the human pasted or created as working scraps, and only after every chunk has
+  landed and the human explicitly says to; a real archive original - anything living in `inbox/`,
+  `documents/`, or another asset location - is never deleted or altered by this skill.
+- **Sessions are an interface, not memory** (_STANDARD.md §7): a half-imported pile leaves its
+  dated resume state in a SEPARATE place - a `{stem}.import.md` sidecar note beside the pile, a
+  scratch note under `notes/research/`, or the source record once it exists - never written into
+  the named original, so next session picks up where this one stopped.
 
 ## Flow
 
@@ -130,11 +135,13 @@ is worked file by file.
      'old-research-notes.md', 2026-07-22; routing confirmed."). IDs in the prose are
      `[[ID|Name]]`.
 
-6. **Leave a resume marker if the session ends mid-pile.** Scraps mode: append one clearly marked
-   line at the end of the original — `<!-- import-notes 2026-07-22: chunks 1-9 filed; "London
-   letters" section onward not yet -->` — appended, never edited in. Keep mode: the coverage note
-   lives in the source record once it exists (`fha source note <S-id> --text "…"`),
-   `process-source`'s own long-document doctrine.
+6. **Leave a resume marker if the session ends mid-pile - never inside the original.** Write the
+   dated resume state to a SEPARATE place, never appended to the named pile. Scraps mode: a
+   `{stem}.import.md` sidecar note beside the pile, or a scratch note under `notes/research/`,
+   carrying the marker — `<!-- import-notes 2026-07-22: chunks 1-9 filed; "London letters" section
+   onward not yet -->`. Keep mode: the coverage note lives in the source record once it exists
+   (`fha source note <S-id> --text "…"`), `process-source`'s own long-document doctrine. Either
+   way the original file is left byte-for-byte as the human handed it over.
 
 7. **Close out.** `fha index`, then `fha normalize-links --dry-run` (this is a write-heavy skill —
    the tidy pass catches a bracket slip), then `fha lint`. Tell him where everything landed in
@@ -146,8 +153,11 @@ is worked file by file.
 ## Guardrails
 
 - Zero claims drafted — evidence becomes claims only through `process-source` → `review-claims`.
-- Never delete, rewrite, or reorder the human's notes; the one permitted touch is the appended,
-  clearly-marked progress line. A dissolve needs an explicit instruction, after everything landed.
+- Never delete, rewrite, reorder, rename, move, or append to the human's original notes - resume
+  state goes to a `{stem}.import.md` sidecar or a `notes/research/` scratch note, never into the
+  pile (AGENTS.md L71). A dissolve applies only to a throwaway scratch file the human pasted as
+  working scraps, needs an explicit instruction, and only after everything landed; a real archive
+  original is never dissolved.
 - No chunk is filed without the human's ruling on it; silence or a topic change is not a ruling.
 - This skill never mints person stubs and never writes to a source's `## Claims`.
 - Imported questions and hypotheses carry `origin: human` plus a dated import `context:`/update
@@ -171,7 +181,8 @@ is worked file by file.
   this skill.
 - Imported questions, hypotheses, and log entries carry `origin: human`, a dated import note, and
   `[[ ]]`-wrapped IDs in prose; nothing duplicates an existing question or hypothesis.
-- The original pile is intact (plus at most the appended resume marker) unless the human
-  explicitly dissolved a fully-filed scraps file.
+- The original pile is byte-for-byte intact - its resume state lives in a `{stem}.import.md`
+  sidecar or a `notes/research/` scratch note, never in the pile - unless the human explicitly
+  dissolved a fully-filed throwaway scratch file.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

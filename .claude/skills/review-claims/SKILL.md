@@ -117,7 +117,10 @@ its claims to the people asked about and leave the rest for later sessions.
      "want me to jot down what would settle this, so it resurfaces when that record shows up?" Only on
      his explicit yes, write one of:
      - an **open question**, hand-written per SPEC §17's shape — an `## Q:` heading naming the question;
-       `- origin: human`; `- status: open`; `- refs: [[C-id]]`; a dated context line noting what was
+       `- origin: human`; `- status: open`; `- refs: [C-id]` (single brackets, comma-separated for
+       several - e.g. `- refs: [C-abc1234def, C-...]`; the `[[C-…]]` double-bracket form is for
+       PROSE links only, and in this structured field the report's question parser stops at the
+       first `]` and normalizes it to an invalid ref); a dated context line noting what was
        parked and why — into the person's `_research` file when the question is person-specific, else
        `notes/questions.md`. If a same-question block already exists, **append a context line to it**
        rather than writing a twin;
