@@ -140,6 +140,78 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(len(read_record(self.record)['meta']['files']), 1)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_page_extraction_error_marked_failed_not_empty(self) -> None:
+        # A pypdf error on ONE page must not be recorded as "no text layer":
+        # that would make a parser failure look like confirmed absence. The good
+        # page's text is still written, the failed page is marked distinctly, and
+        # the run exits nonzero naming the page.
+        import pypdf
+        self.pdf.write_bytes(_minimal_pdf(['Good page one', 'Good page two']))
+        real_cls = pypdf.PdfReader
+
+        class _Page:
+            def __init__(self, real, fail):
+                self._real, self._fail = real, fail
+
+            def extract_text(self, *a, **k):
+                if self._fail:
+                    raise ValueError('pypdf boom on this page')
+                return self._real.extract_text(*a, **k)
+
+        class _Reader:
+            def __init__(self, *a, **k):
+                pages = list(real_cls(*a, **k).pages)
+                self.pages = [_Page(pages[0], False), _Page(pages[1], True)]
+
+        pypdf.PdfReader = _Reader
+        try:
+            result = self._run()
+        finally:
+            pypdf.PdfReader = real_cls
+
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result.data.get('error_pages'), [2])
+        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        self.assertTrue(out.exists())                    # the good page is kept
+        text = out.read_text(encoding='utf-8')
+        self.assertIn('Good page one', text)
+        self.assertIn('extraction FAILED', text)         # distinct error marker
+        self.assertNotIn('[Page 2]\n(no text layer', text)   # NOT mislabeled empty
+        self.assertTrue(any('FAILED on page' in m.text for m in result.messages))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_all_pages_error_refuses_not_confirmed_absence(self) -> None:
+        # Every page errors: this is a parser failure, NOT a scanned-image PDF.
+        # Refuse writing anything rather than emit a dump that reads as "no text
+        # on any page" (which would send the human away from real evidence).
+        import pypdf
+        self.pdf.write_bytes(_minimal_pdf(['x', 'y']))
+        real_cls = pypdf.PdfReader
+
+        class _Reader:
+            def __init__(self, *a, **k):
+                n = len(list(real_cls(*a, **k).pages))
+
+                class _P:
+                    def extract_text(self, *a, **k):
+                        raise ValueError('pypdf boom')
+                self.pages = [_P() for _ in range(n)]
+
+        pypdf.PdfReader = _Reader
+        try:
+            result = self._run()
+        finally:
+            pypdf.PdfReader = real_cls
+
+        self.assertEqual(result['status'], 'extract-error')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertFalse(
+            (self.pdf.parent / f'county-history-extracted-text_{SID}.md').exists())
+        self.assertTrue(any('FAILED on every selected' in m.text for m in result.messages))
+        self.assertFalse(any('scanned-image' in m.text for m in result.messages))
+        self.assertEqual(len(read_record(self.record)['meta']['files']), 1)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_pages_subset_and_out_of_range(self) -> None:
         self.pdf.write_bytes(_minimal_pdf(['One', 'Two', 'Three']))
         # Out-of-range first (nothing extracted yet): names the real count.
@@ -258,29 +330,30 @@ class SourceExtractTests(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_record_write_failure_restores_the_record(self) -> None:
-        # write_text_exact truncates before writing, so a mid-write failure
-        # can destroy the record - the rollback must restore the pristine
-        # text, and only then claim everything was rolled back.
+        # The record write is atomic (write_text_exact_atomic), so a failed
+        # forward write leaves the record untouched; the rollback still restores
+        # the pristine text and deletes the dump, then claims a clean rollback.
+        # The failure is scoped to the RECORD path (the dump write, also atomic,
+        # must succeed) and to its FIRST write (the restore must land).
         self.pdf.write_bytes(_minimal_pdf(['Some text']))
         before = self.record.read_bytes()
-        real_write = source_mod.write_text_exact
-        calls = {'n': 0}
+        real_write = source_mod.write_text_exact_atomic
+        record_writes = {'n': 0}
 
         def failing_write(path, text):
-            calls['n'] += 1
-            if calls['n'] == 1:
-                # Simulate a truncating write that dies partway.
-                Path(path).write_text(text[:20], encoding='utf-8')
-                raise OSError('simulated disk full')
+            if Path(path).name == self.record.name:
+                record_writes['n'] += 1
+                if record_writes['n'] == 1:
+                    raise OSError('simulated disk full')     # forward record write
             return real_write(path, text)
 
-        source_mod.write_text_exact = failing_write
+        source_mod.write_text_exact_atomic = failing_write
         try:
             result = self._run()
         finally:
-            source_mod.write_text_exact = real_write
+            source_mod.write_text_exact_atomic = real_write
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self.record.read_bytes(), before)      # restored
+        self.assertEqual(self.record.read_bytes(), before)      # restored/untouched
         self.assertFalse(
             (self.pdf.parent / f'county-history-extracted-text_{SID}.md').exists())
         self.assertTrue(any('rolled back' in m.text for m in result.messages))

@@ -366,6 +366,19 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(result['missing'], 0)
         self.assertTrue(any('not reachable' in m.text for m in result.messages))
 
+    def test_unreachable_documents_still_runs_the_photo_pass(self) -> None:
+        # An offline documents drive must NOT short-circuit the independent photo
+        # pass (TOOLING §9's one-command contract). With no photo catalog present,
+        # the photo pass reaches its own "No photo catalog" notice - proof it ran
+        # rather than being skipped by the documents early-return.
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: Q:/no/such/drive\n', encoding='utf-8')
+        config = load_fha_yaml(self.root)
+        result = reconcile.run_reconcile(self.root, config)
+        msgs = [m.text for m in result.messages]
+        self.assertTrue(any('not reachable' in t for t in msgs), msgs)
+        self.assertTrue(any('No photo catalog' in t for t in msgs), msgs)
+
 
 if __name__ == '__main__':
     unittest.main()

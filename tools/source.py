@@ -117,7 +117,6 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     result_fail,
-    write_text_exact,
     write_text_exact_atomic,
     yaml_inline,
 )
@@ -263,7 +262,9 @@ def run_source_note(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text_in))
+        # Atomic: a source record is often the sole copy of its evidence, so a
+        # mid-write failure must leave it untouched, not truncated.
+        write_text_exact_atomic(path, reapply_newline(new_text, text_in))
     except OSError as e:
         return _refuse(
             'refused',
@@ -382,7 +383,9 @@ def run_source_edit_note(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text_in))
+        # Atomic: a source record is often the sole copy of its evidence, so a
+        # mid-write failure must leave it untouched, not truncated.
+        write_text_exact_atomic(path, reapply_newline(new_text, text_in))
     except OSError as e:
         return _refuse(
             'refused',
@@ -475,6 +478,7 @@ def _make_group_help(parser: argparse.ArgumentParser):
 
 _EXTRACT_ROLE = 'extracted-text'
 _NO_TEXT_PLACEHOLDER = '(no text layer on this page - read it with vision)'
+_EXTRACT_ERROR_PLACEHOLDER = '(text extraction FAILED on this page - a parser error, not confirmed absence)'
 # A filed document's name ends `_{S-id}.{ext}` (SPEC §13); the derived file
 # slots its role suffix in front of the id, same grammar --more uses.
 _SID_SUFFIX_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
@@ -718,12 +722,20 @@ def run_source_extract(
     ]
     pages_with_text = 0
     empty_pages: list[int] = []
+    error_pages: list[int] = []
     for page_no in selected:
+        parts.append(f'[Page {page_no}]')
         try:
             text = (reader.pages[page_no - 1].extract_text() or '').strip()
-        except Exception:
-            text = ''
-        parts.append(f'[Page {page_no}]')
+        except Exception as page_exc:
+            # A parser failure on ONE page is not "this page has no text" - it is
+            # an unknown. Recording it as empty would let a pypdf error masquerade
+            # as confirmed absence and quietly drop real evidence, so it is tracked
+            # separately, marked distinctly in the dump, and surfaced as a warning.
+            error_pages.append(page_no)
+            parts.append(f'{_EXTRACT_ERROR_PLACEHOLDER} ({page_exc})')
+            parts.append('')
+            continue
         if text:
             pages_with_text += 1
             parts.append(text)
@@ -732,8 +744,25 @@ def run_source_extract(
             parts.append(_NO_TEXT_PLACEHOLDER)
         parts.append('')
     result.data['pages_with_text'] = pages_with_text
+    result.data['error_pages'] = error_pages
 
     if pages_with_text == 0:
+        if error_pages:
+            # Not a scanned-image PDF - the extractor FAILED. Refuse rather than
+            # write a dump that labels every page as empty: a parser error read
+            # as confirmed absence would send the human away from real evidence.
+            shown = (', '.join(str(p) for p in error_pages[:10])
+                     + (' …' if len(error_pages) > 10 else ''))
+            result.data['status'] = 'extract-error'
+            result.exit_code = EXIT_WARNINGS
+            result.add('warning',
+                       f'{pdf_path.name}: text extraction FAILED on every selected '
+                       f'page ({shown}) - a parser error, not confirmed absence of '
+                       'text, so nothing was written (an empty dump would wrongly '
+                       'read as "nothing on these pages"). The PDF may be damaged or '
+                       'use an unsupported encoding; try repairing/re-saving it, or '
+                       'read the pages with vision.')
+            return result
         result.data['status'] = 'no-text'
         result.exit_code = EXIT_WARNINGS
         result.add('warning',
@@ -764,7 +793,10 @@ def run_source_extract(
     coverage = (f'{pages_with_text} of {len(selected)} selected page(s) carry text'
                 + (f' (no text layer on: '
                    f'{", ".join(str(p) for p in empty_pages[:10])}'
-                   f'{" …" if len(empty_pages) > 10 else ""})' if empty_pages else ''))
+                   f'{" …" if len(empty_pages) > 10 else ""})' if empty_pages else '')
+                + (f' (extraction FAILED on: '
+                   f'{", ".join(str(p) for p in error_pages[:10])}'
+                   f'{" …" if len(error_pages) > 10 else ""})' if error_pages else ''))
 
     if dry_run:
         result.data['status'] = 'dry-run'
@@ -792,7 +824,9 @@ def run_source_extract(
     try:
         before = read_text_exact(record_path)
         after = append_file_entry_to_record(before, entry_lines)
-        write_text_exact(record_path, reapply_newline(after, before))
+        # Atomic, matching the extract write above: the record is often the sole
+        # copy of its evidence, so a mid-write failure must leave it untouched.
+        write_text_exact_atomic(record_path, reapply_newline(after, before))
     except Exception as e:
         # Roll back BOTH sides of the partial write. The stray dump's cleanup
         # must NEVER be able to skip the record restore: on Windows a virus
@@ -806,14 +840,15 @@ def run_source_extract(
         except OSError:
             stray_dump = extract_path
 
-        # write_text_exact is a truncating write, so a mid-write failure can
-        # leave the RECORD partial - restore the pristine text we still hold
-        # (the attach_more discipline) and only claim a clean rollback when
-        # the restore actually landed.
+        # The atomic write above leaves the record either fully updated or
+        # untouched, never torn - but if it landed the new entry before some
+        # LATER step raised, restore the pristine text we still hold (the
+        # attach_more discipline), also atomically, and only claim a clean
+        # rollback when the restore actually landed.
         restored = before is None
         if before is not None:
             try:
-                write_text_exact(record_path, before)
+                write_text_exact_atomic(record_path, before)
                 restored = True
             except OSError:
                 restored = False
@@ -846,6 +881,17 @@ def run_source_extract(
     result.add('info', f'Wrote {extract_name} - {coverage}.')
     result.add('info', f'Added a files: entry (role: {_EXTRACT_ROLE}, derived: true) '
                        f'to {record_path.name}.')
+    if error_pages:
+        # Some pages carried text, so the dump is worth keeping - but a page the
+        # extractor errored on is marked FAILED (not empty) in it, and the run
+        # exits nonzero so the failure is not mistaken for confirmed absence.
+        shown = (', '.join(str(p) for p in error_pages[:10])
+                 + (' …' if len(error_pages) > 10 else ''))
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   f'Text extraction FAILED on page(s) {shown} - marked as errors '
+                   'in the dump (not "no text"). Read those pages with vision; do '
+                   'not treat them as blank.')
     result.add('info',
                'Next: mine the dump like a transcript, anchoring every claim '
                '`anchor: "page N"`; run `fha index` so search sees the text.',

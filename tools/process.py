@@ -184,7 +184,7 @@ from _lib import (
     select_variation_primary,
     is_working_copy,
     variant_role,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -2773,6 +2773,16 @@ def process_refile(
     # refusal happens with the archive untouched.
     if to == _PHOTO_DIR:
         photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
+        if not photos_root.is_dir():
+            # The destination root must be REACHABLE before planning. Without this,
+            # the later dest_dir.mkdir(parents=True) would recreate an unplugged
+            # external drive's mount path on the local disk and move the original
+            # into it - hiding the file under the real drive when it reconnects.
+            raise ProcessError(
+                f'the photos root is not reachable at {photos_root} - if it lives '
+                'on an external drive, plug it in, then re-run. (Refusing rather '
+                'than recreating the mount path on the local disk, which would '
+                'strand the file when the drive reconnects.)')
         if not dest:
             raise ProcessError(
                 '--dest is required when refiling into the photo library: fha '
@@ -2783,6 +2793,14 @@ def process_refile(
         new_name = _photo_library_name(src, entry)
     else:
         documents_root = resolve_path('documents', fha_config, archive_root)
+        if not documents_root.is_dir():
+            # Same reachability guard as the photos direction: never recreate an
+            # offline root's mount path on the local disk under the moved file.
+            raise ProcessError(
+                f'the documents root is not reachable at {documents_root} - if it '
+                'lives on an external drive, plug it in, then re-run. (Refusing '
+                'rather than recreating the mount path on the local disk, which '
+                'would strand the file when the drive reconnects.)')
         source_type = str(meta.get('source_type') or _DEFAULT_DOCUMENT_TYPE)
         if dest:
             dest_dir = _validate_dest_subpath(documents_root, dest, 'documents')
@@ -2969,7 +2987,10 @@ def process_refile(
                     else:
                         keyword_embedded = True
 
-        write_text_exact(record_path, reapply_newline(final_text, old_text))
+        # Atomic (temp + os.replace): refile is documented as one atomic
+        # transaction (BUILD M11.6), so a mid-write failure after the asset has
+        # moved must leave the record fully written or untouched, never torn.
+        write_text_exact_atomic(record_path, reapply_newline(final_text, old_text))
     except Exception as e:
         # Best-effort rollback that never claims more than it did. Every step is
         # attempted even when an earlier one fails, failures are collected rather
@@ -3012,7 +3033,9 @@ def process_refile(
             record_text = reapply_newline(final_text, old_text)
         record_consistent = True
         try:
-            write_text_exact(record_path, record_text)
+            # Atomic, same as the forward write: the rollback restore must not
+            # be able to tear the record it is trying to make whole.
+            write_text_exact_atomic(record_path, record_text)
         except Exception:
             record_consistent = False
 

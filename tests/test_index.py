@@ -962,6 +962,24 @@ class ExtractedTextIndexingTests(unittest.TestCase):
         # The dumped text is searchable by a word from inside a page.
         self.assertEqual(self._matches('Marsh'), ['s-7a7a7a7a7a'])
 
+    def test_extracted_text_is_found_through_the_json_ranked_search(self) -> None:
+        # The finding: transcripts_fts is populated, but the JSON/workbench
+        # backend (find._ranked_search, behind search_json + serve.py) queried
+        # only notes_fts - so `fha find --json` could not find extracted PDF
+        # text even after `fha index`. It must query transcripts_fts too.
+        import find
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            hits = find._ranked_search(conn, 'Marsh', ['text'], 20)
+        finally:
+            conn.close()
+        text_hits = [h for h in hits if h['type'] == 'text']
+        self.assertTrue(text_hits, hits)
+        self.assertTrue(any('extracted-text' in h['detail'] for h in text_hits),
+                        text_hits)
+
     def test_upsert_matches_full_build_and_never_duplicates(self) -> None:
         index.build_index(self.root, {})
         full = self._transcript_rows()

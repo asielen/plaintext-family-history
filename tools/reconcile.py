@@ -496,48 +496,51 @@ def run_reconcile(
     documents_root = resolve_path('documents', fha_config, archive_root)
     if not documents_root.is_dir():
         # An unplugged external drive must not read as "everything vanished" -
-        # the same posture photoindex reconcile takes for its root.
+        # the same posture photoindex reconcile takes for its root. This is a
+        # warning, NOT an early return: the photo pass below is independent (its
+        # own root and catalog), and TOOLING §9's one-command contract means an
+        # offline documents drive must not also silence the photo reconciliation.
         result.add('warning',
                    f'The documents folder is not reachable at {documents_root} - '
-                   'nothing checked. If it lives on an external drive, plug it '
-                   'in; if the location changed, update roots: in fha.yaml.')
-        return _finalize(result)
-
-    plan = _plan(archive_root, fha_config, documents_root, result)
-    heals, ambiguous = plan['heals'], plan['ambiguous']
-    missing, unlisted = plan['missing'], plan['unlisted']
-    heal_count = sum(len(v) for v in heals.values())
-    result.data.update({'healed': heal_count, 'ambiguous': len(ambiguous),
-                        'missing': len(missing), 'unlisted': len(unlisted)})
-
-    if dry_run:
-        for rec_path, pairs in sorted(heals.items()):
-            for old_alias, new_alias in pairs:
-                result.add('info',
-                           f'[dry-run] Would re-tie {old_alias} -> {new_alias} '
-                           f'({rec_path.name})')
+                   'documents not checked. If it lives on an external drive, plug '
+                   'it in; if the location changed, update roots: in fha.yaml. '
+                   '(The photo pass below still ran.)')
     else:
-        # Report what actually landed, not what was planned - a refused
-        # rewrite must not inflate the healed count.
-        result.data['healed'] = _apply(archive_root, heals, result)
+        plan = _plan(archive_root, fha_config, documents_root, result)
+        heals, ambiguous = plan['heals'], plan['ambiguous']
+        missing, unlisted = plan['missing'], plan['unlisted']
+        heal_count = sum(len(v) for v in heals.values())
+        result.data.update({'healed': heal_count, 'ambiguous': len(ambiguous),
+                            'missing': len(missing), 'unlisted': len(unlisted)})
 
-    for line in ambiguous:
-        result.add('warning', line)
-    for line in missing:
-        result.add('warning', line)
-    for sid, aliases in sorted(unlisted.items()):
-        shown = ', '.join(sorted(aliases))
-        result.add('warning',
-                   f'{shown} carries {sid.upper()} but that record does not list it - '
-                   'attach it with `fha process <primary-file> --more FILE role`, '
-                   'or add a files: entry to the record.')
+        if dry_run:
+            for rec_path, pairs in sorted(heals.items()):
+                for old_alias, new_alias in pairs:
+                    result.add('info',
+                               f'[dry-run] Would re-tie {old_alias} -> {new_alias} '
+                               f'({rec_path.name})')
+        else:
+            # Report what actually landed, not what was planned - a refused
+            # rewrite must not inflate the healed count.
+            result.data['healed'] = _apply(archive_root, heals, result)
 
-    if heal_count and not dry_run:
-        result.add('info',
-                   'Run `fha index` so searches see the new locations, and '
-                   '`fha lint` to confirm everything is tied down.')
-    elif not (heal_count or ambiguous or missing or unlisted):
-        result.add('info', 'Documents all tied to their records - nothing to heal.')
+        for line in ambiguous:
+            result.add('warning', line)
+        for line in missing:
+            result.add('warning', line)
+        for sid, aliases in sorted(unlisted.items()):
+            shown = ', '.join(sorted(aliases))
+            result.add('warning',
+                       f'{shown} carries {sid.upper()} but that record does not list it - '
+                       'attach it with `fha process <primary-file> --more FILE role`, '
+                       'or add a files: entry to the record.')
+
+        if heal_count and not dry_run:
+            result.add('info',
+                       'Run `fha index` so searches see the new locations, and '
+                       '`fha lint` to confirm everything is tied down.')
+        elif not (heal_count or ambiguous or missing or unlisted):
+            result.add('info', 'Documents all tied to their records - nothing to heal.')
 
     # Photos side (TOOLING §9: one command reconciles every file type). Only
     # when a catalog exists - an archive that never built one should not fail.

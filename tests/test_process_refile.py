@@ -80,7 +80,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self._orig_remove = process._run_exiftool_remove_source
         self._orig_prompt = process._prompt
         self._orig_interactive = process._stdin_is_interactive
-        self._orig_write_text_exact = process.write_text_exact
+        self._orig_write_text_exact = process.write_text_exact_atomic
 
     def tearDown(self) -> None:
         process._run_exiftool_read_keywords = self._orig_read
@@ -88,7 +88,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         process._run_exiftool_remove_source = self._orig_remove
         process._prompt = self._orig_prompt
         process._stdin_is_interactive = self._orig_interactive
-        process.write_text_exact = self._orig_write_text_exact
+        process.write_text_exact_atomic = self._orig_write_text_exact
         self._tmp.cleanup()
 
     # -- fixture builders ------------------------------------------------------
@@ -488,7 +488,7 @@ class ProcessRefileTestCase(unittest.TestCase):
             if writes['n'] == 1:
                 raise OSError('simulated disk full')
             return real_write(path, text)
-        process.write_text_exact = flaky_write
+        process.write_text_exact_atomic = flaky_write
 
         rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
 
@@ -503,6 +503,25 @@ class ProcessRefileTestCase(unittest.TestCase):
                          'a folder this run created is removed again')
         self.assertNotIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []),
                          'the just-embedded keyword is rolled back')
+
+    def test_refile_refuses_when_destination_root_is_offline(self) -> None:
+        # The photos root's external drive is unplugged. Refile must refuse
+        # rather than let dest_dir.mkdir(parents=True) recreate the mount path
+        # on the local disk and bury the moved original under it.
+        import shutil as _shutil
+        self._install_photo_store()
+        asset, record = self._write_doc_source()
+        before = record.read_bytes()
+        _shutil.rmtree(self.archive / 'photos')          # destination root offline
+
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('photos root is not reachable', err)
+        self.assertEqual(record.read_bytes(), before, 'the record is untouched')
+        self.assertTrue(asset.exists(), 'the original stays put')
+        self.assertFalse((self.archive / 'photos').exists(),
+                         'the offline mount path was NOT recreated on local disk')
 
     def test_forward_move_partial_that_cannot_be_removed_is_named(self) -> None:
         # A cross-filesystem forward move whose copy dies mid-write leaves a
@@ -566,7 +585,7 @@ class ProcessRefileTestCase(unittest.TestCase):
             if writes['n'] == 1:
                 raise OSError('simulated disk full on the record write')
             return real_write(path, text)
-        process.write_text_exact = flaky_write
+        process.write_text_exact_atomic = flaky_write
 
         real_move = process._move_file
 
@@ -608,7 +627,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         def always_boom(path, text):
             raise OSError('simulated disk full')
-        process.write_text_exact = always_boom
+        process.write_text_exact_atomic = always_boom
 
         real_move = process._move_file
 
@@ -646,7 +665,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         def always_boom(_path, _text):
             raise OSError('simulated disk full')
-        process.write_text_exact = always_boom
+        process.write_text_exact_atomic = always_boom
 
         rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', '1880s'])
 
