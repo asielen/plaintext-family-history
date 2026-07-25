@@ -636,7 +636,7 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "7aaaca4778112173ce90f57821ed92a9849cac930f22802b1fbf67288fb55d6f",
+      "sha256": "fae261814c30ca5b1214cf0d742955295a498aea36b59deaf6d294488b785761",
       "spec_version": "1.2"
     },
     {
@@ -804,7 +804,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "d548b237b3109c63051b0afa134658e0966478099dc68fb2a81085c14eadf557",
+      "sha256": "6b861438b39d0c22912e799661245c6973ee5e90d9732974aa52a8355bc153cf",
       "spec_version": "1.2"
     },
     {
