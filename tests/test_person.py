@@ -1958,6 +1958,72 @@ class PromoteTests(unittest.TestCase):
         self.assertTrue(
             (self.root / 'people' / PROMOTE_FOLDER / f'line__ma_research_{P_MA}.md').exists())
 
+    def _unlink_only_index_fails(self):
+        """A Path.unlink patch that raises for the index cache, else works.
+
+        The bug under test is a cache-invalidation unlink that fires AFTER the
+        record has already moved. We must fail ONLY that unlink (a locked or
+        read-only .cache/index.sqlite), not the moves the promotion itself
+        performs, so the archive mutation still reaches disk and we exercise
+        the exact post-mutation failure window.
+        """
+        real_unlink = Path.unlink
+
+        def fake_unlink(self, *args, **kwargs):
+            if self.name == 'index.sqlite':
+                raise PermissionError(13, 'Permission denied')
+            return real_unlink(self, *args, **kwargs)
+
+        return mock.patch.object(Path, 'unlink', fake_unlink)
+
+    def test_cache_unlink_failure_after_move_warns_without_traceback(self) -> None:
+        # The record moves, then the index-cache drop fails. The promotion
+        # already succeeded on disk and cannot be rolled back, so the result
+        # is a NON-ZERO warning (not a hard refusal) that names the stale
+        # cache path and the rebuild command - never a leaked traceback.
+        stale_cache = self.root / '.cache' / 'index.sqlite'
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self._unlink_only_index_fails():
+                res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['status'], 'ok-index-stale')
+        # The promotion itself landed: the record left stubs/ for the folder.
+        self.assertFalse(self.pa_stub.exists())
+        self.assertTrue(
+            (self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md').exists())
+        # The stale cache is still on disk (the unlink failed) - the message
+        # must own that fact and point at the fix.
+        self.assertTrue(stale_cache.exists())
+        msg = res.messages[-1].text
+        self.assertIn('index.sqlite', msg)
+        self.assertIn('promoted', msg)
+        self.assertIn('fha index', msg)
+        self.assertEqual(res.messages[-1].next_step, 'fha index')
+        # No traceback leaked to stderr.
+        self.assertNotIn('Traceback', err.getvalue())
+
+    def test_cache_unlink_failure_on_half_promotion_still_warns(self) -> None:
+        # The dangerous half the finding calls out: tier already curated by
+        # hand, so the move preserves the record mtime and an undeleted index
+        # can pass the freshness check while holding the OLD path. If the
+        # cache drop fails here, silence would be worst - assert we still warn.
+        self.pa_stub.write_text(
+            _promote_person_text(P_PA, 'Pa Line', 'M', tier='curated'),
+            encoding='utf-8')
+        self._reindex()
+        stale_cache = self.root / '.cache' / 'index.sqlite'
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self._unlink_only_index_fails():
+                res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['status'], 'ok-index-stale')
+        self.assertFalse(self.pa_stub.exists())
+        self.assertTrue(
+            (self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md').exists())
+        self.assertTrue(stale_cache.exists())
+        self.assertIn('index.sqlite', res.messages[-1].text)
+
     def test_cli_dry_run_via_fha(self) -> None:
         import fha
         out = io.StringIO()

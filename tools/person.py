@@ -1341,7 +1341,32 @@ def run_promote(
         # staleness check cannot see the move - drop the cache outright to
         # force a rebuild (the `fha views brackets --fix` rule).
         db_path = archive_root / '.cache' / 'index.sqlite'
-        db_path.unlink(missing_ok=True)
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError as exc:
+            # The record has ALREADY moved on disk - that archive mutation is
+            # done and irreversible. Only the cache drop failed here (a locked
+            # or read-only .cache/index.sqlite). This is the dangerous half:
+            # a move preserves the record's mtime, so the undeleted index
+            # still passes the freshness check while pointing at the record's
+            # OLD path - queries would silently resolve the person to a file
+            # that no longer exists there. Report the promotion as done but
+            # raise a non-zero warning that names the stale cache and the
+            # exact rebuild command, never letting the unlink traceback escape
+            # to the user (AGENTS_TOOLING: no traceback ever reaches him).
+            reason = exc.strerror or str(exc)
+            return result_fail(
+                result, 'ok-index-stale',
+                f'{label} was promoted (Ahnentafel {pos}) and the record is '
+                f'filed in people/{dest_folder.name}/ - that part worked. But '
+                f'the search index cache could not be cleared ({reason}): '
+                f'{db_path}. The record moved, so the leftover index still '
+                'points at its old location and can look up to date, which '
+                'means searches may quietly go stale until you rebuild it. '
+                f'Delete {db_path} (or just run `fha index`) to rebuild the '
+                'index and clear the stale entry.',
+                exit_code=EXIT_WARNINGS, level='warning',
+                next_step='fha index')
         result.note_changed(db_path)
         result.add('info',
                    'Next: run `fha index` to rebuild the index - the record '
