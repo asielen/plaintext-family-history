@@ -106,7 +106,7 @@ import os
 import re
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -175,23 +175,24 @@ _MUST_BE_CRLF = frozenset({'fha.cmd', 'serve.cmd'})
 
 
 def _normalize_crlf(dest: Path) -> None:
-    """Rewrite `dest` with CRLF endings, in place. No-op when already correct.
+    """Rewrite `dest` with CRLF endings, in place. Raises OSError on failure.
 
     Byte-level and idempotent: split on universal newlines, rejoin with CRLF, so
     a file that is already CRLF is rewritten identically and a mixed one is made
-    consistent. Left alone entirely if it cannot be read or written - the copy
-    itself succeeded, and the caller's checksum is taken afterwards either way.
+    consistent.
+
+    Deliberately NOT guarded. A first version swallowed read/write errors on the
+    grounds that the copy had already succeeded - which is true and beside the
+    point: what it leaves behind is an LF batch file that Windows may not run,
+    checksummed and reported as a good install. The callers already know how to
+    report a file they could not write, so the error goes to them. (Fourth time
+    in this review that "nothing is lost" hid a real consequence; the copy
+    landing is not the same as the file working.)
     """
-    try:
-        raw = dest.read_bytes()
-    except OSError:
-        return
+    raw = dest.read_bytes()
     fixed = b'\r\n'.join(raw.replace(b'\r\n', b'\n').split(b'\n'))
     if fixed != raw:
-        try:
-            dest.write_bytes(fixed)
-        except OSError:
-            pass
+        dest.write_bytes(fixed)
 
 _ROOT_LAUNCHERS = (
     'serve.cmd',
@@ -510,6 +511,7 @@ def load_manifest(repo_root: Path) -> dict:
     # through - turns what would be an AttributeError or KeyError raised
     # mid-operation, potentially after files have already moved, into one plain
     # refusal before anything is touched.
+    seen_paths: dict[str, int] = {}
     for position, entry in enumerate(manifest['files']):
         if not isinstance(entry, dict) or not isinstance(entry.get('path'), str) \
                 or not entry['path']:
@@ -531,6 +533,20 @@ def load_manifest(repo_root: Path) -> dict:
         # so an explicit null is precisely the case that reaches `repo_root /
         # None`. Treating it as "absent" here would let the reported crash
         # straight through.
+        # One archive file, one entry. Two entries naming the same destination
+        # install both (last writer wins) while the stamp records a single
+        # checksum, and every later update classifies them independently - so the
+        # file alternates between the two sources on each run, for as long as the
+        # archive lives.
+        if entry['path'] in seen_paths:
+            raise ScaffoldError(
+                f"{path} lists {entry['path']!r} twice (positions "
+                f"{seen_paths[entry['path']]} and {position}). Each archive file "
+                f"must have exactly one source and one lifecycle, or updates "
+                f"would flip it between them. Re-download the plaintext tools."
+            )
+        seen_paths[entry['path']] = position
+
         # Containment, before any command joins these onto a root. `path` is
         # written to inside the archive and `src` is read from inside the
         # workshop; neither may point outside the folder the human named.
@@ -587,6 +603,36 @@ def _refuse_directory_destinations(archive_root: Path, files: list[dict]) -> Non
     standing between a damaged packing list and the genealogy itself - and the
     records are the thing the tools exist to protect, not the tools.
     """
+    # A symlink is the other way a contained path reaches outside. `is_dir()`
+    # follows links, so a `notes/.gitkeep` symlinked to something external looks
+    # like an ordinary missing file here, and `shutil.copy2` then writes THROUGH
+    # it - replacing a file outside the archive and exiting 0. Ancestors count
+    # too: a symlinked `notes/` puts every path beneath it outside.
+    #
+    # Checked with lstat semantics (`is_symlink`), never by resolving, and only
+    # over ancestors that already exist - the ones install would descend into.
+    links: list[str] = []
+    for entry in files:
+        rel = PurePosixPath(entry['path'])
+        for depth in range(1, len(rel.parts) + 1):
+            here = archive_root / Path(*rel.parts[:depth])
+            if here.is_symlink():
+                links.append(f"{entry['path']} (via {'/'.join(rel.parts[:depth])})"
+                             if depth < len(rel.parts) else entry['path'])
+                break
+            if not here.exists():
+                break
+    if links:
+        listing = '\n  '.join(sorted(set(links))[:10])
+        more = '' if len(set(links)) <= 10 else f'\n  …and {len(set(links)) - 10} more'
+        raise ScaffoldError(
+            f"{archive_root} has symbolic link(s) where tool files belong:\n  "
+            f"{listing}{more}\n"
+            f"Writing through a link would change whatever it points at, which "
+            f"may be outside your archive entirely. Nothing has been changed. "
+            f"Replace the link(s) with real files or remove them, then re-run."
+        )
+
     clashes = [
         entry['path'] for entry in files
         if (archive_root / entry['path']).is_dir()
@@ -1311,12 +1357,16 @@ def run_update_tools(
         tmp = dest.with_suffix(dest.suffix + '.fha-tmp')
         try:
             shutil.copy2(src, tmp)
+            # Fix the line endings BEFORE the swap, so the destination is only
+            # ever replaced by a file that is already correct - a failure here
+            # leaves the previous launcher in place rather than a half-right new
+            # one, and reaches `_fail` like any other unwritable file.
+            if archive_path in _MUST_BE_CRLF:
+                _normalize_crlf(tmp)
             tmp.replace(dest)
         except OSError:
             tmp.unlink(missing_ok=True)
             raise
-        if archive_path in _MUST_BE_CRLF:
-            _normalize_crlf(dest)
         installed_ok[archive_path] = _sha256_file(dest)
 
     def _fail(archive_path: str, exc: OSError) -> None:

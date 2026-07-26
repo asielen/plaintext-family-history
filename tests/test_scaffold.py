@@ -611,6 +611,123 @@ class CrlfLauncherTest(unittest.TestCase):
         self.assertNotIn('has been backed up', buf.getvalue())
 
 
+class SymlinkDestinationTest(unittest.TestCase):
+    """Writing through a link changes whatever it points at, possibly outside."""
+
+    def setUp(self):
+        if os.name == 'nt':
+            self.skipTest('POSIX symlinks')
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        self.outside = self.tmp / 'SECRET.txt'
+        _write(self.outside, 'private\n')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_symlinked_destination_is_refused(self):
+        (self.archive / 'sources').mkdir(parents=True)
+        os.symlink(self.outside, self.archive / 'sources' / '.gitkeep')
+        with self.assertRaises(scaffold.ScaffoldError) as caught:
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(self.archive, self.repo)
+        self.assertIn('symbolic link', str(caught.exception))
+        self.assertEqual(self.outside.read_text(encoding='utf-8'), 'private\n')
+
+    def test_a_symlinked_ANCESTOR_is_refused(self):
+        # The subtler half: nothing is a link at the destination itself, but a
+        # parent directory puts every path beneath it somewhere else.
+        elsewhere = self.tmp / 'elsewhere'
+        elsewhere.mkdir()
+        self.archive.mkdir()
+        os.symlink(elsewhere, self.archive / 'sources')
+        with self.assertRaises(scaffold.ScaffoldError) as caught:
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(self.archive, self.repo)
+        self.assertIn('symbolic link', str(caught.exception))
+        self.assertFalse(list(elsewhere.iterdir()), 'nothing may be written there')
+
+    def test_update_refuses_too(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(self.archive, self.repo)
+        target = self.archive / 'docs' / 'guide.md'
+        target.unlink()
+        os.symlink(self.outside, target)
+        with self.assertRaises(scaffold.ScaffoldError):
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(self.outside.read_text(encoding='utf-8'), 'private\n')
+
+
+class CrlfFailureIsReportedTest(unittest.TestCase):
+    """A launcher that cannot be normalized is a failure, not a shrug.
+
+    Mock-driven: the real trigger is a read-only destination, which is a no-op
+    for root - so a permission-based test would silently skip in exactly the
+    environments most likely to run as root.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        (self.repo / 'fha.cmd').write_bytes(b'@echo off\ngoto :r\n:r\n')
+        scaffold._write_manifest(self.repo)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_install_surfaces_a_normalization_failure(self):
+        with mock.patch.object(scaffold, '_normalize_crlf',
+                               side_effect=OSError(13, 'Permission denied')):
+            with self.assertRaises(scaffold.ScaffoldError):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    scaffold.run_install(self.tmp / 'archive', self.repo)
+
+    def test_update_reports_it_and_keeps_the_old_launcher(self):
+        archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(archive, self.repo)
+        before = (archive / 'fha.cmd').read_bytes()
+        (self.repo / 'fha.cmd').write_bytes(b'@echo off\ngoto :new\n:new\n')
+        scaffold._write_manifest(self.repo)
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold, '_normalize_crlf',
+                               side_effect=OSError(13, 'Permission denied')):
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                rc = scaffold.run_update_tools(archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertIn('fha.cmd', str(rc.data.get('failures', '')))
+        # Normalized before the swap, so a failure leaves the OLD launcher whole
+        # rather than a half-right new one.
+        self.assertEqual((archive / 'fha.cmd').read_bytes(), before)
+
+
+class DuplicateManifestPathTest(unittest.TestCase):
+    """One archive file, one source, one lifecycle."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_repeated_destination_is_refused(self):
+        manifest = json.loads((self.repo / 'manifest.json').read_text(encoding='utf-8'))
+        dupe = dict(manifest['files'][0])
+        dupe['src'] = 'docs/guide.md'
+        manifest['files'].append(dupe)
+        _write(self.repo / 'manifest.json', json.dumps(manifest))
+        with self.assertRaises(scaffold.ScaffoldError) as caught:
+            scaffold.load_manifest(self.repo)
+        self.assertIn('twice', str(caught.exception))
+
+
 class DirectoryDestinationTest(unittest.TestCase):
     """A contained path can still name the human's records folder.
 

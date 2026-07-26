@@ -444,7 +444,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "0dbbb860e6edff960ad4ba5ab26503e612776ca94d7b655c8d418540cf8f7edd",
+      "sha256": "b8963336e85c448f24e822223fcac5bcc98d4222962a6c43f78e6392f840151e",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
