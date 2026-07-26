@@ -83,38 +83,40 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text
-    AmbiguousCoupleFolderError,  # two couple folders share a prefix; refuse, don't guess
+    AmbiguousCoupleFolderError,  # two couple folders share a prefix; refuse, don't guess,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
-    GeneratedFileParentMissing,  # a companion's parent folder is missing (stale index)
-    GeneratedFileRefused,    # shared refusal when a write would clobber a non-generated file
-    PromotionError,       # a --fix-promote promotion refused/failed (rolled back)
-    Result,               # the structured-result contract every run_* returns
-    ahnentafel_generation,   # Ahnentafel position → generation depth (--generations cap)
-    archive_title,        # masthead/page title from fha.yaml site.archive_name
-    build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote
-    couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections)
-    couple_folder_for_prefix,   # canonical on-disk couple folder for a number, or None
-    couple_folder_prefix,    # position → the even couple-folder number
-    find_person_record_path,   # disk-truth record lookup for --fix-promote applies
-    fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
-    format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103
-    is_generated_text,    # GENERATED-header ownership test (first non-blank line)
+    GeneratedFileParentMissing,  # a companion's parent folder is missing (stale index),
+    GeneratedFileRefused,    # shared refusal when a write would clobber a non-generated file,
+    PromotionError,       # a --fix-promote promotion refused/failed (rolled back),
+    Result,               # the structured-result contract every run_* returns,
+    ahnentafel_generation,   # Ahnentafel position → generation depth (--generations cap),
+    archive_title,        # masthead/page title from fha.yaml site.archive_name,
+    build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote,
+    couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections),
+    couple_folder_for_prefix,   # canonical on-disk couple folder for a number, or None,
+    couple_folder_prefix,    # position → the even couple-folder number,
+    extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text,
+    find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
+    fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx),
+    format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103,
+    is_generated_text,    # GENERATED-header ownership test (first non-blank line),
     is_genetic_parent_subtype,
     load_fha_yaml,
-    load_view_css,        # cached design/view.css loader -> (css, warning_or_None)
-    promote_person_record,   # the ONE promote engine (tier flip + move + research scaffold)
-    render_template,      # load + render a tools/templates/ Jinja2 template (shared)
-    nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child
-    normalize_id,         # lower-cases IDs for consistent set/dict keying
-    open_index_db,        # open .cache/index.sqlite with freshness check + table probe
-    read_record,          # parses YAML front-matter + body from a .md file
-    resolve_root_arg,      # --root flag, else find_archive_root(), shared error message
-    write_generated_file,    # marker-guarded write shared with photoindex gallery
+    load_view_css,        # cached design/view.css loader -> (css, warning_or_None),
+    nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child,
+    normalize_id,         # lower-cases IDs for consistent set/dict keying,
+    open_index_db,        # open .cache/index.sqlite with freshness check + table probe,
+    promote_person_record,   # the ONE promote engine (tier flip + move + research scaffold),
+    read_record,          # parses YAML front-matter + body from a .md file,
+    render_template,      # load + render a tools/templates/ Jinja2 template (shared),
+    pip_command,
+    requirements_hint,
+    resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
+    write_generated_file,    # marker-guarded write shared with photoindex gallery,
 )
 
 
@@ -418,10 +420,10 @@ def _format_precheck(fmt: str, allowed: tuple[str, ...]) -> Result | None:
             import jinja2  # noqa: F401  - availability probe only
         except ImportError:
             print(
-                'ERROR: --format html needs the Jinja2 library, which is not '
-                'installed. Install it with `pip install jinja2` (or `pip install '
-                '-r tools/requirements.txt`), or run without --format html for '
-                'the markdown view.',
+                f'ERROR: --format html needs the Jinja2 library, which is not '
+                f'installed. Install it with `{pip_command("jinja2")}` (or '
+                f'`{pip_command("-r " + requirements_hint())}`), or run without '
+                f'--format html for the markdown view.',
                 file=sys.stderr,
             )
             return _views_result(EXIT_FAILURE)

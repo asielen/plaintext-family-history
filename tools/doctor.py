@@ -32,6 +32,8 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import shlex
+import subprocess
 import os
 import shutil
 import sqlite3
@@ -43,37 +45,43 @@ sys.path.insert(0, str(Path(__file__).parent))
 try:
     import yaml  # noqa: F401 - imported for side-effect check; _lib also uses it
 except ImportError:
+    # Built inline rather than via `_lib.pip_command`: _lib imports yaml too, so
+    # at this point it is exactly the module that cannot be loaded. Same rule
+    # though - name the interpreter that is actually short of the package, or the
+    # fix can land in a different one and the retry fails identically.
+    _exe = f'"{sys.executable}"' if ' ' in sys.executable else sys.executable
     print(
         'ERROR: PyYAML is required but not installed. '
-        'Install it with: pip install pyyaml',
+        f'Install it with: {_exe} -m pip install pyyaml',
         file=sys.stderr,
     )
     sys.exit(2)
 
 from _lib import (
+    configure_utf8_stdout,
+    db_mtime,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
-    INDEX_SCHEMA_VERSION,
-    PHOTOINDEX_SCHEMA_VERSION,
-    Result,
-    configure_utf8_stdout,
-    db_mtime,
     get_roots,
+    INDEX_SCHEMA_VERSION,
     is_fixture_path,
     is_working_copy,
     load_fha_yaml,
     newest_record_mtime,
     parse_filename,
+    PHOTOINDEX_SCHEMA_VERSION,
     photoindex_status,
+    pip_command,
     probe_sqlite,
     read_record,
     resolve_path,
     resolve_root_arg,
+    Result,
     sqlite_cache_schema_status,
-)
+    VENDOR_DIR,)
 
 configure_utf8_stdout()
 
@@ -267,13 +275,31 @@ def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict
     worst = EXIT_CLEAN
     stamp_path = archive_root / '.plaintext-version'
     if not stamp_path.is_file():
-        lines.append(
-            'tools version: not stamped (no .plaintext-version)  '
-            'next: no action needed if you copied the tools by hand; '
-            'or run `fha install` from a tools clone to stamp it'
-        )
-        checks.append({'id': 'tools_version', 'status': 'info',
-                       'detail': 'not stamped', 'next_step': None})
+        # `fha install` REFUSES an unstamped archive that still holds a flat
+        # tools/fha.py, because installing beside it would leave those files
+        # in place but unused. Advising it anyway would send the owner to a
+        # command guaranteed to refuse - so say what actually works instead.
+        legacy_tools = (archive_root / 'tools' / 'fha.py').is_file()
+        vendored = (archive_root / VENDOR_DIR / 'tools').is_dir()
+        if legacy_tools and not vendored:
+            lines.append(
+                'tools version: not stamped, and tools/ sits at the archive root '
+                '(the tools now live under .fha/)  '
+                'next: move or delete the old tools/ folder, copying across any '
+                'edits you made to it, then run `fha install` - it refuses while '
+                'both could be present'
+            )
+            checks.append({'id': 'tools_version', 'status': 'info',
+                           'detail': 'not stamped; legacy flat tools/',
+                           'next_step': 'reconcile tools/ by hand, then install'})
+        else:
+            lines.append(
+                'tools version: not stamped (no .plaintext-version)  '
+                'next: no action needed if you copied the tools by hand; '
+                'or run `fha install` from a tools clone to stamp it'
+            )
+            checks.append({'id': 'tools_version', 'status': 'info',
+                           'detail': 'not stamped', 'next_step': None})
     else:
         try:
             stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
@@ -558,13 +584,106 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     checks: list[dict] = []
     root_arg = str(archive_root)
     roots = get_roots(fha_config)
+    if not isinstance(roots, dict):
+        # A hand-edited `roots: []` reached `.items()` and raised, so `fha
+        # doctor` died with a traceback whose advice was to run `fha doctor`.
+        # The diagnostic tool has to survive the thing it diagnoses.
+        lines.append(
+            "fha.yaml: `roots:` is not a mapping  next: it should read like\n"
+            "  roots:\n    photos: photos\n    documents: documents"
+        )
+        checks.append({'id': 'roots_shape', 'status': 'warn',
+                       'detail': f'roots is {type(roots).__name__}, not a mapping',
+                       'next_step': 'fix the roots: block in fha.yaml'})
+        worst = max(worst, EXIT_WARNINGS)
+        roots = {}
     is_fixture = is_fixture_path(archive_root)
     wc_mode = is_working_copy(archive_root)
     index_cmd = f'fha index --root "{root_arg}"'
     photoindex_cmd = f'fha photoindex --root "{root_arg}"'
     lint_cmd = f'fha lint --root "{root_arg}"'
     doctor_cmd = f'fha doctor --root "{root_arg}"'
+    # docs/ stays at the archive root in every layout (only tools/ and design/
+    # are vendored under .fha/), so this path needs no layout probe.
     troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
+
+    # Original evidence is immutable, and git is the one thing in an archive that
+    # rewrites bytes without being asked. `.gitattributes` ships with the DEFAULT
+    # asset folders marked `-text`, but it cannot know where this owner pointed
+    # `roots:` - and a CRLF GEDCOM or transcript under a custom root would be
+    # silently normalized on checkout. Only meaningful for a git-tracked archive
+    # with roots INSIDE it; an external drive is not git's business.
+    ga = archive_root / '.gitattributes'
+    if isinstance(roots, dict) and (archive_root / '.git').exists() and ga.is_file():
+        # ASK GIT, do not reimplement it.
+        #
+        # Three versions of this check parsed `.gitattributes` by hand and three
+        # were wrong: a substring match found the example inside a comment; a
+        # bare split misread quoted patterns; and matching on pattern PRESENCE
+        # ignored both attribute values and rule order, so `media/** -text`
+        # followed by `*.txt text eol=lf` read as protected while git normalizes
+        # `media/x.txt`. Precedence, negation, quoting and macros are git's
+        # semantics, and the only thing that implements them correctly is git.
+        #
+        # `check-attr` answers for a PATH, and different extensions can resolve
+        # differently under the same root, so probe a representative spread. The
+        # question being asked is "could anything ordinary in here be rewritten?"
+        unprotected = []
+        for name, target in sorted(roots.items()):
+            if not target:
+                continue
+            # Relative does not mean inside: `../FamilyPhotos` is an ordinary way
+            # to keep originals beside the archive, and git cannot govern files
+            # outside the repository - advising a pattern for one is advice that
+            # cannot work. Resolve and test containment.
+            resolved = (archive_root / target).resolve()
+            try:
+                inside = resolved.is_relative_to(archive_root.resolve())
+            except AttributeError:                     # Python < 3.9
+                inside = str(resolved).startswith(str(archive_root.resolve()) + os.sep)
+            if not inside or not resolved.is_dir():
+                continue
+            rel = resolved.relative_to(archive_root.resolve()).as_posix()
+            if not rel:
+                continue
+            probes = [f'{rel}/probe.{ext}' for ext in
+                      ('txt', 'csv', 'md', 'ged', 'jpg')] + [f'{rel}/probe']
+            try:
+                out = subprocess.run(
+                    ['git', 'check-attr', 'text', '--'] + probes,
+                    cwd=str(archive_root), capture_output=True, text=True,
+                    timeout=15,
+                )
+            except (OSError, subprocess.SubprocessError):
+                break          # no usable git: this check cannot answer, so it says nothing
+            if out.returncode != 0:
+                break
+            # "path: text: unset" is the protected answer. Anything else - set,
+            # or unspecified under a `* text=auto` rule - means git may rewrite.
+            exposed = [ln.rsplit(': ', 2)[0] for ln in out.stdout.splitlines()
+                       if ln.strip() and not ln.endswith(': unset')]
+            if exposed:
+                unprotected.append((name, rel))
+        if unprotected:
+            worst = max(worst, EXIT_WARNINGS)
+            for name, target in unprotected:
+                # Quote the SUGGESTION too. Git parses the second token of a
+                # rule as an attribute name, so `Family Photos/** -text` is not
+                # merely ugly - it is invalid, and git says so while still
+                # normalizing the file the rule was meant to protect.
+                pattern = f'{target}/**'
+                if any(c.isspace() for c in pattern):
+                    pattern = f'"{pattern}"'
+                lines.append(
+                    f'originals ({name}): {target}/ is not protected in '
+                    f'.gitattributes  next: add `{pattern} -text` to it so a '
+                    f'checkout cannot rewrite your originals'
+                )
+            checks.append({
+                'id': 'originals_gitattributes', 'status': 'warn',
+                'detail': f'{len(unprotected)} asset root(s) unprotected',
+                'next_step': 'add `<root>/** -text` to .gitattributes',
+            })
 
     if wc_mode:
         lines.append(
@@ -638,10 +757,10 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     else:
         lines.append(
             f'jinja2 (fha site): {_WARN} not installed  '
-            'next: `python -m pip install jinja2` to build the family website'
+            f'next: `{pip_command("jinja2")}` to build the family website'
         )
         checks.append({'id': 'jinja2', 'status': 'warn', 'detail': 'not installed',
-                       'next_step': 'python -m pip install jinja2'})
+                       'next_step': pip_command('jinja2')})
         worst = max(worst, EXIT_WARNINGS)
     if _ilu.find_spec('PIL') is not None:
         lines.append(f'pillow (fha site images): {_OK}  next: no action needed')
@@ -649,10 +768,10 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     else:
         lines.append(
             'pillow (fha site images): not installed (optional)  '
-            'next: `python -m pip install pillow` for photos in the standalone site'
+            f'next: `{pip_command("pillow")}` for photos in the standalone site'
         )
         checks.append({'id': 'pillow', 'status': 'info', 'detail': 'not installed (optional)',
-                       'next_step': 'python -m pip install pillow'})
+                       'next_step': pip_command('pillow')})
     # pypdf mirrors Pillow's posture: purely optional (`fha source extract`
     # PDF text layers, M11.5) - absence is informational, never a warning.
     if _ilu.find_spec('pypdf') is not None:
@@ -661,10 +780,10 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     else:
         lines.append(
             'pypdf (fha source extract): not installed (optional)  '
-            'next: `python -m pip install pypdf` to dump PDF text layers'
+            f'next: `{pip_command("pypdf")}` to dump PDF text layers'
         )
         checks.append({'id': 'pypdf', 'status': 'info', 'detail': 'not installed (optional)',
-                       'next_step': 'python -m pip install pypdf'})
+                       'next_step': pip_command('pypdf')})
     lines.append('')
 
     idx_status, idx_delta = _index_freshness(archive_root)

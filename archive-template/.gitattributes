@@ -1,0 +1,56 @@
+# Your archive is plain text. If you keep it in git, these rules stop a checkout
+# on another machine from silently rewriting bytes under you. That matters more
+# than tidiness here: `fha update-tools` compares each operating file against the
+# checksum it recorded when it installed it, so a line-ending rewrite makes every
+# stock file look "customized" and get backed up on every single update.
+* text=auto
+
+
+# Records and configuration.
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.csv text eol=lf
+.gitignore text eol=lf
+
+# The tool suite itself lives in this archive, under .fha/. Its bytes are
+# checksummed, so pin every kind of file it ships.
+*.py text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+
+# The Windows launchers stay CRLF. Pinning them either way stops the checksum
+# churn - the bytes become deterministic on every platform - but CRLF is what
+# cmd.exe expects, what Windows checkouts already produce via autocrlf, and what
+# these files need: both use `goto` labels and serve.cmd has a parenthesised
+# if-block, the constructs reported to misbehave in LF-only batch files.
+*.cmd text eol=crlf
+
+# The POSIX launcher must stay LF in the working tree on every platform. A
+# checkout that rewrote it to CRLF would ship a shell script /bin/sh cannot run
+# ("bad interpreter"), on top of the checksum problem above.
+fha text eol=lf
+
+# Original evidence is immutable: never normalize it. If you track photos/ or
+# documents/ (see .gitignore), a checkout on another machine must not rewrite a
+# GEDCOM, a transcript, or a CSV export you were given - those bytes ARE the
+# record.
+#
+# These come LAST on purpose. git applies the last matching rule, so putting
+# them above the extension rules leaves `documents/notes.csv` matching
+# `*.csv text eol=lf` and being normalized anyway - the exclusion looks right
+# and does nothing. Anything added below this line would need the same care.
+photos/** -text
+documents/** -text
+sources/files/** -text
+
+# These are the DEFAULT asset folders. If you pointed fha.yaml's `roots:` at
+# somewhere else inside the archive - `media/scans`, say - add the same line for
+# it here, or a checkout can rewrite the bytes of originals kept there:
+#
+#     media/scans/** -text
+#
+# `fha doctor` checks this for you and names any configured root that is missing.

@@ -1,0 +1,71 @@
+#!/bin/sh
+# fha - the archive command line on macOS and Linux. Run it from a terminal as
+# `./fha <command>` from the archive folder (e.g. `./fha lint`, `./fha index`,
+# `./fha find "Margaret Cole"`), or as a bare `fha <command>` if you have put the
+# archive folder on your PATH. Your working directory is preserved, so relative
+# paths and archive auto-detection work from anywhere inside the archive. Finds
+# the tools whether they are vendored flat (tools/) or consolidated under .fha/.
+# The Windows twin of this file is fha.cmd.
+set -e
+
+# Resolve this script's own folder, following symlinks, so a symlink dropped on
+# the PATH (ln -s /path/to/archive/fha ~/bin/fha) still finds the archive's tools.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *)  self=$(dirname "$self")/$link ;;
+  esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
+
+# `-s`, not `-f`: a zero-byte entrypoint - an interrupted copy, a sync that
+# created the file before filling it - satisfies "exists", and Python then runs
+# it happily and exits 0 having done nothing at all. Every command becomes a
+# silent no-op, which is worse than a crash because nothing says so. An empty
+# preferred copy also falls through to the intact flat one rather than winning.
+if [ -s "$here/.fha/tools/fha.py" ]; then
+  entry="$here/.fha/tools/fha.py"
+elif [ -s "$here/tools/fha.py" ]; then
+  entry="$here/tools/fha.py"
+else
+  # Recovery has to be a command that actually runs. Telling the user to run
+  # `fha update-tools` here would loop straight back into this error, and
+  # `update-tools` needs both --repo (where the new tools come from) and --root
+  # (which archive to repair) when it is driven from outside the archive. So
+  # spell the whole thing out against the workshop's own launcher.
+  echo "fha: cannot find the tools next to $here" >&2
+  echo "     (looked for .fha/tools/fha.py, then tools/fha.py)." >&2
+  echo >&2
+  echo "     To restore them, run this from your workshop copy of the project -" >&2
+  echo "     the folder holding manifest.json - replacing PATH-TO-WORKSHOP:" >&2
+  echo >&2
+  echo "       cd PATH-TO-WORKSHOP" >&2
+  echo "       ./fha update-tools --repo PATH-TO-WORKSHOP --root \"$here\"" >&2
+  echo >&2
+  echo "     If you have no workshop copy yet, download the project first; see" >&2
+  echo "     docs/UPDATING.md in this folder." >&2
+  exit 3
+fi
+
+# The tool suite is written in Python 3.10+ syntax, so an older interpreter dies
+# with a raw SyntaxError while parsing - not the friendly guidance below. Probe
+# the actual version of each candidate rather than trusting the name: plenty of
+# systems ship a python3 that is 3.8 or 3.9.
+py=''
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 \
+     && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    py=$candidate
+    break
+  fi
+done
+if [ -z "$py" ]; then
+  echo "fha: Python 3.10 or later is required, and neither python3 nor python on" >&2
+  echo "     your PATH is new enough (or neither is installed)." >&2
+  echo "     Install it from python.org (Mac: \`brew install python\`), then re-run." >&2
+  exit 3
+fi
+
+exec "$py" "$entry" "$@"

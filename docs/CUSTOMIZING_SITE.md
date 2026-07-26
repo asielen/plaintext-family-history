@@ -65,9 +65,9 @@ web-friendly copy is made, its hidden location/camera data is stripped, and if i
 to show a living person it is left out of the shareable version automatically. You never
 have to think about that — it just happens.
 
-### 3. The look — `design/custom.css`
+### 3. The look — `.fha/design/custom.css`
 
-If you (or a helper) know a little CSS, `design/custom.css` restyles the **entire** site —
+If you (or a helper) know a little CSS, one stylesheet restyles the **entire** site —
 colours, fonts, spacing, every page and the family tree — from one file. Most changes are
 a line or two:
 
@@ -79,9 +79,25 @@ a line or two:
 ```
 
 You do not need to touch this file to have a good-looking site — it comes with a complete
-design already (a printed family-register look; see [`DESIGN.md`](DESIGN.md) if you are
+design already (a printed family-register look; see [`DESIGN.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/DESIGN.md) if you are
 curious). `custom.css` is there for when you want to make it yours. It is loaded last, so
 whatever you put here wins.
+
+**Where to find it.** In an installed archive the design package lives in the `.fha/` folder
+alongside the tools, so the file is `.fha/design/custom.css`. An older archive that still keeps
+its machinery at the root has it at `design/custom.css` instead. Either way, an update never
+overwrites it.
+
+Getting to it depends on your system:
+
+- **Mac / Linux:** the leading dot makes `.fha` hidden. In Finder, press `Cmd-Shift-.` to show
+  hidden folders (press it again to re-hide them), or use *Go → Go to Folder…* and paste the path.
+- **Windows:** `fha install` marks the folder hidden for you, so tick
+  *Hidden items* on the *View* tab in File Explorer to see it. If it is already visible — the
+  hidden mark doesn't stick on some drives, like a USB stick or a network folder — just open it
+  normally; nothing is wrong.
+
+Simplest of all: ask your assistant to open the stylesheet for you and skip the folder hunt.
 
 ### 4. The facts themselves — your records
 
@@ -111,6 +127,10 @@ the homepage" is enough.
 
 Whenever you have changed any of the above, rebuild:
 
+> **Typing `fha`.** On macOS or Linux use `./fha`, in Windows PowerShell `.\fha`, and in the
+> Windows Command Prompt a bare `fha` - from your archive folder if it has its own launcher
+> (one installed with `fha install` does), otherwise from your project folder with `--root`.
+
 ```
 fha index && fha site
 ```
@@ -135,7 +155,7 @@ assistant:
 
 It runs the **reconcile-site-edits** skill: it reads your hand-edited page, works out what
 you changed, and moves that change into the right source file for you — a colour into
-`design/custom.css`, homepage words into `notes/home.md`, a person's biography into that
+`.fha/design/custom.css`, homepage words into `notes/home.md`, a person's biography into that
 person's record, a title or banner into `fha.yaml`. It shows you each change and asks
 before saving it. Then it rebuilds the site the normal way, so your edit now comes from
 the source and will survive every future build. (If your edit was actually a new *fact*

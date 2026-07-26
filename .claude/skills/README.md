@@ -6,8 +6,8 @@ APIs, no Python — so the harness choice stays reversible (the SKILL.md standar
 
 **Start here:** [`_STANDARD.md`](_STANDARD.md) is the authoring contract every skill conforms to.
 [`today/`](today/SKILL.md) is the reference skill — copy its shape. Design lives in
-[`TOOLING_INTERFACE.md`](../../TOOLING_INTERFACE.md); the build sequence in
-[`BUILD_INTERFACE.md`](../../BUILD_INTERFACE.md).
+[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build sequence in
+[`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md).
 
 The governing split: **deterministic work is in `fha` tools; judgment is in skills; the human is the only
 gate to `accepted`.**
@@ -24,13 +24,13 @@ gate to `accepted`.**
 | [`research-next`](research-next/SKILL.md) | **authored** | Log-aware research leads: check the research log first, combine gaps + questions + hypotheses with era/place context; may draft `origin: agent` hypotheses. | Sonnet |
 | [`merge-identities`](merge-identities/SKILL.md) | **authored** | "Same person / two people" judgment: lay out the neighborhood evidence, propose, wait for human confirmation. Enacts a confirmed merge with `fha confirm merge` (dry-run preview first); the split stays hand-guided per SPEC §9. | Opus |
 | [`place-research`](place-research/SKILL.md) | **authored** | Place history (loose citations OK): draft dated `history:`, propose registry entries via `fha confirm place`. Never edits coordinates without confirmation. | Sonnet |
-| [`reconcile-site-edits`](reconcile-site-edits/SKILL.md) | **authored** | The site escape hatch: when a human hand-edits generated HTML, diff it against a pristine `fha site` baseline and fold the intent into the right source (`custom.css` / `notes/home.md` / a record / `fha.yaml` `site:`), then rebuild. Keeps `fha site` deterministic; every source write is human-confirmed. See [`docs/SITE_PLAN.md`](../../docs/SITE_PLAN.md). | Opus |
+| [`reconcile-site-edits`](reconcile-site-edits/SKILL.md) | **authored** | The site escape hatch: when a human hand-edits generated HTML, diff it against a pristine `fha site` baseline and fold the intent into the right source (`custom.css` / `notes/home.md` / a record / `fha.yaml` `site:`), then rebuild. Keeps `fha site` deterministic; every source write is human-confirmed. See [`docs/SITE_PLAN.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/SITE_PLAN.md). | Opus |
 | [`photo-context`](photo-context/SKILL.md) | **authored** | Invoked-only caption improvement: gather what the archive knows about a photo (people, relationships, event, place), draft a better summary, and — only after the human approves the exact text — write it AI-marked via `fha photoindex set-summary`. Human captions are never overwritten; never automatic, never bulk. Design history: [DESIGN.md](photo-context/DESIGN.md). | Opus |
 | [`find-photos`](find-photos/SKILL.md) | **authored** | The photo front door: resolve "show me grandma's photos" to the right filters, answer from the photo index in plain language (one line per physical photo), offer a clickable `fha photoindex gallery` page. Read-only; identification hands off to `tag-person`'s own prompt. | Sonnet |
 | [`share-and-export`](share-and-export/SKILL.md) | **authored** | The guided sharing path: pick the right exporter (packet / gedcom / site / wikitree / backup) for the recipient, speak the privacy defaults in plain words before running, preview first, then report what went out and what stayed home. Import is not this skill. | Opus |
 | [`import-notes`](import-notes/SKILL.md) | **authored** | The legacy-notes on-ramp: chunk a pile of freeform notes, propose a home per chunk under FILING_CABINET's routing rule (evidence → inbox → `process-source`; question / hypothesis / research-log entry / `notes/research/`), write only on the human's confirmed ruling. Drafts no claims; originals preserved by default, a scraps file dissolves only on explicit say-so after everything landed. | Opus |
 
-Statuses track [`BUILD_INTERFACE.md`](../../BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
+Statuses track [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
 verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session
 check** against `example-archive/` (capture the transcript).
 

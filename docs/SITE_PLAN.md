@@ -6,8 +6,8 @@ customize — without ever giving up the one property that makes `fha site` safe
 run a thousand times: it is **deterministic and idempotent**.
 
 This is a planning document, not a task list. The *visual language* is
-[`DESIGN.md`](DESIGN.md); the *generator mechanics* are [`TOOLING.md`](../TOOLING.md)
-§12; the *human-facing how-to* is [`CUSTOMIZING_SITE.md`](CUSTOMIZING_SITE.md). This
+[`DESIGN.md`](DESIGN.md); the *generator mechanics* are [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md)
+§12; the *human-facing how-to* is [`CUSTOMIZING_SITE.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/CUSTOMIZING_SITE.md). This
 doc is the plan for the customization layer that sits on top of all three: what the
 source-first model is, which layers a human edits, and the phases that build them
 out. Cite the section numbers here when proposing structural changes.
@@ -52,7 +52,7 @@ an input to the deterministic build.
 | Layer | Where | What it customizes | Who edits it | Status |
 |---|---|---|---|---|
 | **(a) Data & records** | `sources/`, `people/`, `places/` | The facts, prose, portraits, and relationships the site renders | Human + AI, through the normal research loop | shipped |
-| **(b) Styling** | `design/custom.css` | Colours, fonts, spacing, any CSS — the whole look, from one file | A CSS-literate human | shipped |
+| **(b) Styling** | `.fha/design/custom.css` | Colours, fonts, spacing, any CSS — the whole look, from one file | A CSS-literate human | shipped |
 | **(c) Homepage intro** | `notes/home.md` | The welcome prose at the top of the homepage — the family's own words | Human + AI, markdown | planned (Phase A) |
 | **(d) Titles & hero** | `fha.yaml` `site:` sub-section | The archive name on the masthead and the homepage hero (title, tagline, image) | Human, plain YAML | planned (Phase A) |
 | **(e) AI reconciliation** | the `reconcile-site-edits` skill | Folds an accidental hand-edit of generated HTML *back into the right source above* | The assistant, on request | planned (Phase E) |
@@ -65,7 +65,7 @@ person's `profile_photo`, add a place's `history:`. None of this is "site work" 
 the ordinary research loop, and the site reflects it on the next `fha index` +
 `fha site`. This layer is the reason the site needs so few *other* knobs.
 
-### (b) `design/custom.css` — the look
+### (b) `.fha/design/custom.css` — the look
 
 Already shipped and already the right seam (DESIGN.md, "Customizing"). Generated pages
 link `styles.css` then `custom.css` last, so a CSS-literate human restyles the entire
@@ -187,7 +187,7 @@ build step — the offline-safe rule (DESIGN.md, "Do / don't") holds.
 ### Phase E — Edit-aware skill + docs
 
 Ship the reconciliation escape hatch (layer e): the `reconcile-site-edits` skill and the
-human-facing [`CUSTOMIZING_SITE.md`](CUSTOMIZING_SITE.md) guide. This phase adds no
+human-facing [`CUSTOMIZING_SITE.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/CUSTOMIZING_SITE.md) guide. This phase adds no
 capability to `fha` and changes nothing about determinism; it teaches the source-first
 model and provides the one graceful recovery path for a hand-edited HTML file. (This
 document and its two siblings are the front edge of Phase E.)

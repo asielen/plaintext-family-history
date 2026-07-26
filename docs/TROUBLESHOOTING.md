@@ -4,9 +4,15 @@ Nothing here is a disaster. Your archive is plain files, you have backups, and m
 command or one sentence to the assistant. Find your symptom, read the plain cause, do the fix.
 
 > **First move, almost always:** ask the assistant to **run `fha doctor`** (or run
-> `python tools/fha.py doctor --root my-family-archive` yourself). It's the archive's health
+> `fha doctor --root my-family-archive` yourself). It's the archive's health
 > check - it inspects the things below and tells you which one is wrong, so you rarely have to
 > guess. Start there whenever something feels off.
+>
+> *Typing it:* `fha` is a launcher file in your archive folder, and the current folder is not on
+> your PATH by default — so on **macOS or Linux** type `./fha doctor`, in Windows **PowerShell**
+> `.\fha doctor`, and in the Windows **Command Prompt** a bare `fha doctor`. Commands on this
+> page are written bare; add the `./` or `.\` your shell needs. ([CHEATSHEET.md](CHEATSHEET.md)
+> has the same table.)
 
 ---
 
@@ -16,7 +22,7 @@ command or one sentence to the assistant. Find your symptom, read the plain caus
 tools build from your files. If you edited records by hand or added a lot at once, the cache can
 fall behind what's actually on disk.
 
-**Fix.** Ask: *"Rebuild the index."* (Or run `python tools/fha.py index --root my-family-archive`.)
+**Fix.** Ask: *"Rebuild the index."* (Or run `fha index --root my-family-archive`.)
 The cache is regenerated from your files; nothing real is ever lost by doing this - you can
 rebuild it as often as you like. `fha doctor` will tell you when the cache is stale.
 
@@ -29,7 +35,7 @@ in its filename or folder - exactly so you can reorganize your library safely. A
 the cache just needs to find the files in their new spots.
 
 **Fix.** Ask: *"Reconcile the photo index."* (Or run
-`python tools/fha.py photoindex reconcile --root my-family-archive`.) It re-matches moved files by
+`fha photoindex reconcile --root my-family-archive`.) It re-matches moved files by
 their embedded ID. Any file it genuinely can't find is flagged so you can point it out. If a photo
 won't reconnect, it may have been re-saved by an editor that stripped the metadata - tell the
 assistant and it'll re-tag it. (`fha doctor` checks whether the photo index has fallen behind the
@@ -64,7 +70,7 @@ that freely and run `fha reconcile`.
 or a missing colon can make a record unreadable. Easy to do, easy to undo.
 
 **Fix.** Ask: *"Lint my archive and help me fix the errors."* (Or run
-`python tools/fha.py lint --root my-family-archive`.) The linter points at the exact file and line.
+`fha lint --root my-family-archive`.) The linter points at the exact file and line.
 Open that file in a plain text editor, fix the spot it names, save. (`fha doctor` includes a lint
 summary, so it flags this too.) If you can't see what's wrong, paste the error to the assistant - it reads YAML for a living. Still stuck? **Undo your edit** (see
 the git / no-git entries at the bottom) to get back to the last good version.
@@ -161,8 +167,10 @@ up in the standalone (shareable) version, Pillow is the missing piece.
 
 **Fix.** Run `fha doctor` - near the top it now reports both, with the exact install command. To
 build the site at all, install Jinja2: `python -m pip install jinja2`. For photos in the shareable
-snapshot, also install Pillow: `python -m pip install pillow` (both are in `tools/requirements.txt`,
-so `python -m pip install -r tools/requirements.txt` does it in one go). The website is rebuildable
+snapshot, also install Pillow: `python -m pip install pillow` (both are listed in the tools'
+`requirements.txt`, so `python -m pip install -r .fha/tools/requirements.txt` from inside your
+archive does it in one go - use `tools/requirements.txt` instead if you're in your workshop copy
+of the project, or in an older archive that still keeps `tools/` at its root). The website is rebuildable
 any time from your records - nothing about your archive changed. Note that the *shareable*
 (`--standalone`) site leaves photos out rather than copying originals when Pillow is missing, on
 purpose: it never lets a photo's hidden location data slip into something you hand to a relative.
@@ -177,7 +185,7 @@ it stops on purpose ("already has the plaintext tools installed") so it can't qu
 archive you've been working in.
 
 **Fix.** If you're starting fresh, point `install` at a folder that doesn't exist yet (it creates
-it): `python tools/fha.py install my-family-archive --repo .`, run from your copy of the tools.
+it): `fha install my-family-archive --repo .`, run from your copy of the tools.
 If you already have an archive and just want the *newest* tools, that's a different command -
 `fha update-tools` (next entry). If `install` says Python is too old, install Python 3.10 or later
 from python.org; if it warns that exiftool is missing, that's only a heads-up - install still
@@ -216,8 +224,8 @@ reports files it can't find ("Inventory file not found on disk").
 so the system finds it wherever you put it:
 
 ```
-python tools/fha.py reconcile --dry-run   # preview what will be re-tied
-python tools/fha.py reconcile             # apply, then run fha index
+fha reconcile --dry-run   # preview what will be re-tied
+fha reconcile             # apply, then run fha index
 ```
 
 If it reports a name existing "in more than one place," you have two copies of the same file -

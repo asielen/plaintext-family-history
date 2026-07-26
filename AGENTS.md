@@ -88,13 +88,20 @@ One mode at a time; if a request crosses modes, say so and ask to switch - never
 contract.
 Never edits SPEC.md, TOOLING.md, or `tools/`.
 - **tool-building** - edits `tools/` and `tests/` only. Follow the build order
-(TOOLING §15). Read **AGENTS_TOOLING.md** for the full implementation loop, coding
-standards, cross-cutting checks, and spec-discovery protocol.
+(TOOLING §15). Read **[AGENTS_TOOLING.md](https://github.com/asielen/plaintext-family-history/blob/master/AGENTS_TOOLING.md)** for the full
+implementation loop, coding standards, cross-cutting checks, and spec-discovery protocol.
 Spec changes only as *proposed* amendments for the human to approve (recorded in git history on acceptance).
 - **code-review** - strict pre-push review of the current branch. **No file edits.**
-Read **AGENTS_TOOLING.md §Code-review mode** for the full 13-class checklist and
-output format. Use the full repo context (not just the diff); produce a structured
-report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
+Read **[AGENTS_TOOLING.md §Code-review mode](https://github.com/asielen/plaintext-family-history/blob/master/AGENTS_TOOLING.md)** for the full
+13-class checklist and output format. Use the full repo context (not just the diff); produce a
+structured report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
+
+> **These last two modes are workshop activities, not archive ones.** They run in a clone of
+> the public project, where `AGENTS_TOOLING.md` and the `BUILD*.md` family live. An installed
+> archive does not carry those docs - nothing in it reads them at run time, and extending
+> vendored tools in place is out of scope (TOOLING §13c). If you are inside an archive and a
+> task needs tool-building or code-review mode, the answer is to do it in the project repo and
+> re-vendor with `fha update-tools`, not to work around the missing doc.
 - **migration** - bulk intake of existing material into the structure. The highest-risk
 mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → human approval → execute in bounded batches (≤200 files) → report.
 Never deletes anything; photos are never renamed even here; only staged files move.
@@ -102,7 +109,7 @@ Never deletes anything; photos are never renamed even here; only staged files mo
 - **spec-refinement** - edits SPEC.md/TOOLING.md (changes tracked in git history), and MUST update
 README.md whenever a change affects how a human reads the archive (the README rule).
 
-**The status-sweep rule (tool-building and spec-refinement).** Implementation status lives in more docs than the one you're editing: when a build lands, a deferred step ships, or a decision reverses, update every statement of that status in the same change - the owning BUILD doc, the sibling TOOLING doc's build-status section, SPEC.md Part IV status notes, README.md's badge and status section, TOOLING.md §16/§17, and this file - then grep the repo for the phrase being retired ("build pending", "not yet built", "when implemented", "deferred") before closing. Full sweep list and grep guidance: AGENTS_TOOLING.md.
+**The status-sweep rule (tool-building and spec-refinement).** Implementation status lives in more docs than the one you're editing: when a build lands, a deferred step ships, or a decision reverses, update every statement of that status in the same change - the owning BUILD doc, the sibling TOOLING doc's build-status section, SPEC.md Part IV status notes, README.md's badge and status section, TOOLING.md §16/§17, and this file - then grep the repo for the phrase being retired ("build pending", "not yet built", "when implemented", "deferred") before closing. Full sweep list and grep guidance: [AGENTS_TOOLING.md](https://github.com/asielen/plaintext-family-history/blob/master/AGENTS_TOOLING.md) (workshop-only, as above).
 
 ### Session end (all modes)
 

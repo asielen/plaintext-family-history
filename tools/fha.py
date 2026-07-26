@@ -26,7 +26,8 @@ COMMANDS = (
     'id', 'index', 'lint', 'check', 'stubs', 'views', 'doctor', 'find', 'search',
     'relate', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
     'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
-    'person', 'source', 'site', 'serve', 'install', 'update-tools', 'working-copy',
+    'person', 'source', 'site', 'serve', 'install', 'update-tools',
+    'working-copy',
     'normalize-links', 'backup', 'reconcile',
 )
 
@@ -292,15 +293,17 @@ def _intercept_scaffold(argv: list[str]) -> int | None:
         command_idx = i
         break
 
-    if command_idx is None or argv[command_idx] not in ('install', 'update-tools'):
+    if command_idx is None or argv[command_idx] not in (
+            'install', 'update-tools'):
         return None
 
     from scaffold import _standalone_main as scaffold_main
     subargv = list(argv[command_idx:])
-    # `update-tools` accepts --root as a subcommand flag; inject the global
-    # --root (supplied before the command name) when not already present.
-    # `install` uses a positional ARCHIVE-PATH, so no injection needed.
-    if global_root and subargv[0] == 'update-tools' and '--root' not in subargv:
+    # `update-tools` accepts --root as a subcommand flag;
+    # inject the global --root (supplied before the command name) when not
+    # already present. `install` uses a positional ARCHIVE-PATH, no injection.
+    if (global_root and subargv[0] == 'update-tools'
+            and '--root' not in subargv):
         subargv = [subargv[0], '--root', global_root] + subargv[1:]
     return scaffold_main(subargv)
 
@@ -695,9 +698,19 @@ def main(argv: list[str] | None = None) -> int:
         raise
     except ModuleNotFoundError as e:
         if e.name == 'yaml':
+            # Built from sys.executable, like every other dependency message:
+            # the launcher picks the first of python3/python that is new enough,
+            # which need not be the one the human installs into. A hardcoded
+            # `python -m pip` can update the OTHER interpreter and leave every
+            # retry failing identically.
+            try:
+                from _lib import pip_command
+                fix = pip_command('pyyaml')
+            except Exception:                     # _lib itself may be unusable
+                fix = f'{sys.executable} -m pip install pyyaml'
             print(
                 'ERROR: This tool needs PyYAML to read archive YAML files. '
-                'Install it with `python -m pip install pyyaml`, then run `fha doctor`.',
+                f'Install it with `{fix}`, then run `fha doctor`.',
                 file=sys.stderr,
             )
             return 3

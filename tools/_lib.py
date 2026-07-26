@@ -53,6 +53,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import shlex
 import sys
 import tempfile
 from collections import deque
@@ -472,7 +473,7 @@ def format_yaml_dependency_error() -> str:
     """
     return (
         'This tool needs PyYAML to read archive YAML files. Install it with '
-        '`python -m pip install pyyaml`, then run `fha doctor` to check your archive.'
+        f'`{pip_command("pyyaml")}`, then run `fha doctor` to check your archive.'
     )
 
 
@@ -3283,11 +3284,20 @@ def render_template(template_name: str, **context) -> str:
     try:
         return load_template(template_name).render(**context)
     except jinja2.TemplateError as e:
+        # Name the REAL path and a command that exists. The templates ship
+        # inside whichever tools directory is running - `tools/templates/` in a
+        # workshop clone, `.fha/tools/templates/` in an installed archive - so a
+        # hardcoded `tools/templates/` sends an archive owner to a path that is
+        # not there. And the old advice could not work either: a stamped archive
+        # REFUSES `fha install`, and a zip user has no git to restore from.
+        # `update-tools` is the command that actually replaces a damaged tool
+        # file, so name that.
+        here = Path(__file__).parent / 'templates' / template_name
         raise RuntimeError(
             f'the {template_name} template is missing or broken (expected at '
-            f'tools/templates/{template_name}) - {e}. Restore the tools/templates '
-            f'folder (reinstall the tools package or restore it from git), then '
-            f're-run.'
+            f'{here}) - {e}. Restore it with `fha update-tools --repo '
+            f'PATH-TO-WORKSHOP`, which reinstalls tool files that have gone '
+            f'missing, then re-run.'
         ) from e
 
 
@@ -4234,6 +4244,14 @@ EXIT_WARNINGS = 1
 EXIT_ERRORS = 2
 EXIT_FAILURE = 3
 
+# The archive subfolder that holds the vendored machinery (tools/, docs/,
+# design/) so a real archive's root reads as the genealogy, not the tooling.
+# `fha install` remaps those subtrees under here; an
+# older flat archive into it. The workshop repo itself stays flat. Shared here
+# because scaffold (writes it), serve (watches design under it), and doctor
+# (locates docs under it) all need the same name.
+VENDOR_DIR = '.fha'
+
 
 class Finding:
     """A single lint finding (error or warning)."""
@@ -4487,6 +4505,68 @@ def result_fail(
     result.data['status'] = status
     result.add(level, message, next_step=next_step)
     return result
+
+
+VENDOR_DIR_NAME = '.fha'
+
+
+def pip_command(target: str) -> str:
+    """Return a `pip install` command that targets the RUNNING interpreter.
+
+    A bare `pip install x` (or even `python -m pip install x`) can install into a
+    different interpreter than the one that just failed to import: the launcher
+    picks the first of `python3`/`python` (or `py -3`/`python` on Windows) that
+    is new enough, which need not be the one whose site-packages the human has
+    been installing into. Following that advice then changes nothing, and the
+    command keeps failing with the same message - the worst kind of instruction,
+    one that looks followed.
+
+    `sys.executable` is by definition the interpreter running this code, which is
+    the one missing the import, so `-m pip` against it always lands where it
+    needs to.
+
+    Quoted, because that path is not guaranteed to be shell-safe: a virtualenv
+    under `~/Family Tools/` or a Windows profile with a space in the name yields
+    a command the shell splits at the space, so the fix we advertise fails before
+    Python even starts - and it fails in a way that reads as "these instructions
+    are wrong" rather than "add quotes". POSIX shells take shlex quoting; cmd.exe
+    and PowerShell do not understand single quotes, so Windows gets double ones.
+    """
+    def _q(word: str) -> str:
+        if os.name == 'nt':
+            return f'"{word}"' if ' ' in word else word
+        return shlex.quote(word)
+
+    # Both halves need it, not just the executable. `-r <path>` carries an
+    # archive path, and "Family Archive" is an ordinary folder name - quoting the
+    # interpreter while leaving the requirements file bare just moves the split
+    # one argument to the right.
+    exe = _q(sys.executable)
+    if target.startswith('-r '):
+        arg = f'-r {_q(target[3:])}'
+    else:
+        arg = _q(target)
+    return f'{exe} -m pip install {arg}'
+
+
+def requirements_hint() -> str:
+    """Return the `pip install -r ...` path that is correct for THIS layout.
+
+    The tool suite lives at `tools/` in a workshop clone but at `.fha/tools/` in
+    an installed archive, so a hard-coded `tools/requirements.txt` in a runtime
+    error message sends installed-archive owners to a path that does not exist -
+    precisely when a dependency is already missing and they need the command to
+    work. `requirements.txt` is always this module's own sibling, so anchoring on
+    `__file__` is right in both layouts.
+
+    Returned ABSOLUTE. The command is printed for the human to paste, and they
+    can be standing anywhere the launcher supports - `fha views --format html`
+    run from `people/` is ordinary usage. A path relative to the archive root
+    then resolves beneath the current subdirectory instead and fails with "file
+    not found", which is a worse outcome than the missing dependency it was
+    meant to fix. An absolute path is correct from every directory.
+    """
+    return str((Path(__file__).parent / 'requirements.txt').resolve())
 
 
 def load_site_module():

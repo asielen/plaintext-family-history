@@ -5,7 +5,7 @@ description: >
   hand, don't lose it" / "fold my page changes back in". `fha site` is deterministic and never reads its
   own output, so a hand-edited HTML file is overwritten on the next build. This skill reads the edited
   HTML, diffs it against a pristine `fha site` baseline to recover the human's intent, folds that intent
-  into the correct SOURCE (styling → `design/custom.css`, homepage copy → `notes/home.md`, person prose →
+  into the correct SOURCE (styling → `.fha/design/custom.css`, homepage copy → `notes/home.md`, person prose →
   that person's record, title/hero → `fha.yaml` `site:`), then re-runs the deterministic build so the edit
   survives cleanly. Every source write is human-confirmed first.
 ---
@@ -14,7 +14,7 @@ description: >
 
 The recovery path for the one thing the source-first model forbids: hand-editing a generated HTML file.
 `fha site` compiles archive data plus a few human-editable source files into HTML and **never reads the
-generated HTML back** (TOOLING §12; [`docs/SITE_PLAN.md`](../../docs/SITE_PLAN.md)) — which is exactly what
+generated HTML back** (TOOLING §12; [`docs/SITE_PLAN.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/SITE_PLAN.md)) — which is exactly what
 makes regeneration safe and idempotent, and exactly why a hand-edit of the output is doomed on the next
 build. This skill does not change that. `fha site` stays deterministic; the fuzzy reconciliation lives
 **only here**. The skill reads the human's edited HTML, recovers what he meant, folds it into the right
@@ -76,7 +76,7 @@ For every change in the diff, decide which source owns it. This is the whole jud
 
 | The hand-edit changed… | It belongs in source layer… |
 |---|---|
-| A colour, font, spacing, or any CSS / inline style | `design/custom.css` |
+| A colour, font, spacing, or any CSS / inline style | `.fha/design/custom.css` |
 | Homepage welcome/intro copy (prose in the home intro region) | `notes/home.md` |
 | A person's biography or story prose on their page | that person's curated `people/…` record |
 | The masthead archive name, or the homepage hero title / tagline / image | `fha.yaml` `site:` (`site.archive_name`, `site.hero`) |
@@ -85,14 +85,23 @@ For every change in the diff, decide which source owns it. This is the whole jud
 An edit can split across layers (a restyled *and* reworded homepage). Split it: the colour goes to
 `custom.css`, the words go to `notes/home.md`.
 
+> **Finding `custom.css`.** An installed archive keeps its design package under the hidden
+> `.fha/` folder, so the file is `.fha/design/custom.css` — that is the one `fha site` reads.
+> The stylesheet always sits **beside the tools that build the site**: `site.py` resolves its
+> design package as its own folder's sibling. So an installed archive uses `.fha/design/custom.css`,
+> while an archive whose tools still sit at the root uses `design/custom.css`. Check which `tools/`
+> directory exists and write the `custom.css` next to it - writing the other path creates a file
+> the build never loads, and the styling this skill promised to preserve is silently lost on the
+> next rebuild.
+
 ### 4. Propose each source change in plain language, and confirm
 
 For each classified delta, show the human the precise source edit you intend — the file, and the before/after
 in words a text-editor user understands — and get his yes before writing:
 
-- **Styling → `design/custom.css`.** Translate the inline HTML style into a token override or rule appended
+- **Styling → `.fha/design/custom.css`.** Translate the inline HTML style into a token override or rule appended
   to `custom.css` (DESIGN.md, "Customizing"): *"You made the links green in the HTML. I'll add
-  `:root { --accent: #3e4a3a; }` to `design/custom.css` so every page picks it up. OK?"* Prefer a token
+  `:root { --accent: #3e4a3a; }` to `.fha/design/custom.css` so every page picks it up. OK?"* Prefer a token
   override to a brittle selector; append, don't rewrite his existing `custom.css`.
 - **Homepage copy → `notes/home.md`.** Merge the reworded prose into `home.md`, preserving his existing
   words around it. Photo embeds stay in Obsidian embed form (`![[S-id|caption]]`), not raw `<img>` — the
@@ -143,7 +152,7 @@ source directly, not the HTML.
 
 - A hand-edited generated HTML page is reconciled by diffing it against a pristine `fha site` baseline,
   classifying each delta to its source layer, and — on the human's per-change confirmation — folding it into
-  `design/custom.css` / `notes/home.md` / the person record / `fha.yaml` `site:`, with the generated HTML
+  `.fha/design/custom.css` / `notes/home.md` / the person record / `fha.yaml` `site:`, with the generated HTML
   itself left to be rebuilt, never patched.
 - A re-run of `fha site` reproduces the human's edit **from source**, proving it now survives regeneration;
   the human is told which source file now holds it.

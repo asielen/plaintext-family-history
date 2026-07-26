@@ -19,18 +19,32 @@ Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-l
 See the repo root `README.md` ("Repo, tools, and your archive") for how the public spec/tools and your private archive relate.
 
 After copying:
-1. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples below).
-2. Bring in the **operating layer** from the public repo. From your clone or unzipped download,
-   copy the `tools/`, `docs/`, and `.claude/skills/` folders plus the root rulebooks
-   (`SPEC.md`, `TOOLING.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS.md`,
-   `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`,
-   `README.md`) into this archive folder.
-   *(Alternatively, `fha install` does this in one step - but it must run against a **fresh,
-   empty** folder name, not a copy of this template. If you've already copied archive-template,
-   use the manual copy path above. See `docs/SETUP_FROM_ZIP.md`.)*
+1. Bring in the **operating layer** first, BEFORE editing anything. `fha install` refuses an
+   archive whose skeleton files have already been changed - that refusal is what stops it
+   overwriting work in progress - so editing `fha.yaml` first is exactly what makes the assisted
+   route stop working. Configure in step 2, once the tools are in.
+
+   The machinery that makes `fha` commands work comes from the public repo. The assisted way is
+   best: run `fha install` against a **fresh, empty** folder
+   name (not a copy of this template - the installer builds the skeleton itself). It lays an
+   installed archive out cleanly, so the root reads as your genealogy: the machinery (`tools/`
+   and `design/`) is tucked into a hidden `.fha/` folder, and what's left at the archive root is
+   the five rulebooks (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`, `README.md`), the
+   `docs/` guides, the launchers (`fha`, `fha.cmd`, `serve.cmd`), your `fha.yaml`, the
+   `.claude/skills/` folder, and the data folders. See `docs/SETUP_FROM_ZIP.md`.
+   *(Already copied this template by hand? You can still point `fha install` at that copy: it
+   accepts skeleton files that are already there as long as they are untouched stock, so a
+   pristine copy of this template installs cleanly and gets the version stamp with it. It stops
+   only if you have started editing — `fha.yaml` filled in, records added — so that it can never
+   overwrite work in progress. If it does stop, copy the operating layer in by hand instead: the
+   `tools/` and `design/` folders go into a `.fha/` folder here, and the five rulebooks above,
+   the `docs/` folder, the `fha`, `fha.cmd` and `serve.cmd` launchers, and the `.claude/skills/`
+   folder go into the archive root.)*
    Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
    you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
    (`BUILD.md` M9.1-M9.2, TOOLING.md §13c).
+2. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples
+   below). Now that the tools are installed, this is safe - updates never touch `fha.yaml`.
 3. Open in your AI agent and start processing `inbox/` items.
 
 ## Where your photos and documents live

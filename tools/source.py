@@ -93,34 +93,34 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
-    EXIT_CLEAN,
-    EXIT_FAILURE,
-    EXIT_WARNINGS,
-    FRONT_RE,
-    FhaConfigError,
-    Result,
     append_file_entry_to_record,
     append_paragraph_to_section,
     claims_edit_problem,
     configure_utf8_stdout,
+    EXIT_CLEAN,
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    FhaConfigError,
     find_source_record_path,
     fmt_id_display,
+    FRONT_RE,
     frontmatter_fence_span,
     id_type_of,
     is_valid_id,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
+    pip_command,
     read_record,
     read_text_exact,
     reapply_newline,
     replace_paragraph_in_section,
     resolve_path,
     resolve_root_arg,
+    Result,
     result_fail,
     write_text_exact_atomic,
-    yaml_inline,
-)
+    yaml_inline,)
 
 configure_utf8_stdout()
 
@@ -444,7 +444,7 @@ def _add_extract_arguments(sub: argparse._SubParsersAction) -> None:
                      '[Page N]-labeled companion the assistant can mine like a '
                      'transcript - seconds instead of reading hundreds of pages '
                      'by eye. The PDF itself is never touched. Needs the pypdf '
-                     'helper package (python -m pip install pypdf).'),
+                     f'helper package ({pip_command("pypdf")}).'),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     x.add_argument('source_id', metavar='S-id',
@@ -588,7 +588,7 @@ def run_source_extract(
         return result_fail(result, 'refused',
                            'Reading PDF text needs the pypdf helper package, which '
                            'is not installed. Install it once with '
-                           '`python -m pip install pypdf`, then re-run.')
+                           f'`{pip_command("pypdf")}`, then re-run.')
 
     record_path = find_source_record_path(archive_root, sid)
     if record_path is None:

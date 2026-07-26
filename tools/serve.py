@@ -87,22 +87,23 @@ from _lib import (  # noqa: E402
     EXIT_CLEAN,
     EXIT_FAILURE,
     FhaConfigError,
-    Result,
-    load_site_module,
     fmt_id_display,
     id_type_of,
     is_valid_id,
     is_working_copy,
     load_fha_yaml,
+    load_site_module,
     normalize_id,
     open_index_db,
+    pip_command,
     read_text_exact,
     reapply_newline,
     resolve_path,
     resolve_root_arg,
+    Result,
+    VENDOR_DIR,
     write_text_exact,
-    yaml_inline,
-)
+    yaml_inline,)
 
 # The engines serve drives in-process. Front-door imports (see module docstring).
 import capture  # noqa: E402
@@ -158,8 +159,8 @@ def run_serve_preflight(archive_root: Path, *, port: int = DEFAULT_PORT) -> Resu
         result.data['status'] = 'no-jinja'
         result.add('error',
                    'fha serve needs Jinja2 to render pages. Install it with '
-                   '`python -m pip install jinja2`, then run `fha serve` again.',
-                   next_step='python -m pip install jinja2')
+                   f'`{pip_command("jinja2")}`, then run `fha serve` again.',
+                   next_step=pip_command('jinja2'))
         return result
 
     if is_working_copy(archive_root):
@@ -334,7 +335,11 @@ def _newest_input_mtime(state: ServeState) -> float:
     root = state.archive_root
     for name in _SNAPSHOT_INPUTS:
         newest = max(newest, _newest_mtime_under(root / name))
+    # The design package installs under .fha/design/ (uncluttered archive root);
+    # older flat archives keep it at design/. Watch both - a missing path
+    # contributes 0 - so editing custom.css marks the snapshot stale either way.
     newest = max(newest, _newest_mtime_under(root / 'design'))
+    newest = max(newest, _newest_mtime_under(root / VENDOR_DIR / 'design'))
     for extra in (root / 'fha.yaml', root / '.cache' / 'index.sqlite',
                   root / '.cache' / 'photos.sqlite'):
         try:

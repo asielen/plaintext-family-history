@@ -5,10 +5,15 @@ site (person, source, place, index, discoveries pages), the family tree, and
 exported reports and packets. This is a reference, not a task list: it explains
 *what the language is* and *why*, so any change can be checked against it.
 
-The canonical implementation is [`design/styles.css`](../design/styles.css). This
-document describes it; the stylesheet is the source of truth. A live specimen of
-every rule is [`design/design-system.html`](../design/design-system.html) — open
-it in a browser to see the guide rendered.
+The canonical implementation is `design/styles.css`. This document describes it;
+the stylesheet is the source of truth. A live specimen of every rule is
+`design/design-system.html` — open it in a browser to see the guide rendered.
+
+Where those two files sit depends on which copy you're in. In the project repo
+they're at `design/` off the root. In an **installed archive** the design package
+is vendored with the rest of the machinery, so they're at `.fha/design/styles.css`
+and `.fha/design/design-system.html`. (Your own overrides go in
+`.fha/design/custom.css`, which no update ever touches — see below.)
 
 ---
 
@@ -247,7 +252,8 @@ Do not regress these:
 
 ## Customizing
 
-Put overrides in `design/custom.css` (linked after `styles.css`, so it wins). Most
+Put overrides in `custom.css` (`.fha/design/custom.css` in an installed archive; linked
+after `styles.css`, so it wins). Most
 restyles are a few tokens:
 
 ```css

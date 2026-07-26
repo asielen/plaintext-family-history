@@ -7,7 +7,7 @@ These tools are **generic**: they operate on any spec-conforming archive and con
 They are the "replaceable glue" of the philosophy - disposable, regenerable from the spec, and safe to publish.
 `TOOLING.md` (repo root) is the design document for every tool; consult it before changing any behavior.
 
-Two **out-of-tree companions** live beside this suite, installed into a user's setup rather than vendored by `fha install` and never load-bearing: [`browser-companion/`](../browser-companion/) (web capture) and [`obsidian-templater/`](../obsidian-templater/) (optional Obsidian Templater templates for new person/source notes; see [docs/USING_WITH_OBSIDIAN.md](../docs/USING_WITH_OBSIDIAN.md)).
+Two **out-of-tree companions** live beside this suite, installed into a user's setup rather than vendored by `fha install` and never load-bearing: [`browser-companion/`](../browser-companion/) (web capture) and [`obsidian-templater/`](../obsidian-templater/) (optional Obsidian Templater templates for new person/source notes; see [docs/USING_WITH_OBSIDIAN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/USING_WITH_OBSIDIAN.md)).
 
 CLI recovery contract: `fha` prints help on no args; unknown subcommands get a
 "did you mean?" hint; ordinary failures explain the cause and the next command
@@ -418,8 +418,13 @@ depends on it - delete `serve.py` and `.cache/serve/` and nothing about the arch
 It is not a daemon: human-started, foreground, 127.0.0.1-only, no login, no watcher
 (refresh-on-use instead of a file watcher). `serve.cmd` (shipped at the archive root by
 `fha install`/`fha update-tools`, alongside the operating layer's other root files) is a
-double-clickable launcher for a non-technical owner: `cd` to the archive, run
-`py -3 tools\fha.py serve`, pause on error so the window doesn't vanish before it's read.
+double-clickable launcher for a non-technical owner: `cd` to the archive, run the CLI's
+`serve` command, pause on error so the window doesn't vanish before it's read. Like its
+sibling launchers `fha.cmd` (Windows terminal) and `fha` (POSIX `/bin/sh`, shipped with its
+executable bit), it is **layout-agnostic**: it probes `.fha\tools\fha.py` first, then
+`tools\fha.py`, so one vendored file works in both the current and the pre-`.fha` layout and
+the same vendored file works from a workshop clone (flat) and an installed archive
+(vendored) alike.
 
 ## fha serve - implementation status
 
@@ -486,8 +491,8 @@ the repo root.
 It is regenerated from the repo - not hand-edited - with the maintenance command
 `python tools/scaffold.py write-manifest --repo .` after any change to a tool, doc, or
 skeleton file; `tests/test_scaffold.py`'s manifest-sync test fails the build if the
-committed copy drifts from the repo. The `fha` command surface is exactly `install` +
-`update-tools`; `write-manifest` is a tool-builder-only path, not part of it.
+committed copy drifts from the repo. The `fha` command surface here is exactly `install` and `update-tools`;
+`write-manifest` is a tool-builder-only path, not part of it.
 
 ## fha process - implementation status
 
@@ -853,21 +858,23 @@ their CLEAN exit contribution.
 
 ## fha install / fha update-tools - implementation status
 
-The scaffolding pair (TOOLING §13c). `manifest.json` is the committed packing list;
+The scaffolding trio (TOOLING §13c). `manifest.json` is the committed packing list;
 both commands read it and copy operating-layer + skeleton files between a public-repo
 clone (or unzipped download) and a private archive. Generic glue - touches no family data.
 
 | Flag / feature | Status | Notes |
 |---|---|---|
-| `manifest.json` | ✓ M9.1 | One JSON object listing every operating-layer + skeleton file with `path`, `category` (`operating`/`skeleton`), `sha256`, `spec_version` (parsed from SPEC.md's version line), and a `src` field on skeleton entries whose archive path drops the `archive-template/` prefix. Built by a repo walk: the root rulebooks (`README.md`/`SPEC.md`/`TOOLING.md`/`AGENTS.md`/`AGENTS_TOOLING.md`/`CLAUDE.md`/`BUILD.md`), all of `tools/` (minus `__pycache__`/`*.pyc`), all of `docs/`, the agent workflow skills under `.claude/skills/`, and the `archive-template/` contents (minus its own `README.md`). Excludes spec-repo furniture (`example-archive/`, `archive-template/` as a folder, `tests/`, `.github/`, `.claude/settings.json`, `PRIVACY.md` - the public-repo "no real data" policy, contradictory inside a real archive - `RELEASE_CHECKLIST.md`, `manifest.json` itself) |
-| docs scope | ✓ | The whole `docs/` folder ships, not just BUILD.md M9.1's named five - they are the floor; a directory rule keeps every doc cross-link intact in an installed archive and auto-covers future docs. The operating layer also ships `README.md` (project orientation) and `.claude/skills/` (the genealogy workflow procedures) - everything a genealogist needs to operate, minus public-repo furniture |
+| `manifest.json` | ✓ M9.1 | One JSON object listing every operating-layer + skeleton file with `path`, `category` (`operating`/`skeleton`), `sha256`, `spec_version` (parsed from SPEC.md's version line), and a `src` field on skeleton entries whose archive path drops the `archive-template/` prefix. Built by a repo walk: the root rulebooks (`README.md`/`SPEC.md`/`TOOLING.md`/`AGENTS.md`/`CLAUDE.md`), the root launchers (`fha`/`fha.cmd`/`serve.cmd`), all of `tools/` and `design/` (minus `__pycache__`/`*.pyc`) - both remapped under the archive's `.fha/` via the `src`≠`path` seam - all of `docs/` (kept at the archive root), the agent workflow skills under `.claude/skills/`, and the `archive-template/` contents (minus its own `README.md`). Excludes the tool-BUILDING docs (`BUILD*.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS_TOOLING.md`) - no tool reads them at run time and operating an archive never needs them - and spec-repo furniture (`example-archive/`, `archive-template/` as a folder, `tests/`, `.github/`, `.claude/settings.json`, `PRIVACY.md` - the public-repo "no real data" policy, contradictory inside a real archive - `RELEASE_CHECKLIST.md`, `manifest.json` itself) |
+| docs scope | ✓ | The whole `docs/` folder ships, not just BUILD.md M9.1's named five - they are the floor, and a directory rule auto-covers new ones. Owner-facing docs install at the archive ROOT (`docs/…`) so the manual stays reachable in a file browser and its two-way link graph with the root rulebooks survives; the two PROJECT docs (`DESIGN.md`, `SITE_PLAN.md`) are vendored to `.fha/docs/` instead - a template reference and a roadmap are not archive-owner material. `_VENDORED_DOCS` declares that set, and the manifest test pins it in both directions (nothing else vendored; no vendored doc also at the root) |
 | `fha install` copy + stamp | ✓ M9.1 | Creates `ARCHIVE-PATH` if absent; copies every manifest file (skeleton remapped to archive root); writes `.plaintext-version` (manifest version, spec version, install timestamp, per-file SHA256). Validates every source exists **before** writing, so a broken clone fails clean with no half-installed archive |
 | Preflight | ✓ M9.1 | Python ≥ 3.10 → friendly download pointer + hard stop if older; `exiftool` missing → advisory only, install still finishes (photo features wait) |
+| Archive `.fha/` layout | ✓ | An installed archive keeps its machinery in a hidden `.fha/` folder (`.fha/tools/`, `.fha/design/`, and the project docs in `.fha/docs/`) so the root reads as the genealogy. Install-time remap only, via the manifest's `src` (repo-flat) vs `path` (archive) seam - the workshop repo stays flat and the copy engine is unchanged. Root-resident: the rulebooks, `docs/`, `.claude/skills/`, the launchers, `fha.yaml`, the record folders. `_lib.VENDOR_DIR` is the single definition of the name, shared with `serve` |
+| Root launchers | ✓ | `serve.cmd` (double-click workbench), `fha.cmd` (Windows terminal), and `fha` (POSIX `/bin/sh`) ship to **every** archive regardless of the installing OS - an archive is a portable folder that may be opened elsewhere. All three probe `.fha/tools/fha.py` then `tools/fha.py`, so one file serves both layouts. `shutil.copy2` carries `fha`'s executable bit; `.gitattributes` pins it to LF so a Windows checkout cannot produce a CRLF shell script |
 | Re-install guard | ✓ | Refuses an archive that already has `.plaintext-version` or `tools/fha.py`, pointing at `fha update-tools` - install is one-time |
 | Zip-based / git-free | ✓ M9.1 | `--repo` only needs a directory containing `manifest.json`; `.git/` is never referenced. `--repo` defaults to the tools being run from (correct for a clone or an unzipped download) |
 | `fha install --dry-run` | ✓ | Previews the file/skeleton counts and the stamp path; writes nothing (BUILD.md "every mutating op ships `--dry-run`") |
 | `fha update-tools` reconcile | ✓ M9.2 | Compares the manifest against `.plaintext-version` and classifies each **operating** file: new → copy; unchanged-from-stock (disk == recorded) → overwrite silently; customized (disk differs from recorded) → move to `.plaintext-backup/{date}/` then install stock; already-current (disk == new stock) → no-op. Retired (recorded but gone from the manifest, still on disk) → move to backup. Never deletes |
-| Skeleton-is-install-once | ✓ M9.2 | `update-tools` reconciles only `category: operating` files. Skeleton seeds (`fha.yaml`, `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, the `.gitkeep`s) are **never touched** - they fill with the human's config/data, so refreshing them would clobber it. The stamp carries their checksums over unchanged. This realizes §13c's governing principle ("never silently overwrites your work") for the two files most certain to be customized; surfaced as a TOOLING §13c clarification |
+| Skeleton-is-install-once | ✓ M9.2 | `update-tools` reconciles only `category: operating` files. Skeleton seeds (`fha.yaml`, `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, the `.gitkeep`s) are **never overwritten** - they fill with the human's config/data, so refreshing them would clobber it. The stamp carries their checksums over unchanged. A seed the manifest has gained SINCE this archive was created is the one exception, and only when it is absent from both disk and stamp: never delivered here, so it cannot overwrite an edit, and a seed the owner deleted stays deleted because the deletion is recorded. `.gitattributes` reaches existing archives this way. This realizes §13c's governing principle ("never silently overwrites your work") for the two files most certain to be customized; surfaced as a TOOLING §13c clarification |
 | Backup safety | ✓ | `.plaintext-backup/{date}/{path}` preserves the archive subtree; a same-day collision gets a `-2`/`-3` suffix so an earlier backup is never overwritten. Per-file outcome messages and the `Done:` summary counts are emitted **after** each operation succeeds (and count only actual successes), so a per-file copy/move `OSError` never produces a false "backed up / updated" line; the failure is reported on stderr and downgrades the run to exit 1 |
 | Stamp rewrite | ✓ | After an update each operating file's recorded baseline is: its new on-disk hash if installed this run; its on-disk hash (== stock) if it was already current; or - if it **failed** this run - the **prior** recorded baseline, never the failed file's current bytes (recording a failed customized file's edit would make the next run treat it as pristine stock and silently overwrite it). Skeleton entries carry over verbatim; retired files that moved drop out, while a retired file whose move failed stays recorded so the next run retries it. `--dry-run` writes no stamp |
 | No-stamp archive | ✓ | An archive whose tools were hand-copied (no `.plaintext-version`) is handled: every differing existing file is treated as customized (backed up, never overwritten); identical hand-copies match new stock and are left alone |
@@ -875,6 +882,7 @@ clone (or unzipped download) and a private archive. Generic glue - touches no fa
 | `--verbose` | ✓ | Also lists files that are already up to date |
 | `--repo` required + archive check | ✓ | Missing `--repo` → the BUILD.md-specified "run from inside your archive, with --repo pointing to your copy of the plaintext tools" message; not-an-archive (auto-detect finds no `fha.yaml`, **or** an explicit `--root` points at a folder without `fha.yaml`) → a distinct plain refusal before any file is written; all exit 3 |
 | `write-manifest` (maintenance) | ✓ | `python tools/scaffold.py write-manifest --repo .` regenerates `manifest.json`; not on the `fha` surface. Kept honest by `tests/test_scaffold.py`'s manifest-sync test |
+| Malformed stamp shape | ✓ | `.plaintext-version` is a hand-editable JSON file. A `files` value that is valid JSON but not an object (a list, a string, `null`) is read as "nothing recorded" by the shared `_stamp_file_map` rather than raising `AttributeError` deep inside a mutating command; non-string keys/values are dropped. Every operating file is then re-checked against the manifest, which errs toward backing up rather than overwriting, and the run re-stamps cleanly |
 | Exit codes | ✓ | 0 clean (incl. install with the exiftool advisory, and an update that backed files up); 1 if some files couldn't be written/moved (reported); 3 for can't-run (Python too old, missing/invalid manifest, re-install refusal, missing `--repo`, not-an-archive, write failure) |
 
 Automated tests: `tests/test_scaffold.py` (stdlib `unittest`) builds a tiny **git-free** fake

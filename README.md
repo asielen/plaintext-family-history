@@ -19,7 +19,7 @@ Delete every layer above and the archive still works, the way the drawer still w
 | A genealogist who wants to start by hand with plain files and no tools | [`quickstart-template/`](quickstart-template/) (blank starter kit); see [`quickstart-example/`](quickstart-example/) for a filled-in worked example |
 | A genealogist who got a zip and doesn't use git/GitHub | [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) |
 | Someone the owner sent documents to | [`docs/CONTRIBUTING_SOURCES.md`](docs/CONTRIBUTING_SOURCES.md) |
-| A developer building or extending the tools | [`BUILD.md`](BUILD.md) then [`TOOLING.md`](TOOLING.md) (core); the capture on-ramp is [`BUILD_INGESTION.md`](BUILD_INGESTION.md)/[`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); the workbench skills are [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md)/[`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) |
+| A developer building or extending the tools | [`BUILD.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD.md) then [`TOOLING.md`](TOOLING.md) (core); the capture on-ramp is [`BUILD_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INGESTION.md)/[`TOOLING_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md); the workbench skills are [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md)/[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md) |
 | Here to understand or rebuild the spec | [`SPEC.md`](SPEC.md) |
 
 ---
@@ -49,12 +49,36 @@ my-family-archive/          ← PRIVATE: your real family's records
 
 They are not technically linked.
 The only relationship is that your private archive *uses the tools* that live in this public repo.
-There are two ways to get those tools to your archive:
+The tools get to your archive by **installing** them into it:
 
-- **Vendor (copy them in).** Copy this repo's `tools/` folder into your private archive so the tools live *beside* your data. The archive becomes fully self-contained - it works on any machine, offline, forever, even if this repo disappears. Updating means re-copying `tools/` when they improve. *Recommended for a personal archive - it matches the "survives tool churn, usable from a USB stick" goal.*
-- **Install (once packaging exists).** *Not available yet.* Once the `fha` suite is packaged, you'll be able to install it from this repo (`pip install git+https://github.com/YOURNAME/plaintext-family-history.git`) and call `fha` from anywhere. Cleaner day-to-day (tools live in one place), but your archive then depends on the tools being installed separately. Until then, use the vendored-copy model above.
+```
+./fha install PATH-TO-YOUR-ARCHIVE --repo .      # macOS / Linux
+.\fha install PATH-TO-YOUR-ARCHIVE --repo .      # Windows PowerShell
+fha install PATH-TO-YOUR-ARCHIVE --repo .        # Windows Command Prompt
+```
 
-Either way, **your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.
+(Run it from inside this clone. The `fha` launcher sits right here beside this
+README, but a fresh clone is not on your `PATH` - hence the `./`.)
+
+That copies the whole operating layer - the program, its design package, the rulebooks, and the
+owner-facing docs - into the archive and records what it wrote, so `fha update-tools` can refresh
+it later. What "refresh" means is worth being precise about: your records,
+`fha.yaml`, your place registry, and your stylesheet are never touched. Tool
+files and rulebooks ARE replaced - if you edited one, your version is moved to
+`.plaintext-backup/` first and the new stock file takes its place, so the edit
+survives but stops being in effect until you re-apply it. The machinery lands in a hidden `.fha/` folder
+so the archive root shows your genealogy rather than the program; your records, the rulebooks, and
+`docs/` stay in plain sight. The archive is then **self-contained**: it works on any machine,
+offline, forever, even if this repo disappears.
+
+The `fha` program itself is never `pip install`ed - the archive owns its own copy on purpose, so
+it cannot be uninstalled out from under you. Its Python **dependencies** are ordinary external
+packages, though: PyYAML is needed for everything, and Jinja2, Pillow, and pypdf for the site,
+photo, and PDF features. [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) walks through
+installing them, and `fha doctor` names any that are missing. If you have no git clone,
+[`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) covers the download-a-zip route.
+
+**Your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.
 
 
 ---
@@ -159,7 +183,7 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 | Document | Read it for |
 |---|---|
 | **[SPEC.md](SPEC.md)** | The complete specification - what exists, how it lives on disk, and the rules that never bend. Start here. |
-| **[TOOLING.md](TOOLING.md)** | How the core tools are built, in enough detail to rewrite from scratch. The `fha` command suite, the index schema, the linter rules. Two siblings cover the rest by concern: **[TOOLING_INGESTION.md](TOOLING_INGESTION.md)** (capture/inbox on-ramp) and **[TOOLING_INTERFACE.md](TOOLING_INTERFACE.md)** (workbench + skills). Each has a matching build doc (`BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`). |
+| **[TOOLING.md](TOOLING.md)** | How the core tools are built, in enough detail to rewrite from scratch. The `fha` command suite, the index schema, the linter rules. Two siblings cover the rest by concern: **[TOOLING_INGESTION.md](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md)** (capture/inbox on-ramp) and **[TOOLING_INTERFACE.md](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** (workbench + skills). Each has a matching build doc (`BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`). |
 | **[AGENTS.md](AGENTS.md)** | What an AI agent may and may not do inside the archive - the contract, the operating modes, the workflows. |
 | **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** | A practical first-session walkthrough. |
 | **[docs/GLOSSARY.md](docs/GLOSSARY.md)** | Every term and ID type defined. |
@@ -227,7 +251,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha capture` - paste-fallback web capture, generic recipe, and Ancestry/FamilySearch/Newspapers.com/FindAGrave recipes (milestone 7.5-7.7)
 - [x] `fha convert-mining` - one-time legacy transcript-mining migration (milestone 7.8)
 - [x] `fha site` - static-site generator: source/person/place/discoveries/home pages, standalone (redacted, self-contained) vs linked preview, and vendored interactive descendant/ancestor trees (milestone 8.1-8.5)
-- [x] `fha install` / `fha update-tools` - archive scaffolding and updating: bootstrap a private archive's operating layer from a clone or unzipped download, then refresh it later, backing up your edits and never deleting or touching your `fha.yaml`/places data (milestone 9.1-9.2)
+- [x] `fha install` / `fha update-tools` - archive scaffolding and updating: bootstrap a private archive's operating layer from a clone or unzipped download, then refresh it later, backing up your edits and never deleting or touching your `fha.yaml`/places data. The machinery installs into a hidden `.fha/` folder so the archive root shows your genealogy rather than the program - your records, the rulebooks, and the owner-facing `docs/` stay where you can see them (the project's own design reference and roadmap ride along inside `.fha/docs/`) (milestone 9.1-9.2)
 - [x] working-copy mode - asset-less plain-text working copies synced to a second machine (toggle with `fha working-copy on/off`, which sets a git-ignored `WORKING_COPY` marker so the mode never syncs back): tools treat absent photos/documents as present-elsewhere (never "missing", never pruned), so you can write narratives and research against existing records anywhere (milestone 10 - SPEC §12.4 / TOOLING §13d)
 - [x] `fha backup` - one-command dated zip snapshot written outside the archive (records-only by default; `--include-assets` packs the mapped photo/document roots), verified after writing, with `fha doctor` reporting the real last-backup date; restore = unzip (2026-07 usability review, plan 04 - TOOLING §13e)
 - [x] `fha serve` - the localhost workbench: a private, editable browser front door onto the same tools, plus `fha claim new` (mint a claim by hand), `fha person new`/`relate`/`estimate`/`edit`/`note`, `fha source note`, and `fha find --json` (machine-readable search) (plan 17 - TOOLING_INTERFACE.md §1b)

@@ -1304,8 +1304,8 @@ duplicates reported, never merged; exactly three `mint_ids` batches for scale.
 
 **Done when:**
 ```sh
-python tools/fha.py gedcom import family-tree.ged --root <archive>            # plan, no writes
-python tools/fha.py gedcom import family-tree.ged --root <archive> --apply   # stubs + record + copy
+fha gedcom import family-tree.ged --root <archive>            # plan, no writes
+fha gedcom import family-tree.ged --root <archive> --apply   # stubs + record + copy
 # fha index && fha lint afterward: no E-codes; re-running the same file: exit 2, zero writes
 ```
 
@@ -1594,10 +1594,18 @@ different risk profile, since it touches an existing populated archive rather th
 empty one) is M9.2.
 
 **`manifest.json`:** one JSON object listing every operating-layer file with `path`, `sha256`,
-`spec_version`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`,
-`CLAUDE.md`, `BUILD.md`, the public `README.md` (project orientation), the agent workflow
-procedures under `.claude/skills/`, and the skeleton (`fha.yaml` template, the empty record
-dirs, seeded `places.yaml`). The guiding rule is *everything a genealogist needs to operate*,
+`spec_version`. Each entry's `path` is the file's destination INSIDE the archive, which is not
+the same as its path in this repo: the tool suite and the design assets are vendored, so
+`tools/index.py` ships as `.fha/tools/index.py` and `design/custom.css` as
+`.fha/design/custom.css`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
+the public `README.md` (project orientation), the agent workflow procedures under
+`.claude/skills/`, the launchers (`fha`, `fha.cmd`, `serve.cmd`), and the skeleton (`fha.yaml`
+template, `.gitignore`, `.gitattributes`, the empty record dirs, seeded `places.yaml`).
+
+Deliberately EXCLUDED, because they are workshop-clone material and an installed archive is not
+where tools get built (TOOLING §13c): `AGENTS_TOOLING.md`, every `BUILD*.md`, and the sibling
+tooling designs (`TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`). Shipping them would tell an
+agent inside an archive to follow a build sequence it cannot run. The guiding rule is *everything a genealogist needs to operate*,
 not a hand-picked minimum. Also covers the human-facing docs that must ship into every archive:
 `docs/GETTING_STARTED.md`, `docs/SETUP_FROM_ZIP.md`, `docs/CHEATSHEET.md`,
 `docs/TROUBLESHOOTING.md`, `docs/FILING_CABINET.md` (create any that don't exist yet as
@@ -1625,7 +1633,7 @@ This is the primary install path for non-technical users (see PR 09 / `docs/SETU
 
 **Done when:**
 ```sh
-python tools/fha.py install ./test-archive --repo .   # skeleton; .plaintext-version written
+fha install ./test-archive --repo .   # skeleton; .plaintext-version written
 # Python < 3.10 → friendly message, no traceback
 # exiftool absent → friendly guidance message, install proceeds (not a hard stop)
 # --repo pointing to an unzipped download (no .git/) → same result as a git clone
@@ -1643,9 +1651,16 @@ compare manifest against `.plaintext-version`. For each file - new → copy in; 
 (checksum matches) → overwrite silently; customized (checksum differs) → move to
 `.plaintext-backup/{date}/` and report; retired from manifest → move to backup and report.
 Never deletes. Never silently overwrites customized files. All output is plain English -
-"Updating tools/index.py (unchanged)" or "Your edited tools/fha.py has been backed up to
-.plaintext-backup/2026-06-22/fha.py - the new version is now in tools/fha.py." No technical
-diffs or checksums shown by default; `--verbose` may add them.
+"Updating .fha/tools/index.py (unchanged)" or "Your edited .fha/tools/fha.py has been backed up
+to .plaintext-backup/2026-06-22/.fha/tools/fha.py - the new version is now in
+.fha/tools/fha.py." No technical diffs or checksums shown by default; `--verbose` may add them.
+
+There is no migration path from the pre-`.fha` flat layout, and none is planned: `fha install`
+produces the vendored layout directly, so only archives created before it could need one. Not
+building it is a deliberate scope decision - a layout transition is a mutating, all-or-nothing
+operation on someone's records folder, and the machinery to do it safely (rollback, half-moved
+detection, launcher and capture-host repair) is a standing liability for a case that does not
+arise in practice.
 
 **Done when:**
 ```sh

@@ -9,3 +9,12 @@
 *.css text eol=lf
 *.txt text eol=lf
 .gitignore text eol=lf
+# Windows launchers: CRLF, matching what cmd.exe expects and what a Windows
+# checkout already produces. Pinned so manifest.json's checksum is stable on
+# every platform instead of falling through to autocrlf.
+*.cmd text eol=crlf
+
+# The POSIX launcher must stay LF in the working tree on every platform: a
+# checkout that rewrote it to CRLF would ship a shell script /bin/sh cannot run,
+# and would change its bytes out from under manifest.json's checksum.
+fha text eol=lf

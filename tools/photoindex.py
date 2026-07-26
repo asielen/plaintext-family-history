@@ -177,40 +177,42 @@ from _lib import (
     FhaConfigError,
     GeneratedFileParentMissing,
     GeneratedFileRefused,
+    INDEX_SCHEMA_VERSION,
+    PHOTOINDEX_SCHEMA_VERSION,
+    PHOTO_EXTENSIONS,
+    ParsedName,
     Result,
     archive_title,
     configure_utf8_stdout,
     db_mtime,
+    edtf_bounds,
     find_source_record,
     fmt_id_display,
-    ParsedName,
-    edtf_bounds,
     format_edtf_error,
     format_exiftool_error,
     grouping_stem as _grouping_stem,
     id_type_of,
-    INDEX_SCHEMA_VERSION,
     is_valid_edtf,
     is_valid_id,
+    is_working_copy,
     load_fha_yaml,
     load_view_css,
-    render_template,
     newest_person_record_mtime,
     normalize_date,
     normalize_id,
     parse_media_filename,
-    select_variation_primary,
-    variant_role as _variant_role,
     path_to_alias,
-    PHOTO_EXTENSIONS,
-    PHOTOINDEX_SCHEMA_VERSION,
     photoindex_status,
-    is_working_copy,
     probe_sqlite,
+    render_template,
+    pip_command,
+    requirements_hint,
     resolve_path,
     resolve_root_arg,
     scan_person_record_ids,
+    select_variation_primary,
     sqlite_cache_schema_status,
+    variant_role as _variant_role,
     write_generated_file,
 )
 
@@ -1888,9 +1890,9 @@ def run_gallery(
             )
         except ImportError:
             raise RuntimeError(
-                'building a gallery needs the Jinja2 library, which is not '
-                'installed. Install it with `pip install jinja2` (or '
-                '`pip install -r tools/requirements.txt`), then re-run.'
+                f'building a gallery needs the Jinja2 library, which is not '
+                f'installed. Install it with `{pip_command("jinja2")}` (or '
+                f'`{pip_command("-r " + requirements_hint())}`), then re-run.'
             )
 
         out_path = _gallery_out_path(
