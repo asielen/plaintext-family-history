@@ -62,8 +62,11 @@ so the archive root shows your genealogy rather than the program; your records, 
 `docs/` stay in plain sight. The archive is then **self-contained**: it works on any machine,
 offline, forever, even if this repo disappears.
 
-No `pip install` is involved and none is planned - the archive owns its own copy of the tools on
-purpose, so nothing it depends on can be uninstalled out from under it. If you have no git clone,
+The `fha` program itself is never `pip install`ed - the archive owns its own copy on purpose, so
+it cannot be uninstalled out from under you. Its Python **dependencies** are ordinary external
+packages, though: PyYAML is needed for everything, and Jinja2, Pillow, and pypdf for the site,
+photo, and PDF features. [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) walks through
+installing them, and `fha doctor` names any that are missing. If you have no git clone,
 [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) covers the download-a-zip route.
 
 **Your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.

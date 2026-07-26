@@ -432,6 +432,83 @@ class ExecBitRepairTest(unittest.TestCase):
             'a repaired launcher is a mutation and belongs in changed')
 
 
+class FlatArchiveRefusalTest(unittest.TestCase):
+    """Both install AND update must refuse an unstamped flat archive.
+
+    update-tools is the command an owner of a hand-copied archive reaches for,
+    so the refusal install got is worth little if this one silently vendors a
+    second copy and switches the first off.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        # A hand-copied pre-.fha archive: tools at the root, no stamp.
+        _write(self.archive / 'tools' / 'fha.py', 'print("legacy")\n')
+        _write(self.archive / 'design' / 'custom.css', '/* my colours */\n')
+        _write(self.archive / 'fha.yaml', 'roots: {}\n')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_update_refuses_and_writes_nothing(self):
+        with self.assertRaises(scaffold.ScaffoldError) as caught:
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+        msg = str(caught.exception)
+        self.assertIn('tools', msg)
+        self.assertIn('custom.css', msg, 'the stylesheet is the thing most '
+                                         'likely to be lost, so name it')
+        # Nothing vendored, nothing stamped, the owner's files untouched.
+        self.assertFalse((self.archive / '.fha').exists())
+        self.assertFalse((self.archive / '.plaintext-version').exists())
+        self.assertEqual(
+            (self.archive / 'design' / 'custom.css').read_text(encoding='utf-8'),
+            '/* my colours */\n')
+
+    def test_a_stamped_archive_is_unaffected(self):
+        # The guard keys on the ABSENCE of a stamp; a normal archive must update.
+        shutil.rmtree(self.archive)
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(self.archive, self.repo)
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+
+
+class ResumeInterruptedInstallTest(unittest.TestCase):
+    """An interrupted install must accept the bytes it copied itself."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_resume_accepts_source_bytes_that_differ_from_the_manifest(self):
+        # The packaged source differs from the manifest's prediction, as a zip
+        # built from repository blobs does for CRLF-pinned launchers.
+        manifest = json.loads((self.repo / 'manifest.json').read_text(encoding='utf-8'))
+        entry = next(e for e in manifest['files'] if e.get('category') == 'operating')
+        src = self.repo / entry.get('src', entry['path'])
+        _write(src, 'packaged bytes\n')          # manifest still holds the old sha
+
+        archive = self.tmp / 'archive'
+        archive.mkdir()
+        # Interrupted: this file was copied, the stamp was never written.
+        dest = archive / entry['path']
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_install(archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN,
+                         'resuming must not refuse the bytes install copied')
+
+
 class ManifestContainmentTest(unittest.TestCase):
     """A manifest is a downloaded file; it must not be able to reach outside."""
 

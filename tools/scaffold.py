@@ -759,16 +759,34 @@ def run_install(
     # with no backup and exit 0, while the template's own README promises that
     # starting to edit makes installation stop.
     #
-    # Two byte patterns are acceptable at a destination: what install would write
-    # (a partial previous install), and what the TEMPLATE ships there (a pristine
-    # hand-copy - the documented path, which must keep working). The template's
-    # README differs from the installed one by design, so comparing against stock
-    # alone would refuse exactly the copy the guide tells people to make.
+    # Three byte patterns are acceptable at a destination: what the manifest
+    # predicts, what THIS COPY of the source actually holds, and what the
+    # TEMPLATE ships there (a pristine hand-copy - the documented path, which
+    # must keep working; the template's README differs from the installed one by
+    # design, so comparing against stock alone would refuse exactly the copy the
+    # guide tells people to make).
+    #
+    # The middle one is what makes an interrupted install resumable. The manifest
+    # is generated in a git checkout, where .gitattributes materializes the .cmd
+    # launchers as CRLF, while a download packaged from the repository blobs can
+    # carry LF - so an install that copied such a file and died before writing
+    # the stamp would, on the next run, refuse the very bytes it had just put
+    # there. Same root as recording the installed hash in the stamp: what is on
+    # disk is decided by the source in hand, not by the manifest's prediction.
     def _acceptable(entry: dict) -> set[str]:
         ok = {entry.get('sha256')}
+        src_copy = repo_root / entry.get('src', entry['path'])
+        if src_copy.is_file():
+            try:
+                ok.add(_sha256_file(src_copy))
+            except OSError:
+                pass          # unreadable source is caught by the preflight below
         template_copy = repo_root / _SKELETON_SRC_DIR / entry["path"]
         if template_copy.is_file():
-            ok.add(_sha256_file(template_copy))
+            try:
+                ok.add(_sha256_file(template_copy))
+            except OSError:
+                pass
         return ok
 
     conflicts: list[str] = []
@@ -1094,6 +1112,29 @@ def run_update_tools(
     archive_root = Path(archive_root).resolve()
     manifest = load_manifest(repo_root)
     stamp = _load_version_stamp(archive_root)
+
+    # The same refusal `install` makes, for the same reason - and it has to be
+    # here too, because this is the command an owner of a hand-copied archive is
+    # far more likely to reach for. Without a stamp there is nothing recording
+    # the flat files, so they are never classified as retired: the run would
+    # install `.fha/tools/`, refresh the launchers to prefer it, write a stamp
+    # and exit 0, leaving the owner's customized `tools/` and `design/custom.css`
+    # sitting in place, unbacked-up and no longer read by anything. There is no
+    # migration path by design, so reconciling the two copies is the owner's
+    # call - but it must be an informed one, not a silent switch-off.
+    if stamp is None and (archive_root / 'tools' / 'fha.py').is_file() \
+            and not (archive_root / VENDOR_DIR / 'tools').is_dir():
+        raise ScaffoldError(
+            f"{archive_root} keeps its tools at {Path('tools') / 'fha.py'}, from "
+            f"a layout this version no longer uses (they now live in "
+            f"{VENDOR_DIR}/), and there is no {VERSION_FILE} recording what was "
+            f"installed. Updating would add a second copy under {VENDOR_DIR}/ and "
+            f"leave your existing tools/ in place but unused - including anything "
+            f"you edited in it.\n"
+            f"Move or delete the old tools/ folder yourself first, copying across "
+            f"any changes you made (a customized design/custom.css especially), "
+            f"then run this again."
+        )
 
     if stamp is None:
         print(
