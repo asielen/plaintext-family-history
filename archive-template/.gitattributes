@@ -1,15 +1,27 @@
-# Your archive is plain text. If you keep it in git, these rules stop a
-# checkout on another machine from silently rewriting line endings under you.
+# Your archive is plain text. If you keep it in git, these rules stop a checkout
+# on another machine from silently rewriting bytes under you. That matters more
+# than tidiness here: `fha update-tools` compares each operating file against the
+# checksum it recorded when it installed it, so a line-ending rewrite makes every
+# stock file look "customized" and get backed up on every single update.
 * text=auto
+
+# Records and configuration.
 *.md text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
 *.csv text eol=lf
 .gitignore text eol=lf
 
+# The tool suite itself lives in this archive, under .fha/. Its bytes are
+# checksummed, so pin every kind of file it ships.
+*.py text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+
 # The POSIX launcher must stay LF in the working tree on every platform. A
 # checkout that rewrote it to CRLF would ship a shell script /bin/sh cannot run
-# ("bad interpreter"), and would change its bytes out from under the checksum
-# recorded in .plaintext-version - so every later update would see the stock
-# launcher as customized and keep backing it up.
+# ("bad interpreter"), on top of the checksum problem above.
 fha text eol=lf

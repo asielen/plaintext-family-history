@@ -746,7 +746,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
 # ── Update (M9.2) ───────────────────────────────────────────────────────────────
 
 def _restore_exec_bits(archive_root: Path, repo_root: Path,
-                       manifest: dict) -> list[str]:
+                       manifest: dict) -> tuple[list[str], list[str]]:
     """Give back the executable bit to files the repo ships executable (POSIX).
 
     `shutil.copy2` preserves mode, so a fresh install is fine - but the bit can
@@ -762,11 +762,14 @@ def _restore_exec_bits(archive_root: Path, repo_root: Path,
     (mirroring the source's own bits); never removes a permission, and never
     touches content. A no-op on Windows, where the bit does not exist.
 
-    Returns human-readable notes for what it repaired.
+    Returns (repaired, failures). A chmod that fails is NOT swallowed: an owner
+    who can write the stamp but does not own the launcher would otherwise get a
+    clean exit 0 while `./fha` keeps refusing to run.
     """
     if os.name == 'nt':
-        return []
+        return [], []
     notes: list[str] = []
+    problems: list[str] = []
     for entry in manifest['files']:
         if entry.get('category') != 'operating':
             continue
@@ -783,10 +786,15 @@ def _restore_exec_bits(archive_root: Path, repo_root: Path,
             if dest_mode & 0o111 == exec_bits:
                 continue
             dest.chmod(dest_mode | exec_bits)
-        except OSError:
+        except OSError as exc:
+            problems.append(
+                f"{entry['path']}: is missing the permission that makes it "
+                f'runnable, and it could not be restored ({exc}). Until it is, '
+                f"running ./{entry['path']} fails with \"Permission denied\". "
+                f"Fix it with: chmod +x \"{dest}\"")
             continue
         notes.append(entry['path'])
-    return notes
+    return notes, problems
 
 
 def _plan_update(
@@ -1394,9 +1402,21 @@ def run_update_tools(
     # (`__file__/../../design`). Letting `design/` complete and retire its flat
     # copy would strip the stylesheet from the toolchain the archive actually
     # ends up running. Either every vendored subtree lands, or none does.
+    #
+    # A failed RELOCATION counts too, not just a failed copy. If a locked
+    # `design/custom.css` cannot move, letting the rest proceed would retire the
+    # flat toolset and activate `.fha/tools/` while the owner's stylesheet stays
+    # at a path the newly active `site.py` never reads - their styling silently
+    # gone, from a run that reported only a warning.
     aborted_roots: set[str] = set()
-    if any(fp.startswith(f'{VENDOR_DIR}/') and fp.split('/')[1] in transition_roots
-           for fp in failed_paths):
+    stuck_relocations = {
+        new.split('/')[1]
+        for old, new in relocations
+        if old in _failed_moves and new.startswith(f'{VENDOR_DIR}/')
+    }
+    if stuck_relocations & transition_roots or any(
+            fp.startswith(f'{VENDOR_DIR}/') and fp.split('/')[1] in transition_roots
+            for fp in failed_paths):
         aborted_roots = set(transition_roots)
 
     # The install-once relocation ran earlier, on the assumption the transition
@@ -1600,9 +1620,12 @@ def run_update_tools(
 
     # Independent of the plan: a launcher whose bytes are current can still have
     # lost its executable bit, and no amount of re-running would have fixed it.
-    for repaired in _restore_exec_bits(archive_root, repo_root, manifest):
+    repaired_modes, mode_failures = _restore_exec_bits(
+        archive_root, repo_root, manifest)
+    for repaired in repaired_modes:
         print(f'Restored the executable permission on {repaired} so it can be '
               f'run directly again.')
+    failures.extend(mode_failures)
 
     # Retiring files one by one leaves their directories behind, empty. After a
     # flat -> .fha/ update that means a hollow `tools/` and `design/` still

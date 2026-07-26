@@ -130,10 +130,28 @@ class ManifestSyncTest(unittest.TestCase):
             self.assertIn(launcher, entries, launcher)
             self.assertEqual(entries[launcher]['category'], 'operating')
         serve = (ROOT / 'serve.cmd').read_text(encoding='utf-8')
-        self.assertIn(r'tools\fha.py serve', serve)        # flat fallback
-        self.assertIn(r'.fha\tools\fha.py serve', serve)   # consolidated
+        self.assertIn(r'.fha\tools\fha.py', serve)         # consolidated
+        self.assertIn(r'tools\fha.py', serve)               # flat fallback
         fha_cmd = (ROOT / 'fha.cmd').read_text(encoding='utf-8')
         self.assertIn(r'.fha\tools\fha.py', fha_cmd)
+
+    def test_double_click_launcher_never_shows_a_raw_error(self):
+        # serve.cmd is the file a NON-TECHNICAL owner double-clicks, so it must
+        # never flash a raw interpreter error and vanish. fha.cmd already guards
+        # both failure modes; serve.cmd must too - by delegating to it, or (for an
+        # archive predating the launchers) by checking the same two things itself.
+        serve = (ROOT / 'serve.cmd').read_text(encoding='utf-8')
+        self.assertIn('fha.cmd', serve, 'should hand over to the hardened shim')
+        self.assertIn('version_info >= (3, 10)', serve,
+                      'a standalone fallback must still check the Python version')
+        self.assertIn(':no_tools', serve,
+                      'a missing toolset must produce guidance, not a raw error')
+        # Every exit path a double-click can reach has to hold the window open.
+        for label in (':no_tools', ':no_python', ':trouble'):
+            # Split on the label DEFINITION (start of line), not the goto above it.
+            tail = serve.split(f'\n{label}\n', 1)[1].split('exit /b', 1)[0]
+            self.assertIn('pause', tail,
+                          f'{label} must pause so the message can be read')
 
     def test_posix_launcher_is_usable(self):
         # Without this file, every `fha ...` example in the guides is a
@@ -1407,6 +1425,42 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
         self.assertIn('SPEC.md', str(caught.exception))
         self.assertEqual((target / 'SPEC.md').read_text(encoding='utf-8'),
                          '# my notes so far\n')
+
+    def test_a_stuck_stylesheet_aborts_the_whole_transition(self):
+        # A locked custom.css is a FAILED layout transition, not a warning to note
+        # and carry on from: proceeding would retire the flat toolset and activate
+        # .fha/tools/ while the stylesheet stays at a path the newly active
+        # site.py never reads - the owner's styling silently gone.
+        shutil.rmtree(self.archive / '.fha')
+        _write(self.archive / 'design' / 'custom.css', '/* MINE */\n')
+        stamp = self._stamp()
+        for key in [k for k in stamp['files'] if k.startswith('.fha/')]:
+            stamp['files'].pop(key)
+        flat_tool = self.archive / 'tools' / 'atool.py'
+        _write(flat_tool, 'print("legacy")\n')
+        stamp['files']['tools/atool.py'] = scaffold._sha256_file(flat_tool)
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+
+        real_move = scaffold.shutil.move
+
+        def flaky_move(src, dst, *a, **kw):
+            if 'custom.css' in str(dst) and '.fha' in str(dst):
+                raise OSError('locked by another program')
+            return real_move(src, dst, *a, **kw)
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold.shutil, 'move', side_effect=flaky_move), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        # The transition was abandoned, so the archive still runs its flat tools
+        # and the stylesheet is still where that toolchain reads it.
+        self.assertFalse((self.archive / '.fha').exists())
+        self.assertEqual(
+            (self.archive / 'design' / 'custom.css').read_text(encoding='utf-8'),
+            '/* MINE */\n')
+        self.assertEqual(flat_tool.read_text(encoding='utf-8'), 'print("legacy")\n')
 
     def test_rollback_clears_a_preexisting_partial_vendor_tree(self):
         # An interrupted earlier attempt can leave a partial .fha/tools/ whose

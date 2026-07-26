@@ -430,7 +430,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "826a9bfd4bb9667b75be877e7513b2afd6aa24ecfb4e4a917ee22ad49ab8a199",
+      "sha256": "8950b3e0c202e016231e351802eb5864758c4a15e00660acb6bf6b1ce3168fd8",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -619,7 +619,7 @@
     {
       "path": ".gitattributes",
       "category": "skeleton",
-      "sha256": "c7b24e860719c05c9e15ddc0dd80994ae0471e5d342ce92231ae52f8821c728f",
+      "sha256": "b3c7a4cab6e37429f6557a7459dc82f79b63e47f3b6f7349551478635619e1a9",
       "spec_version": "1.2",
       "src": "archive-template/.gitattributes"
     },
@@ -864,7 +864,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "4daefebdf843ddc81b089ccc4e0be2a12fc485eaeb9b55d5e58418281fef816d",
+      "sha256": "111fc0ed88feccaf7da7c08c7e83f7cbb9f8ad8600b3e7439b86d9f66a7eb2e9",
       "spec_version": "1.2"
     },
     {
