@@ -5,6 +5,16 @@
 # stock file look "customized" and get backed up on every single update.
 * text=auto
 
+# Original evidence is immutable: never normalize it. If you track photos/ or
+# documents/ (see .gitignore), a checkout on another machine must not rewrite a
+# GEDCOM, a transcript, or a CSV export you were given - those bytes are the
+# record. Marking the asset roots binary keeps git from touching them at all,
+# and it must come BEFORE the *.csv/*.txt rules below, which would otherwise
+# force LF onto an original.
+photos/** -text
+documents/** -text
+sources/files/** -text
+
 # Records and configuration.
 *.md text eol=lf
 *.yaml text eol=lf
@@ -20,6 +30,13 @@
 *.js text eol=lf
 *.json text eol=lf
 *.txt text eol=lf
+
+# The Windows launchers stay CRLF. Pinning them either way stops the checksum
+# churn - the bytes become deterministic on every platform - but CRLF is what
+# cmd.exe expects, what Windows checkouts already produce via autocrlf, and what
+# these files need: both use `goto` labels and serve.cmd has a parenthesised
+# if-block, the constructs reported to misbehave in LF-only batch files.
+*.cmd text eol=crlf
 
 # The POSIX launcher must stay LF in the working tree on every platform. A
 # checkout that rewrote it to CRLF would ship a shell script /bin/sh cannot run

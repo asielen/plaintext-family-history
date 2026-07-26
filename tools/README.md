@@ -423,8 +423,8 @@ double-clickable launcher for a non-technical owner: `cd` to the archive, run th
 sibling launchers `fha.cmd` (Windows terminal) and `fha` (POSIX `/bin/sh`, shipped with its
 executable bit), it is **layout-agnostic**: it probes `.fha\tools\fha.py` first, then
 `tools\fha.py`, so one vendored file works in both the current and the pre-`.fha` layout and
-`migrate-layout` needs no launcher rewrite - only a refresh of pre-`.fha` copies that predate
-the probe.
+the same vendored file works from a workshop clone (flat) and an installed archive
+(vendored) alike.
 
 ## fha serve - implementation status
 
@@ -486,14 +486,13 @@ the repo root.
 |---|---|---|
 | `fha install ARCHIVE-PATH [--repo PATH] [--dry-run]` | `scaffold.py`, `manifest.json` | ✓ M9.1 - first-time bootstrap: copy the operating layer + skeleton into a new archive and stamp `.plaintext-version`. See "fha install / fha update-tools - implementation status" below |
 | `fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH]` | `scaffold.py` | ✓ M9.2 - refresh the operating layer from an updated public clone; back up customized/retired files, never delete, never touch skeleton seeds. (The no-op per-command `--spec-root` was removed; only the global `fha --spec-root` and `fha lint --spec-root` remain.) See below |
-| `fha migrate-layout [--dry-run] [--repo PATH] [--root PATH]` | `scaffold.py` | ✓ - one-time transition for a pre-`.fha` archive: MOVE `tools/` and `design/` under `.fha/` (edits preserved - no copy, no backup), re-key the `.plaintext-version` operating paths, refresh the root launchers from `--repo`, and name the capture-host re-registration when one is installed. Idempotent; refuses a half-migrated state. See below |
 
 `manifest.json` (repo root) is the committed packing list every install/update reads.
 It is regenerated from the repo - not hand-edited - with the maintenance command
 `python tools/scaffold.py write-manifest --repo .` after any change to a tool, doc, or
 skeleton file; `tests/test_scaffold.py`'s manifest-sync test fails the build if the
-committed copy drifts from the repo. The `fha` command surface here is exactly `install`, `update-tools`, and
-`migrate-layout`; `write-manifest` is a tool-builder-only path, not part of it.
+committed copy drifts from the repo. The `fha` command surface here is exactly `install` and `update-tools`;
+`write-manifest` is a tool-builder-only path, not part of it.
 
 ## fha process - implementation status
 
@@ -857,7 +856,7 @@ arms, and the restore smoke test (extract the zip, `fha lint` the result: zero e
 `tests/test_doctor.py` covers the stamp-present/absent/unreadable doctor states and
 their CLEAN exit contribution.
 
-## fha install / fha update-tools / fha migrate-layout - implementation status
+## fha install / fha update-tools - implementation status
 
 The scaffolding trio (TOOLING §13c). `manifest.json` is the committed packing list;
 both commands read it and copy operating-layer + skeleton files between a public-repo
@@ -885,12 +884,7 @@ clone (or unzipped download) and a private archive. Generic glue - touches no fa
 | `write-manifest` (maintenance) | ✓ | `python tools/scaffold.py write-manifest --repo .` regenerates `manifest.json`; not on the `fha` surface. Kept honest by `tests/test_scaffold.py`'s manifest-sync test |
 | Install-once across a layout change | ✓ | A skeleton seed whose archive path moves with the layout (`design/custom.css` -> `.fha/design/custom.css`) is **moved to its new path before** the normal reconciliation runs, and the stamp re-keyed - otherwise the old path reads as retired (gone from the manifest) and is quarantined into `.plaintext-backup/` while nothing replaces it, because updates never install skeleton entries: a customized stylesheet would disappear from the archive. Matched only where the manifest lists the vendor-prefixed twin as a `skeleton` entry, the source is on disk, and the destination is not; both prefix directions handled; reported like any change and honoured by `--dry-run` (which re-keys in memory only, so the preview matches the real run) |
 | Malformed stamp shape | ✓ | `.plaintext-version` is a hand-editable JSON file. A `files` value that is valid JSON but not an object (a list, a string, `null`) is read as "nothing recorded" by the shared `_stamp_file_map` rather than raising `AttributeError` deep inside a mutating command; non-string keys/values are dropped. Every operating file is then re-checked against the manifest, which errs toward backing up rather than overwriting, and the run re-stamps cleanly |
-| `fha migrate-layout` | ✓ | One-time flat -> `.fha/` transition. Plain `shutil.move` of `tools/` and `design/` (hand-edits preserved - not a copy-and-backup cycle) + stamp re-key. Refuses to guess a half-migrated archive (both a flat and a `.fha/` copy of a subtree), a non-archive `--root`, and an archive with nothing to migrate - all before any move, exit 3. Idempotent no-op on an already-migrated archive |
-| migrate-layout launcher refresh | ✓ | A pre-`.fha` archive's `serve.cmd` names `tools\\fha.py` directly and has no `fha`/`fha.cmd` at all, so the move would break double-clicking `serve.cmd` and leave no CLI entry point. Stale launchers (absent, or lacking the vendor probe) are re-copied from `--repo`; any the source cannot supply are listed with the `update-tools` command that installs them, and `--dry-run` says which is which |
-| migrate-layout capture host | ✓ | A registered native-messaging host stores an absolute `<archive>/tools/fha.py` in its generated launcher, which the move invalidates - and `doctor` does not inspect it, so nothing else would report it. The run detects an installed Chrome/Edge host manifest (best-effort; never fatal) and names `fha capture --install-host` as a follow-up step |
-| migrate-layout rollback honesty | ✓ | A failed move rolls back what already moved. A rollback that **itself** fails leaves the archive genuinely half-migrated, so those paths are tracked and the error names each stranded folder and where it belongs, instead of the blanket "nothing was left half-moved" that would send the owner to retry a command that cannot succeed |
-| update-tools layout notice | ✓ | An `update-tools` run against a still-flat archive, from tools inside that same archive, prints the `migrate-layout` route first: the update would otherwise retire the running toolchain into `.plaintext-backup/` and install a fresh copy under `.fha/`. Advisory - the update proceeds if the human continues |
-| Exit codes | ✓ | 0 clean (incl. install with the exiftool advisory, and an update that backed files up); 1 if some files couldn't be written/moved (reported); 3 for can't-run (Python too old, missing/invalid manifest, re-install refusal, missing `--repo`, not-an-archive, write failure, and migrate-layout's not-an-archive / nothing-to-migrate / half-migrated refusals) |
+| Exit codes | ✓ | 0 clean (incl. install with the exiftool advisory, and an update that backed files up); 1 if some files couldn't be written/moved (reported); 3 for can't-run (Python too old, missing/invalid manifest, re-install refusal, missing `--repo`, not-an-archive, write failure) |
 
 Automated tests: `tests/test_scaffold.py` (stdlib `unittest`) builds a tiny **git-free** fake
 repo (3 operating + 3 skeleton files) and throwaway archives, covering install (copy + remap +

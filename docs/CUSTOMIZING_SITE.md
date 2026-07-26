@@ -92,7 +92,7 @@ Getting to it depends on your system:
 
 - **Mac / Linux:** the leading dot makes `.fha` hidden. In Finder, press `Cmd-Shift-.` to show
   hidden folders (press it again to re-hide them), or use *Go → Go to Folder…* and paste the path.
-- **Windows:** `fha install` and `fha migrate-layout` mark the folder hidden for you, so tick
+- **Windows:** `fha install` marks the folder hidden for you, so tick
   *Hidden items* on the *View* tab in File Explorer to see it. If it is already visible — the
   hidden mark doesn't stick on some drives, like a USB stick or a network folder — just open it
   normally; nothing is wrong.

@@ -1655,12 +1655,12 @@ Never deletes. Never silently overwrites customized files. All output is plain E
 to .plaintext-backup/2026-06-22/.fha/tools/fha.py - the new version is now in
 .fha/tools/fha.py." No technical diffs or checksums shown by default; `--verbose` may add them.
 
-An archive still on the pre-`.fha` flat layout is carried across by the same command: the flat
-`tools/` and `design/` are retired to the backup and the vendored copies installed, with the
-owner's install-once `design/custom.css` (and any assets beside it) MOVED rather than retired.
-That transition is all-or-nothing - if any part of it fails, the whole thing is rolled back and
-the archive is left on its old, working layout. `fha migrate-layout` does the same move directly,
-without the retire-and-reinstall round trip.
+There is no migration path from the pre-`.fha` flat layout, and none is planned: `fha install`
+produces the vendored layout directly, so only archives created before it could need one. Not
+building it is a deliberate scope decision - a layout transition is a mutating, all-or-nothing
+operation on someone's records folder, and the machinery to do it safely (rollback, half-moved
+detection, launcher and capture-host repair) is a standing liability for a case that does not
+arise in practice.
 
 **Done when:**
 ```sh

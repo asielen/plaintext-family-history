@@ -83,53 +83,9 @@ root; the launcher finds them there, and `update-tools` refreshes them in place.
    python -m pip install -r .fha/tools/requirements.txt
    ```
 
-   (`.fha/` is where an installed archive keeps its tools. If your archive still has a plain
-   `tools/` folder at its root, drop the `.fha/` and use `tools/requirements.txt` - or move to
-   the tidier layout first with `fha migrate-layout`, below.)
+   (`.fha/` is where an installed archive keeps its tools.)
 
 That's it. Records untouched, settings untouched, improvements in.
-
----
-
-## One-time: tidying an older archive's folders (`fha migrate-layout`)
-
-**Skip this if your archive already has a `.fha` folder in it, or you set it up recently.**
-
-Newer archives keep their machinery — the `tools/` program folder and the `design/` stylesheets —
-inside a single hidden folder called `.fha`, so that when you open your archive you see *your
-family history* and not a pile of program files. Archives set up before that change have `tools/`
-and `design/` sitting at the top level. One command moves them:
-
-1. **Preview first** — this writes nothing:
-
-   ```
-   fha migrate-layout --root "PATH-TO-YOUR-ARCHIVE" --dry-run
-   ```
-
-2. **Do it** — the same command without `--dry-run`.
-
-3. **Then run the normal update** (step 2 of the ritual above) to pick up everything else.
-
-Run it from your **workshop** folder with `--root` pointing at your archive, as shown. That way
-the tools doing the moving aren't the ones being moved.
-
-**What it does and doesn't touch.** Your `tools/` and `design/` folders *move* into `.fha/` —
-they are not copied, replaced, or reset, so anything you or your assistant edited stays exactly
-as it was, including your custom stylesheet (`design/custom.css`, which becomes
-`.fha/design/custom.css`). Your records, `docs/`, the rulebooks, and
-`fha.yaml` do not move at all. Running it twice is harmless: the second run says there's nothing
-to do. If it finds your archive half-moved already, it stops and says so rather than guessing.
-
-**Two things it will tell you about, if they apply:**
-
-- **The launcher files.** An older archive's `serve.cmd` points straight at the old `tools/`
-  folder, and it may not have an `fha` launcher at all. The command replaces them for you when it
-  can. If it says it couldn't, run the update in the ritual above and they'll be installed.
-- **Browser capture.** If you set up the browser clipper (`fha capture --install-host`), the
-  browser remembers where the tools *used* to be. The command tells you when this applies — just
-  re-run `fha capture --install-host` with the same browser and settings as before.
-
-A brand-new archive from `fha install` is already laid out this way and never needs this command.
 
 ---
 

@@ -4236,7 +4236,7 @@ EXIT_FAILURE = 3
 
 # The archive subfolder that holds the vendored machinery (tools/, docs/,
 # design/) so a real archive's root reads as the genealogy, not the tooling.
-# `fha install` remaps those subtrees under here; `fha migrate-layout` moves an
+# `fha install` remaps those subtrees under here; an
 # older flat archive into it. The workshop repo itself stays flat. Shared here
 # because scaffold (writes it), serve (watches design under it), and doctor
 # (locates docs under it) all need the same name.

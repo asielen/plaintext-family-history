@@ -783,23 +783,10 @@ After this the archive is self-contained - tools and rulebook both vendored - an
 *(Bootstrap note: `install` necessarily runs from the clone, e.g. `fha install ~/my-family-archive`, because the archive has no `fha` yet. This is the one command that can't be run from the archive - by definition.)*
 
 **Archive layout: `.fha/`.** An installed archive keeps its *machinery* in a hidden `.fha/` folder - `.fha/tools/` and `.fha/design/` - so the archive root reads as the genealogy: the record folders, `fha.yaml`, the rulebooks, `docs/`, `.claude/skills/`, and the launchers.
+There is no migration path and none is planned: a fresh `fha install` produces this layout directly, and an archive predating it is not something the tools undertake to convert.
 The workshop repo itself stays **flat** (`tools/`, `design/` at its root); the remap is install-time only, recorded by the manifest's existing `src` (repo-relative) vs `path` (archive-relative) seam, so the install/update engine needs no layout knowledge.
 `docs/` deliberately stays at the archive root with the rulebooks it links to and from: remapping either side would break every relative link in the pair (`docs/GETTING_STARTED.md` from the root; `../SPEC.md` from a doc), and an archive has to stay navigable in a plain file browser.
 Root detection is unaffected - it still finds `fha.yaml` at the archive root either way.
-
-**`fha migrate-layout [--dry-run] [--repo PATH] [--root PATH]`** - the one-time transition for an archive installed **before** the `.fha/` layout, which keeps `tools/` and `design/` at its root.
-Moves those two subtrees into `.fha/` with a plain filesystem **move**, so a hand-edited tool stays edited - nothing is copied, backed up, or reset - and re-keys the `.plaintext-version` stamp's operating paths (`tools/…` -> `.fha/tools/…`) so the next `update-tools` sees a current archive rather than a wholly retired one.
-Records, `docs/`, the rulebooks, and `.claude/` are not touched.
-It also **refreshes the root launchers** (`fha`, `fha.cmd`, `serve.cmd`) from `--repo`: a pre-`.fha` archive's `serve.cmd` names `tools\fha.py` directly and has no CLI shim beside it, so moving `tools/` without replacing them would break double-clicking `serve.cmd` and leave no `fha` entry point. Any launcher `--repo` cannot supply is reported with the `update-tools` command that installs it.
-Where a browser capture host is registered, the run names `fha capture --install-host` as a required follow-up - its stored launcher command holds an absolute path to the old `tools/fha.py`.
-
-*Contract.* Idempotent: an already-`.fha/` archive is a clean no-op (exit 0).
-Refuses to guess when both a flat and a `.fha/` copy of the same subtree exist (half-migrated state), when the target is not an archive (no `fha.yaml`), and when there is nothing to migrate - all exit 3, before any move.
-A move that fails is rolled back; when the rollback *itself* fails the error names the exact stranded paths and where each belongs, rather than claiming a clean recovery.
-A missing, unreadable, or malformed stamp is non-fatal - the folders still move and the next `update-tools` re-stamps.
-`--dry-run` prints the same plan, including the launcher and capture-host follow-ups, and writes nothing.
-Safest run from the workshop against the archive (`fha migrate-layout --root ARCHIVE`), so the tools doing the moving are not the tools being moved.
-Upgrading is: `migrate-layout --dry-run` -> `migrate-layout` -> `update-tools --repo PATH`. A fresh `fha install` produces the `.fha/` layout directly and never needs this command.
 
 **`fha update-tools`** - run from the archive (or the clone, pointed at it) any time the public repo improves.
 Reads the public manifest, compares against the archive's `.plaintext-version` stamp, and reconciles **without ever destroying anything**:

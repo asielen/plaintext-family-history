@@ -140,8 +140,12 @@ tools which archive folder to look at. `check` is the friendly name for the comm
 > you have one, in your archive folder too. It finds the tools and runs them, so you never type a
 > path. On **macOS or Linux** type `./fha <command>`; in Windows **PowerShell**, `.\fha <command>`;
 > the Windows **Command Prompt** accepts a bare `fha <command>`. (Adding the folder to your PATH
-> once makes a bare `fha` work everywhere.) The `--root` shown here names which archive to use;
-> run `fha` from inside your archive and you can leave it off.
+> once makes a bare `fha` work everywhere.) The `--root` shown here names which archive to use.
+>
+> This walkthrough builds your archive by copying the template, which puts your records in place
+> but no launcher beside them - so run every command from the **project folder** with `--root`,
+> as shown. (`fha install` is the other way to set up an archive; it puts a launcher in the
+> archive itself, and only then can you `cd` in and drop `--root`.)
 
 ### Coming from Ancestry (or another genealogy program)?
 

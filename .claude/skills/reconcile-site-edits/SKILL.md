@@ -87,10 +87,9 @@ An edit can split across layers (a restyled *and* reworded homepage). Split it: 
 
 > **Finding `custom.css`.** An installed archive keeps its design package under the hidden
 > `.fha/` folder, so the file is `.fha/design/custom.css` — that is the one `fha site` reads.
-> An older archive that has not run `fha migrate-layout` yet keeps it at `design/custom.css`
-> instead. Check which exists before writing; writing the root path into a `.fha/` archive
-> creates a file the build never loads, and the styling this skill promised to preserve is
-> silently lost on the next rebuild.
+> Write that path, not a root-level `design/custom.css` - a file there is never loaded by the
+> build, and the styling this skill promised to preserve would be silently lost on the next
+> rebuild.
 
 ### 4. Propose each source change in plain language, and confirm
 

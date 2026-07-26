@@ -26,7 +26,7 @@ COMMANDS = (
     'id', 'index', 'lint', 'check', 'stubs', 'views', 'doctor', 'find', 'search',
     'relate', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
     'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
-    'person', 'source', 'site', 'serve', 'install', 'update-tools', 'migrate-layout',
+    'person', 'source', 'site', 'serve', 'install', 'update-tools',
     'working-copy',
     'normalize-links', 'backup', 'reconcile',
 )
@@ -294,15 +294,15 @@ def _intercept_scaffold(argv: list[str]) -> int | None:
         break
 
     if command_idx is None or argv[command_idx] not in (
-            'install', 'update-tools', 'migrate-layout'):
+            'install', 'update-tools'):
         return None
 
     from scaffold import _standalone_main as scaffold_main
     subargv = list(argv[command_idx:])
-    # `update-tools` and `migrate-layout` accept --root as a subcommand flag;
+    # `update-tools` accepts --root as a subcommand flag;
     # inject the global --root (supplied before the command name) when not
     # already present. `install` uses a positional ARCHIVE-PATH, no injection.
-    if (global_root and subargv[0] in ('update-tools', 'migrate-layout')
+    if (global_root and subargv[0] == 'update-tools'
             and '--root' not in subargv):
         subargv = [subargv[0], '--root', global_root] + subargv[1:]
     return scaffold_main(subargv)
@@ -680,8 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         # Working-copy mode banner: one informational line before any command
         # output so the user knows why asset features are paused.
         # Skip for commands that manage the mode or print their own banner.
-        _BANNER_SKIP = {'doctor', 'working-copy', 'install', 'update-tools',
-                        'migrate-layout'}
+        _BANNER_SKIP = {'doctor', 'working-copy', 'install', 'update-tools'}
         if args.command not in _BANNER_SKIP:
             from _lib import find_archive_root, is_working_copy
             _root = getattr(args, 'root', None)

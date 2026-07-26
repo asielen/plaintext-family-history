@@ -24,8 +24,9 @@ You never have to type a command. The phrases above are the whole job.
 
 Replace `my-family-archive` with your archive's folder name.
 
-**Running `fha`.** `fha` is a small launcher file that sits in your archive folder (and in your
-workshop copy of the project) and finds the tools for you. How you type it depends on where you
+**Running `fha`.** `fha` is a small launcher file that sits in your workshop copy of the project
+- and, if your archive was set up with `fha install`, in the archive folder too. It finds the
+tools for you. How you type it depends on where you
 are and which terminal you use:
 
 | Where you are | Type |
@@ -36,9 +37,11 @@ are and which terminal you use:
 
 (Put the folder on your PATH once and a bare `fha <command>` works everywhere.)
 
-The examples below name the archive with `--root`, so they run from anywhere. Run them from
-*inside* the archive folder and you can drop `--root` altogether - `fha` uses the archive it
-finds itself in.
+The examples below name the archive with `--root`, so they run from anywhere - that is the form
+to use from your project folder, and it always works. If your archive has its own launcher (it
+does when `fha install` created it), you can instead run them from *inside* the archive and drop
+`--root`: `fha` uses the archive it finds itself in. An archive made by copying the template has
+no launcher of its own, so stay in the project folder and keep `--root`.
 
 ```
 fha process "inbox/the-file-you-added.jpg" --root my-family-archive   # file one new inbox item
