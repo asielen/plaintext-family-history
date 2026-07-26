@@ -610,14 +610,28 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
             attr_rules = set()
         unprotected = []
         for name, target in sorted(roots.items()):
-            if not target or Path(target).is_absolute():
+            if not target:
                 continue
-            top = Path(target).parts[0] if Path(target).parts else ''
-            if not top or not (archive_root / target).is_dir():
+            # Relative does not mean inside: `../FamilyPhotos` is a perfectly
+            # ordinary way to keep originals beside the archive rather than in
+            # it, and git cannot govern files outside the repository - so
+            # advising a `.gitattributes` pattern for one would be advice that
+            # cannot work. Resolve and test containment rather than trusting the
+            # spelling of the path.
+            resolved = (archive_root / target).resolve()
+            try:
+                inside = resolved.is_relative_to(archive_root.resolve())
+            except AttributeError:                     # Python < 3.9
+                inside = str(resolved).startswith(str(archive_root.resolve()))
+            if not inside or not resolved.is_dir():
                 continue
-            if f'{target}/**' in attr_rules or f'{top}/**' in attr_rules:
+            rel = resolved.relative_to(archive_root.resolve()).as_posix()
+            top = rel.split('/')[0] if rel else ''
+            if not top:
                 continue
-            unprotected.append((name, target))
+            if f'{rel}/**' in attr_rules or f'{top}/**' in attr_rules:
+                continue
+            unprotected.append((name, rel))
         if unprotected:
             worst = max(worst, EXIT_WARNINGS)
             for name, target in unprotected:

@@ -1235,15 +1235,17 @@ def _prune_emptied_dirs(archive_root: Path, retired_paths: list[str], *,
             candidates.add(parent)
             parent = parent.parent
     pruned: list[str] = []
+    # Deepest-first, and the preview has to model the CASCADE the live pass gets
+    # for free: once `tools/templates/` is removed, `tools/` may be empty too.
+    # Judging each directory against the disk alone reports the child and misses
+    # the parent, so predictions accumulate and count as already-gone.
+    going = {archive_root / q for q in retired_paths}
     for directory in sorted(candidates, key=lambda q: len(q.parts), reverse=True):
         if dry_run:
-            # Would rmdir succeed? Only for a directory that exists and is empty
-            # once the retirements above have happened - which in a preview they
-            # have not, so judge it by what retirement WOULD leave behind.
             if directory.is_dir() and not any(
-                    q for q in directory.iterdir()
-                    if q.relative_to(archive_root).as_posix() not in set(retired_paths)):
+                    q for q in directory.iterdir() if q not in going):
                 pruned.append(directory.relative_to(archive_root).as_posix())
+                going.add(directory)
             continue
         try:
             directory.rmdir()

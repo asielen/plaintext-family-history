@@ -52,8 +52,13 @@ The only relationship is that your private archive *uses the tools* that live in
 The tools get to your archive by **installing** them into it:
 
 ```
-fha install PATH-TO-YOUR-ARCHIVE --repo PATH-TO-THIS-CLONE
+./fha install PATH-TO-YOUR-ARCHIVE --repo .      # macOS / Linux
+.\fha install PATH-TO-YOUR-ARCHIVE --repo .      # Windows PowerShell
+fha install PATH-TO-YOUR-ARCHIVE --repo .        # Windows Command Prompt
 ```
+
+(Run it from inside this clone. The `fha` launcher sits right here beside this
+README, but a fresh clone is not on your `PATH` - hence the `./`.)
 
 That copies the whole operating layer - the program, its design package, the rulebooks, and the
 owner-facing docs - into the archive and records what it wrote, so `fha update-tools` can refresh

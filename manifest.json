@@ -318,7 +318,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "71e560a91bc02e0dbb8b8fb0bda032c40c0700dde51f7674447023f439c334b8",
+      "sha256": "17ca0c3c4b870595443265c91eef78f47b79bf465755291d3d96b6fbb7569ed0",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -444,7 +444,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "bdf2a6a03d03075035f4f51b8f0e2d23518a7e66a283e483176211824f5ddfce",
+      "sha256": "5a3f0a8c44237510664722fb3233eac0c7d2398d32a1a84c8e0c887239ce7c52",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -659,7 +659,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "91677b89616571a7ff07c87cc5f657dc3093da4e3ef5788ea4777ac50f1bf5fa",
+      "sha256": "a592ab46619b019dd3ee9299084c58c0397bd315f30db1865d23339a28a552cb",
       "spec_version": "1.2"
     },
     {
@@ -866,7 +866,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "0220b977c03a7e5fbd3f3682a260596d714fb7f3abb9c1a82e10ca35ce510c82",
+      "sha256": "4e98b5922c5867a7f21d0fd6f67811d8d76096abd85ea6364e3e5d1f9c83e078",
       "spec_version": "1.2"
     },
     {

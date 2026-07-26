@@ -12,7 +12,7 @@ cd /d "%~dp0"
 
 if exist "%~dp0fha.cmd" (
   call "%~dp0fha.cmd" serve %*
-  if errorlevel 1 goto :trouble
+  if errorlevel 1 set "FHA_RC=%errorlevel%" & goto :trouble
   exit /b 0
 )
 
@@ -40,12 +40,12 @@ goto :no_python
 
 :run_py
 py -3 "%FHA_ENTRY%" serve %*
-if errorlevel 1 goto :trouble
+if errorlevel 1 set "FHA_RC=%errorlevel%" & goto :trouble
 exit /b 0
 
 :run_python
 python "%FHA_ENTRY%" serve %*
-if errorlevel 1 goto :trouble
+if errorlevel 1 set "FHA_RC=%errorlevel%" & goto :trouble
 exit /b 0
 
 :no_tools
@@ -80,5 +80,10 @@ exit /b 3
 :trouble
 echo.
 echo fha serve could not start - read the message above.
+rem Hand back the code the command actually returned. `serve` uses 3 for a
+rem can't-run condition (missing Jinja2, bad config, busy port); flattening
+rem everything to 1 tells a script "warning" when the tool said "failed".
+rem `pause` resets errorlevel, so the value is captured before it runs.
+if not defined FHA_RC set "FHA_RC=1"
 pause
-exit /b 1
+exit /b %FHA_RC%
