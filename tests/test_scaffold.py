@@ -525,6 +525,84 @@ class ResumeInterruptedInstallTest(unittest.TestCase):
                          'resuming must not refuse the bytes install copied')
 
 
+class DirectoryDestinationTest(unittest.TestCase):
+    """A contained path can still name the human's records folder.
+
+    `people` is contained, ordinary-looking, and is where the genealogy lives.
+    Treated as a file it gets moved wholesale into .plaintext-backup/ and
+    replaced - the records being the collateral of a damaged packing list.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(self.archive, self.repo)
+        # The owner's records.
+        _write(self.archive / 'people' / 'P-abcd.md', '# Margaret\n')
+        manifest = json.loads((self.repo / 'manifest.json').read_text(encoding='utf-8'))
+        manifest['files'].append({'path': 'people', 'category': 'operating',
+                                  'src': 'tools/atool.py', 'sha256': 'x'})
+        _write(self.repo / 'manifest.json', json.dumps(manifest))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_update_refuses_and_the_records_survive(self):
+        with self.assertRaises(scaffold.ScaffoldError) as caught:
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_update_tools(self.archive, self.repo)
+        self.assertIn('people', str(caught.exception))
+        self.assertTrue((self.archive / 'people').is_dir())
+        self.assertEqual(
+            (self.archive / 'people' / 'P-abcd.md').read_text(encoding='utf-8'),
+            '# Margaret\n')
+        self.assertFalse((self.archive / '.plaintext-backup').exists(),
+                         'nothing may be moved aside before the refusal')
+
+    def test_install_refuses_too(self):
+        fresh = self.tmp / 'fresh'
+        (fresh / 'people').mkdir(parents=True)
+        _write(fresh / 'people' / 'P-abcd.md', '# Margaret\n')
+        with self.assertRaises(scaffold.ScaffoldError):
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(fresh, self.repo)
+        self.assertEqual(
+            (fresh / 'people' / 'P-abcd.md').read_text(encoding='utf-8'),
+            '# Margaret\n')
+
+
+class ManifestCategoryTest(unittest.TestCase):
+    """An unrecognized category installs and is then never managed again."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        self.pristine = (self.repo / 'manifest.json').read_text(encoding='utf-8')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_missing_or_unknown_category_is_refused(self):
+        for value in (None, 'operatng', 'data', ''):
+            with self.subTest(category=value):
+                manifest = json.loads(self.pristine)
+                if value is None:
+                    manifest['files'][0].pop('category', None)
+                else:
+                    manifest['files'][0]['category'] = value
+                _write(self.repo / 'manifest.json', json.dumps(manifest))
+                with self.assertRaises(scaffold.ScaffoldError) as caught:
+                    scaffold.load_manifest(self.repo)
+                self.assertIn('category', str(caught.exception))
+
+    def test_the_real_manifest_still_loads(self):
+        self.assertTrue(scaffold.load_manifest(ROOT)['files'])
+
+
 class ManifestContainmentTest(unittest.TestCase):
     """A manifest is a downloaded file; it must not be able to reach outside."""
 

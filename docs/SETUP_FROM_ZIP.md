@@ -111,10 +111,13 @@ python -m pip install -r tools/requirements.txt
 it says `No module named 'yaml'`, the install didn't land - run the install command again and
 read its last lines for the reason.)
 
-Now run the linter against your archive - it checks that everything is shaped correctly:
+Now run the linter against your archive - it checks that everything is shaped correctly. Type it
+the way your system wants it, from inside the workshop folder you unzipped:
 
 ```
-fha lint --root my-family-archive
+./fha lint --root my-family-archive      # macOS / Linux
+.\fha lint --root my-family-archive      # Windows PowerShell
+fha lint --root my-family-archive        # Windows Command Prompt
 ```
 
 A fresh archive prints:

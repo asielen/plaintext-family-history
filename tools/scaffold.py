@@ -515,6 +515,19 @@ def load_manifest(repo_root: Path) -> dict:
                     f"archive and read inside your copy of the tools, so this "
                     f"packing list is refused. Re-download the plaintext tools."
                 )
+        # `category` decides who manages the file for the rest of its life:
+        # `_plan_update` handles `operating` and `skeleton` and silently ignores
+        # anything else. A missing or misspelled value therefore installs
+        # normally and then becomes permanently unmanaged - never updated, never
+        # retired, never reported - which is worse than a refusal because nothing
+        # ever surfaces it.
+        if entry.get('category') not in ('operating', 'skeleton'):
+            raise ScaffoldError(
+                f"{path} has an entry at position {position} whose 'category' is "
+                f"{entry.get('category')!r}; it must be 'operating' or "
+                f"'skeleton'. Anything else would be copied in and then never "
+                f"managed again by updates. Re-download the plaintext tools."
+            )
         for field in ('src', 'category', 'sha256'):
             if field not in entry:
                 continue
@@ -528,6 +541,39 @@ def load_manifest(repo_root: Path) -> dict:
                     f"partial one cannot be trusted."
                 )
     return manifest
+
+
+def _refuse_directory_destinations(archive_root: Path, files: list[dict]) -> None:
+    """Refuse before any mutation if a manifest path names an existing directory.
+
+    Containment (see `_contained_relative`) keeps manifest paths inside the
+    archive, but inside is not the same as harmless: `people` is a contained,
+    perfectly ordinary-looking path, and it is where the human's records live.
+    An entry naming it is handled as a FILE by everything downstream - update
+    classifies the directory as customized, moves the whole tree into
+    `.plaintext-backup/`, writes a file in its place, and exits 0; install copies
+    into it. Either way the archive's own records are the collateral.
+
+    This is the check that matters most in this file, because it is the only one
+    standing between a damaged packing list and the genealogy itself - and the
+    records are the thing the tools exist to protect, not the tools.
+    """
+    clashes = [
+        entry['path'] for entry in files
+        if (archive_root / entry['path']).is_dir()
+    ]
+    if clashes:
+        listing = '\n  '.join(sorted(clashes)[:10])
+        more = '' if len(clashes) <= 10 else f'\n  …and {len(clashes) - 10} more'
+        raise ScaffoldError(
+            f"this copy of the plaintext tools has a packing list naming "
+            f"{len(clashes)} path(s) that are FOLDERS in {archive_root}:\n  "
+            f"{listing}{more}\n"
+            f"Those are almost certainly your own folders - records, photos, "
+            f"notes - and treating them as tool files would move them aside. "
+            f"Nothing has been changed. Re-download the plaintext tools; if the "
+            f"problem persists, this manifest is damaged and should not be used."
+        )
 
 
 def _resolve_repo_root(repo_arg: str | None) -> Path:
@@ -699,6 +745,8 @@ def run_install(
         for m in advisories:
             print(f'ERROR: {m}', file=sys.stderr)
         return Result(ok=False, exit_code=EXIT_FAILURE)
+
+    _refuse_directory_destinations(archive_path, manifest['files'])
 
     already = archive_path / VERSION_FILE
     if already.is_file():
@@ -1122,6 +1170,8 @@ def run_update_tools(
     # sitting in place, unbacked-up and no longer read by anything. There is no
     # migration path by design, so reconciling the two copies is the owner's
     # call - but it must be an informed one, not a silent switch-off.
+    _refuse_directory_destinations(archive_root, manifest['files'])
+
     # Keyed on "no USABLE record", not on `stamp is None`. A stamp of
     # `{"files": []}` - hand-edited, truncated, or written by an interrupted run
     # - is a perfectly good object that records nothing, so a None check waves it
