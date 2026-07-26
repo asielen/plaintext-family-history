@@ -72,7 +72,7 @@
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "c407f0399039b27d1436a48ffee5f1526a7742f3d9e1a9f5ca95ac21f5850fbe",
+      "sha256": "8e9e8f8399e1b598a9abfb29cbe6f54da516fe4633290fcf183af9eeae296590",
       "spec_version": "1.2"
     },
     {
@@ -430,7 +430,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "1d48d519a7232774b6daabdccda70970abc7c2c90025afc41d6cfaac22962d14",
+      "sha256": "15241c74667abe7d32457cf5f09d388ea60d66bc9984d2ed73e8f596ec5a2a31",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -626,13 +626,13 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "89b0a2393a99f2fd2a95d7a2dddc1284bfc94b9b24e167a55b0279c5e207dcd6",
+      "sha256": "7945e7e3653ae21ca8eff4923bac19f20e2c4b2d30aa7ff1f91d02ac3f95dc24",
       "spec_version": "1.2"
     },
     {
       "path": "CLAUDE.md",
       "category": "operating",
-      "sha256": "a1ac8258e431dbdca558b29926f6311b093f5f7ee09d5cce5f8980034c1b3c5c",
+      "sha256": "d5d5c3cfee557a94ac26873e0cceed95e946cfa93c0070c987a6713f9c2820f2",
       "spec_version": "1.2"
     },
     {
@@ -716,19 +716,19 @@
     {
       "path": "docs/SITE_PLAN.md",
       "category": "operating",
-      "sha256": "fe0c12802fe111f7ffd7044da9ee5ca6e47682af994a4e7a80e63eaa6f72869e",
+      "sha256": "8107e40fee3de7bbd9c986a06758ba0c3fef1ef1e9278dd4a2d32553d462dc2e",
       "spec_version": "1.2"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "758464f238fa375e8921641378469ccb87d86661be73c6474ec933c44f9cc066",
+      "sha256": "7b598d41c7c08ede45ec5078bf041bc39282e5aa76d413695e17d71d973324ec",
       "spec_version": "1.2"
     },
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "6312a1800dcc0ff57ac8d517c5563eb734af3c62385775bbc49fcbfe091dc762",
+      "sha256": "9df9fe1b6d41f05e40ad36018da57214839b2c69add99f3e32fdd7fb5676ac57",
       "spec_version": "1.2"
     },
     {
@@ -747,7 +747,7 @@
     {
       "path": "fha",
       "category": "operating",
-      "sha256": "502a9e5484c5897ce784ecaf2590b2c33f243f3c0281c80d29b7687ac2e40bbe",
+      "sha256": "7fb7229e9d67b86f42b77803bf41b79380120bc6eaf440464b59e4eaa9c8f07b",
       "spec_version": "1.2"
     },
     {

@@ -102,6 +102,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -795,30 +796,47 @@ def _plan_install_once_relocations(
     return moves
 
 
+def _rekey_stamp_for_relocations(
+    stamp: dict | None,
+    moves: list[tuple[str, str]],
+) -> None:
+    """Point the stamp at the relocated install-once paths, in memory only.
+
+    Done up front, before anything on disk moves, because it is the re-key - not
+    the move - that stops `_plan_update` reading the old path as retired and the
+    skeleton carry-over dropping it from the rewritten stamp. Applied in dry-run
+    too, so a preview reports what the real run would do rather than announcing a
+    retirement that will never happen.
+    """
+    if not isinstance(stamp, dict) or not moves:
+        return
+    files = _stamp_file_map(stamp)
+    for old, new in moves:
+        files[new] = files.pop(old, files.get(new, ''))
+    stamp['files'] = dict(sorted(files.items()))
+
+
 def _apply_install_once_relocations(
     archive_root: Path,
-    stamp: dict | None,
     moves: list[tuple[str, str]],
     *,
     dry_run: bool,
 ) -> list[str]:
-    """Move relocated install-once files and re-key the stamp in memory.
+    """Move the relocated install-once files on disk.
 
-    The in-memory re-key happens in BOTH modes so the rest of the run - the
-    retired scan in `_plan_update` and the skeleton carry-over when the stamp is
-    rewritten - sees the file at its new home. That makes a `--dry-run` plan an
-    honest preview of the real run rather than one that reports the file retired.
+    Deliberately called only AFTER the manifest-source preflight has passed. An
+    update driven from a damaged or partial workshop copy aborts at that check;
+    moving the stylesheet first would leave it at a path the archive's still-flat
+    `site.py` never reads, silently dropping the owner's styling from a run that
+    failed and changed nothing else.
+
     Returns human-readable failure messages (empty on success); a file that
     cannot be moved is left exactly where it is.
     """
-    if not moves:
-        return []
     failures: list[str] = []
-    applied: list[tuple[str, str]] = []
+    if dry_run:
+        return failures
     for old, new in moves:
-        if dry_run:
-            applied.append((old, new))
-            continue
         dest = archive_root / new
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -827,14 +845,6 @@ def _apply_install_once_relocations(
             failures.append(
                 f'{old}: could not move to {new} ({exc}). Your copy is untouched '
                 f'at {archive_root / old} - move it to {dest} by hand.')
-            continue
-        applied.append((old, new))
-
-    if isinstance(stamp, dict) and applied:
-        files = _stamp_file_map(stamp)
-        for old, new in applied:
-            files[new] = files.pop(old, files.get(new, ''))
-        stamp['files'] = dict(sorted(files.items()))
     return failures
 
 
@@ -873,20 +883,15 @@ def run_update_tools(
         )
         print()
 
-    # Before any normal reconciliation: carry install-once files (design/custom.css)
-    # across a vendor-layout change, so a customized stylesheet is never retired
-    # into the backup folder with nothing installed in its place.
+    # Plan (do not yet perform) the carry-over of install-once files across a
+    # vendor-layout change, so a customized stylesheet is never retired into the
+    # backup folder with nothing installed in its place. The stamp is re-keyed in
+    # memory NOW, because that is what stops `_plan_update` reading the old path
+    # as retired; the file itself does not move until the source preflight below
+    # has passed. Moving it earlier would strand the owner's stylesheet at a path
+    # the still-flat site.py does not read, on an update that then aborted.
     relocations = _plan_install_once_relocations(archive_root, manifest, stamp)
-    for old, new in relocations:
-        prefix = '[dry-run] would move' if dry_run else 'Moved'
-        print(f'{prefix} your {old} to {new} (the tools folder layout changed; '
-              'your customizations come with it).')
-    relocation_failures = _apply_install_once_relocations(
-        archive_root, stamp, relocations, dry_run=dry_run)
-    for message in relocation_failures:
-        print(f'WARNING: {message}', file=sys.stderr)
-    if relocations:
-        print()
+    _rekey_stamp_for_relocations(stamp, relocations)
 
     # An update that also changes the layout retires the old flat tools/ into
     # .plaintext-backup/ and installs fresh ones under .fha/. That is correct but
@@ -927,6 +932,18 @@ def run_update_tools(
             f"the manifest expects:\n  {listing}{more}\n"
             f"Re-download or re-clone the tools, then run `fha update-tools` again."
         )
+
+    # Sources check out, so the run will not abort under us: now it is safe to
+    # actually move the install-once files planned above.
+    for old, new in relocations:
+        prefix = '[dry-run] would move' if dry_run else 'Moved'
+        print(f'{prefix} your {old} to {new} (the tools folder layout changed; '
+              'your customizations come with it).')
+    for message in _apply_install_once_relocations(
+            archive_root, relocations, dry_run=dry_run):
+        print(f'WARNING: {message}', file=sys.stderr)
+    if relocations:
+        print()
 
     n_added = len(plan['added'])
     n_stock = len(plan['stock'])
@@ -1293,30 +1310,50 @@ def _refresh_root_launchers(archive_root: Path, repo_root: Path,
     return refreshed, unavailable
 
 
-def _capture_host_installed() -> Path | None:
-    """Return the installed browser capture-host manifest path, or None.
+def _capture_host_installed(archive_root: Path) -> Path | None:
+    """Return the capture-host manifest registered for THIS archive, or None.
 
     The native-messaging host registered by `fha capture --install-host` holds a
-    launcher whose generated command names an ABSOLUTE `<archive>/tools/fha.py`.
-    Moving `tools/` leaves that registration pointing at nothing, and browser
-    capture silently stops launching - `doctor` does not inspect it, so nothing
-    else would ever tell the owner. Detect it so the migrator can name the
-    re-registration command. Probing is best-effort and never fatal: capture.py
-    owns the per-OS locations, and a failure to import or resolve them simply
-    means we fall back to mentioning the command unconditionally.
+    launcher whose generated command names an ABSOLUTE `<archive>/tools/fha.py`
+    and `--root <archive>`. Moving `tools/` leaves that registration pointing at
+    nothing, and browser capture silently stops launching - `doctor` does not
+    inspect it, so nothing else would ever tell the owner.
+
+    The registration is per-machine, not per-archive: there is one host manifest
+    per browser, whoever registered it last. So its mere existence proves
+    nothing. On a machine with two archives, a host registered for archive A
+    would otherwise make migrating archive B announce a stale registration and
+    send the owner to re-run `--install-host` - which would repoint A's working
+    host at B. Read the launcher the manifest names and confirm it actually
+    refers to the archive being migrated before saying anything.
+
+    Best-effort and never fatal: capture.py owns the per-OS locations, and any
+    failure to import, resolve, or read simply yields None (say nothing) rather
+    than risking a wrong instruction.
     """
     try:
         import capture  # local import: only migrate-layout needs it
-        for browser in ('chrome', 'edge'):
-            try:
-                manifest = (capture._native_manifest_dir(browser)
-                            / f'{capture._NATIVE_HOST_NAME}.json')
-            except Exception:
-                continue
-            if manifest.is_file():
-                return manifest
     except Exception:
         return None
+    try:
+        root_norm = os.path.normcase(str(Path(archive_root).resolve()))
+    except OSError:
+        return None
+    for browser in ('chrome', 'edge'):
+        try:
+            manifest_path = (capture._native_manifest_dir(browser)
+                             / f'{capture._NATIVE_HOST_NAME}.json')
+            if not manifest_path.is_file():
+                continue
+            launcher = Path(json.loads(
+                manifest_path.read_text(encoding='utf-8')).get('path', ''))
+            if not launcher.is_file():
+                continue
+            if root_norm in os.path.normcase(
+                    launcher.read_text(encoding='utf-8', errors='replace')):
+                return manifest_path
+        except Exception:
+            continue
     return None
 
 
@@ -1370,7 +1407,7 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
             'one by hand, then re-run.')
 
     stale_launchers = _stale_root_launchers(archive_root)
-    capture_host = _capture_host_installed()
+    capture_host = _capture_host_installed(archive_root)
 
     if dry_run:
         print(f'[dry-run] Would create {VENDOR_DIR}/ under {archive_root} and move into it:')

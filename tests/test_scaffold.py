@@ -19,6 +19,8 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -149,6 +151,80 @@ class ManifestSyncTest(unittest.TestCase):
         if os.name != 'nt':
             self.assertTrue(os.access(posix, os.X_OK),
                             'the POSIX launcher must be executable')
+        # The tool suite is 3.10+ syntax, so a python3 that is 3.8/3.9 must be
+        # REJECTED rather than handed the code - otherwise the user gets a raw
+        # SyntaxError instead of the launcher's install guidance. Both candidates
+        # are probed for the real version, not trusted by name.
+        self.assertEqual(text.count('version_info >= (3, 10)'), 1)
+        self.assertIn('for candidate in python3 python', text)
+        # The missing-tools message must name a command that can actually run:
+        # `fha update-tools` alone loops back here, and update-tools needs both
+        # --repo and --root when driven from outside the archive.
+        recovery = text.split('cannot find the tools')[1]
+        self.assertIn('--repo', recovery)
+        self.assertIn('--root', recovery)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX launcher; /bin/sh not available')
+    def test_posix_launcher_rejects_old_python_and_guides(self):
+        # Behavioural, not just textual: stand up a fake `python3` that reports
+        # older than 3.10 and confirm the launcher refuses it with guidance.
+        with tempfile.TemporaryDirectory() as td:
+            box = Path(td)
+            shutil.copy2(ROOT / 'fha', box / 'fha')
+            os.chmod(box / 'fha', 0o755)
+            _write(box / 'tools' / 'fha.py', 'print("SHOULD NOT RUN")\n')
+            fakebin = box / 'bin'
+            for name in ('python3', 'python'):
+                _write(fakebin / name,
+                       '#!/bin/sh\ncase "$*" in *version_info*) exit 1 ;; esac\n'
+                       'echo SHOULD-NOT-RUN\n')
+                os.chmod(fakebin / name, 0o755)
+            # PATH holds ONLY the fake interpreters, so neither candidate can
+            # satisfy the version probe and the guidance path must be taken.
+            proc = subprocess.run(
+                [str(box / 'fha'), 'lint'], capture_output=True, text=True,
+                env={**os.environ, 'PATH': str(fakebin)})
+            self.assertEqual(proc.returncode, EXIT_FAILURE)
+            self.assertIn('3.10', proc.stderr)
+            self.assertNotIn('SHOULD-NOT-RUN', proc.stdout)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX launcher; /bin/sh not available')
+    def test_posix_launcher_missing_tools_message_is_actionable(self):
+        with tempfile.TemporaryDirectory() as td:
+            box = Path(td)
+            shutil.copy2(ROOT / 'fha', box / 'fha')
+            os.chmod(box / 'fha', 0o755)
+            proc = subprocess.run([str(box / 'fha'), 'lint'],
+                                  capture_output=True, text=True)
+            self.assertEqual(proc.returncode, EXIT_FAILURE)
+            # Names the archive it could not repair, and a runnable command.
+            self.assertIn(str(box), proc.stderr)
+            self.assertIn('update-tools', proc.stderr)
+            self.assertIn('--repo', proc.stderr)
+            self.assertIn('--root', proc.stderr)
+
+    def test_shipped_rulebooks_do_not_link_relatively_to_unshipped_docs(self):
+        # AGENTS.md/CLAUDE.md tell an agent to read AGENTS_TOOLING.md, which this
+        # PR stopped vendoring. In an installed archive a relative link there is a
+        # dead end, so the mandated checklist cannot be followed. Every reference
+        # from a SHIPPED file to an UNSHIPPED doc must be an absolute URL.
+        shipped = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
+        unshipped = ('AGENTS_TOOLING.md', 'BUILD.md', 'BUILD_INGESTION.md',
+                     'BUILD_INTERFACE.md', 'TOOLING_INGESTION.md',
+                     'TOOLING_INTERFACE.md')
+        for doc in unshipped:
+            self.assertNotIn(doc, shipped, f'{doc} is workshop-only')
+        offenders = []
+        for rel in sorted(shipped):
+            src = ROOT / rel
+            if src.suffix != '.md' or not src.is_file():
+                continue
+            text = src.read_text(encoding='utf-8', errors='replace')
+            for doc in unshipped:
+                for form in (f']({doc})', f'](../{doc})', f'](../../{doc})'):
+                    if form in text:
+                        offenders.append(f'{rel} -> {form}')
+        self.assertEqual(offenders, [], f'relative links to workshop-only docs: {offenders}')
 
     def test_skeleton_and_operating_categories(self):
         files = scaffold.generate_manifest(ROOT)['files']
@@ -677,6 +753,31 @@ class MigrateLayoutTest(unittest.TestCase):
         stamp = json.loads((self.arc / '.plaintext-version').read_text(encoding='utf-8'))
         self.assertEqual(stamp['files'], {})   # re-stamped clean, not crashed
 
+    def test_ignores_a_capture_host_registered_for_another_archive(self):
+        # One host manifest per browser per machine, whoever registered last. A
+        # host belonging to archive A must not make migrating archive B tell the
+        # owner to re-register - following that would repoint A's host at B.
+        other = Path(self._tmp.name) / 'other-archive'
+        launcher = Path(self._tmp.name) / 'host-launcher.sh'
+        _write(launcher, f'#!/bin/sh\nexec python3 "{other}/tools/fha.py" '
+                         f'capture --host --root "{other}"\n')
+        manifest = Path(self._tmp.name) / 'host.json'
+        _write(manifest, json.dumps({'path': str(launcher)}))
+
+        class _FakeCapture:
+            _NATIVE_HOST_NAME = 'host'
+
+            @staticmethod
+            def _native_manifest_dir(browser):
+                return manifest.parent
+
+        with mock.patch.dict(sys.modules, {'capture': _FakeCapture}):
+            self.assertIsNone(scaffold._capture_host_installed(self.arc))
+            # ... but a host that DOES name this archive is reported.
+            _write(launcher, f'#!/bin/sh\nexec python3 "{self.arc}/tools/fha.py" '
+                             f'capture --host --root "{self.arc}"\n')
+            self.assertEqual(scaffold._capture_host_installed(self.arc), manifest)
+
     def test_rollback_failure_names_stranded_paths(self):
         # Rolling back a half-done move can itself fail. Claiming "nothing was
         # left half-moved" then sends the owner to retry a command that cannot
@@ -760,9 +861,29 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
         # outcome the real run avoids.
         self.assertNotIn('no longer part of the plaintext tools', buf.getvalue())
 
+    def test_damaged_workshop_aborts_without_stranding_the_stylesheet(self):
+        # The relocation must run AFTER the manifest-source preflight. Moving it
+        # first, then aborting on a broken workshop copy, leaves the owner's
+        # stylesheet at a path the archive's still-flat site.py never reads - the
+        # styling silently gone from a run that otherwise changed nothing.
+        old, new = self._regress_to_flat_custom_css()
+        # A workshop whose manifest promises a file the folder no longer has:
+        # exactly the broken/partial clone the preflight exists to catch.
+        _write(self.repo / 'tools' / 'btool.py', 'print("b")\n')
+        scaffold._write_manifest(self.repo)
+        (self.repo / 'tools' / 'btool.py').unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(scaffold.ScaffoldError) as ctx:
+                scaffold.run_update_tools(self.archive, self.repo)
+        self.assertIn('missing', str(ctx.exception))
+        self.assertTrue(old.is_file(), 'stylesheet must stay where site.py reads it')
+        self.assertEqual(old.read_text(encoding='utf-8'), '/* MY COLOURS */\n')
+        self.assertFalse(new.exists())
+
     def test_malformed_stamp_files_value_does_not_traceback(self):
         stamp = self._stamp()
         stamp['files'] = 'not-an-object'
+
         _write(self.archive / '.plaintext-version', json.dumps(stamp))
         with contextlib.redirect_stdout(io.StringIO()):
             rc = scaffold.run_update_tools(self.archive, self.repo)

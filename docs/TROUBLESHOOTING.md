@@ -7,6 +7,12 @@ command or one sentence to the assistant. Find your symptom, read the plain caus
 > `fha doctor --root my-family-archive` yourself). It's the archive's health
 > check - it inspects the things below and tells you which one is wrong, so you rarely have to
 > guess. Start there whenever something feels off.
+>
+> *Typing it:* `fha` is a launcher file in your archive folder, and the current folder is not on
+> your PATH by default — so on **macOS or Linux** type `./fha doctor`, in Windows **PowerShell**
+> `.\fha doctor`, and in the Windows **Command Prompt** a bare `fha doctor`. Commands on this
+> page are written bare; add the `./` or `.\` your shell needs. ([CHEATSHEET.md](CHEATSHEET.md)
+> has the same table.)
 
 ---
 

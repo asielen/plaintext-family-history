@@ -30,9 +30,16 @@ Run everything from a terminal *inside your archive folder*. `PATH-TO-WORKSHOP` 
 project folder the update comes from - your git clone, or the freshly unzipped new download
 (zip users: [SETUP_FROM_ZIP.md](SETUP_FROM_ZIP.md) covers getting that folder).
 
-The bare `fha` command works whatever your layout. In an installed archive (`fha install`) the
-tools live tucked under a hidden `.fha/` folder, not at the archive root; the launcher finds them
-there, and `update-tools` refreshes them in place. You never name the tool path yourself.
+**How to type `fha`.** `fha` is a launcher file sitting in the folder you are in — your archive,
+or your workshop copy. The current folder is *not* on your PATH by default, so on **macOS or
+Linux** type `./fha <command>`, and in Windows **PowerShell** `.\fha <command>`; the Windows
+**Command Prompt** accepts a bare `fha <command>`. (Put the folder on your PATH once and a bare
+`fha` works everywhere — that is the only way the bare form works on a Mac.) The commands below
+are written bare for readability; add the `./` or `.\` your shell needs.
+
+Whichever form you type, you never name the tool path yourself. In an installed archive
+(`fha install`) the tools live tucked under a hidden `.fha/` folder rather than at the archive
+root; the launcher finds them there, and `update-tools` refreshes them in place.
 
 1. **Freshen the workshop.** Git users: `git pull` in the workshop clone. Zip users: unzip the
    new download beside the old one.
@@ -108,7 +115,8 @@ the tools doing the moving aren't the ones being moved.
 
 **What it does and doesn't touch.** Your `tools/` and `design/` folders *move* into `.fha/` —
 they are not copied, replaced, or reset, so anything you or your assistant edited stays exactly
-as it was, including your `design/custom.css` styling. Your records, `docs/`, the rulebooks, and
+as it was, including your custom stylesheet (`design/custom.css`, which becomes
+`.fha/design/custom.css`). Your records, `docs/`, the rulebooks, and
 `fha.yaml` do not move at all. Running it twice is harmless: the second run says there's nothing
 to do. If it finds your archive half-moved already, it stops and says so rather than guessing.
 

@@ -52,7 +52,7 @@ an input to the deterministic build.
 | Layer | Where | What it customizes | Who edits it | Status |
 |---|---|---|---|---|
 | **(a) Data & records** | `sources/`, `people/`, `places/` | The facts, prose, portraits, and relationships the site renders | Human + AI, through the normal research loop | shipped |
-| **(b) Styling** | `design/custom.css` | Colours, fonts, spacing, any CSS — the whole look, from one file | A CSS-literate human | shipped |
+| **(b) Styling** | `.fha/design/custom.css` | Colours, fonts, spacing, any CSS — the whole look, from one file | A CSS-literate human | shipped |
 | **(c) Homepage intro** | `notes/home.md` | The welcome prose at the top of the homepage — the family's own words | Human + AI, markdown | planned (Phase A) |
 | **(d) Titles & hero** | `fha.yaml` `site:` sub-section | The archive name on the masthead and the homepage hero (title, tagline, image) | Human, plain YAML | planned (Phase A) |
 | **(e) AI reconciliation** | the `reconcile-site-edits` skill | Folds an accidental hand-edit of generated HTML *back into the right source above* | The assistant, on request | planned (Phase E) |
@@ -65,7 +65,7 @@ person's `profile_photo`, add a place's `history:`. None of this is "site work" 
 the ordinary research loop, and the site reflects it on the next `fha index` +
 `fha site`. This layer is the reason the site needs so few *other* knobs.
 
-### (b) `design/custom.css` — the look
+### (b) `.fha/design/custom.css` — the look
 
 Already shipped and already the right seam (DESIGN.md, "Customizing"). Generated pages
 link `styles.css` then `custom.css` last, so a CSS-literate human restyles the entire
