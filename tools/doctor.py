@@ -55,6 +55,7 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    VENDOR_DIR,
     FhaConfigError,
     INDEX_SCHEMA_VERSION,
     PHOTOINDEX_SCHEMA_VERSION,
@@ -564,7 +565,11 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     photoindex_cmd = f'fha photoindex --root "{root_arg}"'
     lint_cmd = f'fha lint --root "{root_arg}"'
     doctor_cmd = f'fha doctor --root "{root_arg}"'
-    troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
+    # docs/ installs under .fha/ in a current archive; older flat archives keep
+    # it at the root. Point the hint at whichever actually exists.
+    troubleshooting = archive_root / VENDOR_DIR / 'docs' / 'TROUBLESHOOTING.md'
+    if not troubleshooting.is_file():
+        troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
 
     if wc_mode:
         lines.append(

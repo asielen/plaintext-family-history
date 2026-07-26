@@ -134,14 +134,16 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(by_path['fha.yaml']['category'], 'skeleton')
         self.assertEqual(by_path['fha.yaml']['src'], 'archive-template/fha.yaml')
         self.assertEqual(by_path['places/places.yaml']['category'], 'skeleton')
-        # The five BUILD-mandated docs are present as operating.
-        for doc in ('docs/GETTING_STARTED.md', 'docs/SETUP_FROM_ZIP.md',
-                    'docs/CHEATSHEET.md', 'docs/TROUBLESHOOTING.md',
-                    'docs/FILING_CABINET.md'):
+        # The five BUILD-mandated docs ship (now vendored under .fha/).
+        for doc in ('.fha/docs/GETTING_STARTED.md', '.fha/docs/SETUP_FROM_ZIP.md',
+                    '.fha/docs/CHEATSHEET.md', '.fha/docs/TROUBLESHOOTING.md',
+                    '.fha/docs/FILING_CABINET.md'):
             self.assertIn(doc, by_path, doc)
             self.assertEqual(by_path[doc]['category'], 'operating')
-        # Operating entries carry no src remap.
-        self.assertNotIn('src', by_path['tools/scaffold.py'])
+        # A vendored operating entry carries a src remap (repo-flat -> archive
+        # .fha/); a root-pinned operating entry (SPEC.md) carries none.
+        self.assertEqual(by_path['.fha/tools/scaffold.py']['src'], 'tools/scaffold.py')
+        self.assertNotIn('src', by_path['SPEC.md'])
 
 
 class InstallTest(unittest.TestCase):
@@ -159,8 +161,8 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         # operating + skeleton landed, remapped correctly
         self.assertTrue((self.archive / 'SPEC.md').is_file())
-        self.assertTrue((self.archive / 'tools' / 'atool.py').is_file())
-        self.assertTrue((self.archive / 'docs' / 'guide.md').is_file())
+        self.assertTrue((self.archive / '.fha' / 'tools' /'atool.py').is_file())
+        self.assertTrue((self.archive / '.fha' / 'docs' /'guide.md').is_file())
         self.assertTrue((self.archive / 'fha.yaml').is_file())
         self.assertTrue((self.archive / 'places' / 'places.yaml').is_file())
         self.assertTrue((self.archive / 'sources' / '.gitkeep').is_file())
@@ -236,22 +238,22 @@ class UpdateToolsTest(unittest.TestCase):
         scaffold._write_manifest(self.repo)
         rc = scaffold.run_update_tools(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertEqual((self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+        self.assertEqual((self.archive / '.fha' / 'tools' /'atool.py').read_text(encoding='utf-8'),
                          'print("a tool v2")\n')
         self.assertFalse((self.archive / '.plaintext-backup').exists())
         # stamp now records the new checksum
-        self.assertEqual(self._stamp()['files']['tools/atool.py'],
+        self.assertEqual(self._stamp()['files']['.fha/tools/atool.py'],
                          scaffold._sha256_file(self.repo / 'tools' / 'atool.py'))
 
     def test_customized_file_is_backed_up_then_updated(self):
         # Archive owner edited their atool.py; upstream also moved on.
-        _write(self.archive / 'tools' / 'atool.py', 'print("MY EDIT")\n')
+        _write(self.archive / '.fha' / 'tools' /'atool.py', 'print("MY EDIT")\n')
         _write(self.repo / 'tools' / 'atool.py', 'print("a tool v2")\n')
         scaffold._write_manifest(self.repo)
         rc = scaffold.run_update_tools(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)
         # live file is the new stock
-        self.assertEqual((self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+        self.assertEqual((self.archive / '.fha' / 'tools' /'atool.py').read_text(encoding='utf-8'),
                          'print("a tool v2")\n')
         # the edit survives in the backup
         backups = list((self.archive / '.plaintext-backup').rglob('atool.py'))
@@ -274,10 +276,10 @@ class UpdateToolsTest(unittest.TestCase):
 
     def test_retired_file_moved_to_backup(self):
         # Inject a recorded tool that the manifest no longer lists.
-        retired = self.archive / 'tools' / 'oldtool.py'
+        retired = self.archive / '.fha' / 'tools' /'oldtool.py'
         _write(retired, 'print("old")\n')
         stamp = self._stamp()
-        stamp['files']['tools/oldtool.py'] = 'deadbeef'
+        stamp['files']['.fha/tools/oldtool.py'] = 'deadbeef'
         _write(self.archive / '.plaintext-version', json.dumps(stamp))
         rc = scaffold.run_update_tools(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)
@@ -285,30 +287,30 @@ class UpdateToolsTest(unittest.TestCase):
         moved = list((self.archive / '.plaintext-backup').rglob('oldtool.py'))
         self.assertEqual(len(moved), 1)
         # and it's dropped from the refreshed stamp
-        self.assertNotIn('tools/oldtool.py', self._stamp()['files'])
+        self.assertNotIn('.fha/tools/oldtool.py', self._stamp()['files'])
 
     def test_added_file_copied_in(self):
         _write(self.repo / 'tools' / 'newtool.py', 'print("new")\n')
         scaffold._write_manifest(self.repo)
         scaffold.run_update_tools(self.archive, self.repo)
-        self.assertTrue((self.archive / 'tools' / 'newtool.py').is_file())
-        self.assertIn('tools/newtool.py', self._stamp()['files'])
+        self.assertTrue((self.archive / '.fha' / 'tools' /'newtool.py').is_file())
+        self.assertIn('.fha/tools/newtool.py', self._stamp()['files'])
 
     def test_dry_run_writes_nothing(self):
-        _write(self.archive / 'tools' / 'atool.py', 'print("MY EDIT")\n')
+        _write(self.archive / '.fha' / 'tools' /'atool.py', 'print("MY EDIT")\n')
         _write(self.repo / 'tools' / 'atool.py', 'print("v2")\n')
         scaffold._write_manifest(self.repo)
         rc = scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
         self.assertEqual(rc, EXIT_CLEAN)
         # the customized file is left exactly as the user had it; no backup made
-        self.assertEqual((self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+        self.assertEqual((self.archive / '.fha' / 'tools' /'atool.py').read_text(encoding='utf-8'),
                          'print("MY EDIT")\n')
         self.assertFalse((self.archive / '.plaintext-backup').exists())
 
     def test_broken_clone_refused_before_any_mutation(self):
         # A file the manifest lists but the clone no longer ships must abort the
         # update before anything is copied or backed up.
-        _write(self.archive / 'tools' / 'atool.py', 'print("MY EDIT")\n')  # would be customized
+        _write(self.archive / '.fha' / 'tools' /'atool.py', 'print("MY EDIT")\n')  # would be customized
         _write(self.repo / 'tools' / 'newtool.py', 'print("new")\n')
         scaffold._write_manifest(self.repo)            # manifest now lists newtool.py
         (self.repo / 'tools' / 'newtool.py').unlink()  # ...then the source vanishes
@@ -317,13 +319,13 @@ class UpdateToolsTest(unittest.TestCase):
         self.assertIn('missing', str(ctx.exception).lower())
         # the customized file was NOT moved to backup
         self.assertFalse((self.archive / '.plaintext-backup').exists())
-        self.assertEqual((self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+        self.assertEqual((self.archive / '.fha' / 'tools' /'atool.py').read_text(encoding='utf-8'),
                          'print("MY EDIT")\n')
 
     def test_partial_failure_does_not_claim_success(self):
         # A per-file failure must not produce a success message or inflate the
         # summary counts (the output stays honest), and must surface the failure.
-        _write(self.archive / 'tools' / 'atool.py', 'print("MY EDIT")\n')  # customized
+        _write(self.archive / '.fha' / 'tools' /'atool.py', 'print("MY EDIT")\n')  # customized
         _write(self.repo / 'tools' / 'atool.py', 'print("v2")\n')
         scaffold._write_manifest(self.repo)
         out, err = io.StringIO(), io.StringIO()
@@ -335,7 +337,7 @@ class UpdateToolsTest(unittest.TestCase):
         self.assertIn('Done: 0 added, 0 updated, 0 backed up', out.getvalue())  # honest counts
         self.assertIn('could not be updated', err.getvalue())           # failure surfaced
         # the edit is intact (the move failed before touching it); nothing backed up
-        self.assertEqual((self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+        self.assertEqual((self.archive / '.fha' / 'tools' /'atool.py').read_text(encoding='utf-8'),
                          'print("MY EDIT")\n')
         self.assertEqual(list((self.archive / '.plaintext-backup').rglob('atool.py')), [])
 
@@ -344,19 +346,19 @@ class UpdateToolsTest(unittest.TestCase):
         # bytes as the installed baseline. If it did, the retry would see
         # disk == recorded, classify the file as pristine stock, and silently
         # overwrite the human's edit with no backup (data loss).
-        _write(self.archive / 'tools' / 'atool.py', 'print("MY EDIT")\n')
+        _write(self.archive / '.fha' / 'tools' /'atool.py', 'print("MY EDIT")\n')
         _write(self.repo / 'tools' / 'atool.py', 'print("v2")\n')
         scaffold._write_manifest(self.repo)
         # Run 1: move fails.
         with mock.patch('scaffold.shutil.move', side_effect=OSError('locked')):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(scaffold.run_update_tools(self.archive, self.repo), EXIT_WARNINGS)
-        self.assertEqual((self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+        self.assertEqual((self.archive / '.fha' / 'tools' /'atool.py').read_text(encoding='utf-8'),
                          'print("MY EDIT")\n')
         # Run 2: move works. The edit must be BACKED UP, not silently overwritten.
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(scaffold.run_update_tools(self.archive, self.repo), EXIT_CLEAN)
-        self.assertEqual((self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+        self.assertEqual((self.archive / '.fha' / 'tools' /'atool.py').read_text(encoding='utf-8'),
                          'print("v2")\n')
         backups = list((self.archive / '.plaintext-backup').rglob('atool.py'))
         self.assertEqual(len(backups), 1)
@@ -365,10 +367,10 @@ class UpdateToolsTest(unittest.TestCase):
     def test_failed_retired_move_is_retried_next_run(self):
         # A retired file whose move fails must stay recorded so the next run
         # re-detects and retries it (a successful move drops it from the stamp).
-        retired = self.archive / 'tools' / 'oldtool.py'
+        retired = self.archive / '.fha' / 'tools' /'oldtool.py'
         _write(retired, 'print("old")\n')
         stamp = json.loads((self.archive / '.plaintext-version').read_text(encoding='utf-8'))
-        stamp['files']['tools/oldtool.py'] = 'deadbeef'
+        stamp['files']['.fha/tools/oldtool.py'] = 'deadbeef'
         _write(self.archive / '.plaintext-version', json.dumps(stamp))
         with mock.patch('scaffold.shutil.move', side_effect=OSError('locked')):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -376,7 +378,7 @@ class UpdateToolsTest(unittest.TestCase):
         self.assertTrue(retired.exists())  # move failed, file still there
         # still recorded → still detectable as retired
         new_stamp = json.loads((self.archive / '.plaintext-version').read_text(encoding='utf-8'))
-        self.assertIn('tools/oldtool.py', new_stamp['files'])
+        self.assertIn('.fha/tools/oldtool.py', new_stamp['files'])
         # retry succeeds and moves it to backup
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(scaffold.run_update_tools(self.archive, self.repo), EXIT_CLEAN)
@@ -387,7 +389,7 @@ class UpdateToolsTest(unittest.TestCase):
         # An archive whose tools were hand-copied (no install) still must not lose
         # a hand-edit on update.
         (self.archive / '.plaintext-version').unlink()
-        _write(self.archive / 'tools' / 'atool.py', 'print("HAND EDIT")\n')
+        _write(self.archive / '.fha' / 'tools' /'atool.py', 'print("HAND EDIT")\n')
         scaffold.run_update_tools(self.archive, self.repo)
         backups = list((self.archive / '.plaintext-backup').rglob('atool.py'))
         self.assertEqual(len(backups), 1)

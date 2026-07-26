@@ -4234,6 +4234,14 @@ EXIT_WARNINGS = 1
 EXIT_ERRORS = 2
 EXIT_FAILURE = 3
 
+# The archive subfolder that holds the vendored machinery (tools/, docs/,
+# design/) so a real archive's root reads as the genealogy, not the tooling.
+# `fha install` remaps those subtrees under here; `fha migrate-layout` moves an
+# older flat archive into it. The workshop repo itself stays flat. Shared here
+# because scaffold (writes it), serve (watches design under it), and doctor
+# (locates docs under it) all need the same name.
+VENDOR_DIR = '.fha'
+
 
 class Finding:
     """A single lint finding (error or warning)."""

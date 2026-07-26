@@ -112,6 +112,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    VENDOR_DIR,
     Result,
     configure_utf8_stdout,
     find_archive_root,
@@ -161,6 +162,18 @@ _ROOT_LAUNCHERS = (
 # walked: it is this spec-repo's own agent config, not an archive's.
 _OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
 
+# The archive subfolder that holds the vendored machinery, so a real archive's
+# root reads as the genealogy - not the tooling. The install remaps the movable
+# operating subtrees (tools/, docs/, design/) UNDER this prefix; the workshop
+# repo itself stays flat, and the manifest's src/path seam records the repo-flat
+# `src` against the archive `.fha/…` `path`. Deliberately kept at the archive
+# ROOT: the rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers, and
+# `.claude/skills` (Claude Code discovers skills at the root). `.claude/skills`
+# is therefore NOT in the vendored set below. `_VENDOR_DIR` is the shared
+# `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on the name.
+_VENDOR_DIR = VENDOR_DIR
+_VENDORED_SUBTREES = ('tools', 'docs', 'design')
+
 # The template folder whose *contents* seed the skeleton. The folder itself is
 # never copied into an archive - each file's archive path strips this prefix.
 _SKELETON_SRC_DIR = 'archive-template'
@@ -172,12 +185,16 @@ _SKELETON_EXCLUDE = {'README.md'}
 # Files that live under an operating subtree but are user-owned skeleton seeds:
 # install-once, then never touched by `update-tools`. `design/custom.css` is the
 # per-archive style hook - stock on install so a genealogist has something to
-# customize, and preserved across updates so a hand-edit is not clobbered.
+# customize, and preserved across updates so a hand-edit is not clobbered. It
+# rides into `.fha/design/` with the rest of the design package, so site.py's
+# `parent.parent/design` read finds it with no special-casing.
 # (archive_path, in-repo src path.)
 _SKELETON_OVERRIDES: tuple[tuple[str, str], ...] = (
-    ('design/custom.css', 'design/custom.css'),
+    (f'{_VENDOR_DIR}/design/custom.css', 'design/custom.css'),
 )
-_SKELETON_OVERRIDE_PATHS = frozenset(a for a, _ in _SKELETON_OVERRIDES)
+# Skipped during the operating-file walk BY SRC path (the walk yields
+# repo-relative paths): these are seeded once as skeleton, never updated.
+_SKELETON_OVERRIDE_SRCS = frozenset(s for _, s in _SKELETON_OVERRIDES)
 
 # The two on-disk footprints of the updater. Both are safe to inspect or delete
 # by hand; neither is ever copied or compared as part of the operating layer.
@@ -223,8 +240,13 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
     cherry-picked: BUILD.md M9.1 names five docs as the floor ("must ship into
     every archive"), but the whole folder is generic human-facing documentation
     with no family data, and a directory rule auto-covers future docs and keeps
-    their cross-links intact in an installed archive. Source path equals archive
-    path for all of these.
+    their cross-links intact in an installed archive.
+
+    The movable subtrees (tools/, docs/, design/) install UNDER .fha/ (see
+    _VENDOR_DIR) so the archive root reads as the genealogy, not the machinery;
+    their archive path is `.fha/…` while the repo source stays flat, recorded by
+    the manifest's src/path seam. The root rulebooks, launchers, and
+    .claude/skills keep source == archive path at the root.
     """
     out: list[tuple[str, Path]] = []
 
@@ -242,6 +264,7 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
         base = repo_root / sub
         if not base.is_dir():
             continue
+        moved = sub in _VENDORED_SUBTREES
         for p in sorted(base.rglob('*')):
             if not p.is_file():
                 continue
@@ -250,9 +273,12 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
             rel = p.relative_to(repo_root).as_posix()
             # Skip skeleton-override files - they live under an operating
             # subtree but are user-owned (see _SKELETON_OVERRIDES).
-            if rel in _SKELETON_OVERRIDE_PATHS:
+            if rel in _SKELETON_OVERRIDE_SRCS:
                 continue
-            out.append((rel, p))
+            # Vendored subtrees (tools/, docs/, design/) install UNDER .fha/ so
+            # the archive root stays uncluttered; .claude/skills stays at root.
+            archive_path = f'{_VENDOR_DIR}/{rel}' if moved else rel
+            out.append((archive_path, p))
 
     return out
 
