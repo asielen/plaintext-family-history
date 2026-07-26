@@ -1047,10 +1047,138 @@ def _cmd_update_tools(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
 
+# ── Migrate layout (flat -> .fha/) ───────────────────────────────────────────────
+
+def run_migrate_layout(archive_root: Path, *, dry_run: bool = False) -> Result:
+    """Move an existing FLAT archive's operating layer under `.fha/` (one-time).
+
+    A pre-`.fha` archive keeps tools/, docs/, design/ at its root. This moves
+    those three subtrees into `.fha/` and re-keys the `.plaintext-version` stamp
+    so the flat operating paths become `.fha/…` paths. It is a plain file MOVE,
+    so a hand-edited tool stays edited (customizations are preserved, not reset).
+    The root rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers,
+    `.claude/`, and every record and asset are untouched. Idempotent: an
+    already-migrated archive is a clean no-op. The launchers need no rewrite -
+    serve.cmd/fha.cmd already probe `.fha/tools/` first.
+
+    Safest run from the workshop against the archive (`fha migrate-layout --root
+    ARCHIVE`), so the running tools are not the ones being moved.
+    """
+    archive_root = Path(archive_root).resolve()
+    vendor = archive_root / VENDOR_DIR
+    present = [s for s in _VENDORED_SUBTREES if (archive_root / s).is_dir()]
+
+    if not present:
+        if (vendor / 'tools').is_dir():
+            print(f'{archive_root} already uses the {VENDOR_DIR}/ layout - '
+                  'nothing to migrate.')
+            return Result(exit_code=EXIT_CLEAN, data={'moved': 0})
+        raise ScaffoldError(
+            f'{archive_root} has no tools/, docs/, or design/ folder at its root, '
+            f'so there is nothing to migrate. Run this from inside a pre-{VENDOR_DIR} '
+            'archive, or pass --root PATH pointing at one.')
+
+    # Refuse a half-migrated / ambiguous state rather than guessing.
+    conflicts = [s for s in present if (vendor / s).exists()]
+    if conflicts:
+        raise ScaffoldError(
+            f'both a flat and a {VENDOR_DIR}/ copy of {conflicts[0]}/ exist in '
+            f'{archive_root} - refusing to guess which is current. Move or remove '
+            'one by hand, then re-run.')
+
+    if dry_run:
+        print(f'[dry-run] Would create {VENDOR_DIR}/ under {archive_root} and move into it:')
+        for s in present:
+            print(f'[dry-run]   {s}/ -> {VENDOR_DIR}/{s}/')
+        print(f'[dry-run] Would re-key .plaintext-version (tools/…, docs/…, '
+              f'design/… -> {VENDOR_DIR}/…).')
+        print('[dry-run] Records, rulebooks, launchers, and .claude/ stay put. '
+              'Nothing was written.')
+        return Result(exit_code=EXIT_CLEAN, data={'moved': len(present)})
+
+    moved_done: list[tuple[Path, Path]] = []
+    try:
+        vendor.mkdir(parents=True, exist_ok=True)
+        for s in present:
+            src = archive_root / s
+            dest = vendor / s
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+            moved_done.append((src, dest))
+    except OSError as exc:
+        for src, dest in reversed(moved_done):
+            try:
+                shutil.move(str(dest), str(src))
+            except OSError:
+                pass
+        raise ScaffoldError(
+            f'could not move the operating layer under {VENDOR_DIR}/: {exc}. '
+            'Nothing was left half-moved (rolled back). Close anything open in '
+            'those folders, check permissions and disk space, then re-run.') from exc
+
+    # Re-key the update stamp: flat operating paths -> .fha/ paths (records and
+    # skeleton keys stay as they are). A missing or unreadable stamp is
+    # non-fatal - the next `update-tools` will re-stamp cleanly.
+    stamp_path = archive_root / VERSION_FILE
+    if stamp_path.is_file():
+        try:
+            stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
+            files = stamp.get('files', {})
+            rekeyed: dict[str, str] = {}
+            for key, val in files.items():
+                first = key.split('/', 1)[0]
+                rekeyed[f'{VENDOR_DIR}/{key}' if first in _VENDORED_SUBTREES else key] = val
+            stamp['files'] = dict(sorted(rekeyed.items()))
+            _write_version_stamp(archive_root, stamp)
+        except (OSError, ValueError):
+            pass
+
+    print(f'Migrated {archive_root} to the {VENDOR_DIR}/ layout:')
+    for s in present:
+        print(f'  {s}/ -> {VENDOR_DIR}/{s}/')
+    print('Records, rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers, '
+          'and .claude/ stayed at the archive root.')
+    print('Next: run `fha doctor` to confirm, then `fha index` to refresh the cache.')
+    return Result(exit_code=EXIT_CLEAN,
+                  changed=[str(d) for _, d in moved_done],
+                  data={'moved': len(present)})
+
+
+def _cmd_migrate_layout(args: argparse.Namespace) -> int:
+    """argparse bridge for `fha migrate-layout`."""
+    root_arg = getattr(args, 'root', None)
+    if root_arg:
+        archive_root = Path(root_arg).resolve()
+        if not (archive_root / 'fha.yaml').is_file():
+            print(
+                f'ERROR: {archive_root} is not an archive (no fha.yaml). Point '
+                '--root at your archive folder (the one containing fha.yaml).',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+    else:
+        detected = find_archive_root()
+        if detected is None:
+            print(
+                'ERROR: this does not look like an archive (no fha.yaml found here '
+                'or in any parent folder). Run `fha migrate-layout` from inside your '
+                'archive, or add --root PATH pointing at it.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+        archive_root = detected
+    try:
+        return run_migrate_layout(
+            archive_root, dry_run=bool(getattr(args, 'dry_run', False))).exit_code
+    except ScaffoldError as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
+        return EXIT_FAILURE
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────────
 
 def register(subs: argparse._SubParsersAction) -> None:
-    """Register both `install` and `update-tools` onto the main fha parser."""
+    """Register `install`, `update-tools`, and `migrate-layout` on the fha parser."""
     p_install = subs.add_parser(
         'install',
         help='Bootstrap a new private archive with the plaintext operating layer.',
@@ -1101,6 +1229,26 @@ def register(subs: argparse._SubParsersAction) -> None:
     )
     p_update.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p_update.set_defaults(func=_cmd_update_tools)
+
+    p_migrate = subs.add_parser(
+        'migrate-layout',
+        help='One-time: move an older flat archive\'s tools/docs/design under .fha/.',
+        description=(
+            'Move an existing archive\'s operating layer (tools/, docs/, design/) '
+            'into a hidden .fha/ folder so the archive root shows only your '
+            'genealogy. Records, rulebooks, launchers, and .claude/ stay at the '
+            'root; customizations are preserved (it is a plain file move). '
+            'Idempotent. Safest run from the workshop with --root pointing at the '
+            'archive. Preview with --dry-run first.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_migrate.add_argument(
+        '--dry-run', action='store_true', dest='dry_run',
+        help='Preview the move; write nothing.',
+    )
+    p_migrate.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    p_migrate.set_defaults(func=_cmd_migrate_layout)
 
 
 def _standalone_main(argv: list[str] | None = None) -> int:

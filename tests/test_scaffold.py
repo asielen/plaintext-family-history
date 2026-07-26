@@ -445,5 +445,98 @@ class CmdErrorPathTest(unittest.TestCase):
         self.assertEqual(rc, EXIT_FAILURE)
 
 
+def _make_flat_archive(root: Path, *, with_stamp: bool = True) -> Path:
+    """A pre-.fha archive: tools/, docs/, design/ at the root + a flat stamp."""
+    _write(root / 'fha.yaml', 'roots:\n  photos: photos\n  documents: documents\n')
+    _write(root / 'SPEC.md', '# SPEC\n')          # root rulebook, stays put
+    _write(root / 'CLAUDE.md', '# CLAUDE\n')      # root rulebook, stays put
+    _write(root / 'fha.cmd', '@echo off\n')       # launcher, stays put
+    _write(root / 'tools' / 'fha.py', 'print("fha")\n')
+    _write(root / 'tools' / 'sub' / 'x.py', 'x = 1\n')
+    _write(root / 'docs' / 'guide.md', '# guide\n')
+    _write(root / 'design' / 'styles.css', 'body{}\n')      # vendored (in stamp)
+    _write(root / 'design' / 'custom.css', '/* mine */\n')  # skeleton (NOT in stamp)
+    _write(root / '.claude' / 'skills' / 's.md', '# skill\n')  # stays at root
+    _write(root / 'people' / '.gitkeep', '')                # a record, untouched
+    if with_stamp:
+        stamp = {
+            'manifest_version': '1', 'spec_version': '1.2',
+            'installed': '2026-01-01T00:00:00',
+            'files': {
+                'tools/fha.py': 'aaa', 'tools/sub/x.py': 'bbb',
+                'docs/guide.md': 'ccc', 'design/styles.css': 'ddd',
+                'SPEC.md': 'eee', '.claude/skills/s.md': 'fff',
+            },
+        }
+        _write(root / '.plaintext-version', json.dumps(stamp))
+    return root
+
+
+class MigrateLayoutTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.arc = _make_flat_archive(Path(self._tmp.name) / 'arc')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_moves_subtrees_and_rekeys_stamp(self):
+        rc = scaffold.run_migrate_layout(self.arc)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        # tools/docs/design now under .fha/ ...
+        self.assertTrue((self.arc / '.fha' / 'tools' / 'fha.py').is_file())
+        self.assertTrue((self.arc / '.fha' / 'tools' / 'sub' / 'x.py').is_file())
+        self.assertTrue((self.arc / '.fha' / 'docs' / 'guide.md').is_file())
+        self.assertTrue((self.arc / '.fha' / 'design' / 'styles.css').is_file())
+        # ... custom.css rode along (it lives under design/) ...
+        self.assertTrue((self.arc / '.fha' / 'design' / 'custom.css').is_file())
+        # ... the flat copies are gone ...
+        self.assertFalse((self.arc / 'tools').exists())
+        self.assertFalse((self.arc / 'docs').exists())
+        self.assertFalse((self.arc / 'design').exists())
+        # ... rulebooks, launcher, skills, and records stayed at the root ...
+        self.assertTrue((self.arc / 'SPEC.md').is_file())
+        self.assertTrue((self.arc / 'fha.cmd').is_file())
+        self.assertTrue((self.arc / '.claude' / 'skills' / 's.md').is_file())
+        self.assertTrue((self.arc / 'people' / '.gitkeep').is_file())
+        # ... and the stamp was re-keyed: vendored paths prefixed, others intact.
+        stamp = json.loads((self.arc / '.plaintext-version').read_text(encoding='utf-8'))
+        self.assertIn('.fha/tools/fha.py', stamp['files'])
+        self.assertIn('.fha/design/styles.css', stamp['files'])
+        self.assertNotIn('tools/fha.py', stamp['files'])
+        self.assertIn('SPEC.md', stamp['files'])                 # root doc key intact
+        self.assertIn('.claude/skills/s.md', stamp['files'])     # skills key intact
+
+    def test_dry_run_writes_nothing(self):
+        before = sorted(p.relative_to(self.arc).as_posix()
+                        for p in self.arc.rglob('*') if p.is_file())
+        rc = scaffold.run_migrate_layout(self.arc, dry_run=True)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        after = sorted(p.relative_to(self.arc).as_posix()
+                       for p in self.arc.rglob('*') if p.is_file())
+        self.assertEqual(before, after)
+        self.assertFalse((self.arc / '.fha').exists())
+
+    def test_idempotent_noop_when_already_migrated(self):
+        scaffold.run_migrate_layout(self.arc)
+        rc = scaffold.run_migrate_layout(self.arc)  # second run
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertEqual(rc.data['moved'], 0)
+
+    def test_refuses_ambiguous_half_migrated_state(self):
+        _write(self.arc / '.fha' / 'tools' / 'fha.py', 'print("dup")\n')  # both exist
+        with self.assertRaises(scaffold.ScaffoldError) as ctx:
+            scaffold.run_migrate_layout(self.arc)
+        self.assertIn('refusing', str(ctx.exception).lower())
+        self.assertTrue((self.arc / 'tools').exists())  # nothing moved
+
+    def test_no_stamp_hand_copied_archive_still_moves(self):
+        (self.arc / '.plaintext-version').unlink()
+        rc = scaffold.run_migrate_layout(self.arc)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertTrue((self.arc / '.fha' / 'tools' / 'fha.py').is_file())
+        self.assertFalse((self.arc / 'tools').exists())
+
+
 if __name__ == '__main__':
     unittest.main()
