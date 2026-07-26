@@ -432,6 +432,52 @@ class ExecBitRepairTest(unittest.TestCase):
             'a repaired launcher is a mutation and belongs in changed')
 
 
+class ManifestContainmentTest(unittest.TestCase):
+    """A manifest is a downloaded file; it must not be able to reach outside."""
+
+    ESCAPES = ('../outside.txt', 'a/../../b', '/etc/passwd', 'C:\\Windows\\x',
+               '\\\\server\\share\\x', 'tools\\fha.py', '..')
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        self.pristine = (self.repo / 'manifest.json').read_text(encoding='utf-8')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_escaping_paths_are_refused(self):
+        for field in ('path', 'src'):
+            for bad in self.ESCAPES:
+                with self.subTest(field=field, value=bad):
+                    _write(self.repo / 'manifest.json', self.pristine)
+                    manifest = json.loads(self.pristine)
+                    manifest['files'][0][field] = bad
+                    _write(self.repo / 'manifest.json', json.dumps(manifest))
+                    with self.assertRaises(scaffold.ScaffoldError):
+                        scaffold.load_manifest(self.repo)
+
+    def test_ordinary_paths_still_load(self):
+        # The guard must not refuse the manifest the project actually ships.
+        manifest = scaffold.load_manifest(self.repo)
+        self.assertTrue(manifest['files'])
+        real = scaffold.load_manifest(ROOT)
+        self.assertTrue(real['files'])
+
+    def test_install_cannot_write_outside_the_archive(self):
+        victim = self.tmp / 'VICTIM.txt'
+        _write(victim, 'do not touch\n')
+        manifest = json.loads(self.pristine)
+        manifest['files'].append({'path': '../VICTIM.txt', 'category': 'operating',
+                                  'src': 'tools/atool.py', 'sha256': 'x'})
+        _write(self.repo / 'manifest.json', json.dumps(manifest))
+        with self.assertRaises(scaffold.ScaffoldError):
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(self.tmp / 'archive', self.repo)
+        self.assertEqual(victim.read_text(encoding='utf-8'), 'do not touch\n')
+
+
 class InstallBaselineTest(unittest.TestCase):
     """The stamp must record the bytes that actually landed."""
 

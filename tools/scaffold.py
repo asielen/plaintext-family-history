@@ -424,6 +424,31 @@ def _write_manifest(repo_root: Path) -> Path:
     return path
 
 
+def _contained_relative(value: str) -> bool:
+    """True when `value` is a plain relative path that cannot escape its root.
+
+    Manifest paths are joined onto the archive root (`path`) and the workshop
+    root (`src`) and then written to or read from. A manifest is a DOWNLOADED
+    file - truncated, hand-edited, or hostile - so a value like `../../.ssh` or
+    `/etc/cron.d/x` would let install and update reach outside the two folders
+    the human pointed them at, which is the one thing a packing list must never
+    be able to do.
+
+    Checked as text rather than by resolving: resolution depends on what exists
+    on this machine, and the answer must not. Rejected are absolute paths,
+    anything with a `..` segment, Windows drive letters and UNC prefixes (a
+    POSIX `Path` treats `C:\\x` as a harmless relative name, so the same
+    manifest would be contained on one OS and not on another), and backslash
+    separators, which manifest paths never use.
+    """
+    if not value or value.startswith(('/', '\\')) or ':' in value:
+        return False
+    if '\\' in value:
+        return False
+    parts = value.split('/')
+    return '..' not in parts and '' not in parts[:-1]
+
+
 def load_manifest(repo_root: Path) -> dict:
     """Read and validate manifest.json from a repo/clone/zip directory.
 
@@ -477,6 +502,19 @@ def load_manifest(repo_root: Path) -> dict:
         # so an explicit null is precisely the case that reaches `repo_root /
         # None`. Treating it as "absent" here would let the reported crash
         # straight through.
+        # Containment, before any command joins these onto a root. `path` is
+        # written to inside the archive and `src` is read from inside the
+        # workshop; neither may point outside the folder the human named.
+        for field in ('path', 'src'):
+            value = entry.get(field)
+            if isinstance(value, str) and value and not _contained_relative(value):
+                raise ScaffoldError(
+                    f"{path} has an unsafe entry at position {position}: "
+                    f"'{field}' is {value!r}, which points outside the folder it "
+                    f"belongs to. Install and update only ever write inside your "
+                    f"archive and read inside your copy of the tools, so this "
+                    f"packing list is refused. Re-download the plaintext tools."
+                )
         for field in ('src', 'category', 'sha256'):
             if field not in entry:
                 continue
