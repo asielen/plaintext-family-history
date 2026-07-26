@@ -100,6 +100,18 @@ class ManifestSyncTest(unittest.TestCase):
         # but the spec-repo's own agent config does not.
         self.assertNotIn('.claude/settings.json', paths)
 
+    def test_manifest_excludes_builder_docs(self):
+        # The tool-BUILDING docs are not vendored into an archive: no tool reads
+        # them at run time and a genealogist never needs them (workshop-only).
+        paths = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
+        for builder in ('BUILD.md', 'BUILD_INGESTION.md', 'BUILD_INTERFACE.md',
+                        'TOOLING_INGESTION.md', 'TOOLING_INTERFACE.md',
+                        'AGENTS_TOOLING.md'):
+            self.assertNotIn(builder, paths, builder)
+        # The operating spec/agent docs that DO ship stay.
+        for shipped in ('SPEC.md', 'TOOLING.md', 'AGENTS.md', 'CLAUDE.md', 'README.md'):
+            self.assertIn(shipped, paths, shipped)
+
     def test_manifest_includes_serve_launcher(self):
         # plan 17: the double-clickable workbench launcher ships into every
         # archive and calls tools\fha.py serve.

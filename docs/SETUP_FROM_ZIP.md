@@ -145,7 +145,7 @@ health-check - lives in [UPDATING.md](UPDATING.md) instead.
 
 When a newer version of the project comes out, you don't need git for that either. Download the
 new zip, unzip it, and copy its `tools/` folder (plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`,
-`AGENTS_TOOLING.md`, `CLAUDE.md`) over the old ones in your workshop. **Never touch your
+`CLAUDE.md`) over the old ones in your workshop. **Never touch your
 `my-family-archive` folder when updating** - your records aren't part of the download and stay
 exactly as they are.
 

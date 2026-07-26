@@ -119,30 +119,6 @@
       "spec_version": "1.2"
     },
     {
-      "path": "AGENTS_TOOLING.md",
-      "category": "operating",
-      "sha256": "b58a9bbc9e704ae525e5c87a6a97b9b9a4b97b2f99f26ab6d764341b062d5e9c",
-      "spec_version": "1.2"
-    },
-    {
-      "path": "BUILD.md",
-      "category": "operating",
-      "sha256": "07518cfe6bf615d4d9cd0767cdaeb5bdd621e0cfaffc505a6d520c5d1ea9b049",
-      "spec_version": "1.2"
-    },
-    {
-      "path": "BUILD_INGESTION.md",
-      "category": "operating",
-      "sha256": "462c1cdfd0ad88999983140b94c8b4e99541b9e0ae5e03f8d5735d922872ec16",
-      "spec_version": "1.2"
-    },
-    {
-      "path": "BUILD_INTERFACE.md",
-      "category": "operating",
-      "sha256": "023068e37beb5fbe0d08ccfebfd7bd0bab4aed32f8d061d81d9fa409efa6ee12",
-      "spec_version": "1.2"
-    },
-    {
       "path": "CLAUDE.md",
       "category": "operating",
       "sha256": "a1ac8258e431dbdca558b29926f6311b093f5f7ee09d5cce5f8980034c1b3c5c",
@@ -167,21 +143,9 @@
       "spec_version": "1.2"
     },
     {
-      "path": "TOOLING_INGESTION.md",
-      "category": "operating",
-      "sha256": "3beeedc1b6dedb5c351250ee061f3a3829781fe1fab32fe81636d3318e0b69be",
-      "spec_version": "1.2"
-    },
-    {
-      "path": "TOOLING_INTERFACE.md",
-      "category": "operating",
-      "sha256": "9f3122ab366eb0d6820ca59963a25d125070139b2403c83d520c55f1df12de37",
-      "spec_version": "1.2"
-    },
-    {
       "path": "design/custom.css",
       "category": "skeleton",
-      "sha256": "817986f1e6e096e29f0ea598dac2bbde2b98c917b2862ea34ac6c64544946e20",
+      "sha256": "ec5e92d69db34dd4d6d97dc600e71197b56d7dc889ed68e0c66d7ade106fc512",
       "spec_version": "1.2"
     },
     {
@@ -301,7 +265,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "bb93a1020981adb8dca41d163e4d3c63ac77db79628ac8d573c76ec1b631d585",
+      "sha256": "7ef12c64a31a41956473323a91649c090f6590080eb5193f1a95c3046aea9418",
       "spec_version": "1.2"
     },
     {
@@ -313,13 +277,13 @@
     {
       "path": "docs/README.md",
       "category": "operating",
-      "sha256": "6a2980adc926b2b32b2fab563ec3d979f7fe3578ca95419b83f7d7f26cb01bd4",
+      "sha256": "cf69bbd18a07179b267da86b2457ffef1ac61d06e80c3900cb3d4e08fca13ae6",
       "spec_version": "1.2"
     },
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "8465bfcdbb7d370dd2e7c1e3f2b34164b5a3489483f6d000ee7cbf6731e1ce2b",
+      "sha256": "880d0bc90d6f281749483cb374441296dbb3eb05141679d5ac372836af44f1f2",
       "spec_version": "1.2"
     },
     {
@@ -454,7 +418,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "e256a4c74bc6a97a719009b68a8c8010c4d772131cf817c7f1689f81df05b1e1",
+      "sha256": "c61c433f73b99e42338196f41502d396ca73a13e6722bd55f77060ea9dfa7c35",
       "spec_version": "1.2"
     },
     {
@@ -666,7 +630,7 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "5aca5de17f7a2bae77e0e15f0728f0966cf22f364f0f8fe3b2675c6a9caeafb6",
+      "sha256": "7e776267e7e93f019afd22d1fe9b3f9fc24c9fa039f3c8b698d022417fc77263",
       "spec_version": "1.2"
     },
     {

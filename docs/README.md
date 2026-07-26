@@ -21,14 +21,14 @@
 
 ## For developers
 
-Design is split by concern; each design doc has a matching build doc.
+The full build sequence (`BUILD*.md`) and per-layer implementation design
+(`TOOLING*.md`, `AGENTS_TOOLING.md`) live in the project repo on GitHub
+([plaintext-family-history](https://github.com/asielen/plaintext-family-history))
+and are **not** shipped into an archive - extending the tools is a workshop-clone
+activity. Two design references *do* ship, because they govern what the archive renders:
 
 | Document | Who it's for |
 |---|---|
-| [../BUILD.md](../BUILD.md) | Build sequence for the core `fha` CLI - start here before touching code |
-| [../TOOLING.md](../TOOLING.md) | Deep implementation design for the core tools - enough to rebuild from scratch |
-| [../BUILD_INGESTION.md](../BUILD_INGESTION.md) / [../TOOLING_INGESTION.md](../TOOLING_INGESTION.md) | The capture / inbox / web on-ramp: build sequence + design |
-| [../BUILD_INTERFACE.md](../BUILD_INTERFACE.md) / [../TOOLING_INTERFACE.md](../TOOLING_INTERFACE.md) | The workbench harness + workflow skills (the AI interface): build sequence + design |
 | [DESIGN.md](DESIGN.md) | The visual language for everything the archive renders as HTML - tokens, typography, components |
 | [SITE_PLAN.md](SITE_PLAN.md) | Roadmap for homepage / navigation / customization: the source-first model, the customization layers, and the build phases |
 | [../tools/README.md](../tools/README.md) | Per-tool implementation status tables (flags, error codes, test coverage) |
@@ -39,6 +39,7 @@ Design is split by concern; each design doc has a matching build doc.
 |---|---|
 | [../SPEC.md](../SPEC.md) | The law: data model, physical format, what every tool must do |
 | [../AGENTS.md](../AGENTS.md) | What an AI agent may and may not do inside the archive |
-| [../AGENTS_TOOLING.md](../AGENTS_TOOLING.md) | Supplementary rules for tool-building and code-review modes |
-| [../PRIVACY.md](../PRIVACY.md) | What real personal data is never allowed in this public repo |
-| [../RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md) | Pre-release verification checklist |
+
+The public-repo governance docs (privacy policy, release checklist, and the
+tool-building / code-review supplements) live on
+[GitHub](https://github.com/asielen/plaintext-family-history).

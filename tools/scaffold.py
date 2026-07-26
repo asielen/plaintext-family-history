@@ -129,18 +129,18 @@ MANIFEST_VERSION = '1'
 # which is contradictory inside a real archive; RELEASE_CHECKLIST.md - the public
 # release process; CNAME, manifest.json, .git*, …). TOOLING §13c / BUILD.md M9.1.
 # README.md is shipped (project orientation a genealogist benefits from).
+#
+# The tool-BUILDING docs (the BUILD*.md family, TOOLING_INGESTION/INTERFACE,
+# AGENTS_TOOLING) are deliberately NOT shipped: no tool reads them at run time
+# and a genealogist operating an archive never needs them - they describe how to
+# BUILD the tools, which is a workshop-clone activity. Extending vendored tools
+# in place is out of scope; do it in the public repo and re-vendor.
 _ROOT_OPERATING_DOCS = (
     'README.md',
     'SPEC.md',
     'TOOLING.md',
-    'TOOLING_INGESTION.md',
-    'TOOLING_INTERFACE.md',
     'AGENTS.md',
-    'AGENTS_TOOLING.md',
     'CLAUDE.md',
-    'BUILD.md',
-    'BUILD_INGESTION.md',
-    'BUILD_INTERFACE.md',
 )
 
 # Double-clickable launchers that live at the repo root (not under tools/). They

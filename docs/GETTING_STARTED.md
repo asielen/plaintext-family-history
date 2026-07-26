@@ -5,8 +5,9 @@ document. No programming required - you'll work with an AI assistant that runs t
 
 - **Were you sent here to hand over photos or documents?** You don't need any of this - see
   [`CONTRIBUTING_SOURCES.md`](CONTRIBUTING_SOURCES.md) instead.
-- **Do you want to build or extend the `fha` tools?** That's a different door - start at
-  [`../BUILD.md`](../BUILD.md), then [`../TOOLING.md`](../TOOLING.md).
+- **Do you want to build or extend the `fha` tools?** That's a different door - the build
+  guide and tool design live in the project repo on GitHub
+  ([plaintext-family-history](https://github.com/asielen/plaintext-family-history)).
 - **Did someone send you a zip of this project?** You can skip the download below and follow
   [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md), then come back here for the walkthrough.
 
