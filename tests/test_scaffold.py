@@ -1340,6 +1340,74 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
         # The run says plainly that something needs a hand.
         self.assertIn('could not be moved back', buf.getvalue())
 
+    def test_identical_duplicate_stylesheet_is_moved_aside(self):
+        # Identical or not, a leftover flat copy the tools never read invites an
+        # edit that silently does nothing.
+        for path in (self.archive / 'design' / 'custom.css',
+                     self.archive / '.fha' / 'design' / 'custom.css'):
+            _write(path, '/* same */\n')
+        (self.archive / '.plaintext-version').unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)   # a duplicate is not an error
+        self.assertFalse((self.archive / 'design' / 'custom.css').exists())
+        self.assertTrue((self.archive / '.fha' / 'design' / 'custom.css').is_file())
+        self.assertEqual(
+            len(list((self.archive / '.plaintext-backup').rglob('custom.css'))), 1)
+
+    def test_dry_run_previews_a_differing_stylesheet_conflict(self):
+        _write(self.archive / 'design' / 'custom.css', '/* FLAT */\n')
+        _write(self.archive / '.fha' / 'design' / 'custom.css', '/* VENDORED */\n')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
+        out = buf.getvalue()
+        self.assertIn('DIFFER', out)
+        self.assertIn('backup folder', out)
+        # A preview writes nothing.
+        self.assertTrue((self.archive / 'design' / 'custom.css').is_file())
+
+    @unittest.skipIf(os.name == 'nt', 'no executable bit on Windows')
+    def test_update_restores_a_lost_executable_bit(self):
+        launcher = self.archive / 'fha'
+        if not launcher.is_file():
+            self.skipTest('fixture has no POSIX launcher')
+        before = launcher.read_bytes()
+        launcher.chmod(0o644)
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+        self.assertTrue(os.access(launcher, os.X_OK),
+                        'a checksum-current launcher must still get its bit back')
+        self.assertEqual(launcher.read_bytes(), before, 'content must not change')
+
+    def test_first_restamp_records_seeds_already_on_disk(self):
+        # A hand-copied archive has no stamp. If the restamp does not record the
+        # seeds sitting there, a later deliberate deletion gets undone.
+        seeds = [k for k in self._stamp()['files']
+                 if k in ('fha.yaml', 'places.yaml')] or ['fha.yaml']
+        (self.archive / '.plaintext-version').unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+        recorded = self._stamp()['files']
+        for seed in seeds:
+            if (self.archive / seed).is_file():
+                self.assertIn(seed, recorded,
+                              f'{seed} was on disk and must be recorded')
+
+    def test_install_refuses_an_edited_operating_file(self):
+        # The template README promises install STOPS once you have started
+        # editing. README.md is an operating file, so a skeleton-only preflight
+        # would copy over it with no backup and exit 0.
+        target = self.archive.parent / 'hand-started'
+        target.mkdir()
+        _write(target / 'SPEC.md', '# my notes so far\n')
+        with self.assertRaises(scaffold.ScaffoldError) as caught:
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(target, self.repo)
+        self.assertIn('SPEC.md', str(caught.exception))
+        self.assertEqual((target / 'SPEC.md').read_text(encoding='utf-8'),
+                         '# my notes so far\n')
+
     def test_rollback_clears_a_preexisting_partial_vendor_tree(self):
         # An interrupted earlier attempt can leave a partial .fha/tools/ whose
         # files are manifest-CURRENT. Those never enter installed_ok, so a

@@ -650,13 +650,31 @@ def run_install(
     # Exception: if a skeleton file is byte-for-byte identical to what install would
     # place (sha256 match) it was left by a partial previous install that never wrote
     # the stamp - safe to overwrite so the user can simply re-run install to finish.
+    #
+    # Checked for EVERY category, not just skeleton. `README.md` is an operating
+    # file, and the documented "copy this template, then point install at it"
+    # path leads a human straight to editing one: install used to copy over it
+    # with no backup and exit 0, while the template's own README promises that
+    # starting to edit makes installation stop.
+    #
+    # Two byte patterns are acceptable at a destination: what install would write
+    # (a partial previous install), and what the TEMPLATE ships there (a pristine
+    # hand-copy - the documented path, which must keep working). The template's
+    # README differs from the installed one by design, so comparing against stock
+    # alone would refuse exactly the copy the guide tells people to make.
+    def _acceptable(entry: dict) -> set[str]:
+        ok = {entry.get('sha256')}
+        template_copy = repo_root / _SKELETON_SRC_DIR / entry["path"]
+        if template_copy.is_file():
+            ok.add(_sha256_file(template_copy))
+        return ok
+
     conflicts = [
         entry['path']
         for entry in files
-        if entry.get('category') == 'skeleton'
-        and Path(entry['path']).name != '.gitkeep'
+        if Path(entry['path']).name != '.gitkeep'
         and (archive_path / entry['path']).is_file()
-        and _sha256_file(archive_path / entry['path']) != entry.get('sha256')
+        and _sha256_file(archive_path / entry['path']) not in _acceptable(entry)
     ]
     if conflicts:
         listing = '\n  '.join(conflicts[:10])
@@ -726,6 +744,50 @@ def _cmd_install(args: argparse.Namespace) -> int:
 
 
 # ── Update (M9.2) ───────────────────────────────────────────────────────────────
+
+def _restore_exec_bits(archive_root: Path, repo_root: Path,
+                       manifest: dict) -> list[str]:
+    """Give back the executable bit to files the repo ships executable (POSIX).
+
+    `shutil.copy2` preserves mode, so a fresh install is fine - but the bit can
+    be lost afterwards without the bytes changing at all: copied off a Windows
+    machine, restored from a zip that drops Unix modes, synced through a service
+    that does not carry them. `_plan_update` compares CHECKSUMS, so it calls such
+    a launcher "current", copies nothing, and `./fha` keeps failing with
+    "Permission denied" no matter how many times the owner runs update-tools.
+
+    So this is deliberately independent of the plan: mode is repaired whenever it
+    is wrong, including for files nothing else touched this run. Only ever ADDS
+    execute where the repo has it, and only where read permission already exists
+    (mirroring the source's own bits); never removes a permission, and never
+    touches content. A no-op on Windows, where the bit does not exist.
+
+    Returns human-readable notes for what it repaired.
+    """
+    if os.name == 'nt':
+        return []
+    notes: list[str] = []
+    for entry in manifest['files']:
+        if entry.get('category') != 'operating':
+            continue
+        src = repo_root / entry.get('src', entry['path'])
+        dest = archive_root / entry['path']
+        try:
+            if not src.is_file() or not dest.is_file():
+                continue
+            src_mode = src.stat().st_mode
+            exec_bits = src_mode & 0o111
+            if not exec_bits:
+                continue
+            dest_mode = dest.stat().st_mode
+            if dest_mode & 0o111 == exec_bits:
+                continue
+            dest.chmod(dest_mode | exec_bits)
+        except OSError:
+            continue
+        notes.append(entry['path'])
+    return notes
+
 
 def _plan_update(
     archive_root: Path,
@@ -1180,15 +1242,20 @@ def run_update_tools(
     # Two copies of the same file, one of which the new tools will never read.
     # This is the owner's to resolve - the archive cannot know which one is
     # current - but it must never pass silently under an exit 0.
+    # Both copies exist. Identical or not, the flat one has to go: the tools read
+    # only the vendored copy, so leaving a legacy file sitting there visible
+    # invites an edit that silently does nothing. Identical bytes make it a
+    # duplicate to tidy away quietly; differing bytes make it something the owner
+    # has to reconcile, and the run says so.
+    duplicate_conflicts: list[tuple[str, str]] = []
     differing_conflicts: list[tuple[str, str]] = []
     for old, new in reloc_conflicts:
         try:
-            if (_sha256_file(archive_root / old)
-                    == _sha256_file(archive_root / new)):
-                continue    # identical copies: nothing to lose, nothing to say
+            same = (_sha256_file(archive_root / old)
+                    == _sha256_file(archive_root / new))
         except OSError:
-            pass
-        differing_conflicts.append((old, new))
+            same = False
+        (duplicate_conflicts if same else differing_conflicts).append((old, new))
 
     plan_added_paths = [ap for ap, _src in plan['added']]
     n_added = len(plan['added'])
@@ -1201,6 +1268,15 @@ def run_update_tools(
         print(f'Dry run - comparing {archive_root} against {repo_root / "manifest.json"}:')
         _report_plan(archive_root, plan, date_str, verbose=verbose)
         print()
+        for old, new in duplicate_conflicts:
+            print(f'[dry-run] {old} and {new} are identical leftovers of the old '
+                  f'layout - would move {old} to the backup folder (the tools '
+                  f'read {new}).')
+        for old, new in differing_conflicts:
+            print(f'[dry-run] WARNING: {old} and {new} both exist and DIFFER. The '
+                  f'tools read {new}; your copy at {old} is not in use. The real '
+                  f'run would move {old} to the backup folder and finish with a '
+                  f'warning for you to reconcile them.')
         print(
             f'Plan: {n_added} to add, {n_stock} to update, {n_custom} to back up '
             f'and update, {n_retired} retired, {n_current} already up to date.'
@@ -1483,6 +1559,20 @@ def run_update_tools(
     # sitting there, inert - present, edited, and silently ignored. Either way
     # the owner ends with the flat copy in the backup folder and a message that
     # names it. Never deleted, and never left to look active when it is not.
+    for old, new in duplicate_conflicts:
+        stale = archive_root / old
+        if not stale.is_file():
+            continue
+        landed = _unique_backup_path(archive_root, old, date_str)
+        try:
+            landed.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(stale), str(landed))
+            backups_made = True
+        except OSError:
+            continue        # harmless: the copies are identical either way
+        print(f'Moved your {old} to {landed} - it is an identical leftover of the '
+              f'old layout, and the tools now read {new} (kept, not deleted).')
+
     for old, new in differing_conflicts:
         stale = archive_root / old
         landed = _unique_backup_path(archive_root, old, date_str)
@@ -1507,6 +1597,12 @@ def run_update_tools(
             f'{new}, so your other copy was NOT in use; it is kept at {landed}. '
             f'Compare the two and, if the kept one is the version you want, put '
             f'its contents into {new}.')
+
+    # Independent of the plan: a launcher whose bytes are current can still have
+    # lost its executable bit, and no amount of re-running would have fixed it.
+    for repaired in _restore_exec_bits(archive_root, repo_root, manifest):
+        print(f'Restored the executable permission on {repaired} so it can be '
+              f'run directly again.')
 
     # Retiring files one by one leaves their directories behind, empty. After a
     # flat -> .fha/ update that means a hollow `tools/` and `design/` still
@@ -1548,6 +1644,19 @@ def run_update_tools(
                 new_checksums[archive_path] = installed_ok[archive_path]
             elif archive_path in old_recorded:
                 new_checksums[archive_path] = old_recorded[archive_path]
+            else:
+                # First stamp for a hand-copied archive: a seed already sitting
+                # on disk has plainly been delivered, so record it as-is. Without
+                # this it stays unrecorded, and a later deliberate deletion would
+                # be undone by the next run - the install-once contract broken by
+                # the very absence of memory this restamp exists to fix. Contents
+                # are never touched, only observed.
+                dest = archive_root / archive_path
+                if dest.is_file():
+                    try:
+                        new_checksums[archive_path] = _sha256_file(dest)
+                    except OSError:
+                        pass
             continue
         if archive_path in installed_ok:
             new_checksums[archive_path] = installed_ok[archive_path]

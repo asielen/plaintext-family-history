@@ -1594,10 +1594,18 @@ different risk profile, since it touches an existing populated archive rather th
 empty one) is M9.2.
 
 **`manifest.json`:** one JSON object listing every operating-layer file with `path`, `sha256`,
-`spec_version`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`,
-`CLAUDE.md`, `BUILD.md`, the public `README.md` (project orientation), the agent workflow
-procedures under `.claude/skills/`, and the skeleton (`fha.yaml` template, the empty record
-dirs, seeded `places.yaml`). The guiding rule is *everything a genealogist needs to operate*,
+`spec_version`. Each entry's `path` is the file's destination INSIDE the archive, which is not
+the same as its path in this repo: the tool suite and the design assets are vendored, so
+`tools/index.py` ships as `.fha/tools/index.py` and `design/custom.css` as
+`.fha/design/custom.css`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
+the public `README.md` (project orientation), the agent workflow procedures under
+`.claude/skills/`, the launchers (`fha`, `fha.cmd`, `serve.cmd`), and the skeleton (`fha.yaml`
+template, `.gitignore`, `.gitattributes`, the empty record dirs, seeded `places.yaml`).
+
+Deliberately EXCLUDED, because they are workshop-clone material and an installed archive is not
+where tools get built (TOOLING §13c): `AGENTS_TOOLING.md`, every `BUILD*.md`, and the sibling
+tooling designs (`TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`). Shipping them would tell an
+agent inside an archive to follow a build sequence it cannot run. The guiding rule is *everything a genealogist needs to operate*,
 not a hand-picked minimum. Also covers the human-facing docs that must ship into every archive:
 `docs/GETTING_STARTED.md`, `docs/SETUP_FROM_ZIP.md`, `docs/CHEATSHEET.md`,
 `docs/TROUBLESHOOTING.md`, `docs/FILING_CABINET.md` (create any that don't exist yet as
@@ -1643,9 +1651,16 @@ compare manifest against `.plaintext-version`. For each file - new → copy in; 
 (checksum matches) → overwrite silently; customized (checksum differs) → move to
 `.plaintext-backup/{date}/` and report; retired from manifest → move to backup and report.
 Never deletes. Never silently overwrites customized files. All output is plain English -
-"Updating tools/index.py (unchanged)" or "Your edited tools/fha.py has been backed up to
-.plaintext-backup/2026-06-22/fha.py - the new version is now in tools/fha.py." No technical
-diffs or checksums shown by default; `--verbose` may add them.
+"Updating .fha/tools/index.py (unchanged)" or "Your edited .fha/tools/fha.py has been backed up
+to .plaintext-backup/2026-06-22/.fha/tools/fha.py - the new version is now in
+.fha/tools/fha.py." No technical diffs or checksums shown by default; `--verbose` may add them.
+
+An archive still on the pre-`.fha` flat layout is carried across by the same command: the flat
+`tools/` and `design/` are retired to the backup and the vendored copies installed, with the
+owner's install-once `design/custom.css` (and any assets beside it) MOVED rather than retired.
+That transition is all-or-nothing - if any part of it fails, the whole thing is rolled back and
+the archive is left on its old, working layout. `fha migrate-layout` does the same move directly,
+without the retire-and-reinstall round trip.
 
 **Done when:**
 ```sh
