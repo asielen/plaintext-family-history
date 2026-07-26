@@ -4540,18 +4540,14 @@ def requirements_hint() -> str:
     work. `requirements.txt` is always this module's own sibling, so anchoring on
     `__file__` is right in both layouts.
 
-    Relative to the archive (or workshop) root where the human is standing when
-    they run the command; falls back to the absolute path if this copy of the
-    tools lives outside that root.
+    Returned ABSOLUTE. The command is printed for the human to paste, and they
+    can be standing anywhere the launcher supports - `fha views --format html`
+    run from `people/` is ordinary usage. A path relative to the archive root
+    then resolves beneath the current subdirectory instead and fails with "file
+    not found", which is a worse outcome than the missing dependency it was
+    meant to fix. An absolute path is correct from every directory.
     """
-    reqs = (Path(__file__).parent / 'requirements.txt').resolve()
-    root = reqs.parent.parent
-    if root.name == VENDOR_DIR_NAME:
-        root = root.parent
-    try:
-        return reqs.relative_to(root).as_posix()
-    except ValueError:
-        return str(reqs)
+    return str((Path(__file__).parent / 'requirements.txt').resolve())
 
 
 def load_site_module():

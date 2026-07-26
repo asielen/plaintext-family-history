@@ -733,13 +733,32 @@ def run_install(
             ok.add(_sha256_file(template_copy))
         return ok
 
-    conflicts = [
-        entry['path']
-        for entry in files
-        if Path(entry['path']).name != '.gitkeep'
-        and (archive_path / entry['path']).is_file()
-        and _sha256_file(archive_path / entry['path']) not in _acceptable(entry)
-    ]
+    conflicts: list[str] = []
+    unreadable: list[str] = []
+    for entry in files:
+        target = archive_path / entry['path']
+        if Path(entry['path']).name == '.gitkeep' or not target.is_file():
+            continue
+        try:
+            here = _sha256_file(target)
+        except OSError as exc:
+            # A file we cannot read is a file we cannot prove is safe to
+            # overwrite, so it belongs with the other preflight refusals - not
+            # as an OSError escaping into `_cmd_install`, which catches only
+            # ScaffoldError and would hand the owner a traceback.
+            unreadable.append(f"{entry['path']} ({exc})")
+            continue
+        if here not in _acceptable(entry):
+            conflicts.append(entry['path'])
+    if unreadable:
+        listing = '\n  '.join(unreadable[:10])
+        more = '' if len(unreadable) <= 10 else f'\n  …and {len(unreadable) - 10} more'
+        raise ScaffoldError(
+            f"{archive_path} contains file(s) install cannot read, so it cannot "
+            f"tell whether overwriting them would destroy your work:\n  "
+            f"{listing}{more}\n"
+            "Check their permissions (or move them aside), then re-run install."
+        )
     if conflicts:
         listing = '\n  '.join(conflicts[:10])
         more = '' if len(conflicts) <= 10 else f'\n  …and {len(conflicts) - 10} more'
@@ -774,7 +793,18 @@ def run_install(
                 # does not have. Set it from the contract instead, so a fresh
                 # install always yields a launcher that runs.
                 dest.chmod(dest.stat().st_mode | 0o111)
-            checksums[entry['path']] = entry.get('sha256') or _sha256_file(src)
+            # Hash the DESTINATION, not the manifest's prediction and not the
+            # source. The stamp is the baseline every later update compares the
+            # working copy against, so it has to describe the bytes that are
+            # really on disk. Those can differ from the manifest legitimately:
+            # manifest.json is generated in a git checkout, where .gitattributes
+            # materializes `.cmd` launchers as CRLF, while a download packaged
+            # from the repository blobs can carry LF. Recording the predicted
+            # hash there would make the very next release that touches a launcher
+            # call the owner's untouched file "customized" and back it up - the
+            # exact churn pinning the line endings was meant to end, arriving
+            # through a different door.
+            checksums[entry['path']] = _sha256_file(dest)
             changed.append(str(dest))
         _write_version_stamp(archive_path, _stamp_dict(manifest, checksums))
         changed.append(str(archive_path / VERSION_FILE))

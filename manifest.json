@@ -227,7 +227,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "fba5466c8a753144423278d6c7048028830d285bc319eac0afb19cca81e1ee7a",
+      "sha256": "d30cfe0779ba2fd6c75464e4ee717e8c8a9858f045621f19c0400bddc3cb27f8",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -444,7 +444,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "fbf463be43dd8effbf5f7de2159647ef74317e58e65ec2b427a315e3db168f99",
+      "sha256": "84f384595fa311d0c337ce828900079ad073a5f0d82486e5b5d7ee99a3d3990f",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },

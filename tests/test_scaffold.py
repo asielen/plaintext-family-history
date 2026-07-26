@@ -432,6 +432,94 @@ class ExecBitRepairTest(unittest.TestCase):
             'a repaired launcher is a mutation and belongs in changed')
 
 
+class InstallBaselineTest(unittest.TestCase):
+    """The stamp must record the bytes that actually landed."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_baseline_is_the_installed_bytes_not_the_manifest_prediction(self):
+        # A package built from the repository blobs can carry different bytes
+        # than the checkout the manifest was generated in - LF vs CRLF launchers
+        # being the case in hand. Trusting the manifest's prediction makes the
+        # next release that touches the file call an untouched copy "customized".
+        scaffold._write_manifest(self.repo)
+        manifest = json.loads((self.repo / 'manifest.json').read_text(encoding='utf-8'))
+        target = next(e for e in manifest['files']
+                      if e.get('category') == 'operating')
+        # Source on disk differs from what the manifest recorded, as a
+        # differently-packaged download would.
+        src = self.repo / target.get('src', target['path'])
+        _write(src, 'packaged differently\n')
+        _write(self.repo / 'manifest.json', json.dumps(manifest))
+
+        archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(archive, self.repo)
+
+        stamp = json.loads(
+            (archive / '.plaintext-version').read_text(encoding='utf-8'))
+        on_disk = scaffold._sha256_file(archive / target['path'])
+        self.assertEqual(
+            stamp['files'][target['path']], on_disk,
+            'the recorded baseline must be the installed bytes')
+        self.assertNotEqual(
+            stamp['files'][target['path']], target['sha256'],
+            'and NOT the manifest prediction when the two differ')
+
+        # The consequence that matters: the next update sees no customization.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scaffold.run_update_tools(archive, self.repo)
+        self.assertNotIn('has been backed up', buf.getvalue(),
+                         'an untouched file must never be reported as edited')
+
+
+class InstallUnreadableTargetTest(unittest.TestCase):
+    """An unreadable file must refuse plainly, not raise out of the CLI.
+
+    Driven with a mocked read failure rather than chmod 0o000: the real
+    permission trick is a no-op for root, so a privilege-dependent test would
+    silently skip in exactly the environments most likely to run as root - and a
+    test that does not run is not a guard.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        _write(self.repo / 'README.md', '# stock\n')
+        scaffold._write_manifest(self.repo)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_unreadable_target_file_is_a_plain_refusal(self):
+        archive = self.tmp / 'archive'
+        archive.mkdir()
+        _write(archive / 'README.md', 'mine\n')
+
+        real_sha = scaffold._sha256_file
+
+        def unreadable(path, *a, **kw):
+            if Path(path).name == 'README.md' and archive in Path(path).parents:
+                raise OSError(13, 'Permission denied')
+            return real_sha(path, *a, **kw)
+
+        with mock.patch.object(scaffold, '_sha256_file', side_effect=unreadable):
+            with self.assertRaises(scaffold.ScaffoldError) as caught:
+                scaffold.run_install(archive, self.repo)
+        # A ScaffoldError is what _cmd_install knows how to print; an OSError
+        # escaping here is the traceback this guard exists to prevent.
+        self.assertIn('README.md', str(caught.exception))
+        self.assertIn('permission', str(caught.exception).lower())
+
+
 class ZipWorkshopLauncherTest(unittest.TestCase):
     """A workshop unzipped from a download has no Unix modes at all.
 
