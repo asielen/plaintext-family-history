@@ -781,12 +781,52 @@ def _plan_update(
     # (skeleton paths stay listed, so user data is never flagged retired). Move
     # only if it still exists; an already-removed file needs nothing.
     manifest_all_paths = {e['path'] for e in manifest['files']}
+    retired: list[str] = []
     for archive_path in recorded:
         if archive_path in manifest_all_paths:
             continue
         if (archive_root / archive_path).exists():
-            plan['retired'].append((archive_path, None))
+            retired.append(archive_path)
 
+    # Legacy layout relics found ON DISK, whether or not a stamp records them.
+    #
+    # An archive assembled by hand-copying `tools/` has no `.plaintext-version`,
+    # so the recorded-path scan above finds nothing to retire. The update would
+    # then install a complete stock toolset under `.fha/tools/` and leave the
+    # flat one sitting there - and because the launcher prefers `.fha/tools/`,
+    # the owner's customized flat tools would silently stop taking effect while
+    # the run exits 0, having just promised that anything differing would be
+    # backed up. Same shadowing risk for a stamp that has drifted from disk.
+    #
+    # Narrow by construction: only files under a VENDORED subtree root, only
+    # where the manifest does not list the flat path but DOES list its `.fha/`
+    # counterpart as an OPERATING entry. That is unambiguously a relic of the old
+    # layout - never a record, never anything the human put there.
+    #
+    # The operating-only condition matters: a flat path whose counterpart is a
+    # SKELETON entry (`design/custom.css`) belongs to the install-once relocation
+    # instead, which moves the human's copy to its new home. Retiring it here
+    # would race that move and quarantine the very file the relocation exists to
+    # rescue.
+    manifest_operating = {e['path'] for e in manifest['files']
+                          if e.get('category') == 'operating'}
+    seen = set(retired)
+    for root in _VENDORED_SUBTREES:
+        base = archive_root / root
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob('*')):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(archive_root).as_posix()
+            if rel in manifest_all_paths or rel in seen:
+                continue
+            if _vendor_counterpart(rel) not in manifest_operating:
+                continue
+            seen.add(rel)
+            retired.append(rel)
+
+    plan['retired'].extend((archive_path, None) for archive_path in sorted(retired))
     return plan
 
 
@@ -1054,6 +1094,7 @@ def run_update_tools(
     if relocations:
         print()
 
+    plan_added_paths = [ap for ap, _src in plan['added']]
     n_added = len(plan['added'])
     n_stock = len(plan['stock'])
     n_custom = len(plan['customized'])
@@ -1078,6 +1119,13 @@ def run_update_tools(
     # downgrades the run to a warning rather than aborting partway. Every per-file
     # message is printed AFTER its operation succeeds, and the summary counts only
     # what actually happened - the output never claims a success that did not occur.
+    # Which vendored subtrees is this run migrating? A legacy flat copy still on
+    # disk means the archive is mid-transition for that subtree, and the two
+    # copies are alternatives - not a merge. Recorded BEFORE any write so the
+    # rollback below knows what "back to how it was" means.
+    transition_roots = {r for r in _VENDORED_SUBTREES
+                        if (archive_root / r).is_dir()}
+
     installed_ok: dict[str, str] = {}
     # A stylesheet that could not be carried across the layout change is a FAILED
     # update, not a footnote: the archive is left with the owner's customization
@@ -1156,6 +1204,82 @@ def run_update_tools(
             f'the new version is now in {archive_path}.'
         )
 
+    # A vendored subtree is ONE UNIT, not a set of independent files. `fha.py`
+    # puts only its own directory on sys.path, so a `.fha/tools/` holding a good
+    # fha.py and a failed scaffold.py is not a degraded toolset - it is an
+    # unrunnable one, and the launcher prefers it over the intact flat tree
+    # sitting right beside it. Even the "re-run fha update-tools" advice then
+    # dies on ModuleNotFoundError.
+    #
+    # So if ANY file in a subtree being migrated failed, undo that subtree's
+    # installs and leave the archive on its old layout, which still works. Only
+    # files THIS RUN created are removed - never anything pre-existing - so this
+    # cannot destroy the human's work, and the legacy tree is then left alone by
+    # the retirement pass below.
+    # All-or-nothing across the WHOLE transition, not per subtree. The layout is
+    # one decision: if `.fha/tools/` has to be abandoned, the archive keeps
+    # running from flat `tools/`, and flat `tools/site.py` reads flat `design/`
+    # (`__file__/../../design`). Letting `design/` complete and retire its flat
+    # copy would strip the stylesheet from the toolchain the archive actually
+    # ends up running. Either every vendored subtree lands, or none does.
+    aborted_roots: set[str] = set()
+    if any(fp.startswith(f'{VENDOR_DIR}/') and fp.split('/')[1] in transition_roots
+           for fp in failed_paths):
+        aborted_roots = set(transition_roots)
+
+    # The install-once relocation ran earlier, on the assumption the transition
+    # would complete. Undo it too, or the owner's stylesheet is stranded under a
+    # `.fha/design/` the archive is not using while the flat `site.py` it IS
+    # running looks at flat `design/`.
+    if aborted_roots:
+        undo = [(new, old) for old, new in relocations
+                if new.startswith(f'{VENDOR_DIR}/')
+                and new.split('/')[1] in aborted_roots]
+        for message in _apply_install_once_relocations(
+                archive_root, stamp, undo, dry_run=False):
+            failures.append(message)
+        _rekey_stamp_for_relocations(stamp, [(n, o) for n, o in undo
+                                             if not (archive_root / n).exists()])
+
+    for root in sorted(aborted_roots):
+        prefix = f'{VENDOR_DIR}/{root}/'
+        rolled_back = 0
+        for archive_path in [ap for ap in installed_ok if ap.startswith(prefix)]:
+            try:
+                (archive_root / archive_path).unlink(missing_ok=True)
+            except OSError:
+                continue
+            installed_ok.pop(archive_path, None)
+            failed_paths.add(archive_path)
+            rolled_back += 1
+        # Prune husks left by BOTH the rolled-back installs and the undone
+        # install-once relocation, so an aborted transition leaves no empty
+        # `.fha/` skeleton implying a layout the archive is not using.
+        _prune_emptied_dirs(
+            archive_root,
+            [ap for ap in plan_added_paths if ap.startswith(prefix)]
+            + [new for _old, new in relocations if new.startswith(prefix)])
+        failures.append(
+            f'{VENDOR_DIR}/{root}/: the new folder layout could not be completed, '
+            f'so the {rolled_back} file(s) that did copy were removed again and '
+            f'your existing {root}/ was left in place and untouched. A '
+            f'half-installed {VENDOR_DIR}/ would be preferred by the launcher '
+            f'over the working copy you already have. Fix the errors above and '
+            f're-run - your archive is exactly as it was.')
+        print(
+            f'Left {archive_root / root} exactly as it was - the move to '
+            f'{VENDOR_DIR}/ could not be completed (see the errors above).')
+
+    if aborted_roots:
+        # If nothing else landed under it, the vendor folder itself is a husk too
+        # - and an empty `.fha/` in the root implies a layout this archive is not
+        # using. rmdir refuses a non-empty directory, so anything that did land
+        # (a completed subtree, a stray file) keeps it.
+        try:
+            (archive_root / VENDOR_DIR).rmdir()
+        except OSError:
+            pass
+
     manifest_all_paths = {e['path'] for e in manifest['files']}
     for archive_path, _src in plan['retired']:
         # A flat -> .fha/ update retires `tools/fha.py` while adding
@@ -1165,6 +1289,8 @@ def run_update_tools(
         # retire a legacy path once the replacement it hands off to is really on
         # disk. Paths with no counterpart in the manifest (a genuinely retired
         # tool) are unaffected.
+        if archive_path.split('/', 1)[0] in aborted_roots:
+            continue          # already reported once, for the whole subtree
         replacement = _vendor_counterpart(archive_path)
         if replacement in manifest_all_paths and (
                 replacement in failed_paths
@@ -1739,11 +1865,22 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
               'before the next update.')
         step += 1
     if unavailable:
+        # Do NOT suggest a bare `fha update-tools` here: the launchers this run
+        # could not replace are exactly the ones that command would go through,
+        # so the recommended repair would invoke the broken thing it is meant to
+        # repair. Name the interpreter and the moved entrypoint directly, with
+        # both paths filled in, so the command runs whatever state the root
+        # launchers are in.
+        entry = archive_root / VENDOR_DIR / 'tools' / 'fha.py'
         print(f'  {step}. IMPORTANT: the root launcher(s) {", ".join(unavailable)} '
-              f'still point at the old flat layout (or are missing) and were not '
-              f'available in {repo_root} to refresh. Run '
-              '`fha update-tools --repo PATH-TO-WORKSHOP` to install the current '
-              'ones - until then, double-clicking serve.cmd will not start.')
+              f'still point at the old flat layout (or are missing), and '
+              f'{repo_root} had no copy to refresh them from. Until they are '
+              f'replaced, double-clicking serve.cmd will not start and `fha` may '
+              f'not run at all. Install the current ones by calling the moved '
+              f'tools directly - this does not go through a launcher:\n'
+              f'        python3 "{entry}" update-tools --repo "PATH-TO-WORKSHOP" '
+              f'--root "{archive_root}"\n'
+              f'     (on Windows, use `py -3` in place of `python3`.)')
         step += 1
     if capture_host:
         print(f'  {step}. Re-register browser capture: the host at {capture_host} '

@@ -1141,9 +1141,95 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
             scaffold.run_update_tools(self.archive, self.repo)
         self.assertTrue((self.archive / 'tools' / 'MY-NOTES.txt').is_file())
 
+    def test_partial_toolset_install_rolls_back_and_keeps_the_flat_tree(self):
+        # fha.py puts only its OWN directory on sys.path, so a .fha/tools/ with a
+        # good fha.py and a failed sibling is not a degraded toolset - it is an
+        # unrunnable one, and the launcher prefers it over the intact flat tree
+        # beside it. Even the "re-run update-tools" advice dies on ImportError.
+        _write(self.repo / 'tools' / 'btool.py', 'print("b")\n')
+        scaffold._write_manifest(self.repo)
+        # A genuinely FLAT archive: no vendored copies yet, flat ones recorded.
+        # Both movable subtrees are mid-transition, which is the real case and
+        # what makes the all-or-nothing property observable.
+        shutil.rmtree(self.archive / '.fha')
+        _write(self.archive / 'design' / 'custom.css', '/* mine */\n')
+        stamp = self._stamp()
+        for key in [k for k in stamp['files'] if k.startswith('.fha/')]:
+            stamp['files'].pop(key)
+        for name in ('atool.py', 'btool.py'):
+            flat = self.archive / 'tools' / name
+            _write(flat, f'print("legacy {name}")\n')
+            stamp['files'][f'tools/{name}'] = scaffold._sha256_file(flat)
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+
+        real_copy = scaffold.shutil.copy2
+
+        def flaky_copy(src, dst, *a, **kw):
+            if 'btool.py' in str(dst):
+                raise OSError('disk full')
+            return real_copy(src, dst, *a, **kw)
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold.shutil, 'copy2', side_effect=flaky_copy), \
+                contextlib.redirect_stdout(buf), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        # The half-built vendored toolset is gone entirely - not left for the
+        # launcher to prefer over the working one.
+        self.assertFalse((self.archive / '.fha' / 'tools' / 'atool.py').exists())
+        self.assertFalse((self.archive / '.fha' / 'tools' / 'btool.py').exists())
+        # ... and the flat tree that still works is intact and un-retired.
+        self.assertEqual(
+            (self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+            'print("legacy atool.py")\n')
+        self.assertFalse((self.archive / '.fha' / 'tools').exists(),
+                         'no half-built vendored toolset may remain')
+        # All-or-nothing: design/ must NOT have completed and retired its flat
+        # copy, because the archive is now running from flat tools/, whose
+        # site.py reads flat design/.
+        self.assertTrue((self.archive / 'design' / 'custom.css').is_file())
+        self.assertFalse((self.archive / '.fha' / 'design').exists())
+        self.assertTrue((self.archive / 'tools' / 'btool.py').is_file())
+        backups = list((self.archive / '.plaintext-backup').rglob('atool.py')) \
+            if (self.archive / '.plaintext-backup').exists() else []
+        self.assertEqual(backups, [], 'nothing should have been quarantined')
+        self.assertIn('exactly as it was', buf.getvalue())
+
+    def test_unstamped_flat_tools_are_retired_not_silently_shadowed(self):
+        # A hand-copied archive has no stamp, so nothing is "recorded" to retire.
+        # Installing .fha/tools/ and leaving the flat tree means the launcher
+        # prefers the new one and the owner's customized flat tools silently stop
+        # taking effect - under an exit 0 that just promised a backup.
+        _write(self.archive / 'tools' / 'atool.py', 'print("MY EDIT")\n')
+        (self.archive / '.plaintext-version').unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        # The shadowed copy was moved aside, and its content preserved.
+        self.assertFalse((self.archive / 'tools' / 'atool.py').exists())
+        kept = list((self.archive / '.plaintext-backup').rglob('atool.py'))
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].read_text(encoding='utf-8'), 'print("MY EDIT")\n')
+        self.assertTrue((self.archive / '.fha' / 'tools' / 'atool.py').is_file())
+
+    def test_records_are_never_swept_up_by_the_legacy_scan(self):
+        # The disk-driven scan must only ever see operating relics under a
+        # vendored root - never a record, never a file the human put there.
+        _write(self.archive / 'people' / 'someone.md', '# a record\n')
+        _write(self.archive / 'tools' / 'MY-SCRATCH.txt', 'my notes\n')
+        (self.archive / '.plaintext-version').unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+        self.assertTrue((self.archive / 'people' / 'someone.md').is_file())
+        # No manifest counterpart -> not a relic -> untouched.
+        self.assertTrue((self.archive / 'tools' / 'MY-SCRATCH.txt').is_file())
+
     def test_malformed_stamp_files_value_does_not_traceback(self):
         stamp = self._stamp()
         stamp['files'] = 'not-an-object'
+
 
 
 

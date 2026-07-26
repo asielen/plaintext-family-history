@@ -430,7 +430,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "21ca2b7c2a4417abb28664bac41b1f4f51a43091278aa535ce3ec3745b8bc3c5",
+      "sha256": "baec36d71e312e4cb7ffb41772a15ae3d41237c467c5afcf75de4cc09019dbf7",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
