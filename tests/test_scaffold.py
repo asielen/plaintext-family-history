@@ -468,6 +468,22 @@ class FlatArchiveRefusalTest(unittest.TestCase):
             (self.archive / 'design' / 'custom.css').read_text(encoding='utf-8'),
             '/* my colours */\n')
 
+    def test_a_stamp_with_no_usable_file_map_is_treated_as_unstamped(self):
+        # `{"files": []}` is a perfectly good object that records nothing. A
+        # `stamp is None` check waves it past while _plan_update still finds no
+        # flat files to retire - so the guard has to ask "does anything record
+        # what is on disk?", not "is there a file?".
+        for broken in ({'files': []}, {'files': {}}, {'files': 'nope'}, {}):
+            with self.subTest(stamp=broken):
+                _write(self.archive / '.plaintext-version', json.dumps(broken))
+                with self.assertRaises(scaffold.ScaffoldError):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        scaffold.run_update_tools(self.archive, self.repo)
+                self.assertFalse((self.archive / '.fha').exists())
+                self.assertEqual(
+                    (self.archive / 'design' / 'custom.css').read_text(
+                        encoding='utf-8'), '/* my colours */\n')
+
     def test_a_stamped_archive_is_unaffected(self):
         # The guard keys on the ABSENCE of a stamp; a normal archive must update.
         shutil.rmtree(self.archive)

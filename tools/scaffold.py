@@ -1122,7 +1122,13 @@ def run_update_tools(
     # sitting in place, unbacked-up and no longer read by anything. There is no
     # migration path by design, so reconciling the two copies is the owner's
     # call - but it must be an informed one, not a silent switch-off.
-    if stamp is None and (archive_root / 'tools' / 'fha.py').is_file() \
+    # Keyed on "no USABLE record", not on `stamp is None`. A stamp of
+    # `{"files": []}` - hand-edited, truncated, or written by an interrupted run
+    # - is a perfectly good object that records nothing, so a None check waves it
+    # straight past while `_plan_update` still finds no flat files to retire. The
+    # question this guard asks is "does anything record what is on disk?", and an
+    # empty map answers it the same way a missing file does.
+    if not _stamp_file_map(stamp) and (archive_root / 'tools' / 'fha.py').is_file() \
             and not (archive_root / VENDOR_DIR / 'tools').is_dir():
         raise ScaffoldError(
             f"{archive_root} keeps its tools at {Path('tools') / 'fha.py'}, from "

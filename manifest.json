@@ -220,7 +220,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "d5069a9d974cddd2071c3bfe7cc7d81ceb611c50127c625eacf120c87db84cfb",
+      "sha256": "02aa2860af3e404a01d20b25be4becd8ab36f880267e5cab6c96f904b027f709",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -444,7 +444,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "3cd69dd1ba84f7788eeb9b486194148fc1fe2f634309165a39d88ca794f457fe",
+      "sha256": "7d8270e2b3b1f29b1d796f283ebe8249e20ebab7b4f9610e814d400a3e2209bb",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -671,7 +671,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "ff7dbcfebca047415df2f2e039bbecc7b87c9e6dce9fd9e8d5dc622fb421f9a3",
+      "sha256": "253ee95d2323b6b533752b1864c1701f09433a5c778cda20733bb2f8b7bd6027",
       "spec_version": "1.2"
     },
     {
