@@ -732,6 +732,7 @@ def _plan_update(
     repo_root: Path,
     manifest: dict,
     stamp: dict | None,
+    incoming: set[str] | None = None,
 ) -> dict:
     """Classify every operating-layer file without writing anything.
 
@@ -776,6 +777,36 @@ def _plan_update(
             plan['stock'].append((archive_path, src))
         else:
             plan['customized'].append((archive_path, src))
+
+    # Skeleton seeds that are NEW upstream and absent here.
+    #
+    # Install-once means "never overwrite", not "never deliver". A seed added to
+    # the manifest after this archive was created would otherwise never arrive:
+    # `.gitattributes` is the case in hand - without it a Windows checkout with
+    # `core.autocrlf` rewrites the `fha` launcher to CRLF, which /bin/sh cannot
+    # run and which breaks the launcher's recorded checksum, so every later
+    # update reports the stock launcher as customized.
+    #
+    # The stamp is what makes this safe: a seed the stamp never recorded has
+    # never been delivered to this archive, so writing it cannot overwrite an
+    # edit and cannot resurrect a file the owner deliberately deleted (that one
+    # IS recorded). Absent from disk and absent from the stamp - both, or it is
+    # left alone.
+    for entry in manifest['files']:
+        if entry.get('category') != 'skeleton':
+            continue
+        archive_path = entry['path']
+        if archive_path in recorded or (archive_root / archive_path).exists():
+            continue
+        # A seed a relocation is about to deliver is NOT missing - it is in
+        # flight. Seeding stock over it would win the race and hand the owner a
+        # pristine stylesheet while their customized one, still at the flat path,
+        # is demoted to an unreadable "conflict".
+        if incoming and archive_path in incoming:
+            continue
+        src = repo_root / entry.get('src', archive_path)
+        if src.is_file():
+            plan['added'].append((archive_path, src))
 
     # Retired: a path the stamp recorded but the manifest no longer lists at all
     # (skeleton paths stay listed, so user data is never flagged retired). Move
@@ -862,10 +893,12 @@ def _vendor_counterpart(archive_path: str) -> str:
 def _plan_install_once_relocations(
     archive_root: Path,
     manifest: dict,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
     """Find install-once files whose archive path moved between vendor layouts.
 
-    Returns [(old_archive_path, new_archive_path), …].
+    Returns (moves, conflicts, residual), each [(old_path, new_path), …]:
+    `moves` are clean relocations, `conflicts` are pairs where BOTH copies exist,
+    and `residual` are the owner's own unlisted files in a subtree that is moving.
 
     Install-once seeds (`_SKELETON_OVERRIDES`, today `design/custom.css`) are
     deliberately never touched by `update-tools` - that is what keeps a hand-edit
@@ -895,6 +928,7 @@ def _plan_install_once_relocations(
                       if e.get('category') == 'skeleton'}
 
     moves: list[tuple[str, str]] = []
+    conflicts: list[tuple[str, str]] = []
     for new in sorted(skeleton_paths):
         old = _vendor_counterpart(new)
         if old in manifest_all_paths:
@@ -902,9 +936,46 @@ def _plan_install_once_relocations(
         if not (archive_root / old).is_file():
             continue
         if (archive_root / new).exists():
+            # Both copies present - an interrupted or hand-performed transition.
+            # Skipping silently is the one thing that must not happen: the new
+            # tools read ONLY the vendored copy, so the owner's edits in the flat
+            # one would remain on disk, look present, and have no effect. Hand it
+            # back as a conflict for the caller to resolve out loud.
+            conflicts.append((old, new))
             continue
         moves.append((old, new))
-    return moves
+
+    # Residual assets: the owner's OWN files inside a subtree that is moving.
+    #
+    # A customized `design/custom.css` routinely references siblings the manifest
+    # never lists - `banner.png`, a font, a background. Relative URLs in that
+    # stylesheet resolve beside the stylesheet, so once it lands in
+    # `.fha/design/` an asset left at flat `design/` is simply gone from the
+    # rebuilt site, under an exit 0. The relic scan cannot rescue them: it
+    # deliberately handles only files WITH a manifest counterpart.
+    #
+    # A folder that moves takes its contents with it. Restricted to files the
+    # manifest lists at neither path - anything it does list is stock, and
+    # belongs to install/retire, not to the human.
+    residual: list[tuple[str, str]] = []
+    moving_roots = {old.split('/', 1)[0] for old, _new in moves + conflicts}
+    for root in sorted(moving_roots):
+        base = archive_root / root
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob('*')):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(archive_root).as_posix()
+            dest = f'{VENDOR_DIR}/{rel}'
+            if rel in manifest_all_paths or dest in manifest_all_paths:
+                continue
+            if (archive_root / dest).exists():
+                conflicts.append((rel, dest))
+                continue
+            residual.append((rel, dest))
+
+    return moves, conflicts, residual
 
 
 def _rekey_stamp_for_relocations(
@@ -923,6 +994,12 @@ def _rekey_stamp_for_relocations(
         return
     files = _stamp_file_map(stamp)
     for old, new in moves:
+        # Only re-key what the stamp actually records. Residual assets ride along
+        # with the same move machinery but the manifest lists neither of their
+        # paths, so they are absent here - and inventing a key for them would
+        # write a checksum-less entry that later runs would read as a real record.
+        if old not in files and new not in files:
+            continue
         files[new] = files.pop(old, files.get(new, ''))
     stamp['files'] = dict(sorted(files.items()))
 
@@ -1034,8 +1111,13 @@ def run_update_tools(
     # as retired; the file itself does not move until the source preflight below
     # has passed. Moving it earlier would strand the owner's stylesheet at a path
     # the still-flat site.py does not read, on an update that then aborted.
-    relocations = _plan_install_once_relocations(archive_root, manifest)
+    relocations, reloc_conflicts, residual_moves = \
+        _plan_install_once_relocations(archive_root, manifest)
+    # Residual assets ride along with the relocations: same move, same failure
+    # handling, and the stamp does not track them (the manifest lists neither
+    # path), so re-keying covers only the install-once seeds.
     _rekey_stamp_for_relocations(stamp, relocations)
+    relocations = relocations + residual_moves
 
     # An update that also changes the layout retires the old flat tools/ into
     # .plaintext-backup/ and installs fresh ones under .fha/. That is correct but
@@ -1058,7 +1140,8 @@ def run_update_tools(
         )
         print()
 
-    plan = _plan_update(archive_root, repo_root, manifest, stamp)
+    plan = _plan_update(archive_root, repo_root, manifest, stamp,
+                        incoming={new for _old, new in relocations})
     date_str = datetime.date.today().isoformat()
 
     # A broken/partial clone must fail before any mutation - otherwise a
@@ -1093,6 +1176,19 @@ def run_update_tools(
               'your customizations come with it).')
     if relocations:
         print()
+
+    # Two copies of the same file, one of which the new tools will never read.
+    # This is the owner's to resolve - the archive cannot know which one is
+    # current - but it must never pass silently under an exit 0.
+    differing_conflicts: list[tuple[str, str]] = []
+    for old, new in reloc_conflicts:
+        try:
+            if (_sha256_file(archive_root / old)
+                    == _sha256_file(archive_root / new)):
+                continue    # identical copies: nothing to lose, nothing to say
+        except OSError:
+            pass
+        differing_conflicts.append((old, new))
 
     plan_added_paths = [ap for ap, _src in plan['added']]
     n_added = len(plan['added'])
@@ -1349,6 +1445,38 @@ def run_update_tools(
             f'Moved {archive_path} to {backup} - it is no longer part of the '
             f'plaintext tools (kept, not deleted).'
         )
+
+    # Two copies of the same install-once file, only one of which the new tools
+    # read. Resolved HERE, after retirement, so both routes in reach the same
+    # end state: when the stamp recorded the flat copy, retirement has already
+    # moved it aside; when it did not (a hand-assembled archive), it is still
+    # sitting there, inert - present, edited, and silently ignored. Either way
+    # the owner ends with the flat copy in the backup folder and a message that
+    # names it. Never deleted, and never left to look active when it is not.
+    for old, new in differing_conflicts:
+        stale = archive_root / old
+        landed = _unique_backup_path(archive_root, old, date_str)
+        if stale.is_file():
+            try:
+                landed.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(stale), str(landed))
+                backups_made = True
+            except OSError as exc:
+                failures.append(
+                    f'{old}: this file and {new} both exist and differ. The '
+                    f'tools read {new}; your copy at {old} is NOT being used, '
+                    f'and could not be moved aside ({exc}). Compare the two by '
+                    f'hand and keep the one you want at {new}.')
+                continue
+        else:
+            landed = next(
+                iter(sorted((archive_root / BACKUP_DIR / date_str).rglob(
+                    Path(old).name))), landed)
+        failures.append(
+            f'{old}: two different versions of this file existed. The tools read '
+            f'{new}, so your other copy was NOT in use; it is kept at {landed}. '
+            f'Compare the two and, if the kept one is the version you want, put '
+            f'its contents into {new}.')
 
     # Retiring files one by one leaves their directories behind, empty. After a
     # flat -> .fha/ update that means a hollow `tools/` and `design/` still

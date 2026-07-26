@@ -1197,6 +1197,81 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
         self.assertEqual(backups, [], 'nothing should have been quarantined')
         self.assertIn('exactly as it was', buf.getvalue())
 
+    def test_owner_added_design_assets_ride_along_with_the_stylesheet(self):
+        # A customized custom.css routinely references siblings the manifest never
+        # lists. Relative CSS URLs resolve beside the stylesheet, so an asset left
+        # at flat design/ vanishes from the rebuilt site under an exit 0.
+        self._regress_to_flat_custom_css('/* mine */\n')
+        _write(self.archive / 'design' / 'banner.png', 'PNGDATA')
+        _write(self.archive / 'design' / 'fonts' / 'my.woff2', 'FONT')
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        vendored = self.archive / '.fha' / 'design'
+        self.assertEqual((vendored / 'custom.css').read_text(encoding='utf-8'),
+                         '/* mine */\n')
+        self.assertEqual((vendored / 'banner.png').read_text(encoding='utf-8'),
+                         'PNGDATA')
+        self.assertEqual((vendored / 'fonts' / 'my.woff2').read_text(encoding='utf-8'),
+                         'FONT')
+        # Nothing of the owner's is left stranded at the dead flat path.
+        self.assertFalse((self.archive / 'design' / 'banner.png').exists())
+
+    def test_two_stylesheet_copies_are_reported_not_silently_skipped(self):
+        # An interrupted or hand-performed transition can leave both copies. The
+        # tools read only the vendored one, so the flat edits are present but
+        # inert - the exact failure that must not pass under an exit 0.
+        _write(self.archive / 'design' / 'custom.css', '/* MY FLAT EDITS */\n')
+        _write(self.archive / '.fha' / 'design' / 'custom.css', '/* vendored */\n')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertIn('NOT in use', buf.getvalue())
+        # The live copy is untouched...
+        self.assertEqual(
+            (self.archive / '.fha' / 'design' / 'custom.css').read_text(encoding='utf-8'),
+            '/* vendored */\n')
+        # ...and the inert one is kept in the backup, not left looking active.
+        self.assertFalse((self.archive / 'design' / 'custom.css').exists())
+        kept = list((self.archive / '.plaintext-backup').rglob('custom.css'))
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].read_text(encoding='utf-8'), '/* MY FLAT EDITS */\n')
+
+    def test_identical_stylesheet_copies_are_not_reported_as_a_conflict(self):
+        for path in (self.archive / 'design' / 'custom.css',
+                     self.archive / '.fha' / 'design' / 'custom.css'):
+            _write(path, '/* same */\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+
+    def test_new_upstream_seed_lands_but_a_deleted_one_stays_deleted(self):
+        # Install-once means "never overwrite", not "never deliver": a seed added
+        # upstream after this archive was made must still arrive. But one the
+        # owner deleted is RECORDED in the stamp, and must not come back.
+        # A seed that appears upstream AFTER this archive was created.
+        _write(self.repo / 'archive-template' / '.gitattributes',
+               'fha text eol=lf\n')
+        scaffold._write_manifest(self.repo)
+        self.assertFalse((self.archive / '.gitattributes').exists())
+
+        # ...and one the owner deliberately deleted, which the stamp records.
+        deleted = self.archive / 'fha.yaml'
+        recorded = self._stamp()['files'].get('fha.yaml')
+        self.assertIsNotNone(recorded, 'fixture: fha.yaml should be a seed')
+        deleted.unlink()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+
+        # Never delivered before -> delivered now.
+        self.assertTrue((self.archive / '.gitattributes').is_file())
+        self.assertIn('fha text eol=lf',
+                      (self.archive / '.gitattributes').read_text(encoding='utf-8'))
+        # Deliberately deleted (and recorded) -> stays gone.
+        self.assertFalse(deleted.exists())
+
     def test_rollback_clears_a_preexisting_partial_vendor_tree(self):
         # An interrupted earlier attempt can leave a partial .fha/tools/ whose
         # files are manifest-CURRENT. Those never enter installed_ok, so a
