@@ -1327,15 +1327,32 @@ def run_update_tools(
     # would complete. Undo it too, or the owner's stylesheet is stranded under a
     # `.fha/design/` the archive is not using while the flat `site.py` it IS
     # running looks at flat `design/`.
+    undo_failed: set[str] = set()
     if aborted_roots:
         undo = [(new, old) for old, new in relocations
                 if new.startswith(f'{VENDOR_DIR}/')
                 and new.split('/')[1] in aborted_roots]
-        for message in _apply_install_once_relocations(
-                archive_root, stamp, undo, dry_run=False):
-            failures.append(message)
-        _rekey_stamp_for_relocations(stamp, [(n, o) for n, o in undo
-                                             if not (archive_root / n).exists()])
+        # Done inline rather than through the forward applier: that helper
+        # reverses a re-key performed BEFORE it ran, which is not the situation
+        # here, and its failure path would then point the stamp at a path that
+        # does not exist.
+        for vendored, flat in undo:
+            src = archive_root / vendored
+            if not src.is_file():
+                continue
+            try:
+                (archive_root / flat).parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(archive_root / flat))
+            except OSError as exc:
+                undo_failed.add(vendored)
+                failures.append(
+                    f'{vendored}: the layout change was rolled back, but your '
+                    f'{flat} could not be moved back from {vendored} ({exc}). '
+                    f'Your file is safe and unchanged where it is - move it to '
+                    f'{archive_root / flat} by hand, or the archive will run '
+                    f'without it.')
+                continue
+            _rekey_stamp_for_relocations(stamp, [(vendored, flat)])
 
     for root in sorted(aborted_roots):
         prefix = f'{VENDOR_DIR}/{root}/'
@@ -1358,7 +1375,14 @@ def run_update_tools(
         # not put it there.
         vendor_dir = archive_root / VENDOR_DIR / root
         if vendor_dir.is_dir():
-            leftovers = sorted(p for p in vendor_dir.rglob('*') if p.is_file())
+            leftovers = sorted(
+                p for p in vendor_dir.rglob('*')
+                if p.is_file()
+                # A file whose restore just failed is already reported, and is
+                # the owner's ONLY copy - sweeping it into the backup would take
+                # their stylesheet away from an archive that is otherwise being
+                # left exactly as it was.
+                and p.relative_to(archive_root).as_posix() not in undo_failed)
             for leftover in leftovers:
                 rel = leftover.relative_to(archive_root).as_posix()
                 try:
@@ -1396,9 +1420,15 @@ def run_update_tools(
             f'half-installed {VENDOR_DIR}/ would be preferred by the launcher '
             f'over the working copy you already have. Fix the errors above and '
             f're-run - your archive is exactly as it was.')
-        print(
-            f'Left {archive_root / root} exactly as it was - the move to '
-            f'{VENDOR_DIR}/ could not be completed (see the errors above).')
+        if any(v.startswith(prefix) for v in undo_failed):
+            print(
+                f'Restored {archive_root / root} to the old layout, EXCEPT for '
+                f'the file(s) named above that could not be moved back - see '
+                f'the errors, they need a hand.')
+        else:
+            print(
+                f'Left {archive_root / root} exactly as it was - the move to '
+                f'{VENDOR_DIR}/ could not be completed (see the errors above).')
 
     if aborted_roots:
         # If nothing else landed under it, the vendor folder itself is a husk too
@@ -1509,7 +1539,14 @@ def run_update_tools(
     for entry in manifest['files']:
         archive_path = entry['path']
         if entry.get('category') == 'skeleton':
-            if archive_path in old_recorded:
+            # A seed delivered THIS RUN must be recorded, or install-once is not
+            # kept: unrecorded means "never delivered", so a later run would
+            # re-deliver it - restoring a file the owner had deliberately
+            # deleted. Otherwise carry the existing baseline verbatim; updates
+            # never touch a seed that is already there.
+            if archive_path in installed_ok:
+                new_checksums[archive_path] = installed_ok[archive_path]
+            elif archive_path in old_recorded:
                 new_checksums[archive_path] = old_recorded[archive_path]
             continue
         if archive_path in installed_ok:

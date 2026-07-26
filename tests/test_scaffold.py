@@ -1272,6 +1272,74 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
         # Deliberately deleted (and recorded) -> stays gone.
         self.assertFalse(deleted.exists())
 
+    def test_a_delivered_seed_is_recorded_so_it_is_not_redelivered(self):
+        # Unrecorded means "never delivered", so a later run would re-deliver a
+        # seed the owner had deliberately deleted - the exact opposite of the
+        # install-once guarantee.
+        _write(self.repo / 'archive-template' / '.gitattributes',
+               'fha text eol=lf\n')
+        scaffold._write_manifest(self.repo)
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+        seed = self.archive / '.gitattributes'
+        self.assertTrue(seed.is_file())
+        self.assertIn('.gitattributes', self._stamp()['files'])
+
+        # Now the owner deletes it on purpose. It must stay gone.
+        seed.unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+        self.assertFalse(seed.exists())
+
+    def test_failed_style_restore_is_not_swept_into_the_backup(self):
+        # When a rollback cannot move custom.css back, the vendored copy is the
+        # owner's ONLY one. Quarantining it would take their stylesheet away from
+        # an archive that is otherwise being restored untouched.
+        _write(self.repo / 'tools' / 'btool.py', 'print("b")\n')
+        scaffold._write_manifest(self.repo)
+        shutil.rmtree(self.archive / '.fha')
+        _write(self.archive / 'design' / 'custom.css', '/* ONLY COPY */\n')
+        stamp = self._stamp()
+        for key in [k for k in stamp['files'] if k.startswith('.fha/')]:
+            stamp['files'].pop(key)
+        for name in ('atool.py', 'btool.py'):
+            flat = self.archive / 'tools' / name
+            _write(flat, f'print("legacy {name}")\n')
+            stamp['files'][f'tools/{name}'] = scaffold._sha256_file(flat)
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+
+        real_copy, real_move = scaffold.shutil.copy2, scaffold.shutil.move
+
+        def flaky_copy(src, dst, *a, **kw):
+            if 'btool.py' in str(dst):
+                raise OSError('disk full')
+            return real_copy(src, dst, *a, **kw)
+
+        def flaky_move(src, dst, *a, **kw):
+            # Fail only the ROLLBACK of the stylesheet, not its forward move.
+            if 'custom.css' in str(src) and '.fha' in str(src):
+                raise OSError('locked')
+            return real_move(src, dst, *a, **kw)
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold.shutil, 'copy2', side_effect=flaky_copy), \
+                mock.patch.object(scaffold.shutil, 'move', side_effect=flaky_move), \
+                contextlib.redirect_stdout(buf), \
+                contextlib.redirect_stderr(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        # The only copy still exists somewhere, with its content intact...
+        found = [p for p in self.archive.rglob('custom.css') if p.is_file()]
+        self.assertTrue(found, 'the owner\'s only stylesheet must still exist')
+        self.assertTrue(
+            any(p.read_text(encoding='utf-8') == '/* ONLY COPY */\n' for p in found))
+        # ...and it was NOT quarantined into the backup folder.
+        self.assertEqual(
+            [p for p in found if '.plaintext-backup' in p.as_posix()], [])
+        # The run says plainly that something needs a hand.
+        self.assertIn('could not be moved back', buf.getvalue())
+
     def test_rollback_clears_a_preexisting_partial_vendor_tree(self):
         # An interrupted earlier attempt can leave a partial .fha/tools/ whose
         # files are manifest-CURRENT. Those never enter installed_ok, so a
