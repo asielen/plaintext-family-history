@@ -131,31 +131,31 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    apply_private_fence,
     ASSET_ROOT_ALIASES,
+    configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
-    PROVISIONAL_VITAL_FIELDS,
-    Result,
-    FhaConfigError,
-    apply_private_fence,
-    configure_utf8_stdout,
     extract_bare_ids,
+    FhaConfigError,
     fmt_id_display,
     id_type_of,
     is_genetic_parent_subtype,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
-    split_log_entries,
-    strip_link_wrapper,
-    strip_unaccepted_drafts,
     open_index_db,
     photoindex_status,
+    pip_command,
+    PROVISIONAL_VITAL_FIELDS,
     read_record,
     resolve_path,
     resolve_root_arg,
-)
+    Result,
+    split_log_entries,
+    strip_link_wrapper,
+    strip_unaccepted_drafts,)
 
 configure_utf8_stdout()
 
@@ -4134,7 +4134,7 @@ def _cmd_site(args: argparse.Namespace) -> int:
     if status == 'no-jinja':
         print(
             'ERROR: building the site needs Jinja2. Install it with '
-            '`python -m pip install jinja2`, then run `fha site` again.',
+            f'`{pip_command("jinja2")}`, then run `fha site` again.',
             file=sys.stderr,
         )
         return EXIT_FAILURE
@@ -4163,7 +4163,7 @@ def _cmd_site(args: argparse.Namespace) -> int:
     print(f'Site built: {result["pages"]} pages ({mode}) in {where}')
     if not getattr(args, 'linked', False) and not _PIL_AVAILABLE:
         print('Note: Pillow is not installed, so images were omitted. Install it with '
-              '`python -m pip install pillow` for photos in the standalone site.', file=sys.stderr)
+              f'`{pip_command("pillow")}` for photos in the standalone site.', file=sys.stderr)
     return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN
 
 
