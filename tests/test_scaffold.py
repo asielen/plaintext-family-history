@@ -390,6 +390,48 @@ class InstallTest(unittest.TestCase):
         self.assertTrue((self.archive / 'SPEC.md').is_file())
 
 
+class ExecBitRepairTest(unittest.TestCase):
+    """A chmod is a mutation: it must be previewed and it must be audited."""
+
+    def setUp(self):
+        if os.name == 'nt':
+            self.skipTest('POSIX permission bits only')
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        _write(self.repo / 'fha', '#!/bin/sh\necho hi\n')
+        (self.repo / 'fha').chmod(0o755)
+        scaffold._write_manifest(self.repo)
+        self.archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(self.archive, self.repo)
+        # Bytes stay current; only the mode is lost - as a Windows round trip,
+        # a zip without Unix modes, or a sync service would leave it.
+        (self.archive / 'fha').chmod(0o644)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_dry_run_previews_the_repair_and_changes_nothing(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
+        self.assertIn('would restore the executable permission', buf.getvalue())
+        # And the preview really was a preview.
+        self.assertFalse((self.archive / 'fha').stat().st_mode & 0o111,
+                         'a dry run must not chmod')
+
+    def test_the_repair_is_recorded_in_changed(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertTrue((self.archive / 'fha').stat().st_mode & 0o111,
+                        'the live run must repair the bit')
+        self.assertTrue(
+            any(c.endswith('/fha') for c in rc.changed),
+            'a repaired launcher is a mutation and belongs in changed')
+
+
 class PipCommandTest(unittest.TestCase):
     """The recovery command must run as printed, for the interpreter it names."""
 

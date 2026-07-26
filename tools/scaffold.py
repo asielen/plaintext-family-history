@@ -802,7 +802,8 @@ def _cmd_install(args: argparse.Namespace) -> int:
 # ── Update (M9.2) ───────────────────────────────────────────────────────────────
 
 def _restore_exec_bits(archive_root: Path, repo_root: Path,
-                       manifest: dict) -> tuple[list[str], list[str]]:
+                       manifest: dict, *,
+                       dry_run: bool = False) -> tuple[list[str], list[str]]:
     """Give back the executable bit to files the repo ships executable (POSIX).
 
     `shutil.copy2` preserves mode, so a fresh install is fine - but the bit can
@@ -821,6 +822,11 @@ def _restore_exec_bits(archive_root: Path, repo_root: Path,
     Returns (repaired, failures). A chmod that fails is NOT swallowed: an owner
     who can write the stamp but does not own the launcher would otherwise get a
     clean exit 0 while `./fha` keeps refusing to run.
+
+    `dry_run` detects without repairing, and the preview goes through this same
+    function on purpose: a chmod is a real mutation, and a preview that returned
+    "0 changes" before silently performing one is the one thing --dry-run must
+    never do. Sharing the detection means the two cannot drift apart.
     """
     if os.name == 'nt':
         return [], []
@@ -841,7 +847,8 @@ def _restore_exec_bits(archive_root: Path, repo_root: Path,
             dest_mode = dest.stat().st_mode
             if dest_mode & 0o111 == exec_bits:
                 continue
-            dest.chmod(dest_mode | exec_bits)
+            if not dry_run:
+                dest.chmod(dest_mode | exec_bits)
         except OSError as exc:
             problems.append(
                 f"{entry['path']}: is missing the permission that makes it "
@@ -1040,9 +1047,17 @@ def run_update_tools(
         print(f'Dry run - comparing {archive_root} against {repo_root / "manifest.json"}:')
         _report_plan(archive_root, plan, date_str, verbose=verbose)
         print()
+        would_repair, _ = _restore_exec_bits(
+            archive_root, repo_root, manifest, dry_run=True)
+        for repaired in would_repair:
+            print(f'[dry-run] would restore the executable permission on '
+                  f'{repaired} so it can be run directly again (its contents '
+                  f'are already up to date).')
         print(
             f'Plan: {n_added} to add, {n_stock} to update, {n_custom} to back up '
-            f'and update, {n_retired} retired, {n_current} already up to date.'
+            f'and update, {n_retired} retired, {n_current} already up to date'
+            + (f', {len(would_repair)} permission(s) to restore'
+               if would_repair else '') + '.'
         )
         print('Nothing was written (dry run). Re-run without --dry-run to apply.')
         return Result(exit_code=EXIT_CLEAN, data={
@@ -1257,6 +1272,11 @@ def run_update_tools(
         )
     # Files actually installed this run, plus the rewritten stamp.
     changed = [str(archive_root / p) for p in installed_ok]
+    # A restored executable bit is a mutation this run made, even though no bytes
+    # moved - so it belongs in the audit a headless caller reads, not only in the
+    # narration a human sees.
+    changed.extend(str(archive_root / p) for p in repaired_modes
+                   if p not in installed_ok)
     changed.append(str(archive_root / VERSION_FILE))
     update_data = {
         'added': n_added_ok, 'stock': n_stock_ok, 'customized': n_custom_ok,
