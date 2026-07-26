@@ -123,10 +123,13 @@ is already in this project at [`../archive-template/`](../archive-template/).
    with nothing yet, the defaults are fine; leave it as-is.
 
 **Did it work?** From the project folder, run the check against your archive (it looks for
-anything shaped the wrong way):
+anything shaped the wrong way). How you type it depends on your system - on macOS and Linux a
+bare `fha` is not found unless the folder is on your PATH, so start with `./`:
 
 ```
-fha check --root my-family-archive
+./fha check --root my-family-archive      # macOS / Linux
+.\fha check --root my-family-archive      # Windows PowerShell
+fha check --root my-family-archive        # Windows Command Prompt
 ```
 
 A fresh archive prints **`✓ No issues found.`** - that's a green light. (`--root` just tells the

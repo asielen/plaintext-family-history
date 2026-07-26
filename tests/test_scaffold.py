@@ -19,6 +19,7 @@ import contextlib
 import io
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -1461,6 +1462,77 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
             (self.archive / 'design' / 'custom.css').read_text(encoding='utf-8'),
             '/* MINE */\n')
         self.assertEqual(flat_tool.read_text(encoding='utf-8'), 'print("legacy")\n')
+
+    def test_a_stuck_launcher_aborts_the_whole_transition(self):
+        # A launcher path does not start with .fha/, so neither the copy nor the
+        # relocation abort test sees it. But retiring flat tools/ while a locked
+        # launcher still points at the tools/fha.py just removed leaves the owner
+        # with no working way to run the archive at all.
+        _write(self.repo / 'serve.cmd', '@echo off\r\n')
+        scaffold._write_manifest(self.repo)
+        shutil.rmtree(self.archive / '.fha')
+        stamp = self._stamp()
+        for key in [k for k in stamp['files'] if k.startswith('.fha/')]:
+            stamp['files'].pop(key)
+        flat_tool = self.archive / 'tools' / 'atool.py'
+        _write(flat_tool, 'print("legacy")\n')
+        stamp['files']['tools/atool.py'] = scaffold._sha256_file(flat_tool)
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+
+        real_copy = scaffold.shutil.copy2
+
+        def flaky_copy(src, dst, *a, **kw):
+            # Writes go to a `.fha-tmp` sibling before the rename, so match the
+            # stem rather than the final name.
+            if 'serve.cmd' in str(dst):
+                raise OSError('locked by another program')
+            return real_copy(src, dst, *a, **kw)
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold.shutil, 'copy2', side_effect=flaky_copy), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        # Transition abandoned for the subtree that was mid-move: the flat
+        # toolset the un-replaced launcher still points at has to survive.
+        self.assertFalse((self.archive / '.fha' / 'tools').exists())
+        self.assertEqual(flat_tool.read_text(encoding='utf-8'), 'print("legacy")\n')
+
+    def test_migrate_resumes_an_interrupted_move(self):
+        # Interrupted after the move but before the stamp re-key: re-running is
+        # the obvious repair, and it used to return CLEAN having fixed nothing.
+        vendor = self.archive / '.fha'
+        for sub in ('tools', 'design'):
+            (vendor / sub).mkdir(parents=True, exist_ok=True)
+            _write(vendor / sub / 'placeholder.txt', 'x')
+        stamp = self._stamp()
+        stamp['files'] = {'tools/atool.py': 'abc', 'people/x.md': 'def'}
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        for flat in ('tools', 'design'):
+            if (self.archive / flat).exists():
+                shutil.rmtree(self.archive / flat)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = scaffold.run_migrate_layout(self.archive, repo_root=self.repo)
+
+        self.assertIn('unfinished', buf.getvalue())
+        recorded = self._stamp()['files']
+        self.assertIn('.fha/tools/atool.py', recorded,
+                      'the stamp must be re-keyed on a resume')
+        self.assertNotIn('tools/atool.py', recorded)
+        self.assertIn('people/x.md', recorded, 'records keys must stay put')
+        self.assertIn(rc.exit_code, (EXIT_CLEAN, EXIT_WARNINGS))
+
+    def test_migrate_reports_the_stamp_in_changed(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = scaffold.run_migrate_layout(self.archive, repo_root=self.repo)
+        if rc.changed:
+            self.assertTrue(
+                any(p.endswith('.plaintext-version') for p in rc.changed),
+                'a rewritten stamp is a mutation and belongs in changed')
 
     def test_rollback_clears_a_preexisting_partial_vendor_tree(self):
         # An interrupted earlier attempt can leave a partial .fha/tools/ whose

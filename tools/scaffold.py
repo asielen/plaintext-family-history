@@ -1408,16 +1408,30 @@ def run_update_tools(
     # flat toolset and activate `.fha/tools/` while the owner's stylesheet stays
     # at a path the newly active `site.py` never reads - their styling silently
     # gone, from a run that reported only a warning.
+    # A failed LAUNCHER counts too, and its path does not start with `.fha/` so
+    # neither test above sees it. The launchers are how the archive is operated:
+    # retiring flat `tools/` while a locked `serve.cmd` still points at the
+    # `tools/fha.py` just removed leaves the owner with a double-click that dies
+    # and, if the CLI shims failed as well, no way to run the retry command
+    # either. Nothing may be retired until every launcher can reach the new home.
     aborted_roots: set[str] = set()
     stuck_relocations = {
         new.split('/')[1]
         for old, new in relocations
         if old in _failed_moves and new.startswith(f'{VENDOR_DIR}/')
     }
-    if stuck_relocations & transition_roots or any(
+    stuck_launchers = [fp for fp in failed_paths if fp in _ROOT_LAUNCHERS]
+    if stuck_relocations & transition_roots or stuck_launchers or any(
             fp.startswith(f'{VENDOR_DIR}/') and fp.split('/')[1] in transition_roots
             for fp in failed_paths):
         aborted_roots = set(transition_roots)
+    if stuck_launchers and aborted_roots:
+        failures.append(
+            f'{", ".join(sorted(stuck_launchers))}: could not be replaced, so the '
+            f'move to {VENDOR_DIR}/ was rolled back and your {", ".join(sorted(transition_roots))}/ '
+            f'left where they are. A launcher still pointing at the old location '
+            f'would stop the archive being usable at all. Close anything holding '
+            f'those files and re-run.')
 
     # The install-once relocation ran earlier, on the assumption the transition
     # would complete. Undo it too, or the owner's stylesheet is stranded under a
@@ -2022,15 +2036,23 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     present = [s for s in _VENDORED_SUBTREES if (archive_root / s).is_dir()]
     subtree_list = ', '.join(f'{s}/' for s in _VENDORED_SUBTREES)
 
+    # Already moved? That is not automatically "nothing to do". A run interrupted
+    # after the move but before the stamp re-key and the launcher refresh leaves
+    # an archive whose stamp still names flat paths and whose launchers still
+    # invoke the `tools/fha.py` that is no longer there - and re-running, the
+    # obvious repair, used to return CLEAN without touching any of it. So fall
+    # through to the post-move steps with an empty move list; each one is
+    # individually idempotent, and if they are all already done the run reports
+    # exactly the no-op it used to.
+    resuming = False
     if not present:
         if (vendor / 'tools').is_dir():
-            print(f'{archive_root} already uses the {VENDOR_DIR}/ layout - '
-                  'nothing to migrate.')
-            return Result(exit_code=EXIT_CLEAN, data={'moved': 0})
-        raise ScaffoldError(
-            f'{archive_root} has no {subtree_list} folder at its root, so there is '
-            f'nothing to migrate. Run this from inside a pre-{VENDOR_DIR} archive, '
-            'or pass --root PATH pointing at one.')
+            resuming = True
+        else:
+            raise ScaffoldError(
+                f'{archive_root} has no {subtree_list} folder at its root, so '
+                f'there is nothing to migrate. Run this from inside a '
+                f'pre-{VENDOR_DIR} archive, or pass --root PATH pointing at one.')
 
     # Refuse a half-migrated / ambiguous state rather than guessing.
     conflicts = [s for s in present if (vendor / s).exists()]
@@ -2042,6 +2064,24 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
 
     stale_launchers = _stale_root_launchers(archive_root)
     capture_host = _capture_host_installed(archive_root)
+
+    if resuming:
+        stamp_needs_rekey = False
+        try:
+            recorded = _stamp_file_map(json.loads(
+                (archive_root / VERSION_FILE).read_text(encoding='utf-8')))
+            stamp_needs_rekey = any(
+                key.split('/', 1)[0] in _VENDORED_SUBTREES for key in recorded)
+        except (OSError, ValueError, AttributeError):
+            stamp_needs_rekey = (archive_root / VERSION_FILE).is_file()
+        if not stale_launchers and not stamp_needs_rekey:
+            print(f'{archive_root} already uses the {VENDOR_DIR}/ layout - '
+                  'nothing to migrate.')
+            return Result(exit_code=EXIT_CLEAN, data={'moved': 0})
+        print(f'{archive_root} already has its folders under {VENDOR_DIR}/, but '
+              f'the rest of the move was left unfinished - picking it up from '
+              f'there. Your files are not moved again.')
+        print()
 
     if dry_run:
         print(f'[dry-run] Would create {VENDOR_DIR}/ under {archive_root} and move into it:')
@@ -2073,7 +2113,7 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
 
     moved_done: list[tuple[Path, Path]] = []
     try:
-        vendor.mkdir(parents=True, exist_ok=True)
+        vendor.mkdir(parents=True, exist_ok=True)   # no-op when resuming
         _hide_vendor_dir(archive_root)
         for s in present:
             src = archive_root / s
@@ -2111,6 +2151,7 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     # is non-fatal - the next `update-tools` will re-stamp cleanly - but it must
     # not raise here, after the folders have already moved.
     stamp_path = archive_root / VERSION_FILE
+    stamp_salvaged: list[str] = []
     stamp_warning = ''
     # True when the warning describes something this run already handled,
     # so the closing steps do not ask for work that is already done.
@@ -2142,6 +2183,7 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
                         f'{stamp_path.name}.unreadable-{n}')
                     n += 1
                 stamp_path.replace(salvage)
+                stamp_salvaged.append(str(salvage))
                 stamp_repaired = True
                 stamp_warning = (
                     f'{VERSION_FILE} was not readable JSON, so it could not be '
@@ -2246,8 +2288,17 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     # the migration record a partially completed run as clean.
     return Result(exit_code=EXIT_WARNINGS if (stamp_warning or unavailable)
                   else EXIT_CLEAN,
+                  # Every path this run created, wrote, or renamed - the suite's
+                  # Result contract, and a headless caller's only audit trail.
+                  # The stamp rewrite and any salvage/backup files are mutations
+                  # too, not bookkeeping: listing only the moves understates what
+                  # changed on disk.
                   changed=[str(d) for _, d in moved_done]
-                          + [str(archive_root / n) for n in refreshed],
+                          + [str(archive_root / n) for n in refreshed]
+                          + ([str(stamp_path)] if stamp_path.is_file() else [])
+                          + stamp_salvaged
+                          + [m.split(' -> ', 1)[1] for m in backed_up
+                             if ' -> ' in m],
                   data={'moved': len(present), 'launchers_refreshed': len(refreshed),
                         'launchers_pending': len(unavailable),
                         'launchers_backed_up': len(backed_up),
