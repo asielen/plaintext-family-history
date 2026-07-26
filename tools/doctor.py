@@ -587,6 +587,51 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     # are vendored under .fha/), so this path needs no layout probe.
     troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
 
+    # Original evidence is immutable, and git is the one thing in an archive that
+    # rewrites bytes without being asked. `.gitattributes` ships with the DEFAULT
+    # asset folders marked `-text`, but it cannot know where this owner pointed
+    # `roots:` - and a CRLF GEDCOM or transcript under a custom root would be
+    # silently normalized on checkout. Only meaningful for a git-tracked archive
+    # with roots INSIDE it; an external drive is not git's business.
+    ga = archive_root / '.gitattributes'
+    if (archive_root / '.git').exists() and ga.is_file():
+        try:
+            # Parsed as RULES, not searched as text: the shipped file documents
+            # the fix with a commented example, and a substring match happily
+            # finds `media/scans/** -text` inside that comment and concludes the
+            # root is protected. (My own first version did exactly that, and the
+            # check silently passed on the archive it was written for.)
+            attr_rules = {
+                line.split()[0]
+                for line in ga.read_text(encoding='utf-8').splitlines()
+                if line.strip() and not line.lstrip().startswith('#') and line.split()
+            }
+        except OSError:
+            attr_rules = set()
+        unprotected = []
+        for name, target in sorted(roots.items()):
+            if not target or Path(target).is_absolute():
+                continue
+            top = Path(target).parts[0] if Path(target).parts else ''
+            if not top or not (archive_root / target).is_dir():
+                continue
+            if f'{target}/**' in attr_rules or f'{top}/**' in attr_rules:
+                continue
+            unprotected.append((name, target))
+        if unprotected:
+            worst = max(worst, EXIT_WARNINGS)
+            for name, target in unprotected:
+                lines.append(
+                    f'originals ({name}): {target}/ is not protected in '
+                    f'.gitattributes  next: add `{target}/** -text` to it so a '
+                    f'checkout cannot rewrite your originals'
+                )
+            checks.append({
+                'id': 'originals_gitattributes', 'status': 'warn',
+                'detail': f'{len(unprotected)} asset root(s) unprotected',
+                'next_step': 'add `<root>/** -text` to .gitattributes',
+            })
+
     if wc_mode:
         lines.append(
             '[working copy] photos and documents live on the main machine - '

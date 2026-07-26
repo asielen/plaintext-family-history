@@ -318,7 +318,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "1fb052cf17e031f3863783584ceda23a64a42584d7e32afde42a2782842afb1a",
+      "sha256": "71e560a91bc02e0dbb8b8fb0bda032c40c0700dde51f7674447023f439c334b8",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -444,7 +444,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "b8963336e85c448f24e822223fcac5bcc98d4222962a6c43f78e6392f840151e",
+      "sha256": "bdf2a6a03d03075035f4f51b8f0e2d23518a7e66a283e483176211824f5ddfce",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -633,7 +633,7 @@
     {
       "path": ".gitattributes",
       "category": "skeleton",
-      "sha256": "1a2c136f811f43ac0060a57fccbc28dd540f569572195ebd27e3db6ec61db951",
+      "sha256": "9aac1976166095c80db5785f7c67d723a1a2a0d60dd182fb4c9e581bf39ea315",
       "spec_version": "1.2",
       "src": "archive-template/.gitattributes"
     },
@@ -756,13 +756,13 @@
     {
       "path": "fha",
       "category": "operating",
-      "sha256": "7fb7229e9d67b86f42b77803bf41b79380120bc6eaf440464b59e4eaa9c8f07b",
+      "sha256": "6089698ee161c8de2cc983ab573f9b6df4335b2340d16d8accff9ed9529786ec",
       "spec_version": "1.2"
     },
     {
       "path": "fha.cmd",
       "category": "operating",
-      "sha256": "aac4945c6329ce9de851bec80a59f24f58e7dd4914416f37b9f7fcf4de240206",
+      "sha256": "3a09280ad6174cc2a2cd91ad9bc6f477b68b295fda8f17dc82a2cbbb720400de",
       "spec_version": "1.2"
     },
     {
@@ -866,7 +866,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "687c535db41091e4717ee38ee1054d0dc9f60975e1a9d79476ea4e0d564ae555",
+      "sha256": "0220b977c03a7e5fbd3f3682a260596d714fb7f3abb9c1a82e10ca35ce510c82",
       "spec_version": "1.2"
     },
     {

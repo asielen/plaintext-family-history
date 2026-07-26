@@ -46,3 +46,11 @@ fha text eol=lf
 photos/** -text
 documents/** -text
 sources/files/** -text
+
+# These are the DEFAULT asset folders. If you pointed fha.yaml's `roots:` at
+# somewhere else inside the archive - `media/scans`, say - add the same line for
+# it here, or a checkout can rewrite the bytes of originals kept there:
+#
+#     media/scans/** -text
+#
+# `fha doctor` checks this for you and names any configured root that is missing.

@@ -174,6 +174,22 @@ _MUST_BE_EXECUTABLE = frozenset({'fha'})
 _MUST_BE_CRLF = frozenset({'fha.cmd', 'serve.cmd'})
 
 
+def _clear_stale_temp(tmp: Path) -> None:
+    """Remove a leftover temp path, refusing to follow it if it is a link.
+
+    `lstat` semantics throughout: a symlink is unlinked (which removes the LINK,
+    never its target), and anything else left over from an interrupted run is
+    removed too so the copy starts from nothing. A directory in the way is left
+    alone - the copy will fail loudly, which is the right outcome for a state
+    nothing here created.
+    """
+    if tmp.is_symlink():
+        tmp.unlink()
+        return
+    if tmp.exists() and not tmp.is_dir():
+        tmp.unlink()
+
+
 def _normalize_crlf(dest: Path) -> None:
     """Rewrite `dest` with CRLF endings, in place. Raises OSError on failure.
 
@@ -708,6 +724,7 @@ def _write_version_stamp(archive_root: Path, stamp: dict) -> None:
     """
     path = archive_root / VERSION_FILE
     tmp = path.with_name(path.name + '.fha-tmp')
+    _clear_stale_temp(tmp)          # same deterministic-temp hazard as _copy_in
     try:
         tmp.write_text(json.dumps(stamp, indent=2) + '\n', encoding='utf-8')
         tmp.replace(path)
@@ -966,6 +983,7 @@ def run_install(
             src = repo_root / entry.get('src', entry['path'])
             dest = archive_path / entry['path']
             dest.parent.mkdir(parents=True, exist_ok=True)
+            _clear_stale_temp(dest)     # never write through a leftover link
             shutil.copy2(src, dest)
             if entry['path'] in _MUST_BE_CRLF:
                 _normalize_crlf(dest)
@@ -1153,7 +1171,15 @@ def _plan_update(
     # edit and cannot resurrect a file the owner deliberately deleted (that one
     # IS recorded). Absent from disk and absent from the stamp - both, or it is
     # left alone.
-    for entry in manifest['files']:
+    # Delivery of a never-recorded seed rests entirely on the stamp being able to
+    # say "this was never delivered here". Without a usable stamp it cannot say
+    # anything - and `recorded` being empty then reads as "nothing was ever
+    # delivered", which is the opposite of the truth for an archive that has been
+    # running for years. The owner who deleted `custom.css` on purpose, or who
+    # followed the corruption advice to delete the stamp, would get every deleted
+    # seed silently recreated. So: no usable stamp, no delivery.
+    can_prove_never_delivered = bool(recorded)
+    for entry in manifest['files'] if can_prove_never_delivered else []:
         if entry.get('category') != 'skeleton':
             continue
         archive_path = entry['path']
@@ -1192,7 +1218,8 @@ def _plan_update(
     return plan
 
 
-def _prune_emptied_dirs(archive_root: Path, retired_paths: list[str]) -> None:
+def _prune_emptied_dirs(archive_root: Path, retired_paths: list[str], *,
+                        dry_run: bool = False) -> list[str]:
     """Remove directories left empty by retiring the files inside them.
 
     Only directories that actually held a retired file are considered, deepest
@@ -1207,11 +1234,23 @@ def _prune_emptied_dirs(archive_root: Path, retired_paths: list[str]) -> None:
         while parent != archive_root and archive_root in parent.parents:
             candidates.add(parent)
             parent = parent.parent
+    pruned: list[str] = []
     for directory in sorted(candidates, key=lambda q: len(q.parts), reverse=True):
+        if dry_run:
+            # Would rmdir succeed? Only for a directory that exists and is empty
+            # once the retirements above have happened - which in a preview they
+            # have not, so judge it by what retirement WOULD leave behind.
+            if directory.is_dir() and not any(
+                    q for q in directory.iterdir()
+                    if q.relative_to(archive_root).as_posix() not in set(retired_paths)):
+                pruned.append(directory.relative_to(archive_root).as_posix())
+            continue
         try:
             directory.rmdir()
         except OSError:
-            pass          # not empty, or not ours to remove - leave it
+            continue      # not empty, or not ours to remove - leave it
+        pruned.append(directory.relative_to(archive_root).as_posix())
+    return pruned
 
 
 def run_update_tools(
@@ -1321,6 +1360,11 @@ def run_update_tools(
         print(f'Dry run - comparing {archive_root} against {repo_root / "manifest.json"}:')
         _report_plan(archive_root, plan, date_str, verbose=verbose)
         print()
+        would_prune = _prune_emptied_dirs(
+            archive_root, [ap for ap, _src in plan['retired']], dry_run=True)
+        for gone in would_prune:
+            print(f'[dry-run] would remove the now-empty folder {gone}/ '
+                  f'(everything in it is being retired).')
         would_repair, _ = _restore_exec_bits(
             archive_root, repo_root, manifest, dry_run=True)
         for repaired in would_repair:
@@ -1356,6 +1400,14 @@ def run_update_tools(
         # disk-full or interrupted copy never leaves a truncated tool file behind.
         tmp = dest.with_suffix(dest.suffix + '.fha-tmp')
         try:
+            # The temp path is deterministic, so it is as attackable as the
+            # destination: a `.fha-tmp` symlink left lying there would have
+            # copy2 write THROUGH it (clobbering whatever it points at, possibly
+            # outside the archive) and then `replace` would move the link itself
+            # into the live tool path. Round 26 guarded manifest destinations and
+            # their ancestors and stopped there - the temp siblings are the same
+            # hazard by the same mechanism.
+            _clear_stale_temp(tmp)
             shutil.copy2(src, tmp)
             # Fix the line endings BEFORE the swap, so the destination is only
             # ever replaced by a file that is already correct - a failure here

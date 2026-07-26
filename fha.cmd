@@ -8,8 +8,16 @@ rem flat (tools\) or consolidated under .fha\. The POSIX twin is the `fha` file.
 
 rem 1. Locate the entrypoint.
 set "FHA_ENTRY="
-if exist "%~dp0.fha\tools\fha.py" set "FHA_ENTRY=%~dp0.fha\tools\fha.py"
-if not defined FHA_ENTRY if exist "%~dp0tools\fha.py" set "FHA_ENTRY=%~dp0tools\fha.py"
+rem `~z` is the file SIZE: a zero-byte entrypoint (interrupted copy, a sync
+rem that created the file before filling it) satisfies `if exist`, and Python
+rem then runs it and exits 0 having done nothing - every command a silent
+rem no-op. Size-checked so an empty preferred copy loses to an intact one.
+if exist "%~dp0.fha\tools\fha.py" (
+  for %%S in ("%~dp0.fha\tools\fha.py") do if %%~zS GTR 0 set "FHA_ENTRY=%~dp0.fha\tools\fha.py"
+)
+if not defined FHA_ENTRY if exist "%~dp0tools\fha.py" (
+  for %%S in ("%~dp0tools\fha.py") do if %%~zS GTR 0 set "FHA_ENTRY=%~dp0tools\fha.py"
+)
 if not defined FHA_ENTRY goto :no_tools
 
 rem 2. Pick an interpreter. The tool suite is written in Python 3.10+ syntax, so

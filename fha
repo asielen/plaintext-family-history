@@ -20,9 +20,14 @@ while [ -L "$self" ]; do
 done
 here=$(cd "$(dirname "$self")" && pwd)
 
-if [ -f "$here/.fha/tools/fha.py" ]; then
+# `-s`, not `-f`: a zero-byte entrypoint - an interrupted copy, a sync that
+# created the file before filling it - satisfies "exists", and Python then runs
+# it happily and exits 0 having done nothing at all. Every command becomes a
+# silent no-op, which is worse than a crash because nothing says so. An empty
+# preferred copy also falls through to the intact flat one rather than winning.
+if [ -s "$here/.fha/tools/fha.py" ]; then
   entry="$here/.fha/tools/fha.py"
-elif [ -f "$here/tools/fha.py" ]; then
+elif [ -s "$here/tools/fha.py" ]; then
   entry="$here/tools/fha.py"
 else
   # Recovery has to be a command that actually runs. Telling the user to run

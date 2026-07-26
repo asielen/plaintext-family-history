@@ -20,8 +20,16 @@ rem No fha.cmd beside us - an archive from before the launchers shipped. Do the
 rem same two checks inline rather than handing a missing path to an interpreter
 rem that may not even be installed.
 set "FHA_ENTRY="
-if exist "%~dp0.fha\tools\fha.py" set "FHA_ENTRY=%~dp0.fha\tools\fha.py"
-if not defined FHA_ENTRY if exist "%~dp0tools\fha.py" set "FHA_ENTRY=%~dp0tools\fha.py"
+rem `~z` is the file SIZE: a zero-byte entrypoint (interrupted copy, a sync
+rem that created the file before filling it) satisfies `if exist`, and Python
+rem then runs it and exits 0 having done nothing - every command a silent
+rem no-op. Size-checked so an empty preferred copy loses to an intact one.
+if exist "%~dp0.fha\tools\fha.py" (
+  for %%S in ("%~dp0.fha\tools\fha.py") do if %%~zS GTR 0 set "FHA_ENTRY=%~dp0.fha\tools\fha.py"
+)
+if not defined FHA_ENTRY if exist "%~dp0tools\fha.py" (
+  for %%S in ("%~dp0tools\fha.py") do if %%~zS GTR 0 set "FHA_ENTRY=%~dp0tools\fha.py"
+)
 if not defined FHA_ENTRY goto :no_tools
 
 py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
