@@ -1252,13 +1252,47 @@ def run_update_tools(
             installed_ok.pop(archive_path, None)
             failed_paths.add(archive_path)
             rolled_back += 1
-        # Prune husks left by BOTH the rolled-back installs and the undone
-        # install-once relocation, so an aborted transition leaves no empty
-        # `.fha/` skeleton implying a layout the archive is not using.
+        # Removing only what THIS RUN installed is not enough. A legacy archive
+        # can already hold a partial `.fha/{root}/` from an interrupted earlier
+        # attempt; those files are manifest-CURRENT, so they never enter
+        # `installed_ok` and would survive the rollback - leaving exactly the
+        # incomplete vendored tree the launcher prefers over the intact flat one.
+        # Sweep whatever remains into the backup: it is quarantined rather than
+        # deleted, because a leftover here may be the human's, and this run did
+        # not put it there.
+        vendor_dir = archive_root / VENDOR_DIR / root
+        if vendor_dir.is_dir():
+            leftovers = sorted(p for p in vendor_dir.rglob('*') if p.is_file())
+            for leftover in leftovers:
+                rel = leftover.relative_to(archive_root).as_posix()
+                try:
+                    quarantine = _unique_backup_path(archive_root, rel, date_str)
+                    quarantine.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(leftover), str(quarantine))
+                except OSError as exc:
+                    failures.append(
+                        f'{rel}: left over from an earlier interrupted attempt '
+                        f'and could not be moved aside ({exc}). Move or delete '
+                        f'{archive_root / VENDOR_DIR / root} by hand before '
+                        f're-running, or the launcher will prefer that '
+                        f'incomplete folder over your working {root}/.')
+                    continue
+            if leftovers:
+                failures.append(
+                    f'{VENDOR_DIR}/{root}/: {len(leftovers)} file(s) left over '
+                    f'from an earlier interrupted attempt were moved to '
+                    f'{BACKUP_DIR}/{date_str}/ so the incomplete folder '
+                    f'could not shadow your working {root}/.')
+
+        # Prune husks left by the rolled-back installs, the undone install-once
+        # relocation, and the quarantine sweep, so an aborted transition leaves
+        # no empty `.fha/` skeleton implying a layout the archive is not using.
         _prune_emptied_dirs(
             archive_root,
             [ap for ap in plan_added_paths if ap.startswith(prefix)]
             + [new for _old, new in relocations if new.startswith(prefix)])
+        if vendor_dir.is_dir() and not any(vendor_dir.rglob('*')):
+            shutil.rmtree(vendor_dir, ignore_errors=True)
         failures.append(
             f'{VENDOR_DIR}/{root}/: the new folder layout could not be completed, '
             f'so the {rolled_back} file(s) that did copy were removed again and '
@@ -1732,6 +1766,10 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
             print(f'[dry-run] Browser capture host found at {capture_host} - it '
                   'would need re-registering afterwards '
                   '(`fha capture --install-host`).')
+        else:
+            print('[dry-run] No browser capture host registered in the standard '
+                  'location. One installed with `--host-manifest-dir` cannot be '
+                  'detected from here and would need re-registering afterwards.')
         print('[dry-run] Records, rulebooks, docs/, and .claude/ stay put. '
               'Nothing was written.')
         return Result(exit_code=EXIT_CLEAN, data={'moved': len(present)})
@@ -1887,6 +1925,21 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
               'still launches the tools from their old path. Re-run '
               '`fha capture --install-host` with the same browser and extension '
               'settings you used before.')
+        step += 1
+    else:
+        # Detection covers only the per-OS DEFAULT locations. `fha capture
+        # --install-host --host-manifest-dir DIR` writes anywhere the owner
+        # points it, and nothing about that choice is recorded in the archive,
+        # so a custom-location host is undetectable from here - it would still
+        # be silently broken by the move, and `doctor` does not inspect it
+        # either. Finding nothing is not evidence there is nothing; say so
+        # briefly, conditioned on a setup only capture users will recognise.
+        print(f'  {step}. If you set up browser capture with '
+              '`--host-manifest-dir` (a custom location), re-run `fha capture '
+              '--install-host` with the same browser, extension, and directory '
+              'settings - its launcher still points at the old tools path. '
+              '(Nothing to do if you never set up browser capture, or used the '
+              'standard location - that case was already checked.)')
         step += 1
     print(f'  {step}. Run `fha doctor` to confirm, then `fha index` to refresh the cache.')
     # A launcher this run could not write is a file that could not be written,

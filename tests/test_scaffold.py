@@ -1197,6 +1197,53 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
         self.assertEqual(backups, [], 'nothing should have been quarantined')
         self.assertIn('exactly as it was', buf.getvalue())
 
+    def test_rollback_clears_a_preexisting_partial_vendor_tree(self):
+        # An interrupted earlier attempt can leave a partial .fha/tools/ whose
+        # files are manifest-CURRENT. Those never enter installed_ok, so a
+        # rollback that removes only this run's installs would leave exactly the
+        # incomplete vendored tree the launcher prefers over the intact flat one.
+        _write(self.repo / 'tools' / 'btool.py', 'print("b")\n')
+        scaffold._write_manifest(self.repo)
+        shutil.rmtree(self.archive / '.fha')
+        _write(self.archive / 'design' / 'custom.css', '/* mine */\n')
+        stamp = self._stamp()
+        for key in [k for k in stamp['files'] if k.startswith('.fha/')]:
+            stamp['files'].pop(key)
+        for name in ('atool.py', 'btool.py'):
+            flat = self.archive / 'tools' / name
+            _write(flat, f'print("legacy {name}")\n')
+            stamp['files'][f'tools/{name}'] = scaffold._sha256_file(flat)
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        # The relic of the interrupted attempt: byte-identical to stock, so the
+        # planner classifies it "current" and never touches it.
+        relic = self.archive / '.fha' / 'tools' / 'atool.py'
+        relic.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.repo / 'tools' / 'atool.py', relic)
+
+        real_copy = scaffold.shutil.copy2
+
+        def flaky_copy(src, dst, *a, **kw):
+            if 'btool.py' in str(dst):
+                raise OSError('disk full')
+            return real_copy(src, dst, *a, **kw)
+
+        with mock.patch.object(scaffold.shutil, 'copy2', side_effect=flaky_copy), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        # No partial vendored tree survives for the launcher to prefer...
+        self.assertFalse((self.archive / '.fha').exists())
+        # ...the relic was quarantined, not deleted...
+        self.assertEqual(
+            len(list((self.archive / '.plaintext-backup').rglob('atool.py'))), 1)
+        # ...and the flat toolset is intact.
+        self.assertEqual(
+            (self.archive / 'tools' / 'atool.py').read_text(encoding='utf-8'),
+            'print("legacy atool.py")\n')
+        self.assertTrue((self.archive / 'tools' / 'btool.py').is_file())
+
     def test_unstamped_flat_tools_are_retired_not_silently_shadowed(self):
         # A hand-copied archive has no stamp, so nothing is "recorded" to retire.
         # Installing .fha/tools/ and leaving the flat tree means the launcher

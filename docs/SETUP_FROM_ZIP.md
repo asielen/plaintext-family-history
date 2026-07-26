@@ -146,10 +146,20 @@ This section's copy-over method needs no tools at all. If your archive carries i
 health-check - lives in [UPDATING.md](UPDATING.md) instead.
 
 When a newer version of the project comes out, you don't need git for that either. Download the
-new zip, unzip it, and copy its `tools/` folder (plus `SPEC.md`, `TOOLING.md`, `AGENTS.md`,
-`CLAUDE.md`) over the old ones in your workshop. **Never touch your
-`my-family-archive` folder when updating** - your records aren't part of the download and stay
-exactly as they are.
+new zip, unzip it, and copy these over the old ones in your workshop:
+
+- the `tools/` folder,
+- the rulebooks `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
+- and the launchers `fha` and `fha.cmd` from the top of the unzipped folder.
+
+The launchers matter: they are what lets you type `./fha lint` (Mac/Linux) or `fha lint`
+(Windows) instead of the longer `python tools/fha.py lint`. A workshop from an older zip
+predates them, so if you skip them, every command in these guides comes back
+"command not found". Copying them once fixes that for good - and if you'd rather not, the
+longer `python tools/fha.py ...` form keeps working everywhere.
+
+**Never touch your `my-family-archive` folder when updating** - your records aren't part of the
+download and stay exactly as they are.
 
 > **The assisted way (optional).** If you'd rather have the tools live *inside* your archive -
 > with the program itself tucked into a hidden `.fha/` folder so the archive root stays clean,

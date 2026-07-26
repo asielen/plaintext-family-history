@@ -4497,6 +4497,33 @@ def result_fail(
     return result
 
 
+VENDOR_DIR_NAME = '.fha'
+
+
+def requirements_hint() -> str:
+    """Return the `pip install -r ...` path that is correct for THIS layout.
+
+    The tool suite lives at `tools/` in a workshop clone but at `.fha/tools/` in
+    an installed archive, so a hard-coded `tools/requirements.txt` in a runtime
+    error message sends installed-archive owners to a path that does not exist -
+    precisely when a dependency is already missing and they need the command to
+    work. `requirements.txt` is always this module's own sibling, so anchoring on
+    `__file__` is right in both layouts.
+
+    Relative to the archive (or workshop) root where the human is standing when
+    they run the command; falls back to the absolute path if this copy of the
+    tools lives outside that root.
+    """
+    reqs = (Path(__file__).parent / 'requirements.txt').resolve()
+    root = reqs.parent.parent
+    if root.name == VENDOR_DIR_NAME:
+        root = root.parent
+    try:
+        return reqs.relative_to(root).as_posix()
+    except ValueError:
+        return str(reqs)
+
+
 def load_site_module():
     """Import tools/site.py under a private module name (shared by fha + serve).
 

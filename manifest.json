@@ -213,7 +213,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "1cbcaffefe0a08354f31741c149050250a5d44d929cff44db4dd88e0c728d2b4",
+      "sha256": "881f83bb0c6c17b76ebdeb6fb9f362d93163b7cc28791580d5f0da1bc0b0f430",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -381,7 +381,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "458ddae9f29b46b8740541d967a5c15049a942a9bb8e64e25cc99b58e28cf7d5",
+      "sha256": "95a317a3a55360f157367d72360eb990805fe24dc0bb082476b59859611c5d4f",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -430,7 +430,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "baec36d71e312e4cb7ffb41772a15ae3d41237c467c5afcf75de4cc09019dbf7",
+      "sha256": "9eac692325e0ca0389eff195f54d9b6e2d39c4fdec1f89f306af5b423e49311b",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -584,7 +584,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "d369ee8fd32a3fcc0eb1d6081c81295e4f0e43cf981fcc78da2af4b6e1a4f19e",
+      "sha256": "f8c9b1ba25d1bcafda27ef47ee188d20e97bdfb74f978d8d4ed0e9800e1fd624",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
@@ -710,7 +710,7 @@
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "a35377ac7bb0613e84748e9fbcb2932ee52279d151c75a4c1844bd51f3a383e3",
+      "sha256": "b800dacc6302fd4b7d9eaeace93618ca36ddb1b78eac1083a7c23e090b521cc2",
       "spec_version": "1.2"
     },
     {
