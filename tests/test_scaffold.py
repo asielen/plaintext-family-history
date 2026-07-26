@@ -1463,6 +1463,33 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
             '/* MINE */\n')
         self.assertEqual(flat_tool.read_text(encoding='utf-8'), 'print("legacy")\n')
 
+    def test_a_deleted_seed_is_not_redelivered_by_the_remap(self):
+        # The owner deleted design/custom.css on purpose. The stamp records that
+        # delivery at the OLD flat path; once the layout moves, the new path is
+        # neither on disk nor in the stamp, which reads as "never delivered".
+        shutil.rmtree(self.archive / '.fha')
+        stamp = self._stamp()
+        stamp['files'] = {k: v for k, v in stamp['files'].items()
+                          if not k.startswith('.fha/')}
+        flat_tool = self.archive / 'tools' / 'atool.py'
+        _write(flat_tool, 'print("legacy")\n')
+        stamp['files']['tools/atool.py'] = scaffold._sha256_file(flat_tool)
+        # Recorded as delivered, then deleted by the owner.
+        stamp['files']['design/custom.css'] = 'whatever-it-was'
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        self.assertFalse((self.archive / 'design' / 'custom.css').exists())
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            scaffold.run_update_tools(self.archive, self.repo)
+
+        self.assertFalse(
+            (self.archive / '.fha' / 'design' / 'custom.css').exists(),
+            'install-once must not resurrect a deliberately deleted seed '
+            'just because the layout moved its path')
+        self.assertIn('.fha/design/custom.css', self._stamp()['files'],
+                      'the delivery record must follow the path across the remap')
+
     def test_a_stuck_launcher_aborts_the_whole_transition(self):
         # A launcher path does not start with .fha/, so neither the copy nor the
         # relocation abort test sees it. But retiring flat tools/ while a locked

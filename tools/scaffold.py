@@ -523,7 +523,8 @@ def _hide_vendor_dir(archive_root: Path) -> None:
 
     Best-effort and never fatal: a filesystem that cannot carry the attribute
     (a FAT/exFAT stick, a network share, a WSL mount) leaves the folder visible,
-    which is cosmetic. Called after install and after migrate-layout create it.
+    which is cosmetic. Called wherever `.fha/` comes into being: install,
+    migrate-layout, and an `update-tools` run that transitions a flat archive.
     """
     if os.name != 'nt':
         return
@@ -1048,6 +1049,51 @@ def _plan_install_once_relocations(
     return moves, conflicts, residual
 
 
+def _plan_deleted_seed_rekeys(
+    archive_root: Path,
+    manifest: dict,
+    stamp: dict | None,
+) -> list[tuple[str, str]]:
+    """Carry stamp keys for install-once seeds the owner deleted on purpose.
+
+    `_plan_install_once_relocations` needs a real file to move, so a seed the
+    owner deliberately deleted has nothing to relocate and its stamp entry keeps
+    naming the old flat path. The delivery check then finds the NEW path neither
+    on disk nor in the stamp and concludes the seed was never delivered - so the
+    update writes a pristine `design/custom.css` into `.fha/design/`, quietly
+    undoing a deletion that install-once promises to respect. The deletion is
+    recorded; it just stopped being legible once the path moved.
+
+    So re-key those entries too. The stamp keeps saying "this archive was given
+    that seed once", now at the path the seed would live at today, and the
+    deletion goes on being honoured across the layout change.
+
+    Conservative in the same way as the relocation planner: the destination must
+    be a skeleton entry, its old counterpart must be a path the manifest no
+    longer lists and the stamp DOES record, and neither copy may exist on disk -
+    a seed present anywhere is a live file the relocation pass owns, not a
+    deletion to preserve.
+    """
+    if not isinstance(stamp, dict):
+        return []
+    recorded = _stamp_file_map(stamp)
+    manifest_all_paths = {e['path'] for e in manifest['files']}
+    rekeys: list[tuple[str, str]] = []
+    for entry in manifest['files']:
+        if entry.get('category') != 'skeleton':
+            continue
+        new = entry['path']
+        old = _vendor_counterpart(new)
+        if old == new or old in manifest_all_paths:
+            continue
+        if old not in recorded or new in recorded:
+            continue
+        if (archive_root / old).exists() or (archive_root / new).exists():
+            continue
+        rekeys.append((old, new))
+    return sorted(rekeys)
+
+
 def _rekey_stamp_for_relocations(
     stamp: dict | None,
     moves: list[tuple[str, str]],
@@ -1187,6 +1233,11 @@ def run_update_tools(
     # handling, and the stamp does not track them (the manifest lists neither
     # path), so re-keying covers only the install-once seeds.
     _rekey_stamp_for_relocations(stamp, relocations)
+    # A seed the owner DELETED has no file to relocate, so its stamp key would be
+    # left behind naming the old path and the seed would be re-delivered as if
+    # new. Carry those keys across the remap as well.
+    deleted_seed_rekeys = _plan_deleted_seed_rekeys(archive_root, manifest, stamp)
+    _rekey_stamp_for_relocations(stamp, deleted_seed_rekeys)
     relocations = relocations + residual_moves
 
     # An update that also changes the layout retires the old flat tools/ into
@@ -1539,6 +1590,16 @@ def run_update_tools(
             print(
                 f'Left {archive_root / root} exactly as it was - the move to '
                 f'{VENDOR_DIR}/ could not be completed (see the errors above).')
+
+    # An update that transitions a flat archive creates `.fha/` implicitly, via
+    # the parent mkdirs of the files copied into it - so unlike install and
+    # migrate-layout, nothing here ever asked for it to be hidden. On Windows
+    # that left the folder plainly visible in File Explorer from a run that
+    # reported success, which is exactly the clutter the dot-prefix is meant to
+    # spare an owner who never asked to see the machinery. Idempotent, and a
+    # no-op off Windows.
+    if (archive_root / VENDOR_DIR).is_dir():
+        _hide_vendor_dir(archive_root)
 
     if aborted_roots:
         # If nothing else landed under it, the vendor folder itself is a husk too
