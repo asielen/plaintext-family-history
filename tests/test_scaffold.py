@@ -20,6 +20,7 @@ import io
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -387,6 +388,23 @@ class InstallTest(unittest.TestCase):
             rc = scaffold.run_install(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)  # install still succeeds
         self.assertTrue((self.archive / 'SPEC.md').is_file())
+
+
+class PipCommandTest(unittest.TestCase):
+    """The recovery command must run as printed, for the interpreter it names."""
+
+    def test_a_spaced_interpreter_path_is_quoted(self):
+        import _lib
+        with mock.patch.object(_lib.sys, 'executable', '/home/u/Family Tools/python'):
+            cmd = _lib.pip_command('pyyaml')
+        # Pasteable: the shell must see one argument, not two.
+        self.assertEqual(shlex.split(cmd)[0], '/home/u/Family Tools/python')
+        self.assertEqual(shlex.split(cmd)[1:], ['-m', 'pip', 'install', 'pyyaml'])
+
+    def test_it_names_the_running_interpreter(self):
+        import _lib
+        self.assertTrue(_lib.pip_command('pyyaml').startswith(
+            shlex.quote(_lib.sys.executable)))
 
 
 class InstallTemplateHandCopyTest(unittest.TestCase):

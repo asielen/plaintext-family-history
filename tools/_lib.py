@@ -53,6 +53,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import shlex
 import sys
 import tempfile
 from collections import deque
@@ -4514,8 +4515,19 @@ def pip_command(target: str) -> str:
     `sys.executable` is by definition the interpreter running this code, which is
     the one missing the import, so `-m pip` against it always lands where it
     needs to.
+
+    Quoted, because that path is not guaranteed to be shell-safe: a virtualenv
+    under `~/Family Tools/` or a Windows profile with a space in the name yields
+    a command the shell splits at the space, so the fix we advertise fails before
+    Python even starts - and it fails in a way that reads as "these instructions
+    are wrong" rather than "add quotes". POSIX shells take shlex quoting; cmd.exe
+    and PowerShell do not understand single quotes, so Windows gets double ones.
     """
-    return f'{sys.executable} -m pip install {target}'
+    if os.name == 'nt':
+        exe = f'"{sys.executable}"' if ' ' in sys.executable else sys.executable
+    else:
+        exe = shlex.quote(sys.executable)
+    return f'{exe} -m pip install {target}'
 
 
 def requirements_hint() -> str:
