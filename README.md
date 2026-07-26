@@ -19,7 +19,7 @@ Delete every layer above and the archive still works, the way the drawer still w
 | A genealogist who wants to start by hand with plain files and no tools | [`quickstart-template/`](quickstart-template/) (blank starter kit); see [`quickstart-example/`](quickstart-example/) for a filled-in worked example |
 | A genealogist who got a zip and doesn't use git/GitHub | [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) |
 | Someone the owner sent documents to | [`docs/CONTRIBUTING_SOURCES.md`](docs/CONTRIBUTING_SOURCES.md) |
-| A developer building or extending the tools | [`BUILD.md`](BUILD.md) then [`TOOLING.md`](TOOLING.md) (core); the capture on-ramp is [`BUILD_INGESTION.md`](BUILD_INGESTION.md)/[`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); the workbench skills are [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md)/[`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) |
+| A developer building or extending the tools | [`BUILD.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD.md) then [`TOOLING.md`](TOOLING.md) (core); the capture on-ramp is [`BUILD_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INGESTION.md)/[`TOOLING_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md); the workbench skills are [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md)/[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md) |
 | Here to understand or rebuild the spec | [`SPEC.md`](SPEC.md) |
 
 ---
@@ -159,7 +159,7 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 | Document | Read it for |
 |---|---|
 | **[SPEC.md](SPEC.md)** | The complete specification - what exists, how it lives on disk, and the rules that never bend. Start here. |
-| **[TOOLING.md](TOOLING.md)** | How the core tools are built, in enough detail to rewrite from scratch. The `fha` command suite, the index schema, the linter rules. Two siblings cover the rest by concern: **[TOOLING_INGESTION.md](TOOLING_INGESTION.md)** (capture/inbox on-ramp) and **[TOOLING_INTERFACE.md](TOOLING_INTERFACE.md)** (workbench + skills). Each has a matching build doc (`BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`). |
+| **[TOOLING.md](TOOLING.md)** | How the core tools are built, in enough detail to rewrite from scratch. The `fha` command suite, the index schema, the linter rules. Two siblings cover the rest by concern: **[TOOLING_INGESTION.md](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md)** (capture/inbox on-ramp) and **[TOOLING_INTERFACE.md](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** (workbench + skills). Each has a matching build doc (`BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`). |
 | **[AGENTS.md](AGENTS.md)** | What an AI agent may and may not do inside the archive - the contract, the operating modes, the workflows. |
 | **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** | A practical first-session walkthrough. |
 | **[docs/GLOSSARY.md](docs/GLOSSARY.md)** | Every term and ID type defined. |

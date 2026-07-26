@@ -124,8 +124,9 @@ A fresh archive prints:
 ```
 
 That's your green light: Python works, the tools work, and your archive is valid. (`--root`
-tells the tools which archive folder to use; `fha` is the launcher that finds and runs the tool
-program for you.)
+tells the tools which archive folder to use; `fha` is the launcher file sitting in the unzipped
+folder that finds and runs the tool program for you. On **macOS or Linux** type `./fha lint …`;
+in Windows **PowerShell**, `.\fha lint …`; the Windows **Command Prompt** takes it bare.)
 
 ---
 
@@ -151,8 +152,9 @@ new zip, unzip it, and copy its `tools/` folder (plus `SPEC.md`, `TOOLING.md`, `
 exactly as they are.
 
 > **The assisted way (optional).** If you'd rather have the tools live *inside* your archive -
-> tucked into a hidden `.fha/` folder (tools, docs, design) so the archive root stays clean, showing
-> only your data plus the rulebooks, launchers, and `fha.yaml` - use `fha install` **instead of**
+> with the program itself tucked into a hidden `.fha/` folder so the archive root stays clean,
+> showing only your data plus the rulebooks, the guides in `docs/`, the launchers, and `fha.yaml` -
+> use `fha install` **instead of**
 > copying `archive-template` in Step 3. It sets up the archive folder with both the skeleton files
 > and the tools in one step:
 >

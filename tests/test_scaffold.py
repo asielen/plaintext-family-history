@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,9 @@ def _make_fake_repo(repo: Path) -> Path:
     _write(repo / 'archive-template' / 'places' / 'places.yaml', '# places\n')
     _write(repo / 'archive-template' / 'sources' / '.gitkeep', '')
     _write(repo / 'archive-template' / 'README.md', 'template readme - excluded\n')
+    # The install-once skeleton override that lives UNDER an operating subtree,
+    # so it is the one seed whose archive path moves with the vendor layout.
+    _write(repo / 'design' / 'custom.css', '/* stock */\n')
     scaffold._write_manifest(repo)
     return repo
 
@@ -114,18 +118,37 @@ class ManifestSyncTest(unittest.TestCase):
 
     def test_manifest_includes_launchers(self):
         # plan 17 + archive-layout: the double-clickable workbench launcher AND
-        # the terminal `fha` CLI shim both ship into every archive. Both are
-        # layout-agnostic - they probe .fha\tools\ first, then tools\ - so one
-        # vendored file works flat or consolidated under .fha/.
+        # the terminal CLI shims all ship into every archive - BOTH platforms'
+        # shims regardless of the installing OS, because an archive is a portable
+        # folder that may well be opened on a different machine than it was made
+        # on. All are layout-agnostic - they probe .fha/tools/ first, then
+        # tools/ - so one vendored file works flat or consolidated under .fha/.
         entries = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
-        for launcher in ('serve.cmd', 'fha.cmd'):
+        for launcher in ('serve.cmd', 'fha.cmd', 'fha'):
             self.assertIn(launcher, entries, launcher)
             self.assertEqual(entries[launcher]['category'], 'operating')
         serve = (ROOT / 'serve.cmd').read_text(encoding='utf-8')
         self.assertIn(r'tools\fha.py serve', serve)        # flat fallback
         self.assertIn(r'.fha\tools\fha.py serve', serve)   # consolidated
-        fha = (ROOT / 'fha.cmd').read_text(encoding='utf-8')
-        self.assertIn(r'.fha\tools\fha.py', fha)
+        fha_cmd = (ROOT / 'fha.cmd').read_text(encoding='utf-8')
+        self.assertIn(r'.fha\tools\fha.py', fha_cmd)
+
+    def test_posix_launcher_is_usable(self):
+        # Without this file, every `fha ...` example in the guides is a
+        # `command not found` on macOS and Linux - including the very first
+        # post-install health check.
+        posix = ROOT / 'fha'
+        self.assertTrue(posix.is_file(), 'the POSIX `fha` launcher must ship')
+        text = posix.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('#!/bin/sh'), 'needs a shebang')
+        self.assertIn('.fha/tools/fha.py', text)   # consolidated, probed first
+        self.assertIn('tools/fha.py', text)        # flat fallback
+        # LF-only: .gitattributes pins it so a Windows checkout cannot produce a
+        # CRLF script that /bin/sh chokes on (and that would break its checksum).
+        self.assertNotIn(b'\r\n', posix.read_bytes())
+        if os.name != 'nt':
+            self.assertTrue(os.access(posix, os.X_OK),
+                            'the POSIX launcher must be executable')
 
     def test_skeleton_and_operating_categories(self):
         files = scaffold.generate_manifest(ROOT)['files']
@@ -134,16 +157,39 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(by_path['fha.yaml']['category'], 'skeleton')
         self.assertEqual(by_path['fha.yaml']['src'], 'archive-template/fha.yaml')
         self.assertEqual(by_path['places/places.yaml']['category'], 'skeleton')
-        # The five BUILD-mandated docs ship (now vendored under .fha/).
-        for doc in ('.fha/docs/GETTING_STARTED.md', '.fha/docs/SETUP_FROM_ZIP.md',
-                    '.fha/docs/CHEATSHEET.md', '.fha/docs/TROUBLESHOOTING.md',
-                    '.fha/docs/FILING_CABINET.md'):
+        # The five BUILD-mandated docs ship, at the archive ROOT: only the
+        # machinery (tools/, design/) is vendored under .fha/. docs/ stays put so
+        # its two-way link graph with the rulebooks keeps resolving - see
+        # test_docs_stay_at_archive_root.
+        for doc in ('docs/GETTING_STARTED.md', 'docs/SETUP_FROM_ZIP.md',
+                    'docs/CHEATSHEET.md', 'docs/TROUBLESHOOTING.md',
+                    'docs/FILING_CABINET.md'):
             self.assertIn(doc, by_path, doc)
             self.assertEqual(by_path[doc]['category'], 'operating')
         # A vendored operating entry carries a src remap (repo-flat -> archive
         # .fha/); a root-pinned operating entry (SPEC.md) carries none.
         self.assertEqual(by_path['.fha/tools/scaffold.py']['src'], 'tools/scaffold.py')
         self.assertNotIn('src', by_path['SPEC.md'])
+
+    def test_docs_stay_at_archive_root(self):
+        # The rulebooks and docs/ are one two-way link graph: README.md links to
+        # `docs/GETTING_STARTED.md`, and docs link back to `../SPEC.md`. Vendoring
+        # either side under .fha/ alone breaks every one of those links in an
+        # installed archive, which has to stay navigable in a file browser. So
+        # docs/ installs at the root, unremapped, and only the machinery moves.
+        by_path = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
+        doc_paths = [p for p in by_path if p.split('/')[0] == 'docs']
+        self.assertTrue(doc_paths, 'docs/ must ship')
+        for p in doc_paths:
+            self.assertNotIn('src', by_path[p], f'{p} must not be remapped')
+        self.assertFalse([p for p in by_path if p.startswith('.fha/docs/')],
+                         'no doc may be vendored under .fha/')
+        # Both ends of the link graph land where the links expect them.
+        self.assertIn('README.md', by_path)
+        self.assertIn('docs/GETTING_STARTED.md', by_path)
+        # Meanwhile the machinery IS vendored.
+        self.assertTrue([p for p in by_path if p.startswith('.fha/tools/')])
+        self.assertTrue([p for p in by_path if p.startswith('.fha/design/')])
 
 
 class InstallTest(unittest.TestCase):
@@ -162,7 +208,7 @@ class InstallTest(unittest.TestCase):
         # operating + skeleton landed, remapped correctly
         self.assertTrue((self.archive / 'SPEC.md').is_file())
         self.assertTrue((self.archive / '.fha' / 'tools' /'atool.py').is_file())
-        self.assertTrue((self.archive / '.fha' / 'docs' /'guide.md').is_file())
+        self.assertTrue((self.archive / 'docs' / 'guide.md').is_file())
         self.assertTrue((self.archive / 'fha.yaml').is_file())
         self.assertTrue((self.archive / 'places' / 'places.yaml').is_file())
         self.assertTrue((self.archive / 'sources' / '.gitkeep').is_file())
@@ -446,14 +492,19 @@ class CmdErrorPathTest(unittest.TestCase):
 
 
 def _make_flat_archive(root: Path, *, with_stamp: bool = True) -> Path:
-    """A pre-.fha archive: tools/, docs/, design/ at the root + a flat stamp."""
+    """A pre-.fha archive: tools/, docs/, design/ at the root + a flat stamp.
+
+    Note `serve.cmd`: a real pre-.fha archive's launcher names `tools\\fha.py`
+    directly and knows nothing about a vendor folder, and `fha`/`fha.cmd` may not
+    exist at all - which is exactly what moving tools/ breaks.
+    """
     _write(root / 'fha.yaml', 'roots:\n  photos: photos\n  documents: documents\n')
     _write(root / 'SPEC.md', '# SPEC\n')          # root rulebook, stays put
     _write(root / 'CLAUDE.md', '# CLAUDE\n')      # root rulebook, stays put
-    _write(root / 'fha.cmd', '@echo off\n')       # launcher, stays put
+    _write(root / 'serve.cmd', '@echo off\npy -3 tools\\fha.py serve %*\n')  # stale
     _write(root / 'tools' / 'fha.py', 'print("fha")\n')
     _write(root / 'tools' / 'sub' / 'x.py', 'x = 1\n')
-    _write(root / 'docs' / 'guide.md', '# guide\n')
+    _write(root / 'docs' / 'guide.md', '# guide\n')        # stays at the root
     _write(root / 'design' / 'styles.css', 'body{}\n')      # vendored (in stamp)
     _write(root / 'design' / 'custom.css', '/* mine */\n')  # skeleton (NOT in stamp)
     _write(root / '.claude' / 'skills' / 's.md', '# skill\n')  # stays at root
@@ -472,31 +523,45 @@ def _make_flat_archive(root: Path, *, with_stamp: bool = True) -> Path:
     return root
 
 
+def _make_launcher_repo(root: Path) -> Path:
+    """A stand-in workshop holding just the current root launchers."""
+    _write(root / 'serve.cmd', '@echo off\nif exist ".fha\\tools\\fha.py" (echo new)\n')
+    _write(root / 'fha.cmd', '@echo off\nrem .fha probe\n')
+    _write(root / 'fha', '#!/bin/sh\n# .fha probe\n')
+    return root
+
+
 class MigrateLayoutTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.arc = _make_flat_archive(Path(self._tmp.name) / 'arc')
+        self.launchers = _make_launcher_repo(Path(self._tmp.name) / 'workshop')
+
+    def _migrate(self, **kw):
+        kw.setdefault('repo_root', self.launchers)
+        return scaffold.run_migrate_layout(self.arc, **kw)
 
     def tearDown(self):
         self._tmp.cleanup()
 
     def test_moves_subtrees_and_rekeys_stamp(self):
-        rc = scaffold.run_migrate_layout(self.arc)
+        rc = self._migrate()
         self.assertEqual(rc.exit_code, EXIT_CLEAN)
         # tools/docs/design now under .fha/ ...
         self.assertTrue((self.arc / '.fha' / 'tools' / 'fha.py').is_file())
         self.assertTrue((self.arc / '.fha' / 'tools' / 'sub' / 'x.py').is_file())
-        self.assertTrue((self.arc / '.fha' / 'docs' / 'guide.md').is_file())
         self.assertTrue((self.arc / '.fha' / 'design' / 'styles.css').is_file())
         # ... custom.css rode along (it lives under design/) ...
         self.assertTrue((self.arc / '.fha' / 'design' / 'custom.css').is_file())
         # ... the flat copies are gone ...
         self.assertFalse((self.arc / 'tools').exists())
-        self.assertFalse((self.arc / 'docs').exists())
         self.assertFalse((self.arc / 'design').exists())
-        # ... rulebooks, launcher, skills, and records stayed at the root ...
+        # ... docs/ did NOT move: it is human-facing reading matter whose links
+        # point at the root rulebooks and vice versa (see the manifest tests) ...
+        self.assertTrue((self.arc / 'docs' / 'guide.md').is_file())
+        self.assertFalse((self.arc / '.fha' / 'docs').exists())
+        # ... rulebooks, skills, and records stayed at the root ...
         self.assertTrue((self.arc / 'SPEC.md').is_file())
-        self.assertTrue((self.arc / 'fha.cmd').is_file())
         self.assertTrue((self.arc / '.claude' / 'skills' / 's.md').is_file())
         self.assertTrue((self.arc / 'people' / '.gitkeep').is_file())
         # ... and the stamp was re-keyed: vendored paths prefixed, others intact.
@@ -505,12 +570,13 @@ class MigrateLayoutTest(unittest.TestCase):
         self.assertIn('.fha/design/styles.css', stamp['files'])
         self.assertNotIn('tools/fha.py', stamp['files'])
         self.assertIn('SPEC.md', stamp['files'])                 # root doc key intact
+        self.assertIn('docs/guide.md', stamp['files'])           # docs key intact
         self.assertIn('.claude/skills/s.md', stamp['files'])     # skills key intact
 
     def test_dry_run_writes_nothing(self):
         before = sorted(p.relative_to(self.arc).as_posix()
                         for p in self.arc.rglob('*') if p.is_file())
-        rc = scaffold.run_migrate_layout(self.arc, dry_run=True)
+        rc = self._migrate(dry_run=True)
         self.assertEqual(rc.exit_code, EXIT_CLEAN)
         after = sorted(p.relative_to(self.arc).as_posix()
                        for p in self.arc.rglob('*') if p.is_file())
@@ -518,24 +584,190 @@ class MigrateLayoutTest(unittest.TestCase):
         self.assertFalse((self.arc / '.fha').exists())
 
     def test_idempotent_noop_when_already_migrated(self):
-        scaffold.run_migrate_layout(self.arc)
-        rc = scaffold.run_migrate_layout(self.arc)  # second run
+        self._migrate()
+        rc = self._migrate()  # second run
         self.assertEqual(rc.exit_code, EXIT_CLEAN)
         self.assertEqual(rc.data['moved'], 0)
 
     def test_refuses_ambiguous_half_migrated_state(self):
         _write(self.arc / '.fha' / 'tools' / 'fha.py', 'print("dup")\n')  # both exist
         with self.assertRaises(scaffold.ScaffoldError) as ctx:
-            scaffold.run_migrate_layout(self.arc)
+            self._migrate()
         self.assertIn('refusing', str(ctx.exception).lower())
         self.assertTrue((self.arc / 'tools').exists())  # nothing moved
 
     def test_no_stamp_hand_copied_archive_still_moves(self):
         (self.arc / '.plaintext-version').unlink()
-        rc = scaffold.run_migrate_layout(self.arc)
+        rc = self._migrate()
         self.assertEqual(rc.exit_code, EXIT_CLEAN)
         self.assertTrue((self.arc / '.fha' / 'tools' / 'fha.py').is_file())
         self.assertFalse((self.arc / 'tools').exists())
+
+    def test_refreshes_stale_and_missing_root_launchers(self):
+        # A pre-.fha serve.cmd runs `tools\fha.py` by name and there is no CLI
+        # shim beside it. Move tools/ without replacing them and double-clicking
+        # serve.cmd stops working with no `fha` command to fall back on.
+        rc = self._migrate()
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertEqual(rc.data['launchers_pending'], 0)
+        serve = (self.arc / 'serve.cmd').read_text(encoding='utf-8')
+        self.assertIn('.fha', serve)                       # refreshed, not stale
+        self.assertTrue((self.arc / 'fha.cmd').is_file())  # installed, was absent
+        self.assertTrue((self.arc / 'fha').is_file())      # POSIX shim too
+
+    def test_reports_launchers_it_could_not_refresh(self):
+        # Running from inside the archive: repo_root is the archive's own vendor
+        # folder, which holds no launcher sources. Say so and name the fix rather
+        # than leaving a silently broken serve.cmd behind.
+        empty = Path(self._tmp.name) / 'empty-repo'
+        empty.mkdir()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = scaffold.run_migrate_layout(self.arc, repo_root=empty)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertTrue(rc.data['launchers_pending'])
+        out = buf.getvalue()
+        self.assertIn('serve.cmd', out)
+        self.assertIn('update-tools', out)
+        # The move itself still happened - the launcher is a follow-up, not a gate.
+        self.assertTrue((self.arc / '.fha' / 'tools' / 'fha.py').is_file())
+
+    def test_up_to_date_launcher_is_left_alone(self):
+        _write(self.arc / 'serve.cmd', '@echo off\nrem .fha\\tools already probed\n')
+        before = (self.arc / 'serve.cmd').read_text(encoding='utf-8')
+        self._migrate()
+        self.assertEqual((self.arc / 'serve.cmd').read_text(encoding='utf-8'), before)
+
+    def test_names_capture_host_when_one_is_registered(self):
+        # The browser's stored launcher holds an absolute <archive>/tools/fha.py;
+        # the move invalidates it and doctor does not inspect it, so this run is
+        # the only thing that can tell the owner.
+        fake_host = self.arc / 'fake-host.json'
+        _write(fake_host, '{}')
+        buf = io.StringIO()
+        with mock.patch.object(scaffold, '_capture_host_installed',
+                               return_value=fake_host), \
+                contextlib.redirect_stdout(buf):
+            self._migrate()
+        out = buf.getvalue()
+        self.assertIn('capture --install-host', out)
+
+    def test_dry_run_previews_launcher_and_capture_followups(self):
+        fake_host = self.arc / 'fake-host.json'
+        _write(fake_host, '{}')
+        buf = io.StringIO()
+        with mock.patch.object(scaffold, '_capture_host_installed',
+                               return_value=fake_host), \
+                contextlib.redirect_stdout(buf):
+            self._migrate(dry_run=True)
+        out = buf.getvalue()
+        self.assertIn('serve.cmd', out)
+        self.assertIn('capture --install-host', out)
+        self.assertFalse((self.arc / '.fha').exists())     # still nothing written
+
+    def test_malformed_stamp_files_value_does_not_traceback(self):
+        # A hand-mangled stamp whose `files` is valid JSON but not an object used
+        # to raise AttributeError from .items() - AFTER the folders had moved, so
+        # the owner saw a traceback out of a mutating command.
+        _write(self.arc / '.plaintext-version',
+               json.dumps({'manifest_version': '1', 'files': ['tools/fha.py']}))
+        rc = self._migrate()
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertTrue((self.arc / '.fha' / 'tools' / 'fha.py').is_file())
+        stamp = json.loads((self.arc / '.plaintext-version').read_text(encoding='utf-8'))
+        self.assertEqual(stamp['files'], {})   # re-stamped clean, not crashed
+
+    def test_rollback_failure_names_stranded_paths(self):
+        # Rolling back a half-done move can itself fail. Claiming "nothing was
+        # left half-moved" then sends the owner to retry a command that cannot
+        # succeed, against an archive that is genuinely split in two.
+        real_move = scaffold.shutil.move
+        calls = {'n': 0}
+
+        def flaky(src, dst):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return real_move(src, dst)     # tools/ moves
+            raise OSError('boom')              # design/ fails, and so does undo
+
+        with mock.patch.object(scaffold.shutil, 'move', side_effect=flaky):
+            with self.assertRaises(scaffold.ScaffoldError) as ctx:
+                self._migrate()
+        msg = str(ctx.exception)
+        self.assertIn('HALF-MIGRATED', msg)
+        self.assertIn('tools', msg)
+        self.assertNotIn('Nothing was left half-moved', msg)
+
+
+class UpdateLayoutTransitionTest(unittest.TestCase):
+    """update-tools across the flat -> .fha/ layout change."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(tmp / 'repo')
+        self.archive = tmp / 'arc'
+        scaffold.run_install(self.archive, self.repo)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stamp(self):
+        return json.loads(
+            (self.archive / '.plaintext-version').read_text(encoding='utf-8'))
+
+    def _regress_to_flat_custom_css(self, body='/* MY COLOURS */\n'):
+        """Put the archive back in the pre-.fha state for the install-once seed."""
+        new = self.archive / '.fha' / 'design' / 'custom.css'
+        old = self.archive / 'design' / 'custom.css'
+        _write(old, body)
+        if new.exists():
+            new.unlink()
+        stamp = self._stamp()
+        stamp['files'].pop('.fha/design/custom.css', None)
+        stamp['files']['design/custom.css'] = 'whatever-was-installed'
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        return old, new
+
+    def test_customized_stylesheet_survives_the_layout_change(self):
+        # The regression this guards: the manifest no longer lists the flat path,
+        # so it reads as RETIRED and goes to .plaintext-backup/ - and updates never
+        # install skeleton entries, so nothing replaces it. The owner's styling
+        # would simply be gone from the archive.
+        old, new = self._regress_to_flat_custom_css()
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertTrue(new.is_file(), 'the stylesheet must land at its new path')
+        self.assertEqual(new.read_text(encoding='utf-8'), '/* MY COLOURS */\n')
+        self.assertFalse(old.exists())
+        # Not quarantined, and re-keyed in the stamp.
+        backups = list((self.archive / '.plaintext-backup').rglob('custom.css')) \
+            if (self.archive / '.plaintext-backup').exists() else []
+        self.assertEqual(backups, [])
+        self.assertIn('.fha/design/custom.css', self._stamp()['files'])
+        self.assertNotIn('design/custom.css', self._stamp()['files'])
+
+    def test_dry_run_previews_the_move_without_making_it(self):
+        old, new = self._regress_to_flat_custom_css()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scaffold.run_update_tools(self.archive, self.repo, dry_run=True)
+        self.assertIn('design/custom.css', buf.getvalue())
+        self.assertTrue(old.is_file())      # untouched
+        self.assertFalse(new.exists())
+        # And the preview must not have called it retired - that is the very
+        # outcome the real run avoids.
+        self.assertNotIn('no longer part of the plaintext tools', buf.getvalue())
+
+    def test_malformed_stamp_files_value_does_not_traceback(self):
+        stamp = self._stamp()
+        stamp['files'] = 'not-an-object'
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertIn(rc.exit_code, (EXIT_CLEAN, EXIT_WARNINGS))
+        self.assertIsInstance(self._stamp()['files'], dict)
 
 
 if __name__ == '__main__':

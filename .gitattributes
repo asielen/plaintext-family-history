@@ -9,3 +9,7 @@
 *.css text eol=lf
 *.txt text eol=lf
 .gitignore text eol=lf
+# The POSIX launcher must stay LF in the working tree on every platform: a
+# checkout that rewrote it to CRLF would ship a shell script /bin/sh cannot run,
+# and would change its bytes out from under manifest.json's checksum.
+fha text eol=lf

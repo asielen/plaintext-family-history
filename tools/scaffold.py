@@ -145,15 +145,19 @@ _ROOT_OPERATING_DOCS = (
 )
 
 # Root-level launchers that ship into every archive. serve.cmd is the
-# double-clickable workbench launcher (plan 17); fha.cmd is the terminal CLI
-# shim so `fha <command>` works without naming the tools' path. Both are
-# layout-agnostic - they probe for the entrypoint under .fha\tools\ first, then
-# tools\ - so a single vendored file works whether the tools live flat or
-# consolidated under .fha/. Enumerated like the root docs because the repo root
-# also holds furniture that never enters an archive.
+# double-clickable workbench launcher (plan 17); fha.cmd (Windows) and fha
+# (POSIX `/bin/sh`, executable bit carried by shutil.copy2) are the terminal CLI
+# shims so a genealogist types `fha <command>` / `./fha <command>` without ever
+# naming the tools' path. All three are layout-agnostic - they probe for the
+# entrypoint under .fha/tools/ first, then tools/ - so a single vendored file
+# works whether the tools live flat or consolidated under .fha/. Both platforms
+# ship to every archive: an archive is a portable folder that may well be opened
+# on a different OS than the one that installed it. Enumerated like the root docs
+# because the repo root also holds furniture that never enters an archive.
 _ROOT_LAUNCHERS = (
     'serve.cmd',
     'fha.cmd',
+    'fha',
 )
 
 # Subtrees walked whole for the operating layer. `.claude/skills/` carries the
@@ -164,15 +168,30 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
 
 # The archive subfolder that holds the vendored machinery, so a real archive's
 # root reads as the genealogy - not the tooling. The install remaps the movable
-# operating subtrees (tools/, docs/, design/) UNDER this prefix; the workshop
-# repo itself stays flat, and the manifest's src/path seam records the repo-flat
-# `src` against the archive `.fha/…` `path`. Deliberately kept at the archive
-# ROOT: the rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers, and
-# `.claude/skills` (Claude Code discovers skills at the root). `.claude/skills`
-# is therefore NOT in the vendored set below. `_VENDOR_DIR` is the shared
+# operating subtrees UNDER this prefix; the workshop repo itself stays flat, and
+# the manifest's src/path seam records the repo-flat `src` against the archive
+# `.fha/…` `path`.
+#
+# Only the MACHINERY moves: `tools/` (the program) and `design/` (its stylesheet
+# and self-hosted fonts). Neither is ever opened by hand.
+#
+# `docs/` deliberately stays at the archive ROOT, alongside the rulebooks it is
+# part of. It is human-facing reading matter, not machinery, and it is one half
+# of a two-way link graph: the root rulebooks link to `docs/…`, and the docs link
+# back to `../SPEC.md`, `../AGENTS.md`, `../README.md`. Remapping either side
+# under `.fha/` breaks every one of those links in an installed archive - a
+# `docs/…` link from a root rulebook would resolve to nothing, and `../SPEC.md`
+# from a vendored doc would resolve inside `.fha/`, where no rulebook lives.
+# Keeping docs at the root costs one visible folder and keeps the archive
+# navigable in a plain file browser, with no install-time link rewriting anywhere
+# in the install/update engine.
+#
+# Also deliberately at the archive root: the rulebooks themselves
+# (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers, and `.claude/skills`
+# (Claude Code discovers skills at the root). `_VENDOR_DIR` is the shared
 # `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on the name.
 _VENDOR_DIR = VENDOR_DIR
-_VENDORED_SUBTREES = ('tools', 'docs', 'design')
+_VENDORED_SUBTREES = ('tools', 'design')
 
 # The template folder whose *contents* seed the skeleton. The folder itself is
 # never copied into an archive - each file's archive path strips this prefix.
@@ -242,11 +261,12 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
     with no family data, and a directory rule auto-covers future docs and keeps
     their cross-links intact in an installed archive.
 
-    The movable subtrees (tools/, docs/, design/) install UNDER .fha/ (see
-    _VENDOR_DIR) so the archive root reads as the genealogy, not the machinery;
+    The machinery subtrees (tools/, design/) install UNDER .fha/ (see
+    _VENDOR_DIR) so the archive root reads as the genealogy, not the tooling;
     their archive path is `.fha/…` while the repo source stays flat, recorded by
-    the manifest's src/path seam. The root rulebooks, launchers, and
-    .claude/skills keep source == archive path at the root.
+    the manifest's src/path seam. The root rulebooks, docs/, the launchers, and
+    .claude/skills keep source == archive path at the root - docs/ among them so
+    its two-way link graph with the rulebooks survives an install (_VENDOR_DIR).
     """
     out: list[tuple[str, Path]] = []
 
@@ -275,8 +295,9 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
             # subtree but are user-owned (see _SKELETON_OVERRIDES).
             if rel in _SKELETON_OVERRIDE_SRCS:
                 continue
-            # Vendored subtrees (tools/, docs/, design/) install UNDER .fha/ so
-            # the archive root stays uncluttered; .claude/skills stays at root.
+            # Vendored subtrees (tools/, design/) install UNDER .fha/ so the
+            # archive root stays uncluttered; docs/ and .claude/skills stay at
+            # the root (readable documentation / agent-discovered skills).
             archive_path = f'{_VENDOR_DIR}/{rel}' if moved else rel
             out.append((archive_path, p))
 
@@ -665,7 +686,7 @@ def _plan_update(
     the template, .gitkeep) are install-once and deliberately untouched here, so
     `update-tools` can never clobber the human's configuration or place data.
     """
-    recorded: dict[str, str] = (stamp or {}).get('files', {}) if stamp else {}
+    recorded: dict[str, str] = _stamp_file_map(stamp)
 
     plan = {'added': [], 'current': [], 'stock': [], 'customized': [], 'retired': []}
 
@@ -707,6 +728,116 @@ def _plan_update(
     return plan
 
 
+def _running_from(archive_root: Path) -> bool:
+    """True when the tools executing this command live inside `archive_root`.
+
+    Used to warn before an update would retire the very folder it is running
+    from. Resolved on both sides so a symlinked or relative invocation still
+    compares honestly; any resolution failure answers False (warn about nothing
+    rather than block on a path quirk).
+    """
+    try:
+        here = Path(__file__).resolve()
+        root = Path(archive_root).resolve()
+    except OSError:
+        return False
+    return root == here or root in here.parents
+
+
+def _plan_install_once_relocations(
+    archive_root: Path,
+    manifest: dict,
+    stamp: dict | None,
+) -> list[tuple[str, str]]:
+    """Find install-once files whose archive path moved between vendor layouts.
+
+    Returns [(old_archive_path, new_archive_path), …].
+
+    Install-once seeds (`_SKELETON_OVERRIDES`, today `design/custom.css`) are
+    deliberately never touched by `update-tools` - that is what keeps a hand-edit
+    safe. But when the layout changes, the seed's archive path changes with it
+    (`design/custom.css` -> `.fha/design/custom.css`), and the two halves of the
+    normal reconciliation both do the wrong thing with the old copy: the manifest
+    no longer lists the old path, so it is classified RETIRED and moved into
+    `.plaintext-backup/`, and updates never install skeleton entries, so nothing
+    replaces it. An owner who had customized their stylesheet would find it gone
+    from the archive - recoverable only by hand out of the backup folder.
+
+    So detect the transition first and MOVE the file to its new path, carrying
+    the customization with it. Matched conservatively: only a recorded path that
+    the manifest has dropped, whose vendor-prefixed twin the manifest lists as a
+    SKELETON entry, and where the destination does not already exist.
+    """
+    recorded = _stamp_file_map(stamp)
+    if not recorded:
+        return []
+    skeleton_paths = {e['path'] for e in manifest['files']
+                      if e.get('category') == 'skeleton'}
+    manifest_all_paths = {e['path'] for e in manifest['files']}
+
+    moves: list[tuple[str, str]] = []
+    for old in sorted(recorded):
+        if old in manifest_all_paths:
+            continue
+        # Both directions, so a future un-vendoring is handled as well as the
+        # flat -> .fha/ move this release performs.
+        if old.startswith(f'{VENDOR_DIR}/'):
+            new = old[len(VENDOR_DIR) + 1:]
+        else:
+            new = f'{VENDOR_DIR}/{old}'
+        if new not in skeleton_paths:
+            continue
+        if not (archive_root / old).is_file():
+            continue
+        if (archive_root / new).exists():
+            continue
+        moves.append((old, new))
+    return moves
+
+
+def _apply_install_once_relocations(
+    archive_root: Path,
+    stamp: dict | None,
+    moves: list[tuple[str, str]],
+    *,
+    dry_run: bool,
+) -> list[str]:
+    """Move relocated install-once files and re-key the stamp in memory.
+
+    The in-memory re-key happens in BOTH modes so the rest of the run - the
+    retired scan in `_plan_update` and the skeleton carry-over when the stamp is
+    rewritten - sees the file at its new home. That makes a `--dry-run` plan an
+    honest preview of the real run rather than one that reports the file retired.
+    Returns human-readable failure messages (empty on success); a file that
+    cannot be moved is left exactly where it is.
+    """
+    if not moves:
+        return []
+    failures: list[str] = []
+    applied: list[tuple[str, str]] = []
+    for old, new in moves:
+        if dry_run:
+            applied.append((old, new))
+            continue
+        dest = archive_root / new
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(archive_root / old), str(dest))
+        except OSError as exc:
+            failures.append(
+                f'{old}: could not move to {new} ({exc}). Your copy is untouched '
+                f'at {archive_root / old} - move it to {dest} by hand.')
+            continue
+        applied.append((old, new))
+
+    if isinstance(stamp, dict) and applied:
+        files = _stamp_file_map(stamp)
+        for old, new in applied:
+            files[new] = files.pop(old, files.get(new, ''))
+        stamp['files'] = dict(sorted(files.items()))
+    return failures
+
+
 def run_update_tools(
     archive_root: Path,
     repo_root: Path,
@@ -739,6 +870,42 @@ def run_update_tools(
             f'No {VERSION_FILE} found in {archive_root} - treating existing tool '
             f'files as your own work. Anything different from the new version is '
             f'backed up (never overwritten), not replaced silently.'
+        )
+        print()
+
+    # Before any normal reconciliation: carry install-once files (design/custom.css)
+    # across a vendor-layout change, so a customized stylesheet is never retired
+    # into the backup folder with nothing installed in its place.
+    relocations = _plan_install_once_relocations(archive_root, manifest, stamp)
+    for old, new in relocations:
+        prefix = '[dry-run] would move' if dry_run else 'Moved'
+        print(f'{prefix} your {old} to {new} (the tools folder layout changed; '
+              'your customizations come with it).')
+    relocation_failures = _apply_install_once_relocations(
+        archive_root, stamp, relocations, dry_run=dry_run)
+    for message in relocation_failures:
+        print(f'WARNING: {message}', file=sys.stderr)
+    if relocations:
+        print()
+
+    # An update that also changes the layout retires the old flat tools/ into
+    # .plaintext-backup/ and installs fresh ones under .fha/. That is correct but
+    # it is the long way round, and if the tools being retired are the ones
+    # RUNNING this command, the update is moving the toolchain out from under
+    # itself mid-run. `migrate-layout` does the same transition as a plain move,
+    # in one step, with nothing to back up - so point at it before starting.
+    if _running_from(archive_root) and (archive_root / 'tools').is_dir() \
+            and not (archive_root / VENDOR_DIR / 'tools').is_dir():
+        print(
+            f'NOTE: this archive still keeps its tools at the root, and the new '
+            f'layout puts them under {VENDOR_DIR}/. This update can make that '
+            f'change, but it does it by backing the old tools up and installing '
+            f'new ones - while running from the very folder it is retiring.\n'
+            f'      The direct route is one command, run from your workshop copy:\n'
+            f'        fha migrate-layout --root "{archive_root}" --dry-run   '
+            f'(then without --dry-run)\n'
+            f'      Then re-run this update. Continuing anyway is safe for your '
+            f'records either way - nothing here touches them.'
         )
         print()
 
@@ -892,7 +1059,7 @@ def run_update_tools(
     # files that moved successfully drop out; ones that failed to move are kept so
     # the next run re-detects and retries them.
     new_checksums: dict[str, str] = {}
-    old_recorded = (stamp or {}).get('files', {})
+    old_recorded = _stamp_file_map(stamp)
     for entry in manifest['files']:
         archive_path = entry['path']
         if entry.get('category') == 'skeleton':
@@ -1049,24 +1216,140 @@ def _cmd_update_tools(args: argparse.Namespace) -> int:
 
 # ── Migrate layout (flat -> .fha/) ───────────────────────────────────────────────
 
-def run_migrate_layout(archive_root: Path, *, dry_run: bool = False) -> Result:
-    """Move an existing FLAT archive's operating layer under `.fha/` (one-time).
+def _stamp_file_map(stamp: dict | None) -> dict[str, str]:
+    """Return a stamp's `files` map, or `{}` when it is missing or malformed.
 
-    A pre-`.fha` archive keeps tools/, docs/, design/ at its root. This moves
-    those three subtrees into `.fha/` and re-keys the `.plaintext-version` stamp
-    so the flat operating paths become `.fha/…` paths. It is a plain file MOVE,
-    so a hand-edited tool stays edited (customizations are preserved, not reset).
-    The root rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers,
-    `.claude/`, and every record and asset are untouched. Idempotent: an
-    already-migrated archive is a clean no-op. The launchers need no rewrite -
-    serve.cmd/fha.cmd already probe `.fha/tools/` first.
+    `.plaintext-version` is a plain JSON file a human can open, edit, and damage.
+    A hand-mangled `files` that is valid JSON but not an object (a list, a
+    string, null) would otherwise blow up on `.items()` deep inside a MUTATING
+    command - the user sees a traceback from `migrate-layout` or `update-tools`
+    after folders have already moved, instead of a clear message. Treat any
+    non-object shape as "nothing recorded": every operating file is then
+    re-checked against the manifest, which is the safe direction (files get
+    backed up rather than overwritten), and the command re-stamps cleanly.
+    Non-string values are dropped for the same reason - a checksum comparison
+    against a list is meaningless.
+    """
+    if not isinstance(stamp, dict):
+        return {}
+    files = stamp.get('files')
+    if not isinstance(files, dict):
+        return {}
+    return {k: v for k, v in files.items()
+            if isinstance(k, str) and isinstance(v, str)}
+
+
+def _stale_root_launchers(archive_root: Path) -> list[str]:
+    """Name the root launchers that would not survive a move to the `.fha/` layout.
+
+    A pre-`.fha` archive was installed with launchers that name `tools\\fha.py`
+    directly and predate `fha.cmd` / `fha` entirely. Moving `tools/` out from
+    under them breaks double-clicking `serve.cmd` and leaves no CLI shim at all,
+    so the migrator has to say so (and refresh them when it can). "Stale" means
+    either absent, or present but with no mention of the vendor folder - the
+    current launchers all probe `.fha/tools/` first.
+    """
+    stale: list[str] = []
+    for name in _ROOT_LAUNCHERS:
+        path = archive_root / name
+        if not path.is_file():
+            stale.append(name)
+            continue
+        try:
+            text = path.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            stale.append(name)
+            continue
+        if VENDOR_DIR not in text:
+            stale.append(name)
+    return stale
+
+
+def _refresh_root_launchers(archive_root: Path, repo_root: Path,
+                            names: list[str]) -> tuple[list[str], list[str]]:
+    """Copy the layout-agnostic root launchers in from `repo_root`.
+
+    Returns (refreshed, unavailable). A launcher the source copy does not have
+    (running from inside the archive being migrated, where `repo_root` is
+    `.fha/`, not a workshop clone) lands in `unavailable` so the caller can
+    print the exact follow-up command instead of silently leaving it broken.
+    An existing launcher is overwritten deliberately: these are generated shims,
+    never a place for a hand-edit, and the pre-`.fha` copy is precisely what is
+    broken. `copy2` carries the POSIX executable bit for `fha`.
+    """
+    refreshed: list[str] = []
+    unavailable: list[str] = []
+    for name in names:
+        src = repo_root / name
+        if not src.is_file():
+            unavailable.append(name)
+            continue
+        try:
+            shutil.copy2(src, archive_root / name)
+        except OSError:
+            unavailable.append(name)
+            continue
+        refreshed.append(name)
+    return refreshed, unavailable
+
+
+def _capture_host_installed() -> Path | None:
+    """Return the installed browser capture-host manifest path, or None.
+
+    The native-messaging host registered by `fha capture --install-host` holds a
+    launcher whose generated command names an ABSOLUTE `<archive>/tools/fha.py`.
+    Moving `tools/` leaves that registration pointing at nothing, and browser
+    capture silently stops launching - `doctor` does not inspect it, so nothing
+    else would ever tell the owner. Detect it so the migrator can name the
+    re-registration command. Probing is best-effort and never fatal: capture.py
+    owns the per-OS locations, and a failure to import or resolve them simply
+    means we fall back to mentioning the command unconditionally.
+    """
+    try:
+        import capture  # local import: only migrate-layout needs it
+        for browser in ('chrome', 'edge'):
+            try:
+                manifest = (capture._native_manifest_dir(browser)
+                            / f'{capture._NATIVE_HOST_NAME}.json')
+            except Exception:
+                continue
+            if manifest.is_file():
+                return manifest
+    except Exception:
+        return None
+    return None
+
+
+def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
+                       repo_root: Path | None = None) -> Result:
+    """Move an existing FLAT archive's machinery under `.fha/` (one-time).
+
+    A pre-`.fha` archive keeps tools/ and design/ at its root. This moves those
+    subtrees into `.fha/` and re-keys the `.plaintext-version` stamp so the flat
+    operating paths become `.fha/…` paths. It is a plain file MOVE, so a
+    hand-edited tool stays edited (customizations are preserved, not reset).
+    `docs/`, the root rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), `.claude/`,
+    and every record and asset are untouched. Idempotent: an already-migrated
+    archive is a clean no-op.
+
+    The root launchers are refreshed as part of the move. A pre-`.fha` archive's
+    `serve.cmd` runs `tools\\fha.py` by name and its `fha.cmd`/`fha` shims do not
+    exist at all, so moving `tools/` without replacing them would break
+    double-clicking `serve.cmd` and leave no CLI entry point. `repo_root`
+    supplies the current copies (defaults to the running tools' own repo root);
+    any the source cannot supply are reported with the command that installs them.
 
     Safest run from the workshop against the archive (`fha migrate-layout --root
-    ARCHIVE`), so the running tools are not the ones being moved.
+    ARCHIVE`), so the running tools are not the ones being moved - and so the
+    launcher sources are at hand.
     """
     archive_root = Path(archive_root).resolve()
+    if repo_root is None:
+        repo_root = _resolve_repo_root(None)
+    repo_root = Path(repo_root).resolve()
     vendor = archive_root / VENDOR_DIR
     present = [s for s in _VENDORED_SUBTREES if (archive_root / s).is_dir()]
+    subtree_list = ', '.join(f'{s}/' for s in _VENDORED_SUBTREES)
 
     if not present:
         if (vendor / 'tools').is_dir():
@@ -1074,9 +1357,9 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False) -> Result:
                   'nothing to migrate.')
             return Result(exit_code=EXIT_CLEAN, data={'moved': 0})
         raise ScaffoldError(
-            f'{archive_root} has no tools/, docs/, or design/ folder at its root, '
-            f'so there is nothing to migrate. Run this from inside a pre-{VENDOR_DIR} '
-            'archive, or pass --root PATH pointing at one.')
+            f'{archive_root} has no {subtree_list} folder at its root, so there is '
+            f'nothing to migrate. Run this from inside a pre-{VENDOR_DIR} archive, '
+            'or pass --root PATH pointing at one.')
 
     # Refuse a half-migrated / ambiguous state rather than guessing.
     conflicts = [s for s in present if (vendor / s).exists()]
@@ -1086,13 +1369,30 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False) -> Result:
             f'{archive_root} - refusing to guess which is current. Move or remove '
             'one by hand, then re-run.')
 
+    stale_launchers = _stale_root_launchers(archive_root)
+    capture_host = _capture_host_installed()
+
     if dry_run:
         print(f'[dry-run] Would create {VENDOR_DIR}/ under {archive_root} and move into it:')
         for s in present:
             print(f'[dry-run]   {s}/ -> {VENDOR_DIR}/{s}/')
-        print(f'[dry-run] Would re-key .plaintext-version (tools/…, docs/…, '
-              f'design/… -> {VENDOR_DIR}/…).')
-        print('[dry-run] Records, rulebooks, launchers, and .claude/ stay put. '
+        print(f'[dry-run] Would re-key .plaintext-version '
+              f'({subtree_list} -> {VENDOR_DIR}/…).')
+        if stale_launchers:
+            have = [n for n in stale_launchers if (repo_root / n).is_file()]
+            missing = [n for n in stale_launchers if n not in have]
+            if have:
+                print(f'[dry-run] Would refresh the root launcher(s) '
+                      f'{", ".join(have)} so they find the moved tools.')
+            if missing:
+                print(f'[dry-run] Could NOT refresh {", ".join(missing)} from '
+                      f'{repo_root} - `fha update-tools --repo PATH-TO-WORKSHOP` '
+                      'would be needed afterwards.')
+        if capture_host:
+            print(f'[dry-run] Browser capture host found at {capture_host} - it '
+                  'would need re-registering afterwards '
+                  '(`fha capture --install-host`).')
+        print('[dry-run] Records, rulebooks, docs/, and .claude/ stay put. '
               'Nothing was written.')
         return Result(exit_code=EXIT_CLEAN, data={'moved': len(present)})
 
@@ -1106,42 +1406,80 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False) -> Result:
             shutil.move(str(src), str(dest))
             moved_done.append((src, dest))
     except OSError as exc:
+        # Roll back what did move. A rollback that ITSELF fails leaves the
+        # archive genuinely half-moved, so track it and say so - claiming a
+        # clean rollback while part of the operating layer sits under .fha/
+        # would send the owner to re-run a command that cannot succeed.
+        stranded: list[str] = []
         for src, dest in reversed(moved_done):
             try:
                 shutil.move(str(dest), str(src))
             except OSError:
-                pass
+                stranded.append(f'{dest} (belongs at {src})')
+        if stranded:
+            raise ScaffoldError(
+                f'could not move the operating layer under {VENDOR_DIR}/: {exc}. '
+                f'The rollback did not fully succeed either, so this archive is '
+                f'HALF-MIGRATED: {"; ".join(reversed(stranded))}. Nothing was '
+                'deleted - move each of those folders back to the path named in '
+                'brackets by hand (or leave them and finish the migration by '
+                'moving the rest), then re-run. Close anything open in those '
+                'folders and check permissions first.') from exc
         raise ScaffoldError(
             f'could not move the operating layer under {VENDOR_DIR}/: {exc}. '
             'Nothing was left half-moved (rolled back). Close anything open in '
             'those folders, check permissions and disk space, then re-run.') from exc
 
     # Re-key the update stamp: flat operating paths -> .fha/ paths (records and
-    # skeleton keys stay as they are). A missing or unreadable stamp is
-    # non-fatal - the next `update-tools` will re-stamp cleanly.
+    # skeleton keys stay as they are). A missing, unreadable, or malformed stamp
+    # is non-fatal - the next `update-tools` will re-stamp cleanly - but it must
+    # not raise here, after the folders have already moved.
     stamp_path = archive_root / VERSION_FILE
     if stamp_path.is_file():
         try:
             stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
-            files = stamp.get('files', {})
-            rekeyed: dict[str, str] = {}
-            for key, val in files.items():
-                first = key.split('/', 1)[0]
-                rekeyed[f'{VENDOR_DIR}/{key}' if first in _VENDORED_SUBTREES else key] = val
-            stamp['files'] = dict(sorted(rekeyed.items()))
-            _write_version_stamp(archive_root, stamp)
+            if isinstance(stamp, dict):
+                rekeyed: dict[str, str] = {}
+                for key, val in _stamp_file_map(stamp).items():
+                    first = key.split('/', 1)[0]
+                    rekeyed[f'{VENDOR_DIR}/{key}' if first in _VENDORED_SUBTREES
+                            else key] = val
+                stamp['files'] = dict(sorted(rekeyed.items()))
+                _write_version_stamp(archive_root, stamp)
         except (OSError, ValueError):
             pass
+
+    refreshed, unavailable = _refresh_root_launchers(
+        archive_root, repo_root, stale_launchers)
 
     print(f'Migrated {archive_root} to the {VENDOR_DIR}/ layout:')
     for s in present:
         print(f'  {s}/ -> {VENDOR_DIR}/{s}/')
-    print('Records, rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers, '
+    if refreshed:
+        print(f'  refreshed the root launcher(s): {", ".join(refreshed)}')
+    print('Records, the rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), docs/, '
           'and .claude/ stayed at the archive root.')
-    print('Next: run `fha doctor` to confirm, then `fha index` to refresh the cache.')
+    print('\nNext:')
+    step = 1
+    if unavailable:
+        print(f'  {step}. IMPORTANT: the root launcher(s) {", ".join(unavailable)} '
+              f'still point at the old flat layout (or are missing) and were not '
+              f'available in {repo_root} to refresh. Run '
+              '`fha update-tools --repo PATH-TO-WORKSHOP` to install the current '
+              'ones - until then, double-clicking serve.cmd will not start.')
+        step += 1
+    if capture_host:
+        print(f'  {step}. Re-register browser capture: the host at {capture_host} '
+              'still launches the tools from their old path. Re-run '
+              '`fha capture --install-host` with the same browser and extension '
+              'settings you used before.')
+        step += 1
+    print(f'  {step}. Run `fha doctor` to confirm, then `fha index` to refresh the cache.')
     return Result(exit_code=EXIT_CLEAN,
-                  changed=[str(d) for _, d in moved_done],
-                  data={'moved': len(present)})
+                  changed=[str(d) for _, d in moved_done]
+                          + [str(archive_root / n) for n in refreshed],
+                  data={'moved': len(present), 'launchers_refreshed': len(refreshed),
+                        'launchers_pending': len(unavailable)})
 
 
 def _cmd_migrate_layout(args: argparse.Namespace) -> int:
@@ -1169,7 +1507,10 @@ def _cmd_migrate_layout(args: argparse.Namespace) -> int:
         archive_root = detected
     try:
         return run_migrate_layout(
-            archive_root, dry_run=bool(getattr(args, 'dry_run', False))).exit_code
+            archive_root,
+            dry_run=bool(getattr(args, 'dry_run', False)),
+            repo_root=_resolve_repo_root(getattr(args, 'repo', None)),
+        ).exit_code
     except ScaffoldError as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return EXIT_FAILURE
@@ -1232,20 +1573,26 @@ def register(subs: argparse._SubParsersAction) -> None:
 
     p_migrate = subs.add_parser(
         'migrate-layout',
-        help='One-time: move an older flat archive\'s tools/docs/design under .fha/.',
+        help='One-time: move an older flat archive\'s tools/ and design/ under .fha/.',
         description=(
-            'Move an existing archive\'s operating layer (tools/, docs/, design/) '
-            'into a hidden .fha/ folder so the archive root shows only your '
-            'genealogy. Records, rulebooks, launchers, and .claude/ stay at the '
-            'root; customizations are preserved (it is a plain file move). '
-            'Idempotent. Safest run from the workshop with --root pointing at the '
-            'archive. Preview with --dry-run first.'
+            'Move an existing archive\'s machinery (tools/, design/) into a '
+            'hidden .fha/ folder so the archive root shows only your genealogy '
+            'and the documents that explain it. Records, the rulebooks, docs/, '
+            'and .claude/ stay at the root; customizations are preserved (it is '
+            'a plain file move). The root launchers are refreshed so they find '
+            'the moved tools - pass --repo if you are running this from inside '
+            'the archive. Idempotent. Safest run from the workshop with --root '
+            'pointing at the archive. Preview with --dry-run first.'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_migrate.add_argument(
         '--dry-run', action='store_true', dest='dry_run',
         help='Preview the move; write nothing.',
+    )
+    p_migrate.add_argument(
+        '--repo', metavar='PATH',
+        help='Your copy of the plaintext tools, used to refresh the root launchers.',
     )
     p_migrate.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p_migrate.set_defaults(func=_cmd_migrate_layout)

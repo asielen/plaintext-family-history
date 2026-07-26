@@ -6,8 +6,8 @@ APIs, no Python — so the harness choice stays reversible (the SKILL.md standar
 
 **Start here:** [`_STANDARD.md`](_STANDARD.md) is the authoring contract every skill conforms to.
 [`today/`](today/SKILL.md) is the reference skill — copy its shape. Design lives in
-[`TOOLING_INTERFACE.md`](../../TOOLING_INTERFACE.md); the build sequence in
-[`BUILD_INTERFACE.md`](../../BUILD_INTERFACE.md).
+[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build sequence in
+[`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md).
 
 The governing split: **deterministic work is in `fha` tools; judgment is in skills; the human is the only
 gate to `accepted`.**
@@ -30,7 +30,7 @@ gate to `accepted`.**
 | [`share-and-export`](share-and-export/SKILL.md) | **authored** | The guided sharing path: pick the right exporter (packet / gedcom / site / wikitree / backup) for the recipient, speak the privacy defaults in plain words before running, preview first, then report what went out and what stayed home. Import is not this skill. | Opus |
 | [`import-notes`](import-notes/SKILL.md) | **authored** | The legacy-notes on-ramp: chunk a pile of freeform notes, propose a home per chunk under FILING_CABINET's routing rule (evidence → inbox → `process-source`; question / hypothesis / research-log entry / `notes/research/`), write only on the human's confirmed ruling. Drafts no claims; originals preserved by default, a scraps file dissolves only on explicit say-so after everything landed. | Opus |
 
-Statuses track [`BUILD_INTERFACE.md`](../../BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
+Statuses track [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
 verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session
 check** against `example-archive/` (capture the transcript).
 

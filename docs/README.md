@@ -31,7 +31,10 @@ activity. Two design references *do* ship, because they govern what the archive 
 |---|---|
 | [DESIGN.md](DESIGN.md) | The visual language for everything the archive renders as HTML - tokens, typography, components |
 | [SITE_PLAN.md](SITE_PLAN.md) | Roadmap for homepage / navigation / customization: the source-first model, the customization layers, and the build phases |
-| [../tools/README.md](../tools/README.md) | Per-tool implementation status tables (flags, error codes, test coverage) |
+| [tools/README.md](https://github.com/asielen/plaintext-family-history/blob/master/tools/README.md) | Per-tool implementation status tables (flags, error codes, test coverage) |
+
+*(Linked to GitHub rather than by relative path: an installed archive keeps the tools
+themselves in a hidden `.fha/tools/` folder, so `../tools/…` would not resolve there.)*
 
 ## Spec and governance
 

@@ -7,7 +7,7 @@ These tools are **generic**: they operate on any spec-conforming archive and con
 They are the "replaceable glue" of the philosophy - disposable, regenerable from the spec, and safe to publish.
 `TOOLING.md` (repo root) is the design document for every tool; consult it before changing any behavior.
 
-Two **out-of-tree companions** live beside this suite, installed into a user's setup rather than vendored by `fha install` and never load-bearing: [`browser-companion/`](../browser-companion/) (web capture) and [`obsidian-templater/`](../obsidian-templater/) (optional Obsidian Templater templates for new person/source notes; see [docs/USING_WITH_OBSIDIAN.md](../docs/USING_WITH_OBSIDIAN.md)).
+Two **out-of-tree companions** live beside this suite, installed into a user's setup rather than vendored by `fha install` and never load-bearing: [`browser-companion/`](../browser-companion/) (web capture) and [`obsidian-templater/`](../obsidian-templater/) (optional Obsidian Templater templates for new person/source notes; see [docs/USING_WITH_OBSIDIAN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/USING_WITH_OBSIDIAN.md)).
 
 CLI recovery contract: `fha` prints help on no args; unknown subcommands get a
 "did you mean?" hint; ordinary failures explain the cause and the next command
@@ -418,8 +418,13 @@ depends on it - delete `serve.py` and `.cache/serve/` and nothing about the arch
 It is not a daemon: human-started, foreground, 127.0.0.1-only, no login, no watcher
 (refresh-on-use instead of a file watcher). `serve.cmd` (shipped at the archive root by
 `fha install`/`fha update-tools`, alongside the operating layer's other root files) is a
-double-clickable launcher for a non-technical owner: `cd` to the archive, run
-`py -3 tools\fha.py serve`, pause on error so the window doesn't vanish before it's read.
+double-clickable launcher for a non-technical owner: `cd` to the archive, run the CLI's
+`serve` command, pause on error so the window doesn't vanish before it's read. Like its
+sibling launchers `fha.cmd` (Windows terminal) and `fha` (POSIX `/bin/sh`, shipped with its
+executable bit), it is **layout-agnostic**: it probes `.fha\tools\fha.py` first, then
+`tools\fha.py`, so one vendored file works in both the current and the pre-`.fha` layout and
+`migrate-layout` needs no launcher rewrite - only a refresh of pre-`.fha` copies that predate
+the probe.
 
 ## fha serve - implementation status
 
@@ -481,13 +486,14 @@ the repo root.
 |---|---|---|
 | `fha install ARCHIVE-PATH [--repo PATH] [--dry-run]` | `scaffold.py`, `manifest.json` | ✓ M9.1 - first-time bootstrap: copy the operating layer + skeleton into a new archive and stamp `.plaintext-version`. See "fha install / fha update-tools - implementation status" below |
 | `fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH]` | `scaffold.py` | ✓ M9.2 - refresh the operating layer from an updated public clone; back up customized/retired files, never delete, never touch skeleton seeds. (The no-op per-command `--spec-root` was removed; only the global `fha --spec-root` and `fha lint --spec-root` remain.) See below |
+| `fha migrate-layout [--dry-run] [--repo PATH] [--root PATH]` | `scaffold.py` | ✓ - one-time transition for a pre-`.fha` archive: MOVE `tools/` and `design/` under `.fha/` (edits preserved - no copy, no backup), re-key the `.plaintext-version` operating paths, refresh the root launchers from `--repo`, and name the capture-host re-registration when one is installed. Idempotent; refuses a half-migrated state. See below |
 
 `manifest.json` (repo root) is the committed packing list every install/update reads.
 It is regenerated from the repo - not hand-edited - with the maintenance command
 `python tools/scaffold.py write-manifest --repo .` after any change to a tool, doc, or
 skeleton file; `tests/test_scaffold.py`'s manifest-sync test fails the build if the
-committed copy drifts from the repo. The `fha` command surface is exactly `install` +
-`update-tools`; `write-manifest` is a tool-builder-only path, not part of it.
+committed copy drifts from the repo. The `fha` command surface here is exactly `install`, `update-tools`, and
+`migrate-layout`; `write-manifest` is a tool-builder-only path, not part of it.
 
 ## fha process - implementation status
 
@@ -851,18 +857,20 @@ arms, and the restore smoke test (extract the zip, `fha lint` the result: zero e
 `tests/test_doctor.py` covers the stamp-present/absent/unreadable doctor states and
 their CLEAN exit contribution.
 
-## fha install / fha update-tools - implementation status
+## fha install / fha update-tools / fha migrate-layout - implementation status
 
-The scaffolding pair (TOOLING §13c). `manifest.json` is the committed packing list;
+The scaffolding trio (TOOLING §13c). `manifest.json` is the committed packing list;
 both commands read it and copy operating-layer + skeleton files between a public-repo
 clone (or unzipped download) and a private archive. Generic glue - touches no family data.
 
 | Flag / feature | Status | Notes |
 |---|---|---|
-| `manifest.json` | ✓ M9.1 | One JSON object listing every operating-layer + skeleton file with `path`, `category` (`operating`/`skeleton`), `sha256`, `spec_version` (parsed from SPEC.md's version line), and a `src` field on skeleton entries whose archive path drops the `archive-template/` prefix. Built by a repo walk: the root rulebooks (`README.md`/`SPEC.md`/`TOOLING.md`/`AGENTS.md`/`AGENTS_TOOLING.md`/`CLAUDE.md`/`BUILD.md`), all of `tools/` (minus `__pycache__`/`*.pyc`), all of `docs/`, the agent workflow skills under `.claude/skills/`, and the `archive-template/` contents (minus its own `README.md`). Excludes spec-repo furniture (`example-archive/`, `archive-template/` as a folder, `tests/`, `.github/`, `.claude/settings.json`, `PRIVACY.md` - the public-repo "no real data" policy, contradictory inside a real archive - `RELEASE_CHECKLIST.md`, `manifest.json` itself) |
-| docs scope | ✓ | The whole `docs/` folder ships, not just BUILD.md M9.1's named five - they are the floor; a directory rule keeps every doc cross-link intact in an installed archive and auto-covers future docs. The operating layer also ships `README.md` (project orientation) and `.claude/skills/` (the genealogy workflow procedures) - everything a genealogist needs to operate, minus public-repo furniture |
+| `manifest.json` | ✓ M9.1 | One JSON object listing every operating-layer + skeleton file with `path`, `category` (`operating`/`skeleton`), `sha256`, `spec_version` (parsed from SPEC.md's version line), and a `src` field on skeleton entries whose archive path drops the `archive-template/` prefix. Built by a repo walk: the root rulebooks (`README.md`/`SPEC.md`/`TOOLING.md`/`AGENTS.md`/`CLAUDE.md`), the root launchers (`fha`/`fha.cmd`/`serve.cmd`), all of `tools/` and `design/` (minus `__pycache__`/`*.pyc`) - both remapped under the archive's `.fha/` via the `src`≠`path` seam - all of `docs/` (kept at the archive root), the agent workflow skills under `.claude/skills/`, and the `archive-template/` contents (minus its own `README.md`). Excludes the tool-BUILDING docs (`BUILD*.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS_TOOLING.md`) - no tool reads them at run time and operating an archive never needs them - and spec-repo furniture (`example-archive/`, `archive-template/` as a folder, `tests/`, `.github/`, `.claude/settings.json`, `PRIVACY.md` - the public-repo "no real data" policy, contradictory inside a real archive - `RELEASE_CHECKLIST.md`, `manifest.json` itself) |
+| docs scope | ✓ | The whole `docs/` folder ships, not just BUILD.md M9.1's named five - they are the floor; a directory rule keeps every doc cross-link intact in an installed archive and auto-covers future docs. `docs/` installs at the archive **root**, not under `.fha/`, precisely so those cross-links keep resolving: the root rulebooks link to `docs/…` and the docs link back to `../SPEC.md`, so vendoring either side alone would break both directions. The operating layer also ships `README.md` (project orientation) and `.claude/skills/` (the genealogy workflow procedures) - everything a genealogist needs to operate, minus public-repo furniture |
 | `fha install` copy + stamp | ✓ M9.1 | Creates `ARCHIVE-PATH` if absent; copies every manifest file (skeleton remapped to archive root); writes `.plaintext-version` (manifest version, spec version, install timestamp, per-file SHA256). Validates every source exists **before** writing, so a broken clone fails clean with no half-installed archive |
 | Preflight | ✓ M9.1 | Python ≥ 3.10 → friendly download pointer + hard stop if older; `exiftool` missing → advisory only, install still finishes (photo features wait) |
+| Archive `.fha/` layout | ✓ | An installed archive keeps its machinery in a hidden `.fha/` folder (`.fha/tools/`, `.fha/design/`) so the root reads as the genealogy. Install-time remap only, via the manifest's `src` (repo-flat) vs `path` (archive) seam - the workshop repo stays flat and the copy engine is unchanged. Root-resident: the rulebooks, `docs/`, `.claude/skills/`, the launchers, `fha.yaml`, the record folders. `_lib.VENDOR_DIR` is the single definition of the name, shared with `serve` |
+| Root launchers | ✓ | `serve.cmd` (double-click workbench), `fha.cmd` (Windows terminal), and `fha` (POSIX `/bin/sh`) ship to **every** archive regardless of the installing OS - an archive is a portable folder that may be opened elsewhere. All three probe `.fha/tools/fha.py` then `tools/fha.py`, so one file serves both layouts. `shutil.copy2` carries `fha`'s executable bit; `.gitattributes` pins it to LF so a Windows checkout cannot produce a CRLF shell script |
 | Re-install guard | ✓ | Refuses an archive that already has `.plaintext-version` or `tools/fha.py`, pointing at `fha update-tools` - install is one-time |
 | Zip-based / git-free | ✓ M9.1 | `--repo` only needs a directory containing `manifest.json`; `.git/` is never referenced. `--repo` defaults to the tools being run from (correct for a clone or an unzipped download) |
 | `fha install --dry-run` | ✓ | Previews the file/skeleton counts and the stamp path; writes nothing (BUILD.md "every mutating op ships `--dry-run`") |
@@ -875,7 +883,14 @@ clone (or unzipped download) and a private archive. Generic glue - touches no fa
 | `--verbose` | ✓ | Also lists files that are already up to date |
 | `--repo` required + archive check | ✓ | Missing `--repo` → the BUILD.md-specified "run from inside your archive, with --repo pointing to your copy of the plaintext tools" message; not-an-archive (auto-detect finds no `fha.yaml`, **or** an explicit `--root` points at a folder without `fha.yaml`) → a distinct plain refusal before any file is written; all exit 3 |
 | `write-manifest` (maintenance) | ✓ | `python tools/scaffold.py write-manifest --repo .` regenerates `manifest.json`; not on the `fha` surface. Kept honest by `tests/test_scaffold.py`'s manifest-sync test |
-| Exit codes | ✓ | 0 clean (incl. install with the exiftool advisory, and an update that backed files up); 1 if some files couldn't be written/moved (reported); 3 for can't-run (Python too old, missing/invalid manifest, re-install refusal, missing `--repo`, not-an-archive, write failure) |
+| Install-once across a layout change | ✓ | A skeleton seed whose archive path moves with the layout (`design/custom.css` -> `.fha/design/custom.css`) is **moved to its new path before** the normal reconciliation runs, and the stamp re-keyed - otherwise the old path reads as retired (gone from the manifest) and is quarantined into `.plaintext-backup/` while nothing replaces it, because updates never install skeleton entries: a customized stylesheet would disappear from the archive. Matched only where the manifest lists the vendor-prefixed twin as a `skeleton` entry, the source is on disk, and the destination is not; both prefix directions handled; reported like any change and honoured by `--dry-run` (which re-keys in memory only, so the preview matches the real run) |
+| Malformed stamp shape | ✓ | `.plaintext-version` is a hand-editable JSON file. A `files` value that is valid JSON but not an object (a list, a string, `null`) is read as "nothing recorded" by the shared `_stamp_file_map` rather than raising `AttributeError` deep inside a mutating command; non-string keys/values are dropped. Every operating file is then re-checked against the manifest, which errs toward backing up rather than overwriting, and the run re-stamps cleanly |
+| `fha migrate-layout` | ✓ | One-time flat -> `.fha/` transition. Plain `shutil.move` of `tools/` and `design/` (hand-edits preserved - not a copy-and-backup cycle) + stamp re-key. Refuses to guess a half-migrated archive (both a flat and a `.fha/` copy of a subtree), a non-archive `--root`, and an archive with nothing to migrate - all before any move, exit 3. Idempotent no-op on an already-migrated archive |
+| migrate-layout launcher refresh | ✓ | A pre-`.fha` archive's `serve.cmd` names `tools\\fha.py` directly and has no `fha`/`fha.cmd` at all, so the move would break double-clicking `serve.cmd` and leave no CLI entry point. Stale launchers (absent, or lacking the vendor probe) are re-copied from `--repo`; any the source cannot supply are listed with the `update-tools` command that installs them, and `--dry-run` says which is which |
+| migrate-layout capture host | ✓ | A registered native-messaging host stores an absolute `<archive>/tools/fha.py` in its generated launcher, which the move invalidates - and `doctor` does not inspect it, so nothing else would report it. The run detects an installed Chrome/Edge host manifest (best-effort; never fatal) and names `fha capture --install-host` as a follow-up step |
+| migrate-layout rollback honesty | ✓ | A failed move rolls back what already moved. A rollback that **itself** fails leaves the archive genuinely half-migrated, so those paths are tracked and the error names each stranded folder and where it belongs, instead of the blanket "nothing was left half-moved" that would send the owner to retry a command that cannot succeed |
+| update-tools layout notice | ✓ | An `update-tools` run against a still-flat archive, from tools inside that same archive, prints the `migrate-layout` route first: the update would otherwise retire the running toolchain into `.plaintext-backup/` and install a fresh copy under `.fha/`. Advisory - the update proceeds if the human continues |
+| Exit codes | ✓ | 0 clean (incl. install with the exiftool advisory, and an update that backed files up); 1 if some files couldn't be written/moved (reported); 3 for can't-run (Python too old, missing/invalid manifest, re-install refusal, missing `--repo`, not-an-archive, write failure, and migrate-layout's not-an-archive / nothing-to-migrate / half-migrated refusals) |
 
 Automated tests: `tests/test_scaffold.py` (stdlib `unittest`) builds a tiny **git-free** fake
 repo (3 operating + 3 skeleton files) and throwaway archives, covering install (copy + remap +

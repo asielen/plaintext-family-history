@@ -7,7 +7,8 @@ This page is the whole ritual - it takes about two minutes, and your records are
 **The one promise to hold onto:** updating replaces *tools and instructions*, never *records*.
 Your `sources/`, `people/`, `places/`, `notes/`, photos, and documents are not part of any
 update. Your settings (`fha.yaml`), your place list (`places/places.yaml`), and your site styling
-(`design/custom.css`) are written once at install and never overwritten by an update either.
+(`.fha/design/custom.css`) are written once at install and never overwritten by an update either -
+not even by the one that introduced the `.fha/` folder, which carries your stylesheet across.
 
 ---
 
@@ -68,10 +69,59 @@ there, and `update-tools` refreshes them in place. You never name the tool path 
 
    Doctor confirms the new tools and your archive agree. If any tool mentions the index needs a
    rebuild, `fha index` does it - the index is a disposable cache, so this is
-   always safe. If the update brought a new `tools/requirements.txt`, re-run
-   `python -m pip install -r tools/requirements.txt` once.
+   always safe. If the update brought new helper packages, re-run the installer once, from
+   inside your archive folder:
+
+   ```
+   python -m pip install -r .fha/tools/requirements.txt
+   ```
+
+   (`.fha/` is where an installed archive keeps its tools. If your archive still has a plain
+   `tools/` folder at its root, drop the `.fha/` and use `tools/requirements.txt` - or move to
+   the tidier layout first with `fha migrate-layout`, below.)
 
 That's it. Records untouched, settings untouched, improvements in.
+
+---
+
+## One-time: tidying an older archive's folders (`fha migrate-layout`)
+
+**Skip this if your archive already has a `.fha` folder in it, or you set it up recently.**
+
+Newer archives keep their machinery — the `tools/` program folder and the `design/` stylesheets —
+inside a single hidden folder called `.fha`, so that when you open your archive you see *your
+family history* and not a pile of program files. Archives set up before that change have `tools/`
+and `design/` sitting at the top level. One command moves them:
+
+1. **Preview first** — this writes nothing:
+
+   ```
+   fha migrate-layout --root "PATH-TO-YOUR-ARCHIVE" --dry-run
+   ```
+
+2. **Do it** — the same command without `--dry-run`.
+
+3. **Then run the normal update** (step 2 of the ritual above) to pick up everything else.
+
+Run it from your **workshop** folder with `--root` pointing at your archive, as shown. That way
+the tools doing the moving aren't the ones being moved.
+
+**What it does and doesn't touch.** Your `tools/` and `design/` folders *move* into `.fha/` —
+they are not copied, replaced, or reset, so anything you or your assistant edited stays exactly
+as it was, including your `design/custom.css` styling. Your records, `docs/`, the rulebooks, and
+`fha.yaml` do not move at all. Running it twice is harmless: the second run says there's nothing
+to do. If it finds your archive half-moved already, it stops and says so rather than guessing.
+
+**Two things it will tell you about, if they apply:**
+
+- **The launcher files.** An older archive's `serve.cmd` points straight at the old `tools/`
+  folder, and it may not have an `fha` launcher at all. The command replaces them for you when it
+  can. If it says it couldn't, run the update in the ritual above and they'll be installed.
+- **Browser capture.** If you set up the browser clipper (`fha capture --install-host`), the
+  browser remembers where the tools *used* to be. The command tells you when this applies — just
+  re-run `fha capture --install-host` with the same browser and settings as before.
+
+A brand-new archive from `fha install` is already laid out this way and never needs this command.
 
 ---
 

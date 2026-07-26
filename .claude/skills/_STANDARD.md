@@ -4,8 +4,8 @@
 written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they
 record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) — the
 reference skill — and obey the rules below. Design lives in
-[`TOOLING_INTERFACE.md`](../../TOOLING_INTERFACE.md); the build sequence in
-[`BUILD_INTERFACE.md`](../../BUILD_INTERFACE.md); the operating law in [`AGENTS.md`](../../AGENTS.md).
+[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build sequence in
+[`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md); the operating law in [`AGENTS.md`](../../AGENTS.md).
 
 ---
 

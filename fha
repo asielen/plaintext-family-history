@@ -1,0 +1,44 @@
+#!/bin/sh
+# fha - the archive command line on macOS and Linux. Run it from a terminal as
+# `./fha <command>` from the archive folder (e.g. `./fha lint`, `./fha index`,
+# `./fha find "Margaret Cole"`), or as a bare `fha <command>` if you have put the
+# archive folder on your PATH. Your working directory is preserved, so relative
+# paths and archive auto-detection work from anywhere inside the archive. Finds
+# the tools whether they are vendored flat (tools/) or consolidated under .fha/.
+# The Windows twin of this file is fha.cmd.
+set -e
+
+# Resolve this script's own folder, following symlinks, so a symlink dropped on
+# the PATH (ln -s /path/to/archive/fha ~/bin/fha) still finds the archive's tools.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *)  self=$(dirname "$self")/$link ;;
+  esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
+
+if [ -f "$here/.fha/tools/fha.py" ]; then
+  entry="$here/.fha/tools/fha.py"
+elif [ -f "$here/tools/fha.py" ]; then
+  entry="$here/tools/fha.py"
+else
+  echo "fha: cannot find the tools (looked for .fha/tools/fha.py and tools/fha.py" >&2
+  echo "     next to $here). Re-run \`fha update-tools\` from your workshop copy." >&2
+  exit 3
+fi
+
+# python3 is the norm; fall back to python only if it is a Python 3.
+if command -v python3 >/dev/null 2>&1; then
+  py=python3
+elif command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' 2>/dev/null; then
+  py=python
+else
+  echo "fha: Python 3.10 or later is required but no python3 was found on your PATH." >&2
+  echo "     Install it from python.org (Mac: \`brew install python\`), then re-run." >&2
+  exit 3
+fi
+
+exec "$py" "$entry" "$@"

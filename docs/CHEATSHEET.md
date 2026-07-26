@@ -24,9 +24,21 @@ You never have to type a command. The phrases above are the whole job.
 
 Replace `my-family-archive` with your archive's folder name.
 
-**Running `fha`:** run these from your archive folder. On Windows PowerShell it may be
-`.\fha <command>` (or add the archive folder to your PATH); Command Prompt accepts a bare
-`fha <command>`.
+**Running `fha`.** `fha` is a small launcher file that sits in your archive folder (and in your
+workshop copy of the project) and finds the tools for you. How you type it depends on where you
+are and which terminal you use:
+
+| Where you are | Type |
+|---|---|
+| Windows, Command Prompt | `fha <command>` |
+| Windows, PowerShell | `.\fha <command>` |
+| macOS or Linux | `./fha <command>` |
+
+(Put the folder on your PATH once and a bare `fha <command>` works everywhere.)
+
+The examples below name the archive with `--root`, so they run from anywhere. Run them from
+*inside* the archive folder and you can drop `--root` altogether - `fha` uses the archive it
+finds itself in.
 
 ```
 fha process "inbox/the-file-you-added.jpg" --root my-family-archive   # file one new inbox item

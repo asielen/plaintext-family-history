@@ -65,9 +65,9 @@ web-friendly copy is made, its hidden location/camera data is stripped, and if i
 to show a living person it is left out of the shareable version automatically. You never
 have to think about that — it just happens.
 
-### 3. The look — `design/custom.css`
+### 3. The look — `.fha/design/custom.css`
 
-If you (or a helper) know a little CSS, `design/custom.css` restyles the **entire** site —
+If you (or a helper) know a little CSS, one stylesheet restyles the **entire** site —
 colours, fonts, spacing, every page and the family tree — from one file. Most changes are
 a line or two:
 
@@ -82,6 +82,13 @@ You do not need to touch this file to have a good-looking site — it comes with
 design already (a printed family-register look; see [`DESIGN.md`](DESIGN.md) if you are
 curious). `custom.css` is there for when you want to make it yours. It is loaded last, so
 whatever you put here wins.
+
+**Where to find it.** In an installed archive the design package lives in the hidden `.fha/`
+folder alongside the tools, so the file is `.fha/design/custom.css`. (On a Mac, press
+`Cmd-Shift-.` in Finder to see hidden folders; in Windows File Explorer, tick *Hidden items*
+under *View*. Or just ask the assistant to open it for you.) An older archive that still keeps
+its machinery at the root has it at `design/custom.css` instead. Either way, an update never
+overwrites it.
 
 ### 4. The facts themselves — your records
 
@@ -135,7 +142,7 @@ assistant:
 
 It runs the **reconcile-site-edits** skill: it reads your hand-edited page, works out what
 you changed, and moves that change into the right source file for you — a colour into
-`design/custom.css`, homepage words into `notes/home.md`, a person's biography into that
+`.fha/design/custom.css`, homepage words into `notes/home.md`, a person's biography into that
 person's record, a title or banner into `fha.yaml`. It shows you each change and asks
 before saving it. Then it rebuilds the site the normal way, so your edit now comes from
 the source and will survive every future build. (If your edit was actually a new *fact*

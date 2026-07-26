@@ -133,9 +133,12 @@ A fresh archive prints **`✓ No issues found.`** - that's a green light. (`--ro
 tools which archive folder to look at. `check` is the friendly name for the command also called
 `lint`.)
 
-> **Running `fha`:** shown here from the project folder with `--root`, but normally you run `fha`
-> from inside your archive folder. On Windows **PowerShell** that may mean typing `.\fha <command>`
-> (or add the archive folder to your PATH); the **Command Prompt** accepts a bare `fha <command>`.
+> **Running `fha`.** `fha` is a small launcher file that sits in the project folder - and, once
+> you have one, in your archive folder too. It finds the tools and runs them, so you never type a
+> path. On **macOS or Linux** type `./fha <command>`; in Windows **PowerShell**, `.\fha <command>`;
+> the Windows **Command Prompt** accepts a bare `fha <command>`. (Adding the folder to your PATH
+> once makes a bare `fha` work everywhere.) The `--root` shown here names which archive to use;
+> run `fha` from inside your archive and you can leave it off.
 
 ### Coming from Ancestry (or another genealogy program)?
 
