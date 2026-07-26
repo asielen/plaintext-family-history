@@ -143,13 +143,16 @@ _ROOT_OPERATING_DOCS = (
     'CLAUDE.md',
 )
 
-# Double-clickable launchers that live at the repo root (not under tools/). They
-# ship into every archive so a non-technical owner can start the workbench
-# without a terminal. serve.cmd is a thin wrapper around `py -3 tools\fha.py
-# serve` (plan 17). Enumerated like the root docs because the repo root also
-# holds furniture that never enters an archive.
+# Root-level launchers that ship into every archive. serve.cmd is the
+# double-clickable workbench launcher (plan 17); fha.cmd is the terminal CLI
+# shim so `fha <command>` works without naming the tools' path. Both are
+# layout-agnostic - they probe for the entrypoint under .fha\tools\ first, then
+# tools\ - so a single vendored file works whether the tools live flat or
+# consolidated under .fha/. Enumerated like the root docs because the repo root
+# also holds furniture that never enters an archive.
 _ROOT_LAUNCHERS = (
     'serve.cmd',
+    'fha.cmd',
 )
 
 # Subtrees walked whole for the operating layer. `.claude/skills/` carries the

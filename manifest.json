@@ -318,6 +318,12 @@
       "src": "archive-template/documents/.gitkeep"
     },
     {
+      "path": "fha.cmd",
+      "category": "operating",
+      "sha256": "bd978b8a6d9583f9dcc99671d3f1fc749e2e9f0490d6514abdc1ea9a42a9fb70",
+      "spec_version": "1.2"
+    },
+    {
       "path": "fha.yaml",
       "category": "skeleton",
       "sha256": "d4a8a1bab5be95e8fc1f00230d099562a18f18d8523691e70e7d6d343db2d8c4",
@@ -418,7 +424,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "c61c433f73b99e42338196f41502d396ca73a13e6722bd55f77060ea9dfa7c35",
+      "sha256": "5559cdb272be9a2d6cfb2e05ef7bae7f060ca2177d10df4c0d9716183edc5e43",
       "spec_version": "1.2"
     },
     {
@@ -630,7 +636,7 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "7e776267e7e93f019afd22d1fe9b3f9fc24c9fa039f3c8b698d022417fc77263",
+      "sha256": "a6e4d1d05fe85823332a19e10f46c2db894fd8ed86b8374bc5b7c7192cfd089d",
       "spec_version": "1.2"
     },
     {

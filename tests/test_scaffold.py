@@ -112,14 +112,20 @@ class ManifestSyncTest(unittest.TestCase):
         for shipped in ('SPEC.md', 'TOOLING.md', 'AGENTS.md', 'CLAUDE.md', 'README.md'):
             self.assertIn(shipped, paths, shipped)
 
-    def test_manifest_includes_serve_launcher(self):
-        # plan 17: the double-clickable workbench launcher ships into every
-        # archive and calls tools\fha.py serve.
+    def test_manifest_includes_launchers(self):
+        # plan 17 + archive-layout: the double-clickable workbench launcher AND
+        # the terminal `fha` CLI shim both ship into every archive. Both are
+        # layout-agnostic - they probe .fha\tools\ first, then tools\ - so one
+        # vendored file works flat or consolidated under .fha/.
         entries = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
-        self.assertIn('serve.cmd', entries)
-        self.assertEqual(entries['serve.cmd']['category'], 'operating')
-        content = (ROOT / 'serve.cmd').read_text(encoding='utf-8')
-        self.assertIn(r'tools\fha.py serve', content)
+        for launcher in ('serve.cmd', 'fha.cmd'):
+            self.assertIn(launcher, entries, launcher)
+            self.assertEqual(entries[launcher]['category'], 'operating')
+        serve = (ROOT / 'serve.cmd').read_text(encoding='utf-8')
+        self.assertIn(r'tools\fha.py serve', serve)        # flat fallback
+        self.assertIn(r'.fha\tools\fha.py serve', serve)   # consolidated
+        fha = (ROOT / 'fha.cmd').read_text(encoding='utf-8')
+        self.assertIn(r'.fha\tools\fha.py', fha)
 
     def test_skeleton_and_operating_categories(self):
         files = scaffold.generate_manifest(ROOT)['files']
