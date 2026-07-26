@@ -203,6 +203,20 @@ class ManifestSyncTest(unittest.TestCase):
             self.assertIn('--repo', proc.stderr)
             self.assertIn('--root', proc.stderr)
 
+    def test_windows_launcher_validates_python(self):
+        # A machine with no `py` launcher, or one whose `py -3` is older than
+        # 3.10, otherwise gets a bare "not recognized" or a raw SyntaxError -
+        # neither of which tells a non-technical owner what to do. The POSIX
+        # launcher already guides them; Windows must match.
+        text = (ROOT / 'fha.cmd').read_text(encoding='utf-8')
+        self.assertEqual(text.count('sys.version_info >= (3, 10)'), 2)  # py, python
+        self.assertIn('python.org/downloads', text)
+        self.assertIn(':no_python', text)
+        # cmd expands %VAR% when it PARSES a parenthesised block, so a variable
+        # set and read in one block reads a stale value. The interpreter choice
+        # must therefore not be made inside an if-block.
+        self.assertNotIn('if not defined FHA_PY (', text)
+
     def test_windows_launcher_handles_missing_tools(self):
         # Parity with the POSIX launcher: without this, a damaged archive hands
         # the missing path straight to Python and the Windows user gets a raw
@@ -713,7 +727,10 @@ class MigrateLayoutTest(unittest.TestCase):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = scaffold.run_migrate_layout(self.arc, repo_root=empty)
-        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        # A file that could not be written is exit 1 by this project's
+        # convention, and here it is load bearing: tools/ has moved and the
+        # archive may have no working launcher left.
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
         self.assertTrue(rc.data['launchers_pending'])
         out = buf.getvalue()
         self.assertIn('serve.cmd', out)
@@ -848,6 +865,56 @@ class MigrateLayoutTest(unittest.TestCase):
 
         with mock.patch.dict(sys.modules, {'capture': _FakeCapture}):
             self.assertIsNone(scaffold._capture_host_installed(self.arc))
+
+    def test_damaged_manifest_entry_refuses_before_any_move(self):
+        # A hand-edited or truncated manifest can hold a null or a bare string.
+        # Every consumer reaches for entry['path'], so without a check at the
+        # loader this surfaces as an AttributeError - during migrate-layout, that
+        # is a traceback AFTER tools/ and design/ have already moved.
+        bad = Path(self._tmp.name) / 'bad-repo'
+        _write(bad / 'manifest.json', json.dumps(
+            {'manifest_version': '1', 'files': [{'path': 'ok.md'}, None]}))
+        with self.assertRaises(scaffold.ScaffoldError) as ctx:
+            scaffold.load_manifest(bad)
+        self.assertIn('damaged entry at position 1', str(ctx.exception))
+        # A string entry and a path-less object are refused the same way.
+        for broken in ('just-a-string', {'sha256': 'abc'}, {'path': ''}):
+            _write(bad / 'manifest.json', json.dumps(
+                {'manifest_version': '1', 'files': [broken]}))
+            with self.assertRaises(scaffold.ScaffoldError):
+                scaffold.load_manifest(bad)
+
+    def test_unreadable_stamp_is_set_aside_not_left_to_block_the_next_step(self):
+        # `_load_version_stamp` REFUSES invalid JSON, so "the next update-tools
+        # re-stamps" is false for this case - it stops with a delete-and-retry
+        # message instead. Repair it here rather than reporting a clean migration
+        # over a file that blocks the very next documented step.
+        _write(self.arc / '.plaintext-version', '{not json at all')
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = self._migrate()
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertTrue(rc.data['stamp_warning'])
+        # Set aside, not deleted, and out of the way of the next update.
+        self.assertFalse((self.arc / '.plaintext-version').exists())
+        salvaged = list(self.arc.glob('.plaintext-version.unreadable*'))
+        self.assertEqual(len(salvaged), 1)
+        self.assertIn('{not json at all', salvaged[0].read_text(encoding='utf-8'))
+        # Already handled, so it must not be listed as a step still to do.
+        self.assertNotIn('Fix the version stamp', buf.getvalue())
+        # And the archive is now in a state the next update really can re-stamp.
+        self.assertIsNone(scaffold._load_version_stamp(self.arc))
+        self.assertIn('update-tools', buf.getvalue() + err.getvalue())
+
+    def test_pending_launchers_make_the_run_a_warning(self):
+        # tools/ has moved and no working root launcher was installed: a script
+        # driving the migration must not read that as a clean run.
+        empty = Path(self._tmp.name) / 'empty-repo-2'
+        empty.mkdir()
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_migrate_layout(self.arc, repo_root=empty)
+        self.assertTrue(rc.data['launchers_pending'])
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
 
     def test_stamp_write_failure_after_migration_is_reported(self):
         # The folders have already moved. Silently swallowing this reports a

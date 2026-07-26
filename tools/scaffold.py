@@ -427,6 +427,22 @@ def load_manifest(repo_root: Path) -> dict:
             f"{path} is not a valid manifest (expected a 'files' list). "
             f"Re-download the plaintext tools and try again."
         )
+    # Validate every ENTRY too, not just the list around them. A hand-edited or
+    # truncated manifest can hold a null, a bare string, or an entry with no
+    # `path`, and each consumer reaches for `entry['path']` / `entry.get(...)`.
+    # Catching it here - at the single door every command reads the manifest
+    # through - turns what would be an AttributeError or KeyError raised
+    # mid-operation, potentially after files have already moved, into one plain
+    # refusal before anything is touched.
+    for position, entry in enumerate(manifest['files']):
+        if not isinstance(entry, dict) or not isinstance(entry.get('path'), str) \
+                or not entry['path']:
+            raise ScaffoldError(
+                f"{path} has a damaged entry at position {position} (every entry "
+                f"must be an object with a 'path'). Re-download the plaintext "
+                f"tools and try again - this file is the packing list the install "
+                f"and update commands read, and a partial one cannot be trusted."
+            )
     return manifest
 
 
@@ -1635,6 +1651,9 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     # not raise here, after the folders have already moved.
     stamp_path = archive_root / VERSION_FILE
     stamp_warning = ''
+    # True when the warning describes something this run already handled,
+    # so the closing steps do not ask for work that is already done.
+    stamp_repaired = False
     if stamp_path.is_file():
         try:
             stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
@@ -1647,9 +1666,34 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
                 stamp['files'] = dict(sorted(rekeyed.items()))
                 _write_version_stamp(archive_root, stamp)
         except ValueError:
-            # Unparseable stamp: the folders still moved, and the next
-            # update-tools re-stamps from scratch. Nothing to say.
-            pass
+            # Unparseable stamp. "The next update-tools re-stamps" is NOT true
+            # for this case: `_load_version_stamp` refuses invalid JSON outright
+            # and stops the update with a delete-it-and-retry message. So repair
+            # it here rather than reporting a clean migration over a file that
+            # will block the very next documented step. The old bytes are kept
+            # beside it - it is only a record of what was installed, never data,
+            # but this command does not delete things either.
+            try:
+                salvage = stamp_path.with_name(stamp_path.name + '.unreadable')
+                n = 2
+                while salvage.exists():
+                    salvage = stamp_path.with_name(
+                        f'{stamp_path.name}.unreadable-{n}')
+                    n += 1
+                stamp_path.replace(salvage)
+                stamp_repaired = True
+                stamp_warning = (
+                    f'{VERSION_FILE} was not readable JSON, so it could not be '
+                    f're-keyed for the new layout. It has been set aside as '
+                    f'{salvage.name} and will be rebuilt by your next '
+                    f'`fha update-tools --repo PATH-TO-WORKSHOP`. Nothing else '
+                    f'was affected - it records only what was installed.')
+            except OSError as exc:
+                stamp_warning = (
+                    f'{VERSION_FILE} is not readable JSON and could not be set '
+                    f'aside ({exc}). Delete {stamp_path} by hand - it records '
+                    f'only what was installed, never your data - then run '
+                    f'`fha update-tools --repo PATH-TO-WORKSHOP` to rebuild it.')
         except OSError as exc:
             # A read or write that failed outright. The write is atomic, so the
             # OLD stamp is still intact on disk - which now names the pre-move
@@ -1678,7 +1722,11 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     if refreshed:
         print(f'  refreshed the root launcher(s): {", ".join(refreshed)}')
     for moved in backed_up:
-        print(f'  your edited {moved} (kept, not deleted - the replacement is '
+        # Deliberately not "your edited …": this also catches an untouched stock
+        # launcher from an OLDER release, whose checksum the current manifest has
+        # no record of. Claiming the owner edited it would be a small lie every
+        # legacy archive gets told.
+        print(f'  kept your previous {moved} (not deleted - the replacement is '
               'the stock launcher that can find the moved tools)')
     print('Records, the rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), docs/, '
           'and .claude/ stayed at the archive root.')
@@ -1686,7 +1734,7 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
         print(f'\nWARNING: {stamp_warning}', file=sys.stderr)
     print('\nNext:')
     step = 1
-    if stamp_warning:
+    if stamp_warning and not stamp_repaired:
         print(f'  {step}. Fix the version stamp as described in the warning above, '
               'before the next update.')
         step += 1
@@ -1704,7 +1752,13 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
               'settings you used before.')
         step += 1
     print(f'  {step}. Run `fha doctor` to confirm, then `fha index` to refresh the cache.')
-    return Result(exit_code=EXIT_WARNINGS if stamp_warning else EXIT_CLEAN,
+    # A launcher this run could not write is a file that could not be written,
+    # which is exit 1 by the project's own convention - and here it is load
+    # bearing: with tools/ moved and no working root launcher, an archive can be
+    # left with no way to run `fha` at all. Exiting 0 would let a script driving
+    # the migration record a partially completed run as clean.
+    return Result(exit_code=EXIT_WARNINGS if (stamp_warning or unavailable)
+                  else EXIT_CLEAN,
                   changed=[str(d) for _, d in moved_done]
                           + [str(archive_root / n) for n in refreshed],
                   data={'moved': len(present), 'launchers_refreshed': len(refreshed),
