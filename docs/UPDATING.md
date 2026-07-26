@@ -29,13 +29,17 @@ Run everything from a terminal *inside your archive folder*. `PATH-TO-WORKSHOP` 
 project folder the update comes from - your git clone, or the freshly unzipped new download
 (zip users: [SETUP_FROM_ZIP.md](SETUP_FROM_ZIP.md) covers getting that folder).
 
+The bare `fha` command works whatever your layout. In an installed archive (`fha install`) the
+tools live tucked under a hidden `.fha/` folder, not at the archive root; the launcher finds them
+there, and `update-tools` refreshes them in place. You never name the tool path yourself.
+
 1. **Freshen the workshop.** Git users: `git pull` in the workshop clone. Zip users: unzip the
    new download beside the old one.
 
 2. **Preview - nothing is written yet:**
 
    ```
-   python tools/fha.py update-tools --dry-run --repo "PATH-TO-WORKSHOP"
+   fha update-tools --dry-run --repo "PATH-TO-WORKSHOP"
    ```
 
    Read the plan: which files are new, which are unchanged, which will be updated, and which of
@@ -59,11 +63,11 @@ project folder the update comes from - your git clone, or the freshly unzipped n
 6. **Health-check:**
 
    ```
-   python tools/fha.py doctor
+   fha doctor
    ```
 
    Doctor confirms the new tools and your archive agree. If any tool mentions the index needs a
-   rebuild, `python tools/fha.py index` does it - the index is a disposable cache, so this is
+   rebuild, `fha index` does it - the index is a disposable cache, so this is
    always safe. If the update brought a new `tools/requirements.txt`, re-run
    `python -m pip install -r tools/requirements.txt` once.
 

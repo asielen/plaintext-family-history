@@ -36,7 +36,7 @@ Everything else stdlib.
 No network access except the geocoder's optional gazetteer download.
 
 **Archive root discovery.** An archive root is identified by the presence of `fha.yaml`; discovery walks upward from CWD to find it, and `--root PATH` overrides. (`sources/` and the other record directories are expected but not required for root detection - a brand-new archive may have `fha.yaml` before its record directories exist.)
-The spec docs (`SPEC.md`/`TOOLING.md`) normally live at the archive root but may instead be installed with the tools; `--spec-root PATH` points at them when separated.
+The spec docs (`SPEC.md`/`TOOLING.md`) normally live at the archive root but may instead be installed with the tools; `--spec-root PATH` points at them when separated. In an installed archive the tools (and the spec docs installed beside them) are vendored under a hidden `.fha/` folder while the archive root shows only the genealogy and the rulebooks; root detection is unaffected - it still walks up to the `fha.yaml` that either layout keeps at the archive root.
 In the public spec repo, the fixture is run explicitly: `fha lint --root example-archive --spec-root .` - the repo root is not itself an archive.
 All stored paths are alias-form with forward slashes (normalize on Windows).
 
@@ -777,7 +777,7 @@ It explicitly **excludes** spec-repo furniture that never enters an archive: `ex
 Creates `<archive-path>` if absent (skeleton + full operating layer), or populates an existing folder that has no tools yet.
 Stamps `.plaintext-version` recording the manifest version and per-file checksums received.
 After this the archive is self-contained - tools and rulebook both vendored - and `update-tools` can run from within it.
-*(Bootstrap note: `install` necessarily runs from the clone, e.g. `python tools/fha.py install ~/my-family-archive`, because the archive has no `fha` yet. This is the one command that can't be run from the archive - by definition.)*
+*(Bootstrap note: `install` necessarily runs from the clone, e.g. `fha install ~/my-family-archive`, because the archive has no `fha` yet. This is the one command that can't be run from the archive - by definition.)*
 
 **`fha update-tools`** - run from the archive (or the clone, pointed at it) any time the public repo improves.
 Reads the public manifest, compares against the archive's `.plaintext-version` stamp, and reconciles **without ever destroying anything**:

@@ -114,7 +114,7 @@ read its last lines for the reason.)
 Now run the linter against your archive - it checks that everything is shaped correctly:
 
 ```
-python tools/fha.py lint --root my-family-archive
+fha lint --root my-family-archive
 ```
 
 A fresh archive prints:
@@ -124,7 +124,8 @@ A fresh archive prints:
 ```
 
 That's your green light: Python works, the tools work, and your archive is valid. (`--root`
-tells the tools which archive folder to use; `tools/fha.py` is the tool program itself.)
+tells the tools which archive folder to use; `fha` is the launcher that finds and runs the tool
+program for you.)
 
 ---
 
@@ -149,12 +150,14 @@ new zip, unzip it, and copy its `tools/` folder (plus `SPEC.md`, `TOOLING.md`, `
 `my-family-archive` folder when updating** - your records aren't part of the download and stay
 exactly as they are.
 
-> **The assisted way (optional).** If you'd rather have the tools live *inside* your archive,
-> use `fha install` **instead of** copying `archive-template` in Step 3 - it sets up the archive
-> folder with both the skeleton files and the tools in one step:
+> **The assisted way (optional).** If you'd rather have the tools live *inside* your archive -
+> tucked into a hidden `.fha/` folder (tools, docs, design) so the archive root stays clean, showing
+> only your data plus the rulebooks, launchers, and `fha.yaml` - use `fha install` **instead of**
+> copying `archive-template` in Step 3. It sets up the archive folder with both the skeleton files
+> and the tools in one step:
 >
 > ```
-> python tools/fha.py install my-family-archive
+> fha install my-family-archive
 > ```
 >
 > Run this from your workshop folder against a **fresh, empty folder name** (not a copy of
@@ -164,7 +167,7 @@ exactly as they are.
 > and never touches your `fha.yaml` or place list. No git required either way.
 
 > **Backups are your safety net, not git.** Since you're not using GitHub, make your own copies:
-> `python tools/fha.py backup --root my-family-archive` writes a dated, verified zip into a folder
+> `fha backup --root my-family-archive` writes a dated, verified zip into a folder
 > beside your archive - copy that zip somewhere separate (an external drive, another computer, a
 > cloud-storage folder). Your records are plain files, so that zip is a complete, future-proof
 > backup: to restore it, just unzip. (Photos and documents aren't included unless you add

@@ -126,12 +126,16 @@ is already in this project at [`../archive-template/`](../archive-template/).
 anything shaped the wrong way):
 
 ```
-python tools/fha.py check --root my-family-archive
+fha check --root my-family-archive
 ```
 
 A fresh archive prints **`✓ No issues found.`** - that's a green light. (`--root` just tells the
 tools which archive folder to look at. `check` is the friendly name for the command also called
 `lint`.)
+
+> **Running `fha`:** shown here from the project folder with `--root`, but normally you run `fha`
+> from inside your archive folder. On Windows **PowerShell** that may mean typing `.\fha <command>`
+> (or add the archive folder to your PATH); the **Command Prompt** accepts a bare `fha <command>`.
 
 ### Coming from Ancestry (or another genealogy program)?
 
@@ -140,7 +144,7 @@ You don't re-type anything. Every genealogy program can export your tree as a **
 Downloads). Then ask your assistant:
 
 > "Import my GEDCOM file" (or run
-> `python tools/fha.py gedcom import family-tree.ged --root my-family-archive`)
+> `fha gedcom import family-tree.ged --root my-family-archive`)
 
 First it shows you a **plan** - how many people, families, and statements it found - and writes
 nothing. Add `--apply` and every person in your tree becomes a record, every assertion becomes a
@@ -242,7 +246,7 @@ Your archive is plain files, so a backup is just a copy - and one command makes 
 Ask the assistant to "back up my archive," or run it yourself:
 
 ```
-python tools/fha.py backup --root my-family-archive
+fha backup --root my-family-archive
 ```
 
 That writes a dated zip file into a folder **beside** your archive (named
@@ -281,7 +285,7 @@ folders you like inside it - by type, by family line, by decade - anything you p
 folder keeps its spot when it's processed (something dropped loose at the drawer's top level
 gets filed into a type folder for you), and you can rearrange it later too: the ID tag in each
 filed item's name ties it to its evidence folder, so after a reshuffle one command
-(`python tools/fha.py reconcile`, or just ask the assistant) re-ties every moved file. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
+(`fha reconcile`, or just ask the assistant) re-ties every moved file. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
 you're not sure where a stray research note belongs, the "Where does a note go?" list in
 [`FILING_CABINET.md`](FILING_CABINET.md) answers it in four lines.
 

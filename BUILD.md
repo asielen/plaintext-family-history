@@ -1304,8 +1304,8 @@ duplicates reported, never merged; exactly three `mint_ids` batches for scale.
 
 **Done when:**
 ```sh
-python tools/fha.py gedcom import family-tree.ged --root <archive>            # plan, no writes
-python tools/fha.py gedcom import family-tree.ged --root <archive> --apply   # stubs + record + copy
+fha gedcom import family-tree.ged --root <archive>            # plan, no writes
+fha gedcom import family-tree.ged --root <archive> --apply   # stubs + record + copy
 # fha index && fha lint afterward: no E-codes; re-running the same file: exit 2, zero writes
 ```
 
@@ -1625,7 +1625,7 @@ This is the primary install path for non-technical users (see PR 09 / `docs/SETU
 
 **Done when:**
 ```sh
-python tools/fha.py install ./test-archive --repo .   # skeleton; .plaintext-version written
+fha install ./test-archive --repo .   # skeleton; .plaintext-version written
 # Python < 3.10 → friendly message, no traceback
 # exiftool absent → friendly guidance message, install proceeds (not a hard stop)
 # --repo pointing to an unzipped download (no .git/) → same result as a git clone

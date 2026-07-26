@@ -22,23 +22,27 @@ You never have to type a command. The phrases above are the whole job.
 
 ## The handful of commands (if you ever want them)
 
-Run from your workshop folder. Replace `my-family-archive` with your archive's folder name.
+Replace `my-family-archive` with your archive's folder name.
+
+**Running `fha`:** run these from your archive folder. On Windows PowerShell it may be
+`.\fha <command>` (or add the archive folder to your PATH); Command Prompt accepts a bare
+`fha <command>`.
 
 ```
-python tools/fha.py process "inbox/the-file-you-added.jpg" --root my-family-archive   # file one new inbox item
-python tools/fha.py report   --root my-family-archive   # the review queue + research leads
-python tools/fha.py find --text "Rose Hartley" --root my-family-archive   # search everything
-python tools/fha.py doctor   --root my-family-archive   # health check - run this when stuck
-python tools/fha.py lint     --root my-family-archive   # "is my archive shaped right?"
-python tools/fha.py reconcile --dry-run --root my-family-archive  # after reorganizing documents: preview re-ties, run without --dry-run to apply
-python tools/fha.py backup   --root my-family-archive   # dated zip beside the archive - restore = unzip
-python tools/fha.py update-tools --dry-run --repo . --root my-family-archive  # preview a tools update (docs/UPDATING.md)
-python tools/fha.py relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
-python tools/fha.py views timeline P-aaaa --format html --root my-family-archive   # a printable one-page timeline (lands in generated/views/)
-python tools/fha.py photoindex gallery --person P-aaaa --root my-family-archive   # a clickable page of someone's photos - double-click to open (lands in generated/gallery/)
+fha process "inbox/the-file-you-added.jpg" --root my-family-archive   # file one new inbox item
+fha report   --root my-family-archive   # the review queue + research leads
+fha find --text "Rose Hartley" --root my-family-archive   # search everything
+fha doctor   --root my-family-archive   # health check - run this when stuck
+fha lint     --root my-family-archive   # "is my archive shaped right?"
+fha reconcile --dry-run --root my-family-archive  # after reorganizing documents: preview re-ties, run without --dry-run to apply
+fha backup   --root my-family-archive   # dated zip beside the archive - restore = unzip
+fha update-tools --dry-run --repo . --root my-family-archive  # preview a tools update (docs/UPDATING.md)
+fha relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
+fha views timeline P-aaaa --format html --root my-family-archive   # a printable one-page timeline (lands in generated/views/)
+fha photoindex gallery --person P-aaaa --root my-family-archive   # a clickable page of someone's photos - double-click to open (lands in generated/gallery/)
 ```
 
-`--root` just names which archive folder to use. On a Mac, use `python3` if that's what answers.
+`--root` just names which archive folder to use.
 
 ---
 

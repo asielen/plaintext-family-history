@@ -20,14 +20,18 @@ See the repo root `README.md` ("Repo, tools, and your archive") for how the publ
 
 After copying:
 1. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples below).
-2. Bring in the **operating layer** from the public repo. From your clone or unzipped download,
-   copy the `tools/`, `docs/`, and `.claude/skills/` folders plus the root rulebooks
-   (`SPEC.md`, `TOOLING.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS.md`,
-   `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`,
-   `README.md`) into this archive folder.
-   *(Alternatively, `fha install` does this in one step - but it must run against a **fresh,
-   empty** folder name, not a copy of this template. If you've already copied archive-template,
-   use the manual copy path above. See `docs/SETUP_FROM_ZIP.md`.)*
+2. Bring in the **operating layer** from the public repo - the machinery that makes `fha`
+   commands work. The assisted way is best: run `fha install` against a **fresh, empty** folder
+   name (not a copy of this template - the installer builds the skeleton itself). It lays an
+   installed archive out cleanly, so the root reads as your genealogy: the machinery (`tools/`,
+   `docs/`, `design/`) is tucked into a hidden `.fha/` folder, and only the five rulebooks
+   (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`, `README.md`), the launchers (`fha.cmd`,
+   `serve.cmd`), your `fha.yaml`, the `.claude/skills/` folder, and the data folders are left at
+   the archive root. See `docs/SETUP_FROM_ZIP.md`.
+   *(Already copied this template by hand? `fha install` won't run against it. Instead, from your
+   clone or unzipped download, copy the `tools/`, `docs/`, and `design/` folders into a `.fha/`
+   folder here, then copy the five rulebooks above, the `fha.cmd` and `serve.cmd` launchers, and
+   the `.claude/skills/` folder into the archive root.)*
    Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
    you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
    (`BUILD.md` M9.1-M9.2, TOOLING.md §13c).

@@ -206,7 +206,7 @@
     {
       "path": ".fha/docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "83f4911c9bbcaac92cdcaa93f47683fa4d5f6e76805dcb5f01eb2149c2aa740c",
+      "sha256": "a4f93c8635edc9ae5a375b8b78c4e71aa0cd8070970744917b7da7cfa309102c",
       "spec_version": "1.2",
       "src": "docs/CHEATSHEET.md"
     },
@@ -248,7 +248,7 @@
     {
       "path": ".fha/docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "7ef12c64a31a41956473323a91649c090f6590080eb5193f1a95c3046aea9418",
+      "sha256": "650bafd7a95bb1a90652fb419e131e75ceb1fae9c4c6184718acc3eb7d3a8727",
       "spec_version": "1.2",
       "src": "docs/GETTING_STARTED.md"
     },
@@ -269,7 +269,7 @@
     {
       "path": ".fha/docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "880d0bc90d6f281749483cb374441296dbb3eb05141679d5ac372836af44f1f2",
+      "sha256": "6b57d57640953029555693e09b8b2f736c3bda149ac5ba93595e60b24d57986f",
       "spec_version": "1.2",
       "src": "docs/SETUP_FROM_ZIP.md"
     },
@@ -283,14 +283,14 @@
     {
       "path": ".fha/docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "093f625ffbe2162c8830626ad89b961052774694d62d6c84852c5e153e17f755",
+      "sha256": "29ac8a7efc62b1345101e19953ea84598bedcdb765c3c43da558ba00fd639c07",
       "spec_version": "1.2",
       "src": "docs/TROUBLESHOOTING.md"
     },
     {
       "path": ".fha/docs/UPDATING.md",
       "category": "operating",
-      "sha256": "7f4ef081962986e6526bbb51edd2f7299e33f54fe48d62251761fc79d3765a36",
+      "sha256": "70dbd2ff4bed273b891b77d8103219b633b60414f22b6b54a6febec338a37ed6",
       "spec_version": "1.2",
       "src": "docs/UPDATING.md"
     },
@@ -409,7 +409,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "cfd2c5c69f61c2dbe81fdaa5acd27b05d67eb217cd5332b737059f4f40458160",
+      "sha256": "f2fd7d90391b38f586ffa82724c74fe3f430fb8aef611cfbff672877547ba220",
       "spec_version": "1.2",
       "src": "tools/fha.py"
     },
@@ -528,7 +528,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "70b5c8bf1cffa598445e7438b35e72060b35fb1aa840861cb32beb8dd853994c",
+      "sha256": "a0a77437ad2b459908a3dcd55caac3d6285310d44236452d1286f9ed9fcc10c9",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -748,7 +748,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "8e2d252e0fcd28be3a5e9d71004f1871cbf10fdf40d8282a916b18830a9bcb18",
+      "sha256": "82a21056978adf4945e2a6feed3c088845307cb61654d509f727e61af3046287",
       "spec_version": "1.2"
     },
     {
