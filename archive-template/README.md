@@ -19,9 +19,13 @@ Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-l
 See the repo root `README.md` ("Repo, tools, and your archive") for how the public spec/tools and your private archive relate.
 
 After copying:
-1. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples below).
-2. Bring in the **operating layer** from the public repo - the machinery that makes `fha`
-   commands work. The assisted way is best: run `fha install` against a **fresh, empty** folder
+1. Bring in the **operating layer** first, BEFORE editing anything. `fha install` refuses an
+   archive whose skeleton files have already been changed - that refusal is what stops it
+   overwriting work in progress - so editing `fha.yaml` first is exactly what makes the assisted
+   route stop working. Configure in step 2, once the tools are in.
+
+   The machinery that makes `fha` commands work comes from the public repo. The assisted way is
+   best: run `fha install` against a **fresh, empty** folder
    name (not a copy of this template - the installer builds the skeleton itself). It lays an
    installed archive out cleanly, so the root reads as your genealogy: the machinery (`tools/`
    and `design/`) is tucked into a hidden `.fha/` folder, and what's left at the archive root is
@@ -39,6 +43,8 @@ After copying:
    Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
    you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
    (`BUILD.md` M9.1-M9.2, TOOLING.md §13c).
+2. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples
+   below). Now that the tools are installed, this is safe - updates never touch `fha.yaml`.
 3. Open in your AI agent and start processing `inbox/` items.
 
 ## Where your photos and documents live

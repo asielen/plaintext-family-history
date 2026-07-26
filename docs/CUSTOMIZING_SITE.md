@@ -127,6 +127,10 @@ the homepage" is enough.
 
 Whenever you have changed any of the above, rebuild:
 
+> **Typing `fha`.** On macOS or Linux use `./fha`, in Windows PowerShell `.\fha`, and in the
+> Windows Command Prompt a bare `fha` - from your archive folder if it has its own launcher
+> (one installed with `fha install` does), otherwise from your project folder with `--root`.
+
 ```
 fha index && fha site
 ```

@@ -492,7 +492,12 @@ def _contained_relative(value: str) -> bool:
     if '\\' in value:
         return False
     parts = value.split('/')
-    return '..' not in parts and '' not in parts[:-1]
+    # No `.`, no `..`, no empty segment ANYWHERE - including a trailing one.
+    # `same` and `same/` are lexically different and land on the same file, so
+    # allowing the alias lets two entries claim one destination without the
+    # duplicate check seeing it. Refusing the alias is simpler than teaching
+    # every later comparison to normalize.
+    return not ({'..', '.', ''} & set(parts))
 
 
 def load_manifest(repo_root: Path) -> dict:

@@ -172,7 +172,9 @@ download and stay exactly as they are.
 > and the tools in one step:
 >
 > ```
-> fha install my-family-archive
+> ./fha install my-family-archive      # macOS / Linux
+> .\fha install my-family-archive      # Windows PowerShell
+> fha install my-family-archive        # Windows Command Prompt
 > ```
 >
 > Run this from your workshop folder, naming the folder you want. A folder that does not exist

@@ -62,7 +62,11 @@ README, but a fresh clone is not on your `PATH` - hence the `./`.)
 
 That copies the whole operating layer - the program, its design package, the rulebooks, and the
 owner-facing docs - into the archive and records what it wrote, so `fha update-tools` can refresh
-it later without touching anything you have edited. The machinery lands in a hidden `.fha/` folder
+it later. What "refresh" means is worth being precise about: your records,
+`fha.yaml`, your place registry, and your stylesheet are never touched. Tool
+files and rulebooks ARE replaced - if you edited one, your version is moved to
+`.plaintext-backup/` first and the new stock file takes its place, so the edit
+survives but stops being in effect until you re-apply it. The machinery lands in a hidden `.fha/` folder
 so the archive root shows your genealogy rather than the program; your records, the rulebooks, and
 `docs/` stay in plain sight. The archive is then **self-contained**: it works on any machine,
 offline, forever, even if this repo disappears.

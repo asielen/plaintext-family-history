@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import shlex
 import os
 import shutil
 import sqlite3
@@ -601,11 +602,20 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
             # finds `media/scans/** -text` inside that comment and concludes the
             # root is protected. (My own first version did exactly that, and the
             # check silently passed on the archive it was written for.)
-            attr_rules = {
-                line.split()[0]
-                for line in ga.read_text(encoding='utf-8').splitlines()
-                if line.strip() and not line.lstrip().startswith('#') and line.split()
-            }
+            # shlex, not split(): a pattern with a space MUST be quoted in
+            # .gitattributes ("Family Photos/**" -text), and a bare split would
+            # read that rule as the pattern `"Family` and miss it - reporting a
+            # correctly protected root as unprotected.
+            attr_rules = set()
+            for line in ga.read_text(encoding='utf-8').splitlines():
+                if not line.strip() or line.lstrip().startswith('#'):
+                    continue
+                try:
+                    tokens = shlex.split(line)
+                except ValueError:
+                    continue
+                if tokens:
+                    attr_rules.add(tokens[0])
         except OSError:
             attr_rules = set()
         unprotected = []
@@ -635,9 +645,16 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         if unprotected:
             worst = max(worst, EXIT_WARNINGS)
             for name, target in unprotected:
+                # Quote the SUGGESTION too. Git parses the second token of a
+                # rule as an attribute name, so `Family Photos/** -text` is not
+                # merely ugly - it is invalid, and git says so while still
+                # normalizing the file the rule was meant to protect.
+                pattern = f'{target}/**'
+                if any(c.isspace() for c in pattern):
+                    pattern = f'"{pattern}"'
                 lines.append(
                     f'originals ({name}): {target}/ is not protected in '
-                    f'.gitattributes  next: add `{target}/** -text` to it so a '
+                    f'.gitattributes  next: add `{pattern} -text` to it so a '
                     f'checkout cannot rewrite your originals'
                 )
             checks.append({

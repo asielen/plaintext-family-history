@@ -318,7 +318,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "17ca0c3c4b870595443265c91eef78f47b79bf465755291d3d96b6fbb7569ed0",
+      "sha256": "0878d357725aff63bcea7d670da5a6b32300061d08624c6986ff8eb29ec7477e",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -444,7 +444,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "5a3f0a8c44237510664722fb3233eac0c7d2398d32a1a84c8e0c887239ce7c52",
+      "sha256": "90d1324a4a087a30eab2d1686ea3cbb68adcc3df30ba92f5e7d851ae597898a5",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -659,7 +659,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "a592ab46619b019dd3ee9299084c58c0397bd315f30db1865d23339a28a552cb",
+      "sha256": "0b383575c7fc99331e86d0d96b72872a13b7de3f1dce28aa49556bd0ca5b694c",
       "spec_version": "1.2"
     },
     {
@@ -689,7 +689,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "57ae4cbe47f5ed9dc11f6b33e7221fd5d3c8215bde3c8c97507c7e263b4f338b",
+      "sha256": "2cfdf7d9aaab35ca0054f3d4678e07d19f2cbd6abed811a68fabce5e84da054e",
       "spec_version": "1.2"
     },
     {
@@ -725,7 +725,7 @@
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "b72b915d76eef84d464904215ebc9702d079331b98c05943e25a3943165e1901",
+      "sha256": "10a7f41e122413742ff52bcce20cdf54ee29bfc44967d7a3fa8346bd53cb0ce0",
       "spec_version": "1.2"
     },
     {
