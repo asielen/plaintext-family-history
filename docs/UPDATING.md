@@ -7,8 +7,7 @@ This page is the whole ritual - it takes about two minutes, and your records are
 **The one promise to hold onto:** updating replaces *tools and instructions*, never *records*.
 Your `sources/`, `people/`, `places/`, `notes/`, photos, and documents are not part of any
 update. Your settings (`fha.yaml`), your place list (`places/places.yaml`), and your site styling
-(`.fha/design/custom.css`) are written once at install and never overwritten by an update either -
-not even by the one that introduced the `.fha/` folder, which carries your stylesheet across.
+(`.fha/design/custom.css`) are written once at install and never overwritten by an update either.
 
 ---
 

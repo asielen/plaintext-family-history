@@ -6,8 +6,8 @@ customize — without ever giving up the one property that makes `fha site` safe
 run a thousand times: it is **deterministic and idempotent**.
 
 This is a planning document, not a task list. The *visual language* is
-[`DESIGN.md`](DESIGN.md); the *generator mechanics* are [`TOOLING.md`](../TOOLING.md)
-§12; the *human-facing how-to* is [`CUSTOMIZING_SITE.md`](CUSTOMIZING_SITE.md). This
+[`DESIGN.md`](DESIGN.md); the *generator mechanics* are [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md)
+§12; the *human-facing how-to* is [`CUSTOMIZING_SITE.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/CUSTOMIZING_SITE.md). This
 doc is the plan for the customization layer that sits on top of all three: what the
 source-first model is, which layers a human edits, and the phases that build them
 out. Cite the section numbers here when proposing structural changes.
@@ -187,7 +187,7 @@ build step — the offline-safe rule (DESIGN.md, "Do / don't") holds.
 ### Phase E — Edit-aware skill + docs
 
 Ship the reconciliation escape hatch (layer e): the `reconcile-site-edits` skill and the
-human-facing [`CUSTOMIZING_SITE.md`](CUSTOMIZING_SITE.md) guide. This phase adds no
+human-facing [`CUSTOMIZING_SITE.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/CUSTOMIZING_SITE.md) guide. This phase adds no
 capability to `fha` and changes nothing about determinism; it teaches the source-first
 model and provides the one graceful recovery path for a hand-edited HTML file. (This
 document and its two siblings are the front edge of Phase E.)

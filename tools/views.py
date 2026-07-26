@@ -113,6 +113,7 @@ from _lib import (
     promote_person_record,   # the ONE promote engine (tier flip + move + research scaffold),
     read_record,          # parses YAML front-matter + body from a .md file,
     render_template,      # load + render a tools/templates/ Jinja2 template (shared),
+    pip_command,
     requirements_hint,
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
@@ -420,9 +421,9 @@ def _format_precheck(fmt: str, allowed: tuple[str, ...]) -> Result | None:
         except ImportError:
             print(
                 f'ERROR: --format html needs the Jinja2 library, which is not '
-                f'installed. Install it with `pip install jinja2` (or `pip '
-                f'install -r {requirements_hint()}`), or run without --format '
-                f'html for the markdown view.',
+                f'installed. Install it with `{pip_command("jinja2")}` (or '
+                f'`{pip_command("-r " + requirements_hint())}`), or run without '
+                f'--format html for the markdown view.',
                 file=sys.stderr,
             )
             return _views_result(EXIT_FAILURE)

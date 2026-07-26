@@ -195,6 +195,18 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
 _VENDOR_DIR = VENDOR_DIR
 _VENDORED_SUBTREES = ('tools', 'design')
 
+# Individual docs that are PROJECT documentation rather than owner documentation,
+# and so belong with the machinery rather than in the archive's readable `docs/`.
+# `DESIGN.md` is the visual language for whoever builds the templates; `SITE_PLAN`
+# is an explicit roadmap - work not yet done, which has no business presenting
+# itself as guidance in someone's family archive. The rest of `docs/` is the
+# manual an owner reaches for when something is wrong, which is exactly when a
+# hidden folder helps least, so it stays at the root.
+_VENDORED_DOCS = frozenset({
+    'docs/DESIGN.md',
+    'docs/SITE_PLAN.md',
+})
+
 # The template folder whose *contents* seed the skeleton. The folder itself is
 # never copied into an archive - each file's archive path strips this prefix.
 _SKELETON_SRC_DIR = 'archive-template'
@@ -298,9 +310,11 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
             if rel in _SKELETON_OVERRIDE_SRCS:
                 continue
             # Vendored subtrees (tools/, design/) install UNDER .fha/ so the
-            # archive root stays uncluttered; docs/ and .claude/skills stay at
-            # the root (readable documentation / agent-discovered skills).
-            archive_path = f'{_VENDOR_DIR}/{rel}' if moved else rel
+            # archive root stays uncluttered; owner-facing docs/ and
+            # .claude/skills stay at the root (readable documentation /
+            # agent-discovered skills). Individual project docs are vendored too.
+            archive_path = (f'{_VENDOR_DIR}/{rel}'
+                            if moved or rel in _VENDORED_DOCS else rel)
             out.append((archive_path, p))
 
     return out
@@ -647,8 +661,26 @@ def run_install(
             f"them with improvements from the public repo, run from inside that "
             f"archive:\n  fha update-tools --repo \"{repo_root}\""
         )
-    # tools/fha.py present without a stamp means a previous install was interrupted
-    # before it could write the stamp.  Allow re-running install to complete it.
+    # An unstamped archive that nonetheless has a flat `tools/fha.py` is a
+    # pre-`.fha` toolset. Installing over it would put stock files under
+    # `.fha/tools/`, exit 0, and leave the owner's flat copies as inert
+    # duplicates the launcher never reaches - their customizations silently
+    # switched off by a command that reported success. There is deliberately no
+    # migration path, so this is the owner's call to make, not ours to guess.
+    legacy_entry = archive_path / 'tools' / 'fha.py'
+    if legacy_entry.is_file() and not (archive_path / VENDOR_DIR / 'tools').is_dir():
+        raise ScaffoldError(
+            f"{archive_path} already holds a copy of the tools at "
+            f"{Path('tools') / 'fha.py'}, from a layout this version no longer "
+            f"uses (the tools now live in {VENDOR_DIR}/). Installing on top would "
+            f"leave those files in place but unused - including any edits you "
+            f"made to them.\n"
+            f"Move or delete the old tools/ folder yourself, then re-run install. "
+            f"If you customized anything in it (a stylesheet in design/, say), "
+            f"copy that across afterwards - nothing here will do it for you."
+        )
+    # A half-written `.fha/tools/` without a stamp means a previous install was
+    # interrupted before it could write one.  Allow re-running install to finish.
 
     # Validate every source exists BEFORE writing anything, so a broken/partial
     # clone fails cleanly instead of leaving a half-installed archive.
@@ -1179,8 +1211,16 @@ def run_update_tools(
                 if dest.is_file():
                     try:
                         new_checksums[archive_path] = _sha256_file(dest)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        # Nothing is lost - and that is not the same as no
+                        # consequence. An unrecorded seed is precisely what lets
+                        # a later deliberate deletion be undone by a future run,
+                        # so say so rather than leaving the gap silent.
+                        failures.append(
+                            f'{archive_path}: is on disk but could not be read '
+                            f'({exc}), so this run could not record that you '
+                            f'already have it. Until a run can read it, deleting '
+                            f'it may not stick. Check its permissions and re-run.')
             continue
         if archive_path in installed_ok:
             new_checksums[archive_path] = installed_ok[archive_path]

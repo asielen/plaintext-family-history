@@ -293,19 +293,27 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(by_path['.fha/tools/scaffold.py']['src'], 'tools/scaffold.py')
         self.assertNotIn('src', by_path['SPEC.md'])
 
-    def test_docs_stay_at_archive_root(self):
-        # The rulebooks and docs/ are one two-way link graph: README.md links to
-        # `docs/GETTING_STARTED.md`, and docs link back to `../SPEC.md`. Vendoring
-        # either side under .fha/ alone breaks every one of those links in an
-        # installed archive, which has to stay navigable in a file browser. So
-        # docs/ installs at the root, unremapped, and only the machinery moves.
+    def test_owner_docs_stay_at_root_and_project_docs_are_vendored(self):
+        # Owner-facing docs are the manual someone reaches for when something is
+        # wrong - exactly when a hidden folder helps least - and they sit in a
+        # two-way link graph with the root rulebooks (README.md ->
+        # `docs/GETTING_STARTED.md`; docs -> `../SPEC.md`), which only survives if
+        # both ends stay put. Project docs (the visual-language reference, the
+        # roadmap) are not owner material and ride with the machinery instead.
         by_path = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
         doc_paths = [p for p in by_path if p.split('/')[0] == 'docs']
         self.assertTrue(doc_paths, 'docs/ must ship')
         for p in doc_paths:
             self.assertNotIn('src', by_path[p], f'{p} must not be remapped')
-        self.assertFalse([p for p in by_path if p.startswith('.fha/docs/')],
-                         'no doc may be vendored under .fha/')
+        # Exactly the declared project docs are vendored - nothing else drifts in.
+        self.assertEqual(
+            sorted(p for p in by_path if p.startswith('.fha/docs/')),
+            sorted(f'.fha/{d}' for d in scaffold._VENDORED_DOCS),
+            'only the declared project docs may live under .fha/docs/')
+        # A vendored doc must not also ship at the root, or an archive holds two
+        # copies and the owner edits whichever they find first.
+        for d in scaffold._VENDORED_DOCS:
+            self.assertNotIn(d, by_path, f'{d} must not also install at the root')
         # Both ends of the link graph land where the links expect them.
         self.assertIn('README.md', by_path)
         self.assertIn('docs/GETTING_STARTED.md', by_path)

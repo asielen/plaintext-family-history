@@ -14,7 +14,7 @@ description: >
 
 The recovery path for the one thing the source-first model forbids: hand-editing a generated HTML file.
 `fha site` compiles archive data plus a few human-editable source files into HTML and **never reads the
-generated HTML back** (TOOLING §12; [`docs/SITE_PLAN.md`](../../docs/SITE_PLAN.md)) — which is exactly what
+generated HTML back** (TOOLING §12; [`docs/SITE_PLAN.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/SITE_PLAN.md)) — which is exactly what
 makes regeneration safe and idempotent, and exactly why a hand-edit of the output is doomed on the next
 build. This skill does not change that. `fha site` stays deterministic; the fuzzy reconciliation lives
 **only here**. The skill reads the human's edited HTML, recovers what he meant, folds it into the right

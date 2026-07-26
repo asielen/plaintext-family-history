@@ -472,7 +472,7 @@ def format_yaml_dependency_error() -> str:
     """
     return (
         'This tool needs PyYAML to read archive YAML files. Install it with '
-        '`python -m pip install pyyaml`, then run `fha doctor` to check your archive.'
+        f'`{pip_command("pyyaml")}`, then run `fha doctor` to check your archive.'
     )
 
 
@@ -4498,6 +4498,24 @@ def result_fail(
 
 
 VENDOR_DIR_NAME = '.fha'
+
+
+def pip_command(target: str) -> str:
+    """Return a `pip install` command that targets the RUNNING interpreter.
+
+    A bare `pip install x` (or even `python -m pip install x`) can install into a
+    different interpreter than the one that just failed to import: the launcher
+    picks the first of `python3`/`python` (or `py -3`/`python` on Windows) that
+    is new enough, which need not be the one whose site-packages the human has
+    been installing into. Following that advice then changes nothing, and the
+    command keeps failing with the same message - the worst kind of instruction,
+    one that looks followed.
+
+    `sys.executable` is by definition the interpreter running this code, which is
+    the one missing the import, so `-m pip` against it always lands where it
+    needs to.
+    """
+    return f'{sys.executable} -m pip install {target}'
 
 
 def requirements_hint() -> str:

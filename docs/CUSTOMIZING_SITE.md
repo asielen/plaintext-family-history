@@ -79,7 +79,7 @@ a line or two:
 ```
 
 You do not need to touch this file to have a good-looking site — it comes with a complete
-design already (a printed family-register look; see [`DESIGN.md`](DESIGN.md) if you are
+design already (a printed family-register look; see [`DESIGN.md`](https://github.com/asielen/plaintext-family-history/blob/master/docs/DESIGN.md) if you are
 curious). `custom.css` is there for when you want to make it yours. It is loaded last, so
 whatever you put here wins.
 

@@ -205,6 +205,7 @@ from _lib import (
     photoindex_status,
     probe_sqlite,
     render_template,
+    pip_command,
     requirements_hint,
     resolve_path,
     resolve_root_arg,
@@ -1890,8 +1891,8 @@ def run_gallery(
         except ImportError:
             raise RuntimeError(
                 f'building a gallery needs the Jinja2 library, which is not '
-                f'installed. Install it with `pip install jinja2` (or '
-                f'`pip install -r {requirements_hint()}`), then re-run.'
+                f'installed. Install it with `{pip_command("jinja2")}` (or '
+                f'`{pip_command("-r " + requirements_hint())}`), then re-run.'
             )
 
         out_path = _gallery_out_path(
