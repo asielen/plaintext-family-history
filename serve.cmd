@@ -47,8 +47,14 @@ echo. 1>&2
 echo            To restore them, run this from your workshop copy of the 1>&2
 echo            project - the folder holding manifest.json: 1>&2
 echo. 1>&2
+echo            In Command Prompt: 1>&2
 echo              cd /d PATH-TO-WORKSHOP 1>&2
 echo              fha update-tools --repo PATH-TO-WORKSHOP --root "%~dp0" 1>&2
+echo. 1>&2
+echo            In PowerShell (`cd /d` is not PowerShell syntax, and a bare 1>&2
+echo            `fha` is not run from the current folder): 1>&2
+echo              Set-Location PATH-TO-WORKSHOP 1>&2
+echo              .\fha update-tools --repo PATH-TO-WORKSHOP --root "%~dp0" 1>&2
 echo. 1>&2
 pause
 exit /b 3

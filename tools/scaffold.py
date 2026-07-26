@@ -156,6 +156,14 @@ _ROOT_OPERATING_DOCS = (
 # ship to every archive: an archive is a portable folder that may well be opened
 # on a different OS than the one that installed it. Enumerated like the root docs
 # because the repo root also holds furniture that never enters an archive.
+# Paths whose executable bit is a REQUIREMENT of the file, not a property of
+# whatever copy of the repo we happen to be installing from. A workshop unzipped
+# from a download has no Unix modes at all, so its `fha` arrives 0644 - and
+# deriving "should this be executable?" from that source mode then concludes no,
+# installs a launcher nobody can run, and leaves the repair pass agreeing there
+# is nothing to repair. The requirement belongs to the archive contract.
+_MUST_BE_EXECUTABLE = frozenset({'fha'})
+
 _ROOT_LAUNCHERS = (
     'serve.cmd',
     'fha.cmd',
@@ -761,6 +769,11 @@ def run_install(
             dest = archive_path / entry['path']
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
+            if os.name != 'nt' and entry['path'] in _MUST_BE_EXECUTABLE:
+                # copy2 carries the source mode, which a zip-sourced workshop
+                # does not have. Set it from the contract instead, so a fresh
+                # install always yields a launcher that runs.
+                dest.chmod(dest.stat().st_mode | 0o111)
             checksums[entry['path']] = entry.get('sha256') or _sha256_file(src)
             changed.append(str(dest))
         _write_version_stamp(archive_path, _stamp_dict(manifest, checksums))
@@ -842,6 +855,11 @@ def _restore_exec_bits(archive_root: Path, repo_root: Path,
                 continue
             src_mode = src.stat().st_mode
             exec_bits = src_mode & 0o111
+            if entry['path'] in _MUST_BE_EXECUTABLE:
+                # Not negotiable, and not inferred from the source copy: a zip
+                # workshop ships this 0644 and would otherwise teach every
+                # archive that the launcher is not meant to be runnable.
+                exec_bits = 0o111
             if not exec_bits:
                 continue
             dest_mode = dest.stat().st_mode

@@ -325,7 +325,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "85ffda998a2cfd77746ffb917e8881f1790beeb6bf0c69dd5e09c4a41b2be6d7",
+      "sha256": "d59f734af7a663cc99931263923509afa76a029f1bee3a435ee6948fba15d828",
       "spec_version": "1.2",
       "src": "tools/fha.py"
     },
@@ -444,7 +444,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "ec4b5e043d194bd3fb7f9c13ab3d9d6c859db052757c24ffdbbc6b8fe00c74d3",
+      "sha256": "fbf463be43dd8effbf5f7de2159647ef74317e58e65ec2b427a315e3db168f99",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -762,7 +762,7 @@
     {
       "path": "fha.cmd",
       "category": "operating",
-      "sha256": "ab8796c3bc8ae430e3571c23c97c78c5abc434f14030f23a989fe985c024c572",
+      "sha256": "aac4945c6329ce9de851bec80a59f24f58e7dd4914416f37b9f7fcf4de240206",
       "spec_version": "1.2"
     },
     {
@@ -866,7 +866,7 @@
     {
       "path": "serve.cmd",
       "category": "operating",
-      "sha256": "b3be437780a09d9709e35cab06dff96e6915ef0bd673852726b77d16592af084",
+      "sha256": "687c535db41091e4717ee38ee1054d0dc9f60975e1a9d79476ea4e0d564ae555",
       "spec_version": "1.2"
     },
     {

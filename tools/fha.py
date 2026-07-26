@@ -698,9 +698,19 @@ def main(argv: list[str] | None = None) -> int:
         raise
     except ModuleNotFoundError as e:
         if e.name == 'yaml':
+            # Built from sys.executable, like every other dependency message:
+            # the launcher picks the first of python3/python that is new enough,
+            # which need not be the one the human installs into. A hardcoded
+            # `python -m pip` can update the OTHER interpreter and leave every
+            # retry failing identically.
+            try:
+                from _lib import pip_command
+                fix = pip_command('pyyaml')
+            except Exception:                     # _lib itself may be unusable
+                fix = f'{sys.executable} -m pip install pyyaml'
             print(
                 'ERROR: This tool needs PyYAML to read archive YAML files. '
-                'Install it with `python -m pip install pyyaml`, then run `fha doctor`.',
+                f'Install it with `{fix}`, then run `fha doctor`.',
                 file=sys.stderr,
             )
             return 3

@@ -432,6 +432,49 @@ class ExecBitRepairTest(unittest.TestCase):
             'a repaired launcher is a mutation and belongs in changed')
 
 
+class ZipWorkshopLauncherTest(unittest.TestCase):
+    """A workshop unzipped from a download has no Unix modes at all.
+
+    Deriving "should this be executable?" from the source copy's mode then
+    concludes no, installs a launcher nobody can run, and leaves the repair pass
+    agreeing there is nothing to repair - so `./fha` fails with "Permission
+    denied" and no amount of update-tools fixes it. The requirement belongs to
+    the archive contract, not to whichever copy of the repo we install from.
+    """
+
+    def setUp(self):
+        if os.name == 'nt':
+            self.skipTest('POSIX permission bits only')
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        _write(self.repo / 'fha', '#!/bin/sh\necho hi\n')
+        (self.repo / 'fha').chmod(0o644)      # as a zip extraction leaves it
+        scaffold._write_manifest(self.repo)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_install_from_a_zip_workshop_yields_a_runnable_launcher(self):
+        archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(archive, self.repo)
+        self.assertTrue((archive / 'fha').stat().st_mode & 0o111,
+                        'the installed launcher must be runnable even when the '
+                        'source copy carries no execute bit')
+
+    def test_update_repairs_it_even_when_the_source_lacks_the_bit(self):
+        archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(archive, self.repo)
+        (archive / 'fha').chmod(0o644)
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(archive, self.repo)
+        self.assertTrue((archive / 'fha').stat().st_mode & 0o111,
+                        'the repair pass must not take the zip source as '
+                        'authority on whether the launcher is executable')
+
+
 class PipCommandTest(unittest.TestCase):
     """The recovery command must run as printed, for the interpreter it names."""
 
