@@ -164,6 +164,35 @@ _ROOT_OPERATING_DOCS = (
 # is nothing to repair. The requirement belongs to the archive contract.
 _MUST_BE_EXECUTABLE = frozenset({'fha'})
 
+# Files whose LINE ENDINGS are part of the archive contract, for the same reason
+# the executable bit is: the requirement belongs to the file, not to whichever
+# copy of the repo it arrives from. A GitHub ZIP holds the repository blobs, so
+# `.cmd` launchers extract with LF whatever `.gitattributes` says - and shutil
+# preserves those bytes straight into the archive. `goto` labels and the
+# parenthesised block in serve.cmd are exactly what misbehaves in an LF-only
+# batch file, so the copy is normalized rather than trusted.
+_MUST_BE_CRLF = frozenset({'fha.cmd', 'serve.cmd'})
+
+
+def _normalize_crlf(dest: Path) -> None:
+    """Rewrite `dest` with CRLF endings, in place. No-op when already correct.
+
+    Byte-level and idempotent: split on universal newlines, rejoin with CRLF, so
+    a file that is already CRLF is rewritten identically and a mixed one is made
+    consistent. Left alone entirely if it cannot be read or written - the copy
+    itself succeeded, and the caller's checksum is taken afterwards either way.
+    """
+    try:
+        raw = dest.read_bytes()
+    except OSError:
+        return
+    fixed = b'\r\n'.join(raw.replace(b'\r\n', b'\n').split(b'\n'))
+    if fixed != raw:
+        try:
+            dest.write_bytes(fixed)
+        except OSError:
+            pass
+
 _ROOT_LAUNCHERS = (
     'serve.cmd',
     'fha.cmd',
@@ -892,6 +921,8 @@ def run_install(
             dest = archive_path / entry['path']
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
+            if entry['path'] in _MUST_BE_CRLF:
+                _normalize_crlf(dest)
             if os.name != 'nt' and entry['path'] in _MUST_BE_EXECUTABLE:
                 # copy2 carries the source mode, which a zip-sourced workshop
                 # does not have. Set it from the contract instead, so a fresh
@@ -1082,9 +1113,12 @@ def _plan_update(
         archive_path = entry['path']
         if archive_path in recorded or (archive_root / archive_path).exists():
             continue
-        src = repo_root / entry.get('src', archive_path)
-        if src.is_file():
-            plan['added'].append((archive_path, src))
+        # Planned even when the source is MISSING, deliberately. Dropping it
+        # here hid a broken clone: the run reported zero additions, rewrote the
+        # stamp and exited 0 while never delivering the seed. The missing-source
+        # preflight inspects planned entries, so keeping it in the plan is what
+        # turns a silent omission into the refusal that already exists.
+        plan['added'].append((archive_path, repo_root / entry.get('src', archive_path)))
 
     # Retired: a path the stamp recorded but the manifest no longer lists at all
     # (skeleton paths stay listed, so user data is never flagged retired). Move
@@ -1172,24 +1206,35 @@ def run_update_tools(
     # call - but it must be an informed one, not a silent switch-off.
     _refuse_directory_destinations(archive_root, manifest['files'])
 
-    # Keyed on "no USABLE record", not on `stamp is None`. A stamp of
-    # `{"files": []}` - hand-edited, truncated, or written by an interrupted run
-    # - is a perfectly good object that records nothing, so a None check waves it
-    # straight past while `_plan_update` still finds no flat files to retire. The
-    # question this guard asks is "does anything record what is on disk?", and an
-    # empty map answers it the same way a missing file does.
-    if not _stamp_file_map(stamp) and (archive_root / 'tools' / 'fha.py').is_file() \
+    # A flat archive is refused, full stop - no condition on the stamp.
+    #
+    # This guard has been wrong three times, and each time because I fixed the
+    # CONDITION instead of asking what it is for. Round 19 keyed it on "no
+    # stamp"; round 23 on "no usable file map". Both let through the case that
+    # matters most: an archive installed by the PREVIOUS release, which has a
+    # perfectly valid populated stamp AND flat tools. For that archive the
+    # retire-and-add path silently performs the very layout conversion this
+    # project decided not to build - removing the flat tool tree, activating a
+    # stock `.fha/design/custom.css`, and leaving the owner's styling only in
+    # the backup folder, on an exit 0.
+    #
+    # The actual question is about the LAYOUT, which the stamp does not describe:
+    # are the tools flat, with nothing vendored? Then this version cannot update
+    # in place, whatever the stamp says.
+    if (archive_root / 'tools' / 'fha.py').is_file() \
             and not (archive_root / VENDOR_DIR / 'tools').is_dir():
         raise ScaffoldError(
             f"{archive_root} keeps its tools at {Path('tools') / 'fha.py'}, from "
-            f"a layout this version no longer uses (they now live in "
-            f"{VENDOR_DIR}/), and there is no {VERSION_FILE} recording what was "
-            f"installed. Updating would add a second copy under {VENDOR_DIR}/ and "
-            f"leave your existing tools/ in place but unused - including anything "
-            f"you edited in it.\n"
-            f"Move or delete the old tools/ folder yourself first, copying across "
-            f"any changes you made (a customized design/custom.css especially), "
-            f"then run this again."
+            f"a layout this version no longer uses - they now live in "
+            f"{VENDOR_DIR}/. Updating in place would retire your flat tools/ into "
+            f"{BACKUP_DIR}/ and install a fresh copy under {VENDOR_DIR}/, which "
+            f"is a layout change, not an update: your customized "
+            f"design/custom.css would be replaced by the stock one and survive "
+            f"only as a backup.\n"
+            f"There is no automatic conversion, by design. Move tools/ and "
+            f"design/ under {VENDOR_DIR}/ yourself (keeping your edits), or start "
+            f"a fresh archive with `fha install` and copy your records across - "
+            f"then this command works normally again."
         )
 
     if stamp is None:
@@ -1270,6 +1315,8 @@ def run_update_tools(
         except OSError:
             tmp.unlink(missing_ok=True)
             raise
+        if archive_path in _MUST_BE_CRLF:
+            _normalize_crlf(dest)
         installed_ok[archive_path] = _sha256_file(dest)
 
     def _fail(archive_path: str, exc: OSError) -> None:

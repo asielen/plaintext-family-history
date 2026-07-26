@@ -3284,11 +3284,20 @@ def render_template(template_name: str, **context) -> str:
     try:
         return load_template(template_name).render(**context)
     except jinja2.TemplateError as e:
+        # Name the REAL path and a command that exists. The templates ship
+        # inside whichever tools directory is running - `tools/templates/` in a
+        # workshop clone, `.fha/tools/templates/` in an installed archive - so a
+        # hardcoded `tools/templates/` sends an archive owner to a path that is
+        # not there. And the old advice could not work either: a stamped archive
+        # REFUSES `fha install`, and a zip user has no git to restore from.
+        # `update-tools` is the command that actually replaces a damaged tool
+        # file, so name that.
+        here = Path(__file__).parent / 'templates' / template_name
         raise RuntimeError(
             f'the {template_name} template is missing or broken (expected at '
-            f'tools/templates/{template_name}) - {e}. Restore the tools/templates '
-            f'folder (reinstall the tools package or restore it from git), then '
-            f're-run.'
+            f'{here}) - {e}. Restore it with `fha update-tools --repo '
+            f'PATH-TO-WORKSHOP`, which reinstalls tool files that have gone '
+            f'missing, then re-run.'
         ) from e
 
 

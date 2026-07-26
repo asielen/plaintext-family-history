@@ -525,6 +525,92 @@ class ResumeInterruptedInstallTest(unittest.TestCase):
                          'resuming must not refuse the bytes install copied')
 
 
+class FlatLayoutRefusalTest(unittest.TestCase):
+    """A flat archive is refused whatever its stamp says.
+
+    The case that matters is an archive installed by the PREVIOUS release: a
+    perfectly valid populated stamp AND flat tools. Guards keyed on the stamp
+    let it through, and the retire-and-add path then performs the layout
+    conversion this project decided not to build.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        self.archive = self.tmp / 'archive'
+        _write(self.archive / 'tools' / 'fha.py', 'print("previous release")\n')
+        _write(self.archive / 'design' / 'custom.css', '/* my colours */\n')
+        _write(self.archive / 'fha.yaml', 'roots: {}\n')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stamps(self):
+        """Every stamp shape a flat archive can plausibly carry."""
+        populated = {'manifest_version': '1', 'files': {
+            'tools/fha.py': scaffold._sha256_file(self.archive / 'tools' / 'fha.py'),
+            'design/custom.css': 'whatever'}}
+        return [None, {}, {'files': []}, {'files': {}}, populated]
+
+    def test_every_stamp_shape_is_refused(self):
+        for stamp in self._stamps():
+            with self.subTest(stamp='none' if stamp is None else str(stamp)[:30]):
+                stamp_file = self.archive / '.plaintext-version'
+                if stamp is None:
+                    stamp_file.unlink(missing_ok=True)
+                else:
+                    _write(stamp_file, json.dumps(stamp))
+                with self.assertRaises(scaffold.ScaffoldError):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        scaffold.run_update_tools(self.archive, self.repo)
+                self.assertFalse((self.archive / '.fha').exists())
+                self.assertEqual(
+                    (self.archive / 'design' / 'custom.css').read_text(
+                        encoding='utf-8'), '/* my colours */\n',
+                    'the owner styling must never be swapped for stock')
+
+
+class CrlfLauncherTest(unittest.TestCase):
+    """A ZIP carries repository blobs, so .cmd arrives LF whatever git says."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.repo = _make_fake_repo(self.tmp / 'repo')
+        (self.repo / 'fha.cmd').write_bytes(b'@echo off\ngoto :run\n:run\n')
+        (self.repo / 'serve.cmd').write_bytes(b'@echo off\ngoto :run\n:run\n')
+        scaffold._write_manifest(self.repo)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_install_normalizes_launchers_to_crlf(self):
+        archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(archive, self.repo)
+        for name in ('fha.cmd', 'serve.cmd'):
+            raw = (archive / name).read_bytes()
+            self.assertIn(b'\r\n', raw, f'{name} must be CRLF in the archive')
+            self.assertNotIn(b'\n\n', raw.replace(b'\r\n', b''),
+                             f'{name} must not keep bare LF endings')
+
+    def test_the_stamp_records_the_normalized_bytes(self):
+        archive = self.tmp / 'archive'
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_install(archive, self.repo)
+        stamp = json.loads(
+            (archive / '.plaintext-version').read_text(encoding='utf-8'))
+        self.assertEqual(stamp['files']['fha.cmd'],
+                         scaffold._sha256_file(archive / 'fha.cmd'),
+                         'the baseline must match what is really on disk')
+        # And a follow-up update must not call the untouched launcher edited.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            scaffold.run_update_tools(archive, self.repo)
+        self.assertNotIn('has been backed up', buf.getvalue())
+
+
 class DirectoryDestinationTest(unittest.TestCase):
     """A contained path can still name the human's records folder.
 
