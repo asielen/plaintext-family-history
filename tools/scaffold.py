@@ -443,6 +443,30 @@ def load_manifest(repo_root: Path) -> dict:
                 f"tools and try again - this file is the packing list the install "
                 f"and update commands read, and a partial one cannot be trusted."
             )
+        # `path` alone is not the whole contract. The optional fields are read
+        # just as unconditionally once a command gets going: `repo_root /
+        # entry['src']` raises TypeError on a null, and `category` / `sha256`
+        # reach comparisons that quietly misbehave rather than refuse. Each one
+        # that is present must be a string, checked at the same single door -
+        # otherwise the failure surfaces as a traceback mid-install instead of a
+        # plain refusal before anything is written.
+        # Presence, not value: `entry.get('src', fallback)` returns None when the
+        # key is THERE holding a null - the fallback only covers a missing key -
+        # so an explicit null is precisely the case that reaches `repo_root /
+        # None`. Treating it as "absent" here would let the reported crash
+        # straight through.
+        for field in ('src', 'category', 'sha256'):
+            if field not in entry:
+                continue
+            value = entry[field]
+            if not isinstance(value, str) or not value:
+                raise ScaffoldError(
+                    f"{path} has a damaged entry at position {position}: "
+                    f"'{field}' must be text, but it is {value!r}. Re-download "
+                    f"the plaintext tools and try again - this file is the "
+                    f"packing list the install and update commands read, and a "
+                    f"partial one cannot be trusted."
+                )
     return manifest
 
 
@@ -1663,8 +1687,18 @@ def run_update_tools(
             landed.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(stale), str(landed))
             backups_made = True
-        except OSError:
-            continue        # harmless: the copies are identical either way
+        except OSError as exc:
+            # Not harmless just because the two copies match today. The file
+            # stays visible at the path the owner knows, while every tool reads
+            # the vendored copy - so the next edit they make to it does nothing,
+            # with no way to tell why. Report it like any other failed move.
+            failures.append(
+                f'{old}: is an identical leftover of the old layout and could '
+                f'not be moved to {BACKUP_DIR}/{date_str}/ ({exc}). Nothing was '
+                f'lost - but the tools now read {new}, so edits to {old} will '
+                f'have no effect. Close anything holding it and re-run, or move '
+                f'it aside by hand.')
+            continue
         print(f'Moved your {old} to {landed} - it is an identical leftover of the '
               f'old layout, and the tools now read {new} (kept, not deleted).')
 
@@ -2105,6 +2139,18 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     # through to the post-move steps with an empty move list; each one is
     # individually idempotent, and if they are all already done the run reports
     # exactly the no-op it used to.
+    # `design/` without `tools/` is a damaged archive, not a migratable one.
+    # Moving the design folder and refreshing launchers that point at
+    # `.fha/tools/fha.py` would exit 0 having built a layout whose entrypoint
+    # does not exist - a migration that reports success and leaves nothing
+    # runnable. Refuse before touching anything and name the repair.
+    if present and 'tools' not in present and not (vendor / 'tools').is_dir():
+        raise ScaffoldError(
+            f'{archive_root} has no tools/ folder, so there is nothing to run '
+            f'the archive with and migrating the rest would leave it that way. '
+            f'Restore the tools first with `fha update-tools --repo '
+            f'PATH-TO-WORKSHOP`, then re-run this.')
+
     resuming = False
     if not present:
         if (vendor / 'tools').is_dir():

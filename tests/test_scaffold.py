@@ -1463,6 +1463,63 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
             '/* MINE */\n')
         self.assertEqual(flat_tool.read_text(encoding='utf-8'), 'print("legacy")\n')
 
+    def test_migrate_refuses_an_archive_with_no_tools(self):
+        # design/ but no tools/: migrating would build a layout whose entrypoint
+        # does not exist and exit 0 with nothing runnable.
+        for sub in ('tools', '.fha'):
+            if (self.archive / sub).exists():
+                shutil.rmtree(self.archive / sub)
+        (self.archive / 'design').mkdir(parents=True, exist_ok=True)
+        _write(self.archive / 'design' / 'custom.css', '/* mine */\n')
+
+        with self.assertRaises(scaffold.ScaffoldError) as caught:
+            scaffold.run_migrate_layout(self.archive, repo_root=self.repo)
+        self.assertIn('update-tools', str(caught.exception))
+        # Pre-mutation refusal: the design folder is still where it was.
+        self.assertTrue((self.archive / 'design' / 'custom.css').is_file())
+        self.assertFalse((self.archive / '.fha' / 'design').exists())
+
+    def test_a_locked_identical_leftover_is_reported(self):
+        # Identical copies mean nothing is lost - but the flat file stays visible
+        # while the tools read the vendored one, so edits to it silently do
+        # nothing. That is a failure to report, not a harmless skip.
+        vendored = self.archive / '.fha' / 'design' / 'custom.css'
+        vendored.parent.mkdir(parents=True, exist_ok=True)
+        _write(vendored, '/* same */\n')
+        _write(self.archive / 'design' / 'custom.css', '/* same */\n')
+
+        real_move = scaffold.shutil.move
+
+        def flaky_move(src, dst, *a, **kw):
+            if 'design/custom.css' in str(src).replace('\\', '/'):
+                raise OSError('locked by another program')
+            return real_move(src, dst, *a, **kw)
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold.shutil, 'move', side_effect=flaky_move), \
+                contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+
+        if (self.archive / 'design' / 'custom.css').is_file():
+            self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+            self.assertTrue(
+                any('no effect' in f for f in rc.data.get('failures', [])),
+                'an inert leftover must be reported, not silently skipped')
+
+    def test_manifest_entry_with_a_null_src_refuses_plainly(self):
+        # `path` alone is not the whole contract: repo_root / None is a
+        # TypeError traceback mid-preflight rather than a refusal.
+        pristine = (self.repo / 'manifest.json').read_text(encoding='utf-8')
+        for field in ('src', 'category', 'sha256'):
+            with self.subTest(field=field):
+                _write(self.repo / 'manifest.json', pristine)
+                manifest = json.loads(pristine)
+                manifest['files'][0][field] = None
+                _write(self.repo / 'manifest.json', json.dumps(manifest))
+                with self.assertRaises(scaffold.ScaffoldError) as caught:
+                    scaffold.load_manifest(self.repo)
+                self.assertIn(field, str(caught.exception))
+
     def test_a_deleted_seed_is_not_redelivered_by_the_remap(self):
         # The owner deleted design/custom.css on purpose. The stamp records that
         # delivery at the OLD flat path; once the layout moves, the new path is
