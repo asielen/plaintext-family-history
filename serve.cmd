@@ -10,11 +10,18 @@ rem locates the tools (flat or vendored) and checks the Python version, so that
 rem guidance lives in ONE place and cannot drift between the two launchers.
 cd /d "%~dp0"
 
-if exist "%~dp0fha.cmd" (
-  call "%~dp0fha.cmd" serve %*
-  if errorlevel 1 set "FHA_RC=%errorlevel%" & goto :trouble
-  exit /b 0
-)
+rem No parenthesised block here on purpose. Inside one, %errorlevel% is
+rem expanded when cmd PARSES the block, so it holds a stale value by the
+rem time the call has run; and `&` does not bind to `if`, so an `if ... set
+rem ... & goto` runs the goto unconditionally - sending even a clean exit 0
+rem into the failure path. Sequential lines with a label read the real code.
+if not exist "%~dp0fha.cmd" goto :no_shim
+call "%~dp0fha.cmd" serve %*
+set "FHA_RC=%errorlevel%"
+if not "%FHA_RC%"=="0" goto :trouble
+exit /b 0
+
+:no_shim
 
 rem No fha.cmd beside us - an archive from before the launchers shipped. Do the
 rem same two checks inline rather than handing a missing path to an interpreter
@@ -40,12 +47,14 @@ goto :no_python
 
 :run_py
 py -3 "%FHA_ENTRY%" serve %*
-if errorlevel 1 set "FHA_RC=%errorlevel%" & goto :trouble
+set "FHA_RC=%errorlevel%"
+if not "%FHA_RC%"=="0" goto :trouble
 exit /b 0
 
 :run_python
 python "%FHA_ENTRY%" serve %*
-if errorlevel 1 set "FHA_RC=%errorlevel%" & goto :trouble
+set "FHA_RC=%errorlevel%"
+if not "%FHA_RC%"=="0" goto :trouble
 exit /b 0
 
 :no_tools
