@@ -72,7 +72,7 @@
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "e0f893ae262cc3b4b683b5fc10d62974a3910272c87cc20d956fd03cb80948a5",
+      "sha256": "5cf854910b99779efc6e912183711a9d90482b7d2a6943c3407757288fbfe7b5",
       "spec_version": "1.2"
     },
     {
@@ -227,7 +227,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "d30cfe0779ba2fd6c75464e4ee717e8c8a9858f045621f19c0400bddc3cb27f8",
+      "sha256": "f1f87e011bb8932a798a230a970f9f352268a02fd1c1e90de12d38aeb2da705b",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -318,7 +318,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "b5a81e3ea29e9cbc35b88ff9286aef2cfd511f00e43b707988e9ab6fa7b7b8fa",
+      "sha256": "1fb052cf17e031f3863783584ceda23a64a42584d7e32afde42a2782842afb1a",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -659,7 +659,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "dc2a02e5f518c9cc4fc8a333ef4a141dbd837ddb5c881a1761fc8e95f99629f3",
+      "sha256": "b9376313f13838ca11b0994a53b8c9d43f4eeb573ff4d8a53bc513e2e534d69e",
       "spec_version": "1.2"
     },
     {

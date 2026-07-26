@@ -59,6 +59,7 @@ from _lib import (
     INDEX_SCHEMA_VERSION,
     PHOTOINDEX_SCHEMA_VERSION,
     Result,
+    VENDOR_DIR,
     configure_utf8_stdout,
     db_mtime,
     get_roots,
@@ -267,13 +268,31 @@ def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict
     worst = EXIT_CLEAN
     stamp_path = archive_root / '.plaintext-version'
     if not stamp_path.is_file():
-        lines.append(
-            'tools version: not stamped (no .plaintext-version)  '
-            'next: no action needed if you copied the tools by hand; '
-            'or run `fha install` from a tools clone to stamp it'
-        )
-        checks.append({'id': 'tools_version', 'status': 'info',
-                       'detail': 'not stamped', 'next_step': None})
+        # `fha install` REFUSES an unstamped archive that still holds a flat
+        # tools/fha.py, because installing beside it would leave those files
+        # in place but unused. Advising it anyway would send the owner to a
+        # command guaranteed to refuse - so say what actually works instead.
+        legacy_tools = (archive_root / 'tools' / 'fha.py').is_file()
+        vendored = (archive_root / VENDOR_DIR / 'tools').is_dir()
+        if legacy_tools and not vendored:
+            lines.append(
+                'tools version: not stamped, and tools/ sits at the archive root '
+                '(the tools now live under .fha/)  '
+                'next: move or delete the old tools/ folder, copying across any '
+                'edits you made to it, then run `fha install` - it refuses while '
+                'both could be present'
+            )
+            checks.append({'id': 'tools_version', 'status': 'info',
+                           'detail': 'not stamped; legacy flat tools/',
+                           'next_step': 'reconcile tools/ by hand, then install'})
+        else:
+            lines.append(
+                'tools version: not stamped (no .plaintext-version)  '
+                'next: no action needed if you copied the tools by hand; '
+                'or run `fha install` from a tools clone to stamp it'
+            )
+            checks.append({'id': 'tools_version', 'status': 'info',
+                           'detail': 'not stamped', 'next_step': None})
     else:
         try:
             stamp = json.loads(stamp_path.read_text(encoding='utf-8'))

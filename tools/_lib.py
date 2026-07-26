@@ -4523,11 +4523,21 @@ def pip_command(target: str) -> str:
     are wrong" rather than "add quotes". POSIX shells take shlex quoting; cmd.exe
     and PowerShell do not understand single quotes, so Windows gets double ones.
     """
-    if os.name == 'nt':
-        exe = f'"{sys.executable}"' if ' ' in sys.executable else sys.executable
+    def _q(word: str) -> str:
+        if os.name == 'nt':
+            return f'"{word}"' if ' ' in word else word
+        return shlex.quote(word)
+
+    # Both halves need it, not just the executable. `-r <path>` carries an
+    # archive path, and "Family Archive" is an ordinary folder name - quoting the
+    # interpreter while leaving the requirements file bare just moves the split
+    # one argument to the right.
+    exe = _q(sys.executable)
+    if target.startswith('-r '):
+        arg = f'-r {_q(target[3:])}'
     else:
-        exe = shlex.quote(sys.executable)
-    return f'{exe} -m pip install {target}'
+        arg = _q(target)
+    return f'{exe} -m pip install {arg}'
 
 
 def requirements_hint() -> str:

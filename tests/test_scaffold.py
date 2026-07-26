@@ -574,6 +574,18 @@ class PipCommandTest(unittest.TestCase):
         self.assertEqual(shlex.split(cmd)[0], '/home/u/Family Tools/python')
         self.assertEqual(shlex.split(cmd)[1:], ['-m', 'pip', 'install', 'pyyaml'])
 
+    def test_a_spaced_requirements_path_is_quoted_too(self):
+        # Quoting the interpreter but not the `-r` argument just moves the split
+        # one argument to the right - and an archive called "Family Archive" is
+        # an entirely ordinary thing to have.
+        import _lib
+        with mock.patch.object(_lib.sys, 'executable', '/home/u/py env/bin/python'):
+            cmd = _lib.pip_command('-r /home/u/Family Archive/.fha/tools/requirements.txt')
+        self.assertEqual(
+            shlex.split(cmd),
+            ['/home/u/py env/bin/python', '-m', 'pip', 'install', '-r',
+             '/home/u/Family Archive/.fha/tools/requirements.txt'])
+
     def test_it_names_the_running_interpreter(self):
         import _lib
         self.assertTrue(_lib.pip_command('pyyaml').startswith(

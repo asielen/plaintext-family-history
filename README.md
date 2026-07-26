@@ -49,12 +49,24 @@ my-family-archive/          ← PRIVATE: your real family's records
 
 They are not technically linked.
 The only relationship is that your private archive *uses the tools* that live in this public repo.
-There are two ways to get those tools to your archive:
+The tools get to your archive by **installing** them into it:
 
-- **Vendor (copy them in).** Copy this repo's `tools/` folder into your private archive so the tools live *beside* your data. The archive becomes fully self-contained - it works on any machine, offline, forever, even if this repo disappears. Updating means re-copying `tools/` when they improve. *Recommended for a personal archive - it matches the "survives tool churn, usable from a USB stick" goal.*
-- **Install (once packaging exists).** *Not available yet.* Once the `fha` suite is packaged, you'll be able to install it from this repo (`pip install git+https://github.com/YOURNAME/plaintext-family-history.git`) and call `fha` from anywhere. Cleaner day-to-day (tools live in one place), but your archive then depends on the tools being installed separately. Until then, use the vendored-copy model above.
+```
+fha install PATH-TO-YOUR-ARCHIVE --repo PATH-TO-THIS-CLONE
+```
 
-Either way, **your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.
+That copies the whole operating layer - the program, its design package, the rulebooks, and the
+owner-facing docs - into the archive and records what it wrote, so `fha update-tools` can refresh
+it later without touching anything you have edited. The machinery lands in a hidden `.fha/` folder
+so the archive root shows your genealogy rather than the program; your records, the rulebooks, and
+`docs/` stay in plain sight. The archive is then **self-contained**: it works on any machine,
+offline, forever, even if this repo disappears.
+
+No `pip install` is involved and none is planned - the archive owns its own copy of the tools on
+purpose, so nothing it depends on can be uninstalled out from under it. If you have no git clone,
+[`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) covers the download-a-zip route.
+
+**Your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.
 
 
 ---
