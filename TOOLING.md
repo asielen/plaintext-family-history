@@ -38,7 +38,7 @@ Everything else stdlib.
 No network access except the geocoder's optional gazetteer download.
 
 **Archive root discovery.** An archive root is identified by the presence of `fha.yaml`; discovery walks upward from CWD to find it, and `--root PATH` overrides. (`sources/` and the other record directories are expected but not required for root detection - a brand-new archive may have `fha.yaml` before its record directories exist.)
-The spec docs (`SPEC.md`/`TOOLING.md`) normally live at the archive root but may instead be installed with the tools; `--spec-root PATH` points at them when separated. In an installed archive the tools (and the spec docs installed beside them) are vendored under a hidden `.fha/` folder while the archive root shows only the genealogy and the rulebooks; root detection is unaffected - it still walks up to the `fha.yaml` that either layout keeps at the archive root.
+The spec docs (`SPEC.md`/`TOOLING.md`) normally live at the archive root but may instead be installed with the tools; `--spec-root PATH` points at them when separated. `fha install` always writes them **at the archive root** - only the machinery (`.fha/tools/`, `.fha/design/`) is vendored under the hidden `.fha/` folder, so `--spec-root` is not needed for an installed archive. Root detection is unaffected either way: it walks up to the `fha.yaml` that every layout keeps at the archive root.
 In the public spec repo, the fixture is run explicitly: `fha lint --root example-archive --spec-root .` - the repo root is not itself an archive.
 All stored paths are alias-form with forward slashes (normalize on Windows).
 

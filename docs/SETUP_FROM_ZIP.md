@@ -162,8 +162,10 @@ exactly as they are.
 > fha install my-family-archive
 > ```
 >
-> Run this from your workshop folder against a **fresh, empty folder name** (not a copy of
-> `archive-template` - the installer creates the skeleton itself). Then, with each new download,
+> Run this from your workshop folder, naming the folder you want. A folder that does not exist
+> yet is the simplest case - the installer creates the skeleton itself. Pointing it at a copy of
+> `archive-template` you have not edited yet works too; it stops only once you have started
+> filling the archive in, so that it can never overwrite work in progress. Then, with each new download,
 > `fha update-tools --repo <the-new-unzipped-folder>` (run from inside your archive) pulls the
 > improvements in for you: it backs up anything you've edited before replacing it, never deletes,
 > and never touches your `fha.yaml` or place list. No git required either way.

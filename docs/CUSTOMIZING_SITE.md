@@ -83,12 +83,21 @@ design already (a printed family-register look; see [`DESIGN.md`](DESIGN.md) if 
 curious). `custom.css` is there for when you want to make it yours. It is loaded last, so
 whatever you put here wins.
 
-**Where to find it.** In an installed archive the design package lives in the hidden `.fha/`
-folder alongside the tools, so the file is `.fha/design/custom.css`. (On a Mac, press
-`Cmd-Shift-.` in Finder to see hidden folders; in Windows File Explorer, tick *Hidden items*
-under *View*. Or just ask the assistant to open it for you.) An older archive that still keeps
+**Where to find it.** In an installed archive the design package lives in the `.fha/` folder
+alongside the tools, so the file is `.fha/design/custom.css`. An older archive that still keeps
 its machinery at the root has it at `design/custom.css` instead. Either way, an update never
 overwrites it.
+
+Getting to it depends on your system:
+
+- **Mac / Linux:** the leading dot makes `.fha` hidden. In Finder, press `Cmd-Shift-.` to show
+  hidden folders (press it again to re-hide them), or use *Go → Go to Folder…* and paste the path.
+- **Windows:** `fha install` and `fha migrate-layout` mark the folder hidden for you, so tick
+  *Hidden items* on the *View* tab in File Explorer to see it. If it is already visible — the
+  hidden mark doesn't stick on some drives, like a USB stick or a network folder — just open it
+  normally; nothing is wrong.
+
+Simplest of all: ask your assistant to open the stylesheet for you and skip the folder hunt.
 
 ### 4. The facts themselves — your records
 

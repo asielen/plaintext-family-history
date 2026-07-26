@@ -103,6 +103,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -474,9 +475,52 @@ def _stamp_dict(manifest: dict, checksums: dict[str, str]) -> dict:
 
 
 def _write_version_stamp(archive_root: Path, stamp: dict) -> None:
-    """Write .plaintext-version (pretty JSON, trailing newline)."""
+    """Write .plaintext-version (pretty JSON, trailing newline), atomically.
+
+    Written to a sibling temp file and then replaced, so a full disk or an
+    interrupted write can never leave a TRUNCATED stamp behind. That matters more
+    than it looks: a half-written stamp is invalid JSON, and `_load_version_stamp`
+    refuses an unreadable stamp outright - so the next `update-tools` stops with a
+    "delete it and re-run" message instead of the clean automatic re-stamp the
+    migration contract promises. Either the old stamp survives intact or the new
+    one lands whole; there is no in-between state.
+    """
     path = archive_root / VERSION_FILE
-    path.write_text(json.dumps(stamp, indent=2) + '\n', encoding='utf-8')
+    tmp = path.with_name(path.name + '.fha-tmp')
+    try:
+        tmp.write_text(json.dumps(stamp, indent=2) + '\n', encoding='utf-8')
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _hide_vendor_dir(archive_root: Path) -> None:
+    """Give `.fha/` the Windows hidden attribute (no-op elsewhere).
+
+    A leading dot hides a folder on macOS and Linux by convention, but means
+    nothing to Windows: File Explorer shows a dot-folder like any other. Since
+    the whole point of vendoring is that the archive root reads as the genealogy
+    rather than the machinery, Windows needs the actual FILE_ATTRIBUTE_HIDDEN bit
+    set - otherwise the folder every guide calls "hidden" sits in plain view for
+    the users least likely to shrug it off.
+
+    Best-effort and never fatal: a filesystem that cannot carry the attribute
+    (a FAT/exFAT stick, a network share, a WSL mount) leaves the folder visible,
+    which is cosmetic. Called after install and after migrate-layout create it.
+    """
+    if os.name != 'nt':
+        return
+    vendor = archive_root / VENDOR_DIR
+    if not vendor.is_dir():
+        return
+    try:
+        import ctypes
+        _FILE_ATTRIBUTE_HIDDEN = 0x02
+        ctypes.windll.kernel32.SetFileAttributesW(  # type: ignore[attr-defined]
+            str(vendor), _FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        pass
 
 
 def _unique_backup_path(archive_root: Path, rel_path: str, date_str: str) -> Path:
@@ -631,6 +675,7 @@ def run_install(
             changed.append(str(dest))
         _write_version_stamp(archive_path, _stamp_dict(manifest, checksums))
         changed.append(str(archive_path / VERSION_FILE))
+        _hide_vendor_dir(archive_path)
     except OSError as exc:
         raise ScaffoldError(
             f"could not finish installing into {archive_path}: {exc}. "
@@ -745,10 +790,22 @@ def _running_from(archive_root: Path) -> bool:
     return root == here or root in here.parents
 
 
+def _vendor_counterpart(archive_path: str) -> str:
+    """The same archive path with the `.fha/` vendor prefix toggled.
+
+    `design/custom.css` <-> `.fha/design/custom.css`. Used to pair a file's
+    pre-layout-change home with its post-change one, in both directions, so a
+    future un-vendoring is handled as well as the move this release performs.
+    """
+    prefix = f'{VENDOR_DIR}/'
+    if archive_path.startswith(prefix):
+        return archive_path[len(prefix):]
+    return f'{prefix}{archive_path}'
+
+
 def _plan_install_once_relocations(
     archive_root: Path,
     manifest: dict,
-    stamp: dict | None,
 ) -> list[tuple[str, str]]:
     """Find install-once files whose archive path moved between vendor layouts.
 
@@ -765,28 +822,26 @@ def _plan_install_once_relocations(
     from the archive - recoverable only by hand out of the backup folder.
 
     So detect the transition first and MOVE the file to its new path, carrying
-    the customization with it. Matched conservatively: only a recorded path that
-    the manifest has dropped, whose vendor-prefixed twin the manifest lists as a
-    SKELETON entry, and where the destination does not already exist.
+    the customization with it.
+
+    Driven off the MANIFEST and the DISK, deliberately not off the stamp: an
+    archive assembled by hand-copying `tools/` and `design/` has no
+    `.plaintext-version` at all, and keying this on recorded paths would skip
+    exactly those archives - installing the new `.fha/` operating layer while
+    leaving the owner's stylesheet at a path the newly installed `site.py` no
+    longer reads, and exiting 0. Still conservative: the destination must be a
+    SKELETON entry the manifest lists, its counterpart must be a path the
+    manifest does NOT list (so a live file is never moved), the source must be a
+    real file, and the destination must not already exist.
     """
-    recorded = _stamp_file_map(stamp)
-    if not recorded:
-        return []
+    manifest_all_paths = {e['path'] for e in manifest['files']}
     skeleton_paths = {e['path'] for e in manifest['files']
                       if e.get('category') == 'skeleton'}
-    manifest_all_paths = {e['path'] for e in manifest['files']}
 
     moves: list[tuple[str, str]] = []
-    for old in sorted(recorded):
+    for new in sorted(skeleton_paths):
+        old = _vendor_counterpart(new)
         if old in manifest_all_paths:
-            continue
-        # Both directions, so a future un-vendoring is handled as well as the
-        # flat -> .fha/ move this release performs.
-        if old.startswith(f'{VENDOR_DIR}/'):
-            new = old[len(VENDOR_DIR) + 1:]
-        else:
-            new = f'{VENDOR_DIR}/{old}'
-        if new not in skeleton_paths:
             continue
         if not (archive_root / old).is_file():
             continue
@@ -818,17 +873,26 @@ def _rekey_stamp_for_relocations(
 
 def _apply_install_once_relocations(
     archive_root: Path,
+    stamp: dict | None,
     moves: list[tuple[str, str]],
     *,
     dry_run: bool,
 ) -> list[str]:
-    """Move the relocated install-once files on disk.
+    """Move the relocated install-once files on disk; undo the re-key on failure.
 
     Deliberately called only AFTER the manifest-source preflight has passed. An
     update driven from a damaged or partial workshop copy aborts at that check;
     moving the stylesheet first would leave it at a path the archive's still-flat
     `site.py` never reads, silently dropping the owner's styling from a run that
     failed and changed nothing else.
+
+    A move that fails must not stay re-keyed. The stamp was pointed at the new
+    path up front so the plan would read correctly, but recording a destination
+    that does not exist makes every later run believe the transition already
+    happened - the file is a skeleton entry, so nothing re-checks it - and the
+    owner's stylesheet sits unused at the old path forever. So on failure the key
+    goes back, and the caller is handed a message it must count as a run failure
+    (exit 1), never a silent warning under an exit 0.
 
     Returns human-readable failure messages (empty on success); a file that
     cannot be moved is left exactly where it is.
@@ -842,10 +906,34 @@ def _apply_install_once_relocations(
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(archive_root / old), str(dest))
         except OSError as exc:
+            _rekey_stamp_for_relocations(stamp, [(new, old)])   # put it back
             failures.append(
                 f'{old}: could not move to {new} ({exc}). Your copy is untouched '
-                f'at {archive_root / old} - move it to {dest} by hand.')
+                f'at {archive_root / old} - move it to {dest} by hand, or re-run '
+                f'this update once whatever is holding the file has let go.')
     return failures
+
+
+def _prune_emptied_dirs(archive_root: Path, retired_paths: list[str]) -> None:
+    """Remove directories left empty by retiring the files inside them.
+
+    Only directories that actually held a retired file are considered, deepest
+    first so a nested tree collapses in one pass. `rmdir` fails on a non-empty
+    directory, which is the safety property: a folder still holding anything at
+    all - a record, a stray note, a file this run failed to move - is left
+    exactly where it is. The archive root is never a candidate.
+    """
+    candidates: set[Path] = set()
+    for rel in retired_paths:
+        parent = (archive_root / rel).parent
+        while parent != archive_root and archive_root in parent.parents:
+            candidates.add(parent)
+            parent = parent.parent
+    for directory in sorted(candidates, key=lambda q: len(q.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass          # not empty, or not ours to remove - leave it
 
 
 def run_update_tools(
@@ -890,7 +978,7 @@ def run_update_tools(
     # as retired; the file itself does not move until the source preflight below
     # has passed. Moving it earlier would strand the owner's stylesheet at a path
     # the still-flat site.py does not read, on an update that then aborted.
-    relocations = _plan_install_once_relocations(archive_root, manifest, stamp)
+    relocations = _plan_install_once_relocations(archive_root, manifest)
     _rekey_stamp_for_relocations(stamp, relocations)
 
     # An update that also changes the layout retires the old flat tools/ into
@@ -934,14 +1022,19 @@ def run_update_tools(
         )
 
     # Sources check out, so the run will not abort under us: now it is safe to
-    # actually move the install-once files planned above.
+    # actually move the install-once files planned above. Report each move only
+    # once it has succeeded - announcing it first and then failing is exactly the
+    # false-success this file avoids everywhere else.
+    relocation_failures = _apply_install_once_relocations(
+        archive_root, stamp, relocations, dry_run=dry_run)
+    _failed_moves = {old for old, _new in relocations
+                     if any(m.startswith(f'{old}:') for m in relocation_failures)}
     for old, new in relocations:
+        if old in _failed_moves:
+            continue
         prefix = '[dry-run] would move' if dry_run else 'Moved'
         print(f'{prefix} your {old} to {new} (the tools folder layout changed; '
               'your customizations come with it).')
-    for message in _apply_install_once_relocations(
-            archive_root, relocations, dry_run=dry_run):
-        print(f'WARNING: {message}', file=sys.stderr)
     if relocations:
         print()
 
@@ -970,7 +1063,11 @@ def run_update_tools(
     # message is printed AFTER its operation succeeds, and the summary counts only
     # what actually happened - the output never claims a success that did not occur.
     installed_ok: dict[str, str] = {}
-    failures: list[str] = []
+    # A stylesheet that could not be carried across the layout change is a FAILED
+    # update, not a footnote: the archive is left with the owner's customization
+    # at a path the new site.py does not read. Seeding it here puts it in the
+    # summary and drops the exit code to 1, so a script driving the update sees it.
+    failures: list[str] = list(relocation_failures)
     failed_paths: set[str] = set()
     n_added_ok = n_stock_ok = n_custom_ok = n_retired_ok = 0
     backups_made = False
@@ -1043,7 +1140,25 @@ def run_update_tools(
             f'the new version is now in {archive_path}.'
         )
 
+    manifest_all_paths = {e['path'] for e in manifest['files']}
     for archive_path, _src in plan['retired']:
+        # A flat -> .fha/ update retires `tools/fha.py` while adding
+        # `.fha/tools/fha.py`. If that add FAILED, retiring the old copy leaves
+        # the archive with no entrypoint at all - and the closing advice to re-run
+        # `fha update-tools` is then impossible to follow from inside it. Only
+        # retire a legacy path once the replacement it hands off to is really on
+        # disk. Paths with no counterpart in the manifest (a genuinely retired
+        # tool) are unaffected.
+        replacement = _vendor_counterpart(archive_path)
+        if replacement in manifest_all_paths and (
+                replacement in failed_paths
+                or not (archive_root / replacement).is_file()):
+            failures.append(
+                f'{archive_path}: kept in place - its replacement {replacement} '
+                f'could not be installed this run. Retiring it would leave the '
+                f'archive without that file entirely.')
+            failed_paths.add(archive_path)
+            continue
         dest = archive_root / archive_path
         backup = _unique_backup_path(archive_root, archive_path, date_str)
         try:
@@ -1058,6 +1173,16 @@ def run_update_tools(
             f'Moved {archive_path} to {backup} - it is no longer part of the '
             f'plaintext tools (kept, not deleted).'
         )
+
+    # Retiring files one by one leaves their directories behind, empty. After a
+    # flat -> .fha/ update that means a hollow `tools/` and `design/` still
+    # sitting in the archive root - exactly the clutter the vendored layout
+    # exists to remove, and indistinguishable at a glance from tools that failed
+    # to move. Prune the husks, deepest first; rmdir refuses a non-empty
+    # directory, so this can only ever remove what retirement emptied.
+    _prune_emptied_dirs(archive_root,
+                        [ap for ap, _src in plan['retired']
+                         if ap not in failed_paths])
 
     if verbose:
         for archive_path, _src in plan['current']:
@@ -1282,32 +1407,60 @@ def _stale_root_launchers(archive_root: Path) -> list[str]:
     return stale
 
 
-def _refresh_root_launchers(archive_root: Path, repo_root: Path,
-                            names: list[str]) -> tuple[list[str], list[str]]:
+def _refresh_root_launchers(archive_root: Path, repo_root: Path, names: list[str],
+                            manifest: dict | None = None,
+                            date_str: str | None = None,
+                            ) -> tuple[list[str], list[str], list[str]]:
     """Copy the layout-agnostic root launchers in from `repo_root`.
 
-    Returns (refreshed, unavailable). A launcher the source copy does not have
-    (running from inside the archive being migrated, where `repo_root` is
-    `.fha/`, not a workshop clone) lands in `unavailable` so the caller can
+    Returns (refreshed, unavailable, backed_up). A launcher the source copy does
+    not have (running from inside the archive being migrated, where `repo_root`
+    is `.fha/`, not a workshop clone) lands in `unavailable` so the caller can
     print the exact follow-up command instead of silently leaving it broken.
-    An existing launcher is overwritten deliberately: these are generated shims,
-    never a place for a hand-edit, and the pre-`.fha` copy is precisely what is
-    broken. `copy2` carries the POSIX executable bit for `fha`.
+
+    A launcher that is NOT a byte-for-byte match for a stock copy the project has
+    shipped is backed up to `.plaintext-backup/{date}/` before being replaced.
+    These files are usually generated shims nobody edits, but "usually" is not a
+    guarantee an owner's custom port, proxy setting, or wrapper command can be
+    silently discarded on - `update-tools` gives the same file checksum-and-backup
+    protection, and a migration advertised as preserving customizations must not
+    be the weaker path. Stock is judged against the manifest's recorded sha256 as
+    well as the incoming file, so a launcher matching ANY shipped version is
+    replaced quietly rather than generating a pointless backup.
+
+    `copy2` carries the POSIX executable bit for `fha`.
     """
+    stock_sums: dict[str, set[str]] = {}
+    for entry in (manifest or {}).get('files', []):
+        if entry.get('path') in names and entry.get('sha256'):
+            stock_sums.setdefault(entry['path'], set()).add(entry['sha256'])
+
     refreshed: list[str] = []
     unavailable: list[str] = []
+    backed_up: list[str] = []
     for name in names:
         src = repo_root / name
         if not src.is_file():
             unavailable.append(name)
             continue
+        dest = archive_root / name
         try:
-            shutil.copy2(src, archive_root / name)
+            if dest.is_file():
+                known = set(stock_sums.get(name, set()))
+                known.add(_sha256_file(src))
+                if _sha256_file(dest) not in known:
+                    backup = _unique_backup_path(
+                        archive_root, name,
+                        date_str or datetime.date.today().isoformat())
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dest, backup)
+                    backed_up.append(f'{name} -> {backup}')
+            shutil.copy2(src, dest)
         except OSError:
             unavailable.append(name)
             continue
         refreshed.append(name)
-    return refreshed, unavailable
+    return refreshed, unavailable, backed_up
 
 
 def _capture_host_installed(archive_root: Path) -> Path | None:
@@ -1349,8 +1502,16 @@ def _capture_host_installed(archive_root: Path) -> Path | None:
                 manifest_path.read_text(encoding='utf-8')).get('path', ''))
             if not launcher.is_file():
                 continue
-            if root_norm in os.path.normcase(
-                    launcher.read_text(encoding='utf-8', errors='replace')):
+            text = launcher.read_text(encoding='utf-8', errors='replace')
+            # Compare the launcher's `--root "<path>"` as a WHOLE path, not by
+            # substring. `/data/family` is a substring of `/data/family-old`, so a
+            # containment test would claim the neighbouring archive's host belongs
+            # to this one - and the "re-register" advice that follows would
+            # overwrite that archive's working registration.
+            hosted = re.search(r'--root\s+"([^"]*)"', text)
+            if hosted is None:
+                continue
+            if os.path.normcase(str(Path(hosted.group(1)))) == root_norm:
                 return manifest_path
         except Exception:
             continue
@@ -1436,6 +1597,7 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     moved_done: list[tuple[Path, Path]] = []
     try:
         vendor.mkdir(parents=True, exist_ok=True)
+        _hide_vendor_dir(archive_root)
         for s in present:
             src = archive_root / s
             dest = vendor / s
@@ -1472,6 +1634,7 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
     # is non-fatal - the next `update-tools` will re-stamp cleanly - but it must
     # not raise here, after the folders have already moved.
     stamp_path = archive_root / VERSION_FILE
+    stamp_warning = ''
     if stamp_path.is_file():
         try:
             stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
@@ -1483,21 +1646,50 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
                             else key] = val
                 stamp['files'] = dict(sorted(rekeyed.items()))
                 _write_version_stamp(archive_root, stamp)
-        except (OSError, ValueError):
+        except ValueError:
+            # Unparseable stamp: the folders still moved, and the next
+            # update-tools re-stamps from scratch. Nothing to say.
             pass
+        except OSError as exc:
+            # A read or write that failed outright. The write is atomic, so the
+            # OLD stamp is still intact on disk - which now names the pre-move
+            # paths. Every one of those reads as retired on the next update, so
+            # say so and name the one-line repair rather than reporting a clean
+            # migration over a stamp that no longer matches the tree.
+            stamp_warning = (
+                f'could not update {VERSION_FILE} ({exc}). The folders moved, but '
+                f'that file still lists their old paths. Delete '
+                f'{stamp_path} - it is only a record of what was installed, never '
+                f'your data - and run `fha update-tools --repo PATH-TO-WORKSHOP` '
+                f'to rewrite it.')
 
-    refreshed, unavailable = _refresh_root_launchers(
-        archive_root, repo_root, stale_launchers)
+    # The manifest (when the source has one) lets a launcher that matches ANY
+    # shipped stock version be replaced without a pointless backup.
+    try:
+        launcher_manifest = load_manifest(repo_root)
+    except ScaffoldError:
+        launcher_manifest = None
+    refreshed, unavailable, backed_up = _refresh_root_launchers(
+        archive_root, repo_root, stale_launchers, launcher_manifest)
 
     print(f'Migrated {archive_root} to the {VENDOR_DIR}/ layout:')
     for s in present:
         print(f'  {s}/ -> {VENDOR_DIR}/{s}/')
     if refreshed:
         print(f'  refreshed the root launcher(s): {", ".join(refreshed)}')
+    for moved in backed_up:
+        print(f'  your edited {moved} (kept, not deleted - the replacement is '
+              'the stock launcher that can find the moved tools)')
     print('Records, the rulebooks (SPEC/TOOLING/AGENTS/README/CLAUDE), docs/, '
           'and .claude/ stayed at the archive root.')
+    if stamp_warning:
+        print(f'\nWARNING: {stamp_warning}', file=sys.stderr)
     print('\nNext:')
     step = 1
+    if stamp_warning:
+        print(f'  {step}. Fix the version stamp as described in the warning above, '
+              'before the next update.')
+        step += 1
     if unavailable:
         print(f'  {step}. IMPORTANT: the root launcher(s) {", ".join(unavailable)} '
               f'still point at the old flat layout (or are missing) and were not '
@@ -1512,11 +1704,13 @@ def run_migrate_layout(archive_root: Path, *, dry_run: bool = False,
               'settings you used before.')
         step += 1
     print(f'  {step}. Run `fha doctor` to confirm, then `fha index` to refresh the cache.')
-    return Result(exit_code=EXIT_CLEAN,
+    return Result(exit_code=EXIT_WARNINGS if stamp_warning else EXIT_CLEAN,
                   changed=[str(d) for _, d in moved_done]
                           + [str(archive_root / n) for n in refreshed],
                   data={'moved': len(present), 'launchers_refreshed': len(refreshed),
-                        'launchers_pending': len(unavailable)})
+                        'launchers_pending': len(unavailable),
+                        'launchers_backed_up': len(backed_up),
+                        'stamp_warning': bool(stamp_warning)})
 
 
 def _cmd_migrate_layout(args: argparse.Namespace) -> int:

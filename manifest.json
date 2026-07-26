@@ -430,7 +430,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "15241c74667abe7d32457cf5f09d388ea60d66bc9984d2ed73e8f596ec5a2a31",
+      "sha256": "6c666682520d1c4c7db4133a5735bc7532485e649ea8d89a2e51ed4eddcb8a67",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -650,7 +650,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "35dab4330c8aa44db7f70e7ceeb49deac1c4cf9a1d4e8391f088c1a604b17a0d",
+      "sha256": "c4df6fca96deec144b4b32959f7932a5f0cce933b45883ccb5d6fa3b805a1985",
       "spec_version": "1.2"
     },
     {
@@ -668,7 +668,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "57de243b7055f6b09a4061a01a22ad11f5e545156dee427ce51962de69c99492",
+      "sha256": "fd3f85dabb393cea5ed7bb30eb8b897b1b16d66fd60536a6a261418867081ff1",
       "spec_version": "1.2"
     },
     {
@@ -710,7 +710,7 @@
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "1d1a955380a7a17e0166c2701041f5027959f3fba778d1f4e2741287276b2c0c",
+      "sha256": "a35377ac7bb0613e84748e9fbcb2932ee52279d151c75a4c1844bd51f3a383e3",
       "spec_version": "1.2"
     },
     {
@@ -753,7 +753,7 @@
     {
       "path": "fha.cmd",
       "category": "operating",
-      "sha256": "bd978b8a6d9583f9dcc99671d3f1fc749e2e9f0490d6514abdc1ea9a42a9fb70",
+      "sha256": "1398c9b1da0a17b35ece46033b98d2d529bce3e8387b453b01c831857160b773",
       "spec_version": "1.2"
     },
     {

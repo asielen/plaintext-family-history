@@ -28,10 +28,14 @@ After copying:
    the five rulebooks (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`, `README.md`), the
    `docs/` guides, the launchers (`fha`, `fha.cmd`, `serve.cmd`), your `fha.yaml`, the
    `.claude/skills/` folder, and the data folders. See `docs/SETUP_FROM_ZIP.md`.
-   *(Already copied this template by hand? `fha install` won't run against it. Instead, from your
-   clone or unzipped download, copy the `tools/` and `design/` folders into a `.fha/` folder
-   here, then copy the five rulebooks above, the `docs/` folder, the `fha`, `fha.cmd` and
-   `serve.cmd` launchers, and the `.claude/skills/` folder into the archive root.)*
+   *(Already copied this template by hand? You can still point `fha install` at that copy: it
+   accepts skeleton files that are already there as long as they are untouched stock, so a
+   pristine copy of this template installs cleanly and gets the version stamp with it. It stops
+   only if you have started editing — `fha.yaml` filled in, records added — so that it can never
+   overwrite work in progress. If it does stop, copy the operating layer in by hand instead: the
+   `tools/` and `design/` folders go into a `.fha/` folder here, and the five rulebooks above,
+   the `docs/` folder, the `fha`, `fha.cmd` and `serve.cmd` launchers, and the `.claude/skills/`
+   folder go into the archive root.)*
    Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
    you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
    (`BUILD.md` M9.1-M9.2, TOOLING.md §13c).

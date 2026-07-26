@@ -203,6 +203,19 @@ class ManifestSyncTest(unittest.TestCase):
             self.assertIn('--repo', proc.stderr)
             self.assertIn('--root', proc.stderr)
 
+    def test_windows_launcher_handles_missing_tools(self):
+        # Parity with the POSIX launcher: without this, a damaged archive hands
+        # the missing path straight to Python and the Windows user gets a raw
+        # interpreter error with no recovery step.
+        text = (ROOT / 'fha.cmd').read_text(encoding='utf-8')
+        self.assertIn(r'if exist "%~dp0tools\fha.py"', text)
+        self.assertIn('cannot find the tools', text)
+        recovery = text.split('cannot find the tools')[1]
+        self.assertIn('update-tools', recovery)
+        self.assertIn('--repo', recovery)
+        self.assertIn('--root', recovery)
+        self.assertIn('exit /b 3', text)
+
     def test_shipped_rulebooks_do_not_link_relatively_to_unshipped_docs(self):
         # AGENTS.md/CLAUDE.md tell an agent to read AGENTS_TOOLING.md, which this
         # PR stopped vendoring. In an installed archive a relative link there is a
@@ -778,6 +791,94 @@ class MigrateLayoutTest(unittest.TestCase):
                              f'capture --host --root "{self.arc}"\n')
             self.assertEqual(scaffold._capture_host_installed(self.arc), manifest)
 
+    def test_customized_launcher_is_backed_up_before_refresh(self):
+        # update-tools gives these same files checksum-and-backup protection; a
+        # migration advertised as preserving customizations must not be weaker.
+        _write(self.arc / 'serve.cmd',
+               '@echo off\nset FHA_PORT=9999\npy -3 tools\\fha.py serve %*\n')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = self._migrate()
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertEqual(rc.data['launchers_backed_up'], 1)
+        kept = list((self.arc / '.plaintext-backup').rglob('serve.cmd'))
+        self.assertEqual(len(kept), 1)
+        self.assertIn('FHA_PORT=9999', kept[0].read_text(encoding='utf-8'))
+        # ... and the live one is now the layout-aware stock copy.
+        self.assertIn('.fha', (self.arc / 'serve.cmd').read_text(encoding='utf-8'))
+        self.assertIn('serve.cmd', buf.getvalue())
+
+    def test_stock_legacy_launcher_is_replaced_without_a_backup(self):
+        # The common case: an untouched pre-.fha launcher. A backup here would be
+        # noise, so only a file matching no shipped version earns one.
+        stock_legacy = '@echo off\npy -3 tools\\fha.py serve %*\n'
+        _write(self.arc / 'serve.cmd', stock_legacy)
+        manifest = {'files': [{'path': 'serve.cmd',
+                               'sha256': scaffold._sha256_bytes(
+                                   stock_legacy.encode())}]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_migrate_layout(
+                self.arc, repo_root=self.launchers)
+        # Without the manifest the legacy copy is unknown, so it IS kept - the
+        # safe direction. With it recorded as stock, nothing is quarantined.
+        self.assertGreaterEqual(rc.data['launchers_backed_up'], 0)
+        refreshed, unavailable, backed_up = scaffold._refresh_root_launchers(
+            self.arc, self.launchers, ['serve.cmd'], manifest)
+        self.assertEqual(backed_up, [])
+        self.assertEqual(unavailable, [])
+        self.assertEqual(refreshed, ['serve.cmd'])
+
+    def test_capture_host_prefix_paths_do_not_collide(self):
+        # /data/family is a substring of /data/family-old: a containment test
+        # would claim the neighbour's host and send the owner to re-register,
+        # overwriting that archive's working registration.
+        sibling = Path(str(self.arc) + '-old')
+        launcher = Path(self._tmp.name) / 'host-launcher.sh'
+        _write(launcher, f'#!/bin/sh\nexec python3 "{sibling}/tools/fha.py" '
+                         f'capture --host --root "{sibling}"\n')
+        manifest = Path(self._tmp.name) / 'host.json'
+        _write(manifest, json.dumps({'path': str(launcher)}))
+
+        class _FakeCapture:
+            _NATIVE_HOST_NAME = 'host'
+
+            @staticmethod
+            def _native_manifest_dir(browser):
+                return manifest.parent
+
+        with mock.patch.dict(sys.modules, {'capture': _FakeCapture}):
+            self.assertIsNone(scaffold._capture_host_installed(self.arc))
+
+    def test_stamp_write_failure_after_migration_is_reported(self):
+        # The folders have already moved. Silently swallowing this reports a
+        # clean migration over a stamp that still names the pre-move paths, and
+        # the next update-tools then treats every one of them as retired.
+        buf, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(scaffold, '_write_version_stamp',
+                               side_effect=OSError('no space left on device')), \
+                contextlib.redirect_stdout(buf), \
+                contextlib.redirect_stderr(err):
+            rc = self._migrate()
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertTrue(rc.data['stamp_warning'])
+        self.assertIn('no space left', err.getvalue())
+        self.assertIn('update-tools', buf.getvalue() + err.getvalue())
+        # The move still happened and is still reported honestly.
+        self.assertTrue((self.arc / '.fha' / 'tools' / 'fha.py').is_file())
+
+    def test_version_stamp_write_is_atomic(self):
+        # A truncated stamp is invalid JSON, and _load_version_stamp refuses an
+        # unreadable stamp outright - so a half-written one turns the next
+        # update into a manual repair instead of the promised auto re-stamp.
+        stamp_path = self.arc / '.plaintext-version'
+        before = stamp_path.read_text(encoding='utf-8')
+        with mock.patch.object(Path, 'replace', side_effect=OSError('boom')):
+            with self.assertRaises(OSError):
+                scaffold._write_version_stamp(self.arc, {'files': {}})
+        self.assertEqual(stamp_path.read_text(encoding='utf-8'), before)
+        leftovers = list(self.arc.glob('.plaintext-version*fha-tmp'))
+        self.assertEqual(leftovers, [], 'the temp file must be cleaned up')
+
     def test_rollback_failure_names_stranded_paths(self):
         # Rolling back a half-done move can itself fail. Claiming "nothing was
         # left half-moved" then sends the owner to retry a command that cannot
@@ -880,9 +981,104 @@ class UpdateLayoutTransitionTest(unittest.TestCase):
         self.assertEqual(old.read_text(encoding='utf-8'), '/* MY COLOURS */\n')
         self.assertFalse(new.exists())
 
+    def test_unstamped_legacy_archive_keeps_its_custom_styles(self):
+        # An archive assembled by hand-copying tools/ and design/ has no
+        # .plaintext-version at all. Keying the relocation off recorded paths
+        # skipped exactly those archives: the new .fha/ layer installed, the
+        # owner's CSS left at a path the new site.py no longer reads, exit 0.
+        old, new = self._regress_to_flat_custom_css('/* HAND COPIED */\n')
+        (self.archive / '.plaintext-version').unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_CLEAN)
+        self.assertTrue(new.is_file())
+        self.assertEqual(new.read_text(encoding='utf-8'), '/* HAND COPIED */\n')
+        self.assertFalse(old.exists())
+
+    def test_failed_relocation_fails_the_run_and_leaves_the_stamp_alone(self):
+        # A move blocked by a lock or permissions must not be recorded as done:
+        # the entry is skeleton, so nothing ever re-checks it, and the stylesheet
+        # would sit unused at the old path forever under a green exit code.
+        old, new = self._regress_to_flat_custom_css()
+        real_move = scaffold.shutil.move
+
+        def flaky(src, dst):
+            if 'custom.css' in str(src):
+                raise OSError('locked')
+            return real_move(src, dst)
+
+        buf = io.StringIO()
+        with mock.patch.object(scaffold.shutil, 'move', side_effect=flaky), \
+                contextlib.redirect_stdout(buf), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)     # a failure, not a footnote
+        self.assertTrue(old.is_file())                    # still where site.py reads it
+        self.assertNotIn('Moved your design/custom.css', buf.getvalue())
+        files = self._stamp()['files']
+        self.assertNotIn('.fha/design/custom.css', files)  # re-key rolled back
+
+    def test_legacy_path_is_not_retired_when_its_replacement_fails(self):
+        # A flat -> .fha update retires tools/fha.py while adding
+        # .fha/tools/fha.py. If the add fails and the retire proceeds, the
+        # archive has no entrypoint at all - and the closing "re-run
+        # fha update-tools" advice cannot be followed from inside it.
+        flat = self.archive / 'tools' / 'atool.py'
+        _write(flat, 'print("legacy")\n')
+        stamp = self._stamp()
+        stamp['files']['tools/atool.py'] = scaffold._sha256_file(flat)
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        vendored = self.archive / '.fha' / 'tools' / 'atool.py'
+        vendored.unlink()      # force it into 'added', then make the add fail
+
+        real_copy = scaffold.shutil.copy2
+
+        def flaky_copy(src, dst, *a, **kw):
+            if 'atool.py' in str(dst):
+                raise OSError('disk full')
+            return real_copy(src, dst, *a, **kw)
+
+        with mock.patch.object(scaffold.shutil, 'copy2', side_effect=flaky_copy), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = scaffold.run_update_tools(self.archive, self.repo)
+        self.assertEqual(rc.exit_code, EXIT_WARNINGS)
+        self.assertTrue(flat.is_file(), 'the only live copy must survive')
+        self.assertFalse(vendored.exists())
+        backups = list((self.archive / '.plaintext-backup').rglob('atool.py')) \
+            if (self.archive / '.plaintext-backup').exists() else []
+        self.assertEqual(backups, [], 'nothing should have been quarantined')
+
+    def test_update_leaves_no_hollow_flat_folders_behind(self):
+        # Retiring files one at a time leaves their directories standing. After
+        # the layout change that means an empty tools/ still in the archive root -
+        # the exact clutter the vendored layout removes, and at a glance
+        # indistinguishable from an update that half-failed.
+        _write(self.archive / 'tools' / 'atool.py', 'print("legacy")\n')
+        _write(self.archive / 'tools' / 'nested' / 'deep.py', 'x = 1\n')
+        stamp = self._stamp()
+        stamp['files']['tools/atool.py'] = 'aaa'
+        stamp['files']['tools/nested/deep.py'] = 'bbb'
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+        self.assertFalse((self.archive / 'tools').exists(),
+                         'the emptied flat tools/ husk must go')
+        # ... but a directory still holding anything is untouched.
+        _write(self.archive / 'tools' / 'atool.py', 'print("again")\n')
+        _write(self.archive / 'tools' / 'MY-NOTES.txt', 'keep me\n')
+        stamp = self._stamp()
+        stamp['files']['tools/atool.py'] = 'aaa'
+        _write(self.archive / '.plaintext-version', json.dumps(stamp))
+        with contextlib.redirect_stdout(io.StringIO()):
+            scaffold.run_update_tools(self.archive, self.repo)
+        self.assertTrue((self.archive / 'tools' / 'MY-NOTES.txt').is_file())
+
     def test_malformed_stamp_files_value_does_not_traceback(self):
         stamp = self._stamp()
         stamp['files'] = 'not-an-object'
+
+
 
         _write(self.archive / '.plaintext-version', json.dumps(stamp))
         with contextlib.redirect_stdout(io.StringIO()):
