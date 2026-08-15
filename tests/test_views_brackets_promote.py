@@ -250,8 +250,9 @@ class W119SharedCoupleFolderTests(BracketsPromoteBase):
 
     def test_check_gives_both_partners_one_shared_destination(self) -> None:
         # Unit-level: the check function must hand both pos-4 and pos-5 the same
-        # dest_folder, and that folder must be the even-slot (GPA) name - what a
-        # single `fha person promote GPA` would create.
+        # dest_folder, and - both partners being in the batch - that folder is
+        # named for the couple from the start (SPEC 12.2's illustrated
+        # convention), even-slot (GPA) partner first.
         conn = views.open_index_db(self.root, ('persons',))
         try:
             # The index stores IDs lowercased; the map is keyed on those, so
@@ -266,16 +267,18 @@ class W119SharedCoupleFolderTests(BracketsPromoteBase):
         self.assertEqual(
             by_pid[normalize_id(GPA)]['dest_folder'],
             by_pid[normalize_id(GMA)]['dest_folder'])
-        self.assertEqual(by_pid[normalize_id(GPA)]['dest_folder'].name, '004 Gpa Deep')
+        self.assertEqual(by_pid[normalize_id(GPA)]['dest_folder'].name,
+                         '004 Gpa Deep + Gma Deep')
 
     def test_fix_promote_lands_the_couple_in_one_folder(self) -> None:
         with mock.patch('builtins.input', return_value='y'):
             res, _out, _err = self._run(fix_promote=True)
         self.assertEqual(res.exit_code, EXIT_CLEAN)
-        # Exactly one 004-prefixed folder, holding BOTH partners' records.
+        # Exactly one 004-prefixed folder, named for the couple (both partners
+        # are in the batch), holding BOTH partners' records.
         prefixed = [d for d in self._root_dirs() if d.startswith('004')]
-        self.assertEqual(prefixed, ['004 Gpa Deep'], prefixed)
-        shared = self.root / 'people' / '004 Gpa Deep'
+        self.assertEqual(prefixed, ['004 Gpa Deep + Gma Deep'], prefixed)
+        shared = self.root / 'people' / '004 Gpa Deep + Gma Deep'
         gpa_rec = shared / f'deep__gpa_{GPA}.md'
         gma_rec = shared / f'deep__gma_{GMA}.md'
         self.assertTrue(gpa_rec.exists(), gpa_rec)
@@ -290,8 +293,8 @@ class W119SharedCoupleFolderTests(BracketsPromoteBase):
         # for both partners, so no dry-run vs live divergence.
         res, out, _err = self._run(fix_promote=True, dry_run=True)
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
-        self.assertIn('004 Gpa Deep', out)
-        self.assertNotIn('004 Gma Deep', out)
+        self.assertIn('004 Gpa Deep + Gma Deep', out)
+        self.assertNotIn('004 Gma Deep + Gpa Deep', out)
 
 
 class AmbiguousCoupleFolderTests(BracketsPromoteBase):
@@ -345,6 +348,105 @@ class FixPromoteCacheUnlinkTests(BracketsPromoteBase):
         self.assertIn('index.sqlite', combined)
         self.assertIn('fha index', combined)
         self.assertNotIn('Traceback', combined)
+
+
+class RealignTests(BracketsPromoteBase):
+    """--realign: renames/moves and promotions in one previewed pass, with
+    promotion destinations recomputed against the POST-rename tree.
+
+    The trap this class pins down: PA + MA's couple folder is hand-misnamed to
+    prefix 004 - exactly the prefix GPA's promotion needs. The naive answer
+    (follow the folder) would promote GPA into PA + MA's folder; the naive
+    opposite (keep the pre-fix destination) would do the same. Realign must
+    rename the folder back to 002 AND send GPA to a fresh `004 Gpa Deep`.
+    """
+
+    WRONG = '004 Pa Deep + Ma Deep'
+    FIXED = '002 Pa Deep + Ma Deep [Kid]'   # the rename also refreshes the bracket
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Promote PA + MA the ordinary way (GPA is generation 2, stays a stub),
+        # then hand-misname their couple folder onto GPA's prefix.
+        with mock.patch('builtins.input', return_value='y'):
+            self._run(fix_promote=True, generations=1)
+        (self.root / 'people' / FOLDER).rename(self.root / 'people' / self.WRONG)
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+
+    def _people_dirs(self) -> list[str]:
+        return sorted(p.name for p in (self.root / 'people').iterdir() if p.is_dir())
+
+    def test_realign_refused_with_either_fix_flag(self) -> None:
+        for extra in ({'fix': True}, {'fix_promote': True}):
+            res, _out, err = self._run(realign=True, **extra)
+            self.assertEqual(res.exit_code, EXIT_FAILURE, extra)
+            self.assertIn('--realign', err)
+        self.assertIn(self.WRONG, self._people_dirs())   # nothing written
+
+    def test_dry_run_previews_both_halves_and_writes_nothing(self) -> None:
+        res, out, _err = self._run(realign=True, dry_run=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        # One combined preview: the rename half AND the promotion half.
+        self.assertIn('Ahnentafel folder renames (W110):', out)
+        self.assertIn('Stub promotions (W119):', out)
+        self.assertIn('dry-run: no changes written', out)
+        # The promotion preview already points at the fresh 004 folder, never
+        # at the misnamed couple folder that is about to be renamed away.
+        self.assertIn('004 Gpa Deep', out)
+        # Nothing moved, nothing renamed, cache intact.
+        self.assertIn(self.WRONG, self._people_dirs())
+        self.assertIn(f'deep__gpa_{GPA}.md', self._stub_names())
+        self.assertTrue((self.root / '.cache' / 'index.sqlite').exists())
+
+    def test_declined_gate_writes_nothing(self) -> None:
+        with mock.patch('builtins.input', return_value='n'):
+            res, out, _err = self._run(realign=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('Aborted - no changes written.', out)
+        self.assertIn(self.WRONG, self._people_dirs())
+        self.assertIn(f'deep__gpa_{GPA}.md', self._stub_names())
+
+    def test_apply_realigns_renames_and_promotions_together(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            res, out, _err = self._run(realign=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        dirs = self._people_dirs()
+        # The misnamed couple folder went back to its derived prefix (bracket
+        # refreshed in the same rename), and GPA got his own fresh folder -
+        # NOT a berth in the folder that used to carry his prefix.
+        self.assertIn(self.FIXED, dirs)
+        self.assertNotIn(self.WRONG, dirs)
+        self.assertIn('004 Gpa Deep', dirs)
+        gpa_rec = self.root / 'people' / '004 Gpa Deep' / f'deep__gpa_{GPA}.md'
+        self.assertTrue(gpa_rec.exists())
+        self.assertEqual(str(read_record(gpa_rec)['meta'].get('tier')), 'curated')
+        self.assertNotIn(f'deep__gpa_{GPA}.md', self._stub_names())
+        # PA + MA's records traveled with their folder's rename.
+        self.assertTrue((self.root / 'people' / self.FIXED
+                         / f'deep__pa_{PA}.md').exists())
+        # One cache drop, the usual follow-ups named once.
+        self.assertFalse((self.root / '.cache' / 'index.sqlite').exists())
+        self.assertIn('fha index', out)
+        self.assertIn('fha views refresh', out)
+
+    def test_realign_converges_after_bracketing_the_fresh_folder(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            self._run(realign=True)
+        self._reindex()
+        # A promotion names the new folder but never brackets it (same as
+        # `fha person promote`); the NEXT pass adds the child list - the one
+        # remaining finding - and after that the tree is fully converged.
+        with mock.patch('builtins.input', return_value='y'):
+            res, out, _err = self._run(realign=True)
+        self.assertEqual(res.data['w110'], 0)
+        self.assertEqual(res.data['w119'], 0)
+        self.assertEqual(res.data['w103'], 1)
+        self.assertIn('004 Gpa Deep [Pa]', out)
+        self._reindex()
+        res, out, _err = self._run(realign=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertIn('no issues found', out)
 
 
 if __name__ == '__main__':

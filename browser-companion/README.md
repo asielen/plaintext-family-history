@@ -15,10 +15,20 @@ durable Python tool (`fha capture --ingest`) does the authoritative extraction
 later. A wrong guess in the browser costs nothing, because the raw `page.html` is
 always saved and the Python recipe corrects it at filing.
 
-This folder lives **outside** the Python tool suite and outside the archive's
-operating layer. It is installed in the *browser*, not vendored into an archive
-by `fha install`, so it is **not** a `manifest.json` operating-layer entry. It is
-versioned alongside the spec but distributed through the browser.
+This folder lives **outside** the Python tool suite - it runs in the *browser*,
+never inside the archive - but it **ships with every archive**: `fha install` /
+`fha update-tools` vendor the loadable files (`manifest.json`, `src/`, `icons/`,
+this README) into `.fha/browser-companion/`, so from any installed archive you
+can load it with no clone of this repo:
+
+1. Open `chrome://extensions` (or `edge://extensions`), turn on Developer mode.
+2. Click **Load unpacked** and pick your archive's `.fha/browser-companion/`
+   folder.
+
+The dev furniture here (`tests/`, `test-bundle/`, `package.json`) stays in the
+repo - what ships is exactly what the browser loads. Developing the extension
+remains a workshop-repo activity like any other tool-building; archives receive
+the result through `fha update-tools`.
 
 ---
 
@@ -117,7 +127,9 @@ in Chrome and Edge; a Firefox port is a packaging detail, not a redesign.
        later.
      - **No, the page copy is the record**, for memorials, index entries, and
        write-ups where the page itself is the evidence. (With the page-snapshot toggle
-       off too, this is a pointer-only capture: just the citation.)
+       off too, this is a pointer-only capture: citation and link only, staged with
+       an empty `assets` list; `fha capture --ingest` files it as a pointer stub
+       flagged `asset_elsewhere: true`.)
 4. **Capture & save.** The bundle is staged to Downloads. **No source record is
    minted, no claims drafted, no ID assigned**, it is pre-source. Go back to
    researching and capture more; a sitting yields a dozen bundles.
@@ -202,21 +214,20 @@ These are the build-time decisions where the implementation went slightly beyond
 [`../TOOLING_INGESTION.md`](../TOOLING_INGESTION.md) §5 as written. They are
 recorded here (not silently) as proposed spec clarifications:
 
-- **`sidePanel` permission added.** §5.4's manifest lists
-  `activeTab, scripting, downloads, storage` (+ optional `nativeMessaging`). The
-  side-panel UX §5.3 describes requires Chrome's `sidePanel` permission and a
-  `side_panel` manifest key, so both are present. `sidePanel` is not a
-  privacy-sensitive grant (it only allows showing a panel), so this keeps the
-  least-privilege intent. **Proposed amendment:** add `sidePanel` to the §5.4
-  permission list.
+- **`sidePanel` permission added.** The side-panel UX §5.3 describes requires
+  Chrome's `sidePanel` permission and a `side_panel` manifest key, so both are
+  present. `sidePanel` is not a privacy-sensitive grant (it only allows showing
+  a panel), so this keeps the least-privilege intent. *(Amendment landed:
+  §5.4's manifest sketch now lists `sidePanel`.)*
 - **`capture.json` is schema 2: an `assets:` list.** The single
   `asset_mode`/`asset_file` pair became `assets: [{file, role, mode,
   provisional?}]` so one capture can carry **both** a page snapshot (role
   `webpage`) and a separate evidence file (role `record`), the "both" case the
   panel's design enables. Ingest reads both shapes (schema 1's flat pair still
   files unchanged) and routes multi-asset captures to a SPEC §12.1 bundle folder.
-  **Proposed amendment:** document schema 2 in §3 alongside schema 1 (this README
-  and the test-bundle are the worked example).
+  *(Amendment landed: §3 now documents schema 2 as the shipping shape, with
+  schema 1 kept as accepted legacy input; this README and the test-bundle stay
+  the worked example.)*
 - **Provisional flag is now structured (and still in `notes`).** A flagged
   screen capture sets `assets[].provisional: true` (schema 2) AND prepends a
   `[provisional image, …]` line to the human's `notes` body, so review sees it

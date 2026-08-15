@@ -339,6 +339,57 @@ def format_bracket_child(given_name: str, label: str | None) -> str:
     both derive byte-identical bracket lists (SPEC §12.2, TOOLING §7)."""
     return f'{given_name} ({label})' if label else given_name
 
+
+def spouse_extended_base(
+    base_name: str, partner_ids: list[str], names: dict[str, str],
+) -> tuple[str, str | None]:
+    """Extend a couple folder's base name with the missing second partner.
+
+    SPEC §12.2's illustrated convention names both partners ('040 Thomas
+    Hartley + Margaret Cole'), but a tool-created folder starts with only the
+    promoted person's name (`{NNN} {name}`, the promote engine's grammar) and
+    nothing ever added the spouse. This derives the `+ second spouse` half from
+    the same folder-occupancy data that drives the W103 bracket refresh -
+    shared by lint and views so both derive byte-identical names.
+
+    Deliberately conservative - folder names are free-form human convenience
+    (SPEC §12.2), so the rule is: only ADD, never rewrite, never guess. The
+    extension fires only when ALL hold:
+      - the folder's derived couple (`partner_ids`: occupants minus occupants
+        who are children of occupants) has exactly two members;
+      - the base name (numeric prefix + text, bracket list already stripped)
+        carries no `+` yet - an existing spouse half, even a hand-written
+        nickname, is never touched;
+      - the text after the numeric prefix exactly matches ONE partner's
+        recorded name (case/whitespace-insensitive) - a base hand-crafted
+        enough not to match is left alone rather than guessed at.
+
+    Returns (new_base, other_name): the possibly-extended base name, and the
+    appended partner's name when it changed (None otherwise).
+    """
+    if len(partner_ids) != 2:
+        return base_name, None
+
+    m = re.match(r'^(\d+[a-z]?\s+)(.*)$', base_name)
+    if not m or '+' in m.group(2):
+        return base_name, None
+
+    def _norm(s: str) -> str:
+        return ' '.join(s.split()).casefold()
+
+    base_person = _norm(m.group(2))
+    matched = [pid for pid in partner_ids
+               if names.get(pid) and _norm(names[pid]) == base_person]
+    if len(matched) != 1:
+        return base_name, None
+    other = next(pid for pid in partner_ids if pid != matched[0])
+    other_name = names.get(other)
+    # A partner with no recorded name resolves to their bare P-id - a folder
+    # name is for humans, so never write an ID into it.
+    if not other_name or other_name == other or _norm(other_name) == base_person:
+        return base_name, None
+    return f'{base_name} + {other_name}', other_name
+
 # The keys that mark a YAML mapping as a claim, used to recognise hand-written
 # claims a human typed under `## Claims` but forgot to fence (read_record reads
 # them anyway so they are never silently lost; lint offers to wrap the fence).
@@ -3631,7 +3682,10 @@ def render_stub_content(
 # claim (SPEC §4: hand-labor scales with curiosity; TOOLING §5's
 # placement-is-a-human-act rule carves out exactly this engine).
 
-def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, int]:
+def build_ahnentafel_map(
+    conn: sqlite3.Connection, root_pid: str,
+    sex_gaps: list[dict] | None = None,
+) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
 
     Seed: root_pid -> 1.  Parents of person at position N:
@@ -3639,6 +3693,17 @@ def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, i
       Same-sex or sex='U' pairs: lexicographically-first P-id -> 2N (deterministic).
     Terminates when no accepted parent edges remain (the relationships table is
     derived from accepted claims only - see index.py).
+
+    `sex_gaps`, when a list is passed, collects the W120 set: every placement
+    made by the single-resolved-parent branch where that parent's `sex:` is not
+    a recorded M/F, appended as {'pid', 'pos'}. Such a person took the father
+    (even) slot by DEFAULT, not by derivation - a completely normal early-
+    research state (SPEC never requires `sex:` up front), but the resulting
+    folder number looks confident while actually being a guess, and W110 can
+    never catch it because the folders match their own flawed derivation. Two
+    RESOLVED parents with unset or matching sex are deliberately NOT collected:
+    that is the genuine same-sex/unknown-pair case the deterministic tie-break
+    below exists for (TOOLING §7).
 
     WHY BFS: Ahnentafel is a breadth-first numbering by definition.  Depth-first
     would produce the same positions but BFS is the natural traversal shape.
@@ -3683,6 +3748,8 @@ def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, i
             if p_pid not in pid_to_pos:
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
+                if sex_gaps is not None and p_sex not in ('M', 'F'):
+                    sex_gaps.append({'pid': p_pid, 'pos': pos})
         else:
             # Two or more genetic parent edges - assisted reproduction (a
             # donor-egg mother plus a surrogate-genetic mother plus a

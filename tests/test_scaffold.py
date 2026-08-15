@@ -120,6 +120,31 @@ class ManifestSyncTest(unittest.TestCase):
         for shipped in ('SPEC.md', 'TOOLING.md', 'AGENTS.md', 'CLAUDE.md', 'README.md'):
             self.assertIn(shipped, paths, shipped)
 
+    def test_manifest_vendors_the_browser_companion(self):
+        # The capture extension is a front-end tool like the serve workbench
+        # (owner decision 2026-07-26): it has no build step, so its source tree
+        # IS the loadable artifact and every archive carries it ready for
+        # chrome://extensions "Load unpacked" at .fha/browser-companion/.
+        entries = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
+        for shipped in ('.fha/browser-companion/manifest.json',
+                        '.fha/browser-companion/src/background.js',
+                        '.fha/browser-companion/src/panel.html',
+                        '.fha/browser-companion/src/lib/capture-json.js',
+                        '.fha/browser-companion/icons/icon128.png',
+                        '.fha/browser-companion/README.md'):
+            self.assertIn(shipped, entries, shipped)
+            self.assertEqual(entries[shipped]['category'], 'operating')
+            # The src/path seam records the repo-flat source for vendored files.
+            self.assertEqual(entries[shipped]['src'],
+                             shipped.removeprefix('.fha/'))
+        # Dev furniture never enters an archive: the node test-suite, its
+        # capture-bundle fixtures, the npm manifest, the hand-test walkthrough.
+        paths = set(entries)
+        self.assertFalse(any('browser-companion/tests/' in p for p in paths))
+        self.assertFalse(any('browser-companion/test-bundle/' in p for p in paths))
+        self.assertNotIn('.fha/browser-companion/package.json', paths)
+        self.assertNotIn('.fha/browser-companion/ANCESTRY-AUTOFETCH-TEST.md', paths)
+
     def test_manifest_includes_launchers(self):
         # plan 17 + archive-layout: the double-clickable workbench launcher AND
         # the terminal CLI shims all ship into every archive - BOTH platforms'

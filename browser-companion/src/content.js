@@ -643,6 +643,18 @@
       if (!DATA_SCRIPT.test(type)) s.remove();
     });
 
+    // Anchor the snapshot's remaining RELATIVE references (anchors, CSS url()
+    // resources, anything the bounded inliner below skips) back to the live
+    // page: opened from file:// without a <base>, every relative URL would
+    // resolve into the local folder and break. A page that already declares
+    // its own <base> keeps it - the author's baseline wins.
+    const head = clone.querySelector('head');
+    if (head && !head.querySelector('base')) {
+      const base = document.createElement('base');
+      base.setAttribute('href', document.baseURI);
+      head.insertBefore(base, head.firstChild);
+    }
+
     let budget = SINGLEFILE_MAX_RESOURCES;
 
     // Inline <img> sources (and neutralize srcset so the data: src is used).

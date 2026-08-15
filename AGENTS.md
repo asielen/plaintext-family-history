@@ -119,9 +119,13 @@ Summarize what changed and where; list any proposed-but-unapproved decisions; su
 
 ```
 SPEC.md                 the law (read before structural work)
-TOOLING*.md             tool design by concern: TOOLING.md (core),
+TOOLING*.md             tool design by concern: TOOLING.md (core - ships with every archive),
                         TOOLING_INGESTION.md (capture/inbox), TOOLING_INTERFACE.md (skills)
 BUILD*.md               build sequences, one per TOOLING doc (BUILD / _INGESTION / _INTERFACE)
+                        NOTE: inside an installed archive only SPEC.md and TOOLING.md are
+                        present - TOOLING_INGESTION/_INTERFACE and every BUILD*.md live in
+                        the project repo (read them there, don't hunt the archive for them):
+                        https://github.com/asielen/plaintext-family-history
 photos/{year}/          originals - read-only to you (except spec'd keyword writes via tools)
                         NOTE: asset roots may live OUTSIDE this folder - resolve any
                         photos/ or documents/ path through fha.yaml roots first
@@ -133,10 +137,19 @@ people/connections/     non-direct people (FAN club), ordinary §13 person files
 people/stubs/           unplaced person stubs
 places/places.yaml      place registry
 notes/                  general research; notes/questions.md = question log
+.fha/                   vendored machinery in an installed archive (tools/, design/) -
+                        run it, never hand-edit it; refreshed by `fha update-tools`
 .cache/                 disposable tool caches (index.sqlite, photos.sqlite) - never truth
 generated/              built deliverables, regenerable (generated/site = fha site output)
 .claude/skills/{name}/   workflow playbooks - portable SKILL.md procedures (see Playbooks)
 ```
+
+The capture **browser extension** (`browser-companion/` in the project repo) runs in the
+*browser*, never inside the archive - but every installed archive carries a ready-to-load
+copy at `.fha/browser-companion/` (chrome://extensions → Developer mode → "Load unpacked" →
+that folder; its README says the same). At run time its whole archive footprint is the
+staged bundles it drops and the `fha capture --ingest` sweep that files them (TOOLING §13b).
+Working ON the extension is a project-repo activity like any other tool-building.
 
 ## Format quick reference
 
@@ -259,7 +272,7 @@ Text passed to the note verbs (`fha person note/edit-note`, `fha source note/edi
 `fha places note/edit-note`) and to `fha confirm discovery` is prose - any record ID inside it
 takes the `[[ ]]` wikilink form, never bare (see Citations above).
 
-Execution rules (all tools): run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.
+Execution rules (all tools): `fha` is not on PATH - invoke it through the launcher at the archive root: `./fha <command>` (macOS/Linux), `.\fha <command>` (Windows PowerShell), or plain `fha <command>` (Windows cmd). The launcher finds the vendored tools wherever they live (`.fha/tools/` or `tools/`); if it is somehow missing, `python .fha/tools/fha.py <command>` (or `python tools/fha.py …`) runs the same entrypoint. Run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.
 
 Query the index, not the tree: person/claim/photo questions are SQL or `fha` calls.
 Never bulk-ingest `photos/` or `documents/` into context.

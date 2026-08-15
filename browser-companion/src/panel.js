@@ -8,8 +8,8 @@
 // closed; everything else is optional and a hurried human clicks straight to
 // Capture.
 //
-// The design (private/capture-panel-mockup.html) composes two independent
-// choices in Step 2:
+// The design (the capture-panel mockup in the workshop repo's design notes;
+// not vendored into archives) composes two independent choices in Step 2:
 //   • a "keep a copy of the whole page" CHECKBOX (its own toggle, default on)
 //     that produces a self-contained single-file snapshot (role `webpage`), AND
 //   • a two-option evidence picker: "Yes, save the actual file" (a pre-filled
@@ -295,12 +295,17 @@
       } else {
         parts.push('Record file: add an address or drop a file');
       }
-    } else {
+    } else if (pageCopyOn()) {
       parts.push('the page copy is the record');
+    } else {
+      // Pointer-only (§5.3's "none", TOOLING §13b case (c)): both controls
+      // off is a deliberate, legitimate capture - citation + link, no file.
+      // Ingest files it as a pointer stub flagged asset_elsewhere: true.
+      parts.push('Citation + link only - no file saved (a pointer for later retrieval)');
     }
-    const ok = pageCopyOn() || hasEvidence();
+    const ok = pageCopyOn() || evidenceMode() !== 'yes' || hasEvidence();
     setAssetStatus(
-      parts.join('   ·   ') || 'Nothing yet. Tick the page copy or pick a file.',
+      parts.join('   ·   '),
       ok ? 'ok' : 'warn'
     );
   }
@@ -505,13 +510,11 @@
 
     const wantPageCopy = pageCopyOn();
     const wantEvidence = evidenceMode() === 'yes';
-    if (!wantPageCopy && !wantEvidence) {
-      setStageResult(
-        'Tick "Keep a copy of the whole page", or choose to save the actual file.',
-        'warn'
-      );
-      return;
-    }
+    // Both controls off is NOT a refusal: it is the pointer-only capture
+    // (§5.3's "none", TOOLING §13b case (c)) - page.html + an empty assets
+    // list, which ingest files as a citation/link pointer stub
+    // (asset_elsewhere: true). The status line above the button already says
+    // "Citation + link only", so the human sees what they are staging.
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
         && !state.ancestryViewer && !state.iiif) {
       setStageResult(
@@ -792,22 +795,39 @@
   function loadSettings() {
     return new Promise((resolve) => {
       chrome.storage.local.get(
-        { captureFolder: 'fha-inbox', defaultEvidence: 'yes', pageCopyDefault: true },
+        {
+          captureFolder: captureJson.DEFAULT_FOLDER,
+          defaultEvidence: 'yes',
+          pageCopyDefault: true,
+        },
         (cfg) => {
-          state.folder = cfg.captureFolder || 'fha-inbox';
+          // Sanitize on the way in too: a value stored by an older build (or
+          // edited by hand) must not carry an escape the API rejects later.
+          state.folder = captureJson.sanitizeFolder(cfg.captureFolder);
           $('f-folder').value = state.folder;
           $('f-default-evidence').value = cfg.defaultEvidence || 'yes';
           $('cb-pagecopy').checked = cfg.pageCopyDefault !== false;
+          updateIngestCmd();
           resolve(cfg);
         }
       );
     });
   }
 
+  // Keep the handoff card's copyable command pointing where captures actually
+  // stage: the bare `fha capture --ingest` only sweeps the default folder, so
+  // a renamed staging folder must surface as the command's DIR argument or
+  // the copied command finds nothing (the Python side `~`-expands it).
+  function updateIngestCmd() {
+    $('cmd-text').textContent = captureJson.ingestCommand(state.folder);
+  }
+
   function wireSettings() {
     $('f-folder').addEventListener('change', () => {
-      state.folder = $('f-folder').value.trim() || 'fha-inbox';
+      state.folder = captureJson.sanitizeFolder($('f-folder').value);
+      $('f-folder').value = state.folder; // reflect the sanitized form back
       chrome.storage.local.set({ captureFolder: state.folder });
+      updateIngestCmd();
     });
     $('f-default-evidence').addEventListener('change', () => {
       chrome.storage.local.set({ defaultEvidence: $('f-default-evidence').value });

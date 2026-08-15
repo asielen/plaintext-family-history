@@ -5,7 +5,7 @@ views.py - fha views: generate view files from the index.
   fha views timeline [P-id | --all-curated] [--format md|html]
   fha views sources-index [P-id | --all-curated | --couple-folders] [--format md|html]
   fha views draft-queue [P-id | --all-curated] [--format md|html]
-  fha views brackets [--fix] [--fix-promote] [--generations N] [--dry-run]
+  fha views brackets [--fix | --fix-promote | --realign] [--generations N] [--dry-run]
   fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
   fha views clean [--dry-run]
   fha views refresh [--format md|html|both]
@@ -57,11 +57,16 @@ single-file artifact (the photo gallery inherits them; TOOLING §7 D11):
 `fha views brackets` is a maintenance view, not a content view.  It reads
 the index to derive expected bracket lists and Ahnentafel positions, then
 reports mismatches as W103/W110 findings - and direct-line ancestors still
-filed as stubs as W119 findings (leads, never defects).  With --fix it
+filed as stubs as W119 findings (leads, never defects), plus W120 notes for
+slots the derivation had to default because a lone linked parent has no
+recorded sex: (report-only; the human records the fact).  With --fix it
 renames folders and moves person files; with --fix-promote it batch-applies
 the shared promote engine (`_lib.promote_person_record` - the same engine
 behind `fha person promote`) to the W119 set under the previewed Apply?
-gate; --dry-run previews all changes without writing.
+gate; with --realign it does both halves in one combined preview under one
+gate (promotion destinations rebased through the pending renames) - the
+one-command recovery whenever the derived tree drifts from the promoted
+folders; --dry-run previews all changes without writing.
 
 SPEC §16 defines the companion kinds; TOOLING §7 defines each view's content.
 """
@@ -116,6 +121,7 @@ from _lib import (
     pip_command,
     requirements_hint,
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
+    spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
 )
 
@@ -182,7 +188,9 @@ def _views_result(
 #    _couple_folder_dirs          - list digit-prefixed dirs under people/
 #    _persons_in_folder           - person_ids whose profile files live in a folder
 #    _build_ahnentafel_map        - BFS from root_person → {pid: int position}
-#    _check_w103_brackets         - derive expected bracket lists, find mismatches
+#                                    (+ W120 sex-gap collection via _lib)
+#    _check_w103_brackets         - derive expected bracket lists + the missing
+#                                    `+ spouse` half, find mismatches
 #    _person_couple_folder        - locate a person's current couple folder via index
 #    _person_name_from_db         - fetch display name from persons table
 #    _companion_files_in_folder   - disk-scan for all .md files for a person in a folder
@@ -190,10 +198,11 @@ def _views_result(
 #    _check_w119_direct_line_stubs - check 4: direct-line ancestors still filed as stubs
 #    _print_promote_preview       - plain-words promotion plans (engine dry runs)
 #    _apply_promotions            - batch-apply _lib.promote_person_record to the W119 set
+#    _realign_promotion_dests     - re-point W119 dests at the post-rename tree (--realign)
 #    _compose_folder_renames      - merge W103+W110 renames that share a source folder
 #    _print_bracket_preview       - format the preview diff before any writes
 #    _apply_bracket_fixes         - perform renames/moves after confirmation
-#    _cmd_brackets                - CLI handler: report, preview, fix, fix-promote
+#    _cmd_brackets                - CLI handler: report, preview, fix, fix-promote, realign
 #
 #  Tree view  (_cmd_tree and helpers)
 #    _build_nodes_bulk            - batch TOOLING §7 node dicts for all BFS pids (2 SQL queries)
@@ -1277,21 +1286,26 @@ def _persons_in_folder(conn: sqlite3.Connection, folder: Path) -> list[str]:
     return [r['person_id'] for r in rows]
 
 
-def _build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, int]:
+def _build_ahnentafel_map(
+    conn: sqlite3.Connection, root_pid: str,
+    sex_gaps: list[dict] | None = None,
+) -> dict[str, int]:
     """BFS from root_pid to build {person_id → Ahnentafel position}.
 
     Delegates to `_lib.build_ahnentafel_map` - the derivation moved there so
     `fha person promote` and `fha report` §7b can compute the same positions
     without importing views (tools never import tools). Behavior is identical;
-    the docstring and algorithm live with the shared function.
+    the docstring and algorithm live with the shared function. `sex_gaps`
+    collects the W120 set (single-parent placements defaulted for lack of a
+    recorded `sex:`) when a list is passed.
     """
-    return build_ahnentafel_map(conn, root_pid)
+    return build_ahnentafel_map(conn, root_pid, sex_gaps)
 
 
 def _check_w103_brackets(
     conn: sqlite3.Connection, archive_root: Path
 ) -> list[dict]:
-    """Derive expected bracket lists and return stale-bracket findings.
+    """Derive expected bracket lists and return stale-folder-name findings.
 
     For each couple folder, the expected bracket list is: given names of ALL
     children of persons in the folder, sorted alphabetically, derived from the
@@ -1299,6 +1313,10 @@ def _check_w103_brackets(
     by their roles: map regardless of nature). A child who joined other than by
     birth is marked `(adopted)`/`(step)`/… via the backing claim's subtype, so an
     adopted child is shown but visibly distinct (SPEC §12.2).
+
+    The same pass also proposes adding the missing `+ second spouse` half of
+    the folder's base name (SPEC §12.2's illustrated convention) - see
+    `_spouse_extended_base` for the deliberately conservative add-only rule.
 
     Each returned dict has keys: code, folder, old_name, new_name, msg.
 
@@ -1380,21 +1398,37 @@ def _check_w103_brackets(
             derived_entries.append(format_bracket_child(_given_name(info['name']), label))
         derived_names = sorted(derived_entries)
 
-        if sorted(current_names) != sorted(derived_names):
-            bracket_part = (
-                f' [{" + ".join(derived_names)}]' if derived_names else ''
-            )
-            base_name = re.sub(r'\s*\[[^\]]*\]', '', folder_name).rstrip()
-            new_name = base_name + bracket_part
+        base_name = re.sub(r'\s*\[[^\]]*\]', '', folder_name).rstrip()
+        new_base, other_name = spouse_extended_base(
+            base_name, person_ids,
+            {pid: _person_name_from_db(conn, pid) for pid in person_ids})
+
+        bracket_stale = sorted(current_names) != sorted(derived_names)
+        spouse_add = new_base != base_name
+        if bracket_stale or spouse_add:
+            if bracket_stale:
+                bracket_part = (
+                    f' [{" + ".join(derived_names)}]' if derived_names else ''
+                )
+            else:
+                # Bracket already correct: keep its text byte-for-byte (do not
+                # churn a same-set, differently-ordered hand-written list).
+                m = re.search(r'(\s*\[[^\]]*\])', folder_name)
+                bracket_part = m.group(1) if m else ''
+            new_name = new_base + bracket_part
+            parts = []
+            if spouse_add:
+                parts.append(f'couple folder names only one partner - add {other_name}')
+            if bracket_stale:
+                parts.append(
+                    f'stale bracket list '
+                    f'[{" + ".join(current_names)}] -> [{" + ".join(derived_names)}]')
             issues.append({
                 'code': 'W103',
                 'folder': folder,
                 'old_name': folder_name,
                 'new_name': new_name,
-                'msg': (
-                    f'W103 people/{folder_name}: stale bracket list '
-                    f'[{" + ".join(current_names)}] -> [{" + ".join(derived_names)}]'
-                ),
+                'msg': f'W103 people/{folder_name}: {"; ".join(parts)}',
             })
     return issues
 
@@ -1700,11 +1734,20 @@ def _check_w119_direct_line_stubs(
         # No folder on disk: name the new one after the even (father-slot)
         # member. For a couple that is always the lower position (N < N+1), and
         # for a lone stub it is simply that person - matching single-person
-        # promote, which names the new folder after whoever is promoted.
+        # promote, which names the new folder after whoever is promoted. When
+        # BOTH partners are in the batch, name the folder for both from the
+        # start (`004 Robert + Jeanne`, the SPEC §12.2 convention) - otherwise
+        # the fresh folder announces only one partner and waits for the next
+        # W103 pass to add the other.
         members = [c for c in candidates if c['prefix'] == prefix]
         namer = min(members, key=lambda c: c['pos'])
+        partner = next(
+            (c for c in members if c['pos'] == namer['pos'] + 1), None)
+        folder_label = namer['name']
+        if partner is not None and partner['name']:
+            folder_label = f'{namer["name"]} + {partner["name"]}'
         shared_dest[prefix] = (
-            archive_root / 'people' / f'{str(prefix).zfill(3)} {namer["name"]}')
+            archive_root / 'people' / f'{str(prefix).zfill(3)} {folder_label}')
 
     issues: list[dict] = []
     for c in candidates:
@@ -1783,6 +1826,70 @@ def _apply_promotions(w119: list[dict], archive_root: Path) -> tuple[int, int]:
     return applied, failures
 
 
+def _realign_promotion_dests(
+    w119: list[dict], rename_map: dict[Path, Path], archive_root: Path,
+) -> tuple[int, str | None]:
+    """Point every W119 promotion at the couple folder as named AFTER the renames.
+
+    --realign applies the W103/W110 renames before the promotions, but the
+    W119 destinations were derived against the CURRENT folder tree. Following
+    the rename blindly would be wrong in one direction, ignoring it wrong in
+    the other:
+      - a folder about to gain a DIFFERENT numeric prefix (a W110 rename) was
+        misnamed - that is why it is being renamed - so it must stop
+        attracting the promotions computed against its old prefix;
+      - a folder renamed with its prefix intact (a W103 bracket/spouse
+        refresh) is still the couple's folder and must carry its promotions
+        with it.
+    So destinations are recomputed per couple prefix against the post-rename
+    name set: exactly one post-rename folder carries the prefix -> that
+    folder; none does -> a fresh couple folder named for the batch members
+    (the same invention rule as _check_w119_direct_line_stubs, even-slot
+    partner first); two or more would share it -> refuse rather than file
+    records into an arbitrary half.
+
+    Mutates each issue's dest_folder in place. Returns (changed_count,
+    problem): problem is None on success, else the plain-words refusal.
+    """
+    post_folders = [rename_map.get(f, f) for f in _couple_folder_dirs(archive_root)]
+    by_prefix: dict[int, list[Path]] = {}
+    for post in post_folders:
+        m = re.match(r'^(\d+) ', post.name)
+        if m:
+            by_prefix.setdefault(int(m.group(1)), []).append(post)
+
+    members_by_prefix: dict[int, list[dict]] = {}
+    for item in w119:
+        members_by_prefix.setdefault(
+            couple_folder_prefix(item['pos']), []).append(item)
+
+    changed = 0
+    for prefix, members in sorted(members_by_prefix.items()):
+        posts = by_prefix.get(prefix, [])
+        if len(posts) > 1:
+            return changed, (
+                f'two folders would share the couple prefix {prefix:03d} '
+                f'after the renames above ({" and ".join(p.name for p in posts)}) '
+                '- the promotions cannot pick one safely. Apply the renames '
+                'alone first (`fha views brackets --fix`), resolve the '
+                'duplicate prefix, then re-run.')
+        if posts:
+            dest = posts[0]
+        else:
+            namer = min(members, key=lambda c: c['pos'])
+            partner = next(
+                (c for c in members if c['pos'] == namer['pos'] + 1), None)
+            label = namer['name']
+            if partner is not None and partner['name']:
+                label = f'{namer["name"]} + {partner["name"]}'
+            dest = archive_root / 'people' / f'{str(prefix).zfill(3)} {label}'
+        for item in members:
+            if item['dest_folder'] != dest:
+                item['dest_folder'] = dest
+                changed += 1
+    return changed, None
+
+
 def _compose_folder_renames(
     w103: list[dict], w110: list[dict]
 ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -1828,13 +1935,16 @@ def _compose_folder_renames(
         # the rename target changes below.
         old_w110_target = w110_item['new_folder']
 
-        # Extract the bracket suffix from the W103 target name ("" when no children)
-        bracket_m = re.search(r'(\s*\[[^\]]*\])$', item['new_name'])
-        bracket_suffix = bracket_m.group(1) if bracket_m else ''
-
-        # Compose: W110's new_folder carries the right prefix; swap its bracket.
-        w110_base = re.sub(r'\s*\[[^\]]*\]$', '', old_w110_target.name).rstrip()
-        composed_name = w110_base + bracket_suffix
+        # Compose: W110 contributes only the corrected numeric prefix; the rest
+        # of the name (base, any spouse half W103 just added, bracket list)
+        # comes from the W103 target. Substituting the prefix into the W103
+        # name - rather than grafting W103's bracket onto W110's base - keeps
+        # a `+ second spouse` addition from being silently dropped.
+        prefix_m = re.match(r'^(\d+)', old_w110_target.name)
+        if prefix_m:
+            composed_name = re.sub(r'^\d+', prefix_m.group(1), item['new_name'])
+        else:   # W110 target unexpectedly prefix-less: keep the W103 name whole
+            composed_name = item['new_name']
         composed_folder = old_w110_target.parent / composed_name
 
         old_msg = w110_item['msg']
@@ -2043,11 +2153,13 @@ def run_brackets(
     dry_run: bool = False,
     fix_promote: bool = False,
     generations: int | None = None,
+    realign: bool = False,
 ) -> Result:
     """Run the bracket/Ahnentafel checks and (with a fix flag) apply them; return a Result.
 
     Four checks in one pass (TOOLING §7):
-      1. W103 - refresh stale bracket lists in couple-folder names.
+      1. W103 - refresh stale bracket lists, and add the missing `+ second
+                 spouse` half of a couple-folder name (add-only, never guessed).
       2. W110 check 2 - rename couple folders whose numeric prefix disagrees
                          with the Ahnentafel-derived number.  (Requires root_person.)
       3. W110 check 3 - move all companion files (profile, research, timeline,
@@ -2056,6 +2168,9 @@ def run_brackets(
       4. W119 - direct-line ancestors (derived position >= 2) still filed as
                  stubs (`tier: stub`, or a record under people/stubs/).
                  (Requires root_person.  `generations` caps the depth.)
+    Plus one report-only note: W120 - a placement the derivation made by
+    default (a lone linked parent with no recorded `sex:` takes the father/even
+    slot); nothing mechanical to fix - the human records `sex:` to settle it.
 
     Without a fix flag or --dry-run: report only (W119 included - a lead, not
     a defect).  --dry-run: findings + full preview, exit without writing.
@@ -2066,6 +2181,14 @@ def run_brackets(
     out of people/stubs/.  The two fix flags are refused together: a W110
     folder rename would invalidate the promotion destinations computed in the
     same pass, so they run as two consecutive invocations instead.
+    --realign: the whole-tree recovery verb - ONE combined preview of both
+    halves (the W103/W110 renames/moves AND the W119 promotions, the latter
+    with destinations recomputed against the post-rename tree, see
+    _realign_promotion_dests), one Apply? [y/N] gate, then fixes first and
+    promotions second. Refused with --fix/--fix-promote (it subsumes both).
+    This is the one-command answer whenever the derived tree may have
+    drifted from the promoted folders - a re-anchored `root_person`, a
+    corrected `sex:`, a new parent claim, a merge (SPEC §12.2).
 
     The findings, preview, prompt, and per-rename narration stay inline - the
     interactive Apply? gate is bound to that output and is out of scope to move
@@ -2078,7 +2201,16 @@ def run_brackets(
             'ERROR: --fix and --fix-promote cannot run in one pass - a folder '
             'rename would invalidate the promotion destinations computed with '
             'it. Run `fha views brackets --fix` first, `fha index`, then '
-            '`fha views brackets --fix-promote`.',
+            '`fha views brackets --fix-promote` - or run both halves in one '
+            'previewed pass with `fha views brackets --realign`.',
+            file=sys.stderr,
+        )
+        return _views_result(EXIT_FAILURE)
+    if realign and (fix or fix_promote):
+        print(
+            'ERROR: --realign already runs both the rename/move fixes and the '
+            'stub promotions in one previewed pass - drop the extra '
+            '--fix/--fix-promote flag.',
             file=sys.stderr,
         )
         return _views_result(EXIT_FAILURE)
@@ -2093,7 +2225,8 @@ def run_brackets(
     # A fix run mutates the tree, so it must never run from a stale index;
     # report-only and --dry-run are read-only and tolerate staleness with a
     # warning.
-    conn = open_index_db(archive_root, ('persons',), strict=(fix or fix_promote))
+    conn = open_index_db(archive_root, ('persons',),
+                         strict=(fix or fix_promote or realign))
     if conn is None:
         return _views_result(EXIT_FAILURE)
 
@@ -2110,6 +2243,7 @@ def run_brackets(
         root_person_raw = fha_cfg.get('root_person')
         w110: list[dict] = []
         w119: list[dict] = []
+        w120: list[dict] = []
 
         if root_person_raw:
             root_pid = normalize_id(str(root_person_raw))
@@ -2120,7 +2254,34 @@ def run_brackets(
                     file=sys.stderr,
                 )
             else:
-                pid_to_pos = _build_ahnentafel_map(conn, root_pid)
+                sex_gaps: list[dict] = []
+                pid_to_pos = _build_ahnentafel_map(conn, root_pid, sex_gaps)
+                # W120: a slot the derivation DEFAULTED rather than derived - a
+                # lone linked parent with no recorded sex: takes the father
+                # (even) slot, and W110 can never catch a wrong outcome because
+                # the folders match their own flawed derivation. Report-only:
+                # the fix is a fact about a person only the human can record.
+                for gap in sex_gaps:
+                    gap_name = _person_name_from_db(conn, gap['pid'])
+                    row = conn.execute(
+                        'SELECT path FROM persons WHERE id = ?',
+                        (gap['pid'],)).fetchone()
+                    where = (row['path'] or 'fha.yaml') if row else 'fha.yaml'
+                    w120.append({
+                        'code': 'W120',
+                        'pid': gap['pid'],
+                        'pos': gap['pos'],
+                        'msg': (
+                            f'W120 {where}: {gap_name} took Ahnentafel '
+                            f'position {gap["pos"]} (the father/even slot) by '
+                            'default - they are the only linked parent of that '
+                            'couple and their record has no sex: recorded, so '
+                            'this slot and every ancestor number above it is a '
+                            'guess, not a derivation. Record `sex: M` or '
+                            '`sex: F` on their record to confirm or correct '
+                            'it, then re-run `fha views brackets`.'
+                        ),
+                    })
                 w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
                 try:
                     w119 = _check_w119_direct_line_stubs(
@@ -2151,8 +2312,9 @@ def run_brackets(
         # ── Compose renames that touch the same folder ────────────────────
         w103, w110, w103_suppressed = _compose_folder_renames(w103, w110)
 
-        all_issues = w103 + w110 + w119
-        issue_data = {'w103': len(w103), 'w110': len(w110), 'w119': len(w119)}
+        all_issues = w103 + w110 + w119 + w120
+        issue_data = {'w103': len(w103), 'w110': len(w110),
+                      'w119': len(w119), 'w120': len(w120)}
 
         # ── Report ────────────────────────────────────────────────────────
         for item in all_issues:
@@ -2170,16 +2332,126 @@ def run_brackets(
             print('brackets: no issues found.')
             return _views_result(EXIT_CLEAN, data=issue_data)
 
-        if not fix and not fix_promote and not dry_run:
+        if not fix and not fix_promote and not realign and not dry_run:
             # Report-only mode: findings emitted above, exit with warnings
             return _views_result(EXIT_WARNINGS, data=issue_data)
+
+        # ── --realign: both halves, one combined preview, one Apply? gate ──
+        if realign:
+            if not (w103 or w110 or w119):
+                # Only report-only notes (W120) remain - nothing mechanical to
+                # realign; the note above already names the human's fix.
+                print(
+                    '\nNothing to realign - the promoted tree already matches '
+                    'the derivation.'
+                )
+                return _views_result(EXIT_WARNINGS, data=issue_data)
+
+            # Recompute every promotion destination against the folder tree
+            # as it will stand AFTER the fix half runs. This is exactly the
+            # invalidation that forces --fix and --fix-promote into two
+            # passes - undone here by recomputing instead of refusing.
+            rename_map: dict[Path, Path] = {}
+            for item in w103:
+                rename_map[item['folder']] = item['folder'].parent / item['new_name']
+            for item in w110:
+                if item['kind'] == 'folder_rename':
+                    rename_map[item['old_folder']] = item['new_folder']
+            rebased, dest_problem = _realign_promotion_dests(
+                w119, rename_map, archive_root)
+            if dest_problem is not None:
+                print(f'ERROR: {dest_problem}', file=sys.stderr)
+                return _views_result(EXIT_FAILURE, data=issue_data)
+
+            _print_bracket_preview(w103, w110, archive_root)
+            if w119:
+                _print_promote_preview(w119, archive_root)
+                if rebased:
+                    print(
+                        '\n  (promotion destinations reflect the folder '
+                        'renames above - a "create" step becomes a reuse once '
+                        'the rename lands)'
+                    )
+
+            if dry_run:
+                print('\n(dry-run: no changes written)')
+                return _views_result(EXIT_WARNINGS, data=issue_data)
+
+            try:
+                answer = input('\nApply? [y/N] ').strip().lower()
+            except EOFError:
+                answer = ''
+            if answer != 'y':
+                print('Aborted - no changes written.')
+                return _views_result(EXIT_WARNINGS, data=issue_data)
+
+            failures = 0
+            if w103 or w110:
+                failures, aborted = _apply_bracket_fixes(w103, w110, archive_root)
+                if aborted:
+                    print(
+                        f'\nNo changes written - {failures} rename '
+                        'destination(s) already exist (see stderr). Resolve '
+                        'the conflicts, then re-run.',
+                        file=sys.stderr,
+                    )
+                    return _views_result(EXIT_FAILURE, data=issue_data)
+
+            promoted = 0
+            if w119:
+                promoted, pfail = _apply_promotions(w119, archive_root)
+                failures += pfail
+
+            # Renames, moves, and promotions all change paths without touching
+            # mtimes, so the index cannot see it is stale - drop the cache
+            # outright, same rationale as the --fix and --fix-promote paths.
+            conn.close()
+            db_path = archive_root / '.cache' / 'index.sqlite'
+            try:
+                db_path.unlink(missing_ok=True)
+            except OSError as exc:
+                reason = exc.strerror or str(exc)
+                print(
+                    f'\nThe realignment was applied, but the search index '
+                    f'cache could not be cleared ({reason}): {db_path}. The '
+                    'records moved without changing their file times, so the '
+                    'leftover index still points at the old locations and can '
+                    'look up to date - searches may quietly go stale until '
+                    f'you rebuild it. Delete {db_path} (or just run '
+                    '`fha index`) to rebuild the index and clear the stale '
+                    'entries.',
+                    file=sys.stderr,
+                )
+                return _views_result(
+                    EXIT_WARNINGS,
+                    data={**issue_data, 'index_stale': True,
+                          'promoted': promoted, 'failures': failures})
+            changed = [str(db_path)]
+
+            done_parts = []
+            if w103 or w110:
+                done_parts.append('renames/moves applied')
+            if w119:
+                done_parts.append(f'{promoted} of {len(w119)} stub(s) promoted')
+            print(
+                f'\nRealigned - {", ".join(done_parts)}. Run `fha index` to '
+                'rebuild the index, then `fha views refresh` to regenerate '
+                'the companion views.'
+            )
+            if failures:
+                print(f'{failures} item(s) not applied - see stderr.')
+                return _views_result(EXIT_WARNINGS, changed=changed,
+                                     data={**issue_data, 'failures': failures,
+                                           'promoted': promoted})
+            return _views_result(EXIT_CLEAN, changed=changed,
+                                 data={**issue_data, 'promoted': promoted})
 
         # ── --fix-promote: the W119 promotions under the Apply? gate ─────
         if fix_promote:
             if not w119:
                 print('\nNo direct-line stubs to promote (W119 is clear).')
                 return _views_result(
-                    EXIT_WARNINGS if (w103 or w110) else EXIT_CLEAN,
+                    EXIT_WARNINGS if (w103 or w110 or w120) else EXIT_CLEAN,
                     data=issue_data)
             _print_promote_preview(w119, archive_root)
             if dry_run:
@@ -2242,16 +2514,22 @@ def run_brackets(
                 return _views_result(EXIT_WARNINGS, changed=changed,
                                      data={**issue_data, 'failures': failures})
             return _views_result(
-                EXIT_WARNINGS if (w103 or w110) else EXIT_CLEAN,
+                EXIT_WARNINGS if (w103 or w110 or w120) else EXIT_CLEAN,
                 changed=changed, data=issue_data)
 
         # ── --fix / --dry-run: the W103/W110 renames and moves ────────────
         if fix and not (w103 or w110):
-            print(
-                '\nNothing here is applied by --fix - the W119 stub promotions '
-                'above are applied with `fha views brackets --fix-promote` '
-                '(previewed, then confirmed).'
-            )
+            notes = []
+            if w119:
+                notes.append(
+                    'the W119 stub promotions above are applied with '
+                    '`fha views brackets --fix-promote` (previewed, then '
+                    'confirmed)')
+            if w120:
+                notes.append(
+                    'a W120 note is settled by recording sex: M or sex: F on '
+                    'the named person, not by a fix')
+            print('\nNothing here is applied by --fix - ' + '; '.join(notes) + '.')
             return _views_result(EXIT_WARNINGS, data=issue_data)
 
         # ── Preview ───────────────────────────────────────────────────────
@@ -2338,6 +2616,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
         dry_run=getattr(args, 'dry_run', False),
         fix_promote=getattr(args, 'fix_promote', False),
         generations=getattr(args, 'generations', None),
+        realign=getattr(args, 'realign', False),
     ).exit_code
 
 
@@ -3238,7 +3517,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     br = vsubs.add_parser(
         'brackets',
         help='Check couple-folder bracket lists, Ahnentafel placement, and '
-             'direct-line stubs (W103/W110/W119).',
+             'direct-line stubs (W103/W110/W119/W120).',
     )
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
@@ -3246,6 +3525,14 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                     help='Promote the direct-line stubs (W119) after a preview '
                          'and an Apply? confirmation - tier flip, move into the '
                          'couple folder, research file scaffold.')
+    br.add_argument('--realign', action='store_true',
+                    help='Bring the whole promoted tree back in line with the '
+                         'current derivation in one previewed pass: the '
+                         'renames/moves AND the stub promotions together, one '
+                         'combined preview, one Apply? confirmation. Use after '
+                         'anything that shifts the derived tree (a re-anchored '
+                         'root_person, a corrected sex:, a new parent claim, a '
+                         'merge).')
     br.add_argument('--generations', type=int, metavar='N',
                     help='Only consider direct-line stubs within N generations '
                          '(1 = parents, 2 = grandparents, …).')
@@ -3364,9 +3651,11 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
             extra(p)
         p.set_defaults(func=func)
 
-    br = subs.add_parser('brackets', help='Check couple-folder bracket lists, Ahnentafel placement, and direct-line stubs (W103/W110/W119).')
+    br = subs.add_parser('brackets', help='Check couple-folder bracket lists, Ahnentafel placement, and direct-line stubs (W103/W110/W119/W120).')
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
+    br.add_argument('--realign', action='store_true',
+                    help='Renames/moves and stub promotions together - one combined preview, one confirmation.')
     br.add_argument('--fix-promote', action='store_true', dest='fix_promote',
                     help='Promote the direct-line stubs (W119) after a preview and confirmation.')
     br.add_argument('--generations', type=int, metavar='N',

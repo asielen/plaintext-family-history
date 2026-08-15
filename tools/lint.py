@@ -84,6 +84,7 @@ from _lib import (
     format_bracket_child,
     is_genetic_parent_subtype,
     nonbirth_bracket_label,
+    spouse_extended_base,
     extract_token_ids,
     extract_wikilinks,
     link_field_refs,
@@ -141,12 +142,13 @@ import yaml
 #    _process_person_file        - index one person file + file-level checks
 #    _process_source_file        - index one source file + file-level checks + claims
 #
-#  Bracket / Ahnentafel checks (W103, W110, W119)
+#  Bracket / Ahnentafel checks (W103, W110, W119, W120)
 #    _build_child_edges          - parent → {child → {nature,…}} from accepted claims
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
-#    _check_bracket_lists        - W103: stale couple-folder bracket lists
+#    _check_bracket_lists        - W103: stale bracket lists + missing `+ spouse` half
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
-#    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder
+#    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder;
+#                                   also emits W120 (slot defaulted, sex: unrecorded)
 #    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
 #                                   (report-only lead; brackets --fix-promote applies)
 #
@@ -1283,16 +1285,36 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
             derived_entries.append(format_bracket_child(name.split()[0], label))
         derived_names = sorted(derived_entries)
 
-        if sorted(current_names) != sorted(derived_names):
+        # The same pass also proposes the missing `+ second spouse` half of the
+        # base name (add-only, never rewrites, never guesses) - the shared
+        # `_lib.spouse_extended_base` rule, mirroring views so both backends
+        # derive identical target names.
+        base_name = re.sub(r'\s*\[[^\]]*\]', '', folder_name).rstrip()
+        partner_names = {
+            pid: str(registry.person_meta.get(pid, {}).get('name', '') or '')
+            for pid in parents
+        }
+        new_base, other_name = spouse_extended_base(
+            base_name, sorted(parents), partner_names)
+
+        bracket_stale = sorted(current_names) != sorted(derived_names)
+        if bracket_stale or new_base != base_name:
+            parts = []
+            if new_base != base_name:
+                parts.append(
+                    f'couple folder names only one partner - add {other_name}')
+            if bracket_stale:
+                parts.append(
+                    f'stale bracket list [{" + ".join(sorted(current_names))}] '
+                    f'-> [{" + ".join(derived_names)}]')
             findings.append(Finding('W', 'W103',
                 people_dir / folder_name,
-                f'stale bracket list [{" + ".join(sorted(current_names))}] '
-                f'-> [{" + ".join(derived_names)}]; '
-                f'run `fha views brackets --fix` to update'))
+                '; '.join(parts) + '; run `fha views brackets --fix` to update'))
 
 
 def _build_ahnentafel_lint(
-    root_pid: str, children_of: dict[str, set[str]], registry: Registry
+    root_pid: str, children_of: dict[str, set[str]], registry: Registry,
+    sex_gaps: list[dict] | None = None,
 ) -> dict[str, int]:
     """BFS from root_pid → {person_id: Ahnentafel position} using in-memory data.
 
@@ -1300,6 +1322,12 @@ def _build_ahnentafel_lint(
     in-memory registry rather than the SQLite relationships table.  Parents are
     determined by inverting children_of: a person P is a parent of Q if Q is
     in children_of[P].
+
+    `sex_gaps`, when a list is passed, collects the W120 set exactly as
+    `_lib.build_ahnentafel_map` does: single-resolved-parent placements where
+    that parent's `sex:` is not a recorded M/F, appended as {'pid', 'pos'} -
+    the slot was a default, not a derivation, and the resulting folder numbers
+    look confident while being a guess W110 can never catch.
 
     Determinism on same-sex / unknown pairs: lex-first P-id takes the even slot.
     With three or more genetic contributors (assisted reproduction), the two
@@ -1330,6 +1358,8 @@ def _build_ahnentafel_lint(
             if pp not in pid_to_pos:
                 pid_to_pos[pp] = pos
                 queue.append((pp, pos))
+                if sex_gaps is not None and sex not in ('M', 'F'):
+                    sex_gaps.append({'pid': pp, 'pos': pos})
         else:
             # Two or more genetic parent edges - assisted reproduction (e.g. a
             # donor-egg mother, a surrogate-genetic mother, and a donor-sperm
@@ -1371,6 +1401,11 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     live in the couple folder whose numeric prefix equals their expected position
     (or position−1 if they hold the odd/mother slot).
 
+    Also emits W120 for every placement the map builder made by DEFAULT rather
+    than derivation: a lone linked parent with no recorded `sex:` silently
+    takes the father (even) slot, so the folder numbers above them look
+    confirmed while being a guess (the views twin reports the same set).
+
     Skips persons in people/connections/ or people/stubs/.
 
     Returns the derived {P-id: position} map (empty when root_person is absent
@@ -1391,7 +1426,28 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
     # and legal parent edges are shown in the bracket list but never numbered.
     children_of = _build_children_of(registry, genetic_only=True)
-    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry)
+    sex_gaps: list[dict] = []
+    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry, sex_gaps)
+
+    # W120: a lone linked parent with no recorded sex took the father (even)
+    # slot by DEFAULT - a normal early-research state (SPEC never requires
+    # `sex:` up front), but the derived folder numbers above them look
+    # confident while being a guess, and W110 can never catch it because the
+    # folders match their own flawed derivation. Report-only: the fix is a
+    # fact about a person, which only the human can record.
+    for gap in sex_gaps:
+        pid = gap['pid']
+        name = str(registry.person_meta.get(pid, {}).get('name', pid))
+        profile_paths = registry.person_profile_paths.get(pid, [])
+        where = (profile_paths[0] if profile_paths
+                 else registry.archive_root / 'fha.yaml')
+        findings.append(Finding('W', 'W120', where,
+            f'{name} took Ahnentafel position {gap["pos"]} (the father/even '
+            'slot) by default: they are the only linked parent of that couple '
+            'and their record has no sex: recorded, so their slot - and every '
+            'ancestor number above them - is a guess, not a derivation. '
+            'Record `sex: M` or `sex: F` on their record to confirm or '
+            'correct the placement, then run `fha views brackets`'))
 
     people_dir = registry.archive_root / 'people'
     excluded = {'stubs', 'connections'}

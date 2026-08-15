@@ -34,12 +34,31 @@ function timestamp(d) {
     '-' +
     pad(d.getHours()) +
     pad(d.getMinutes()) +
-    pad(d.getSeconds())
+    pad(d.getSeconds()) +
+    '-' +
+    String(d.getMilliseconds()).padStart(3, '0')
   );
 }
 
 function bundleName(title, d) {
   return slugify(title) + '-' + timestamp(d);
+}
+
+const DEFAULT_FOLDER = 'fha-inbox';
+
+function sanitizeFolder(folder) {
+  const segs = String(folder || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((s) => s.trim())
+    .filter((s) => s && s !== '.' && s !== '..');
+  return segs.length ? segs.join('/') : DEFAULT_FOLDER;
+}
+
+function ingestCommand(folder) {
+  const f = sanitizeFolder(folder);
+  if (f === DEFAULT_FOLDER) return 'fha capture --ingest';
+  return 'fha capture --ingest "~/Downloads/' + f + '"';
 }
 
 function accessedDate(d) {
@@ -76,4 +95,8 @@ function build(fields) {
   return out;
 }
 
-module.exports = { CAPTURE_JSON_SCHEMA, slugify, timestamp, bundleName, accessedDate, build };
+module.exports = {
+  CAPTURE_JSON_SCHEMA, DEFAULT_FOLDER,
+  slugify, timestamp, bundleName, accessedDate, build,
+  sanitizeFolder, ingestCommand,
+};

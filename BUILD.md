@@ -513,7 +513,7 @@ fha lint --root example-archive   # still exits 1 (documented baseline, TOOLING 
 **One PR.** Extend `tools/views.py` with `brackets`; stub `tree`, `clean`, `refresh` as
 "not yet implemented" so the CLI is coherent (TOOLING §7).
 
-**`fha views brackets [--fix] [--dry-run]`** - folder maintenance, originally three concerns in one pass (a fourth, W119 direct-line stub promotion via `--fix-promote`, joined in M11.4):
+**`fha views brackets [--fix] [--dry-run]`** - folder maintenance, originally three concerns in one pass (a fourth, W119 direct-line stub promotion via `--fix-promote`, joined in M11.4; the `+ second spouse` half of W103, the W120 defaulted-slot note, and the combined `--realign` pass joined in M11.7):
 
 1. *Bracket list refresh (W103)*: walk `people/` for couple folders (dirs starting with digits
    directly under `people/` or `people/connections/`). Parse current `[child, …]` suffix.
@@ -1892,6 +1892,47 @@ since process's parser takes a positional FILE. Exits 0 ok/dry-run ·
 1 not-found/working-copy · 3 refusals. Tests: `tests/test_process_refile.py`
 (25 cases: both directions, the refusal surface, dry-run zero-writes,
 rollback, dispatcher interception).
+
+### M11.7 - Ahnentafel realignment wave (✓ shipped 2026-07-26)
+
+Four live-usage findings from the first real-archive promotion batch
+(2026-07-26 feedback), one wave: **(1)** W103 (both backends, shared
+`_lib.spouse_extended_base`) now proposes the missing `+ second spouse` half
+of a couple-folder name - add-only (exactly two derived partners, no `+` yet,
+base exactly matches one partner's name; hand-crafted names never rewritten,
+never guessed) - and a batch promotion that invents a new couple folder with
+BOTH partners aboard names it for the couple from the start. **(2)** SPEC
+§12.2 wording fixes: the 2n/2n+1 variable reuse, the spouse-half drift
+clause, and the explicit re-anchoring paragraph (`root_person` at a
+descendant shifts the whole tree; realign recovers it). **(3)**
+`fha views brackets --realign` - the whole-tree recovery verb: checks 1-4 in
+ONE previewed pass under one Apply? gate, fixes first, promotions second with
+destinations recomputed against the post-rename tree
+(`views._realign_promotion_dests`; a folder renamed AWAY from a prefix stops
+attracting that prefix's promotions), refused with `--fix`/`--fix-promote`.
+**(4)** W120 (views + lint twins, collected inside the shared Ahnentafel
+BFS): a couple with exactly ONE resolved parent whose `sex:` is unrecorded
+takes the even slot by default - a confident-looking guess W110 can never
+dispute - reported with the one-line fix (record `sex: M`/`sex: F`);
+two resolved parents with unset sex stay silent (the designed same-sex/
+unknown tie-break). Also: AGENTS.md now states the launcher invocation
+convention (`./fha`, not-on-PATH) and maps `.fha/` + which docs ship with an
+archive. Example-archive lint baseline unchanged (W101 + W102 + ten W119).
+Tests: `tests/test_brackets_spouse_w120.py` (new),
+`tests/test_views_brackets_promote.py` (RealignTests + couple-naming),
+fixture `tests/fixtures/broken-W120/`.
+
+Same wave, owner decision: the capture **browser extension now ships with
+every archive** - it is a front-end tool like the serve workbench, has no
+build step (source tree = MV3 loadable artifact), so `fha install`/
+`update-tools` vendor `manifest.json` + `src/` + `icons/` + README into
+`.fha/browser-companion/` ("Load unpacked" works from any archive, no
+workshop clone); dev furniture (`tests/`, `test-bundle/`, `package.json`)
+excluded via the new `_VENDOR_EXCLUDE_*` seams in scaffold.py; manifest.json
+regenerated (+18 entries). Developing the extension stays a workshop
+activity. Docs: TOOLING §13c, TOOLING_INGESTION §5 + status,
+browser-companion/README, AGENTS.md, docs/GETTING_STARTED. Test:
+`test_manifest_vendors_the_browser_companion` in `tests/test_scaffold.py`.
 
 ---
 

@@ -5,9 +5,9 @@ private archive and keep it current (TOOLING §13c, BUILD.md M9.1-M9.2).
 
 A real family archive is a *separate, private* repository: the user's records
 plus a vendored copy of the generic operating layer (the `tools/`, the spec docs,
-the agent rulebooks, the human docs). This file is the ritual that copies that
-operating layer in, and later refreshes it from an improved public clone -
-without ever destroying the human's work.
+the agent rulebooks, the human docs, the capture browser extension). This file is
+the ritual that copies that operating layer in, and later refreshes it from an
+improved public clone - without ever destroying the human's work.
 
 THE MANIFEST (the package's own packing list)
 ---------------------------------------------
@@ -220,7 +220,13 @@ _ROOT_LAUNCHERS = (
 # agent's genealogy workflow procedures (process-source, review-claims, …) - the
 # "how to operate" an archive, so it ships. `.claude/settings.json` is *not*
 # walked: it is this spec-repo's own agent config, not an archive's.
-_OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
+# `browser-companion/` is the capture extension - a front-end tool exactly like
+# the serve workbench, so it ships ready to use (owner decision 2026-07-26): the
+# extension has no build step, so its source tree IS the loadable artifact and
+# vendoring it gives every archive a chrome://extensions "Load unpacked" target
+# with no workshop clone. Its dev furniture stays home (_VENDOR_EXCLUDE_*).
+_OPERATING_SUBTREES = ('tools', 'docs', 'design', 'browser-companion',
+                       '.claude/skills')
 
 # The archive subfolder that holds the vendored machinery, so a real archive's
 # root reads as the genealogy - not the tooling. The install remaps the movable
@@ -228,8 +234,11 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
 # the manifest's src/path seam records the repo-flat `src` against the archive
 # `.fha/…` `path`.
 #
-# Only the MACHINERY moves: `tools/` (the program) and `design/` (its stylesheet
-# and self-hosted fonts). Neither is ever opened by hand.
+# Only the MACHINERY moves: `tools/` (the program), `design/` (its stylesheet
+# and self-hosted fonts), and `browser-companion/` (the capture extension - the
+# one folder a human DOES open by hand, exactly once, to point
+# chrome://extensions "Load unpacked" at `.fha/browser-companion/`; its README
+# rides along and says so).
 #
 # `docs/` deliberately stays at the archive ROOT, alongside the rulebooks it is
 # part of. It is human-facing reading matter, not machinery, and it is one half
@@ -247,7 +256,19 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
 # (Claude Code discovers skills at the root). `_VENDOR_DIR` is the shared
 # `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on the name.
 _VENDOR_DIR = VENDOR_DIR
-_VENDORED_SUBTREES = ('tools', 'design')
+_VENDORED_SUBTREES = ('tools', 'design', 'browser-companion')
+
+# Dev-only furniture inside a vendored subtree that never enters an archive:
+# the extension's node test-suite, its capture-bundle fixtures, the npm test
+# manifest, and the hand-test walkthrough. What ships is exactly what the
+# browser loads unpacked - manifest.json, src/, icons/ - plus the README that
+# says how to load it. (Repo-relative src paths / path prefixes.)
+_VENDOR_EXCLUDE_PREFIXES = ('browser-companion/tests/',
+                            'browser-companion/test-bundle/')
+_VENDOR_EXCLUDE_FILES = frozenset({
+    'browser-companion/package.json',
+    'browser-companion/ANCESTRY-AUTOFETCH-TEST.md',
+})
 
 # Individual docs that are PROJECT documentation rather than owner documentation,
 # and so belong with the machinery rather than in the archive's readable `docs/`.
@@ -322,19 +343,23 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
 
     The operating layer is the generic, regenerable glue a genealogist needs to
     operate an archive: the root rulebooks + README, everything under tools/
-    (minus Python bytecode caches), everything under docs/, and the agent's
-    workflow skills under .claude/skills/. docs/ is included whole rather than
-    cherry-picked: BUILD.md M9.1 names five docs as the floor ("must ship into
-    every archive"), but the whole folder is generic human-facing documentation
-    with no family data, and a directory rule auto-covers future docs and keeps
-    their cross-links intact in an installed archive.
+    (minus Python bytecode caches), everything under docs/, the capture
+    extension under browser-companion/ (minus its dev furniture - it is a
+    front-end tool like the serve workbench, shipped ready to load unpacked),
+    and the agent's workflow skills under .claude/skills/. docs/ is included
+    whole rather than cherry-picked: BUILD.md M9.1 names five docs as the floor
+    ("must ship into every archive"), but the whole folder is generic
+    human-facing documentation with no family data, and a directory rule
+    auto-covers future docs and keeps their cross-links intact in an installed
+    archive.
 
-    The machinery subtrees (tools/, design/) install UNDER .fha/ (see
-    _VENDOR_DIR) so the archive root reads as the genealogy, not the tooling;
-    their archive path is `.fha/…` while the repo source stays flat, recorded by
-    the manifest's src/path seam. The root rulebooks, docs/, the launchers, and
-    .claude/skills keep source == archive path at the root - docs/ among them so
-    its two-way link graph with the rulebooks survives an install (_VENDOR_DIR).
+    The machinery subtrees (tools/, design/, browser-companion/) install UNDER
+    .fha/ (see _VENDOR_DIR) so the archive root reads as the genealogy, not the
+    tooling; their archive path is `.fha/…` while the repo source stays flat,
+    recorded by the manifest's src/path seam. The root rulebooks, docs/, the
+    launchers, and .claude/skills keep source == archive path at the root -
+    docs/ among them so its two-way link graph with the rulebooks survives an
+    install (_VENDOR_DIR).
     """
     out: list[tuple[str, Path]] = []
 
@@ -362,6 +387,11 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
             # Skip skeleton-override files - they live under an operating
             # subtree but are user-owned (see _SKELETON_OVERRIDES).
             if rel in _SKELETON_OVERRIDE_SRCS:
+                continue
+            # Skip dev-only furniture inside a vendored subtree (the
+            # extension's tests/fixtures - see _VENDOR_EXCLUDE_*).
+            if (rel in _VENDOR_EXCLUDE_FILES
+                    or rel.startswith(_VENDOR_EXCLUDE_PREFIXES)):
                 continue
             # Vendored subtrees (tools/, design/) install UNDER .fha/ so the
             # archive root stays uncluttered; owner-facing docs/ and

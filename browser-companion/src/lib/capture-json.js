@@ -41,9 +41,13 @@
     return String(n).padStart(2, '0');
   }
 
-  // Local-time stamp `YYYYMMDD-HHMMSS`. The folder name only has to be unique and
-  // sortable on the human's own machine; the durable accessed *date* travels
-  // separately in capture.json (and overrides the scrape at ingest, §6).
+  // Local-time stamp `YYYYMMDD-HHMMSS-mmm`. The folder name only has to be
+  // unique and sortable on the human's own machine; the durable accessed *date*
+  // travels separately in capture.json (and overrides the scrape at ingest, §6).
+  // Milliseconds close the same-second collision: two same-title captures in one
+  // second would otherwise share a folder, and the downloads API's `uniquify`
+  // renames the FILES inside it (`capture (1).json`) - one mixed folder ingest
+  // half-reads - rather than the folder itself.
   function timestamp(d) {
     d = d || new Date();
     return (
@@ -53,12 +57,45 @@
       '-' +
       pad(d.getHours()) +
       pad(d.getMinutes()) +
-      pad(d.getSeconds())
+      pad(d.getSeconds()) +
+      '-' +
+      String(d.getMilliseconds()).padStart(3, '0')
     );
   }
 
   function bundleName(title, d) {
     return slugify(title) + '-' + timestamp(d);
+  }
+
+  // The staging folder Chrome writes under Downloads. The default must match
+  // capture.py `_DEFAULT_STAGING`'s folder name, so the bare `fha capture
+  // --ingest` sweeps exactly where a default-settings panel stages.
+  const DEFAULT_FOLDER = 'fha-inbox';
+
+  // Normalize a human-typed staging-folder setting into something the
+  // downloads API will accept as a Downloads-relative subpath: backslashes
+  // become slashes, empty/'.'/'..' segments are dropped (the API rejects
+  // escapes anyway, but at capture time with a raw browser error - this makes
+  // the setting self-correcting at typing time instead). An input with nothing
+  // left falls back to the default rather than staging into Downloads' root.
+  function sanitizeFolder(folder) {
+    const segs = String(folder || '')
+      .replace(/\\/g, '/')
+      .split('/')
+      .map((s) => s.trim())
+      .filter((s) => s && s !== '.' && s !== '..');
+    return segs.length ? segs.join('/') : DEFAULT_FOLDER;
+  }
+
+  // The exact command the handoff card offers for sweeping staged bundles in.
+  // A renamed staging folder MUST surface here: the bare `fha capture --ingest`
+  // only sweeps `capture_staging:`/`~/Downloads/fha-inbox`, so copying it after
+  // staging into a custom folder finds nothing - the DIR argument (which the
+  // Python side `~`-expands on every OS) points the sweep at the right place.
+  function ingestCommand(folder) {
+    const f = sanitizeFolder(folder);
+    if (f === DEFAULT_FOLDER) return 'fha capture --ingest';
+    return 'fha capture --ingest "~/Downloads/' + f + '"';
   }
 
   // ISO `YYYY-MM-DD` for the `accessed` field - the date the human actually
@@ -116,10 +153,13 @@
 
   FHA.captureJson = {
     SCHEMA: CAPTURE_JSON_SCHEMA,
+    DEFAULT_FOLDER,
     slugify,
     timestamp,
     bundleName,
     accessedDate,
     build,
+    sanitizeFolder,
+    ingestCommand,
   };
 })();

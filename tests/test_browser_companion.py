@@ -358,5 +358,60 @@ class CaptureJsonProducibilityTestCase(unittest.TestCase):
                         'no longer produce the sample it claims to mirror')
 
 
+class PointerOnlyCaptureTestCase(unittest.TestCase):
+    """The panel's pointer-only capture files as a citation/link pointer stub.
+
+    §5.3's "none" (TOOLING §13b case (c)): page-copy off + "No, the page copy
+    is the record" stages page.html plus a capture.json with an EMPTY assets
+    list - exactly what capture-json.js build() emits for that state. Ingest
+    must file it as a lone sidecar stub flagged `asset_elsewhere: true` (the
+    deliberate-no-companion marker `fha process` requires before minting a
+    no-asset source), carrying the citation and link.
+    """
+
+    def test_empty_assets_bundle_files_as_pointer_stub(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = staging / 'deed-index-1854-20260727-120000-000'
+            bundle.mkdir(parents=True)
+            (bundle / 'page.html').write_text(
+                '<!DOCTYPE html>\n<html><head><title>Deed index 1854</title>'
+                '</head><body><h1>Deed index 1854</h1></body></html>\n',
+                encoding='utf-8')
+            (bundle / 'capture.json').write_text(json.dumps({
+                'schema': capture._CAPTURE_JSON_SCHEMA,
+                'url': 'https://county.example.gov/deeds/1854',
+                'accessed': '2026-07-27',
+                'assets': [],
+            }, indent=2), encoding='utf-8')
+
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n',
+                encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+
+            res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.exit_code, EXIT_CLEAN)
+            self.assertEqual(res.data['ingested'], 1)
+
+            stubs = list((archive / 'inbox').glob('*.notes.md'))
+            self.assertEqual(len(stubs), 1, stubs)
+            rec = read_record(stubs[0])
+            self.assertEqual(rec['parse_errors'], [])
+            self.assertTrue(rec['meta'].get('asset_elsewhere'),
+                            'pointer stub must flag asset_elsewhere: true')
+            self.assertEqual(rec['meta']['external_links'][0]['url'],
+                             'https://county.example.gov/deeds/1854')
+            self.assertEqual(rec['meta']['external_links'][0]['accessed'],
+                             '2026-07-27')
+            # No asset files were filed alongside (pointer-only by contract).
+            self.assertEqual(
+                [p.name for p in (archive / 'inbox').iterdir()],
+                [stubs[0].name])
+
+
 if __name__ == '__main__':
     unittest.main()

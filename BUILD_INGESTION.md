@@ -156,9 +156,27 @@ fha capture --ingest <staging-dir>                                   # stubs in 
 
 **One PR.** A Manifest V3 browser extension in [`browser-companion/`](browser-companion/)
 (TOOLING_INGESTION §5), the everyday front-end that produces the staged bundles MG2.1's
-`--ingest` already consumes. It lives **outside** the Python tool suite and the archive
-operating layer - installed in the browser, not vendored by `fha install`, so it is **not**
-a `manifest.json` entry. No new Python; the backend contract was finished in MG2.1.
+`--ingest` already consumes. It lives **outside** the Python tool suite - installed in the
+browser, never running inside the archive. *(Amended 2026-07-26, owner decision: it now
+SHIPS with every archive - `fha install`/`update-tools` vendor the loadable files into
+`.fha/browser-companion/` as ordinary manifest entries, ready for "Load unpacked", dev
+furniture excluded; see TOOLING_INGESTION §5 and BUILD.md M11.7. Original build scope
+below is unchanged.)* No new Python; the backend contract was finished in MG2.1.
+
+*(Review wave 2026-07-27, from a full code review of the shipped companion:
+pointer-only capture restored - page-copy off + "No" stages an empty `assets`
+list that ingest files as an `asset_elsewhere: true` pointer stub, per §5.3;
+the handoff card's copyable command now names a renamed staging folder
+(`fha capture --ingest "~/Downloads/<folder>"` - the bare command only sweeps
+the default); the folder setting is sanitized to a Downloads-relative subpath;
+bundle timestamps carry milliseconds so same-second captures cannot share a
+folder; the single-file snapshot gains a `<base href>` so un-inlined relative
+references survive offline; §5.3/§5.4/§5.6 doc drift corrected (print-to-PDF
+removal, the real `<all_urls>` justification, the real storage keys). New
+tests: `tests/test-capture-json.js`, `tests/test-sync.js` - the latter turns
+every "keep in sync" comment pair (content.js copies ↔ lib canonical modules,
+capture-json.js ↔ its pure twin) into failing builds instead of hopes - and a
+pointer-only ingest round-trip in `tests/test_browser_companion.py`.)*
 
 Scope is the **core** extension only:
 - The four-phase side panel (§5.3): Invoke → Confirm (generic pre-fill, editable) → Capture

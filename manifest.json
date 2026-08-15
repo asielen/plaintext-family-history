@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-26",
+  "generated": "2026-07-27",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -104,6 +104,132 @@
       "category": "operating",
       "sha256": "8e6a3eaf695a9252e6b6108c1a322e23b0c687c738124d23bca623f1d2e8eda9",
       "spec_version": "1.2"
+    },
+    {
+      "path": ".fha/browser-companion/README.md",
+      "category": "operating",
+      "sha256": "4f447e915a163631868f3f869482c83da3901a925e8ffdfeaa5c8d412a9f1ab0",
+      "spec_version": "1.2",
+      "src": "browser-companion/README.md"
+    },
+    {
+      "path": ".fha/browser-companion/icons/icon128.png",
+      "category": "operating",
+      "sha256": "b461b28ff07998efc9051a3134f558f2fe369d9c4e1c4bc15647929eb4444510",
+      "spec_version": "1.2",
+      "src": "browser-companion/icons/icon128.png"
+    },
+    {
+      "path": ".fha/browser-companion/icons/icon16.png",
+      "category": "operating",
+      "sha256": "995c0f975d23d4d80bf83c1d811321be7ec7c94f21be4c93b6cac5907a73856c",
+      "spec_version": "1.2",
+      "src": "browser-companion/icons/icon16.png"
+    },
+    {
+      "path": ".fha/browser-companion/icons/icon32.png",
+      "category": "operating",
+      "sha256": "e52e4faef148acc74950afe069be9b2213dc849f05dd35197d6a2973a287d15f",
+      "spec_version": "1.2",
+      "src": "browser-companion/icons/icon32.png"
+    },
+    {
+      "path": ".fha/browser-companion/icons/icon48.png",
+      "category": "operating",
+      "sha256": "7f5d91423b16621e0ed7cb9bdc33b9719ace593cba24395a5212a7b7f034256a",
+      "spec_version": "1.2",
+      "src": "browser-companion/icons/icon48.png"
+    },
+    {
+      "path": ".fha/browser-companion/manifest.json",
+      "category": "operating",
+      "sha256": "a4472939363b92b0e2ee888ff16ddf6f1b89e668b04f4399fa5953da314cef04",
+      "spec_version": "1.2",
+      "src": "browser-companion/manifest.json"
+    },
+    {
+      "path": ".fha/browser-companion/src/background.js",
+      "category": "operating",
+      "sha256": "98570ec45f0ee0430bbccba384b6de338978cd357a675cbe5365e27d41a87d70",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/background.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/content.js",
+      "category": "operating",
+      "sha256": "c1dea15972037cf3812b643ae657a0ee838cd8e4ad729a63aeaaf5224e668a54",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/content.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/bundle.js",
+      "category": "operating",
+      "sha256": "96222612001a1a62d6fd1f3a61cac996f7827001a2009c4458e837a874ee93c1",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/bundle.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
+      "category": "operating",
+      "sha256": "6e74941a4cb01d1298c6119f2500e04ae0ad0b556013752a099be962b48d9ca1",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/capture-json-pure.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/capture-json.js",
+      "category": "operating",
+      "sha256": "453e5165c10fda9ef9c9b173b09b70fd6614602ad0d2fe6f9029ee7ce80e9fbf",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/capture-json.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/capture-readiness.js",
+      "category": "operating",
+      "sha256": "fe60692b93ac134bb33717a3766113e35e5b34ccbbc92eba5d7fc24c8165f4e7",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/capture-readiness.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/iiif.js",
+      "category": "operating",
+      "sha256": "9ceffa476632e7d5e7aa3ead32183a3fb069ef9009f3f148bf33e29591e15c25",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/iiif.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/native-host.js",
+      "category": "operating",
+      "sha256": "b548540405848cf98e7ff8ec11a2efab625a57edc79041f94d02c7586319d928",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/native-host.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/people-harvest.js",
+      "category": "operating",
+      "sha256": "8620f6370de3ffe05fd76d3e002f106bded2f55997dcd0aa684f13d3c7f045d4",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/people-harvest.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/panel.css",
+      "category": "operating",
+      "sha256": "02daa8bbe8613c7328423a8c17d9574b270fb826ffcd5f16430110655e1f79da",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/panel.css"
+    },
+    {
+      "path": ".fha/browser-companion/src/panel.html",
+      "category": "operating",
+      "sha256": "12a235d8ac29f98a8ccd613d9e5370e814ee0114b61046542c280df0a967f410",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/panel.html"
+    },
+    {
+      "path": ".fha/browser-companion/src/panel.js",
+      "category": "operating",
+      "sha256": "75e3876521f5279f265d2c6cbc8f654dc941b969d07ce0b3c49e1399a1b49bc2",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/panel.js"
     },
     {
       "path": ".fha/design/custom.css",
@@ -220,14 +346,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "02aa2860af3e404a01d20b25be4becd8ab36f880267e5cab6c96f904b027f709",
+      "sha256": "5c288361352e30107e53bf5ea1405abf6b159789bc24764705bc40b8fa7f7d38",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "d4c6d277d3e813ef723dd3b2e133b7348a7874c717f6b891468b9588a7140ae9",
+      "sha256": "6f64f531905c8d530fb080a0c8e3174655fef509c56d9b6fea2e71bb4a85dfe9",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -367,7 +493,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "2c9e8c90f7e03e286cb41d6ee1d5f03ed155f9948250370d7e9c9d50e38761cd",
+      "sha256": "58a18950d9058de929f5983be979d9b33e6dd2db19a5a031bee7ab910e7cefe9",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -444,7 +570,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "90d1324a4a087a30eab2d1686ea3cbb68adcc3df30ba92f5e7d851ae597898a5",
+      "sha256": "7a715e4410ab3a7e5dd825e7c2f7bb92b6301ea0278cd268685816a8cf34ab99",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -598,7 +724,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "5d60ecbf6ecb3d30339e9ebc2109b21f9c772b5b0b08d73d754801ff4f3f249b",
+      "sha256": "94c2c675304bad4006194704f2c6f59b811235697d67e0134c7fba60e296dda9",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
@@ -647,7 +773,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "7945e7e3653ae21ca8eff4923bac19f20e2c4b2d30aa7ff1f91d02ac3f95dc24",
+      "sha256": "86db4826cc72b8de45d3e8875103c4ec7871ab3a9d3ad6483c3fcbe5001cd62b",
       "spec_version": "1.2"
     },
     {
@@ -659,19 +785,19 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "0b383575c7fc99331e86d0d96b72872a13b7de3f1dce28aa49556bd0ca5b694c",
+      "sha256": "265d3e0722ea750ec86c6ec5cca163b7ed2b2ff83a29e39657d62e1d1e3d7156",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "2d89193d036928accd42c6a130e3cac21a313433a34411bb9349bfd4b11afe60",
+      "sha256": "c9c5fe2dd5a422ebb57b6e63c5f42f44d830e603d4ceefa68eae44c203bbdf5b",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "253ee95d2323b6b533752b1864c1701f09433a5c778cda20733bb2f8b7bd6027",
+      "sha256": "5803d5a5d93ad264eb86b1b7ab2111d77ba04f0cd98562ba4950aca485633b7c",
       "spec_version": "1.2"
     },
     {
@@ -707,7 +833,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "897c6077a179831606627ccc3ebe9052544cb23899dbbc5d6345b0f9c78ae694",
+      "sha256": "8c16ebd9987988806c983fd64c80cf1ed76a24f9fcd859a2245cea6efc40e1c2",
       "spec_version": "1.2"
     },
     {

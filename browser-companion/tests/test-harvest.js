@@ -244,10 +244,10 @@ test('accessedDate — returns YYYY-MM-DD', () => {
   assert.equal(accessedDate(d), '2026-01-05');
 });
 
-test('bundleName — slug + timestamp', () => {
-  const d = new Date(2026, 5, 29, 10, 30, 0); // 2026-06-29 10:30:00
+test('bundleName — slug + timestamp (milliseconds close same-second collisions)', () => {
+  const d = new Date(2026, 5, 29, 10, 30, 0, 42); // 2026-06-29 10:30:00.042
   const name = bundleName('1880 Census Thomas', d);
-  assert.equal(name, '1880-census-thomas-20260629-103000');
+  assert.equal(name, '1880-census-thomas-20260629-103000-042');
 });
 
 test('build — schema version is correct', () => {
