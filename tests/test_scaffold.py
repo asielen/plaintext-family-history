@@ -1032,9 +1032,16 @@ class PipCommandTest(unittest.TestCase):
              '/home/u/Family Archive/.fha/tools/requirements.txt'])
 
     def test_it_names_the_running_interpreter(self):
+        # pip_command quotes platform-appropriately (POSIX single quotes,
+        # Windows double quotes), so unwrap whichever style arrived rather than
+        # assert one of them - asserting shlex.quote() here fails on any
+        # Windows interpreter installed under a spaced path
+        # (C:\Program Files\...), where double quotes are correct.
         import _lib
-        self.assertTrue(_lib.pip_command('pyyaml').startswith(
-            shlex.quote(_lib.sys.executable)))
+        cmd = _lib.pip_command('pyyaml')
+        head, sep, _rest = cmd.partition(' -m pip install ')
+        self.assertTrue(sep, f'unexpected shape: {cmd}')
+        self.assertEqual(head.strip('\'"'), _lib.sys.executable)
 
 
 class InstallTemplateHandCopyTest(unittest.TestCase):
