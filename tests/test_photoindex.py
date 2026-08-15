@@ -852,6 +852,124 @@ class PhotoindexTests(unittest.TestCase):
         finally:
             subprocess.run = orig_run
 
+    def test_run_exiftool_passes_paths_via_argfile_never_the_command_line(self) -> None:
+        # 500 realistic Windows paths overflow the 32,767-char command-line
+        # cap (#34), so the file list must travel via `-@ argfile` - the
+        # command line then stays bounded no matter how many paths are passed.
+        long_dir = 'D:/Family Photos/' + ('a descriptive folder name/' * 3)
+        paths = [Path(f'{long_dir}photo with a long name {i:04}.jpg') for i in range(500)]
+        seen: dict[str, object] = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = '[]'
+            stderr = ''
+
+        def fake_run(cmd, **kwargs):
+            seen['cmd'] = cmd
+            at = cmd.index('-@')
+            seen['argfile_content'] = Path(cmd[at + 1]).read_text(encoding='utf-8')
+            return FakeProc()
+
+        orig_run = subprocess.run
+        subprocess.run = fake_run
+        try:
+            photoindex._run_exiftool(paths)
+        finally:
+            subprocess.run = orig_run
+
+        cmd = seen['cmd']
+        self.assertLess(len(' '.join(str(c) for c in cmd)), 2000)
+        for p in paths:
+            self.assertNotIn(str(p), cmd)
+        # -charset filename=utf8 + a UTF-8 argfile is what lets decomposed
+        # (NFD) filenames resolve; bare -charset on the command line does not.
+        charset_at = cmd.index('-charset')
+        self.assertEqual(cmd[charset_at + 1], 'filename=utf8')
+        lines = seen['argfile_content'].splitlines()
+        self.assertEqual(lines, [str(p) for p in paths])
+        # The temp argfile must not leak.
+        argfile = cmd[cmd.index('-@') + 1]
+        self.assertFalse(Path(argfile).exists())
+
+    def test_run_exiftool_never_blames_a_present_binary_for_winerror_206(self) -> None:
+        # CreateProcess's WinError 206 (command line too long) reaches Python
+        # as FileNotFoundError, which used to be reported as "exiftool is not
+        # installed" while doctor said it was healthy (#34). The defensive
+        # branch must name the real cause instead.
+        def fake_run(cmd, **kwargs):
+            e = FileNotFoundError(2, 'The filename or extension is too long')
+            e.winerror = 206
+            raise e
+
+        orig_run = subprocess.run
+        subprocess.run = fake_run
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'command line was too long'):
+                photoindex._run_exiftool([Path('a.jpg')])
+        finally:
+            subprocess.run = orig_run
+
+    def test_run_exiftool_keeps_partial_results_on_error_exit(self) -> None:
+        # exiftool exits non-zero when ANY file fails while still emitting
+        # valid JSON for the ones it read - a single unreadable file must not
+        # discard the rest of the batch (#34).
+        class FakeProc:
+            returncode = 1
+            stdout = '[{"SourceFile": "a.jpg"}, {"SourceFile": "b.jpg"}]'
+            stderr = 'Error: File not found - c.jpg'
+
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **k: FakeProc()
+        try:
+            rows = photoindex._run_exiftool([Path('a.jpg'), Path('b.jpg'), Path('c.jpg')])
+        finally:
+            subprocess.run = orig_run
+        self.assertEqual([r['SourceFile'] for r in rows], ['a.jpg', 'b.jpg'])
+
+    def test_catalog_carries_group_and_path_indexes(self) -> None:
+        # Without idx_photos_group_id, _candidate_groups()'s correlated NOT
+        # EXISTS is O(groups x photos) and triage never returns on a real
+        # library (#41). The IF NOT EXISTS DDL runs on every open, so a cache
+        # created before the indexes existed gains them on its next use with
+        # no schema bump or rescan.
+        with tempfile.TemporaryDirectory() as d:
+            cache = Path(d) / '.cache'
+            conn, _backfill, _reason = photoindex._get_db(cache)
+            try:
+                names = {
+                    row[0] for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'")
+                }
+            finally:
+                conn.close()
+            for expected in (
+                'idx_photos_group_id', 'idx_photo_keywords_path',
+                'idx_photo_people_path', 'idx_photo_face_regions_path',
+            ):
+                self.assertIn(expected, names)
+
+            # Simulate the pre-index cache: drop them, reopen, expect them back.
+            conn = sqlite3.connect(cache / 'photos.sqlite')
+            for name in (
+                'idx_photos_group_id', 'idx_photo_keywords_path',
+                'idx_photo_people_path', 'idx_photo_face_regions_path',
+            ):
+                conn.execute(f'DROP INDEX {name}')
+            conn.commit()
+            conn.close()
+
+            conn, _backfill, reason = photoindex._get_db(cache)
+            try:
+                names = {
+                    row[0] for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'")
+                }
+            finally:
+                conn.close()
+            self.assertIsNone(reason, 'index-less cache must heal, not rebuild')
+            self.assertIn('idx_photos_group_id', names)
+
     def test_corrupt_photos_sqlite_is_recreated(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -934,7 +1052,11 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 photoindex._group_photos = orig_group_photos
 
-    def test_missing_exiftool_row_fails_without_refreshing_stale_metadata(self) -> None:
+    def test_unreadable_file_is_skipped_with_stale_row_kept_not_fatal(self) -> None:
+        # One corrupt/locked file must not make the whole catalog unbuildable
+        # (#34): the scan records it, skips it, finishes - and any prior cache
+        # row for it survives (the file still exists on disk, so the stale-row
+        # sweep leaves it alone; stale metadata beats none).
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
 
@@ -947,6 +1069,7 @@ class PhotoindexTests(unittest.TestCase):
             photoindex._run_exiftool = first_exiftool
             first_summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
             self.assertEqual(first_summary['scraped'], 4)
+            self.assertEqual(first_summary['unreadable'], 0)
 
             changed = archive / 'photos' / 'family_reunion.jpg'
             os.utime(changed, None)
@@ -959,8 +1082,14 @@ class PhotoindexTests(unittest.TestCase):
                 ]
 
             photoindex._run_exiftool = missing_one_exiftool
-            with self.assertRaisesRegex(RuntimeError, 'did not return metadata'):
-                photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            summary = photoindex.run_scan(
+                archive, {'roots': {'photos': 'photos'}}, full=True)
+
+            self.assertEqual(summary['unreadable'], 1)
+            self.assertEqual(len(summary['unreadable_sample']), 1)
+            self.assertIn('family_reunion.jpg', summary['unreadable_sample'][0])
+            self.assertEqual(summary['scraped'], 3)
+            self.assertEqual(summary['unchanged'], 0)
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
             try:
@@ -968,8 +1097,32 @@ class PhotoindexTests(unittest.TestCase):
                     "SELECT title FROM photos WHERE path LIKE '%family_reunion.jpg'"
                 ).fetchone()[0]
                 self.assertEqual(title, 'first family_reunion.jpg')
+                refreshed = conn.execute(
+                    "SELECT COUNT(*) FROM photos WHERE title LIKE 'second %'"
+                ).fetchone()[0]
+                self.assertEqual(refreshed, 3)
             finally:
                 conn.close()
+
+    def test_cmd_scan_warns_and_exits_warnings_on_unreadable_files(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def missing_one_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {'SourceFile': str(p)}
+                    for p in paths
+                    if p.name != 'family_reunion.jpg'
+                ]
+
+            photoindex._run_exiftool = missing_one_exiftool
+            args = type('Args', (), {'root': str(archive), 'full': False})()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                code = photoindex._cmd_scan(args)
+            self.assertEqual(code, EXIT_WARNINGS)
+            self.assertIn('could not read 1 file(s)', stderr.getvalue())
+            self.assertIn('family_reunion.jpg', stderr.getvalue())
 
     def test_photoindex_subcommands_are_registered_in_the_cli(self) -> None:
         """`fha photoindex <subcommand> --help` should resolve for every M3.1-M3.6 subcommand.

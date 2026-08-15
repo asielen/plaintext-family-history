@@ -164,6 +164,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -259,6 +260,19 @@ CREATE TABLE IF NOT EXISTS photo_people(path TEXT, person_ref TEXT, via TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS photo_fts USING fts5(
   path, title, caption, user_comment, keywords
 );
+
+-- Without an index on photos.group_id, _candidate_groups()'s correlated
+-- NOT EXISTS degrades to a full scan of `photos` per row of `photo_groups` -
+-- O(groups x photos). Measured on 86,480 photos / 84,484 groups (#41): the
+-- query extrapolated to ~85 minutes and `fha photoindex triage` was
+-- indistinguishable from a hang; with the index it runs in 0.17s. The
+-- path-keyed child tables are joined per photo and want the same treatment.
+-- IF NOT EXISTS + executescript-on-every-open means existing caches pick
+-- these up on the next command, no schema version bump or rescan needed.
+CREATE INDEX IF NOT EXISTS idx_photos_group_id        ON photos(group_id);
+CREATE INDEX IF NOT EXISTS idx_photo_keywords_path    ON photo_keywords(path);
+CREATE INDEX IF NOT EXISTS idx_photo_people_path      ON photo_people(path);
+CREATE INDEX IF NOT EXISTS idx_photo_face_regions_path ON photo_face_regions(path);
 """
 
 _REQUIRED_SCHEMA = {
@@ -289,9 +303,10 @@ _SOURCE_KEYWORD_RE = re.compile(r'^SOURCE:\s*(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
 _PID_KEYWORD_RE = re.compile(r'^P-[0-9a-hjkmnp-tv-z]{10}$', re.I)
 _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 
-# Keeps a single exiftool invocation's command line bounded on a large photo
-# root - every batched call to _run_exiftool (full scan or reconcile rematch)
-# uses this same chunk size.
+# Bounds how much JSON a single exiftool invocation returns - every batched
+# call to _run_exiftool (full scan or reconcile rematch) uses this same chunk
+# size. It does NOT bound the command line: file paths travel via an argfile
+# (see _run_exiftool), so no OS command-line limit applies at any batch size.
 _EXIFTOOL_BATCH_SIZE = 500
 
 
@@ -318,17 +333,63 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
     """
     if not paths:
         return []
-    cmd = ['exiftool', '-j', '-struct', '-n'] + _EXIFTOOL_FIELDS + [str(p) for p in paths]
+    # The file list travels via an exiftool argfile (-@), never on the command
+    # line, for two reasons (#34):
+    #   * no OS command-line limit applies - 500 paths averaging ~110 chars
+    #     overflow Windows' 32,767-char cap, and CreateProcess's WinError 206
+    #     reaches Python as FileNotFoundError, which used to be misreported as
+    #     "exiftool is not installed" while doctor said it was healthy;
+    #   * decomposed-Unicode filenames (NFD, typical of files that came via
+    #     macOS) resolve only this way - measured: a name carrying a combining
+    #     grave accent (U+0300) failed as "File not found" both bare and with
+    #     `-charset filename=utf8` on the command line, and read cleanly via a
+    #     UTF-8 argfile with that charset flag.
+    argfile = None
     try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
-    except FileNotFoundError as e:
-        raise RuntimeError(format_exiftool_error('fha photoindex')) from e
-    if proc.returncode != 0:
+        with tempfile.NamedTemporaryFile(
+            'w', suffix='.args', delete=False, encoding='utf-8'
+        ) as fh:
+            argfile = fh.name
+            for p in paths:
+                fh.write(f'{p}\n')
+        cmd = [
+            'exiftool', '-charset', 'filename=utf8', '-@', argfile,
+            '-j', '-struct', '-n',
+        ] + _EXIFTOOL_FIELDS
+        try:
+            proc = subprocess.run(
+                cmd, check=False, capture_output=True, text=True, encoding='utf-8'
+            )
+        except FileNotFoundError as e:
+            # Defensive: with the argfile a too-long command line should be
+            # impossible, but if one ever reappears, do not blame a binary
+            # that is present.
+            if getattr(e, 'winerror', None) == 206:
+                raise RuntimeError(
+                    'exiftool could not be started: the command line was too '
+                    'long. This is a bug in fha, not a problem with your '
+                    'photos - please report it.'
+                ) from e
+            raise RuntimeError(format_exiftool_error('fha photoindex')) from e
+    finally:
+        if argfile:
+            try:
+                os.unlink(argfile)
+            except OSError:
+                pass
+    # exiftool exits non-zero when ANY file in the batch fails while still
+    # emitting valid JSON for the ones that succeeded. Take the partial result
+    # and let the caller decide what a missing row means (#34) - raising here
+    # threw away a whole batch of good reads over one unreadable file.
+    rows: list[dict] = []
+    if proc.stdout:
+        try:
+            rows = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
+    if proc.returncode != 0 and not rows:
         raise RuntimeError(f'exiftool failed while scanning photos: {proc.stderr.strip()}')
-    try:
-        return json.loads(proc.stdout or '[]')
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
+    return rows
 
 
 def _as_list(value: object) -> list[str]:
@@ -3287,6 +3348,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             'photos_root': str(resolve_path('photos', fha_config, archive_root)),
             'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
+            'unreadable': 0, 'unreadable_sample': [],
             'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         })
 
@@ -3296,6 +3358,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         return Result(ok=False, exit_code=EXIT_WARNINGS, data={
             'photos_root': str(photos_root), 'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
+            'unreadable': 0, 'unreadable_sample': [],
             'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         })
 
@@ -3331,6 +3394,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                 to_scrape.append(p)
 
         scraped = 0
+        unreadable: list[Path] = []
         for start in range(0, len(to_scrape), _EXIFTOOL_BATCH_SIZE):
             batch = to_scrape[start:start + _EXIFTOOL_BATCH_SIZE]
             resolved = {p: p.resolve() for p in batch}
@@ -3338,16 +3402,19 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                 Path(row['SourceFile']).resolve(): row
                 for row in _run_exiftool(batch) if row.get('SourceFile')
             }
+            # A file exiftool returned no row for is unreadable (corrupt,
+            # locked, truncated). An archive of scanned family photos will
+            # always hold a few, and one must not make the whole catalog
+            # unbuildable (#34) - record it, skip it, carry on. Any prior
+            # cache row it has survives untouched: the file still exists on
+            # disk, so the stale-row sweep below never removes it, and stale
+            # metadata beats none.
             missing = [p for p in batch if resolved[p] not in rows_by_file]
-            if missing:
-                sample = ', '.join(str(p) for p in missing[:5])
-                more = f' and {len(missing) - 5} more' if len(missing) > 5 else ''
-                raise RuntimeError(
-                    'exiftool did not return metadata for '
-                    f'{len(missing)} requested file(s): {sample}{more}'
-                )
+            unreadable.extend(missing)
             for p in batch:
-                row = rows_by_file[resolved[p]]
+                row = rows_by_file.get(resolved[p])
+                if row is None:
+                    continue
                 mtime, size = on_disk[p]
                 photo = _row_to_photo(row, mtime, size)
                 path_key = alias_by_path[p]
@@ -3428,7 +3495,9 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     return Result(data={
         'photos_root': str(photos_root), 'root_found': True,
         'total': len(on_disk), 'scraped': scraped,
-        'unchanged': len(on_disk) - scraped, 'removed': removed,
+        'unchanged': len(on_disk) - scraped - len(unreadable), 'removed': removed,
+        'unreadable': len(unreadable),
+        'unreadable_sample': [str(p) for p in unreadable[:5]],
         'groups': groups, 'conflicts': conflicts,
         'rebuilt_reason': rebuilt_reason,
     })
@@ -3685,6 +3754,18 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         f"{summary['removed']} removed from cache).\n"
         f"Groups: {summary['groups']} ({summary['conflicts']} with date conflicts)."
     )
+    if summary.get('unreadable'):
+        sample = ', '.join(summary.get('unreadable_sample', []))
+        more = (
+            f" and {summary['unreadable'] - len(summary.get('unreadable_sample', []))} more"
+            if summary['unreadable'] > len(summary.get('unreadable_sample', [])) else ''
+        )
+        print(
+            f"WARNING: exiftool could not read {summary['unreadable']} file(s), "
+            f'skipped (any prior catalog entry was kept): {sample}{more}',
+            file=sys.stderr,
+        )
+        return EXIT_WARNINGS
     return EXIT_CLEAN
 
 
