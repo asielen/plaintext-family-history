@@ -1557,7 +1557,7 @@ def run_ingest(
 ) -> Result:
     """Sweep staged capture bundles into the inbox (TOOLING_INGESTION §6).
 
-    Each `<slug>-<timestamp>/` bundle is fed through `run_capture` wholesale -
+    Each `<slug>-<timestamp>-<token>/` bundle is fed through `run_capture` wholesale -
     `page.html` as the HTML, the asset as `--asset`, the `capture.json` fields as
     explicit overrides - so the stub is byte-identical to the paste-fallback's.
     On success the bundle is parked in `.ingested/`. The sweep is idempotent

@@ -4,7 +4,7 @@
 // write to an arbitrary path - its only file-writing affordance is
 // chrome.downloads.download(), which writes UNDER the browser's Downloads
 // directory. So the default path stages the bundle to
-// `Downloads/<folder>/<slug>-<timestamp>/` and the human later runs
+// `Downloads/<folder>/<slug>-<timestamp>-<token>/` and the human later runs
 // `fha capture --ingest` to sweep it into the real `inbox/` (the one sanctioned
 // move). This module never pretends it reached the archive; it returns exactly
 // where the files landed so the panel can say so.
@@ -122,7 +122,10 @@
   //
   //   spec = {
   //     folder,        // Downloads subfolder, e.g. 'fha-inbox'
-  //     bundleName,    // '<slug>-<timestamp>'
+  //     bundleName,    // '<slug>-<timestamp>-<token>' - unique per capture, so
+  //                    //   `conflictAction: 'uniquify'` below never has to
+  //                    //   rename a member of this bundle (see capture-json.js
+  //                    //   randomToken for what that would cost)
   //     pageHtml,      // string - ALWAYS written (§5.2: page.html is mandatory)
   //     assets,        // [{ filename, blob }]  - the "both" case may carry two
   //                    //   (a `webpage` page copy and a `record` evidence file);

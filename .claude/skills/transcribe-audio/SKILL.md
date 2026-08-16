@@ -67,13 +67,28 @@ draft rather than an archive record, so it lives in this skill's own
    The script skips a recording whose three output files are all there (it
    reports "already transcribed" and exits 0 — which is what makes a long queue
    safe to re-run after a reboot), and a run that is interrupted or fails
-   publishes nothing at all. An unfinished set is never mistaken for a finished
-   one: if only some of the three files are there, or if a run was killed
-   outright while it was putting them in place (it leaves a `.publishing` marker
-   when that happens), the next run says so plainly and re-does the recording
-   instead of skipping it. Tell the human what it says; the leftover `.part`,
-   `.kept` and `.publishing` files in that folder can be deleted once the new
-   transcript looks right.
+   publishes nothing at all.
+
+   An unfinished set is never mistaken for a finished one, and neither is
+   somebody else's file. Three cases, and the script tells them apart by
+   whether it left a `.publishing` marker in the folder — it always does when
+   its own run is cut off mid-write:
+
+   - **Marker present** (a run killed outright while putting the files in
+     place): that is the script's own unfinished work, so it says so and
+     re-does the recording instead of skipping it. Nothing to decide.
+   - **No marker, and only one or two of the three files are there:** the run
+     **stops** and writes nothing. Without the marker there is no sign the
+     script wrote those files at all, and `--outdir` is a folder the human
+     picked — a `family.md` of his own is exactly as likely as a leftover.
+     The message names the full command to re-run with `--force` (which
+     replaces them) and the `--name` / `--outdir` alternative (which keeps
+     them). **Read it out and let him choose; never add `--force` on his
+     behalf.** Exit code 2, so don't treat it as a transient failure to retry.
+   - **All three present, no marker:** already transcribed, exit 0.
+
+   Tell the human what it says; the leftover `.part`, `.kept` and `.publishing`
+   files in that folder can be deleted once the new transcript looks right.
 3. **Review the output** (`<name>.md`, timestamped) against the passages that
    mattered — especially names the original transcript garbled.
 4. **Keep BOTH transcripts on the source — always.** This skill's end state
@@ -254,5 +269,12 @@ draft rather than an archive record, so it lives in this skill's own
   destination that cannot be replaced stops the run before anything moves, and
   a failure part way through puts the previous transcript back. The one thing
   no program can undo - a hard kill mid-rename - is marked on disk instead, and
-  the next run repairs it. Re-running is always safe; `--force` is the only way
-  to replace a *finished* transcript that already exists.
+  the next run repairs it. Re-running is always safe.
+- **The script replaces only what it can show it wrote.** Its own unfinished
+  work carries a `.publishing` marker, so that it redoes unasked; a set of
+  files without one is not its own to replace, and it refuses rather than
+  guessing. `--force` is the only way to overwrite either a *finished*
+  transcript or an unmarked set of files sharing those names, and it is the
+  human's call, not yours: relay the refusal and the command it prints, and
+  wait for his yes. The same rule you follow for archived originals applies to
+  the scratch folder - a file you did not write is not yours to replace.

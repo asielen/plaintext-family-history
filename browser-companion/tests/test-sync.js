@@ -45,7 +45,16 @@ test('capture-json.js behaves identically to its pure twin', () => {
 
   for (const s of ['1880 Census - Thomas!', '', null, '  A  B  ', 'Émile Zola']) {
     assert.strictEqual(b.slugify(s), pure.slugify(s), 'slugify(' + s + ')');
-    assert.strictEqual(b.bundleName(s, when), pure.bundleName(s, when));
+    // The bundle name now carries a per-capture random token, so the twins are
+    // compared with the token injected - the same way the clock is injected.
+    assert.strictEqual(b.bundleName(s, when, 'tok123'), pure.bundleName(s, when, 'tok123'));
+    // ...and each twin, left to itself, really does draw a fresh one.
+    assert.notStrictEqual(b.bundleName(s, when), b.bundleName(s, when));
+    assert.notStrictEqual(pure.bundleName(s, when), pure.bundleName(s, when));
+  }
+  for (let i = 0; i < 50; i++) {
+    assert.match(b.randomToken(), /^[0-9abcdefghjkmnpqrstvwxyz]{6}$/);
+    assert.match(pure.randomToken(), /^[0-9abcdefghjkmnpqrstvwxyz]{6}$/);
   }
 
   const dirs = [

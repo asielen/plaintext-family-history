@@ -40,8 +40,38 @@ function timestamp(d) {
   );
 }
 
-function bundleName(title, d) {
-  return slugify(title) + '-' + timestamp(d);
+// Crockford Base32 - the archive's own ID alphabet (lowercase, no `ilou`).
+// Path-safe, shell-safe, and `capture.py`'s `_safe_member_name` leaves it
+// alone. 32 values is 5 bits, so `byte & 31` is an unbiased draw.
+const TOKEN_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+const TOKEN_LENGTH = 6;
+
+// Six random characters appended to every bundle folder name. A clock is not
+// an identity: two side panels (or a clock adjustment) can produce the same
+// `<slug>-<timestamp>`, and `conflictAction: 'uniquify'` renames the FILE, not
+// the folder - so the two captures merge into one directory whose capture.json
+// then names assets that may belong to the other capture, with the second
+// capture parked unread. See capture-json.js for the full note.
+function randomToken() {
+  const source = (typeof crypto !== 'undefined' && crypto.getRandomValues)
+    ? crypto : null;
+  let out = '';
+  if (source) {
+    const bytes = new Uint8Array(TOKEN_LENGTH);
+    source.getRandomValues(bytes);
+    for (let i = 0; i < TOKEN_LENGTH; i++) out += TOKEN_ALPHABET[bytes[i] & 31];
+    return out;
+  }
+  for (let i = 0; i < TOKEN_LENGTH; i++) {
+    out += TOKEN_ALPHABET[Math.floor(Math.random() * TOKEN_ALPHABET.length)];
+  }
+  return out;
+}
+
+// `d` and `token` are injectable so a test can assert an exact string; every
+// production call passes neither.
+function bundleName(title, d, token) {
+  return slugify(title) + '-' + timestamp(d) + '-' + (token || randomToken());
 }
 
 const DEFAULT_FOLDER = 'fha-inbox';
@@ -126,6 +156,6 @@ function build(fields) {
 
 module.exports = {
   CAPTURE_JSON_SCHEMA, DEFAULT_FOLDER,
-  slugify, timestamp, bundleName, accessedDate, build,
+  slugify, timestamp, randomToken, bundleName, accessedDate, build,
   sanitizeFolder, stagedPaths, ingestCommand, ingestHint,
 };

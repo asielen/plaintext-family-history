@@ -117,7 +117,7 @@ browser-staged bundle to a real inbox stub - the prerequisite for the browser co
 (§5), whose only output is such a bundle.
 
 Algorithm: resolve `DIR` (explicit arg → `fha.yaml` `capture_staging:` → default
-`~/Downloads/fha-inbox`). For each `<slug>-<timestamp>/` bundle (`page.html` + optional
+`~/Downloads/fha-inbox`). For each `<slug>-<timestamp>-<token>/` bundle (`page.html` + optional
 `asset.*` + `capture.json`, §3): read + validate it, then run `run_capture` wholesale -
 `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as explicit
 overrides (`url`/`title`/`type`/`date`/`accessed`/`notes`/`people`). `run_capture` gained
@@ -201,7 +201,7 @@ Scope is the **core** extension only:
   `page.html` at ingest. The browser captures; Python extracts.
 - The §5.1 transport: assemble `page.html` + optional `asset.<ext>` + `capture.json`
   (schema 2 today; shipped at schema 1 - §3) in memory, write them via
-  `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>/`. The panel
+  `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. The panel
   reports exactly where the bundle went and that `fha capture --ingest` files it - it never
   pretends Downloads is the archive.
 - A minimal single-file inliner (§9): images + stylesheet text inlined, scripts dropped,

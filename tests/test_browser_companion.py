@@ -551,6 +551,103 @@ class HandoffLocationTestCase(unittest.TestCase):
             self.assertIn('capture_staging', text, name)
 
 
+class BundleIdentityTestCase(unittest.TestCase):
+    """A staged bundle folder is unique per CAPTURE, not per (title, millisecond).
+
+    `chrome.downloads.download` is the extension's only way to write a file, and
+    it takes a Downloads-relative path with `conflictAction: 'uniquify'`. That
+    setting renames each FILE on its own, never the folder - so when two
+    captures compute the same `<slug>-<timestamp>` folder (two side panels in
+    two browser windows, or a clock adjustment handing the same millisecond out
+    twice), Chrome merges them into ONE directory and uniquifies the members:
+
+        1880-census-thomas-20260727-101500-007/
+            page.html          record.jpg          capture.json
+            page (1).html      record (1).jpg      capture (1).json
+
+    Nothing about that folder looks broken. `fha capture --ingest` reads the one
+    file literally named `capture.json`, resolves `assets[].file` to the one
+    literally named `record.jpg` (`capture._resolve_bundle_assets`), files a
+    complete-looking source, and parks the whole folder in `.ingested/`. Two
+    things go wrong silently: the second capture is never read at all, and -
+    because the assets are written in their own order, interleaved - the
+    surviving `record.jpg` can be the OTHER capture's evidence sitting under
+    this capture's citation. Neither leaves a trace to notice later.
+
+    The fix has to make the folder itself unique, so a per-capture random token
+    joins the slug and the timestamp. These are the structural pins; the
+    behaviour is covered by the node suite (`npm --prefix browser-companion
+    test`, tests/test-capture-json.js), which CI never runs because it installs
+    no node.
+    """
+
+    def setUp(self) -> None:
+        self.libs = {
+            p.name: p.read_text(encoding='utf-8')
+            for p in sorted((COMPANION / 'src' / 'lib').glob('capture-json*.js'))
+        }
+        self.assertTrue(self.libs, 'no capture-json*.js found under src/lib')
+        self.panel = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+        self.bundle = (COMPANION / 'src' / 'lib' / 'bundle.js').read_text(encoding='utf-8')
+
+    def test_the_bundle_name_is_not_title_and_clock_alone(self) -> None:
+        # Both the browser file and its kept-in-sync pure twin.
+        for name, src in self.libs.items():
+            body = re.search(r'function\s+bundleName\s*\([^)]*\)\s*\{(.*?)\n\s*\}', src, re.S)
+            self.assertIsNotNone(
+                body, f'{name}: no `function bundleName(...) {{ ... }}` found - it '
+                      'moved; point this pin at the new shape')
+            self.assertIn(
+                'randomToken', body.group(1),
+                f'{name}: bundleName is built from the title and the clock only. Two '
+                'captures made in the same millisecond would share a folder, and '
+                "Chrome's uniquify would then rename the FILES inside it - leaving a "
+                'bundle whose capture.json points at asset names that no longer exist.')
+
+    def test_the_token_is_drawn_from_a_real_random_source(self) -> None:
+        for name, src in self.libs.items():
+            self.assertTrue('function randomToken(' in src,
+                            f'{name}: no randomToken() to break a folder collision')
+            self.assertTrue(
+                'getRandomValues' in src,
+                f'{name}: the collision-breaking token needs a real random source')
+
+    def test_nothing_inside_a_bundle_is_named_from_the_page_or_the_clock(self) -> None:
+        """The folder is the only content-derived name, so no sibling can be renamed.
+
+        `capture.json` names its assets by `assets[].file`. If those filenames
+        were themselves derived from the title or the clock, uniquify could
+        rename one and leave the JSON pointing at a name that is not there. They
+        are fixed literals instead - `page-snapshot.html` and `record.<ext>` -
+        so a unique folder is sufficient to make the whole bundle safe.
+        """
+        self.assertIn("filename: 'page-snapshot.html'", self.panel)
+        self.assertRegex(self.panel, r"filename:\s*'record\.'\s*\+")
+        # bundle.js uses the bundle name in exactly ONE place - building the
+        # directory - and writes every member under it by the member's own name.
+        self.assertIn("'/' + spec.bundleName", self.bundle)
+        self.assertIn("dir + '/' + asset.filename", self.bundle)
+        self.assertEqual(
+            self.bundle.count('spec.bundleName'), 1,
+            'bundle.js uses the bundle name somewhere other than the directory it '
+            'builds; a member named after the bundle would be content-derived too')
+
+    def test_every_sample_asset_name_is_one_the_panel_writes_literally(self) -> None:
+        """The committed sample cannot reference a name uniquify could have moved."""
+        allowed = re.compile(r'^(page-snapshot\.html|record\.[A-Za-z0-9]+)$')
+        samples = sorted((COMPANION / 'test-bundle').glob('*/capture.json'))
+        self.assertTrue(samples, 'no committed test-bundle capture.json found')
+        for path in samples:
+            cap = json.loads(path.read_text(encoding='utf-8'))
+            for entry in cap.get('assets', []):
+                self.assertRegex(
+                    entry['file'], allowed,
+                    f"{path.parent.name}: assets[].file {entry['file']!r} is not one of "
+                    'the fixed names the panel writes, so it may be a name derived '
+                    'from page content - which uniquify can rename out from under the '
+                    'capture.json that points at it')
+
+
 class ArchiveReadmeTestCase(unittest.TestCase):
     """The README an archive receives is the owner's, not the project's."""
 

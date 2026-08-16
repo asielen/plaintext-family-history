@@ -116,7 +116,7 @@ Every delivery form converges on one artifact: a **staged bundle** the engine ca
 A staged bundle is a folder containing:
 
 ```
-<slug>-<timestamp>/
+<slug>-<timestamp>-<token>/
   page.html        ← the raw captured DOM (always present; the scrape source recipes run on)
   asset.<ext>      ← the asset: case (a) the file/image; case (b) the self-contained
                      preservation copy (single-file .html or .pdf); absent for case (c)
@@ -162,7 +162,7 @@ The human copies the page (or saves the HTML) and pipes it in: `pbpaste | fha ca
 
 ### 4.2 Bookmarklet - *not pursued*
 
-> **Decision (MG2.1):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
+> **Decision (MG2.1):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>-<token>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
 
 ### 4.3 Browser extension - *the nice panel* (§5)
 
@@ -188,7 +188,7 @@ The hard constraint that §13b never resolved: **an MV3 extension cannot write t
 
 So the extension cannot, by itself, drop a bundle into `inbox/`. Three honest resolutions, in order of how much they ask of the user:
 
-1. **Staging folder + explicit ingest (default).** The extension writes the bundle to `Downloads/fha-inbox/<slug>-<timestamp>/`. Locally, the human runs **`fha capture --ingest`** (§6), which sweeps that folder into the archive's real `inbox/` - the one sanctioned *move* at intake (SPEC §12.1). No watcher, no daemon: an explicit command, on the human's schedule, exactly like every other refresh-on-use step.
+1. **Staging folder + explicit ingest (default).** The extension writes the bundle to `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. Locally, the human runs **`fha capture --ingest`** (§6), which sweeps that folder into the archive's real `inbox/` - the one sanctioned *move* at intake (SPEC §12.1). No watcher, no daemon: an explicit command, on the human's schedule, exactly like every other refresh-on-use step.
 2. **Download directly into the inbox.** If the archive's `inbox/` lives under the user's Downloads tree (or the browser's download directory is pointed at it), the extension's bundle lands in `inbox/` immediately and `--ingest` is a no-op. A convenience for the common single-machine setup; not assumable in general because `inbox/` is a configurable root (SPEC §12.4) that often lives elsewhere.
 3. **Native-messaging host (§5.7).** A registered local host writes the bundle straight into `inbox/`, anywhere it lives, with no Downloads detour. The seamless upgrade, install-gated.
 
@@ -196,7 +196,7 @@ The default (1) needs zero native install and works in plain Chrome. The extensi
 
 ### 5.2 The staged bundle (what the extension writes)
 
-Exactly the §3 contract: `page.html`, an optional `asset.<ext>`, and `capture.json`. The extension assembles all three in memory (content script + panel), then writes them with `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>/`. `page.html` is **always** saved - it is the raw material the Python recipe re-extracts from, so even a generic in-browser pre-fill that got the title wrong is recoverable at ingest.
+Exactly the §3 contract: `page.html`, an optional `asset.<ext>`, and `capture.json`. The extension assembles all three in memory (content script + panel), then writes them with `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. `page.html` is **always** saved - it is the raw material the Python recipe re-extracts from, so even a generic in-browser pre-fill that got the title wrong is recoverable at ingest.
 
 ### 5.3 The panel workflow (the four phases)
 
@@ -287,7 +287,7 @@ The local bridge from a staged-bundle folder to real inbox stubs. A new mode of 
 fha capture --ingest [DIR] [--dry-run]
 ```
 
-`DIR` defaults to the known capture folder (`~/Downloads/fha-inbox/`, overridable by an optional `fha.yaml` `capture_staging:` key). For each `<slug>-<timestamp>/` bundle it finds:
+`DIR` defaults to the known capture folder (`~/Downloads/fha-inbox/`, overridable by an optional `fha.yaml` `capture_staging:` key). For each `<slug>-<timestamp>-<token>/` bundle it finds:
 
 1. **Read** `capture.json`, `page.html`, and the optional asset.
 2. **Run the engine** - feed `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as the explicit overrides (`title`/`type`/`date`/`url`/`accessed`/`notes`/`people`/`repository`), exactly as if a human had typed them. The recipe re-detects on `page.html` (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` names carry through as hints. This **reuses `run_capture` wholesale** - the ingest path produces a byte-identical stub to what the paste-fallback would have, which is the whole point of the staged-bundle seam.

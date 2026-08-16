@@ -46,10 +46,17 @@ tool-building; archives receive the result through `fha update-tools`.
 ## What it produces (the only contract that matters)
 
 Every capture writes one **staged bundle** to
-`Downloads/<folder>/<slug>-<timestamp>/` (folder defaults to `fha-inbox`):
+`Downloads/<folder>/<slug>-<timestamp>-<token>/` (folder defaults to
+`fha-inbox`). The trailing `<token>` is six random characters: the slug and the
+timestamp are there so the folder reads well and sorts chronologically, but two
+captures can genuinely share both (two side panels, or a clock adjustment), and
+the browser resolves a folder clash by renaming the FILES inside it rather than
+the folder - which would leave one merged folder whose `capture.json` names
+assets belonging to the other capture. The token makes the folder itself the
+unique thing.
 
 ```
-<slug>-<timestamp>/
+<slug>-<timestamp>-<token>/
   page.html          ← the raw captured DOM, ALWAYS saved; the clean scrape source
   page-snapshot.html ← optional self-contained page snapshot (role webpage), when
                        "Keep a copy of the whole page" is on

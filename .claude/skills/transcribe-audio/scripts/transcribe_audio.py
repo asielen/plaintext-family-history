@@ -18,7 +18,7 @@ What it does:
      readable) into --outdir - all three at once, only after the whole
      recording has been transcribed (see publish_transcripts).
 
-Two rules this file exists to keep:
+Three rules this file exists to keep:
 
   * ALL OR NOTHING. Whisper decodes lazily, so a bad frame, a model failure or
     a Ctrl-C lands in the middle of the segment loop. Every byte is written to
@@ -38,6 +38,16 @@ Two rules this file exists to keep:
     next run reads it, refuses to call the recording done, and redoes it. The
     one thing that must never happen - a mixed set of files that looks finished
     and is therefore skipped forever - cannot survive a single retry.
+
+  * WHAT THIS PROGRAM DID NOT WRITE, IT DOES NOT REPLACE. --outdir is a folder
+    the human picked, so a name this run wants can already be taken by a file
+    of his - a `family.md` he typed himself, sitting where this run would put
+    `family.md`. The marker above is also the ownership evidence: an unfinished
+    promotion of ours ALWAYS leaves one. So a marked folder is redone without
+    being asked, and an UNMARKED set of one or two files - which is just some
+    files that happen to share a name - stops the run and asks for --force.
+    Overwriting on a guess is what AGENTS.md forbids; the refusal names the
+    exact command that would go ahead.
 
   * NOTHING MACHINE-SPECIFIC IN THE OUTPUT. The .md is written to be attached
     to a source record and kept forever, so it names the recording by FILENAME
@@ -65,8 +75,10 @@ Usage:
 
 Exit codes:  0 transcript written (or already present - nothing to do)
              1 ran, but the recording held no speech; nothing was written
-             2 could not run: bad input, missing dependency, decode failure, or
-               the transcript could not be saved where it was asked for
+             2 could not run: bad input, missing dependency, decode failure, the
+               transcript could not be saved where it was asked for, or the
+               output folder holds files under these names that this program
+               cannot show it wrote (see --force)
 
 Model guide (CPU, rough): base ~ 2-4x realtime, rough quality; small ~ 1-2x,
 good default; medium ~ realtime, noticeably better with mumbled/overlapping
@@ -89,12 +101,14 @@ CODE MAP
   publish_transcripts    - the all-or-nothing writer (temp siblings + promotion)
   prepare_audio          - ffmpeg extraction with a PyAV fallback
   build_parser           - the CLI surface (kept apart so a test can read it)
+  rerun_command          - this run, plus a flag, as one copyable command line
   _leftover_note         - what a failed run actually left on disk
   main                   - CLI: check, transcribe, publish, say what is next
 """
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -170,16 +184,23 @@ def publication_state(outdir, name):
       'complete'    - all three files are there and no promotion was left open
       'interrupted' - the marker is still there, so a promotion was cut short and
                       the three files may be a mix of two runs
-      'partial'     - only some of the three are there
+      'partial'     - only some of the three are there, and no marker says why
       'none'        - none of them are there
 
     Only 'complete' may be read as "already transcribed, skip it". That is the
     whole point of this function: the skill tells the human to work a long queue
     by skipping recordings whose outputs exist, so a test that any single file
-    satisfies makes a half-published set permanent. Both halves are needed - the
-    marker catches a set that is complete but mixed (a hard kill between two
-    renames), and the file count catches a set the marker never knew about
-    (a run killed before it wrote one, or a file deleted by hand afterwards).
+    satisfies makes a half-published set permanent.
+
+    The two answers carry different weight, and main treats them differently.
+    'interrupted' is OUR unfinished work with our own evidence beside it, so it
+    is redone unasked. 'partial' is weaker than it looks: this program cannot
+    produce it by being interrupted (a run killed while writing leaves only
+    `.part` siblings, and one killed mid-promotion leaves the marker), so it
+    means either a file deleted by hand afterwards or - just as likely, in a
+    folder the human chose - files of his own that happen to share the name.
+    There is no way to tell those apart from here, so main refuses rather than
+    guessing, and --force is how he settles it.
     """
     if marker_path(outdir, name).exists():
         return 'interrupted'
@@ -550,8 +571,31 @@ def build_parser():
     ap.add_argument("--language", default="en",
                     help="spoken language code, or 'auto' to let whisper detect it (default en)")
     ap.add_argument("--force", action="store_true",
-                    help="re-transcribe even if this run's output files already exist")
+                    help="re-transcribe, and overwrite files already sitting under this "
+                         "run's output names - whether they are a finished transcript or "
+                         "files this program cannot show it wrote")
     return ap
+
+
+def rerun_command(argv, *extra):
+    """This same run with `extra` on the end, as one line he can copy.
+
+    Naming a flag is not naming a command: the human reading this has a folder
+    open, not a terminal history, and re-typing an invocation with a path and
+    three flags in it at 11pm is where the typos come from. So the refusal hands
+    back what he ran, plus the flag that changes the answer.
+
+    `sys.argv[0]` is used only when it really names THIS file, so the path he
+    actually typed comes back to him. Under a test runner or any other embedding
+    it names something else entirely (pytest's own `__main__.py`, say), and
+    echoing that back would hand him a command that runs the wrong program - so
+    the bare filename is the fallback.
+    """
+    args = list(argv) if argv is not None else list(sys.argv[1:])
+    myself = Path(__file__).name
+    invoked = sys.argv[0] if sys.argv else ''
+    script = invoked if invoked and Path(invoked).name == myself else myself
+    return 'python ' + shlex.join([script, *args, *extra])
 
 
 def _leftover_note(outdir, name):
@@ -612,13 +656,32 @@ def main(argv=None):
               "or pass a different --name.")
         return EXIT_OK
     if state == 'partial' and not a.force:
-        print(f"an earlier attempt left only part of this recording's transcript in {outdir}:")
+        # A part-set with no marker is NOT evidence of an unfinished run of
+        # ours. This program's own torn promotion always leaves the marker -
+        # that is what the marker is for - and a run killed while writing leaves
+        # only `.part` siblings, never a final name. So there is nothing here
+        # saying these files came from a transcription at all, and --outdir is a
+        # folder the human chose: a `rec.md` of his own, sitting where this run
+        # wants to put `rec.md`, is an ordinary thing to find. Replacing it on a
+        # guess is precisely the overwrite AGENTS.md forbids, so the run stops
+        # and he decides which it is.
+        print(f"the folder {outdir} already holds files named after this recording, but "
+              "not a whole transcript:", file=sys.stderr)
         for p in finals:
             if p.exists():
-                print(f"  {p.name}")
-        print("A part of a transcript is not a transcript, so this recording is being redone "
-              "now and those files will be replaced.")
-    elif state == 'interrupted' and not a.force:
+                print(f"  {p.name}", file=sys.stderr)
+        print("A transcript from this program is all three of .txt, .srt and .md together, "
+              "and a run that was cut off part way leaves a marker file behind. Neither is "
+              "true here, so there is nothing to say this program wrote them - and they have "
+              "not been touched.", file=sys.stderr)
+        print("If they are leftovers you want replaced, this redoes the recording and writes "
+              "over them:", file=sys.stderr)
+        print(f"  {rerun_command(argv, '--force')}", file=sys.stderr)
+        print("If they are your own files, keep them and give the transcript a name of its "
+              "own instead: add --name <something-else>, or --outdir <another folder>.",
+              file=sys.stderr)
+        return EXIT_FAILED
+    if state == 'interrupted' and not a.force:
         print(f"an earlier run was stopped while it was putting this recording's transcript "
               f"files into {outdir}, so what is there can be a mix of two runs.")
         print("Redoing the recording now and rewriting all three. Once the new transcript "

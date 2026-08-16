@@ -12,6 +12,7 @@ const {
   slugify,
   timestamp,
   bundleName,
+  randomToken,
   build,
   sanitizeFolder,
   ingestCommand,
@@ -28,12 +29,45 @@ test('timestamp carries milliseconds so same-second captures cannot share a fold
   assert.notStrictEqual(timestamp(WHEN), timestamp(plus1ms));
 });
 
-test('bundleName is slug + timestamp', () => {
+test('bundleName is slug + timestamp + a per-capture token', () => {
+  // The token is injectable purely so this assertion can be exact, the same
+  // way the clock is; production calls pass neither and get both fresh.
   assert.strictEqual(
-    bundleName('1880 Census - Thomas Hartley!', WHEN),
-    '1880-census-thomas-hartley-20260727-101500-007'
+    bundleName('1880 Census - Thomas Hartley!', WHEN, 'a1b2c3'),
+    '1880-census-thomas-hartley-20260727-101500-007-a1b2c3'
   );
-  assert.strictEqual(bundleName('', WHEN), 'capture-20260727-101500-007');
+  assert.strictEqual(bundleName('', WHEN, 'a1b2c3'), 'capture-20260727-101500-007-a1b2c3');
+});
+
+test('two same-title captures in the same millisecond get different folders', () => {
+  // The failure this closes: two side panels (or a clock adjustment) produce
+  // the same <slug>-<timestamp>, Chrome merges both captures into ONE download
+  // folder, and conflictAction 'uniquify' renames each FILE independently -
+  // `page (1).html`, `record (1).jpg`, `capture (1).json`. The surviving
+  // capture.json still says `record.jpg`, so the folder ingests as one
+  // complete-looking capture that can carry the other one's evidence, while
+  // the second capture is parked into .ingested/ unread.
+  const title = '1880 Census - Thomas Hartley';
+  const a = bundleName(title, WHEN);
+  const b = bundleName(title, WHEN);
+  assert.notStrictEqual(a, b, 'same title + same millisecond must not share a folder');
+  // Same prefix (sortable, chronological); only the token differs.
+  assert.ok(a.startsWith('1880-census-thomas-hartley-20260727-101500-007-'), a);
+  assert.ok(b.startsWith('1880-census-thomas-hartley-20260727-101500-007-'), b);
+});
+
+test('the bundle token is unique enough to rely on, and path-safe', () => {
+  const seen = new Set();
+  for (let i = 0; i < 2000; i++) {
+    const token = randomToken();
+    // Crockford Base32, the alphabet the archive's own IDs use: lowercase,
+    // no path separators, nothing `_safe_member_name` would rewrite, nothing
+    // a shell or Windows would object to in a folder name.
+    assert.match(token, /^[0-9abcdefghjkmnpqrstvwxyz]{6}$/, token);
+    seen.add(token);
+  }
+  // 32^6 ≈ 1.07e9 values: 2000 draws colliding at all would be a broken source.
+  assert.strictEqual(seen.size, 2000, 'randomToken repeated itself in 2000 draws');
 });
 
 test('build emits an EMPTY assets list for the pointer-only capture', () => {

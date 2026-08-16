@@ -1,11 +1,12 @@
 // capture-json.js - assemble the §3 staged-bundle metadata.
 //
 // This is the seam the whole companion exists to fill (TOOLING_INGESTION §3):
-// every delivery form converges on one artifact a `<slug>-<timestamp>/` bundle
-// of `page.html` + optional asset files + `capture.json`. This module owns the
-// shape of `capture.json` and the bundle's name, so the panel never hand-builds
-// either. Keeping it small and pure (no chrome.* calls) makes it the one place
-// to audit against the Python `capture._CAPTURE_JSON_SCHEMA` contract.
+// every delivery form converges on one artifact a `<slug>-<timestamp>-<token>/`
+// bundle of `page.html` + optional asset files + `capture.json`. This module
+// owns the shape of `capture.json` and the bundle's name, so the panel never
+// hand-builds either. Keeping it small and pure (no chrome.* calls) makes it
+// the one place to audit against the Python `capture._CAPTURE_JSON_SCHEMA`
+// contract.
 //
 // Schema 2 (this build): the single `asset_mode`/`asset_file` pair becomes an
 // `assets: [{file, role, mode, provisional?}]` LIST, so one capture can carry
@@ -42,12 +43,11 @@
   }
 
   // Local-time stamp `YYYYMMDD-HHMMSS-mmm`. The folder name only has to be
-  // unique and sortable on the human's own machine; the durable accessed *date*
-  // travels separately in capture.json (and overrides the scrape at ingest, §6).
-  // Milliseconds close the same-second collision: two same-title captures in one
-  // second would otherwise share a folder, and the downloads API's `uniquify`
-  // renames the FILES inside it (`capture (1).json`) - one mixed folder ingest
-  // half-reads - rather than the folder itself.
+  // sortable and readable on the human's own machine; the durable accessed
+  // *date* travels separately in capture.json (and overrides the scrape at
+  // ingest, §6). Milliseconds keep two captures a moment apart in the order
+  // they were made; they are NOT what makes the folder unique - see
+  // randomToken below for that.
   function timestamp(d) {
     d = d || new Date();
     return (
@@ -63,8 +63,61 @@
     );
   }
 
-  function bundleName(title, d) {
-    return slugify(title) + '-' + timestamp(d);
+  // Crockford Base32 - the archive's own ID alphabet (SPEC: lowercase, no
+  // `ilou`). Nothing in it needs escaping in a path, a shell, or a Windows
+  // folder name, and `capture.py`'s `_safe_member_name` passes it through
+  // untouched. 32 values is 5 bits, so a random byte masked with 31 is an
+  // unbiased draw - no modulo skew to explain away.
+  const TOKEN_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+  const TOKEN_LENGTH = 6;
+
+  // Six random characters, appended to every bundle folder name.
+  //
+  // A clock is not an identity. Two side panels in two browser windows can
+  // stage a same-titled capture in the same millisecond, and a clock adjustment
+  // can hand the same millisecond out twice - and then both captures compute
+  // the same `<slug>-<timestamp>` folder. `chrome.downloads.download` writes
+  // with `conflictAction: 'uniquify'`, which renames the FILE, never the
+  // folder, so the two captures MERGE into one directory:
+  //
+  //     page.html   record.jpg   capture.json
+  //     page (1).html   record (1).jpg   capture (1).json
+  //
+  // Nothing about that folder looks wrong. `fha capture --ingest` reads the one
+  // file literally named `capture.json` and resolves its `assets[].file` to the
+  // one literally named `record.jpg` - and because the two captures' downloads
+  // interleave, that record.jpg can belong to the OTHER capture. It files a
+  // complete-looking source carrying the wrong evidence, then parks the whole
+  // folder in `.ingested/` with the second capture never read at all. Both
+  // failures are silent. Making the FOLDER the unique thing is what prevents
+  // them; 32^6 is about 1.07e9, so two captures colliding is not a case that
+  // has to be handled.
+  function randomToken() {
+    const source = (typeof crypto !== 'undefined' && crypto.getRandomValues)
+      ? crypto : null;
+    let out = '';
+    if (source) {
+      const bytes = new Uint8Array(TOKEN_LENGTH);
+      source.getRandomValues(bytes);
+      for (let i = 0; i < TOKEN_LENGTH; i++) out += TOKEN_ALPHABET[bytes[i] & 31];
+      return out;
+    }
+    // No WebCrypto (an old embedder, a stripped test host): Math.random is
+    // weaker but this is a collision breaker, not a secret, and a predictable
+    // token is still enormously better than none.
+    for (let i = 0; i < TOKEN_LENGTH; i++) {
+      out += TOKEN_ALPHABET[Math.floor(Math.random() * TOKEN_ALPHABET.length)];
+    }
+    return out;
+  }
+
+  // `<slug>-<timestamp>-<token>`. Slug and timestamp are for the human reading
+  // his own Downloads folder; the token is what makes the name an identity.
+  //
+  // `d` and `token` are injectable for the same reason: a test needs an exact
+  // string to assert. Every production call passes neither.
+  function bundleName(title, d, token) {
+    return slugify(title) + '-' + timestamp(d) + '-' + (token || randomToken());
   }
 
   // The staging folder Chrome writes under Downloads. The default must match
@@ -225,6 +278,7 @@
     DEFAULT_FOLDER,
     slugify,
     timestamp,
+    randomToken,
     bundleName,
     accessedDate,
     build,

@@ -574,20 +574,77 @@ class CliRecoveryTestCase(unittest.TestCase):
             rc = ta.main([str(self.audio), '--outdir', str(self.out), *extra])
         return rc, out.getvalue(), err.getvalue()
 
-    def test_a_partial_set_is_redone_rather_than_skipped(self):
-        """Two files of three is not a transcript, whatever a batch pass assumes."""
+    def test_an_unmarked_partial_set_is_not_overwritten(self):
+        """The human's own file, sharing this --name by accident, is not ours to replace.
+
+        `--outdir` is a folder HE picks, so a `rec.md` of his own sitting in it
+        with no `rec.txt` and no `rec.srt` beside it is an ordinary thing, not
+        the wreckage of an earlier run: this script's own torn promotion always
+        leaves a `.publishing` marker, and there is none here. With no evidence
+        the files are ours, replacing them would be exactly the overwrite
+        AGENTS.md forbids.
+        """
+        his_own = "Aunt Ruth's notes on the farm - do not delete\n"
+        self.finals[2].write_text(his_own, encoding='utf-8')
+        _install_fake_whisper(self, iter(_segments(3)))
+        rc, out, err = self._run()
+
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        # His file is byte-for-byte what it was, and nothing new appeared.
+        self.assertEqual(self.finals[2].read_text(encoding='utf-8'), his_own)
+        self.assertEqual(_leftovers(self.out), ['rec.md'])
+        # And it did not quietly call the recording finished either.
+        self.assertNotIn('already transcribed', out + err)
+
+    def test_the_refusal_names_the_command_that_would_replace_them(self):
+        """A dead end is a bug: the message has to carry the exact next command."""
+        self.finals[2].write_text('his own file', encoding='utf-8')
+        _install_fake_whisper(self, iter(_segments(3)))
+        _rc, out, err = self._run()
+        said = out + err
+        # One line he can copy: the script, this recording, this folder, --force.
+        offered = [line for line in said.splitlines() if '--force' in line]
+        self.assertTrue(offered, f'the refusal never names --force:\n{said}')
+        line = offered[0]
+        for part in ('transcribe_audio.py', str(self.audio), '--outdir', str(self.out)):
+            self.assertIn(part, line, f'{part!r} missing from the offered command: {line!r}')
+        # And the other way out, for when the files really are his.
+        self.assertIn('--name', said)
+
+    def test_that_named_command_really_does_replace_them(self):
+        """The command the refusal prints is run here, and it works."""
+        self.finals[2].write_text('his own file', encoding='utf-8')
+        _install_fake_whisper(self, iter(_segments(3)))
+        rc, _out, _err = self._run('--force')
+        self.assertEqual(rc, ta.EXIT_OK)
+        self.assertEqual(_leftovers(self.out), ['rec.md', 'rec.srt', 'rec.txt'])
+        self.assertEqual(self.finals[0].read_text(encoding='utf-8'),
+                         'line 0\nline 1\nline 2\n')
+
+    def test_a_marked_partial_set_is_still_redone_without_force(self):
+        """The control: a torn promotion of OURS is still repaired automatically.
+
+        This is the half the marker exists for. Two files of three plus the
+        `.publishing` marker is this script's own unfinished work, evidence and
+        all, so it is redone rather than refused - the batch queue keeps
+        repairing itself and only genuinely unowned files ask for `--force`.
+        """
         _plant_previous_transcript(self.out, 'rec')
         self.finals[2].unlink()
+        ta.marker_path(self.out, 'rec').write_text('interrupted', encoding='utf-8')
         _install_fake_whisper(self, iter([]))
         rc, out, _err = self._run()
-        # It transcribed (and found no speech); it did not report "already done".
+        # It transcribed (and found no speech); it did not report "already done"
+        # and it did not refuse.
         self.assertEqual(rc, ta.EXIT_NO_SPEECH)
         self.assertNotIn('already transcribed', out)
-        self.assertIn('only part', out)
-        # And having promised to replace them, it says it did not: the run found
-        # no speech, so the two old files are still the two old files.
-        self.assertIn('left exactly as they were', out)
+        self.assertIn('mix of two runs', out)
+        # Having promised to replace them, it says it did not: the run found no
+        # speech, so the two old files are still the two old files - and still
+        # marked, so the next run will try again.
+        self.assertIn('mix of this run and the last one', out)
         self.assertEqual(self.finals[0].read_text(encoding='utf-8'), PREVIOUS)
+        self.assertTrue(ta.marker_path(self.out, 'rec').exists())
 
     def test_an_interrupted_promotion_is_redone_even_with_all_three_present(self):
         """The hard-kill case: three plausible files, one marker saying otherwise."""
@@ -681,6 +738,28 @@ class SkillDocTestCase(unittest.TestCase):
             self.assertIn(prefix, stems,
                           f'the skill shows {prefix}-whisper-transcript_… but never tells the '
                           f'caller to pass --name {prefix}')
+
+    def test_the_skill_does_not_promise_to_replace_files_it_may_not_own(self):
+        """Doc-vs-code: the retired promise, in the words it was written in.
+
+        The skill used to tell the reader that a part-set of output files is
+        simply "re-done", which described a branch that replaced whatever was
+        sitting under those names - a human's own `family.md` included. The
+        script now refuses that case and asks for `--force`, so the prose has
+        to stop promising the old behaviour and has to name the flag.
+        """
+        # Whitespace-normalised, so a reflowed paragraph cannot smuggle the old
+        # promise back past the guard on a line break.
+        flowed = re.sub(r'\s+', ' ', self.text.lower())
+        for phrase in (
+            'if only some of the three files are there, or if a run was killed',
+            '`--force` is the only way to replace a *finished* transcript',
+        ):
+            self.assertNotIn(phrase, flowed,
+                             f'SKILL.md still promises the retired behaviour: {phrase!r}')
+        # And it names the way out, in the same breath as the refusal.
+        self.assertIn('--force', self.text)
+        self.assertIn('.publishing', self.text)
 
     def test_skill_does_not_prescribe_renaming_an_archived_file(self):
         """Thread 4: filed names and `files:` entries are tool territory only."""
