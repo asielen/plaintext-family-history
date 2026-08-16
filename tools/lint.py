@@ -81,6 +81,7 @@ from _lib import (
     claim_item_key_indent,
     claims_edit_problem,
     edtf_bounds,
+    files_carry_searchable_text,
     finding_to_message,
     format_bracket_child,
     is_genetic_parent_subtype,
@@ -184,6 +185,8 @@ import yaml
 #    _check_generated_headers    - W105: hand-edits below a GENERATED header
 #    _check_readme_age           - W108: README.md older than SPEC.md
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
+#    _check_untranscribed_evidence - W124: accepted claims on evidence the
+#                                   archive holds no words for (no transcript)
 #    _check_roots_change         - W121: a roots: change orphaned filed assets
 #                                   (runs first; the E011 fallout follows it)
 #    _check_unreadable_dirs      - W123: a record folder this lint could not open
@@ -2278,6 +2281,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     findings.append(Finding('W', 'W106', src_path,
                         f'Accepted claim {cid} missing Mills field(s): {", ".join(missing_mills)}'))
 
+    # W124: accepted claims resting on evidence nobody has written out
+    _check_untranscribed_evidence(registry, findings)
+
     # E016: new claims referencing a merged person
     for pid, meta in registry.person_meta.items():
         if str(meta.get('status', '')) == 'merged':
@@ -2324,6 +2330,64 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W123: a record folder Pass 1 could not open. Last, so it reads as the
     # caveat on everything above it rather than as one more finding among many.
     _check_unreadable_dirs(registry, findings)
+
+
+def _check_untranscribed_evidence(
+    registry: Registry, findings: list[Finding],
+) -> None:
+    """W124: accepted claims resting on evidence nobody has written out (#46).
+
+    A source can be processed, have claims drafted from its pictures, reviewed
+    and accepted - and the archive still holds no text of what the document
+    says. The pictures are the only copy. Every later reader then reads the
+    claim values instead, inheriting whatever the first pass misread, and a text
+    search over the archive answers for what some earlier pass chose to write
+    down while looking exactly like a search of the evidence.
+
+    That second effect is why this is a lint rule and not just a nicety. A null
+    text search on such an archive is a statement about coverage, not about the
+    family, and it has already been read the other way: a surname was searched
+    for, found only in one claim's value, judged invented, and struck - while it
+    sat in plain handwriting on a chart in a 22-page image-only scan. The
+    archive where that happened held 43 such sources carrying 135 accepted
+    claims and had no way to say so.
+
+    Read entirely from the record's own `files:` roles, never from the files
+    themselves: lint does not open a PDF to ask whether it has a text layer (it
+    would need an optional dependency and every source's worth of reading to
+    answer a warning). A source with no files listed is not flagged - there is
+    nothing to transcribe. Warning, not error: an untranscribed source is a
+    normal state of research, and the fix is work, not a correction.
+    """
+    for sid, meta in sorted(registry.source_meta.items()):
+        raw_files = meta.get('files') or []
+        entries = [
+            (str(f.get('role', '')), str(f.get('file', '')))
+            for f in raw_files if isinstance(f, dict)
+        ]
+        if not entries or files_carry_searchable_text(entries):
+            continue
+
+        accepted = [
+            c for c in registry.source_claims.get(sid, [])
+            if isinstance(c, dict) and str(c.get('status', '')) == 'accepted'
+        ]
+        if not accepted:
+            continue
+
+        path = registry.source_paths.get(sid, registry.archive_root / str(sid))
+        display = fmt_id_display(sid)
+        findings.append(Finding('W', 'W124', path,
+            f'{len(accepted)} accepted claim(s) rest on evidence this archive '
+            f'holds no words for: every file of {display} is a scan, '
+            'photograph, PDF or recording with no transcript beside it. '
+            'A search of your archive cannot look inside them, so '
+            'anything written in this document reads as though it were not '
+            'there. If it is a PDF that carries its own text layer, run '
+            f'`fha source extract {display}`; otherwise read the file and type '
+            'out what it says, then attach it with `fha process <one of its '
+            'files> --more <your-transcript.md> transcript`. Either way, run '
+            '`fha index` afterwards so the words become searchable.'))
 
 
 def _check_unreadable_dirs(registry: Registry, findings: list[Finding]) -> None:

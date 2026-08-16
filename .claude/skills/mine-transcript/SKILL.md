@@ -61,6 +61,14 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
      been transcribed at all. Compare durations against transcript length before concluding a recording
      holds nothing.
 
+   **If the transcript ends in a `<!-- AI-DRAFT … -->` marker, it is an unreviewed machine reading of
+   the images** — [`transcribe-source`](../transcribe-source/SKILL.md) wrote it and nobody has checked
+   it against the original yet. Mine it, but carry that through: the claim's `confidence:` reflects a
+   reading no human has verified, its `notes:` says the reading is unverified, and an `[illegible]`,
+   `[word?]` or `[unclear: a or b]` in the text is **never** silently resolved into a claim value — ask
+   the human, or leave that fact unclaimed. A transcript with no marker, or one carrying
+   `<!-- AI-ACCEPTED … -->`, needs none of this.
+
    Never rewrite either transcript to match the other, and never "correct" the garbled names inside them
    — the originals stay byte-for-byte (SPEC §6.3). The reconciliation lives in the claim you draft.
 
@@ -94,8 +102,9 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
 4. **Route narrative to `## Stories`; leave the rest in the transcript.** Story-shaped passages (an
    anecdote about the railroad job, a description of the family home) go to the source's `## Stories`
    section as narrative chunks tagged with `[[P-…]]` refs — feedstock for a future biography. Everything
-   else **stays in the transcript**, unchanged (it remains searchable via `transcripts_fts` when that
-   surface is populated).
+   else **stays in the transcript**, unchanged — and it stays searchable: `fha index` loads every
+   `role: transcript` / `transcription` / `extracted-text` companion into `transcripts_fts`, so
+   `fha find --text` reaches inside it.
 
 5. **Record the AI pass** in the source's `## AI Passes` block:
    ```yaml

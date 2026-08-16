@@ -50,6 +50,8 @@ from _lib import (
     EXIT_WARNINGS,
     ID_RE,
     INDEX_SCHEMA_VERSION,
+    SEARCHABLE_TEXT_SUFFIXES,
+    TEXT_COMPANION_ROLES,
     TOKEN_RE,
     FhaConfigError,
     Message,
@@ -357,12 +359,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
 
 _RELATIONSHIPS_SOCIAL_SUBTYPES = {'friend', 'associate', 'neighbor'}
 
-# Mirrors source.py's `_EXTRACT_ROLE`: the files: role that `fha source extract`
-# stamps on a PDF's dumped text layer. Its body is fed into transcripts_fts so
-# JSON/workbench search can reach inside the dump (see _index_source). Kept as a
-# literal here rather than imported from source.py to avoid a build-tool import
-# reaching into a write-tool module; the two must stay in step.
-_EXTRACTED_TEXT_ROLE = 'extracted-text'
+# _lib.TEXT_COMPANION_ROLES holds the files: roles whose body belongs in
+# transcripts_fts: `extracted-text` (what `fha source extract` stamps on a PDF's
+# dumped text layer - source.py's `_EXTRACT_ROLE`) and `transcript` /
+# `transcription` (what a transcript written by any other means carries: by
+# hand, by the transcribe-audio skill, by anyone who read a scan and typed it
+# out). All of them are the same thing to a search - the archive's copy of what
+# the evidence says - and loading only the extract verb's own dumps left every
+# other transcript unsearchable through the index (#46). The vocabulary lives in
+# _lib because `fha lint` counts the same files this loads, and one shared rule
+# is what keeps the two from drifting apart.
+#
+# _lib.SEARCHABLE_TEXT_SUFFIXES is the second half of the gate: a transcript is
+# only a transcript if it is text. A role tag can land on anything - a `.m4a`
+# attached as `role: transcript` by a slip of the hand - and reading a media
+# file as UTF-8 would fail on every build and print a "re-save it as UTF-8"
+# warning naming a file that was never text at all.
 
 
 # ── Build helpers ─────────────────────────────────────────────────────────────
@@ -1115,17 +1127,24 @@ def _index_source(
             (sid, file_path, role, None, derived, orig_name, exists),
         )
 
-        # Extracted-text companion (role: extracted-text, from `fha source
-        # extract`): feed its body into transcripts_fts so JSON/workbench search
-        # reaches inside the dumped page text - the extract command's success
-        # message promises `fha index` makes the dump searchable, and this is
-        # where that promise is kept. This runs inside _index_source, which BOTH
-        # build_index and upsert_source call, so full-rebuild and incremental
-        # stay symmetric (upsert drops this source's transcripts_fts rows first).
-        # Guarded on the file being on disk: a working copy that never synced
-        # the dump simply has nothing to read, and skipping is the graceful
-        # answer - a full build on the main archive fills it in.
-        if role == _EXTRACTED_TEXT_ROLE and resolved.exists():
+        # Text companion (role: transcript / transcription / extracted-text):
+        # feed its body into transcripts_fts so JSON/workbench search reaches
+        # inside what the evidence actually says. `fha source extract`'s success
+        # message promises `fha index` makes its dump searchable, and this is
+        # where that promise is kept - but a transcript written by any other
+        # means is the same kind of text and earns the same treatment, which is
+        # the whole point of #46: an archive can hold a full transcript of a
+        # scan and still answer a search as though the scan were mute. This runs
+        # inside _index_source, which BOTH build_index and upsert_source call,
+        # so full-rebuild and incremental stay symmetric (upsert drops this
+        # source's transcripts_fts rows first). Guarded on the file being on
+        # disk: a working copy that never synced the companion simply has
+        # nothing to read, and skipping is the graceful answer - a full build on
+        # the main archive fills it in.
+        suffix = Path(file_path.replace('\\', '/')).suffix.lower()
+        if (role.strip().lower() in TEXT_COMPANION_ROLES
+                and suffix in SEARCHABLE_TEXT_SUFFIXES
+                and resolved.exists()):
             try:
                 dump_text = resolved.read_text(encoding='utf-8')
             except OSError:

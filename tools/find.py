@@ -34,9 +34,13 @@ Design decisions in TOOLING §4a:
       relational joins it runs have no meaningful tree-scan fallback): an
       absent or unreadable index is a hard error (exit 3), not a degrade.
   D7: --text searches records + notes; photo captions are searched when
-      .cache/photos.sqlite is fresh (else find prints a skip note). The
-      transcripts_fts table exists but is not yet populated - transcript
-      search is deferred to a later milestone.
+      .cache/photos.sqlite is fresh (else find prints a skip note); and
+      transcripts_fts carries every `role: transcript` / `transcription` /
+      `extracted-text` companion `fha index` has loaded.  Whatever it cannot
+      read, it says so: every text search ends with a count of the sources in
+      the archive that hold no text at all (#46), on a hit as readily as on a
+      miss, because a search that only half read its corpus is misleading
+      either way.
 
   --json (plan 17; documented in TOOLING §4a): a pure, machine-readable ranked
   search over the index - the backend the fha serve reference resolver (and
@@ -71,6 +75,7 @@ from _lib import (
     Result,
     configure_utf8_stdout,
     edtf_bounds,
+    file_entry_carries_text,
     format_edtf_error,
     id_type_of,
     is_valid_edtf,
@@ -110,6 +115,8 @@ configure_utf8_stdout()
 #    _find_by_scan             - grep all text files for bare ID string
 #
 #  Text search
+#    _count_sources_without_text - how many sources hold no text at all (#46)
+#    _searchable_text_note     - the coverage caveat printed with every result
 #    _find_text                - FTS (when index fresh) + re.search over record bodies
 #
 #  --related (M4.3): neighborhood queries over the relational index
@@ -729,6 +736,103 @@ def _print_unseen_folders(
 
 # ── Text search ───────────────────────────────────────────────────────────────
 
+def _count_sources_without_text(
+    conn: sqlite3.Connection,
+) -> tuple[int, int] | None:
+    """How many of the sources this search covered hold no text at all?
+
+    Returns `(unreadable, total)`, or None when the index cannot answer.
+
+    A source whose files are all scans, photographs, PDFs or recordings puts
+    nothing into the archive as text. A text search over it returns nothing and
+    looks exactly like a text search that read it and found nothing - which is
+    how a null result gets read as a finding about the family rather than a fact
+    about the corpus (#46). Counting them is what lets the search say which of
+    the two it just did.
+
+    Answered entirely from the index, because this runs on EVERY text search:
+    one pass over `source_files` (a handful of rows per source) and one over
+    `transcripts_fts`'s key column (one row per transcript companion), never a
+    walk of the photo or document roots. The transcripts_fts pass is belt and
+    braces - `fha index` only ever fills that table from the same roles the
+    first pass reads - but it means a source the index found text in is never
+    reported as mute, whatever wrote the row.
+
+    A file the index recorded as absent from disk (`exists_on_disk = 0`) does
+    not count as text: a `files:` line promising a transcript that is not there
+    is exactly as unsearchable as no transcript at all. A source with no files
+    listed at all is left out of both halves of the count - there is nothing to
+    read, so nothing was missed.
+    """
+    try:
+        total = conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0]
+        with_files: set[str] = set()
+        with_text: set[str] = set()
+        for sid, role, path, exists in conn.execute(
+            'SELECT source_id, role, path, exists_on_disk FROM source_files'
+        ):
+            if not sid:
+                continue
+            with_files.add(sid)
+            if exists == 0:
+                continue
+            if file_entry_carries_text(role or '', path or ''):
+                with_text.add(sid)
+        for row in conn.execute('SELECT DISTINCT source_id FROM transcripts_fts'):
+            if row[0]:
+                with_text.add(row[0])
+    except sqlite3.Error:
+        # An old-schema or damaged index: the rest of the search still works off
+        # whatever tables it does have, and the caller says plainly that the
+        # coverage question went unanswered rather than implying full coverage.
+        return None
+    return len(with_files - with_text), int(total)
+
+
+def _searchable_text_note(
+    conn: sqlite3.Connection | None, *, found_something: bool,
+) -> str | None:
+    """The line that tells the reader how much of the archive this search read.
+
+    Printed with the result, never instead of it, and printed on a HIT as
+    readily as on a miss. Three matches drawn from a corpus the search could
+    only half read are as misleading as none - more so, because hits feel like
+    confirmation and nobody re-examines a question they think is answered.
+
+    Returns None when there is nothing to say (every source has text, or the
+    count came back zero).
+
+    The named next steps are the ones that exist today: `fha source extract`
+    for a PDF carrying its own text layer, and reading the file. Naming a verb
+    the tools do not have would be a promise this program cannot keep.
+    """
+    if conn is None:
+        return ('Note: could not check which sources have no searchable text - '
+                'there is no usable search index. Run `fha index`, then search '
+                'again.')
+    counted = _count_sources_without_text(conn)
+    if counted is None:
+        return ('Note: could not check which sources have no searchable text - '
+                'the search index is out of date. Run `fha index`, then search '
+                'again.')
+    unreadable, total = counted
+    if not unreadable:
+        return None
+    lead = ('These results are not the whole picture'
+            if found_something else
+            'Nothing was found, but this search could not look everywhere')
+    return (
+        f'Note: {lead} - this archive holds no searchable text for '
+        f'{unreadable} of its {total} sources. Those files are scans, '
+        'photographs, PDFs or recordings with no transcript written out beside '
+        'them, so what those documents say is not in the archive as words and '
+        'this search never read them. `fha source extract <S-id>` makes a PDF '
+        'searchable when it carries its own text layer; a scan or a photograph '
+        'has to be read and typed out. `fha find <S-id>` lists what files a '
+        'source has.'
+    )
+
+
 def _find_text(
     query: str,
     archive_root: Path,
@@ -738,12 +842,17 @@ def _find_text(
     """
     Search records and notes for query text, plus photo captions when available.
 
-    When the index is fresh: query notes_fts (and transcripts_fts, currently
-    empty - transcript population is deferred) first, then a re.search pass to
-    catch anything the FTS tables may not cover (e.g. a fresh lint-only run
-    without FTS populated).
+    When the index is fresh: query notes_fts and transcripts_fts (transcript
+    and extracted-text companions) first, then a re.search pass to catch
+    anything the FTS tables may not cover (e.g. a fresh lint-only run without
+    FTS populated).
 
     When the index is absent: re.search only.
+
+    Either way the result carries the coverage note (_searchable_text_note):
+    the sources whose files this search cannot read inside are counted and
+    named as a number, so a null result is never mistaken for a negative
+    finding and a handful of hits is never mistaken for the whole story.
 
     Design decision D7 (TOOLING §4a): photo captions ARE searched when
     .cache/photos.sqlite is verifiably fresh (DB present, schema OK, newer than
@@ -899,6 +1008,11 @@ def _find_text(
         print(f'No results for: {query!r}')
         if photo_note:
             print(photo_note)
+        # The coverage caveat prints on a miss AND on a hit - see
+        # _searchable_text_note. This is the miss.
+        text_note = _searchable_text_note(conn, found_something=False)
+        if text_note:
+            print(text_note)
         _print_unseen_folders(text_unreadable, archive_root, found_something=False)
         return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN
 
@@ -909,6 +1023,9 @@ def _find_text(
             print(f'    … {context} …')
     if photo_note:
         print(f'\n{photo_note}')
+    text_note = _searchable_text_note(conn, found_something=True)
+    if text_note:
+        print(f'\n{text_note}')
     _print_unseen_folders(text_unreadable, archive_root, found_something=True)
 
     return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN

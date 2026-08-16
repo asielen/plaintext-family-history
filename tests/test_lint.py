@@ -1842,5 +1842,104 @@ class UnreadableRecordFolderTests(unittest.TestCase):
         self.assertIn('W123', [m.code for m in result.messages])
 
 
+_W124_SID = 'S-5n7q9s1t3v'
+_W124_SOURCE = '''---
+id: {sid}
+title: Hand-drawn family chart
+source_type: other
+files:{files}
+---
+
+## Claims
+```yaml
+- id: C-5n7q9s1t3v
+  type: name
+  persons: ["Rose Harkness"]
+  value: "Rose Harkness"
+  status: {status}
+  confidence: high
+  reviewed: 2026-08-01
+```
+
+## Notes
+Twenty-two pages, all picture.
+'''
+
+_IMAGE = (f'documents/charts/harkness-chart_{_W124_SID}.jpg', 'front')
+_TRANSCRIPT = (f'documents/charts/harkness-chart-transcript_{_W124_SID}.md',
+               'transcript')
+
+
+class UntranscribedEvidenceTests(unittest.TestCase):
+    """W124: accepted claims resting on evidence the archive holds no words for.
+
+    A source can be processed, mined from its pictures, reviewed and accepted,
+    and the archive still holds no text of what the document says. Nothing in
+    the tools noticed, and nothing warned - so a text search over such an
+    archive answered for what an earlier pass had chosen to write down while
+    looking exactly like a search of the evidence. The archive that produced
+    #46 carried 43 such sources and 135 accepted claims on them."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'people').mkdir()
+        (self.root / 'sources' / 'other').mkdir(parents=True)
+
+    def _write_source(self, entries: list, status: str = 'accepted') -> None:
+        """Write the source record AND the files it lists, so the only finding
+        under test is W124 - a `files:` line with nothing behind it is E011."""
+        block = ''.join(
+            f'\n  - file: {path}\n    role: {role}' for path, role in entries)
+        (self.root / 'sources' / 'other'
+         / f'harkness-chart_{_W124_SID.lower()}.md').write_text(
+            _W124_SOURCE.format(sid=_W124_SID, files=block, status=status),
+            encoding='utf-8')
+        for path, _role in entries:
+            on_disk = self.root / path
+            on_disk.parent.mkdir(parents=True, exist_ok=True)
+            on_disk.write_text('Rose Harkness, married 1871.\n', encoding='utf-8')
+
+    def _codes(self) -> list:
+        findings, _ = lint._run_lint_core(self.root, {})
+        return [f for f in findings if f.code == 'W124']
+
+    def test_an_image_only_source_with_an_accepted_claim_is_flagged(self) -> None:
+        self._write_source([_IMAGE])
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertEqual(found[0].severity, 'W')
+        # The next-step rule: the message names what to do, in commands that
+        # exist. `fha source transcribe` does not.
+        self.assertIn('1 accepted claim(s)', found[0].message)
+        self.assertIn(_W124_SID, found[0].message)
+        self.assertIn('fha source extract', found[0].message)
+        self.assertIn('--more', found[0].message)
+        self.assertNotIn('fha source transcribe', found[0].message)
+
+    def test_a_transcript_beside_the_scan_settles_it(self) -> None:
+        self._write_source([_IMAGE, _TRANSCRIPT])
+        self.assertEqual(self._codes(), [])
+
+    def test_suggested_claims_alone_are_not_flagged(self) -> None:
+        # Nothing has been accepted on the strength of an unread picture yet -
+        # review is where that gets settled, and W102 already names the backlog.
+        self._write_source([_IMAGE], status='suggested')
+        self.assertEqual(self._codes(), [])
+
+    def test_a_source_with_no_files_is_not_flagged(self) -> None:
+        # An accepted claim from an online record with nothing attached has no
+        # evidence file to transcribe; there is nothing here to fix.
+        self._write_source([])
+        self.assertEqual(self._codes(), [])
+
+    def test_the_warning_moves_the_run_off_exit_0(self) -> None:
+        self._write_source([_IMAGE])
+        result = lint.run_lint(self.root, {})
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertIn('W124', [m.code for m in result.messages])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: all layers authored (I1-I7; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and fifteen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, and `transcribe-audio` - one per milestone entry below, `reconcile-site-edits` and `import-notes` under Layer I7. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
+**Status: all layers authored (I1-I8; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension; Layer I8 shipped `transcribe-source` and the `process-source` Stage A½ extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and sixteen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, `transcribe-audio`, and `transcribe-source` - one per milestone entry below, `reconcile-site-edits` and `import-notes` under Layer I7. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
 
 ---
 
@@ -260,7 +260,7 @@ python -m unittest tests.test_transcribe_audio -v   # atomic publish, portable h
 
 Two skills landed with the work they serve rather than with a numbered skill wave, so they had no
 milestone entry here while the header above already counted them. They are recorded here so every
-one of the fifteen shipped SKILL.md files has a status line in this doc, which is the authoritative
+one of the sixteen shipped SKILL.md files has a status line in this doc, which is the authoritative
 build-status record for the interface layer. Design: TOOLING_INTERFACE.md §2.5.
 
 ### MI7.1 - `reconcile-site-edits` skill
@@ -287,6 +287,75 @@ confirmation. It drafts no claims - evidence earns those later through `process-
 
 **Orchestrates:** `fha process` (via the inbox hand-off to `process-source`), `fha find` for name
 resolution, plain writes into `notes/questions.md` and `notes/research/` - no new verb.
+
+---
+
+## Layer I8 - The image-only gap (Milestone I8 - authored 2026-08-16, issue #46)
+
+An image-only source contributes no text to the archive, so `fha find --text` searches only what an
+earlier pass wrote into a claim value while looking exactly like a search of the evidence. The core
+half of the answer is detection and is built in `tools/` (lint **W124**; the coverage note `fha find
+--text` prints under every result, hit or miss; `role: transcript` companions loaded into
+`transcripts_fts`). The half that cannot be deterministic - somebody reads the pictures - is this
+layer. Design: TOOLING_INTERFACE.md §2.6.
+
+### MI8.1 - `transcribe-source` skill
+
+**Status: authored** (`.claude/skills/transcribe-source/SKILL.md` + `GAP.md`), with the mechanically
+checkable half of the SKILL.md pinned by [`tests/test_transcribe_source.py`](tests/test_transcribe_source.py):
+every `fha` verb the prose names exists in the CLI, the documented `--more` example really produces
+the filename it shows when run through `process.attach_more`'s naming rule, the skill's
+"image-only" definition is `_lib.file_entry_carries_text` rather than a second hand-written copy of
+it, and the marker contract's four states plus the placement rule are executed rather than read for
+keywords - including the counter-example that a top-of-file marker leaks the whole unreviewed
+transcript through `_lib.strip_unaccepted_drafts` while the documented end-of-file placement
+withholds all of it. The behavioral session check against `example-archive` is pending like every
+other layer, but the pipeline was run end to end on a scratch copy: W124 fires on an image-only
+source with an accepted claim, `fha process --more <file> transcript` files `{stem}.md` as
+`{stem}-transcript_{S-id}.md`, `fha index` puts it in `transcripts_fts`, `fha find --text` then
+returns a phrase that was unfindable before and its coverage count drops by one, and W124 clears.
+
+Reads an image-only source and writes out what it says as a `[Page N]`-labeled `role: transcript`
+companion in the original's pagination. `fha source extract` is tried first on any PDF so the model
+never re-reads text the file already holds. Two entry points: from `process-source` **between Stage
+A and Stage B** (see MI1.3's Stage A½ - the ordering rule is the win, and that skill is the only
+place it can be enforced), and standalone for backfill in confirmed batches of five sources or
+fewer, whose worklist is re-read from `fha lint` each time rather than carried in session memory.
+
+The skill **drafts and edits no claims**. Unclaimed facts hand off to `mine-transcript`; a reading
+that contradicts an existing claim - **including an `accepted` one** - becomes a `## Q:` block in
+`notes/questions.md`, never a silent correction. That contradiction report is the single most
+valuable thing it produces: hand-transcribing three such sources found two accepted claims
+materially wrong, a time of death wrong in two claims and in a note quoting the page "verbatim", and
+a scribal error carried as a reading ambiguity.
+
+**The unreviewed-transcript marker contract** (the deliverable a `find --text` implementation reads
+against) reuses `<!-- AI-DRAFT … -->` / `<!-- AI-ACCEPTED … -->` rather than inventing a third
+convention - four states, *unreviewed* outranking *verified*, *damaged* failing closed to
+*unreviewed*, one marker as the last non-blank line of a heading-free body. Full statement:
+TOOLING_INTERFACE.md §2.6 and the skill's own "The marker" section.
+
+**Orchestrates:** `fha find`, `fha source extract`, `fha process --more … transcript`, `fha index`,
+`fha source note`, `fha lint` (W124 as its own worklist and done-gate) - no new verb.
+
+**One gap, blocked not enacted** (`_STANDARD.md` §6): nothing flips the marker. `fha confirm draft`
+takes a `<P-id>` and edits a person profile only, and a skill never hand-edits a marker, so every AI
+transcript stays *unreviewed* - true, if incomplete. The wanted verb is recorded in
+[`transcribe-source/GAP.md`](.claude/skills/transcribe-source/GAP.md); no interim enactment is
+blessed here, and blessing one would be an owner decision needing its own entry in this doc.
+
+```
+python -m unittest tests.test_transcribe_source -v   # documented commands, naming rule, marker contract
+```
+
+### MI8.2 - `process-source` Stage A½ extension
+
+**Status: authored** (folded into `.claude/skills/process-source/SKILL.md` as Stage A½, between
+Stage A and Stage B). The ordering rule from #46: when `fha process` has just filed an item whose
+files are all images, the transcript is written **before** any claim is drafted, so Stage B drafts
+from text somebody read out line by line rather than from a single pass over pictures. Stage B's
+existing "text layer first" advice for large PDFs stays where it is and now names the same
+`transcribe-source` path for the all-image case.
 
 ---
 

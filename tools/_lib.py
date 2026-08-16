@@ -59,7 +59,8 @@ import sys
 import tempfile
 import time
 from collections import deque
-from pathlib import Path
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -80,7 +81,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    SOURCE_TYPES              - controlled vocabulary for source_type field
 #    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
+#    TEXT_COMPANION_ROLES      - files: roles that hold a source's words as text
+#    SEARCHABLE_TEXT_SUFFIXES  - file extensions the text search actually reads
 #    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
+#
+#  Which sources a text search can see inside (#46)
+#    file_entry_carries_text   - one files: entry -> is its content searchable text?
+#    files_carry_searchable_text - a source's files: block -> any text at all?
 #
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
@@ -643,6 +650,25 @@ PHOTO_EXTENSIONS: frozenset[str] = frozenset({
     '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.gif', '.heic', '.heif',
     '.cr2', '.nef', '.dng', '.arw', '.orf', '.rw2',
 })
+
+# The `files:` roles whose companion holds a source's words as text: the
+# `transcript` role SPEC §12.1 lists among the filename suffixes, and the
+# `extracted-text` role `fha source extract` stamps on a PDF text-layer dump.
+# `transcription` is the older spelling - it is what the shipped example
+# archive's records say, and hand-written records use it too - and it means the
+# same thing, so it is accepted here rather than read as an unknown role. Being
+# fussy about the spelling would make a fully transcribed source count as one
+# nobody can read, which is the one mistake this vocabulary exists to prevent.
+TEXT_COMPANION_ROLES: frozenset[str] = frozenset({
+    'transcript', 'transcription', 'extracted-text',
+})
+
+# File extensions the archive's text search actually opens and reads. Anything
+# else - a scan, a photograph, a PDF, a recording - is opaque to it: a PDF's own
+# text layer is only searchable once `fha source extract` has dumped it into a
+# companion, and an image or a recording only once somebody has written out what
+# it says.
+SEARCHABLE_TEXT_SUFFIXES: frozenset[str] = frozenset({'.md', '.txt'})
 
 # Companion file kinds: generated view files that share a P-id with their profile
 # and live in the same folder.  Enumerated here so that parse_filename (kind
@@ -3507,6 +3533,46 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
             except OSError:
                 pass
     return found
+
+
+# ── Which sources a text search can see inside (#46) ─────────────────────────
+
+def file_entry_carries_text(role: str, path: str) -> bool:
+    """Does one `files:` entry put the source's words into the archive as text?
+
+    Two ways it can, and they are the only two: the entry is tagged with a role
+    that means "this file is what the evidence says" (`transcript`,
+    `transcription`, `extracted-text`), or the file is itself a plain-text file
+    the search reads anyway (a `.md` or `.txt` attached with no role at all).
+
+    Everything else - a scan, a photograph, a PDF, a recording - holds its words
+    in a form no text search can read. That is true of a PDF with a perfectly
+    good text layer, too, until `fha source extract` dumps it into a companion:
+    the search opens `.md` and `.txt` files and nothing else.
+
+    The role is what decides, not the extension, because a role-tagged companion
+    is a promise about the file's content that outranks any guess from its name.
+    """
+    if str(role or '').strip().lower() in TEXT_COMPANION_ROLES:
+        return True
+    suffix = PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
+    return suffix in SEARCHABLE_TEXT_SUFFIXES
+
+
+def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool:
+    """True when at least one of a source's files holds text a search can read.
+
+    `file_entries` is an iterable of `(role, path)` pairs - the shape both
+    callers already have: `fha lint` reads them straight off a record's `files:`
+    frontmatter, `fha find` reads them out of the index's `source_files` table.
+    Sharing the predicate is what keeps lint's warning and find's coverage note
+    counting the same sources; two hand-written copies of this rule would drift
+    on the first new role.
+
+    A source with no files at all is not "unreadable" - there is nothing to
+    read - so callers test emptiness separately rather than folding it in here.
+    """
+    return any(file_entry_carries_text(role, path) for role, path in file_entries)
 
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────

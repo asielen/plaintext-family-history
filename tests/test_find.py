@@ -1662,5 +1662,119 @@ class ScanFallbackCoverageTests(unittest.TestCase):
         self.assertIn('people/stubs', err)
 
 
+# Two valid Crockford S-ids (SPEC §10) for the coverage fixtures below.
+_MUTE_SID = 's-2h4k6m8p0r'      # a scan: nothing of it is in the archive as text
+_SPOKEN_SID = 's-3j5n7q9s1t'    # the same evidence, typed out beside the original
+
+
+class TextSearchCoverageNoteTests(unittest.TestCase):
+    """A text search must say how much of the archive it could actually read.
+
+    A source whose files are all scans, photographs or PDFs puts nothing into
+    the archive as text. Search it and you get nothing back - which looks
+    exactly like searching it and finding nothing, and that is how a null
+    result gets read as a fact about the family rather than a fact about the
+    corpus. It has already cost a person her surname: the name was searched
+    for, found only in one claim's value, judged invented, and struck, while it
+    sat in plain handwriting on a 22-page image-only scan (#46).
+
+    The note therefore prints on a HIT as readily as on a miss. Three results
+    drawn from a corpus half of which nobody could read are as misleading as
+    none, and worse in practice, because hits feel like confirmation."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+        _add_source(self.conn, _MUTE_SID, 'Hand-drawn family chart')
+        self._add_file(_MUTE_SID, 'documents/charts/chart_S-2h4k6m8p0r.pdf', 'page-1')
+        _add_source(self.conn, _SPOKEN_SID, 'Farm interview')
+        self._add_file(
+            _SPOKEN_SID,
+            'documents/interviews/farm-transcript_S-3j5n7q9s1t.md', 'transcript')
+        self.conn.execute(
+            'INSERT INTO transcripts_fts(source_id, path, content) VALUES (?,?,?)',
+            (_SPOKEN_SID, 'documents/interviews/farm-transcript_S-3j5n7q9s1t.md',
+             'Rose Harkness kept the west field.'))
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _add_file(self, sid: str, path: str, role: str, exists: int = 1) -> None:
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, derived, '
+            'exists_on_disk, in_inventory) VALUES (?,?,?,0,?,1)',
+            (sid, path, role, exists))
+
+    def _search(self, query: str, *, indexed: bool = True):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = find._find_text(
+                query, self.archive_root, {}, self.conn if indexed else None)
+        return code, buf.getvalue()
+
+    def test_a_miss_names_the_sources_it_could_not_read(self) -> None:
+        code, out = self._search('Harkness-and-nobody-else')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('No results', out)
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+        self.assertIn('could not look everywhere', out)
+
+    def test_a_hit_carries_the_same_caveat(self) -> None:
+        # The general case, not just the null one: a search that returned
+        # something out of a corpus it could only half read is exactly as
+        # misleading as one that returned nothing.
+        code, out = self._search('Harkness')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('Found 1 result(s)', out)
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+        self.assertIn('not the whole picture', out)
+
+    def test_the_note_names_only_commands_that_exist(self) -> None:
+        # `fha source transcribe` does not exist. Naming it in shipped output
+        # would be a promise this program cannot keep, so the next steps are
+        # the extract verb (for a PDF with its own text layer) and reading the
+        # file. See the write-up in TOOLING §4a.
+        _, out = self._search('nothing-matches-this')
+        self.assertIn('fha source extract', out)
+        self.assertNotIn('fha source transcribe', out)
+
+    def test_an_archive_that_can_be_read_throughout_says_nothing(self) -> None:
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self.conn.execute('DELETE FROM sources WHERE id=?', (_MUTE_SID,))
+        self.conn.commit()
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
+
+    def test_a_promised_transcript_that_is_not_on_disk_is_not_text(self) -> None:
+        # A `files:` line naming a transcript nobody synced is exactly as
+        # unsearchable as no transcript at all, so it must not buy coverage.
+        self.conn.execute('DELETE FROM transcripts_fts')
+        self.conn.execute(
+            'UPDATE source_files SET exists_on_disk=0 WHERE source_id=?',
+            (_SPOKEN_SID,))
+        self.conn.commit()
+        _, out = self._search('anything')
+        self.assertIn('no searchable text for 2 of its 2 sources', out)
+
+    def test_a_source_with_no_files_is_not_counted_as_unreadable(self) -> None:
+        # An online record with nothing attached has no evidence to transcribe;
+        # counting it would inflate the number and teach the reader to ignore it.
+        _add_source(self.conn, 's-4k6m8p0r2t', 'A citation with no attachment')
+        self.conn.commit()
+        _, out = self._search('anything')
+        self.assertIn('no searchable text for 1 of its 3 sources', out)
+
+    def test_without_an_index_the_question_is_declared_unanswered(self) -> None:
+        # Silence on coverage is the failure mode; a scan-only search reads even
+        # less than an indexed one, so it must not imply it read everything.
+        _, out = self._search('anything', indexed=False)
+        self.assertIn('could not check which sources have no searchable text', out)
+        self.assertIn('fha index', out)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1537,5 +1537,98 @@ class UnreadableFolderBuildTests(unittest.TestCase):
         self.assertFalse(any(str(self.root) in t for t in texts), texts)
 
 
+_TRANSCRIPT_SID = 'S-6b6b6b6b6b'
+_TRANSCRIPT_SOURCE = '''---
+id: {sid}
+title: Hand-drawn Harkness family chart
+source_type: other
+files:
+  - file: documents/charts/harkness-chart_{low}.jpg
+    role: front
+  - file: documents/charts/harkness-chart-transcript_{sid}.md
+    role: transcript
+---
+
+## Notes
+Twenty-two pages of scan, and one page of somebody's patience.
+'''
+_TRANSCRIPT_TEXT = '''# Transcript - hand-drawn family chart [{sid}]
+
+Rose Harkness, married 1871, mother of the bride.
+'''
+
+
+class TranscriptCompanionIndexingTests(unittest.TestCase):
+    """A `role: transcript` companion is text about the evidence exactly as an
+    `extracted-text` dump is, and must reach transcripts_fts the same way (#46).
+
+    Until it did, an archive could hold a full, careful transcript of a scan and
+    still answer `fha find --text` as though the scan were mute - the index
+    loaded only `fha source extract`'s own dumps, so every transcript written by
+    hand, by the transcribe-audio skill, or by anyone reading a picture and
+    typing it out stayed outside the searchable surface. Both index paths are
+    checked, because a contract honoured by the full rebuild and not by the
+    incremental upsert is a contract that fails in ordinary use."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        low = _TRANSCRIPT_SID.lower()
+        _write(self.root / 'sources' / 'other' / f'harkness-chart_{low}.md',
+               _TRANSCRIPT_SOURCE.format(sid=_TRANSCRIPT_SID, low=low))
+        _write(self.root / 'documents' / 'charts'
+               / f'harkness-chart-transcript_{_TRANSCRIPT_SID}.md',
+               _TRANSCRIPT_TEXT.format(sid=_TRANSCRIPT_SID))
+        # The scan itself: never read by the indexer, present so the source
+        # looks like the real thing (an image plus one page of typing).
+        _write(self.root / 'documents' / 'charts' / f'harkness-chart_{low}.jpg',
+               'not really a jpeg')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _rows(self) -> list:
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return sorted(tuple(r) for r in conn.execute(
+                'SELECT source_id, path FROM transcripts_fts'))
+        finally:
+            conn.close()
+
+    def test_full_build_loads_the_transcript_companion(self) -> None:
+        index.build_index(self.root, {})
+        self.assertEqual(self._rows(), [(
+            's-6b6b6b6b6b',
+            f'documents/charts/harkness-chart-transcript_{_TRANSCRIPT_SID}.md')])
+
+    def test_upsert_matches_the_full_build(self) -> None:
+        index.build_index(self.root, {})
+        full = self._rows()
+        self.assertEqual(
+            index.upsert_source(self.root, {}, _TRANSCRIPT_SID.lower()), 'indexed')
+        self.assertEqual(self._rows(), full)
+
+    def test_the_name_on_the_chart_comes_back_from_a_text_search(self) -> None:
+        # The round trip the issue asks for: a name written only on a scan,
+        # typed out into a transcript companion, is returned by `fha find
+        # --text` - and by the JSON/workbench backend, which reads text hits
+        # from transcripts_fts alone and so had no other way to see it.
+        import find
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = find._find_text('Harkness', self.root, {}, conn)
+            out = buf.getvalue()
+            hits = find._ranked_search(conn, 'Harkness', ['text'], 20)
+        finally:
+            conn.close()
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('harkness-chart-transcript', out)
+        self.assertTrue(any('transcript' in h['detail'] for h in hits), hits)
+
+
 if __name__ == '__main__':
     unittest.main()
