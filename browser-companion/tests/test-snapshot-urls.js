@@ -38,18 +38,20 @@ function extractBlock(startMarker, endMarker) {
   return content.slice(from + startMarker.length, to);
 }
 
-// Both blocks are evaluated together: the rewrite helpers call absolutizeUrl.
+// Three blocks are evaluated together: the rewrite helpers call absolutizeUrl,
+// and the srcdoc pass re-uses the srcset parser the element sweep uses.
 const {
   absolutizeUrl, absolutizeCss,
   anchorBaseElement, disarmMetaPragma, disarmInlineHandlers,
   disarmSpeculativeLink, limitFrameNavigation, disarmNoscriptText,
-  disarmAttribute,
+  disarmAttribute, disarmSrcdocMarkup,
 } = new Function(
+  extractBlock('// FHA-SYNC-BEGIN srcset\n', '// FHA-SYNC-END srcset') +
   extractBlock('// FHA-SYNC-BEGIN snapshot-urls\n', '// FHA-SYNC-END snapshot-urls') +
   extractBlock('// FHA-SYNC-BEGIN snapshot-rewrites\n', '// FHA-SYNC-END snapshot-rewrites') +
   '\nreturn { absolutizeUrl, absolutizeCss, anchorBaseElement, disarmMetaPragma,' +
   ' disarmInlineHandlers, disarmSpeculativeLink, limitFrameNavigation,' +
-  ' disarmNoscriptText, disarmAttribute };'
+  ' disarmNoscriptText, disarmAttribute, disarmSrcdocMarkup };'
 )();
 
 // A stand-in for one cloned element. The rewrite helpers deliberately take a
@@ -318,6 +320,156 @@ test('speculative <link>s stop fetching, rendering ones are left alone', () => {
   }
 });
 
+// ── iframe srcdoc: the second document a snapshot carries ────────────────────
+//
+// `srcdoc` holds a whole document inside an ATTRIBUTE VALUE, so the script
+// sweep, the handler sweep and the URL sweep - all of which walk elements -
+// never see a line of it. Opening the saved file parses it fresh and runs it.
+
+test('a srcdoc <script> cannot execute from the saved snapshot', () => {
+  const out = disarmSrcdocMarkup(
+    '<p>Baptism, 1871</p><script>location="https://live.example.org/"</script>',
+    PAGE);
+  // Every <script> left in the markup carries a type no browser will run.
+  assert.ok(!/<script(?![^>]*type="text\/fha-disabled-script")/i.test(out), out);
+  assert.ok(out.includes('data-fha-disabled-type=""'), out);
+  // And the frame itself is denied the permission, so anything the pass above
+  // failed to recognise stays inert too.
+  const frame = el({ srcdoc: '<script>alert(1)<\/script>' });
+  limitFrameNavigation(frame);
+  assert.ok(!frame.getAttribute('sandbox').split(' ').includes('allow-scripts'),
+    frame.getAttribute('sandbox'));
+});
+
+test('a srcdoc inline handler is disarmed', () => {
+  const out = disarmSrcdocMarkup(
+    '<body onload="top.location=\'https://live.example.org/\'"><img src="a.gif" ' +
+    'onerror="fetch(\'https://track.example.org/\')"></body>', PAGE);
+  assert.ok(!/\son(load|error)\s*=/i.test(out), out);
+  assert.ok(out.includes('data-fha-disabled-onload='), out);
+  assert.ok(out.includes('data-fha-disabled-onerror='), out);
+});
+
+test('a disarmed srcdoc is still readable as evidence', () => {
+  // Disarm, not delete: the page said what it said, and a reader (or a grep)
+  // has to be able to see all of it in the saved file.
+  const srcdoc = '<h1>Marriage register</h1><script type="text/javascript">' +
+    'track("view")</script><p>Page 214</p>';
+  const out = disarmSrcdocMarkup(srcdoc, PAGE);
+  assert.ok(out.includes('<h1>Marriage register</h1>'), out);
+  assert.ok(out.includes('<p>Page 214</p>'), out);
+  assert.ok(out.includes('track("view")'), out);
+  // The author's own type is parked, not dropped.
+  assert.ok(out.includes('data-fha-disabled-type="text/javascript"'), out);
+});
+
+test('a srcdoc JSON data script is kept exactly as it was', () => {
+  // The snapshot deliberately keeps non-executable data scripts so the ingest
+  // recipe can still read JSON-LD out of the saved file.
+  const srcdoc = '<script type="application/ld+json">{"name":"Ann"}</script>';
+  assert.strictEqual(disarmSrcdocMarkup(srcdoc, PAGE), srcdoc);
+});
+
+test('a meta refresh inside srcdoc is disarmed, not armed', () => {
+  const out = disarmSrcdocMarkup(
+    '<meta http-equiv="refresh" content="0;url=/login"><p>Record</p>', PAGE);
+  assert.ok(!/\shttp-equiv\s*=/i.test(out), out);
+  assert.ok(out.includes('data-fha-disabled-http-equiv="refresh"'), out);
+  assert.ok(out.includes('0;url=/login'), out);
+});
+
+test('a captured CSP and a speculative link inside srcdoc are disarmed', () => {
+  const out = disarmSrcdocMarkup(
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'">' +
+    '<link rel="prerender" href="/next"><link rel="stylesheet" href="/s.css">', PAGE);
+  assert.ok(out.includes('data-fha-disabled-http-equiv="Content-Security-Policy"'), out);
+  assert.ok(out.includes('data-fha-disabled-rel="prerender"'), out);
+  assert.ok(out.includes('rel="stylesheet"'), out);
+});
+
+test('a ping beacon inside srcdoc does not reach the live server', () => {
+  const out = disarmSrcdocMarkup(
+    '<a href="/r/2" ping="https://track.example.org/p">next</a>', PAGE);
+  assert.ok(!/\sping\s*=/i.test(out), out);
+  assert.ok(out.includes('data-fha-disabled-ping="https://track.example.org/p"'), out);
+});
+
+test('relative references inside srcdoc are anchored to the live page', () => {
+  // Same file:// problem as the outer document: an about:srcdoc document
+  // inherits the PARENT's base URL, so opened from disk every one of these
+  // resolves into whatever folder the snapshot was saved in.
+  const out = disarmSrcdocMarkup(
+    '<img src="scan.jpg"><a href="../up.html">up</a>' +
+    '<img srcset="a.jpg 1x, b.jpg 2x">' +
+    '<div style="background:url(paper.png)"></div>' +
+    '<style>body{background:url(tile.png)}</style>', PAGE);
+  assert.ok(out.includes('src="https://records.example.org/collections/1880/scan.jpg"'), out);
+  assert.ok(out.includes('href="https://records.example.org/collections/up.html"'), out);
+  assert.ok(out.includes('https://records.example.org/collections/1880/a.jpg 1x'), out);
+  assert.ok(out.includes('url(https://records.example.org/collections/1880/paper.png)'), out);
+  assert.ok(out.includes('url(https://records.example.org/collections/1880/tile.png)'), out);
+});
+
+test('a <base> inside srcdoc is honoured once, not applied twice', () => {
+  const out = disarmSrcdocMarkup('<base href="records/"><img src="scan.jpg">', PAGE);
+  assert.ok(out.includes('href="https://records.example.org/collections/1880/records/"'), out);
+  assert.ok(out.includes('src="https://records.example.org/collections/1880/records/scan.jpg"'),
+    out);
+  assert.ok(!out.includes('/records/records/'), out);
+});
+
+test('an ampersand in a srcdoc URL survives one round trip', () => {
+  const out = disarmSrcdocMarkup('<img src="img.php?a=1&amp;b=2">', PAGE);
+  assert.ok(out.includes('src="https://records.example.org/collections/1880/img.php?a=1&amp;b=2"'),
+    out);
+});
+
+test('a srcdoc captured from disk leaks no local path', () => {
+  const out = disarmSrcdocMarkup(
+    '<base href="sub/"><img src="scan.jpg">',
+    'file:///home/someone/Documents/record.html');
+  assert.ok(!out.includes('file:'), out);
+  assert.ok(out.includes('href="sub/"'), out);
+  assert.ok(out.includes('src="scan.jpg"'), out);
+});
+
+test('srcdoc markup no rule touches comes back byte for byte', () => {
+  const plain = '<table class="record"><tr><td>Ann Hartley</td></tr></table>';
+  assert.strictEqual(disarmSrcdocMarkup(plain, PAGE), plain);
+  assert.strictEqual(disarmSrcdocMarkup('', PAGE), '');
+  assert.strictEqual(disarmSrcdocMarkup(null, PAGE), '');
+});
+
+test('an already-absolute srcdoc reference is not re-written for the sake of it', () => {
+  const plain = '<img src="https://cdn.example.net/a.png" class=thumb>';
+  assert.strictEqual(disarmSrcdocMarkup(plain, PAGE), plain);
+});
+
+test('disarming a srcdoc twice is the same as disarming it once', () => {
+  const srcdoc = '<script>go()</script><img src="scan.jpg" onerror="retry()">' +
+    '<meta http-equiv="refresh" content="0;url=/login">';
+  const once = disarmSrcdocMarkup(srcdoc, PAGE);
+  assert.strictEqual(disarmSrcdocMarkup(once, PAGE), once);
+});
+
+test('a frame nested inside srcdoc is sandboxed too, and deeper ones inherit', () => {
+  // The recursion bound: this pass gives the nested frame a sandbox and does not
+  // unescape its own srcdoc, because sandbox flags are inherited by every nested
+  // browsing context - nothing below a frame denied allow-scripts can run script.
+  const out = disarmSrcdocMarkup(
+    '<iframe src="https://viewer.example.org/1"></iframe>' +
+    '<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe>', PAGE);
+  const sandboxes = out.match(/sandbox="[^"]*"/g) || [];
+  assert.strictEqual(sandboxes.length, 2, out);
+  for (const sandbox of sandboxes) {
+    assert.ok(!sandbox.includes('allow-top-navigation'), sandbox);
+  }
+  assert.ok(!sandboxes[1].includes('allow-scripts'), sandboxes[1]);
+  assert.ok(sandboxes[0].includes('allow-scripts'), sandboxes[0]);
+  // The nested markup is left escaped and readable, not unescaped and re-run.
+  assert.ok(out.includes('srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"'), out);
+});
+
 test('a framed page cannot retarget the whole snapshot', () => {
   // The meta-refresh hazard one level down: a frame-busting `top.location = …`
   // takes the reader off the evidence just as effectively.
@@ -343,6 +495,26 @@ test("an author's own sandbox is kept, minus the one token that matters", () => 
   assert.strictEqual(locked.getAttribute('sandbox'), '');
 });
 
+test('script permission is withheld from a frame we carry the markup of', () => {
+  // A live `src` frame keeps allow-scripts - the framed thing is often the
+  // record viewer, and most viewers are a blank box without it. A `srcdoc`
+  // frame does not: that document is markup we captured and disarmed, so there
+  // is nothing legitimate left in it to run.
+  const inline = el({ srcdoc: '<p>Record</p>' });
+  limitFrameNavigation(inline);
+  assert.strictEqual(inline.getAttribute('sandbox'),
+    'allow-same-origin allow-forms allow-popups');
+
+  const live = el({ src: 'https://viewer.example.org/1' });
+  limitFrameNavigation(live);
+  assert.ok(live.getAttribute('sandbox').split(' ').includes('allow-scripts'));
+
+  // An author who granted it explicitly does not get it back either.
+  const declared = el({ srcdoc: '<p>Record</p>', sandbox: 'allow-scripts allow-forms' });
+  limitFrameNavigation(declared);
+  assert.strictEqual(declared.getAttribute('sandbox'), 'allow-forms');
+});
+
 test('a refresh hidden inside <noscript> is disarmed as well', () => {
   // With scripting on, a <noscript>'s contents are one raw text node, so no
   // element pass ever sees them - but they become live markup for a reader who
@@ -362,4 +534,20 @@ test('other <noscript> markup passes through byte for byte', () => {
   assert.strictEqual(disarmNoscriptText(plain), plain);
   assert.strictEqual(disarmNoscriptText(''), '');
   assert.strictEqual(disarmNoscriptText(null), '');
+});
+
+test('the rest of what a <noscript> can carry is disarmed as well', () => {
+  // Everything in here is live for a reader with scripting off - the audience
+  // most likely to open an archived file - and none of it waits to be asked.
+  const out = disarmNoscriptText(
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'">' +
+    '<link rel="prefetch" href="/next">' +
+    '<iframe src="https://viewer.example.org/1"></iframe>');
+  assert.ok(out.includes('data-fha-disabled-http-equiv="Content-Security-Policy"'), out);
+  assert.ok(out.includes('data-fha-disabled-rel="prefetch"'), out);
+  assert.ok(/sandbox="[^"]*"/.test(out), out);
+  assert.ok(!/allow-top-navigation/.test(out), out);
+  // Still an absolutize-free zone: a relative reference in here stays relative
+  // rather than becoming a working request to the live server.
+  assert.ok(out.includes('href="/next"'), out);
 });

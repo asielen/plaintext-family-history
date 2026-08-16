@@ -453,6 +453,24 @@ class SnapshotUrlRewriteTestCase(unittest.TestCase):
         for marker in ('imagesrcset', "'xlink:href'", 'http-equiv', 'absolutizeCss'):
             self.assertIn(marker, self.content, marker)
 
+    def test_markup_carried_inside_an_attribute_is_disarmed_too(self) -> None:
+        # An <iframe srcdoc="..."> carries a whole second document as an
+        # ATTRIBUTE STRING, so every DOM pass in the snapshot builder walks
+        # straight past it - the script removal, the handler disarm, the URL
+        # sweep, all of it. The frame sandbox then granted allow-scripts, which
+        # made that untouched markup live again in the saved file.
+        #
+        # This guard lives in the Python suite on purpose: CI installs no node
+        # (tests.yml says so outright), so the 100+ browser-companion node tests
+        # never run there. A structural pin here is the only thing standing
+        # between this gap and a silent return.
+        self.assertIn('disarmSrcdocMarkup(', self.content)
+        self.assertIn('iframe[srcdoc]', self.content)
+        # A frame whose markup we carry and have already disarmed gains nothing
+        # legitimate from script; a `src` frame often IS the record viewer and
+        # keeps it.
+        self.assertIn('frameSandboxValue(', self.content)
+
     def test_no_local_disk_path_can_enter_a_snapshot(self) -> None:
         # AGENTS.md privacy rule: a local absolute path must never reach a file
         # that lands in the archive. Capturing a page opened from disk would

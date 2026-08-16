@@ -296,6 +296,26 @@ recorded here (not silently) as proposed spec clarifications:
   cannot do one level down what the refresh would have done. Following a link or
   submitting a form is still the reader's own click, so `<a href>` and
   `<form action>` are left anchored.
+- **Markup hiding inside an attribute or a text node gets the same treatment.**
+  Every sweep above walks *elements*, and two places in a captured page hold
+  markup that never became one: an `<iframe srcdoc="…">` (a whole second
+  document stored in an attribute value, parsed and run the instant the snapshot
+  is opened) and a `<noscript>` (one raw text node while scripting is on, live
+  markup again for a reader who opens the file with JavaScript off). Both are
+  rewritten as strings: scripts keep their text but are given a type no browser
+  runs (`text/fha-disabled-script`, the author's own type parked alongside),
+  `on…` handlers, `ping` beacons, refreshes, captured CSPs and speculative
+  `<link>`s are disarmed exactly as above, and a nested `<iframe>` gets the same
+  sandbox. A `srcdoc` frame is additionally denied `allow-scripts` - its document
+  is markup we carry and have already disarmed, so there is nothing legitimate
+  left in it to run, and anything the string pass failed to recognise stays
+  inert. That sandbox binds every frame nested inside it at any depth (sandbox
+  flags are inherited and can only narrow), which is what bounds the rewrite to
+  one level of markup. `srcdoc` references are anchored like the outer
+  document's - an `about:srcdoc` document inherits the *parent's* base URL, so
+  left alone they would resolve into whatever folder the snapshot was opened
+  from - while `<noscript>` is left byte for byte, since absolutizing in there
+  would arm the tracking pixel those blocks most often carry.
 - **Print-to-PDF mode removed.** The old radio offering *Save as PDF* via
   drag-drop is gone: the single-file HTML snapshot supersedes it (§9's case-(b)
   default), and a real PDF still files fine through the "Yes, save the actual

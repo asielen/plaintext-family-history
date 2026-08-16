@@ -84,7 +84,7 @@ Then ask your AI assistant to **process the inbox**. It reads each captured
 page, files it as a source with its own record, and drafts what it thinks the
 page says - all of it marked as suggestions for you to accept or reject. You
 have the final word on every fact. The
-[everyday commands sheet](../../docs/CHEATSHEET.md) lists the rest of the
+[everyday commands sheet](../../CHEATSHEET.md) lists the rest of the
 commands; [when something looks wrong](../../docs/TROUBLESHOOTING.md) is where
 to turn if a step does not behave.
 

@@ -939,52 +939,395 @@
   }
 
   // What a framed page may still do inside a snapshot. Deliberately permissive
-  // except for the one power that matters here: no allow-top-navigation token,
-  // in any of its spellings.
+  // except for the two powers that matter here: no allow-top-navigation token,
+  // in any of its spellings, and no allow-scripts for a frame whose whole
+  // document travels with us inside its own `srcdoc` attribute.
   const FRAME_SANDBOX_DEFAULT = 'allow-scripts allow-same-origin allow-forms allow-popups';
   const TOP_NAVIGATION_TOKEN = /^allow-top-navigation/i;
+  const SCRIPTS_TOKEN = /^allow-scripts$/i;
 
   /**
-   * Stop a framed live page from steering the whole snapshot.
+   * The sandbox one preserved frame should carry.
    *
-   * An `<iframe src>` is absolutized like any other resource on purpose: the
-   * framed thing is often the record viewer itself, and a live copy the reader
-   * can still open beats a permanently blank box. What it must not keep is the
-   * power to replace the top-level document - a frame-busting script inside the
-   * framed page (`top.location = …`) does exactly what the meta refresh did, one
-   * level down, and the reader loses the evidence the same way. A sandbox with no
-   * allow-top-navigation token forbids that and still lets the frame render.
+   * `declared` is the author's own sandbox attribute (null when they wrote
+   * none). It is only ever pruned, never widened, so a page that had already
+   * locked its frames down stays locked down.
    *
-   * An author's own sandbox is kept and only pruned of that one token, so a page
-   * that had already locked its frames down stays locked down.
+   * allow-scripts SURVIVES for a frame pointing at a live page (`src`): the
+   * framed thing is often the record viewer itself and most viewers are a blank
+   * box without script, so a live copy the reader can still open is the honest
+   * outcome for something we cannot inline. It does NOT survive for a frame
+   * carrying `srcdoc`. That document is markup we captured and can disarm, the
+   * pass below does exactly that, and withholding the permission as well means
+   * anything the pass failed to recognise stays inert instead of running the
+   * moment the saved file is opened. Nothing legitimate is lost: a snapshot's
+   * inline frame has no script left to run.
+   *
+   * Both tokens also bind every frame nested inside this one, at any depth: a
+   * nested browsing context inherits its parent's sandbox flags and can only be
+   * more restrictive, never less. That inheritance is what bounds the srcdoc
+   * rewrite below to a single level of markup.
    */
-  function limitFrameNavigation(frame) {
-    const declared = frame.getAttribute('sandbox');
-    const tokens = (declared === null ? FRAME_SANDBOX_DEFAULT : declared)
+  function frameSandboxValue(declared, carriesSrcdoc) {
+    const tokens = (declared == null ? FRAME_SANDBOX_DEFAULT : String(declared))
       .trim().split(/\s+/).filter(Boolean);
-    frame.setAttribute(
-      'sandbox', tokens.filter((t) => !TOP_NAVIGATION_TOKEN.test(t)).join(' '));
+    return tokens
+      .filter((t) => !TOP_NAVIGATION_TOKEN.test(t))
+      .filter((t) => !(carriesSrcdoc && SCRIPTS_TOKEN.test(t)))
+      .join(' ');
   }
 
   /**
-   * Disarm meta refreshes hiding inside <noscript> markup.
+   * Stop a framed page from steering the whole snapshot, or running at all when
+   * we are the ones carrying its markup.
    *
-   * With scripting enabled - which it is in the tab being cloned - a <noscript>'s
-   * contents are never parsed into elements: they sit in the DOM as one raw text
-   * node, so every element-level pass here walks straight past them. That text
-   * becomes live markup again for exactly the reader most likely to open an
-   * archived file with JavaScript off, and the classic payload waiting there is
-   * `<meta http-equiv="refresh" content="0;url=/nojs">`, which bounces them off
-   * the evidence in the same way.
+   * An `<iframe src>` is absolutized like any other resource on purpose (see
+   * frameSandboxValue). What it must not keep is the power to replace the
+   * top-level document - a frame-busting script inside the framed page
+   * (`top.location = …`) does exactly what the meta refresh did, one level down,
+   * and the reader loses the evidence the same way.
+   */
+  function limitFrameNavigation(frame) {
+    frame.setAttribute('sandbox', frameSandboxValue(
+      frame.getAttribute('sandbox'), frame.hasAttribute('srcdoc')));
+  }
+
+  // ── markup that lives inside an attribute or a raw text node ────────────────
+  //
+  // Every pass above walks ELEMENTS. Two places in a captured page hold markup
+  // that never became an element in the tab we cloned, so no element pass ever
+  // sees it - and both become live markup again in the saved file:
+  //
+  //   • `<iframe srcdoc="…">` - a whole document stored in an attribute value.
+  //     It is parsed and rendered the instant the snapshot is opened, and it
+  //     brings its own <script>s, its own on* handlers and its own meta refresh
+  //     with it.
+  //   • `<noscript>` - with scripting on (which it is in the tab being cloned)
+  //     its contents sit in the DOM as one raw text node. That text is live
+  //     markup for exactly the reader most likely to open an archived file with
+  //     JavaScript off.
+  //
+  // Both are handled as STRING rewrites over the start tags, for the reason the
+  // <noscript> pass already gave: markup a pattern does not recognise passes
+  // through unharmed rather than garbled, and a tag nothing applies to comes
+  // back byte for byte. The tradeoff, stated plainly: a start tag written inside
+  // a comment or inside disabled script text is rewritten too, because a string
+  // scan cannot tell those apart. That costs a cosmetic edit in a place nothing
+  // renders; re-parsing and re-serializing the markup instead would rewrite
+  // every quote and entity in the whole fragment.
+
+  /** Script types the snapshot KEEPS (see the executable-script sweep below). */
+  const DATA_SCRIPT_TYPE = /(^|\/)(ld\+json|json)\b/i;
+
+  /** What an executable script's type becomes: unknown to the browser, plain to a reader. */
+  const INERT_SCRIPT_TYPE = 'text/fha-disabled-script';
+
+  // Every (tag, attribute) pair the snapshot anchors to the live page, shared by
+  // the element sweep in buildSingleFile and the srcdoc rewrite here so the two
+  // cannot drift. The judgement calls worth naming, so they are not re-litigated:
+  //   • `iframe`/`embed`/`object` DO fetch live content the moment the snapshot
+  //     opens. That is the honest outcome for something we cannot inline - a
+  //     framed record viewer the reader can still open beats a blank box - and
+  //     the powers that would cost the reader the evidence were removed by
+  //     limitFrameNavigation above.
+  //   • an autoplaying `video`/`audio` also reaches the network unasked, but it
+  //     is a resource the page carried and it takes nobody off the page, so the
+  //     src stays and `autoplay` is left as the author wrote it.
+  //   • a saved form that still posts somewhere posts to the live site, as it did
+  //     before; a relative action would post to the local folder. Nothing can
+  //     submit it on its own: the scripts are gone and the on* handlers with
+  //     them, so a submission is always the reader's own click.
+  // No pair appears twice in this list, so nothing is resolved twice.
+  const SNAPSHOT_URL_ATTRS = [
+    ['a', 'href'], ['area', 'href'], ['link', 'href'],
+    ['img', 'src'], ['source', 'src'], ['video', 'src'], ['audio', 'src'],
+    ['video', 'poster'], ['iframe', 'src'], ['embed', 'src'],
+    ['object', 'data'], ['track', 'src'], ['input', 'src'],
+    ['form', 'action'], ['button', 'formaction'], ['input', 'formaction'],
+  ];
+
+  /** The URL attributes of one tag name, for the string passes. */
+  function markupUrlAttrs(tagName) {
+    // SVG `<use>`/`<image>` take a plain href in SVG 2 and the legacy
+    // xlink:href everywhere else; both are usually a bare `#icon` that
+    // absolutizeUrl declines, so the in-document sprite keeps resolving.
+    if (tagName === 'use' || tagName === 'image') return ['href', 'xlink:href'];
+    const attrs = [];
+    for (const [tag, attr] of SNAPSHOT_URL_ATTRS) {
+      if (tag === tagName) attrs.push(attr);
+    }
+    return attrs;
+  }
+
+  // A start tag, with quoted attribute values allowed to contain `>`
+  // (`title="a > b"` is legal). Closing tags, comments and doctypes do not
+  // match - the name has to start with a letter.
+  const START_TAG = /<([a-zA-Z][^\s/>]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+
+  // Attribute name, then an optional value: double-quoted, single-quoted, or
+  // bare. Values are captured in SOURCE form, entities and all.
+  const START_TAG_ATTR = /([^\s=/>]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]*))?/g;
+
+  // A <style> element and its text, for the one rewrite that lives between tags
+  // rather than inside one.
+  const STYLE_BLOCK = /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi;
+
+  /** The five references that matter for reading a URL back out of markup. */
+  function decodeMarkupEntities(value) {
+    return String(value == null ? '' : value)
+      .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"').replace(/&#0*39;|&apos;/gi, "'")
+      .replace(/&amp;/gi, '&');
+  }
+
+  /**
+   * The inverse, for a value this pass computed rather than copied.
    *
-   * A string rewrite, kept narrow on purpose: rename the pragma attribute and
-   * leave everything else - the target included - byte for byte, so markup this
-   * pattern does not recognise passes through unharmed rather than garbled.
+   * Both quote characters are escaped, not just the one in use: a rewritten
+   * value is written back inside whichever quotes the author happened to
+   * choose, and a URL may legally carry an apostrophe.
+   */
+  function encodeMarkupAttr(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Split one start tag's attribute text into `{name, quote, value}` records.
+   *
+   * Values stay in source form - unescaping them would mean re-escaping every
+   * one on the way out, and the whole point of this pass is that untouched
+   * markup comes back untouched. Only a value this pass replaces is decoded (to
+   * resolve it) and re-encoded (to write it).
+   */
+  function parseStartTagAttrs(attrText) {
+    const attrs = [];
+    START_TAG_ATTR.lastIndex = 0;
+    let m;
+    while ((m = START_TAG_ATTR.exec(attrText)) !== null) {
+      const raw = m[2];
+      let quote = '';
+      let value = null;
+      if (raw !== undefined) {
+        const first = raw.charAt(0);
+        if (raw.length >= 2 && (first === '"' || first === "'") &&
+            raw.charAt(raw.length - 1) === first) {
+          quote = first;
+          value = raw.slice(1, -1);
+        } else {
+          value = raw;
+        }
+      }
+      attrs.push({ name: m[1], quote: quote, value: value });
+    }
+    return attrs;
+  }
+
+  /** Put a changed tag back together. Only ever called for tags a rule touched. */
+  function serializeStartTag(name, attrs, selfClosing) {
+    const rendered = attrs.map((a) => {
+      if (a.value === null) return a.name;
+      const quote = a.quote || '"';
+      return a.name + '=' + quote + a.value + quote;
+    });
+    return '<' + name + (rendered.length ? ' ' + rendered.join(' ') : '') +
+      (selfClosing ? ' /' : '') + '>';
+  }
+
+  /**
+   * Run `rewriteTag(tagName, attrs)` over every start tag in a markup string.
+   *
+   * The callback mutates the attribute list in place and returns true when it
+   * changed something; only then is the tag rebuilt. A tag no rule touched is
+   * returned as the exact substring that was matched.
+   */
+  function rewriteStartTags(markup, rewriteTag) {
+    return String(markup == null ? '' : markup).replace(
+      START_TAG,
+      (whole, name, attrText) => {
+        const attrs = parseStartTagAttrs(attrText);
+        const selfClosing = /\/\s*$/.test(attrText);
+        return rewriteTag(name.toLowerCase(), attrs)
+          ? serializeStartTag(name, attrs, selfClosing)
+          : whole;
+      });
+  }
+
+  /**
+   * The neutralize half of the string passes: everything that would act on the
+   * reader's behalf, disarmed in the same `data-fha-disabled-` idiom the element
+   * passes use, so the value stays visible to a reader and to grep.
+   *
+   * Handled here, one per element pass above: inline `on*` handlers and `ping`
+   * beacons; an executable `<script>`, which keeps its text but is given a type
+   * no browser will run (the element pass can delete the node outright, a string
+   * pass cannot do that without dropping evidence); a `<meta http-equiv>` that
+   * refreshes or carries a captured CSP; a speculative `<link rel>`; and a
+   * nested `<iframe>`, which gets the same sandbox its outer twin does.
+   */
+  function disarmMarkupTag(tagName, attrs) {
+    let changed = false;
+    for (const attr of attrs) {
+      const lower = attr.name.toLowerCase();
+      if (/^on[a-z]{3,}$/.test(lower) || lower === 'ping') {
+        attr.name = DISABLED_ATTR + attr.name;
+        changed = true;
+      }
+    }
+    const find = (name) => attrs.find((a) => a.name.toLowerCase() === name);
+
+    if (tagName === 'script') {
+      const type = find('type');
+      const declared = type && type.value ? type.value.trim().toLowerCase() : '';
+      // The second test keeps a second pass over already-disarmed markup from
+      // stacking a second type onto the same tag.
+      if (!DATA_SCRIPT_TYPE.test(declared) && declared !== INERT_SCRIPT_TYPE) {
+        // A script with no type, or a JavaScript type, executes. Park whatever
+        // the author wrote and hand the browser a type it does not know.
+        if (type) type.name = DISABLED_ATTR + type.name;
+        else attrs.push({ name: DISABLED_ATTR + 'type', quote: '"', value: '' });
+        attrs.push({ name: 'type', quote: '"', value: INERT_SCRIPT_TYPE });
+        changed = true;
+      }
+    }
+
+    if (tagName === 'meta') {
+      const equiv = find('http-equiv');
+      const pragma = equiv && equiv.value ? equiv.value.trim().toLowerCase() : '';
+      if (DISARM_META_PRAGMA.has(pragma)) {
+        equiv.name = DISABLED_ATTR + equiv.name;
+        changed = true;
+      }
+    }
+
+    if (tagName === 'link') {
+      const rel = find('rel');
+      const tokens = (rel && rel.value ? rel.value : '').trim().split(/\s+/).filter(Boolean);
+      if (tokens.length && tokens.every((t) => DISARM_LINK_REL.test(t))) {
+        rel.name = DISABLED_ATTR + rel.name;
+        changed = true;
+      }
+    }
+
+    if (tagName === 'iframe') {
+      const sandbox = find('sandbox');
+      const value = frameSandboxValue(
+        sandbox ? sandbox.value : null, Boolean(find('srcdoc')));
+      if (sandbox) {
+        if (sandbox.value !== value) { sandbox.value = value; changed = true; }
+      } else {
+        attrs.push({ name: 'sandbox', quote: '"', value: value });
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * The absolutize half: anchor a tag's URL attributes to the live page.
+   *
+   * `base` is the base URL the framed document actually resolves against - the
+   * parent document's, which is what an `about:srcdoc` document inherits, unless
+   * the markup declares a <base> of its own. Left relative, every one of these
+   * resolves into whatever folder the snapshot was opened from and the frame
+   * renders as broken boxes.
+   */
+  function anchorMarkupTagUrls(tagName, attrs, base) {
+    let changed = false;
+    const urlAttrs = markupUrlAttrs(tagName);
+    for (const attr of attrs) {
+      if (attr.value === null) continue;
+      const lower = attr.name.toLowerCase();
+      const value = decodeMarkupEntities(attr.value);
+      let next = null;
+      if (tagName === 'base' && lower === 'href') {
+        // The effective base is already resolved (see srcdocBase); resolving the
+        // author's relative href against it again would apply the same path
+        // twice, exactly as the outer document's <base> once did.
+        next = absolutizeUrl(base, base);
+      } else if (urlAttrs.indexOf(lower) !== -1) {
+        next = absolutizeUrl(value, base);
+      } else if (lower === 'srcset' || lower === 'imagesrcset') {
+        next = rewriteSrcset(value, (u) => absolutizeUrl(u, base));
+      } else if (lower === 'style' && value.indexOf('url(') !== -1) {
+        next = absolutizeCss(value, base);
+      }
+      // An already-absolute reference resolves to itself, and a tag nothing
+      // actually moved is not a tag worth re-serializing.
+      const encoded = next === null ? null : encodeMarkupAttr(next);
+      if (encoded !== null && encoded !== attr.value) {
+        attr.value = encoded;
+        attr.quote = attr.quote || '"';
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * The base URL a srcdoc document resolves against.
+   *
+   * An `about:srcdoc` document inherits its parent's base URL, so `pageBase` is
+   * the answer unless the stored markup declares a <base> of its own - in which
+   * case that, resolved against the page, is what the frame used. A base this
+   * pass cannot resolve (or one that lands on `file:`) falls back to the page.
+   */
+  function srcdocBase(markup, pageBase) {
+    const m = markup.match(
+      /<base\b[^>]*?\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    if (!m) return pageBase;
+    const raw = m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]);
+    return absolutizeUrl(decodeMarkupEntities(raw), pageBase) || pageBase;
+  }
+
+  /**
+   * Disarm and anchor the document a page stored in an `<iframe srcdoc="…">`.
+   *
+   * This is the one place a snapshot carries a second whole document, and until
+   * this pass existed it was the one document nothing sanitized: the script
+   * sweep, the handler sweep and the URL sweep all walk elements, and srcdoc is
+   * an attribute VALUE. Opening the saved file parsed it fresh and ran whatever
+   * the page had put in there.
+   *
+   * Bounded to one level on purpose. A srcdoc may itself contain an
+   * `<iframe srcdoc="…">`, whose markup arrives here doubly escaped; this pass
+   * gives that nested frame a sandbox but does not unescape and recurse into it.
+   * It does not need to: sandbox flags are inherited by every nested browsing
+   * context, so no descendant of a frame we denied allow-scripts can run script
+   * either, however deep the nesting goes. What a deeper level can still do is
+   * fetch - an inner box loading a live URL - which is the same honest outcome
+   * the snapshot already accepts for `<iframe src>`.
+   */
+  function disarmSrcdocMarkup(markup, pageBase) {
+    const text = String(markup == null ? '' : markup);
+    if (!text) return text;
+    const base = srcdocBase(text, pageBase);
+    const anchoredCss = text.replace(
+      STYLE_BLOCK, (whole, open, css, close) => open + absolutizeCss(css, base) + close);
+    return rewriteStartTags(anchoredCss, (tagName, attrs) => {
+      const disarmed = disarmMarkupTag(tagName, attrs);
+      const anchored = anchorMarkupTagUrls(tagName, attrs, base);
+      return disarmed || anchored;
+    });
+  }
+
+  /**
+   * Disarm the markup hiding inside a <noscript>.
+   *
+   * The classic payload is `<meta http-equiv="refresh" content="0;url=/nojs">`,
+   * which bounces a JavaScript-off reader straight off the evidence; a captured
+   * CSP blanks the page for them the same way, a speculative <link> fetches on
+   * open, and a bare `<iframe>` in there can retarget the whole window because
+   * nothing sandboxed it. All of those fire without being asked, so all of them
+   * are disarmed.
+   *
+   * URLs in here are deliberately NOT anchored. A <noscript> is live only for a
+   * reader with scripting off, its contents are held byte for byte, and
+   * absolutizing a relative reference in there would arm the one thing these
+   * blocks most often carry: a tracking pixel aimed at the live server.
    */
   function disarmNoscriptText(text) {
-    return String(text == null ? '' : text).replace(
-      /(<meta\b[^>]*?\s)http-equiv(\s*=\s*(["']?)refresh\3)/gi,
-      '$1' + DISABLED_ATTR + 'http-equiv$2');
+    return rewriteStartTags(text, disarmMarkupTag);
   }
   // FHA-SYNC-END snapshot-rewrites
 
@@ -1022,11 +1365,12 @@
     // This is also the widest neutralize in the file, and most of what the rule
     // at the top of this section worries about dies here: a `location =` redirect,
     // a service-worker registration, an analytics beacon, a form that submits
-    // itself. What survives it is inline `on*` handlers, disarmed below.
-    const DATA_SCRIPT = /(^|\/)(ld\+json|json)\b/i;
+    // itself. What survives it is inline `on*` handlers, disarmed below - and
+    // the markup a page keeps inside an `<iframe srcdoc>` attribute, which no
+    // element pass can reach and which disarmSrcdocMarkup handles below.
     clone.querySelectorAll('script').forEach((s) => {
       const type = (s.getAttribute('type') || '').trim().toLowerCase();
-      if (!DATA_SCRIPT.test(type)) s.remove();
+      if (!DATA_SCRIPT_TYPE.test(type)) s.remove();
     });
 
     // Anchor the snapshot's remaining RELATIVE references (links, images the
@@ -1079,34 +1423,22 @@
     for (const frame of Array.from(clone.querySelectorAll('iframe'))) {
       limitFrameNavigation(frame);
     }
+    // The two places markup hides from every pass above: an attribute value and
+    // a raw text node. Both are live markup again in the saved file, so both get
+    // the same treatment as a string (see the section on them above).
+    for (const frame of Array.from(clone.querySelectorAll('iframe[srcdoc]'))) {
+      frame.setAttribute(
+        'srcdoc', disarmSrcdocMarkup(frame.getAttribute('srcdoc'), pageBase));
+    }
     for (const noscript of Array.from(clone.querySelectorAll('noscript'))) {
       noscript.textContent = disarmNoscriptText(noscript.textContent);
     }
 
     // Absolutize territory, every one of them: a reference the saved page needs
     // in order to show what it showed, or one the reader may choose to follow.
-    // The two judgement calls worth naming, so they are not re-litigated:
-    //   • `iframe`/`embed`/`object` DO fetch live content the moment the snapshot
-    //     opens. That is the honest outcome for something we cannot inline - a
-    //     framed record viewer the reader can still open beats a blank box - and
-    //     the one power that would cost the reader the evidence, retargeting the
-    //     top window, was removed by limitFrameNavigation above.
-    //   • an autoplaying `video`/`audio` also reaches the network unasked, but it
-    //     is a resource the page carried and it takes nobody off the page, so the
-    //     src stays and `autoplay` is left as the author wrote it.
-    // No pair appears twice in this list, so nothing is resolved twice.
-    const URL_ATTRS = [
-      ['a', 'href'], ['area', 'href'], ['link', 'href'],
-      ['img', 'src'], ['source', 'src'], ['video', 'src'], ['audio', 'src'],
-      ['video', 'poster'], ['iframe', 'src'], ['embed', 'src'],
-      ['object', 'data'], ['track', 'src'], ['input', 'src'],
-      // A saved form that still posts somewhere sends it to the live site, as
-      // it did before; a relative action would post to the local folder. Nothing
-      // can submit it on its own: the scripts are gone and the on* handlers with
-      // them, so a submission is always the reader's own click.
-      ['form', 'action'], ['button', 'formaction'], ['input', 'formaction'],
-    ];
-    for (const [tag, attr] of URL_ATTRS) {
+    // The list and the judgement calls behind it sit on SNAPSHOT_URL_ATTRS
+    // above, which the srcdoc pass reads too so the two cannot drift.
+    for (const [tag, attr] of SNAPSHOT_URL_ATTRS) {
       for (const el of Array.from(clone.querySelectorAll(tag + '[' + attr + ']'))) {
         const abs = absolutize(el.getAttribute(attr));
         if (abs) el.setAttribute(attr, abs);
