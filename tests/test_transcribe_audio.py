@@ -33,9 +33,22 @@ What can go wrong is everything around it, so that is what these tests pin:
      the skill shows, checked against `process.attach_more`'s own naming rule
      rather than against a copy of it.
 
+  4. THE AUDIT NEVER REWRITES AN ACCEPTED CLAIM ON ITS OWN AUTHORITY. Step 6
+     reads a whisper pass against claims a human already accepted, so it is the
+     one place in this skill where prose can authorise a write to a `reviewed:`
+     fact. `fha claim <C-id> --value …` edits the value and leaves `reviewed:`
+     untouched, which turns a machine's new reading of the audio into a claim
+     asserting that a human accepted it on a date he was looking at different
+     words. `AcceptedClaimSafetyTestCase` pins both halves of the rule against
+     the real `tools/claim.py` parser and against a real edit on a fixture: a
+     correction is proposed as an exact before/after and applied only on an
+     explicit per-claim yes, and applying it re-stamps `reviewed:` by passing
+     `--status` in the same call.
+
 Run: python -m unittest tests.test_transcribe_audio -v   (from the repo root)
 """
 
+import argparse
 import importlib.util
 import io
 import contextlib
@@ -49,6 +62,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import claim  # noqa: E402  (the real CLI the audit step drives)
 import process  # noqa: E402  (path set above, as every tool test here does)
 
 SKILL_DIR = ROOT / '.claude' / 'skills' / 'transcribe-audio'
@@ -724,6 +738,192 @@ class SkillDocTestCase(unittest.TestCase):
         for path in attaches:
             self.assertTrue(path.startswith('documents/'),
                             f'--more {path} is not under the documents root; attach_more refuses it')
+
+
+class AcceptedClaimSafetyTestCase(unittest.TestCase):
+    """Step 6's audit must not rewrite an accepted claim under the old signature.
+
+    `reviewed:` records the day a HUMAN looked at a claim's content. `fha claim
+    <C-id> --value …` on its own edits the value and leaves `reviewed:` exactly
+    where it was (verified against the real CLI in
+    `test_a_value_only_edit_really_does_leave_the_old_reviewed_date`), so a
+    machine-decided correction applied that way produces a claim asserting "a
+    human accepted this on <old date>" about wording no human has ever seen -
+    an incorrect claim wearing a human's signature. Every test here pins one
+    half of the fix: the correction is the human's decision (proposed as an
+    exact before/after, applied only on an explicit yes), and applying it
+    re-stamps `reviewed:` so the date matches the decision it records.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = SKILL_MD.read_text(encoding='utf-8')
+        cls.lowered = cls.text.lower()
+        # Two different things, and the difference matters. `runnable` is what
+        # the skill tells the agent to type - fenced blocks only. `mentioned`
+        # includes inline prose, where the skill also has to NAME the bare
+        # `--value` form in order to forbid it; scanning prose for a "missing
+        # --status" would flag that prohibition as the very defect it prevents.
+        fenced = '\n'.join(re.findall(r'```[a-z]*\n(.*?)```', cls.text, re.S))
+        cls.runnable = [m.group(0).strip() for m in
+                        re.finditer(r'fha claim [^\n`]+', re.sub(r'\\\n\s*', ' ', fenced))]
+        cls.mentioned = [m.group(0).strip() for m in
+                         re.finditer(r'fha claim [^\n`]+', re.sub(r'\\\n\s*', ' ', cls.text))]
+
+    def test_the_skill_shows_at_least_one_correction_command(self):
+        """Guard against the other tests passing because the prose went silent."""
+        self.assertTrue(self.runnable, 'SKILL.md no longer shows any runnable `fha claim` command')
+
+    def test_no_field_edit_is_shown_as_runnable_without_a_reviewed_restamp(self):
+        """A field edit on an accepted claim must carry `--status` (which re-stamps).
+
+        `--reviewed` only takes effect together with `--status` (claim.py
+        `_add_arguments`), so `--status accepted` in the same call is the ONLY
+        way `fha claim` writes a fresh review date beside a changed value.
+        """
+        field_flags = ('--value', '--date', '--type', '--place', '--place-text',
+                       '--persons', '--confidence')
+        for cmd in self.runnable:
+            if cmd.startswith('fha claim new'):
+                continue  # a brand-new claim has no prior signature to preserve
+            if any(f in cmd for f in field_flags):
+                self.assertIn(
+                    '--status', cmd,
+                    f'SKILL.md tells the agent to run a field edit with no --status '
+                    f're-stamp: {cmd!r} - the corrected value would keep the old '
+                    'reviewed: date, signing wording no human has read')
+
+    def test_the_skill_names_the_bare_value_form_as_the_wrong_command(self):
+        """Forbidding it explicitly is what stops the next author re-adding it."""
+        self.assertRegex(
+            self.lowered,
+            r'`fha claim <c-id> --value[^`]*`\*{0,2} on its own is the wrong command',
+            'SKILL.md never says plainly that a bare `fha claim <C-id> --value …` is '
+            'the wrong command on an accepted claim')
+
+    def test_every_documented_claim_flag_exists_in_the_real_cli(self):
+        """Doc-vs-code: no invented flag (e.g. a `--notes` no verb provides)."""
+        real = set()
+        parser = argparse.ArgumentParser()
+        claim._add_arguments(parser)
+        for action in parser._actions:
+            real.update(action.option_strings)
+        for cmd in self.mentioned:
+            if cmd.startswith('fha claim new'):
+                continue  # `claim new` has its own parser, checked below
+            for flag in re.findall(r'(--[a-z][a-z-]*)', cmd):
+                self.assertIn(flag, real,
+                              f'SKILL.md shows `fha claim … {flag}`, which the CLI '
+                              f'does not accept: {cmd!r}')
+
+    def test_every_documented_claim_new_flag_exists_in_the_real_cli(self):
+        real = set()
+        parser = argparse.ArgumentParser()
+        claim._add_new_arguments(parser)
+        for action in parser._actions:
+            real.update(action.option_strings)
+        for cmd in self.mentioned:
+            if not cmd.startswith('fha claim new'):
+                continue
+            for flag in re.findall(r'(--[a-z][a-z-]*)', cmd):
+                self.assertIn(flag, real,
+                              f'SKILL.md shows `fha claim new … {flag}`, which the CLI '
+                              f'does not accept: {cmd!r}')
+
+    def test_the_skill_does_not_call_a_preserved_reviewed_date_correct(self):
+        """The round-2 framing this fix retires, in the words it was written in."""
+        for phrase in (
+            "without touching `status:` or `reviewed:`",
+            "which is right — the human's original acceptance stands",
+            "the human's original acceptance stands",
+            'status and `reviewed:` untouched',
+        ):
+            self.assertNotIn(phrase.lower(), self.lowered,
+                             f'SKILL.md still presents a stale reviewed: date as correct: {phrase!r}')
+
+    def test_the_audit_requires_an_explicit_yes_per_correction(self):
+        """Agreeing to RUN the audit is not agreeing to each correction it finds."""
+        self.assertIn('before/after', self.lowered,
+                      'the audit must show each correction as an exact before/after')
+        self.assertRegex(
+            self.lowered,
+            r'(agreeing to run the audit|running the audit) is not',
+            'the audit must say that a yes to the audit is not a yes to its corrections')
+
+    def test_the_skill_never_tells_the_agent_to_decide_a_correction(self):
+        """Agent-decides phrasings, which the archive reserves for the human."""
+        for phrase in ('apply a value fix with',
+                       'correct the claim and',
+                       'fix the claim and move on'):
+            self.assertNotIn(phrase, self.lowered,
+                             f'SKILL.md still has the agent deciding a correction: {phrase!r}')
+
+    def test_the_guardrails_name_every_kind_of_write_the_body_performs(self):
+        """A guardrail list that omits the claim writes contradicts step 6."""
+        guardrails = self.lowered.split('## guardrails', 1)
+        self.assertEqual(len(guardrails), 2, 'SKILL.md has no ## Guardrails section')
+        guardrails = guardrails[1]
+        for token in ('fha claim', 'accepted', 'reviewed:'):
+            self.assertIn(token, guardrails,
+                          f'the Guardrails section never mentions {token!r}, though step 6 '
+                          'writes to accepted claims')
+
+    def test_a_missing_verb_is_recorded_as_a_gap_not_papered_over(self):
+        """_STANDARD.md §6: a capability no `fha` verb owns is named, not hand-rolled."""
+        gap = SKILL_DIR / 'GAP.md'
+        self.assertTrue(gap.is_file(),
+                        'the skill reaches for claim-notes editing that no verb provides '
+                        'but records no GAP.md')
+        gap_text = gap.read_text(encoding='utf-8').lower()
+        self.assertIn('notes', gap_text)
+        self.assertIn('fha claim', gap_text)
+
+    def test_a_value_only_edit_really_does_leave_the_old_reviewed_date(self):
+        """The premise of this whole class, proven against the real CLI.
+
+        Two runs on one fixture claim: `--value` alone keeps the old
+        `reviewed:`; `--status accepted --value` re-stamps it. If claim.py ever
+        starts re-stamping on a bare field edit, this test fails and the prose
+        rule above can be relaxed deliberately rather than by drift.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'archive'
+            (archive / 'sources' / 'census').mkdir(parents=True)
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            record = archive / 'sources' / 'census' / 'c_S-wc00000001.md'
+            record.write_text(
+                '---\n'
+                'id: S-wc00000001\n'
+                'title: Fixture\n'
+                'source_type: census\n'
+                '---\n\n'
+                '## Claims\n'
+                '```yaml\n'
+                '- id: C-wc00000001\n'
+                '  type: birth\n'
+                '  value: Sue walkie\n'
+                '  status: accepted\n'
+                '  reviewed: 2026-06-24\n'
+                '```\n', encoding='utf-8')
+
+            def run(argv):
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    rc = claim._standalone_main(argv + ['--root', str(archive)])
+                return rc, out.getvalue()
+
+            rc, _ = run(['C-wc00000001', '--value', 'Suwalki'])
+            self.assertEqual(rc, 0)
+            after = record.read_text(encoding='utf-8')
+            self.assertIn('value: Suwalki', after)
+            self.assertIn('reviewed: 2026-06-24', after)  # the stale signature
+
+            rc, _ = run(['C-wc00000001', '--status', 'accepted',
+                         '--value', 'Suwalki', '--reviewed', '2026-08-16'])
+            self.assertEqual(rc, 0)
+            after = record.read_text(encoding='utf-8')
+            self.assertIn('reviewed: 2026-08-16', after)
+            self.assertNotIn('reviewed: 2026-06-24', after)
 
 
 if __name__ == '__main__':
