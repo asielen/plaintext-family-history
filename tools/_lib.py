@@ -550,6 +550,10 @@ PHOTO_EXTENSIONS: frozenset[str] = frozenset({
 # detection) and index.py (person_files.kind column) stay in sync when new view
 # types are added - add the kind here, and both consumers pick it up automatically.
 COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index', 'draft-queue'})
+# The subset a tool writes FROM the index (`fha views`). Their content is
+# derived, so writing one changes nothing the index needs to re-read; the
+# `research` companion is human-written and stays a record for freshness.
+GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-index', 'draft-queue'})
 
 # Disposable cache schema versions. These are deliberately small integers stored
 # in both a meta row and PRAGMA user_version so humans and SQLite tools can see
@@ -3498,16 +3502,32 @@ def archive_title(cfg: dict) -> str:
 
 # ── Archive freshness ─────────────────────────────────────────────────────────
 
+def _is_generated_companion(path: Path) -> bool:
+    """A `fha views` output under people/ (timeline / sources-index / draft-queue)."""
+    parsed = parse_filename(path)
+    return bool(parsed) and parsed.get('kind') in GENERATED_COMPANION_KINDS
+
+
 def newest_record_mtime(archive_root: Path) -> float:
     """Max mtime (epoch seconds) across sources/people/notes .md files and places/places.yaml.
 
     Used as the freshness baseline for index.sqlite and photos.sqlite: if the
     cache is older than this, it is stale.  Returns 0.0 on a brand-new archive
     that has no record files yet (trivially up-to-date).
+
+    Generated companion views (timeline, sources-index, draft-queue) are
+    excluded (#37): `fha views` writes them FROM the index, so counting them
+    made every view write stale the index it had just read - the documented
+    per-person close-out (`views timeline`, `views sources-index`, `views
+    draft-queue`) failed on its second call and needed a full rebuild between
+    every write. Their content is derived; the index only records that they
+    exist (person_files), which the next ordinary rebuild picks up.
     """
     max_mtime = 0.0
     dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
     for p in itertools.chain.from_iterable(d.rglob('*.md') for d in dirs if d.is_dir()):
+        if _is_generated_companion(p):
+            continue
         try:
             mtime = p.stat().st_mtime
             if mtime > max_mtime:

@@ -1254,6 +1254,18 @@ def run_promote(
             next_step='fha index')
     try:
         if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone() is None:
+            # Distinguish "the index holds no people at all" (a cache that was
+            # created empty or never fully built - the fix is `fha index`) from
+            # "this person is not in it" (the fix is fha.yaml or a stub). The
+            # old single message sent people to edit a correct fha.yaml (#37).
+            if conn.execute('SELECT COUNT(*) FROM persons').fetchone()[0] == 0:
+                return _refuse_result(
+                    result, 'refused',
+                    'the search index holds no person records at all - it was '
+                    'never fully built, or was recreated empty. Run `fha index`, '
+                    'then retry. Nothing was written (fha.yaml is not the '
+                    'problem).',
+                    next_step='fha index')
             return _refuse_result(
                 result, 'refused',
                 f'root_person {fmt_id_display(root_pid)} (from fha.yaml) has no '
@@ -1354,45 +1366,53 @@ def run_promote(
     else:
         result.add('info', 'Research companion already exists - left as is.')
 
+    # Keep the index correct in place rather than deleting it (#37). A move
+    # keeps the record's mtime, so the staleness check cannot see it - the
+    # old answer was to drop the cache, which made the NEXT promote fail with
+    # a message that read like corruption (or sent the human to fix
+    # root_person and run `fha stubs`, when only the cache was absent). The
+    # relocation rewrites every path-keyed row, applies the tier flip, and
+    # indexes a fresh research companion, so a batch of promotes needs no
+    # rebuild between them.
+    moves: list[tuple[Path, Path]] = []
     if applied['move']:
-        # A moved record keeps its mtime relative to the cache, so the
-        # staleness check cannot see the move - drop the cache outright to
-        # force a rebuild (the `fha views brackets --fix` rule).
-        db_path = archive_root / '.cache' / 'index.sqlite'
-        try:
-            db_path.unlink(missing_ok=True)
-        except OSError as exc:
-            # The record has ALREADY moved on disk - that archive mutation is
-            # done and irreversible. Only the cache drop failed here (a locked
-            # or read-only .cache/index.sqlite). This is the dangerous half:
-            # a move preserves the record's mtime, so the undeleted index
-            # still passes the freshness check while pointing at the record's
-            # OLD path - queries would silently resolve the person to a file
-            # that no longer exists there. Report the promotion as done but
-            # raise a non-zero warning that names the stale cache and the
-            # exact rebuild command, never letting the unlink traceback escape
-            # to the user (AGENTS_TOOLING: no traceback ever reaches him).
-            reason = exc.strerror or str(exc)
-            return result_fail(
-                result, 'ok-index-stale',
-                f'{label} was promoted (Ahnentafel {pos}) and the record is '
-                f'filed in people/{dest_folder.name}/ - that part worked. But '
-                f'the search index cache could not be cleared ({reason}): '
-                f'{db_path}. The record moved, so the leftover index still '
-                'points at its old location and can look up to date, which '
-                'means searches may quietly go stale until you rebuild it. '
-                f'Delete {db_path} (or just run `fha index`) to rebuild the '
-                'index and clear the stale entry.',
-                exit_code=EXIT_WARNINGS, level='warning',
-                next_step='fha index')
+        moves.append((applied['old_path'], applied['new_path']))
+    if applied.get('research_move'):
+        moves.append((applied['research_source_path'], applied['research_path']))
+    new_files = [applied['research_path']] if applied.get('research_create') else []
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    try:
+        import index as _index
+        outcome = _index.relocate_person(
+            archive_root, pid, moves, tier='curated', new_files=new_files)
+    except (sqlite3.Error, OSError) as exc:
+        # The record has ALREADY moved on disk - that archive mutation is
+        # done and irreversible; only the in-place index update failed (a
+        # locked or read-only cache). A move preserves the record's mtime, so
+        # the untouched index can pass the freshness check while pointing at
+        # the record's OLD path. Report the promotion as done, warn non-zero,
+        # name the exact rebuild command; no traceback reaches the user.
+        reason = getattr(exc, 'strerror', None) or str(exc)
+        return result_fail(
+            result, 'ok-index-stale',
+            f'{label} was promoted (Ahnentafel {pos}) and the record is '
+            f'filed in people/{dest_folder.name}/ - that part worked. But '
+            f'the search index could not be updated in place ({reason}): '
+            f'{db_path}. The record moved, so the index still points at its '
+            'old location and can look up to date, which means searches may '
+            'quietly go stale until you rebuild it. Run `fha index` to '
+            'rebuild it.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha index')
+    if outcome == 'indexed':
         result.note_changed(db_path)
         result.add('info',
-                   'Next: run `fha index` to rebuild the index - the record '
-                   'moved, so the old index cache was removed.',
-                   next_step='fha index')
+                   'The search index was updated in place - no `fha index` '
+                   'needed before the next promote.')
     else:
         result.add('info',
-                   'Next: run `fha index` so queries see the tier change.',
+                   'Next: run `fha index` so queries see the promotion '
+                   '(no index cache exists yet).',
                    next_step='fha index')
     result.add('info',
                'Then generate their companion views: '

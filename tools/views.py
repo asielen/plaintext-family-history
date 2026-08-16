@@ -3011,10 +3011,11 @@ def run_timeline(
                     count += 1
             print(f'Generated {count} timeline file(s).')
             if count and fmt == 'md':
-                # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite), but a successful write is not a
-                # warning: exit clean and print the reindex as advice, not an alarm.
-                # (HTML lands under generated/, which the indexer never scans.)
+                # A companion write does NOT stale the index (#37: generated
+                # views are excluded from the freshness watermark - they are
+                # written FROM it). The only thing the index lacks is a
+                # person_files row for a brand-new view file, which the next
+                # ordinary rebuild adds; so this is advice, never an alarm.
                 print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
@@ -3109,10 +3110,11 @@ def run_sources_index(
 
             print(f'Generated {count} sources-index file(s).')
             if count:
-                # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite), but a successful write is not a
-                # warning: exit clean and print the reindex as advice, not an alarm.
-                # (HTML lands under generated/, which the indexer never scans.)
+                # A companion write does NOT stale the index (#37: generated
+                # views are excluded from the freshness watermark - they are
+                # written FROM it). The only thing the index lacks is a
+                # person_files row for a brand-new view file, which the next
+                # ordinary rebuild adds; so this is advice, never an alarm.
                 if fmt == 'md':
                     print('Run `fha index` when convenient to update the search index with the new view file(s).')
                 return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
@@ -3200,10 +3202,11 @@ def run_draft_queue(
                     count += 1
             print(f'Generated {count} draft-queue file(s).')
             if count and fmt == 'md':
-                # Writing a companion file makes the index stale (its mtime now
-                # post-dates .cache/index.sqlite), but a successful write is not a
-                # warning: exit clean and print the reindex as advice, not an alarm.
-                # (HTML lands under generated/, which the indexer never scans.)
+                # A companion write does NOT stale the index (#37: generated
+                # views are excluded from the freshness watermark - they are
+                # written FROM it). The only thing the index lacks is a
+                # person_files row for a brand-new view file, which the next
+                # ordinary rebuild adds; so this is advice, never an alarm.
                 print('Run `fha index` when convenient to update the search index with the new view file(s).')
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 
@@ -3386,11 +3389,11 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
 
         print(f'Generated {count} view file(s).')
         if count and 'md' in fmt_passes:
-            # Refresh writes new/updated companion files, which makes the index
-            # stale by definition (newest_record_mtime now post-dates it). That is
-            # not a failure of the refresh: exit clean and print the reindex as
-            # advice, so a harness following the exit code isn't alarmed each run.
-            # (An html-only refresh writes under generated/ and stales nothing.)
+            # Refresh writes new/updated companion files. That does NOT stale
+            # the index (#37: generated views are excluded from the freshness
+            # watermark), but any brand-new view file lacks its person_files
+            # row until the next rebuild - so print the reindex as advice, and
+            # exit clean so a harness following the exit code isn't alarmed.
             print('Run `fha index` when convenient to update the search index with the new view files.')
         return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
 

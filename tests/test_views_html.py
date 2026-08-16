@@ -394,10 +394,12 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
 
 
 class ExitCodeTests(_ViewsHtmlBase):
-    def test_html_write_does_not_stale_index_md_write_does(self):
-        # HTML lands under generated/, which newest_record_mtime never scans:
-        # the strict freshness gate still opens afterwards.  The .md companion
-        # write is byte-for-byte the old behavior - it stales the index.
+    def test_neither_html_nor_md_view_write_stales_the_index(self):
+        # HTML lands under generated/, which newest_record_mtime never scans,
+        # and since #37 the .md companion (a GENERATED file written FROM the
+        # index) is excluded from the watermark too - so the strict freshness
+        # gate opens after either write and the documented per-person
+        # close-out runs without a rebuild between views.
         res = views.run_timeline(self.root, person_id=PID, fmt='html')
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         conn = open_index_db(self.root, ('persons',), strict=True)
@@ -405,7 +407,9 @@ class ExitCodeTests(_ViewsHtmlBase):
         conn.close()
         res_md = views.run_timeline(self.root, person_id=PID)
         self.assertEqual(res_md.exit_code, EXIT_CLEAN)
-        self.assertIsNone(open_index_db(self.root, ('persons',), strict=True))
+        conn = open_index_db(self.root, ('persons',), strict=True)
+        self.assertIsNotNone(conn)
+        conn.close()
 
 
 class CleanSweepTests(_ViewsHtmlBase):
