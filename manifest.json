@@ -407,7 +407,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "4c544e613797cec3f37615ba64fb38485762e0a6b0e5f3328b81347a3f58d51e",
+      "sha256": "1f2cf25a7337b9195b5bd4670bfa455515828402fe4ed8115825880601a0e9aa",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -519,7 +519,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "9493230a454584760a4856b7c9faa7336e5f9dad016173558c85fc1938f788f9",
+      "sha256": "1a6bd3fbc522c273856ec12855c4fe6cda2e7b19b5ed579a3ead9fed5608fd3f",
       "spec_version": "1.2",
       "src": "tools/find.py"
     },
@@ -638,7 +638,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "93526b7067aa63b6b9d85ab5a8a66ce7e0a2a0b5fcba1514e707c5cbafba62bf",
+      "sha256": "893a8411576ed1c93aeaf818fe552fbfcb515d06256bd12cef4a0312850cf94d",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -771,14 +771,14 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.css",
       "category": "operating",
-      "sha256": "dada63b17a2948502a42d112a722be0a0c5047042d2bf398af6c18db661fef88",
+      "sha256": "0f0e3a7c6e43471bcc078e8364efaa88cb4c9819cf32922fdb7ab76127b250ff",
       "spec_version": "1.2",
       "src": "tools/templates/workbench/workbench.css"
     },
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "d254b52e7450dff31298364d07dd0cd1327daf5c389f069c24295e7b75875ed7",
+      "sha256": "b21b70159a5f43f63c63af7ce6e834e10b2c424920c6365616609e2da4b76bee",
       "spec_version": "1.2",
       "src": "tools/templates/workbench/workbench.js"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "9b9f03720d24aeaa4d112396dc9796cca5e2eb4ee1fbbe535ee1311e889d1ed3",
+      "sha256": "b2063942ef97b904f957d33cb99f553b8065d9fa0186587b2c9f272f000b500c",
       "spec_version": "1.2"
     },
     {

@@ -2532,9 +2532,17 @@ class _Handler(BaseHTTPRequestHandler):
         if kind_err is not None:
             self._reject(400, kind_err)
             return
-        results = find_mod.search_json(self.state.archive_root, self.state.fha_config,
-                                       q, kinds=kinds, limit=limit)
-        self._send_json(200, {'results': results})
+        # `coverage` is the same sentence `fha find --text` prints and
+        # `fha find --json` puts on stderr (find._searchable_text_note, D14):
+        # how many of this archive's sources hold no text a search can read.
+        # The workbench box would otherwise be the one search surface that
+        # answers with silence and no caveat - and silence read as a finding is
+        # what #46 is a record of. Null when there is nothing to caveat; the
+        # front end renders it only for the whole-archive search bar.
+        results, coverage = find_mod.search_json_with_coverage(
+            self.state.archive_root, self.state.fha_config,
+            q, kinds=kinds, limit=limit)
+        self._send_json(200, {'results': results, 'coverage': coverage})
 
     def _handle_root_asset(self, path: str) -> None:
         rest = unquote(path[len('/root/'):])

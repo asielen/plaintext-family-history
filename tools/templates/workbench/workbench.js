@@ -717,7 +717,17 @@
            navigate to and no id worth inserting; render it as a plain note
            (wireframe: text hits are non-clickable snippets). */
         if (hit.type === 'text') {
-          return '<li><span class="note"><span class="wb-kind">text</span> ' +
+          /* `unchecked` (present only when true) means these words were read
+             off a picture by a machine and nobody has compared them to the
+             image (TOOLING §4a D15). The CLI writes "[unchecked AI transcript]"
+             on the result line; here the same fact is a chip beside the kind
+             chip, which is this UI's own idiom for a status word. */
+          var flag = hit.unchecked
+            ? ' <span class="wb-unchecked" title="A machine read these words off a picture.' +
+              ' Nobody has checked them against the image, and the image is the evidence.">' +
+              'unchecked AI transcript</span>'
+            : '';
+          return '<li><span class="note"><span class="wb-kind">text</span>' + flag + ' ' +
             esc(hit.label || '') + (hit.detail ? ' <span class="note">' + esc(hit.detail) + '</span>' : '') +
             '</span></li>';
         }
@@ -754,6 +764,18 @@
       /* The search BAR (no kind) gets the wireframe's CLI-parity footer:
          the search is exactly `fha find --text "<q>"`, said so and copyable. */
       if ((!opts || !opts.kind) && listEl.closest('.wb-search-results')) {
+        /* And it gets what that command would also have said: how many of this
+           archive's sources hold no text any search can read (TOOLING §4a
+           D14). It sits under the results and above the CLI echo, which on a
+           search that found NOTHING puts it directly under the "no matches"
+           line - the moment the #46 mistake gets made, where a null result is
+           read as "this name is in no source". Rendered only for the
+           whole-archive search bar: a person/place picker is asking "which
+           record do you mean", not "what does the archive say". */
+        if (j.coverage) {
+          listEl.innerHTML += '<li class="wb-coverage"><span class="note">' +
+            esc(j.coverage) + '</span></li>';
+        }
         listEl.innerHTML += '<li class="wb-search-echo"><code>fha find --text "' + esc(q) + '"</code>' +
           '<button type="button" class="btn btn-sm" data-wb-copy>copy</button></li>';
       }

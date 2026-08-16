@@ -54,6 +54,13 @@ Design decisions in TOOLING §4a:
   --related (no defined meaning for "the neighborhood of X, as ranked
   search results" - refused with a plain message naming the supported
   combinations, exit 2).
+  The machine surface carries the same two warnings the human one does, and
+  that is the point of D14/D15 rather than an afterthought: its reader is
+  usually another model, which is precisely the reader whose mistake #46
+  records. stdout stays the bare `[{id, type, label, detail}, …]` array it has
+  always been - the coverage caveat goes to STDERR (so nothing that parses
+  stdout sees a change), and an unchecked transcript hit gains one additive
+  key, `"unchecked": true`, present only when true.
 """
 
 from __future__ import annotations
@@ -155,10 +162,12 @@ configure_utf8_stdout()
 #    _bare_id_hit               - direct table lookup for a whole-string ID query
 #    _ranked_search             - the merge: aliases + persons + sources + places/place_names
 #                                 + notes_fts, deduped by id, sorted by tier then label
+#    search_json_with_coverage  - one connection, one open: the hits AND the D14 coverage note
 #    search_json                - public engine: opens/closes its own connection, returns list[dict]
 #    run_find_json               - wraps _ranked_search into the Result contract (own connection,
 #                                 shared with search_json's core, not a second open_index_db call)
-#    _cmd_find_json              - the only layer that prints: one json.dumps document, or nothing
+#    _cmd_find_json              - the only layer that prints: one json.dumps document on stdout,
+#                                 the coverage note on stderr, or nothing
 #    _parse_kind_filter          - CLI --kind comma list → (kinds, error_message)
 #
 #  Public API
@@ -2365,6 +2374,15 @@ def _ranked_search(
     applied per-candidate before dedup so it also bounds how much work later
     tiers do (a `kinds=['text']` search skips the alias/persons/sources/
     places queries entirely - see the guard on the notes_fts block).
+
+    Every hit carries the four documented keys `{id, type, label, detail}`. A
+    text hit whose words came from a transcript no human has checked against
+    the image carries one more, `'unchecked': True` (D15) - additive, and
+    present only when true, so a consumer written to the four-key contract
+    reads exactly what it always read. The rule is the same one the CLI's
+    `_find_text` applies: the SURFACE decides, so only `transcripts_fts` rows
+    are eligible, and `_lib.transcript_text_is_unchecked` makes the fail-closed
+    call so this file never restates it.
     """
     q = (query or '').strip()
     limit = max(0, limit)
@@ -2491,10 +2509,18 @@ def _ranked_search(
         # are deduped by path through the shared `candidates` dict below. The
         # table/column pairs are code literals, never user input.
         for table, content_col in (('notes_fts', 1), ('transcripts_fts', 2)):
+            # THE SURFACE DECIDES, NOT THE MARKER WORD (D15): only a hit read
+            # out of the transcript table can carry `unchecked`, so only that
+            # table pays to read its content column back. A person profile
+            # carrying `<!-- AI-DRAFT … -->` biography prose arrives through
+            # notes_fts and is never marked - it is the same marker pair on a
+            # file that is nobody's reading of a picture.
+            is_transcript_table = table == 'transcripts_fts'
+            body_col = ', content AS body' if is_transcript_table else ''
             try:
                 fts_rows = conn.execute(
-                    f"SELECT path, snippet({table}, {content_col}, '', '', ' … ', 10) AS snip "
-                    f'FROM {table} WHERE {table} MATCH ? LIMIT ?',
+                    f"SELECT path, snippet({table}, {content_col}, '', '', ' … ', 10) AS snip"
+                    f'{body_col} FROM {table} WHERE {table} MATCH ? LIMIT ?',
                     (q, max(limit * 5, 50)),
                 ).fetchall()
             except sqlite3.OperationalError:
@@ -2507,16 +2533,55 @@ def _ranked_search(
                 path = row['path']
                 existing = candidates.get(path)
                 if existing is None or _TIER_TEXT < existing['tier']:
-                    candidates[path] = {
-                        'tier': _TIER_TEXT,
-                        'hit': {
-                            'id': path, 'type': 'text',
-                            'label': (row['snip'] or '').strip(), 'detail': path,
-                        },
+                    hit = {
+                        'id': path, 'type': 'text',
+                        'label': (row['snip'] or '').strip(), 'detail': path,
                     }
+                    # Present-or-absent, never `"unchecked": false`. A consumer
+                    # reads "the key is here" as the warning; an explicit false
+                    # would read as "checked", which is a claim nobody has made
+                    # about an unmarked transcript or a record body.
+                    if is_transcript_table and transcript_text_is_unchecked(row['body'] or ''):
+                        hit['unchecked'] = True
+                    candidates[path] = {'tier': _TIER_TEXT, 'hit': hit}
 
     ordered = sorted(candidates.values(), key=lambda c: (c['tier'], c['hit']['label'].lower()))
     return [c['hit'] for c in ordered[:limit]]
+
+
+def search_json_with_coverage(
+    archive_root: Path,
+    fha_config: dict,
+    query: str,
+    *,
+    kinds: list[str] | None = None,
+    limit: int = 20,
+) -> tuple[list[dict], str | None]:
+    """The ranked search AND the D14 coverage caveat, from one open connection.
+
+    `(hits, note)`. The note is `_searchable_text_note`'s own sentence - the
+    same words the CLI text search prints, composed once in one place so the
+    two surfaces can never drift into disagreeing about how much of the archive
+    a search could read. It is None when there is nothing to caveat.
+
+    This exists because the caveat needs the connection the search already has.
+    Asking for it separately would mean a second `open_index_db`, which prints
+    its own stale/missing-index message as a side effect - the same
+    double-message `run_find_json`'s docstring explains avoiding.
+    """
+    conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
+    if conn is None:
+        return [], None
+    try:
+        hits = _ranked_search(conn, query, kinds, limit)
+        return hits, _searchable_text_note(conn, found_something=bool(hits))
+    except sqlite3.OperationalError:
+        # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's
+        # table probe confirms the required tables EXIST, not that every
+        # column a query touches is present in an older schema.
+        return [], None
+    finally:
+        conn.close()
 
 
 def search_json(
@@ -2536,6 +2601,10 @@ def search_json(
     caller that must tell those two apart (the CLI) uses `run_find_json`
     instead, which carries the outcome in a `Result`.
 
+    A caller that also wants to tell its reader how much of the archive the
+    search could read uses `search_json_with_coverage`, whose first element
+    this is; this signature is left alone because it is the documented one.
+
     `fha_config` is accepted for signature parity with every other finder in
     this file (`_find_person`, `_related_person`, …) and to leave room for a
     later asset-root-aware hit (e.g. resolving a text hit's path through
@@ -2543,18 +2612,8 @@ def search_json(
     (aliases/persons/sources/places/place_names/notes_fts) all carry
     archive-relative paths and IDs already, so it is not read yet.
     """
-    conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
-    if conn is None:
-        return []
-    try:
-        return _ranked_search(conn, query, kinds, limit)
-    except sqlite3.OperationalError:
-        # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's
-        # table probe confirms the required tables EXIST, not that every
-        # column a query touches is present in an older schema.
-        return []
-    finally:
-        conn.close()
+    return search_json_with_coverage(
+        archive_root, fha_config, query, kinds=kinds, limit=limit)[0]
 
 
 def run_find_json(
@@ -2575,6 +2634,13 @@ def run_find_json(
     connection with `_ranked_search`, `search_json`'s same core, so the
     plain message - and the exit code - are identical to calling
     `search_json` directly, printed exactly once.
+
+    The `Result` carries the D14 coverage caveat alongside the hits, under
+    `data['coverage_note']` (None when there is nothing to caveat). It rides
+    in `data` rather than in `messages` because `_cmd_find_json` prints it
+    verbatim - the sentence already opens with its own "Note:" and is the
+    identical text the human search prints, and running it through the
+    message-level prefixes would emit "NOTE: Note: …".
     """
     conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
     if conn is None:
@@ -2584,6 +2650,8 @@ def run_find_json(
     try:
         try:
             results = _ranked_search(conn, query, kinds, limit)
+            coverage_note = _searchable_text_note(
+                conn, found_something=bool(results))
         except sqlite3.OperationalError:
             return Result(ok=False, exit_code=EXIT_FAILURE).add(
                 'error',
@@ -2593,7 +2661,8 @@ def run_find_json(
             )
     finally:
         conn.close()
-    return Result(ok=True, exit_code=EXIT_CLEAN, data={'results': results})
+    return Result(ok=True, exit_code=EXIT_CLEAN,
+                  data={'results': results, 'coverage_note': coverage_note})
 
 
 def _cmd_find_json(result: Result) -> int:
@@ -2613,8 +2682,21 @@ def _cmd_find_json(result: Result) -> int:
     list `[{id, type, label, detail}, ...]`, not `Result.data`'s own wrapper
     dict - printing `result.data` whole would hand a consumer written to
     that contract `{"results": [...]}` instead of the array it expects.
+
+    THE COVERAGE CAVEAT GOES ON STDERR (D14, extended to --json). stdout is a
+    parsed contract and stays a bare array, byte for byte what it has always
+    been; the caveat is prose for whoever is reading the stream - which for
+    this surface is usually another model, the exact reader #46 was written
+    about. A pipe consumer sees no change, a terminal or a log sees the
+    warning. It is printed BEFORE the document so it is not mistaken for a
+    trailer on the JSON, and only when there is something to caveat: an
+    archive whose sources all hold text emits nothing on stderr at all,
+    because a warning that always fires is a warning nobody reads.
     """
     if 'results' in result.data:
+        note = result.data.get('coverage_note')
+        if note:
+            print(note, file=sys.stderr)
         print(json.dumps(result.data['results']))
         return result.exit_code
     for m in result.messages:
