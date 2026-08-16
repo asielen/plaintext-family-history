@@ -42,7 +42,7 @@
     {
       "path": ".claude/skills/import-recordings/scripts/attribute_speakers.py",
       "category": "operating",
-      "sha256": "59df4bc29649c8ce56f4aa5db98ce397f772d867dac0af94e09f0dbf2b3e63e1",
+      "sha256": "297ee5eab3a9ea330270c2f2bac5cc841bc846bf55099667dd1d7e919525096d",
       "spec_version": "1.2"
     },
     {

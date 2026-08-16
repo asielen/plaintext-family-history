@@ -64,6 +64,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -702,6 +703,85 @@ class AttributeSpeakersOutputSafetyTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('same file', err)
         self.assertFalse(same.exists())
+
+    def test_an_output_reaching_an_input_through_a_link_is_refused(self):
+        """A hard link is one file under two names, and a string cannot see it.
+
+        The load-bearing test for the identity fix. It reproduces on ANY
+        filesystem the aliasing that a case-insensitive volume produces - two
+        paths, one inode - so it exercises the `samefile` arm here rather than
+        needing the macOS volume the container cannot provide.
+
+        The input it aliases is an archived original: `--out` is written
+        atomically over it, and the run would otherwise announce success.
+        """
+        alias = self.tmp / 'other-name.md'
+        try:
+            os.link(self.whisper, alias)
+        except (OSError, AttributeError) as e:      # pragma: no cover
+            self.skipTest('hard links unavailable here: %s' % e)
+        before = self.whisper.read_bytes()
+        code, _out, err = run_script(attribute_speakers, [
+            '--whisper', str(self.whisper), '--app-transcript', str(self.app),
+            '--out', str(alias), '--report', str(self.report), '--quiet'])
+        self.assertEqual(code, 1)
+        self.assertIn('transcripts this tool reads', err)
+        self.assertEqual(self.whisper.read_bytes(), before)
+
+    def test_an_output_reaching_an_input_through_a_linked_folder_is_refused(self):
+        """Same file, reached through a symlinked parent rather than by name."""
+        linked = self.tmp / 'by-another-route'
+        try:
+            os.symlink(self.tmp, linked, target_is_directory=True)
+        except (OSError, AttributeError, NotImplementedError) as e:  # pragma: no cover
+            self.skipTest('symlinks unavailable here: %s' % e)
+        before = self.whisper.read_bytes()
+        code, _out, err = run_script(attribute_speakers, [
+            '--whisper', str(self.whisper), '--app-transcript', str(self.app),
+            '--out', str(linked / self.whisper.name),
+            '--report', str(self.report), '--quiet'])
+        self.assertEqual(code, 1)
+        self.assertIn('transcripts this tool reads', err)
+        self.assertEqual(self.whisper.read_bytes(), before)
+
+    def test_a_case_variant_of_an_input_is_refused_on_every_platform(self):
+        """The reported macOS shape, asserted against the fold directly.
+
+        This container's volume is case-sensitive, so `SESSION-WHISPER.MD` is
+        genuinely a free name here and no end-to-end run can reproduce the
+        destruction. What CAN be asserted is that the tool no longer decides
+        the question with a comparison that only answers it on Windows - so
+        this pins `could_be_same_file`, and the two link tests above carry the
+        end-to-end proof.
+        """
+        upper = self.tmp / self.whisper.name.upper()
+        self.assertTrue(attribute_speakers.could_be_same_file(
+            str(upper), str(self.whisper)))
+        self.assertFalse(attribute_speakers.could_be_same_file(
+            str(self.tmp / 'something-else.md'), str(self.whisper)))
+
+    def test_an_accent_spelled_the_other_way_is_the_same_file(self):
+        """macOS stores NFD; a name typed as NFC is one file and two strings."""
+        nfc = self.tmp / 'reunião.md'
+        nfd = self.tmp / unicodedata.normalize('NFD', 'reunião.md')
+        self.assertNotEqual(str(nfc), str(nfd), 'precondition: two distinct strings')
+        self.assertTrue(attribute_speakers.could_be_same_file(str(nfc), str(nfd)))
+
+    def test_canonical_path_is_a_normaliser_not_an_identity_test(self):
+        """It resolves spellings; it does not answer 'are these one file'.
+
+        Pinned because the docstring used to promise macOS case equivalence
+        that `os.path.normcase` never delivered - `normcase` folds on Windows
+        only. Asserting what it really does keeps anyone from reinstating the
+        promise instead of the fix.
+        """
+        self.assertEqual(
+            attribute_speakers.canonical_path(os.path.join(str(self.tmp), '.', 'x.md')),
+            attribute_speakers.canonical_path(str(self.tmp / 'x.md')))
+        if sys.platform != 'win32':
+            self.assertNotEqual(
+                attribute_speakers.canonical_path(str(self.tmp / 'X.md')),
+                attribute_speakers.canonical_path(str(self.tmp / 'x.md')))
 
     def test_an_output_pointed_at_an_input_is_refused(self):
         before = self.whisper.read_bytes()

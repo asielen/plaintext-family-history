@@ -362,15 +362,72 @@ def read_text(path: str):
 
 
 def canonical_path(path: str) -> str:
-    """One spelling of a path, for comparing two command-line arguments.
+    """One spelling of a path. A NORMALISER - not an identity test.
 
-    `--out ./x.md` and `--out x.md` are the same file, and on Windows and macOS
-    so are `X.md` and `x.md`. Collision checks that miss those spellings let a
-    mistyped command destroy the file it was told to protect, so every
-    comparison in this tool goes through here rather than through a bare
-    string equality test.
+    Resolves `.`, `..` and symlinks, and folds case on Windows, where
+    `os.path.normcase` folds. It does NOT fold case anywhere else: on POSIX -
+    macOS included - `normcase` is the identity function. Do not read a
+    docstring promise of macOS case equivalence into it; an earlier version of
+    this docstring made exactly that promise and it was false everywhere it
+    mattered.
+
+    For "would writing here land on that file?", use `could_be_same_file`.
     """
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+# ── Path identity ─────────────────────────────────────────────────────────────
+#
+# Two names can be one file, and no amount of string tidying decides which.
+# A case-insensitive volume (the default on macOS and Windows) makes `X.md` and
+# `x.md` one file; macOS stores names in NFD, so a name typed as NFC and the
+# same name read back off disk are one file and two Python strings; a hard link
+# or a second mount is one file under two unrelated paths. The filesystem is the
+# only authority on any of it.
+#
+# That matters here because this tool's collision checks stand between a
+# mistyped command line and an ARCHIVED ORIGINAL: `--out`/`--report` are checked
+# against the two transcripts being read, and those are files `fha process` has
+# already filed. A check that compares strings passes `--out Whisper.md` while
+# reading `whisper.md`, and the atomic write then replaces the input.
+#
+# The same fix landed in this skill's `find_duplicate_media.py`, which carries
+# the canonical version of these helpers and a longer treatment. They are
+# duplicated rather than shared because a skill script must run standalone from
+# any folder with no archive present - it may not import a sibling script.
+
+def _identity_key(path: str) -> str:
+    """A blunt, unconditional folding of a path, for a file that is not there yet.
+
+    NFC-normalise, then `casefold`. Deliberately over-eager: it folds case on
+    volumes that do not, and folds accent spellings that only macOS conflates.
+
+    Blunt on purpose, and only reached from `could_be_same_file`. The two
+    mistakes are not comparable - a false positive refuses a filename that was
+    actually free and costs the human one more word on the command line; a false
+    negative overwrites an archived transcript. Probing the volume instead is
+    also weaker than it sounds: it would have to run on the volume holding each
+    candidate, it needs a write to be trustworthy, and it cannot run at all on a
+    read-only mount.
+    """
+    return unicodedata.normalize('NFC', canonical_path(path)).casefold()
+
+
+def could_be_same_file(a: str, b: str) -> bool:
+    """Could writing to one of these land on the other? Two arms, one question.
+
+    * Both exist - ask the filesystem. `os.path.samefile` compares
+      `(st_dev, st_ino)`, which is authoritative on every volume and catches the
+      aliases no string can: a hard link, a second mount of the same disk, a
+      case variant on a folding volume where only one spelling is the name on
+      disk.
+    * One does not - `samefile` cannot speak about a file that is not there, and
+      an output path usually is not. Fall back to the folded key.
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return _identity_key(a) == _identity_key(b)
 
 
 def atomic_write(path: str, body: str) -> None:
@@ -1249,14 +1306,17 @@ def main(argv=None):
     # not, and it is the quieter failure: the transcript is written first, the
     # JSON report lands on top of it, and the run still exits 0 announcing the
     # transcript it just destroyed.
-    inputs = {canonical_path(args.whisper), canonical_path(args.app)}
+    # `could_be_same_file`, never string equality: the inputs are archived
+    # originals, and on a case-insensitive volume `--out Whisper.md` while
+    # reading `whisper.md` compares unequal and passes.
     for out_path, flag in ((args.out, "--out"), (args.report, "--report")):
-        if out_path and canonical_path(out_path) in inputs:
+        if out_path and any(could_be_same_file(out_path, src)
+                            for src in (args.whisper, args.app)):
             return fail("%s points at one of the two transcripts this tool reads "
                         "(%s); inputs are never modified. Give %s a new filename "
                         "and run the command again."
                         % (flag, os.path.basename(out_path), flag))
-    if args.report and canonical_path(args.out) == canonical_path(args.report):
+    if args.report and could_be_same_file(args.out, args.report):
         return fail("--out and --report point at the same file (%s). The JSON report "
                     "would be written over the attributed transcript. Give them "
                     "different filenames - for example --out \"%s\" --report \"%s\" - "
