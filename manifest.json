@@ -24,7 +24,7 @@
     {
       "path": ".claude/skills/import-notes/SKILL.md",
       "category": "operating",
-      "sha256": "78ec98cecc5efc94d645ff1dfe483c3b7844eff06dc681eb7f4388a68b1612bd",
+      "sha256": "b50dfdd1afb9b79a9f6303a8beb105e5965f140fde67d98509aeee3df39d1709",
       "spec_version": "1.2"
     },
     {
@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "5cf854910b99779efc6e912183711a9d90482b7d2a6943c3407757288fbfe7b5",
+      "sha256": "017222403c6d9f7f1556a33278deeb4c717df632b4fbf268fe8ddf8fd9c2c1cb",
       "spec_version": "1.2"
     },
     {
@@ -120,13 +120,13 @@
     {
       "path": ".claude/skills/transcribe-audio/SKILL.md",
       "category": "operating",
-      "sha256": "498a6415c6c9eb96538a840c97612648ba50097108b4ba83840a7eb20778ca6d",
+      "sha256": "bafcb4a0d9d5c9ba75d2d6282361afbfb28cbcfd353691c853b5ee340ac6a40c",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
-      "sha256": "f05f4de6d15530abb182300e22730fc4a024b6afad4e2c68ed86419245a00c6b",
+      "sha256": "afbe912cd6a202e1898e7f5da62a6120f1a416d8933fb8234825f9e3414b5522",
       "spec_version": "1.2"
     },
     {
@@ -138,9 +138,9 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "43ec0fa69d81609d499357ef614f2e7232eed8acee57a82fabfd89a0b9d17954",
+      "sha256": "eae019e8a827b2b304f4f8b24feae9122c83a332f8fb636a77b10e2ab0ce7fd3",
       "spec_version": "1.2",
-      "src": "browser-companion/README.md"
+      "src": "browser-companion/README-ARCHIVE.md"
     },
     {
       "path": ".fha/browser-companion/icons/icon128.png",
@@ -187,7 +187,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "36e3e1d006c5941b9d1a45158ec2ea6abbb1c0e2f4bde9ad5428cbd7c7538af6",
+      "sha256": "18bc9e431be5bdf2611cb0662f64dfb57698e5161ab6239b4cfb3ae463832a84",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -239,6 +239,13 @@
       "sha256": "8620f6370de3ffe05fd76d3e002f106bded2f55997dcd0aa684f13d3c7f045d4",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/people-harvest.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/srcset.js",
+      "category": "operating",
+      "sha256": "d0c226749cd58bfe941cb85f22beeb0d1b81795438e608da0ef63e4d6d3eed56",
+      "spec_version": "1.2",
+      "src": "browser-companion/src/lib/srcset.js"
     },
     {
       "path": ".fha/browser-companion/src/panel.css",
@@ -600,7 +607,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "de08c6892c172e932862c0f53c9e87c36918e4f4930e66f54ade1d37daef2165",
+      "sha256": "03f2f32d054f50b172a29dbe2d8ee7a8b2b1dc553937ba29c5723f029446cdff",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
