@@ -1565,10 +1565,11 @@ class TranscriptCompanionIndexingTests(unittest.TestCase):
     Until it did, an archive could hold a full, careful transcript of a scan and
     still answer `fha find --text` as though the scan were mute - the index
     loaded only `fha source extract`'s own dumps, so every transcript written by
-    hand, by the transcribe-audio skill, or by anyone reading a picture and
-    typing it out stayed outside the searchable surface. Both index paths are
-    checked, because a contract honoured by the full rebuild and not by the
-    incremental upsert is a contract that fails in ordinary use."""
+    hand, by the transcribe-audio skill, or by the transcribe-source skill
+    reading a picture and typing it out stayed outside the searchable surface.
+    Both index paths are checked, because a contract honoured by the full
+    rebuild and not by the incremental upsert is a contract that fails in
+    ordinary use."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

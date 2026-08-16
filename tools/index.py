@@ -363,12 +363,12 @@ _RELATIONSHIPS_SOCIAL_SUBTYPES = {'friend', 'associate', 'neighbor'}
 # transcripts_fts: `extracted-text` (what `fha source extract` stamps on a PDF's
 # dumped text layer - source.py's `_EXTRACT_ROLE`) and `transcript` /
 # `transcription` (what a transcript written by any other means carries: by
-# hand, by the transcribe-audio skill, by anyone who read a scan and typed it
-# out). All of them are the same thing to a search - the archive's copy of what
-# the evidence says - and loading only the extract verb's own dumps left every
-# other transcript unsearchable through the index (#46). The vocabulary lives in
-# _lib because `fha lint` counts the same files this loads, and one shared rule
-# is what keeps the two from drifting apart.
+# hand, by the transcribe-audio skill, by the transcribe-source skill reading a
+# scan and typing it out). All of them are the same thing to a search - the
+# archive's copy of what the evidence says - and loading only the extract verb's
+# own dumps left every other transcript unsearchable through the index (#46).
+# The vocabulary lives in _lib because `fha lint` counts the same files this
+# loads, and one shared rule is what keeps the two from drifting apart.
 #
 # _lib.SEARCHABLE_TEXT_SUFFIXES is the second half of the gate: a transcript is
 # only a transcript if it is text. A role tag can land on anything - a `.m4a`

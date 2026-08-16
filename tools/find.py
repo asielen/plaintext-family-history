@@ -40,7 +40,9 @@ Design decisions in TOOLING §4a:
       read, it says so: every text search ends with a count of the sources in
       the archive that hold no text at all (#46), on a hit as readily as on a
       miss, because a search that only half read its corpus is misleading
-      either way.
+      either way.  And what it read second-hand it also says: a hit whose
+      matching words came from a transcript no human has checked against the
+      image is labelled `[unchecked AI transcript]` on its own result line.
 
   --json (plan 17; documented in TOOLING §4a): a pure, machine-readable ranked
   search over the index - the backend the fha serve reference resolver (and
@@ -87,11 +89,13 @@ from _lib import (
     normalize_id,
     normalize_place_text,
     open_index_db,
+    path_to_alias,
     PHOTO_EXTENSIONS,
     photoindex_status,
     read_record,
     resolve_path,
     resolve_root_arg,
+    transcript_text_is_unchecked,
     unreadable_dir_recorder,
     walk_files,
 )
@@ -117,6 +121,7 @@ configure_utf8_stdout()
 #  Text search
 #    _count_sources_without_text - how many sources hold no text at all (#46)
 #    _searchable_text_note     - the coverage caveat printed with every result
+#    _indexed_transcript_paths - which paths transcripts_fts holds (for the regex pass)
 #    _find_text                - FTS (when index fresh) + re.search over record bodies
 #
 #  --related (M4.3): neighborhood queries over the relational index
@@ -833,6 +838,51 @@ def _searchable_text_note(
     )
 
 
+# ── Marking a hit that came from an unchecked machine reading ────────────────
+# The coverage note above is a caveat on the whole search. This one is a caveat
+# on a single line of it, and it has to be: one search can return a transcript a
+# human has compared to the scan and a transcript no one has ever looked at, and
+# the difference between those two results is the whole question of whether the
+# hit is evidence. #46 closed "the search cannot see"; an unchecked transcript is
+# the same hole facing the other way - it does not return silence, it returns
+# confident hits, and nobody re-examines a question they believe is answered.
+#
+# The label rides on the result line so it cannot be missed while skimming; the
+# sentence explaining it prints ONCE, after the results, because ten identical
+# paragraphs between ten hits would bury exactly the results it is warning about.
+_UNCHECKED_LABEL = '[unchecked AI transcript]'
+_UNCHECKED_NOTE = (
+    'Note: [unchecked AI transcript] marks words a machine read off a picture. '
+    'Nobody has checked them against the image, and the image is the evidence - '
+    'read it before you rely on those words. `fha find <S-id>` lists which files '
+    'a source has.'
+)
+
+
+def _indexed_transcript_paths(conn: sqlite3.Connection | None) -> set[str]:
+    """The paths `fha index` loaded into transcripts_fts, for the regex pass.
+
+    The FTS pass knows a hit came from a transcript because it queried the
+    transcript table. The re.search pass that follows it does not: it walks the
+    documents root for `.md`/`.txt` and a transcript companion looks the same as
+    any other text file there. FTS MATCH and a substring regex do not agree on
+    what matches (a partial word matches one and not the other), so a transcript
+    really can be found only by the second pass - and it would then print
+    unmarked.
+
+    One cheap key-column query answers it. Reading the roles out of
+    `source_files` would work too, but this is the set `fha index` actually
+    loaded, which is the set whose text the marker rule is defined over.
+    """
+    if conn is None:
+        return set()
+    try:
+        return {row[0] for row in conn.execute(
+            'SELECT DISTINCT path FROM transcripts_fts') if row[0]}
+    except sqlite3.Error:
+        return set()   # old-schema or damaged index: the search still runs
+
+
 def _find_text(
     query: str,
     archive_root: Path,
@@ -854,24 +904,29 @@ def _find_text(
     named as a number, so a null result is never mistaken for a negative
     finding and a handful of hits is never mistaken for the whole story.
 
+    And a hit whose matching text came from a transcript no human has checked
+    against the image carries its own per-line mark (_UNCHECKED_LABEL). Only the
+    transcript surfaces can earn it: a match in a record body or a claim value
+    is a match on what someone wrote down, not on a machine's reading of a
+    picture, and marking those would train the reader to ignore the mark.
+
     Design decision D7 (TOOLING §4a): photo captions ARE searched when
     .cache/photos.sqlite is verifiably fresh (DB present, schema OK, newer than
     the photos root).  When the photoindex is absent/stale/unreadable, captions
     are skipped and an explicit note tells the user why.
     """
-    hits: list[tuple[str, str]] = []   # (relative path, context snippet)
+    # (relative path, context snippet, matched unchecked machine-read text)
+    hits: list[tuple[str, str, bool]] = []
     seen_paths: set[str] = set()
+    transcript_paths = _indexed_transcript_paths(conn)
 
     # FTS queries from the index
     if conn is not None:
         try:
             # FTS5 snippet: 32 tokens, mark matches with [...]
-            fts_sql = (
-                "SELECT path, snippet({table}, {col}, '[', ']', '…', 32) "
-                "FROM {table} WHERE {table} MATCH ?"
-            )
             for row in conn.execute(
-                fts_sql.format(table='notes_fts', col='1'), (query,)
+                "SELECT path, snippet(notes_fts, 1, '[', ']', '…', 32) "
+                'FROM notes_fts WHERE notes_fts MATCH ?', (query,)
             ):
                 rel = row[0]
                 # Registry place notes share one physical file: every place's
@@ -881,14 +936,21 @@ def _find_text(
                 # way).
                 if rel in seen_paths:
                     continue
-                hits.append((rel, row[1]))
+                # notes_fts is record prose and note bodies - what a person
+                # wrote down. Never a machine's reading of a picture.
+                hits.append((rel, row[1], False))
                 seen_paths.add(rel)
+            # transcripts_fts carries the companion's whole text, so the marker
+            # state is decided from the row already in hand - no file is opened
+            # to answer it.
             for row in conn.execute(
-                fts_sql.format(table='transcripts_fts', col='2'), (query,)
+                "SELECT path, snippet(transcripts_fts, 2, '[', ']', '…', 32), "
+                'content FROM transcripts_fts WHERE transcripts_fts MATCH ?',
+                (query,),
             ):
                 rel = row[0]
                 if rel not in seen_paths:
-                    hits.append((rel, row[1]))
+                    hits.append((rel, row[1], transcript_text_is_unchecked(row[2])))
                     seen_paths.add(rel)
         except Exception:
             pass   # FTS tables absent (index built without note content) - fall through
@@ -939,7 +1001,23 @@ def _find_text(
                     if line_end == -1:
                         line_end = len(text)
                     context = text[line_start:line_end].strip()[:120]
-                    hits.append((rel, context))
+                    # Is this file one of the transcripts the index loaded? The
+                    # index keys them by their alias-form path ('documents/…'),
+                    # which is what `rel` already is for an internal documents
+                    # root and is NOT what it is for an external one - there
+                    # `rel` is the absolute path. path_to_alias converts back,
+                    # so an archive whose documents live on another drive gets
+                    # the same answer as one that keeps them inside.
+                    key = rel
+                    if scan_dir == docs_root:
+                        key = path_to_alias(
+                            p, 'documents', fha_config or {}, archive_root)
+                    # The transcript's own text is already in hand from the read
+                    # above, so deciding the marker state costs nothing extra.
+                    unchecked = (
+                        key in transcript_paths
+                        and transcript_text_is_unchecked(text))
+                    hits.append((rel, context, unchecked))
                     seen_paths.add(rel)
             except OSError:
                 pass
@@ -959,7 +1037,7 @@ def _find_text(
                     if line_end == -1:
                         line_end = len(text)
                     context = text[line_start:line_end].strip()[:120]
-                    hits.append((rel, context))
+                    hits.append((rel, context, False))
                     seen_paths.add(rel)
             except OSError:
                 pass
@@ -990,7 +1068,9 @@ def _find_text(
                     else:
                         rel = f'[photo] {row[0]}'
                     if rel not in seen_paths:
-                        hits.append((rel, row[1]))
+                        # A caption is what a person wrote about a photo, not a
+                        # reading of what the photo says.
+                        hits.append((rel, row[1], False))
                         seen_paths.add(rel)
             finally:
                 pconn.close()
@@ -1017,10 +1097,13 @@ def _find_text(
         return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN
 
     print(f'Found {len(hits)} result(s) for: {query!r}')
-    for rel_path, context in hits:
-        print(f'\n  {rel_path}')
+    for rel_path, context, unchecked in hits:
+        label = f'  {_UNCHECKED_LABEL}' if unchecked else ''
+        print(f'\n  {rel_path}{label}')
         if context:
             print(f'    … {context} …')
+    if any(unchecked for _rel, _context, unchecked in hits):
+        print(f'\n{_UNCHECKED_NOTE}')
     if photo_note:
         print(f'\n{photo_note}')
     text_note = _searchable_text_note(conn, found_something=True)

@@ -209,6 +209,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Alias resolution / publication guards
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    strip_unaccepted_drafts   - drop AI-DRAFT prose + AI markers pre-publication (fail-closed)
+#    transcript_review_state   - has a human checked this transcript against the
+#                                 picture? unreviewed | verified | unmarked | damaged
+#    transcript_text_is_unchecked - that state collapsed to the one question a
+#                                 consumer asks (damaged counts as unchecked)
 #    GENERATED_PREFIX, is_generated_text, is_generated_file - GENERATED-header ownership test
 #
 #  Walking a tree that might not open
@@ -4098,6 +4102,84 @@ def strip_unaccepted_drafts(text: str) -> tuple[str, str | None]:
     # Cutting a block leaves the blank lines that framed it; collapse the
     # leftovers so paragraph spacing stays normal.
     return _BLANK_RUN_RE.sub('\n\n', cleaned), None
+
+
+# The four states a transcript companion's text can be in, named once so every
+# consumer says the same word. Only two of them matter to a caller deciding
+# whether to trust the words: see transcript_text_is_unchecked below.
+TRANSCRIPT_UNREVIEWED = 'unreviewed'
+TRANSCRIPT_VERIFIED = 'verified'
+TRANSCRIPT_UNMARKED = 'unmarked'
+TRANSCRIPT_DAMAGED = 'damaged'
+
+
+def transcript_review_state(text: str) -> str:
+    """Has a human checked this transcript against the picture it was read from?
+
+    A model that reads a scan and types out what it says produces text that is
+    searchable and, from the outside, indistinguishable from evidence. A misread
+    word does not fail loudly the way a missing transcript does - it returns
+    confident hits nobody re-examines. So a transcript states its own status in
+    its text, and this function reads it.
+
+    The rule is the transcribe-source skill's contract ("The marker - how a
+    consumer tells an unreviewed transcript from a checked one"), and it reuses
+    the archive's existing marker pair rather than inventing a third convention:
+    the same `<!-- AI-DRAFT ... -->` / `<!-- AI-ACCEPTED ... -->` comments
+    `write-biography` writes and `fha confirm draft` flips, read with the same
+    regexes strip_unaccepted_drafts uses above.
+
+    Returns one of four states, decided on the companion's FULL text:
+
+      unreviewed  a complete AI-DRAFT marker is present. A machine read the
+                  images; no human has checked the text against them.
+      verified    a complete AI-ACCEPTED marker and no AI-DRAFT marker. A human
+                  compared it to the image.
+      unmarked    neither marker word appears. A human typed it, or `fha source
+                  extract` dumped it mechanically out of a PDF's own text layer.
+                  The archive makes no AI claim about it either way - and this
+                  is the common case, which is why it must never be reported as
+                  unreviewed: flag every transcript and the flag stops meaning
+                  anything.
+      damaged     the literal word appears outside any complete marker (an
+                  unterminated `<!--`, a stray prose mention). Draft can no
+                  longer be told from checked.
+
+    unreviewed outranks verified: one AI-DRAFT marker anywhere makes the whole
+    file unreviewed, because the marker sits at the END of the span it covers
+    and a file carrying both has an unchecked span in it somewhere.
+    """
+    body = text or ''
+    has_draft_word = 'AI-DRAFT' in body
+    has_accepted_word = 'AI-ACCEPTED' in body
+    if not has_draft_word and not has_accepted_word:
+        return TRANSCRIPT_UNMARKED
+
+    # The same accounting strip_unaccepted_drafts closes with: remove every
+    # complete marker, and any marker word still standing was never inside one.
+    residue = _AI_ACCEPTED_MARK_RE.sub('', _AI_DRAFT_MARK_RE.sub('', body))
+    if 'AI-DRAFT' in residue or 'AI-ACCEPTED' in residue:
+        return TRANSCRIPT_DAMAGED
+    if _AI_DRAFT_MARK_RE.search(body):
+        return TRANSCRIPT_UNREVIEWED
+    return TRANSCRIPT_VERIFIED
+
+
+def transcript_text_is_unchecked(text: str) -> bool:
+    """Should a consumer warn that nobody has checked these words yet?
+
+    True for `unreviewed` and for `damaged`. Damaged fails CLOSED - a file whose
+    markers cannot be read is treated as unchecked, never as checked - matching
+    strip_unaccepted_drafts, which withholds everything rather than guess which
+    prose was accepted. Over-warning costs a reader one glance at the original;
+    under-warning lets a machine's reading of a picture pass for the picture.
+
+    The fail-closed collapse lives here rather than at each call site so that
+    every consumer inherits it by using the function instead of remembering the
+    rule.
+    """
+    return transcript_review_state(text) in (
+        TRANSCRIPT_UNREVIEWED, TRANSCRIPT_DAMAGED)
 
 
 # ── Private-content fence (publication guard) ─────────────────────────────────

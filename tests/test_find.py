@@ -2,6 +2,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -1774,6 +1775,201 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
         _, out = self._search('anything', indexed=False)
         self.assertIn('could not check which sources have no searchable text', out)
         self.assertIn('fha index', out)
+
+
+# Four transcripts of the same kind of evidence, in the four states the
+# transcribe-source marker contract defines.
+_DRAFTED_SID = 's-5m7p9r1t3v'    # a machine read the scan; nobody has checked it
+_CHECKED_SID = 's-6n8q0s2v4w'    # a human compared it to the image
+_TYPED_SID = 's-7p0r2t4w6x'      # a human typed it, or extract dumped it: no marker
+_BROKEN_SID = 's-8q1s3v5x7y'     # its marker is damaged and cannot be read
+
+
+class UncheckedTranscriptHitTests(unittest.TestCase):
+    """A hit that came from an unchecked machine reading says so, on its line.
+
+    #46 closed the hole where a search could not see an image-only source and a
+    null result was read as a finding. This is the same hole facing the other
+    way: a transcript a model produced and nobody checked against the image is
+    searchable and indistinguishable from evidence, and it does not fail
+    quietly - it returns confident hits, which nobody re-examines. By the
+    reasoning in AGENTS.md's "You cannot conclude absence from a search", that
+    is a coverage claim too.
+
+    The mark is per RESULT, not per search: one search can return a transcript a
+    human has compared to the scan and a transcript nobody has ever looked at,
+    and the difference between those two matters at the line. Which is also why
+    `unmarked` and `verified` must stay silent - flag every transcript and the
+    flag stops meaning anything."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+
+        page = '[Page 1]\nHartlee kept the {field} field.\n'
+        self.paths = {}
+        for sid, name, body in (
+            (_DRAFTED_SID, 'drafted', page.format(field='west')
+             + '\n<!-- AI-DRAFT 2026-08-16 a-model - transcript of chart.jpg, '
+               'pages 1-1; not yet checked against the image by a human -->\n'),
+            (_CHECKED_SID, 'checked', page.format(field='east')
+             + '\n<!-- AI-ACCEPTED 2026-08-16 a-model - transcript of '
+               'chart.jpg (accepted 2026-08-20) -->\n'),
+            (_TYPED_SID, 'typed', page.format(field='north')),
+            (_BROKEN_SID, 'broken', page.format(field='south')
+             + '\n<!-- AI-DRAFT 2026-08-16 a-model\n'),
+        ):
+            _add_source(self.conn, sid, f'A {name} transcript')
+            rel = f'documents/charts/{name}-transcript_{sid.upper()}.md'
+            self.paths[name] = rel
+            self.conn.execute(
+                'INSERT INTO transcripts_fts(source_id, path, content) '
+                'VALUES (?,?,?)', (sid, rel, body))
+
+        # The other surface: a claim value. `fha index` puts a source record's
+        # whole body into notes_fts, `## Claims` block included, so this is what
+        # a claim-value hit looks like to the search. It is deliberately the
+        # record of the source whose transcript IS unreviewed - the same source,
+        # a different surface - because that is the pair an implementation which
+        # marked the search (or the source) instead of the hit would get wrong.
+        self.paths['record'] = f'sources/other/drafted_{_DRAFTED_SID.upper()}.md'
+        self.conn.execute(
+            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+            (self.paths['record'],
+             '## Claims\n\n- id: C-aaaaaaaaaa\n  type: name\n'
+             '  value: Hartlee\n  status: accepted\n'))
+        # And a person profile carrying AI-DRAFT biography prose. The SAME
+        # marker word, in a file that is not a transcript of anything: nothing
+        # here was read off a picture, so calling it an unchecked transcript
+        # would be a false statement about where the words came from.
+        self.paths['profile'] = 'people/stubs/hartlee__rose_P-aaaaaaaaaa.md'
+        self.conn.execute(
+            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+            (self.paths['profile'],
+             '## Biography\n\nRose Hartlee farmed the west field.\n'
+             '<!-- AI-DRAFT 2026-08-16 a-model - biography from 2 claims -->\n'))
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _search(self, query: str):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = find._find_text(query, self.archive_root, {}, self.conn)
+        return code, buf.getvalue()
+
+    @staticmethod
+    def _marked(out: str, rel: str) -> bool:
+        """Is the result line for `rel` carrying the unchecked label?"""
+        for line in out.splitlines():
+            if line.strip().startswith(rel):
+                return '[unchecked AI transcript]' in line
+        raise AssertionError(f'{rel} is not in the results:\n{out}')
+
+    def test_an_unreviewed_transcript_hit_is_marked(self) -> None:
+        code, out = self._search('Hartlee')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertTrue(self._marked(out, self.paths['drafted']))
+
+    def test_a_verified_transcript_hit_is_silent(self) -> None:
+        # A human compared this one to the image. Marking it would say the
+        # opposite of what is true.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['checked']))
+
+    def test_an_unmarked_transcript_hit_is_silent(self) -> None:
+        # `unmarked` is not `unreviewed`. A human's typing and an `fha source
+        # extract` dump of a PDF's own text layer both carry no marker, and
+        # they are most of the transcripts in an archive: flag them and the
+        # reader learns to skip the flag, which is how the ones that matter get
+        # read as evidence.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['typed']))
+
+    def test_a_damaged_marker_is_marked_failing_closed(self) -> None:
+        # Its marker has no closing `-->`, so draft cannot be told from checked.
+        # Treated as unchecked, exactly as _lib.strip_unaccepted_drafts
+        # withholds rather than guesses.
+        _, out = self._search('Hartlee')
+        self.assertTrue(self._marked(out, self.paths['broken']))
+
+    def test_a_record_body_hit_is_not_a_transcript_hit(self) -> None:
+        # The match here is on what someone wrote down in a claim value, not on
+        # a machine's reading of a picture.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['record']))
+
+    def test_a_drafted_biography_hit_is_not_a_transcript_hit(self) -> None:
+        # The surface decides, not the marker word. An AI-drafted biography
+        # carries the identical `<!-- AI-DRAFT ... -->` comment - it is the same
+        # marker pair - but nobody read a picture to write it, and the profile
+        # is not a transcript of anything. Marking it would say something false
+        # about where the words came from, and put the label on a large share of
+        # ordinary profile hits.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['profile']))
+
+    def test_the_mark_explains_itself_once(self) -> None:
+        _, out = self._search('Hartlee')
+        self.assertIn('the image is the evidence', out)
+        self.assertIn('Nobody has checked them against the image', out)
+        # Once for the whole result list, not once per hit: two of these five
+        # results are marked, and repeating the paragraph between them would
+        # bury the results it is warning about.
+        self.assertEqual(out.count('Nobody has checked them against the image'), 1)
+
+    def test_nothing_is_said_when_every_hit_is_trustworthy(self) -> None:
+        # Only the checked and the unmarked transcripts match this one.
+        self.conn.execute('DELETE FROM transcripts_fts WHERE source_id IN (?,?)',
+                          (_DRAFTED_SID, _BROKEN_SID))
+        self.conn.commit()
+        _, out = self._search('Hartlee')
+        self.assertIn('Found 4 result(s)', out)
+        self.assertNotIn('unchecked AI transcript', out)
+
+    def test_the_regex_pass_marks_what_fts_did_not_match(self) -> None:
+        # The two halves must agree. FTS matches whole tokens and the fallback
+        # regex matches substrings, so a transcript really can be found only by
+        # the second pass - and printing it unmarked there would make the label
+        # depend on which pass happened to find it.
+        body = ('[Page 1]\nHartlee kept the west field.\n'
+                '\n<!-- AI-DRAFT 2026-08-16 a-model - pages 1-1 -->\n')
+        rel = self.paths['drafted']
+        on_disk = self.archive_root / rel
+        on_disk.parent.mkdir(parents=True, exist_ok=True)
+        on_disk.write_text(body, encoding='utf-8')
+        self.conn.execute('UPDATE transcripts_fts SET content=? WHERE source_id=?',
+                          (body, _DRAFTED_SID))
+        self.conn.commit()
+        _, out = self._search('artlee')          # a substring, not a token
+        self.assertTrue(self._marked(out, rel))
+
+    def test_an_external_documents_root_is_marked_too(self) -> None:
+        # The index keys a transcript by its alias-form path ('documents/…');
+        # the scan pass keys a file in an EXTERNAL documents root by its
+        # absolute path, because it is not under the archive root at all. An
+        # archive whose documents live on another drive must get the same
+        # answer as one that keeps them inside.
+        outside = Path(self._tmp.name + '-docs')
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        body = ('[Page 1]\nHartlee kept the west field.\n'
+                '\n<!-- AI-DRAFT 2026-08-16 a-model - pages 1-1 -->\n')
+        (outside / 'charts').mkdir()
+        on_disk = outside / 'charts' / Path(self.paths['drafted']).name
+        on_disk.write_text(body, encoding='utf-8')
+        self.conn.execute('UPDATE transcripts_fts SET content=? WHERE source_id=?',
+                          (body, _DRAFTED_SID))
+        self.conn.commit()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            find._find_text('artlee', self.archive_root,
+                            {'roots': {'documents': str(outside)}}, self.conn)
+        self.assertTrue(self._marked(buf.getvalue(), str(on_disk)))
 
 
 if __name__ == '__main__':
