@@ -1825,10 +1825,21 @@ class UnreadableRecordFolderTests(unittest.TestCase):
     def test_run_lint_leaves_exit_0_behind(self) -> None:
         # The point of the warning: a clean bill of health must not be issued
         # over records nobody read, so the run moves off exit 0.
+        #
+        # W123 is asserted BY CODE, not by a warning count, and the difference
+        # is the whole test. `n_warnings >= 1` passed against the unfixed lint
+        # on Python 3.10 - the floor, and a CI leg - for a reason that has
+        # nothing to do with this guarantee: pre-fix lint reached records
+        # through `rglob`, which on 3.10 does not observe a patched
+        # `os.scandir` (pathlib binds it at import time there). So the denied
+        # record stayed visible, its missing vitals raised W101, and one
+        # warning was enough to satisfy the assertion. On 3.14 the same test
+        # failed honestly. A count is not evidence when the fixture can supply
+        # the count by itself; the code is.
         with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
             result = lint.run_lint(self.root, {})
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
-        self.assertGreaterEqual(result['n_warnings'], 1)
+        self.assertIn('W123', [m.code for m in result.messages])
 
 
 if __name__ == '__main__':

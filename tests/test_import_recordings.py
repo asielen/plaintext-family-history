@@ -746,7 +746,15 @@ class AttributeSpeakersOutputSafetyTest(unittest.TestCase):
         self.assertEqual(self.whisper.read_bytes(), before)
 
     def test_an_output_reaching_an_input_through_a_linked_folder_is_refused(self):
-        """Same file, reached through a symlinked parent rather than by name."""
+        """Same file, reached through a symlinked parent rather than by name.
+
+        Guard, not proof: `canonical_path`'s `realpath` already resolved a
+        symlinked PARENT before `samefile` arrived, so this passes against the
+        pre-fix collision check. The three neighbours are the proof - a case
+        variant, an NFC/NFD accent, and a link to the FILE itself, none of
+        which string equality can answer. This pins the case the rewrite must
+        not lose on its way to the ones it was written for.
+        """
         linked = self.tmp / 'by-another-route'
         try:
             os.symlink(self.tmp, linked, target_is_directory=True)
@@ -1915,6 +1923,13 @@ class DedupeCoverageTest(unittest.TestCase):
         the documents root that lands on the inbox, and a link that lands on a
         folder inside it. Reading either as filed would answer the whole
         capture workflow with "already filed, nothing to import".
+
+        Guard, not proof: `realpath` already collapsed a symlinked FOLDER
+        before the identity rewrite, so this passes against the pre-fix walk
+        too. It is here so the move from prefix comparison to folder identity
+        cannot quietly drop a case the old code happened to get right - which
+        is a different and easier thing to lose than the cases the rewrite was
+        written for.
         """
         (self.archive / 'fha.yaml').write_text(
             'roots:\n  documents: documents\n  photos: photos\n'

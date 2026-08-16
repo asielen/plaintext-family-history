@@ -462,7 +462,16 @@ class MarkerDurabilityTestCase(unittest.TestCase):
         return rec
 
     def test_the_marker_is_flushed_before_the_first_rename(self):
-        """Both halves: the marker's bytes, then the folder entry naming it."""
+        """Both halves: the marker's bytes, then the folder entry naming it.
+
+        Guard, not proof, for the commit that added it: `_write_marker`'s two
+        flushes arrived one commit earlier, so this passes against that
+        commit's parent. What that commit did add is the mirror half - the
+        folder flush before the marker is RELEASED - and the two siblings
+        below are what prove it. This stays because the barrier it pins is the
+        one a later "the write already fsyncs, why flush the folder too"
+        simplification would remove.
+        """
         rec = self._record()
         ta.publish_transcripts(self.out, 'stem', _segments(2), 'medium', 'rec.m4a')
         marker_fsync = rec.index(('fsync', self.marker))
