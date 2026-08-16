@@ -16,6 +16,17 @@ What is covered here:
   2. DOC/CLI AGREEMENT - every `fha` verb and every script flag written in a
      SKILL.md code fence exists. A workflow that stops at a parser error is a
      broken workflow.
+  2b. ONE WORD, ONE VOTE - the two methods' evidence is pooled per WORD, not as
+     per-speaker totals. Adding the totals let the text alignment and the app's
+     clock each claim the same word, so a ten-word segment matched on five
+     words (5.0) and overlapping one speaker's interval for 45% of its duration
+     (4.5) scored 9.5/10 = 0.95 for 50% real coverage - and the gate, which
+     three documents describe as `coverage x (2 x agreement - 1)`, quietly
+     meant something looser than any of them said. `VotePoolingTest` pins the
+     meaning (a word cannot be covered twice, two methods covering different
+     words still add up, a contested word cancels) and `DocumentedGatesTest`
+     pins the number that goes with it: 0.65, measured to reproduce the
+     labelling the old arithmetic was producing, not chosen to sound safe.
   3. THE GATES THEMSELVES - the 80% timestamp gate is a true fraction (4 of 6
      turns must fail it); an untimed turn between two timed ones blanks its span
      instead of being absorbed into the previous speaker's interval; and a
@@ -159,8 +170,18 @@ class DocumentedGatesTest(unittest.TestCase):
         self.skill = SKILL_MD.read_text(encoding='utf-8')
         self.tooling = (ROOT / 'TOOLING_INTERFACE.md').read_text(encoding='utf-8')
 
-    def test_confidence_gate_default_is_the_documented_090(self):
-        self.assertAlmostEqual(attribute_speakers.DEFAULT_MIN_CONFIDENCE, 0.90)
+    def test_confidence_gate_default_is_the_documented_065(self):
+        """0.90 until the pooling fix, and the two numbers travel together.
+
+        0.90 was chosen against a score that let the alignment and the app's
+        clock each claim the same word, so on a timestamped export it was
+        really asking for about 0.45 of honest coverage. Correcting the count
+        without moving the gate would have kept the sentence and thrown away a
+        quarter of the labels the tool was already getting right; 0.65 is the
+        value measured to reproduce that operating point. Changing either half
+        alone is the drift this file exists to catch.
+        """
+        self.assertAlmostEqual(attribute_speakers.DEFAULT_MIN_CONFIDENCE, 0.65)
 
     def test_mispair_gate_default_is_the_documented_050(self):
         self.assertAlmostEqual(attribute_speakers.DEFAULT_MIN_MATCH_RATE, 0.50)
@@ -168,15 +189,54 @@ class DocumentedGatesTest(unittest.TestCase):
     def test_timestamp_coverage_gate_is_the_documented_080(self):
         self.assertAlmostEqual(attribute_speakers.TIME_MIN_TURN_COVERAGE, 0.80)
 
-    def test_skill_md_states_the_090_gate(self):
-        self.assertIn('0.90', self.skill)
-        self.assertIn('--min-confidence`, default 0.90', self.skill)
+    def test_skill_md_states_the_shipped_gate(self):
+        """Derived from the constant, so the prose cannot drift off it."""
+        gate = attribute_speakers.DEFAULT_MIN_CONFIDENCE
+        self.assertIn('--min-confidence`, default %.2f' % gate, self.skill)
+        self.assertIn('confidence of %.2f or better' % gate, self.skill)
 
-    def test_tooling_interface_states_the_090_gate(self):
+    def test_skill_md_states_both_ends_of_what_the_gate_demands(self):
+        """The sentence that was false before: what full/partial coverage costs.
+
+        Markdown wraps, so the doc is read with its whitespace collapsed - a
+        line break landing between "82.5%" and "agreement" is not drift.
+        """
+        gate = attribute_speakers.DEFAULT_MIN_CONFIDENCE
+        flat = ' '.join(self.skill.split())
+        self.assertIn('%g%% agreement' % (100.0 * (1.0 + gate) / 2.0), flat)
+        self.assertIn('%g%% coverage' % (100.0 * gate), flat)
+
+    def test_tooling_interface_states_the_shipped_gate(self):
         entry = [ln for ln in self.tooling.splitlines()
                  if ln.startswith('- `import-recordings`')]
         self.assertEqual(len(entry), 1, 'the import-recordings design entry moved')
-        self.assertIn('0.90', entry[0])
+        gate = attribute_speakers.DEFAULT_MIN_CONFIDENCE
+        self.assertIn('confidence of %.2f or better' % gate, entry[0])
+        self.assertIn('%g%% agreement' % (100.0 * (1.0 + gate) / 2.0), entry[0])
+        self.assertIn('%g%% coverage' % (100.0 * gate), entry[0])
+
+    def test_the_unverified_field_figure_is_marked_as_unverified(self):
+        """96% at ~75% coverage was measured under the OLD arithmetic.
+
+        It is the one published number this change could not re-measure - it
+        needs a real recording with known speakers, and fixtures are not that.
+        A stale measurement quoted as current is exactly the drift that put the
+        0.90 gate in three documents while the code meant something else, so
+        wherever it still appears it must say it is unverified.
+        """
+        source = (SCRIPTS / 'attribute_speakers.py').read_text(encoding='utf-8')
+        for name, raw in (('SKILL.md', self.skill),
+                          ('TOOLING_INTERFACE.md', self.tooling),
+                          ('attribute_speakers.py', source)):
+            if '96%' not in raw:
+                continue
+            text = ' '.join(raw.split())
+            window = text[max(0, text.index('96%') - 900):text.index('96%') + 900]
+            self.assertTrue(
+                'not been re-measured' in window
+                or 'NOT been re-measured' in window
+                or 'needs re-measuring' in window.lower(),
+                '%s quotes the 96%% figure without saying it is unverified' % name)
 
     def test_documented_stage_b_command_relies_on_the_default(self):
         """The worked invocation must not pass --min-confidence.
@@ -246,7 +306,10 @@ class DocumentedGatesTest(unittest.TestCase):
 
     def test_decide_labels_at_the_gate_and_refuses_just_below_it(self):
         """The gate value is enforced where it is read, not just where it is set."""
-        for weight, expect_label in ((9.5, True), (9.0, True), (8.5, False)):
+        gate = attribute_speakers.DEFAULT_MIN_CONFIDENCE
+        for weight, expect_label in ((10.0 * gate + 0.5, True),
+                                     (10.0 * gate, True),
+                                     (10.0 * gate - 0.5, False)):
             seg = attribute_speakers.Segment()
             seg.idx = 0
             seg.tokens = ['w'] * 10
@@ -254,7 +317,7 @@ class DocumentedGatesTest(unittest.TestCase):
             votes = [attribute_speakers.Counter({'Speaker 1': weight})]
             attribute_speakers.decide(
                 [seg], votes, None, [(0, 0), (9, 9)],
-                ['Speaker 1'] * 10, attribute_speakers.DEFAULT_MIN_CONFIDENCE)
+                ['Speaker 1'] * 10, gate)
             self.assertEqual(seg.speaker is not None, expect_label,
                              'weight %.1f/10 decided wrongly (reason %r)'
                              % (weight, seg.reason))
@@ -397,7 +460,10 @@ class BlindSpanTest(unittest.TestCase):
         ]
         for seg, turn in zip(segments, turns):
             turn.tokens = list(seg.tokens)
-        votes, used = attribute_speakers.collect_time_votes(
+        # The third value is the per-word breakdown of the same evidence, which
+        # `pool_votes` needs to tell "the clock and the alignment agree about
+        # these words" from "they are talking about different words".
+        votes, used, _per_word = attribute_speakers.collect_time_votes(
             segments, turns, len(segments), [])
         # Segment 2 (00:00:20) sits wholly inside the blind span.
         self.assertEqual(dict(votes[2]), {})
@@ -497,6 +563,224 @@ class UncoveredTailTest(unittest.TestCase):
                 self.assertNotIn('Speaker', line,
                                  'a segment the app transcript never reached was '
                                  'labelled anyway')
+
+
+def _distinct_words(n, start=0):
+    """`n` tokens that appear nowhere else, so anchoring is unambiguous."""
+    return ['word%03d' % k for k in range(start, start + n)]
+
+
+def _double_counted_pair(blind_after_target=True):
+    """A pair where BOTH methods describe the same half of one segment.
+
+    Twelve whisper segments of ten distinct words each, ten seconds apart. The
+    target is segment 4 (00:00:40 to 00:00:50), and everything is arranged so
+    that the alignment and the timestamp path cover exactly the same five
+    words of it:
+
+      * the app's first turn (Speaker 1) carries segments 0-3 plus the FIRST
+        FIVE words of segment 4 and nothing more, so the text alignment covers
+        those five words and no others,
+      * that turn's interval ends at 00:00:45, halfway through the target, so
+        the timestamp path covers the same five words' worth of duration.
+
+    With `blind_after_target` the turn beginning at 00:00:45 is followed by an
+    untimed turn, so its span is blind and casts no vote: the target's second
+    half has no evidence at all from either method, and its honest coverage is
+    50%. Without it, the timestamp path covers the WHOLE target for Speaker 1
+    while the alignment still covers only half - the shape that used to push a
+    segment's total vote weight above its own word count.
+    """
+    words = _distinct_words(120)
+    segs = [words[i * 10:(i + 1) * 10] for i in range(12)]
+    rows = [('00:%02d:%02d' % ((i * 10) // 60, (i * 10) % 60), ' '.join(s))
+            for i, s in enumerate(segs)]
+    target = 4
+    first = [w for i in range(target) for w in segs[i]] + segs[target][:5]
+    turns = [
+        (1, '00:00', ' '.join(first)),
+        (2, '00:45', ' '.join(segs[target + 1])),
+        (1, None if blind_after_target else '00:55', ' '.join(segs[target + 2])),
+        (2, '01:10', ' '.join(segs[7] + segs[8] + segs[9])),
+        (1, '01:40', ' '.join(segs[10] + segs[11])),
+    ]
+    return whisper_text(rows), app_numbered(turns), target
+
+
+def _evidence(whisper, app):
+    """Run the pipeline as far as the pooled votes, the way main() does."""
+    segments, wh_stream, wh_owner = attribute_speakers.parse_whisper(
+        whisper.splitlines())
+    turns, _variant, app_stream, app_owner = attribute_speakers.parse_app(
+        app.splitlines())
+    pairs, _stats = attribute_speakers.align_tokens(app_stream, wh_stream)
+    _v, _a, _f, align_claim = attribute_speakers.collect_align_votes(
+        pairs, app_owner, wh_owner, len(segments))
+    tv = attribute_speakers.collect_time_votes(
+        segments, turns, len(segments), [])
+    time_claim = tv[2] if tv is not None else None
+    votes = attribute_speakers.pool_votes(segments, align_claim, time_claim)
+    return segments, votes, tv, pairs, app_owner
+
+
+class VotePoolingTest(unittest.TestCase):
+    """One word, one vote - however many methods claim that word.
+
+    THE DEFECT THIS CLASS PINS. The alignment votes and the timestamp votes
+    used to be added as per-speaker totals, in a space where each method could
+    already contribute a full vote for every word of the segment. A ten-word
+    segment matched on five words by the alignment (5.0) and overlapping a
+    Speaker 1 interval for 45% of its duration (4.5) therefore scored
+    9.5 / 10 = 0.95 and was published - even when both numbers were describing
+    the same five words and the real coverage was 50%.
+
+    That is not a tuning question. The score is documented, in three places, as
+    `coverage x (2 x agreement - 1)`, and a coverage figure that counts one
+    word twice is not a coverage figure: the shipped gate demanded something
+    looser than every sentence describing it said. The tests below fix the
+    meaning rather than the number - what a word is worth, not where the bar
+    sits (the bar is `DocumentedGatesTest`'s business).
+    """
+
+    def _segment(self, ntok, t0=0):
+        seg = attribute_speakers.Segment()
+        seg.idx = 0
+        seg.tokens = ['w'] * ntok
+        seg.t0, seg.t1 = t0, t0 + ntok
+        return seg
+
+    def test_two_methods_over_the_same_words_are_one_covered_word(self):
+        """The docstring's own worked example: 9.5 was never 0.95 of anything."""
+        seg = self._segment(10)
+        align = {k: 'Speaker 1' for k in range(5)}
+        time = [[attribute_speakers.Counter({'Speaker 1': 1.0})] * 4
+                + [attribute_speakers.Counter({'Speaker 1': 0.5})]
+                + [attribute_speakers.Counter() for _ in range(5)]]
+        votes = attribute_speakers.pool_votes([seg], align, time)
+        # The naive sum of the two methods' totals, which is what shipped.
+        self.assertAlmostEqual(len(align) + sum(sum(c.values()) for c in time[0]),
+                               9.5, places=6)
+        self.assertAlmostEqual(sum(votes[0].values()), 5.0, places=6,
+                               msg='the same five words were counted twice')
+
+    def test_two_methods_over_different_words_still_add_up(self):
+        """Union, not max: covering different halves really is full coverage.
+
+        This is why the pooling is positional rather than a per-speaker
+        `max()`, which needs no positions but would score this segment 50%.
+        """
+        seg = self._segment(10)
+        align = {k: 'Speaker 1' for k in range(5)}
+        time = [[attribute_speakers.Counter() for _ in range(5)]
+                + [attribute_speakers.Counter({'Speaker 1': 1.0}) for _ in range(5)]]
+        votes = attribute_speakers.pool_votes([seg], align, time)
+        self.assertAlmostEqual(sum(votes[0].values()), 10.0, places=6)
+
+    def test_two_methods_claiming_one_word_for_two_speakers_cancel(self):
+        """A contested word contributes nothing to (winner - others)."""
+        seg = self._segment(4)
+        align = {k: 'Speaker 1' for k in range(4)}
+        time = [[attribute_speakers.Counter({'Speaker 2': 1.0}) for _ in range(4)]]
+        votes = attribute_speakers.pool_votes([seg], align, time)
+        self.assertAlmostEqual(votes[0]['Speaker 1'], 2.0, places=6)
+        self.assertAlmostEqual(votes[0]['Speaker 2'], 2.0, places=6)
+
+    def test_with_no_timestamp_path_the_alignment_votes_are_untouched(self):
+        """The align-only path had no defect, so it must not have moved."""
+        whisper, app, _target = _double_counted_pair()
+        segments, wh_stream, wh_owner = attribute_speakers.parse_whisper(
+            whisper.splitlines())
+        turns, _v, app_stream, app_owner = attribute_speakers.parse_app(
+            app.splitlines())
+        pairs, _s = attribute_speakers.align_tokens(app_stream, wh_stream)
+        align_votes, _a, _f, claim = attribute_speakers.collect_align_votes(
+            pairs, app_owner, wh_owner, len(segments))
+        pooled = attribute_speakers.pool_votes(segments, claim, None)
+        for seg in segments:
+            self.assertEqual(dict(pooled[seg.idx]), dict(align_votes[seg.idx]),
+                             'segment %d moved without a timestamp path' % seg.idx)
+
+    def test_no_segment_can_be_covered_more_than_completely(self):
+        """The invariant the documented formula rests on, on a real pair.
+
+        `coverage x (2 x agreement - 1)` is only a coverage figure while the
+        votes cast over a segment cannot outnumber its words. Under the pooled
+        sum they could, and did: with the timestamp path covering the whole of
+        this target and the alignment covering half of it, the target collected
+        15 votes for a segment of 10 words.
+        """
+        whisper, app, target = _double_counted_pair(blind_after_target=False)
+        segments, votes, tv, _pairs, _owner = _evidence(whisper, app)
+        self.assertIsNotNone(tv, 'the timestamp path did not switch on')
+        for seg in segments:
+            self.assertLessEqual(
+                sum(votes[seg.idx].values()), len(seg.tokens) + 1e-9,
+                'segment %d cast %.2f votes over %d words'
+                % (seg.idx, sum(votes[seg.idx].values()), len(seg.tokens)))
+        self.assertAlmostEqual(sum(votes[target].values()), 10.0, places=6)
+
+    def test_a_segment_covered_twice_over_one_half_is_left_unlabelled(self):
+        """End to end, at the shipped default: the load-bearing case.
+
+        Half the target's words carry evidence and the other half carry none,
+        from either method. Its honest confidence is 0.50 and it goes out
+        unlabelled. Before the pooling was corrected the two methods' totals
+        summed to 10.0 over ten words, the segment scored a flat 1.00, and it
+        was published with a speaker on it.
+        """
+        tmp = Path(tempfile.mkdtemp(prefix='import-recordings-pool-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        whisper, app, _target = _double_counted_pair()
+        (tmp / 'w.md').write_text(whisper, encoding='utf-8')
+        (tmp / 'a.txt').write_text(app, encoding='utf-8')
+        out = tmp / 'o.md'
+        code, _stdout, _err = run_script(attribute_speakers, [
+            '--whisper', str(tmp / 'w.md'), '--app-transcript', str(tmp / 'a.txt'),
+            '--out', str(out), '--quiet'])
+        self.assertEqual(code, 0)
+        line = [ln for ln in out.read_text(encoding='utf-8').splitlines()
+                if ln.startswith('**[00:00:40]')]
+        self.assertEqual(len(line), 1, 'the target segment moved')
+        self.assertNotIn('Speaker', line[0],
+                         'a segment with 50% real coverage was labelled anyway')
+
+        segments, votes, _tv, pairs, app_owner = _evidence(whisper, app)
+        attribute_speakers.decide(segments, votes, None, pairs, app_owner,
+                                  attribute_speakers.DEFAULT_MIN_CONFIDENCE)
+        self.assertAlmostEqual(segments[4].confidence, 0.50, places=6)
+
+    def test_the_documented_reading_of_the_gate_is_arithmetically_true(self):
+        """Both ends of the sentence the docs print, derived from the constant.
+
+        A unanimous segment needs `gate` coverage; a fully covered one needs
+        (1 + gate) / 2 agreement. Both readings are only true because a word
+        cannot vote twice, so this is the doc-facing half of the invariant
+        above rather than a separate rule.
+        """
+        gate = attribute_speakers.DEFAULT_MIN_CONFIDENCE
+        ntok = 200
+        for covered, expect in ((int(round(gate * ntok)), True),
+                                (int(round(gate * ntok)) - 2, False)):
+            seg = self._segment(ntok)
+            align = {k: 'Speaker 1' for k in range(covered)}
+            votes = attribute_speakers.pool_votes([seg], align, None)
+            attribute_speakers.decide([seg], votes, None, [(0, 0), (ntok, ntok)],
+                                      ['Speaker 1'] * (ntok + 1), gate)
+            self.assertEqual(seg.speaker is not None, expect,
+                             'unanimous at %d/%d words decided wrongly (%.4f)'
+                             % (covered, ntok, seg.confidence))
+        need = (1.0 + gate) / 2.0
+        for share, expect in ((need + 0.01, True), (need - 0.01, False)):
+            seg = self._segment(ntok)
+            win = int(round(share * ntok))
+            align = dict([(k, 'Speaker 1') for k in range(win)]
+                         + [(k, 'Speaker 2') for k in range(win, ntok)])
+            votes = attribute_speakers.pool_votes([seg], align, None)
+            attribute_speakers.decide([seg], votes, None, [(0, 0), (ntok, ntok)],
+                                      ['Speaker 1'] * (ntok + 1), gate)
+            self.assertEqual(seg.speaker is not None, expect,
+                             'fully covered at %.3f agreement decided wrongly '
+                             '(%.4f)' % (share, seg.confidence))
 
 
 class MispairGateCoverageTest(unittest.TestCase):
@@ -904,7 +1188,8 @@ class AttributeSpeakersOutputSafetyTest(unittest.TestCase):
     def test_report_settings_echo_the_documented_gate(self):
         self._run()
         report = json.loads(self.report.read_text(encoding='utf-8'))
-        self.assertAlmostEqual(report['settings']['min_confidence'], 0.90)
+        self.assertAlmostEqual(report['settings']['min_confidence'],
+                               attribute_speakers.DEFAULT_MIN_CONFIDENCE)
         self.assertAlmostEqual(report['settings']['min_match_rate'], 0.50)
 
     def test_a_missing_input_names_the_next_step_and_writes_nothing(self):

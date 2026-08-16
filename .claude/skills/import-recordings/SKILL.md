@@ -412,14 +412,30 @@ directory — pass `--root <archive>` on every call rather than guessing.
      export): if `--out` or `--report` already holds a file, it is left alone and the script exits 1
      rather than replace good work with an unlabeled copy — and `--replace` does not buy past that
      one either, because it says a file may go, not that an unlabeled copy is worth what it replaces.
-   - **Label a whisper segment only at a confidence of 0.90 or better, and never when contested.**
+   - **Label a whisper segment only at a confidence of 0.65 or better, and never when contested.**
      The score is `coverage × (2 × agreement − 1)` — the winner's votes minus everybody else's, over
-     the segment's token count — so 0.90 demands a segment be nearly fully covered *and* nearly
-     unanimous: fully covered needs ≥ 95% agreement, unanimous needs ≥ 90% coverage. At that
-     operating point ~75% of segments get a label at ~95% agreement and **25% are honestly left
-     unlabeled**. (`--min-confidence`, default 0.90. Lowering it is a decision you own and must say
-     out loud; below 0.9 the measured agreement falls toward a coin flip, and nothing downstream may
-     treat a lowered run as if it met this contract.)
+     the segment's token count. Every word of a segment has **one** vote and gives it once, however
+     many methods claim that word: the text alignment and the app's timestamps agreeing about a word
+     make it *one covered word, not two*, and when they claim the same word for different speakers
+     its vote splits and cancels. So 0.65 reads at both ends — a fully covered segment needs ≥ 82.5%
+     agreement, and a unanimous segment needs ≥ 65% coverage. On the fixture set used to calibrate
+     it (32 synthetic interview pairs, ~2,800 segments with known speakers, corrupted app text,
+     mid-sentence app splits, blind spans and phantom speaker IDs) that labels ~72% of segments and
+     leaves **~28% honestly unlabeled**. (`--min-confidence`, default 0.65. Lowering it is a decision
+     you own and must say out loud, and nothing downstream may treat a lowered run as if it met this
+     contract.)
+
+     **Why 0.65, when this skill used to advertise 0.90.** The old score let the two methods each
+     claim the same word: a ten-word segment matched on five words by the alignment (5.0) and
+     overlapping one speaker's interval for 45% of its duration (4.5) scored 9.5/10 = 0.95 even when
+     both numbers described the same five words. So 0.90 of a doubled number was really asking for
+     about 0.45 of honest coverage, and every sentence promising "nearly fully covered" — this one
+     included — was untrue of the code. The count was corrected so the published formula means what
+     it says; 0.65 is the gate **measured** to keep the labelling the tool was already producing
+     (72.7% of segments labelled before, 72.1% after, with the same or a slightly higher share of
+     them correct). One consequence to know: an app export with no usable timestamps was never
+     double-counted, so nothing about its scores changed and the lower gate genuinely does loosen
+     that case — on the same fixtures, from ~57% of its segments labelled to ~68%.
    - **Never interpolate across a speaker change**, and never across a gap wider than ~25 tokens.
    - **Timestamp evidence needs real coverage, and coverage means *where*, not just *how many*.**
      The interval path only switches on when at least 80% of the app's turns actually carry a
@@ -436,9 +452,14 @@ directory — pass `--root <archive>` on every call rather than guessing.
 
    State the ceiling rather than hiding it: **this is label transfer, not diarization.** It can only
    inherit the app's own segmentation, including its mid-sentence splits and its phantom speakers
-   (one real 3-person conversation exported with **ten** speaker IDs). The residual ~4–5% error sits
-   within 3–5 seconds of a turn boundary where neither method is authoritative, and no threshold
-   fixes it. Never call the output "diarized".
+   (one real 3-person conversation exported with **ten** speaker IDs). The residual error sits within
+   3–5 seconds of a turn boundary where neither method is authoritative, and no threshold fixes it.
+   Never call the output "diarized". **One published number is currently unverified:** the "precision
+   plateaus around 96% at ~75% coverage" figure was measured on a real interview under the older,
+   over-counting confidence score and its 0.90 gate. It has not been re-measured against what ships
+   now, and the calibration above is fixtures rather than field. Quote it as the shape of the answer,
+   not as a measurement of this build, until somebody runs the current script over a real pair whose
+   speakers are known.
 
    The merged file opens with an AI marker naming the model, the date, the gates, and the plain
    sentence that **an unlabeled turn means unknown, not unimportant** (SPEC §6.1: AI-written text is
@@ -548,7 +569,7 @@ proposal-and-confirm is unchanged.
        task: "local whisper transcription of the recording",
        outputs: [], human_reviewed: false}
     - {date: {today}, model: {your-model-id}, harness: {your-harness},
-       task: "speaker-label transfer from the app transcript onto the whisper text (gate >= 0.90)",
+       task: "speaker-label transfer from the app transcript onto the whisper text (gate >= 0.65)",
        outputs: [], human_reviewed: false}
     ```
 

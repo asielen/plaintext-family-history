@@ -86,10 +86,13 @@ OPPORTUNISTIC TIMESTAMP PATH
 Some app exports carry per-turn timestamps (`1 / Speaker 1 / 00:01 / text…`).
 When at least 80% of turns have monotone timestamps, the problem collapses to an
 interval lookup, which is strictly better than any text alignment. Rather than
-choosing between the two, both are run and their evidence is pooled in the same
-vote space (each method may contribute at most one vote per token of the
-segment). Agreement saturates confidence; disagreement cancels to zero and the
-segment goes out unlabeled. Nothing is assumed about which method is right.
+choosing between the two, both are run and their evidence is pooled PER WORD:
+each of a segment's words has one vote to give, and it gives that vote once
+however many methods claim it. Two methods agreeing about a word are one covered
+word, not two - agreement is confidence about that word, not more of the
+segment. When they claim the same word for different speakers, its vote splits
+and cancels, and the segment goes out unlabeled. Nothing is assumed about which
+method is right.
 
 The 80% gate is a real fraction, not a truncated one: 4 of 6 turns is 66.7% and
 fails it. And an interval only carries a speaker when the turn that ends it is
@@ -109,23 +112,64 @@ through. An uncovered tail casts no timestamp votes and goes out unlabelled.
 
 CONFIDENCE
 ==========
-Per Whisper segment, every token that carries evidence votes for one speaker.
+Per Whisper segment, every word has ONE vote and gives it once, however many
+methods claim that word. The alignment names exact words; the timestamp path
+names time spans, which become words at the file's own speaking rate.
 
-    confidence = (winner_votes − all_other_votes) / segment_token_count
+    confidence = (winner_votes - all_other_votes) / segment_token_count
 
-which is algebraically identical to  coverage × (2·agreement − 1), clipped to
-[0, 1]. It penalises thin coverage and contested segments in one number: a fully
-covered segment split 60/40 scores 0.20; a 40%-covered unanimous segment scores
-0.40.
+which is algebraically identical to  coverage x (2 x agreement - 1), where
+coverage is the share of the segment's words carrying any evidence at all. It
+penalises thin coverage and contested segments in one number: a fully covered
+segment split 60/40 scores 0.20; a 40%-covered unanimous segment scores 0.40.
 
-The gate is 0.90, and it is the safety contract this skill advertises rather
-than a tuning knob (SKILL.md "Transfer speaker turns…", TOOLING_INTERFACE.md
-§import-recordings). At that operating point a segment must be nearly fully
-covered AND nearly unanimous: a fully covered segment needs >= 95% agreement,
-a unanimous one needs >= 90% coverage. Everything below stays unlabelled, which
-is what "an unlabelled turn means unknown, not unimportant" promises the reader.
-Lowering it with --min-confidence is possible and is the caller's decision to
-defend; nothing downstream may treat a lowered run as if it met the contract.
+One vote per word is the whole reason `pool_votes` exists, and it is a
+correction. Until it did exist, the two methods' per-speaker TOTALS were added,
+in a space where each method could already contribute a full vote per word: a
+ten-word segment matched on five words by the alignment (5.0) and overlapping a
+Speaker 1 interval for 45% of its duration (4.5) scored 9.5/10 = 0.95 - even
+when both numbers were describing the same five words and the real coverage was
+50%. The gate then promised a coverage nothing measured, and every document
+describing it said something that was not true of the code.
+
+The gate is 0.65, and it is the safety contract this skill advertises rather
+than a tuning knob (SKILL.md "Transfer speaker turns...", TOOLING_INTERFACE.md
+§import-recordings). Read it at both ends: a fully covered segment needs
+>= 82.5% agreement - that is (1 + gate) / 2 - and a unanimous segment needs
+>= 65% coverage. Everything below stays unlabeled, which is what "an unlabeled
+turn means unknown, not unimportant" promises the reader.
+
+WHY 0.65 AND NOT THE 0.90 THIS FILE SHIPPED BEFORE. 0.90 was chosen against the
+doubled score, where on a timestamped export it was really asking for about 0.45
+of honest coverage. Correcting the arithmetic and leaving the gate where it was
+would have kept the sentence and thrown away a quarter of the labels the tool
+was already getting right, which is fixing a documentation error by breaking a
+working tool. 0.65 is the value MEASURED to reproduce the old operating point
+under the corrected count, over 32 synthetic interview pairs (about 2,800
+segments) with known speakers, corrupted app text, mid-sentence app splits,
+blind spans and phantom speaker IDs:
+
+    old arithmetic, gate 0.90    72.7% of segments labeled, 92.6% of those right
+    new arithmetic, gate 0.90    61.5% labeled, 94.9% right
+    new arithmetic, gate 0.65    72.1% labeled, 93.2% right
+
+and, on a held-out set of the same shapes built from different seeds, 72.4% /
+95.5% before against 71.4% / 95.6% after. Same operating point, honest number.
+
+Note what moved underneath, because it is a real consequence and not a rounding
+detail: an app export with no usable timestamps was never double counted, so
+none of its scores changed. Lowering the gate does loosen that path - on the
+same fixtures it goes from 56.9% labeled at 99.0% right to 68.1% at 97.5%. That
+is the price of one number covering both paths instead of two, and two gates
+would be a second knob on a contract that is meant to be one.
+
+These are fixture measurements, not field measurements. The precision plateau
+quoted under HONEST LIMITS was measured on a real interview under the OLD
+arithmetic and has NOT been re-measured; see that section before quoting it.
+
+Lowering the gate further with --min-confidence is possible and is the caller's
+decision to defend; nothing downstream may treat a lowered run as if it met the
+contract.
 
 SAFETY RULES (all mandatory, none tunable away)
 ==============================================
@@ -205,9 +249,16 @@ SAFETY RULES (all mandatory, none tunable away)
 
 HONEST LIMITS
 =============
-* Precision plateaus around 96% at ~75% coverage; the residual sits within a few
-  seconds of turn boundaries where neither the app's turn starts nor Whisper's
-  segment starts are authoritative. Tightening the threshold does not fix it.
+* THE FIELD PRECISION FIGURE NEEDS RE-MEASURING. "Precision plateaus around 96%
+  at ~75% coverage" was measured on a real interview under the OLD pooled
+  arithmetic and its 0.90 gate, and neither of those is what ships now. The
+  fixture calibration under CONFIDENCE says the operating point is unchanged,
+  but a synthetic pair is not a recording: until somebody runs the corrected
+  tool over a real pair with known speakers, read 96% / 75% as the shape of the
+  answer and not as a measurement of what ships today. What has NOT changed is
+  where the residual sits: within a few seconds of turn boundaries, where
+  neither the app's turn starts nor Whisper's segment starts are authoritative.
+  Tightening the threshold does not fix that.
 * Both transcribers mangle proper names, so a speaker label on a name-bearing
   segment is the *least* trustworthy kind — and names are what genealogy wants.
 * Mid-sentence app splits and phantom app speakers are inherited, not repaired.
@@ -244,6 +295,8 @@ CODE MAP
                      turn_span_estimate        how long one turn plausibly lasts
                      speaker_intervals         turn spans, blind where unknowable
                      collect_time_votes        votes from the interval lookup
+                     pool_votes                one vote per word, however many
+                                               methods claim it
   Decision           enclosing_agree           do the anchors around a segment agree
                      decide                    the gate: label, or say why not
   Rendering          render                    rewrite segment header lines
@@ -274,7 +327,13 @@ TOOL_VERSION = "1.0.0"
 # ---------------------------------------------------------------------------
 # Tunables (documented above; changing these changes the safety story)
 # ---------------------------------------------------------------------------
-DEFAULT_MIN_CONFIDENCE = 0.90   # the documented safety contract, not a knob
+DEFAULT_MIN_CONFIDENCE = 0.65   # the documented safety contract, not a knob.
+                          # 0.90 until the pooling fix: the old vote space let
+                          # the alignment and the clock each claim the same
+                          # word, so 0.90 of a doubled score was really asking
+                          # for about 0.45 of honest coverage. 0.65 is the
+                          # value measured to reproduce the old operating point
+                          # once each word votes once (see CONFIDENCE above).
 DEFAULT_MIN_MATCH_RATE = 0.50
 MIN_MATCH_TOKENS = 20     # and the rate must rest on at least this many matched
                           # words. A rate over five words is not a measurement:
@@ -961,12 +1020,26 @@ def mispair_sentence(ev, min_match_rate):
 # Evidence gathering
 # ---------------------------------------------------------------------------
 def collect_align_votes(pairs, app_owner, wh_owner, n_segments):
+    """Alignment evidence, both as per-segment votes and as WHICH token it sits on.
+
+    The fourth return value is the load-bearing one: `claim` maps a whisper
+    token's index in the flat stream to the speaker the alignment says owns it.
+    Nothing about the arithmetic here changed when that map was added - each
+    whisper token index appears at most once in `pairs` (align_tokens keeps the
+    pairs strictly increasing in j) and gap-filling only touches the indices
+    strictly between two pairs - so `votes` is exactly the per-token count it
+    always was. What the map buys is the ability to ask, later, whether the
+    timestamp path is describing the SAME tokens or different ones, which a
+    bag of per-speaker totals cannot answer. See `pool_votes`.
+    """
     votes = [Counter() for _ in range(n_segments)]
     anchored = [0] * n_segments
     filled = [0] * n_segments
+    claim = {}
     for (i, j) in pairs:
         seg = wh_owner[j]
         votes[seg][app_owner[i]] += 1.0
+        claim[j] = app_owner[i]
         anchored[seg] += 1
     # Interpolate only between two anchors that agree, and only over short gaps.
     for k in range(1, len(pairs)):
@@ -982,8 +1055,9 @@ def collect_align_votes(pairs, app_owner, wh_owner, n_segments):
         for j in range(j1 + 1, j2):
             seg = wh_owner[j]
             votes[seg][s1] += 1.0
+            claim[j] = s1
             filled[seg] += 1
-    return votes, anchored, filled
+    return votes, anchored, filled, claim
 
 
 def timestamp_coverage_ok(turns):
@@ -1108,6 +1182,7 @@ def collect_time_votes(segments, turns, n_segments, warnings):
         return None
 
     votes = [Counter() for _ in range(n_segments)]
+    claim = [[] for _ in range(n_segments)]
     used = [False] * n_segments
     k = 0
     for idx, seg in enumerate(segments):
@@ -1118,28 +1193,115 @@ def collect_time_votes(segments, turns, n_segments, warnings):
         ntok = len(seg.tokens)
         if ntok == 0:
             continue
+        # `s1 > s0` is guaranteed by the reset above, so `dur` is safe to
+        # divide by; the cursor is advanced first either way, because it is
+        # shared across segments and must not depend on this segment's shape.
         while k + 1 < len(intervals) and intervals[k][1] <= s0:
             k += 1
+        dur = s1 - s0
         kk = k
-        acc = Counter()
+        per_token = [Counter() for _ in range(ntok)]
+        tok_dur = dur / float(ntok)
         while kk < len(intervals) and intervals[kk][0] < s1:
             i0, i1, spk = intervals[kk]
             kk += 1
             if spk is None:
                 continue                   # blind span: no vote in either direction
-            ov = min(s1, i1) - max(s0, i0)
-            if ov > 0:
-                acc[spk] += ov
-        dur = s1 - s0
-        if dur <= 0 or not acc:
-            continue
-        # Overlaps that fell in a blind span are simply absent from `acc`, so a
+            lo = max(s0, i0)
+            hi = min(s1, i1)
+            if hi <= lo:
+                continue
+            # Which of this segment's words the interval covers, at the same
+            # speaking rate the rest of the file is measured with. The total
+            # weight this loop hands `spk` is (overlap / duration) * ntok, to
+            # the last decimal place - the per-token breakdown is a finer
+            # accounting of the same evidence, not more of it. It exists so
+            # `pool_votes` can tell "the alignment and the clock agree about
+            # these five words" from "they are talking about different words".
+            m_lo = max(0, int((lo - s0) / tok_dur))
+            m_hi = min(ntok - 1, int((hi - s0 - FRACTION_EPSILON) / tok_dur))
+            for m in range(m_lo, m_hi + 1):
+                a = s0 + m * tok_dur
+                ov = min(hi, a + tok_dur) - max(lo, a)
+                if ov > 0:
+                    per_token[m][spk] += ov / tok_dur
+        # Overlaps that fell in a blind span are simply absent, so a
         # partly-blind segment gets proportionally less timestamp weight. That
         # is the intended behaviour: less certainty, less vote.
-        for spk, ov in acc.items():
-            votes[idx][spk] += (ov / dur) * ntok
+        got = False
+        for m in range(ntok):
+            for spk, w in per_token[m].items():
+                votes[idx][spk] += w
+                got = True
+        if not got:
+            continue
+        claim[idx] = per_token
         used[idx] = True
-    return votes, used
+    return votes, used, claim
+
+
+def pool_votes(segments, align_claim, time_claim):
+    """One vote per whisper token, shared out among whoever claims that token.
+
+    THE RULE: a segment of N words has N votes to give, and each word gives its
+    own vote once. Two methods that agree about a word are one covered word,
+    not two.
+
+    This function exists because the earlier version pooled the two methods'
+    per-speaker totals by adding them, in a vote space where each method could
+    already contribute up to one vote per token on its own. A ten-word segment
+    matched on five words by the alignment (5.0) and overlapping a Speaker 1
+    interval for 45% of its duration (4.5) scored 9.5 out of 10 - a confidence
+    of 0.95 - even when both methods were describing the same half of the
+    segment and the real coverage was 50%. The score is meant to read as
+    coverage x (2 x agreement - 1), and coverage that counts the same word
+    twice is not coverage. The gate then meant something looser than every
+    document describing it said it meant.
+
+    So the two methods are intersected where they can be: the alignment names
+    exact token indices, and the timestamp path names time spans, which become
+    token indices at the file's own speaking rate. Per token, the claims are
+    summed and then scaled back to at most one vote:
+
+      * both methods, same speaker  -> 1.0 for that speaker (corroboration is
+        confidence about the word, not a second word),
+      * both methods, different speakers -> 0.5 each, which cancels in
+        (winner - others) exactly as a contested word should,
+      * one method only -> that method's weight, unchanged.
+
+    The alternative considered was to keep the per-speaker totals and pool them
+    as max() rather than sum, which needs no positions. It is rejected because
+    it is not the same measurement: max() throws away every token one method
+    covers and the other does not, so two methods covering DIFFERENT halves of
+    a segment would score 50% coverage when the honest answer is 100%. Taking
+    the union costs one array per segment and answers the real question.
+
+    With this in place, `decide`'s confidence is bounded by coverage, so the
+    clip at 1.0 is arithmetic belt-and-braces rather than a live path, and the
+    documented reading of the gate - full coverage needs (1 + gate) / 2
+    agreement, unanimity needs `gate` coverage - is true rather than aspirational.
+    """
+    votes = [Counter() for _ in segments]
+    for seg in segments:
+        ntok = len(seg.tokens)
+        if ntok == 0:
+            continue
+        per_token = time_claim[seg.idx] if time_claim is not None else None
+        for m in range(ntok):
+            per = Counter()
+            spk = align_claim.get(seg.t0 + m)
+            if spk is not None:
+                per[spk] += 1.0
+            if per_token:
+                for s, w in per_token[m].items():
+                    per[s] += w
+            total = sum(per.values())
+            if total <= 0:
+                continue
+            scale = (1.0 / total) if total > 1.0 else 1.0
+            for s, w in per.items():
+                votes[seg.idx][s] += w * scale
+    return votes
 
 
 # ---------------------------------------------------------------------------
@@ -1551,14 +1713,17 @@ def main(argv=None):
             if not gate_ok:
                 warnings.append("mispair gate overridden with --force: "
                                 + mispair_sentence(evidence, args.min_match_rate))
-            votes, anchored, filled = collect_align_votes(
+            _av, _anchored, _filled, align_claim = collect_align_votes(
                 pairs, app_owner, wh_owner, len(segments))
             tv = collect_time_votes(segments, turns, len(segments), warnings)
+            time_claim = None
             if tv is not None:
-                time_votes, time_used = tv
+                _time_votes, time_used, time_claim = tv
                 method = "align+time"
-                for k in range(len(segments)):
-                    votes[k].update(time_votes[k])
+            # Pooled per TOKEN, never per speaker total: two methods that agree
+            # about a word are one covered word (see pool_votes). With no
+            # timestamp path this is exactly the alignment's own votes.
+            votes = pool_votes(segments, align_claim, time_claim)
             counts = decide(segments, votes, time_used, pairs, app_owner,
                             args.min_confidence)
 
@@ -1679,6 +1844,9 @@ def main(argv=None):
             "empty_segments": counts.get("empty", 0),
             "confidence_formula":
                 "(winner_votes - other_votes) / segment_tokens  ==  coverage * (2*agreement - 1)",
+            "vote_rule": "one vote per whisper word, shared out among whoever "
+                         "claims it - two methods agreeing about a word are one "
+                         "covered word, not two",
             "per_speaker_segments": dict(Counter(
                 s.speaker for s in segments if s.speaker)),
             "confidence_histogram": dict(Counter(
@@ -1689,8 +1857,10 @@ def main(argv=None):
         "caveats": [
             "Label transfer, not diarization: it inherits every mid-sentence split "
             "and every phantom speaker ID the phone app produced.",
-            "Precision plateaus near 96%; residual errors cluster within a few "
-            "seconds of turn boundaries, where neither source is authoritative.",
+            "Residual errors cluster within a few seconds of turn boundaries, "
+            "where neither source is authoritative. The often-quoted 96% "
+            "precision was measured under an earlier, over-counting version of "
+            "the confidence score and has not been re-measured in the field.",
             "Proper names are the worst-transcribed tokens on both sides, so labels "
             "on name-bearing segments are the least trustworthy.",
             "No 'Speaker N' may become a person's name without human confirmation, "

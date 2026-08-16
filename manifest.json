@@ -36,13 +36,13 @@
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "c311b188ec50da088c8bb165f59db9136dfbecf4ac123b19d07f34ae8c6b9964",
+      "sha256": "6024464fc74833b0fa830062c7197ae934b569fd07204604e61cc3738fad8727",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/import-recordings/scripts/attribute_speakers.py",
       "category": "operating",
-      "sha256": "ba06400ceb60767afcbc94d9c82230f76a11f98fe30e656bda67e06333d622c7",
+      "sha256": "25682defff941916a1b1e6245056d77ce263fad9137e44fd9e44ecb5873e25f1",
       "spec_version": "1.2"
     },
     {
