@@ -210,6 +210,27 @@ class FixPromoteTests(BracketsPromoteBase):
         self.assertIn('--fix-promote', out)
         self.assertEqual(len(self._stub_names()), 4)
 
+    def test_yes_skips_the_gate_without_a_tty(self) -> None:
+        # --yes (#38) must apply with stdin closed - a script, background job
+        # or agent harness has no TTY, and EOF at the prompt used to be the
+        # only outcome. input() raising here proves the prompt is never read.
+        def no_stdin(prompt=''):
+            raise EOFError
+
+        with mock.patch('builtins.input', side_effect=no_stdin):
+            res, out, _err = self._run(fix_promote=True, yes=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertIn('--yes', out)
+        self.assertEqual(self._stub_names(), [f'far__frank_{FRIEND}.md'])
+
+    def test_without_yes_a_closed_stdin_still_declines(self) -> None:
+        # The safe default is unchanged: no --yes + no answer = no writes.
+        with mock.patch('builtins.input', side_effect=EOFError):
+            res, out, _err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('Aborted - no changes written.', out)
+        self.assertEqual(len(self._stub_names()), 4)
+
 
 GMA = 'P-2fffffffff'
 

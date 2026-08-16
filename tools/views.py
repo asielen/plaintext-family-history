@@ -5,7 +5,7 @@ views.py - fha views: generate view files from the index.
   fha views timeline [P-id | --all-curated] [--format md|html]
   fha views sources-index [P-id | --all-curated | --couple-folders] [--format md|html]
   fha views draft-queue [P-id | --all-curated] [--format md|html]
-  fha views brackets [--fix | --fix-promote | --realign] [--generations N] [--dry-run]
+  fha views brackets [--fix | --fix-promote | --realign] [--generations N] [--dry-run] [--yes]
   fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
   fha views clean [--dry-run]
   fha views refresh [--format md|html|both]
@@ -2147,6 +2147,27 @@ def _apply_bracket_fixes(
     return failures, False
 
 
+def _confirm_apply(yes: bool) -> bool:
+    """
+    The Apply? [y/N] gate shared by --fix, --fix-promote and --realign.
+
+    `yes` (the --yes flag, #38) skips the prompt after saying so - the
+    preview above it is still printed in full, so a scripted or agent-driven
+    run leaves the same audit trail an interactive one does. Without it, a
+    non-interactive shell reads EOF here and aborts, which is safe but makes
+    the fix flags unusable from scripts and harnesses whose stdin is closed
+    (the only way through was piping a literal 'y'). EOF still declines: a
+    tree mutation must never proceed on a missing answer.
+    """
+    if yes:
+        print('\nApplying (--yes given, prompt skipped).')
+        return True
+    try:
+        return input('\nApply? [y/N] ').strip().lower() == 'y'
+    except EOFError:
+        return False
+
+
 def run_brackets(
     archive_root: Path,
     fix: bool = False,
@@ -2154,6 +2175,7 @@ def run_brackets(
     fix_promote: bool = False,
     generations: int | None = None,
     realign: bool = False,
+    yes: bool = False,
 ) -> Result:
     """Run the bracket/Ahnentafel checks and (with a fix flag) apply them; return a Result.
 
@@ -2189,6 +2211,10 @@ def run_brackets(
     This is the one-command answer whenever the derived tree may have
     drifted from the promoted folders - a re-anchored `root_person`, a
     corrected `sex:`, a new parent claim, a merge (SPEC §12.2).
+
+    All three fix flags share one Apply? [y/N] gate (_confirm_apply); `yes`
+    (--yes) skips the prompt for scripted/non-interactive runs, with the full
+    preview still printed (#38).
 
     The findings, preview, prompt, and per-rename narration stay inline - the
     interactive Apply? gate is bound to that output and is out of scope to move
@@ -2377,11 +2403,7 @@ def run_brackets(
                 print('\n(dry-run: no changes written)')
                 return _views_result(EXIT_WARNINGS, data=issue_data)
 
-            try:
-                answer = input('\nApply? [y/N] ').strip().lower()
-            except EOFError:
-                answer = ''
-            if answer != 'y':
+            if not _confirm_apply(yes):
                 print('Aborted - no changes written.')
                 return _views_result(EXIT_WARNINGS, data=issue_data)
 
@@ -2457,11 +2479,7 @@ def run_brackets(
             if dry_run:
                 print('\n(dry-run: no changes written)')
                 return _views_result(EXIT_WARNINGS, data=issue_data)
-            try:
-                answer = input('\nApply? [y/N] ').strip().lower()
-            except EOFError:
-                answer = ''
-            if answer != 'y':
+            if not _confirm_apply(yes):
                 print('Aborted - no changes written.')
                 return _views_result(EXIT_WARNINGS, data=issue_data)
 
@@ -2540,12 +2558,7 @@ def run_brackets(
             return _views_result(EXIT_WARNINGS, data=issue_data)
 
         # ── Confirm and apply ─────────────────────────────────────────────
-        try:
-            answer = input('\nApply? [y/N] ').strip().lower()
-        except EOFError:
-            answer = ''
-
-        if answer != 'y':
+        if not _confirm_apply(yes):
             print('Aborted - no changes written.')
             return _views_result(EXIT_WARNINGS, data=issue_data)
 
@@ -2617,6 +2630,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
         fix_promote=getattr(args, 'fix_promote', False),
         generations=getattr(args, 'generations', None),
         realign=getattr(args, 'realign', False),
+        yes=getattr(args, 'yes', False),
     ).exit_code
 
 
@@ -3538,6 +3552,9 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                          '(1 = parents, 2 = grandparents, …).')
     br.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview changes without writing.')
+    br.add_argument('--yes', action='store_true',
+                    help='Skip the Apply? confirmation (for scripted or '
+                         'non-interactive runs; the preview still prints).')
     br.set_defaults(func=_cmd_brackets)
 
     # ── tree ──────────────────────────────────────────────────────────────────
@@ -3661,6 +3678,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     br.add_argument('--generations', type=int, metavar='N',
                     help='Only consider direct-line stubs within N generations.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
+    br.add_argument('--yes', action='store_true', help='Skip the Apply? confirmation (for scripted or non-interactive runs; the preview still prints).')
     br.set_defaults(func=_cmd_brackets)
 
     cl = subs.add_parser('clean', help='Delete every generated view file (companion .md + generated/views/ HTML); they regenerate with `fha views refresh`.')
