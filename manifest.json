@@ -132,13 +132,13 @@
     {
       "path": ".claude/skills/transcribe-audio/SKILL.md",
       "category": "operating",
-      "sha256": "31ca019e35cb4d53636d9b219d7a824f6a44acef620284a0a20d46ff15cb45b9",
+      "sha256": "d8176070bc698e51dfaaacb8c5f5f87b61e0faa467999348d95419a89cf7a7f2",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
-      "sha256": "31b6b294aaa01f7be099622705decc782122fc086c97ca65bd1583a111faedd7",
+      "sha256": "30425d3544e890f1bd49f67460105c9727c75944feee6ba4ff6cc20ab8647acb",
       "spec_version": "1.2"
     },
     {
@@ -206,21 +206,21 @@
     {
       "path": ".fha/browser-companion/src/lib/bundle.js",
       "category": "operating",
-      "sha256": "2525011957e93000b2d39d196f529bfafb7e711f42e354a4527232e8768a8d43",
+      "sha256": "84b0dcd6406c8981fa19c0295935dc7c64be210597391c28d6d0eabac60ae765",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/bundle.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
-      "sha256": "c6d98888ae507cab03cbb5519b52271b14d89bc1b5772565068bb49d85608413",
+      "sha256": "731052a5f66ad2c855a57f9edeb2fbfef1d31d905cf400977d8145a6f2611fc5",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "75d221c8ba789f9c71460cd5cd47253b83b2694e3337d85e4deeb87daca9a129",
+      "sha256": "9d2a05f789339bdae775979eab1be44dfb165990397292150c5bcf1137a6e2a8",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -416,7 +416,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "4e73fe5fbfee35aa3b4fcb550b77f1e96c5ffe4cdbc4b971548484dcb1eab4e4",
+      "sha256": "2bde438a6805eac53f6f941353d5e548122a72bae887a3c7d25be35c53a811cc",
       "spec_version": "1.2",
       "src": "tools/capture.py"
     },
@@ -852,7 +852,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "5f785061b2b689112bc0bf022d0ab95c7908b8aaffc1887d8665836f5a5b0aaf",
+      "sha256": "87f30168766f0d84821f97cb2a698a74bf25fe6cbef9b6042d3c12362580a8a1",
       "spec_version": "1.2"
     },
     {
