@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -201,12 +202,68 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(r('Y!M!D~', '1960:05:12 00:00:00'), '1960-05-~12')
         self.assertEqual(r('Y!M!D?H!M!', '1916:06:10 10:53:21'), '1916-06')
         self.assertEqual(r('y!m!d!', '1942:11:25 10:00:00'), '1942-11-25')
-        self.assertEqual(r('YMD', '1942:11:25 10:00:00'), '1942-11-25')
         self.assertEqual(r('Y!M!D!', '1942-11-25T10:00:00'), '1942-11-25')
         self.assertIsNone(r('Y?', '1960:05:01 00:00:00'))
         self.assertIsNone(r('Y!M!D!', None))
         self.assertIsNone(r('Y!M!D!', 'not a date'))
         self.assertIsNone(r('1880!', '1960:05:01 00:00:00'))   # digit form: not a placeholder
+
+    def test_omitted_precision_marker_is_unknown_not_confident(self) -> None:
+        # SPEC §20 rule 1: '?' and an OMITTED marker both mean unknown, and
+        # rule 2 says the forced full YYYY-MM-DD written into EXIF never
+        # becomes truth. So an unmarked component must be dropped exactly like
+        # a '?' one: 'Y!M' keeps only its confirmed year, and 'YMD' - which
+        # confirms nothing - resolves to no date at all rather than promoting
+        # a scanner clock to an exact archive date.
+        r = photoindex._placeholder_to_edtf
+        self.assertEqual(r('Y!M', '1916:06:10 10:53:21'), '1916')
+        self.assertEqual(r('Y!MD', '1916:06:10 10:53:21'), '1916')
+        self.assertEqual(r('Y!M!D', '1916:06:10 10:53:21'), '1916-06')
+        self.assertEqual(r('Y!M~D', '1942:03:15 00:00:00'), '1942-~03')
+        self.assertIsNone(r('YMD', '1942:11:25 10:00:00'))
+        self.assertIsNone(r('YM', '1942:11:25 10:00:00'))
+        self.assertIsNone(r('Y', '1942:11:25 10:00:00'))
+        # The digit form is a human's own transcription, not a machine
+        # timestamp, so it keeps reading as confident.
+        self.assertEqual(photoindex._keyword_to_edtf('1880'), '1880')
+        self.assertEqual(photoindex._resolve_photo_edtf('1880', '2009:04:20 10:58:33'), '1880')
+
+    def test_scan_leaves_an_unconfirmed_placeholder_photo_undated(self) -> None:
+        # End to end: a photo whose DATE: keyword affirms nothing must land in
+        # the catalog undated, and must not answer --edtf on its EXIF year.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            rows = {
+                'wedding_1902.jpg': {
+                    'Keywords': ['DATE: YMD'],
+                    'DateTimeOriginal': '2021:03:02 09:00:00',
+                },
+                'family_reunion.jpg': {
+                    'Keywords': ['DATE: Y!M'],
+                    'DateTimeOriginal': '1955:08:04 12:00:00',
+                },
+            }
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), **rows.get(p.name, {})} for p in paths
+            ]
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, cfg)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                edtf_by_name = {
+                    Path(path).name: edtf
+                    for path, edtf in conn.execute('SELECT path, edtf FROM photos')
+                }
+            finally:
+                conn.close()
+            self.assertIsNone(edtf_by_name['wedding_1902.jpg'])
+            self.assertEqual(edtf_by_name['family_reunion.jpg'], '1955')
+
+            res = photoindex.run_find(archive, cfg, edtf='2021')
+            self.assertEqual(res['rows'], [])
+            res = photoindex.run_find(archive, cfg, edtf='1955')
+            self.assertTrue(any('family_reunion' in r['path'] for r in res['rows']), res.data)
 
     def test_resolve_photo_edtf_needs_a_keyword_and_keeps_digit_form(self) -> None:
         # The keyword's presence marks a date as REVIEWED (archive-owner
@@ -3510,6 +3567,274 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertEqual(rows[0][1], 'pid-keyword')
             finally:
                 conn.close()
+
+
+    # ── Subtree filters vs. reconcile's MISSING: rows ────────────────────
+
+    def _stage_missing_photos(self, archive: Path, cfg: dict) -> None:
+        """Scan a small library, then let two of its photos vanish.
+
+        Leaves the catalog holding one MISSING: row inside a SOURCE-keyed
+        group that spans two folders (so the group's surviving member is
+        OUTSIDE the subtree under test) and one MISSING: row that is a group
+        of its own. Both carry the 'tintype' keyword so a filter can select
+        them without depending on the subtree logic being tested.
+        """
+        woodbury = archive / 'photos' / 'Woodbury'
+        woodbury.mkdir()
+        elsewhere = archive / 'photos' / 'Elsewhere'
+        elsewhere.mkdir()
+        for path in (woodbury / 'attic_scan.jpg', woodbury / 'lone_print.jpg',
+                     elsewhere / 'shoebox_scan.jpg'):
+            path.write_bytes(b'x')
+
+        rows = {
+            'attic_scan.jpg': {'Keywords': ['SOURCE: S-123456789a', 'tintype']},
+            'shoebox_scan.jpg': {'Keywords': ['SOURCE: S-123456789a', 'tintype']},
+            'lone_print.jpg': {'Keywords': ['tintype']},
+        }
+        photoindex._run_exiftool = lambda paths: [
+            {'SourceFile': str(p), **rows.get(p.name, {})} for p in paths
+        ]
+        photoindex.run_scan(archive, cfg)
+
+        (woodbury / 'attic_scan.jpg').unlink()
+        (woodbury / 'lone_print.jpg').unlink()
+        result = photoindex.run_reconcile(archive, cfg)
+        self.assertEqual(
+            sorted(result['missing']),
+            ['MISSING:photos/Woodbury/attic_scan.jpg',
+             'MISSING:photos/Woodbury/lone_print.jpg'],
+        )
+
+    def test_under_filter_matches_a_reconciled_missing_photo(self) -> None:
+        # Reconcile keeps a vanished photo queryable under a synthetic
+        # 'MISSING:photos/…' key, and `find` deliberately keeps those rows
+        # findable - so --under must compare on the alias underneath the
+        # prefix. Otherwise the one filter that scopes a query to a folder is
+        # the one filter a missing photo drops out of, including the group it
+        # belongs to when its surviving variant lives elsewhere.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage_missing_photos(archive, cfg)
+
+            res = photoindex.run_find(archive, cfg, keyword='tintype', under='Woodbury')
+            self.assertEqual(
+                [r['path'] for r in res['rows']],
+                ['MISSING:photos/Woodbury/lone_print.jpg',
+                 'photos/Elsewhere/shoebox_scan.jpg'],
+            )
+
+            # --files lists the vanished variant itself, not just its group.
+            res = photoindex.run_find(
+                archive, cfg, keyword='tintype', under='Woodbury', files=True)
+            self.assertIn('MISSING:photos/Woodbury/attic_scan.jpg',
+                          [r['path'] for r in res['rows']])
+
+    def test_not_under_filter_excludes_a_reconciled_missing_photos_group(self) -> None:
+        # The exclusion half of the same rule: a group with any variant inside
+        # --not-under is dropped, and a MISSING: variant still counts as being
+        # inside the folder it vanished from.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._stage_missing_photos(archive, cfg)
+
+            res = photoindex.run_find(
+                archive, cfg, keyword='tintype', not_under='Woodbury')
+            self.assertEqual([r['path'] for r in res['rows']], [])
+
+            # And the exclusion is genuinely about the folder, not about
+            # missing rows in general: excluding the other folder leaves the
+            # Woodbury-only group behind.
+            res = photoindex.run_find(
+                archive, cfg, keyword='tintype', not_under='Elsewhere')
+            self.assertEqual(
+                [r['path'] for r in res['rows']],
+                ['MISSING:photos/Woodbury/lone_print.jpg'],
+            )
+
+    def test_scan_keeps_a_missing_variant_grouped_with_its_living_siblings(self) -> None:
+        # A rescan after reconcile re-derives every group from the stored
+        # paths. Parsing 'MISSING:photos/portrait_1880.jpg' raw would file the
+        # vanished front scan under a folder called 'MISSING:photos' and split
+        # it out of its own physical photo - losing the caption/date history
+        # reconcile kept it for. The group must also refuse to take its date
+        # back from the vanished variant, matching what reconcile itself
+        # computed (_recompute_group_dates).
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {'portrait_1880.jpg': {'Keywords': ['DATE: 1955!']}}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, cfg)
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg)
+
+            photoindex.run_scan(archive, cfg)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                groups = dict(conn.execute(
+                    "SELECT path, group_id FROM photos WHERE path LIKE '%portrait_1880%'"
+                ).fetchall())
+                self.assertEqual(
+                    groups['MISSING:photos/portrait_1880.jpg'],
+                    groups['photos/portrait_1880-back.jpg'],
+                )
+                primary, resolved = conn.execute(
+                    'SELECT primary_path, edtf_resolved FROM photo_groups WHERE group_id=?',
+                    (groups['photos/portrait_1880-back.jpg'],),
+                ).fetchone()
+                # The file a human can actually open leads the group, and the
+                # vanished variant's 1955 is not resurrected as its date.
+                self.assertEqual(primary, 'photos/portrait_1880-back.jpg')
+                self.assertIsNone(resolved)
+            finally:
+                conn.close()
+
+    def test_tag_person_never_offers_a_missing_photo(self) -> None:
+        # tag-person writes a keyword INTO a file. A vanished photo keeps its
+        # cached face regions, so the face-tag selector would otherwise
+        # preview a write to a path that is not on disk; and a --paths
+        # argument naming one must be refused with a next step, not handed to
+        # exiftool.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                region = {'RegionInfo': {'RegionList': [
+                    {'Name': 'Maggie', 'Type': 'Face'}]}}
+                return [
+                    {'SourceFile': str(p), **(region if p.name == 'portrait_1880.jpg' else {})}
+                    for p in paths
+                ]
+
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            (people_dir / 'maggie_P-de957bcda1.md').write_text(
+                '---\nid: P-de957bcda1\n---\n', encoding='utf-8',
+            )
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, cfg)
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg)
+
+            with self.assertRaisesRegex(ValueError, 'no photo carries a face region'):
+                photoindex.run_tag_person_plan(
+                    archive, cfg, 'P-de957bcda1', from_face_tag='Maggie')
+            with self.assertRaisesRegex(ValueError, 'not on disk'):
+                photoindex.run_tag_person_plan(
+                    archive, cfg, 'P-de957bcda1',
+                    paths=['MISSING:photos/portrait_1880.jpg'])
+
+    # ── Freshness watermark ──────────────────────────────────────────────
+
+    def test_ignored_subtree_change_leaves_the_catalog_fresh(self) -> None:
+        # photos_ignore prunes a subtree from the scan, so a file that changes
+        # inside it changes nothing the catalog holds. Letting it drive the
+        # freshness watermark would mark an otherwise-current catalog stale -
+        # which makes `fha find --text` skip every cataloged photo caption
+        # until a rescan that has nothing to do - and would walk the very
+        # subtree the setting exists to avoid walking.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            bulk = archive / 'photos' / 'Bulk Export'
+            bulk.mkdir()
+            (bulk / 'recent_0001.jpg').write_bytes(b'x')
+            cfg = {'roots': {'photos': 'photos'}, 'photos_ignore': ['Bulk Export']}
+
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, cfg)
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
+
+            # A change under the ignored subtree - new file, changed file, and
+            # the directory mtime bump both of those carry.
+            later = time.time() + 120
+            (bulk / 'recent_0002.jpg').write_bytes(b'x')
+            os.utime(bulk / 'recent_0001.jpg', (later, later))
+            os.utime(bulk / 'recent_0002.jpg', (later, later))
+            os.utime(bulk, (later, later))
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
+
+            # A change to a photo that IS catalogued still marks it stale, and
+            # dropping the ignore pattern brings the subtree back into scope.
+            self.assertEqual(
+                photoindex_status(archive, {'roots': {'photos': 'photos'}})[0], 'stale')
+            os.utime(archive / 'photos' / 'portrait_1880.jpg', (later, later))
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'stale')
+
+    def test_unreadable_new_file_keeps_the_catalog_stale(self) -> None:
+        # A new or changed photo exiftool could not read never reached the
+        # catalog, but the commit stamps photos.sqlite with 'now' - so status
+        # would call the catalog fresh and nothing would ever ask for another
+        # scan. The watermark is pulled back behind the unread file instead.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            readable = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex._run_exiftool = readable
+            photoindex.run_scan(archive, cfg)
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
+
+            shutil.copy(archive / 'photos' / 'portrait_1880.jpg',
+                        archive / 'photos' / 'brand_new.jpg')
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths if p.name != 'brand_new.jpg']
+            summary = photoindex.run_scan(archive, cfg)
+            self.assertEqual(summary['unreadable'], 1)
+            self.assertEqual(summary['unreadable_unindexed'], 1)
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'stale')
+
+            # Reading it later heals the catalog - the pullback is a retry
+            # marker, not a permanent condition.
+            photoindex._run_exiftool = readable
+            summary = photoindex.run_scan(archive, cfg)
+            self.assertEqual(summary['unreadable'], 0)
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
+
+    def test_unreadable_but_unchanged_file_does_not_hold_the_catalog_stale(self) -> None:
+        # The other side of the same rule: under --full an unreadable photo is
+        # re-sent to exiftool even though its cached row already matches the
+        # file on disk. That row is as current as it can be, so a permanently
+        # damaged photo must not leave the catalog stale forever.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, cfg)
+
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths if p.name != 'family_reunion.jpg']
+            summary = photoindex.run_scan(archive, cfg, full=True)
+            self.assertEqual(summary['unreadable'], 1)
+            self.assertEqual(summary['unreadable_unindexed'], 0)
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
+
+    def test_cmd_scan_names_the_held_stale_catalog_and_the_next_step(self) -> None:
+        # The human sees a stale-index warning from `fha find` next; the scan
+        # that caused it must say so and name the fix.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths if p.name != 'family_reunion.jpg']
+            args = type('Args', (), {'root': str(archive), 'full': False})()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                code = photoindex._cmd_scan(args)
+            self.assertEqual(code, EXIT_WARNINGS)
+            text = stderr.getvalue()
+            self.assertIn('stays marked out of date', text)
+            self.assertIn('fha photoindex', text)
 
 
 class GalleryTests(unittest.TestCase):

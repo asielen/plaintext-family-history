@@ -52,6 +52,11 @@ CODE MAP
   Schema
     _DDL                      - CREATE TABLE statements for photos.sqlite
 
+  Cached-path vocabulary
+    _MISSING_PREFIX           - reconcile's synthetic key for a vanished photo
+    _live_alias               - the real alias under a MISSING: key (where the photo WAS)
+    _is_missing_key           - is this key a vanished photo? (can the file be opened?)
+
   exiftool integration
     PHOTO_EXTENSIONS          - recognised photo/scan file extensions (imported from _lib)
     _run_exiftool             - batched `exiftool -j -struct` invocation (test seam)
@@ -157,7 +162,6 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import os
 import re
@@ -204,6 +208,8 @@ from _lib import (
     parse_media_filename,
     path_to_alias,
     photoindex_status,
+    photos_ignore_matcher,
+    photos_ignore_patterns as _photos_ignore_patterns,
     probe_sqlite,
     render_template,
     pip_command,
@@ -299,6 +305,39 @@ _EXIFTOOL_FIELDS = [
     '-Keywords', '-Subject', '-XMP-mwg-rs:RegionInfo',
 ]
 
+# Reconcile's bookkeeping prefix for a photo that vanished from disk: the
+# cached row is kept (its caption, keywords and dates stay searchable) under
+# 'MISSING:' + its last known alias, a key that can never collide with a real
+# on-disk path. Defined up here, not down in the reconcile section, because
+# every layer that reads cached paths has to know about it - grouping, the
+# subtree filters, the gallery, tag-person, set-summary. See run_reconcile.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The real alias path a cached key refers to, with any 'MISSING:' prefix off.
+
+    A missing row's key is a decoration on the path it had, not a different
+    path: anything that reasons about WHERE a photo lives (which folder, which
+    variation group) must look underneath the prefix, or a vanished front scan
+    stops matching the subtree it came from and stops belonging to its own
+    physical photo. Anything that reasons about whether a file can be OPENED
+    must test the prefix instead and refuse - that is the other half of the
+    rule, and `_is_missing_key` is its name.
+    """
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached path is reconcile's synthetic missing-file key.
+
+    The readable name for `path.startswith(_MISSING_PREFIX)`, used wherever a
+    code path is about to touch the file itself (open it, write a keyword,
+    link to it from a gallery) and must refuse instead.
+    """
+    return path.startswith(_MISSING_PREFIX)
+
+
 _SOURCE_KEYWORD_RE = re.compile(r'^SOURCE:\s*(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
 _PID_KEYWORD_RE = re.compile(r'^P-[0-9a-hjkmnp-tv-z]{10}$', re.I)
 _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
@@ -310,62 +349,24 @@ _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 _EXIFTOOL_BATCH_SIZE = 500
 
 
-def _photos_ignore_patterns(fha_config: dict) -> list[str]:
-    """
-    The `photos_ignore:` patterns from fha.yaml, normalized to posix form.
-
-    A photos root often holds material that is not the archive's subject - the
-    motivating case (#35) was a root of 88,131 files, 63,156 of them one bulk
-    photo-service export, drowning the few dozen scanned ancestor photos in
-    every triage ranking. Narrowing `roots: photos` instead is NOT safe (it
-    orphans already-filed `files:` entries, #36), so exclusion has to live at
-    scan level. Accepts a single string or a list; anything else is a clean
-    RuntimeError (the scan callers' existing error path).
-    """
-    raw = fha_config.get('photos_ignore')
-    if raw is None:
-        return []
-    if isinstance(raw, (str, int, float)):
-        raw = [raw]
-    # Scalars are coerced: YAML reads an unquoted year folder (`- 2019`) as
-    # an int, and the intent is unambiguous. Anything structured is refused.
-    if not isinstance(raw, list) or not all(
-        isinstance(p, (str, int, float)) and not isinstance(p, bool) for p in raw
-    ):
-        raise RuntimeError(
-            'photos_ignore in fha.yaml must be a list of path patterns '
-            "(e.g.\n  photos_ignore:\n    - 'Flickr Export'\n    - '*.tif')"
-        )
-    out = []
-    for p in raw:
-        text = str(p).replace('\\', '/').strip().strip('/')
-        if text:
-            out.append(text)
-    return out
-
-
 def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
     """
     Yield catalogable photo files under photos_root, or nothing if it is absent.
 
-    `ignore` patterns (photos_ignore in fha.yaml, #35) are fnmatch-style,
-    matched case-insensitively against the posix path relative to the root -
-    the photo library lives on a case-insensitive filesystem on both Windows
-    and macOS, and 'flickr export' silently failing to prune 'Flickr Export'
-    would read as the feature not working. A pattern matching a directory
-    prunes its whole subtree without walking it - excluding a 63,000-file
-    export costs nothing - and a pattern matching a file skips that file.
+    `ignore` patterns (photos_ignore in fha.yaml, #35) are matched by the
+    shared `_lib.photos_ignore_matcher` rule, which the freshness check
+    (`photoindex_status`) uses too - a file this walk skips must not be a file
+    that later marks the catalog stale. A pattern matching a directory prunes
+    its whole subtree without walking it - excluding a 63,000-file export
+    costs nothing - and a pattern matching a file skips that file.
     fnmatch's '*' crosses folder boundaries ('Flickr*' also matches
     'a/Flickr Export'), and '[' opens a character class - a folder whose name
     contains brackets is matched by escaping them ('Scans [[]2019]').
     """
     if not photos_root.is_dir():
         return
-    patterns = [pat.casefold() for pat in (ignore or [])]
-
-    def _ignored(rel: str) -> bool:
-        rel_cf = rel.casefold()
-        return any(fnmatch.fnmatchcase(rel_cf, pat) for pat in patterns)
+    patterns = list(ignore or [])
+    _ignored = photos_ignore_matcher(patterns)
 
     for dirpath, dirnames, filenames in os.walk(photos_root):
         rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
@@ -550,12 +551,24 @@ def _placeholder_to_edtf(pattern: str, exif_date: object) -> str | None:
     'Y!M!D?' + '1916:06:10 10:53:21' -> '1916!-06!-10?' -> '1916-06'
     'Y!M~D?' + '1942:03:15 00:00:00' -> '1942!-03~-15?' -> '1942-~03'
     'Y~'     + '1960:00:00 00:00:00' -> '1960~'         -> '1960~'
+    'Y!M'    + '1916:06:10 10:53:21' -> '1916!-06?'     -> '1916'
+    'YMD'    + '1942:11:25 10:00:00' -> '1942?-11?-25?' -> None
 
     Builds the digit-plus-marker form `_keyword_to_edtf` already understands
     and delegates to it, so SPEC §20's rules (stop at the first unconfirmed
-    component, '~' placement, validation) stay in one place. An unmarked
-    component ('Y' alone) reads as confident, matching the digit form's
-    treatment of a bare '1880'.
+    component, '~' placement, validation) stay in one place.
+
+    An omitted marker is UNKNOWN, exactly like '?' - SPEC §20 rule 1 spells
+    out the grammar as "'!' confident, '~' best guess, '?'/omitted unknown",
+    and rule 2 says the forced full YYYY-MM-DD in EXIF is a compatibility
+    workaround that never becomes truth. Defaulting a bare component to
+    confident would do precisely that: 'DATE: YMD' would turn a scanner's
+    own clock into an exact archive date. So a component the pipeline did
+    not affirm is dropped, and a pattern with no affirmed component at all
+    ('Y', 'YMD') resolves to nothing - the photo stays undated until someone
+    marks a component confident. This is deliberately NOT how the digit form
+    is read: a hand-typed 'DATE: 1880' carries a value a human wrote down,
+    not a machine timestamp, so `_keyword_to_edtf` still trusts it.
     """
     m = _DATE_PLACEHOLDER_RE.match(pattern.strip())
     if not m or exif_date is None:
@@ -565,11 +578,11 @@ def _placeholder_to_edtf(pattern: str, exif_date: object) -> str | None:
         return None
     year, month, day = d.groups()
     year_c, has_month, month_c, has_day, day_c, _time_parts = m.groups()
-    parts = year + (year_c or '!')
+    parts = year + (year_c or '?')
     if has_month:
-        parts += '-' + month + (month_c or '!')
+        parts += '-' + month + (month_c or '?')
         if has_day:
-            parts += '-' + day + (day_c or '!')
+            parts += '-' + day + (day_c or '?')
     return _keyword_to_edtf(parts)
 
 
@@ -1052,7 +1065,13 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     source_id_by_path: dict[str, str | None] = {}
 
     for path, source_id, edtf in rows:
-        p = Path(path)
+        # A reconcile-flagged row is keyed 'MISSING:photos/…'; its folder and
+        # filename are the ones underneath that prefix. Parsing the raw key
+        # instead would file the vanished front scan under a folder named
+        # 'MISSING:photos/1950' and split it out of its own physical photo's
+        # group - the group would lose the file_count and the caption history
+        # reconcile deliberately kept (see run_reconcile).
+        p = Path(_live_alias(path))
         parsed = parse_media_filename(p.stem)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
@@ -1082,15 +1101,26 @@ def _group_photos(conn: sqlite3.Connection) -> None:
         # scan), then a front scan, then the lexicographically-first path when
         # every member carries some other suffix (e.g. a back-only group).
         # Shared with `fha process` so both tools agree on the primary file.
-        primary = select_variation_primary(paths, parsed_by_path.__getitem__)
+        # A vanished member is passed over while any live one remains: the
+        # primary is the file a human opens, and `find` printing a MISSING:
+        # path for a photo still sitting on disk under another name would be
+        # a lie about the group. An all-missing group keeps its own path,
+        # which is what tells reconcile and the reader what it is.
+        live_paths = [p for p in paths if not _is_missing_key(p)]
+        primary = select_variation_primary(
+            live_paths or paths, parsed_by_path.__getitem__)
 
         # Order candidates with the primary file first, then lexicographically,
         # so a confidence tie (e.g. two variants both 'year only, no marker')
         # resolves deterministically to the primary's date rather than
         # insertion order - and falls back to path order only when the
-        # primary itself carries no date.
+        # primary itself carries no date. Vanished members contribute no date:
+        # a group must not keep reporting a resolved date, or a conflict badge,
+        # that only a file no longer on disk carried - the same rule
+        # reconcile's own `_recompute_group_dates` applies, kept identical here
+        # so a later full scan cannot undo what reconcile just corrected.
         dated = sorted(
-            ((edtf_by_path[p], p) for p in paths if edtf_by_path[p]),
+            ((edtf_by_path[p], p) for p in live_paths if edtf_by_path[p]),
             key=lambda pair: (pair[1] != primary, pair[1]),
         )
         best_edtf, date_conflict = _best_group_date([e for e, _p in dated])
@@ -1179,8 +1209,18 @@ def _normalize_subtree_arg(
 def _under_subtree(path: str, subtree: str) -> bool:
     """Case-insensitive 'is this alias path inside that subtree' - one rule
     for find/gallery/triage so the three can never disagree (Python casefold
-    rather than SQLite LIKE, which folds ASCII only)."""
-    p = path.casefold()
+    rather than SQLite LIKE, which folds ASCII only).
+
+    Reconcile keeps a vanished photo queryable under a synthetic
+    'MISSING:photos/...' key (see run_reconcile), which is bookkeeping rather
+    than a different location: the row still describes a photo that was in
+    that subtree. Compare on the real alias underneath the prefix so --under
+    can include a missing variant of the folder it asks about and --not-under
+    can exclude its group - the same rule that keeps missing rows findable at
+    all. `_paths_under` is the only caller that sees these keys today; putting
+    the strip here keeps find, gallery and triage from drifting apart on it.
+    """
+    p = _live_alias(path).casefold()
     t = subtree.casefold()
     return p == t or p.startswith(t + '/')
 
@@ -1895,9 +1935,9 @@ def _gallery_group_dict(
     with no members at all - it is dropped, never shown as a broken link.
     """
     if isinstance(key, str):
-        members = [m for m in members if not m['path'].startswith(_MISSING_PREFIX)]
+        members = [m for m in members if not _is_missing_key(m['path'])]
         meta_primary = group_meta['primary_path'] if group_meta is not None else None
-        if meta_primary and not meta_primary.startswith(_MISSING_PREFIX):
+        if meta_primary and not _is_missing_key(meta_primary):
             primary_path = meta_primary
             edtf_resolved = group_meta['edtf_resolved']
             date_conflict = bool(group_meta['date_conflict'])
@@ -1911,7 +1951,7 @@ def _gallery_group_dict(
         primary_row = next((m for m in members if m['path'] == primary_path), None)
         member_rows = members
     else:
-        if singleton_row is None or key[1].startswith(_MISSING_PREFIX):
+        if singleton_row is None or _is_missing_key(key[1]):
             return None
         primary_path = key[1]
         edtf_resolved = singleton_row['edtf']
@@ -2573,7 +2613,6 @@ def run_report(archive_root: Path, fha_config: dict) -> Result:
 
 # ── Reconcile (fha photoindex reconcile - BUILD.md M3.4) ─────────────────
 
-_MISSING_PREFIX = 'MISSING:'
 _RECONCILE_TABLES = (
     'photos', 'photo_keywords', 'photo_face_regions', 'photo_people', 'photo_fts',
 )
@@ -2625,7 +2664,7 @@ def _recompute_group_dates(conn: sqlite3.Connection, group_ids: set[str]) -> Non
         live = sorted(
             (
                 (edtf, path) for path, edtf in rows
-                if edtf and not path.startswith(_MISSING_PREFIX)
+                if edtf and not _is_missing_key(path)
             ),
             key=lambda pair: pair[1],
         )
@@ -2823,7 +2862,7 @@ def run_reconcile(
 
             now_missing: list[str] = []
             for old_path in missing:
-                if old_path.startswith(_MISSING_PREFIX):
+                if _is_missing_key(old_path):
                     now_missing.append(old_path)
                     continue
                 new_key = f'{_MISSING_PREFIX}{old_path}'
@@ -2932,8 +2971,16 @@ def run_tag_person_plan(
                 'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []})
         try:
             if from_face_tag:
+                # A vanished photo keeps its face regions in the cache
+                # (reconcile renames the rows, it does not drop them), but
+                # tag-person writes a keyword INTO a file - offering a
+                # 'MISSING:' row would send exiftool after a path that is not
+                # there. Excluded here rather than at the write, so the
+                # preview a human confirms only ever lists real files.
                 rows = conn.execute(
-                    'SELECT DISTINCT path FROM photo_face_regions WHERE name=?', (from_face_tag,)
+                    'SELECT DISTINCT path FROM photo_face_regions '
+                    'WHERE name=? AND path NOT LIKE ?',
+                    (from_face_tag, f'{_MISSING_PREFIX}%'),
                 ).fetchall()
                 candidate_paths = sorted(row['path'] for row in rows)
                 if not candidate_paths:
@@ -2986,6 +3033,16 @@ def _resolve_catalog_path(
         row = conn.execute('SELECT path FROM photos WHERE path=?', (alias,)).fetchone() if alias else None
     if row is None:
         raise ValueError(f'{raw!r} is not a known photo in the catalog')
+    if _is_missing_key(row['path']):
+        # `fha photoindex find` prints these rows as MISSING, so a human can
+        # copy one back in here. The row is real, the file is not - say which
+        # it is and where the answer lives, rather than letting exiftool fail
+        # on a path that was never on disk.
+        raise ValueError(
+            f'{_live_alias(row["path"])} is in the catalog but is not on disk - '
+            'the photo moved or was deleted. Put it back, then run '
+            'fha photoindex reconcile --with-exif to re-link it.'
+        )
     return row['path']
 
 
@@ -3626,7 +3683,8 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
 _EMPTY_SCAN_SUMMARY = {
     'root_found': False,
     'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
-    'unreadable': 0, 'unreadable_sample': [], 'ignore_patterns': [],
+    'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
+    'ignore_patterns': [],
     'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
 }
 
@@ -3683,6 +3741,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             f'could not stat {len(stat_failures)} photo file(s): {sample}{more}'
         )
 
+    db_path = archive_root / '.cache' / 'photos.sqlite'
     conn, needs_face_backfill, rebuilt_reason = _get_db(archive_root / '.cache')
     try:
         existing = {
@@ -3761,8 +3820,8 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             # the scrape loop above already inserted a fresh row for that
             # alias, so the synthetic row is a stale duplicate, not bookkeeping
             # an --with-exif retry still needs.
-            if path_key.startswith(_MISSING_PREFIX):
-                if path_key[len(_MISSING_PREFIX):] in alias_on_disk:
+            if _is_missing_key(path_key):
+                if _live_alias(path_key) in alias_on_disk:
                     conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
                     _delete_path_rows(
                         conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key
@@ -3818,12 +3877,41 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     finally:
         conn.close()
 
+    # A file the scan could not read is a file whose current metadata never
+    # reached the catalog. Committing above just stamped photos.sqlite with
+    # "now", which is newer than that photo - so `photoindex_status()` would
+    # call the catalog fresh, and `fha find --text` would keep serving the
+    # old caption (or nothing at all for a brand-new file) with nobody ever
+    # told to scan again. Pull the cache's mtime back behind the oldest such
+    # file so status keeps reporting 'stale' until a later scan reads it,
+    # exactly as run_reconcile does for the files it leaves unscraped.
+    #
+    # Only files whose cached row does NOT match what is on disk count here:
+    # under --full an unreadable photo is re-sent to exiftool even though its
+    # stored mtime/size still match the file, and its row is as current as it
+    # ever was. Holding the whole catalog stale for that would mean one
+    # permanently corrupt photo could never be scanned clean again.
+    unindexed = [
+        p for p in unreadable
+        if existing.get(alias_by_path[p]) != on_disk[p]
+    ]
+    if unindexed:
+        try:
+            oldest = min(on_disk[p][0] for p in unindexed)
+            os.utime(db_path, (time.time(), oldest - 1))
+        except OSError:
+            # A photo root on removable or network storage can vanish between
+            # the commit and this touch; a missed staleness pullback is not a
+            # reason to fail a scan that otherwise succeeded.
+            pass
+
     return Result(data={
         'photos_root': str(photos_root), 'root_found': True,
         'total': len(on_disk), 'scraped': scraped,
         'unchanged': len(on_disk) - scraped - len(unreadable), 'removed': removed,
         'unreadable': len(unreadable),
         'unreadable_sample': [str(p) for p in unreadable[:5]],
+        'unreadable_unindexed': len(unindexed),
         'ignore_patterns': ignore,
         'groups': groups, 'dated_groups': dated_groups, 'conflicts': conflicts,
         'rebuilt_reason': rebuilt_reason,
@@ -4104,6 +4192,18 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             f'skipped (any prior catalog entry was kept): {sample}{more}',
             file=sys.stderr,
         )
+        if summary.get('unreadable_unindexed'):
+            # Those files are new or changed and never made it into the
+            # catalog, so the catalog is deliberately left marked out of date
+            # (see run_scan). Say so, or the next `fha find` warning about a
+            # stale photo index reads as a second, unexplained fault.
+            print(
+                f"The photo catalog stays marked out of date until those "
+                f"{summary['unreadable_unindexed']} file(s) can be read. "
+                'Close anything holding them open (or restore them from '
+                'backup if they are damaged), then run fha photoindex again.',
+                file=sys.stderr,
+            )
         return EXIT_WARNINGS
     return EXIT_CLEAN
 
@@ -4332,7 +4432,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     for old, new in result['rematched']:
         print(f'  RE-MATCHED  {old} -> {new}')
     for path in result['missing']:
-        print(f'  MISSING     {path[len(_MISSING_PREFIX):]}')
+        print(f'  MISSING     {_live_alias(path)}')
     for source_id, paths in sorted(result['new_sourced'].items()):
         print(f'  NEW (source {source_id})  ' + ', '.join(paths))
     if result['new_unsourced']:
