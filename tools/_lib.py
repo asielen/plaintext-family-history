@@ -48,6 +48,7 @@ import calendar
 import dataclasses
 import datetime
 import itertools
+import json
 import os
 import re
 import secrets
@@ -830,6 +831,131 @@ def path_to_alias(path: str | Path, alias: str, fha_config: dict, archive_root: 
     except ValueError:
         return path.as_posix()
     return f'{alias}/{rel.as_posix()}' if str(rel) != '.' else alias
+
+
+# The last `roots:` mapping the tools ran against, remembered so a change can
+# be judged BEFORE it does damage. Disposable cache, like everything under
+# .cache/: absent means "nothing to compare", never an error.
+ROOTS_STAMP_NAME = 'roots.json'
+
+
+def _read_roots_stamp(archive_root: Path) -> dict[str, str] | None:
+    path = archive_root / '.cache' / ROOTS_STAMP_NAME
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _write_roots_stamp(archive_root: Path, roots: dict[str, str]) -> None:
+    cache = archive_root / '.cache'
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / ROOTS_STAMP_NAME).write_text(
+            json.dumps(roots, indent=2, sort_keys=True), encoding='utf-8')
+    except OSError:
+        pass  # a stamp that cannot be written just means no warning next time
+
+
+def _iter_filed_asset_paths(archive_root: Path):
+    """Yield every alias-form `files:` entry across the source records."""
+    sources_dir = archive_root / 'sources'
+    if not sources_dir.is_dir():
+        return
+    for path in sorted(sources_dir.rglob('*.md')):
+        try:
+            rec = read_record(path)
+        except Exception:
+            continue
+        for f in (rec.get('meta') or {}).get('files') or []:
+            if isinstance(f, dict) and f.get('file'):
+                yield path, str(f['file']).replace('\\', '/').lstrip('./')
+
+
+def roots_change_orphans(archive_root: str | Path, fha_config: dict) -> list[dict]:
+    """
+    Detect a `roots:` change that has orphaned already-filed assets (#36).
+
+    Compares the current `roots:` mapping with the one remembered in
+    `.cache/roots.json`. For every alias whose value changed, every source
+    record's `files:` entry under that alias is resolved twice: an entry that
+    resolved under the OLD root and does not under the NEW one is an orphan -
+    the record still names it, the file still exists, and only the mapping
+    moved out from under it. This is the check `fha lint` E011 already makes,
+    run at the moment it can still be undone with a one-line revert instead
+    of after a wall of errors whose suggested remedy (`fha reconcile`) cannot
+    apply, because nothing moved.
+
+    Returns one dict per orphaning alias: {alias, old, new, orphaned,
+    sample}. Side effects on the stamp: no stamp yet -> seeded with the
+    current mapping, nothing reported (there is nothing to compare); a change
+    that orphans nothing -> accepted, stamp updated; a change that orphans ->
+    stamp left alone, so the warning stays until the human reverts the value
+    or re-points the records. `roots:` shapes that are not a mapping are
+    doctor's business (it already reports them) and are ignored here.
+    """
+    archive_root = Path(archive_root)
+    roots_now = get_roots(fha_config)
+    if not isinstance(roots_now, dict):
+        return []
+    roots_now = {str(k): str(v) for k, v in roots_now.items() if v is not None}
+    remembered = _read_roots_stamp(archive_root)
+    if remembered is None:
+        _write_roots_stamp(archive_root, roots_now)
+        return []
+    changed = {
+        alias for alias in set(remembered) | set(roots_now)
+        if remembered.get(alias) != roots_now.get(alias)
+    }
+    if not changed:
+        return []
+
+    old_config = {'roots': remembered}
+    per_alias: dict[str, dict] = {}
+    for _record, entry in _iter_filed_asset_paths(archive_root):
+        alias = entry.split('/', 1)[0]
+        if alias not in changed:
+            continue
+        if resolve_path(entry, fha_config, archive_root).exists():
+            continue
+        if not resolve_path(entry, old_config, archive_root).exists():
+            continue  # was already broken before the change - not this change's doing
+        info = per_alias.setdefault(alias, {
+            'alias': alias,
+            'old': remembered.get(alias),
+            'new': roots_now.get(alias),
+            'orphaned': 0,
+            'sample': [],
+        })
+        info['orphaned'] += 1
+        if len(info['sample']) < 3:
+            info['sample'].append(entry)
+
+    if not per_alias:
+        _write_roots_stamp(archive_root, roots_now)
+        return []
+    return [per_alias[a] for a in sorted(per_alias)]
+
+
+def format_roots_orphan_warning(item: dict, archive_root: str | Path) -> str:
+    """One plain-language warning line for a `roots_change_orphans` item."""
+    fha_yaml = Path(archive_root) / 'fha.yaml'
+    old = item['old'] if item['old'] is not None else '(unset)'
+    new = item['new'] if item['new'] is not None else '(unset)'
+    sample = ', '.join(item['sample'])
+    more = item['orphaned'] - len(item['sample'])
+    more_txt = f' and {more} more' if more > 0 else ''
+    return (
+        f"roots: {item['alias']} changed from {old!r} to {new!r} in {fha_yaml}, and "
+        f"{item['orphaned']} filed file(s) that resolved under the old value no longer "
+        f'do ({sample}{more_txt}). Nothing on disk moved, so `fha reconcile` cannot '
+        're-tie them. Revert the value, or re-point those records - and if the aim '
+        'was to keep part of the library out of the photo catalog, use '
+        '`photos_ignore:` in fha.yaml instead of narrowing the root.'
+    )
 
 
 def db_mtime(db_path: Path) -> float | None:

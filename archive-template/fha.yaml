@@ -33,6 +33,20 @@
 #   photos: /Users/you/Pictures/Lightroom     # Mac
 #   documents: documents
 #
+# ── Keeping part of the photo library out of the catalog (optional) ──
+#   If the photos folder also holds material that is not part of the family
+#   history (a bulk export from a photo-sharing account, phone camera rolls),
+#   list it here and `fha photoindex` will skip it - so photo search and the
+#   "what should I process next?" ranking see only the real subject. Patterns
+#   are folder or file names relative to the photos root; `*` is a wildcard.
+#   Do NOT narrow `photos:` above to a subfolder instead: any photo already
+#   attached to a source record from a sibling folder would stop resolving.
+#
+# photos_ignore:
+#   - Flickr Export
+#   - Phone Backups/*
+#   - '*.tif'
+#
 # ── Biography voice (optional) ──
 #   How the assistant's drafted biographies read. The facts and citations are
 #   identical either way - this only sets the voice. You can always override

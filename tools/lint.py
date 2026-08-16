@@ -93,6 +93,7 @@ from _lib import (
     fmt_id_display,
     format_edtf_error,
     format_exiftool_error,
+    format_roots_orphan_warning,
     format_source_type_error,
     id_type_of,
     is_fixture_path,
@@ -108,6 +109,7 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    roots_change_orphans,
     yaml_inline,
 )
 
@@ -168,6 +170,8 @@ import yaml
 #    _check_generated_headers    - W105: hand-edits below a GENERATED header
 #    _check_readme_age           - W108: README.md older than SPEC.md
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
+#    _check_roots_change         - W121: a roots: change orphaned filed assets
+#                                   (runs first; the E011 fallout follows it)
 #
 #  Format checks / fix modes
 #    _check_format               - W109: final newline, CRLF line endings
@@ -1136,8 +1140,11 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             else:
                 findings.append(Finding('E', 'E011', path,
                     f'Inventory file not found on disk: {file_path_str!r} - if the '
-                    'file was moved within the documents folder, `fha reconcile` '
-                    're-ties it automatically (preview with --dry-run)'))
+                    'file was moved within its asset folder, `fha reconcile` '
+                    're-ties it automatically (preview with --dry-run); if the '
+                    'roots: mapping in fha.yaml changed instead, see the W121 '
+                    'finding on fha.yaml - reconcile cannot help there, because '
+                    'nothing moved'))
     registry.source_inventory[sid] = inventory_paths
 
     # W102: suggested-claim backlog
@@ -2472,6 +2479,21 @@ def _check_agent_drift(archive_root: Path, findings: list[Finding]) -> None:
         pass   # too ambiguous to check textually
 
 
+def _check_roots_change(archive_root: Path, fha_config: dict, findings: list[Finding]) -> None:
+    """W121: a `roots:` value changed and orphaned already-filed assets (#36).
+
+    The E011s that follow such a change name each orphan individually and
+    suggest `fha reconcile`, which cannot help - nothing moved. This one
+    finding names the cause (the changed value, and what it was), sits on
+    fha.yaml where the fix lives, and appears at the top of the report ahead
+    of the per-record fallout. Sticky until reverted or re-pointed (see
+    `_lib.roots_change_orphans` for the stamp semantics).
+    """
+    for item in roots_change_orphans(archive_root, fha_config):
+        findings.append(Finding('W', 'W121', archive_root / 'fha.yaml',
+                                format_roots_orphan_warning(item, archive_root)))
+
+
 # ── Format check ─────────────────────────────────────────────────────────────
 
 _FRONTMATTER_KEY_ORDER_PERSONS = [
@@ -2546,6 +2568,7 @@ def _run_lint_core(
     """
     findings: list[Finding] = []
     registry = Registry(archive_root, fha_config)
+    _check_roots_change(archive_root, fha_config, findings)
     _walk_archive(archive_root, registry, findings)
     _cross_file_checks(registry, findings, with_exif=with_exif)
     _check_agent_drift(archive_root, findings)

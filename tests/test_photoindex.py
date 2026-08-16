@@ -76,6 +76,114 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(photoindex._keyword_to_edtf('1960~'), '1960~')
         self.assertEqual(photoindex._keyword_to_edtf('1960!-05!-12~'), '1960-05-~12')
 
+    def test_normalize_subtree_arg_accepts_relative_alias_and_windows_forms(self) -> None:
+        norm = photoindex._normalize_subtree_arg
+        self.assertEqual(norm('Woodbury/1950s'), 'photos/Woodbury/1950s')
+        self.assertEqual(norm('photos/Woodbury'), 'photos/Woodbury')
+        self.assertEqual(norm('Woodbury\\1950s'), 'photos/Woodbury/1950s')
+        self.assertEqual(norm('./Woodbury/'), 'photos/Woodbury')
+        self.assertEqual(norm('photos'), 'photos')
+        with self.assertRaises(ValueError):
+            norm('/')
+        with self.assertRaises(ValueError):
+            norm('   ')
+
+    def test_photos_ignore_excludes_a_subtree_and_prunes_stale_rows(self) -> None:
+        # The motivating case for #35: a bulk export inside the photos root
+        # must be excludable without narrowing roots: (which orphans filed
+        # assets, #36). Adding the pattern later must also remove the rows an
+        # earlier scan already catalogued.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            bulk = archive / 'photos' / 'Bulk Export'
+            bulk.mkdir()
+            (bulk / 'recent_0001.jpg').write_bytes(b'x')
+            (bulk / 'recent_0002.jpg').write_bytes(b'x')
+
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths
+            ]
+
+            # First scan without the ignore: everything is catalogued.
+            summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            self.assertEqual(summary['total'], 6)
+
+            # Second scan with the ignore: the subtree is skipped AND its
+            # previously catalogued rows are swept out.
+            cfg = {'roots': {'photos': 'photos'}, 'photos_ignore': ['Bulk Export']}
+            summary = photoindex.run_scan(archive, cfg)
+            self.assertEqual(summary['total'], 4)
+            self.assertEqual(summary['removed'], 2)
+            self.assertEqual(summary['ignore_patterns'], ['Bulk Export'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                leftover = conn.execute(
+                    "SELECT COUNT(*) FROM photos WHERE path LIKE '%Bulk Export%'"
+                ).fetchone()[0]
+                self.assertEqual(leftover, 0)
+            finally:
+                conn.close()
+
+            # A single string is accepted; garbage shapes are a clean error.
+            summary = photoindex.run_scan(
+                archive, {'roots': {'photos': 'photos'}, 'photos_ignore': 'Bulk Export'})
+            self.assertEqual(summary['total'], 4)
+            with self.assertRaisesRegex(RuntimeError, 'photos_ignore'):
+                photoindex.run_scan(
+                    archive, {'roots': {'photos': 'photos'}, 'photos_ignore': {'a': 1}})
+
+    def test_find_and_triage_scope_by_under_and_not_under(self) -> None:
+        # #35's query-time half: --under scopes to a subtree, --not-under
+        # excludes one, on find and triage alike.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            old_dir = archive / 'photos' / 'Woodbury'
+            new_dir = archive / 'photos' / 'Bulk Export'
+            old_dir.mkdir()
+            new_dir.mkdir()
+            (old_dir / 'ancestor_portrait.jpg').write_bytes(b'x')
+            (new_dir / 'recent_snap.jpg').write_bytes(b'x')
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {'SourceFile': str(p), 'Caption-Abstract': 'farm scene'}
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, cfg)
+
+            hits = photoindex.run_find(archive, cfg, text='farm', under='Woodbury')
+            self.assertEqual(
+                [r['path'] for r in hits['rows']],
+                ['photos/Woodbury/ancestor_portrait.jpg'])
+
+            hits = photoindex.run_find(
+                archive, cfg, text='farm', not_under='Bulk Export')
+            self.assertNotIn(
+                'photos/Bulk Export/recent_snap.jpg',
+                [r['path'] for r in hits['rows']])
+            self.assertIn(
+                'photos/Woodbury/ancestor_portrait.jpg',
+                [r['path'] for r in hits['rows']])
+
+            # --under with no other filter is a valid filter on its own.
+            hits = photoindex.run_find(archive, cfg, under='Woodbury')
+            self.assertEqual(
+                [r['path'] for r in hits['rows']],
+                ['photos/Woodbury/ancestor_portrait.jpg'])
+
+            res = photoindex.run_triage(archive, cfg, top=10, under='Woodbury')
+            self.assertEqual(
+                [c['path'] for c in res['candidates']],
+                ['photos/Woodbury/ancestor_portrait.jpg'])
+            res = photoindex.run_triage(archive, cfg, top=10, not_under='Bulk Export')
+            self.assertNotIn(
+                'photos/Bulk Export/recent_snap.jpg',
+                [c['path'] for c in res['candidates']])
+
     def test_exif_to_edtf_resolves_exiftool_timestamps(self) -> None:
         # exiftool emits 'YYYY:MM:DD HH:MM:SS' - not ISO-8601 (#40). Precision
         # degrades with EXIF's zero-filled convention; time-of-day is dropped.

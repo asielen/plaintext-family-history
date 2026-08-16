@@ -65,6 +65,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    format_roots_orphan_warning,
     get_roots,
     INDEX_SCHEMA_VERSION,
     is_fixture_path,
@@ -80,6 +81,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     Result,
+    roots_change_orphans,
     sqlite_cache_schema_status,
     VENDOR_DIR,)
 
@@ -730,6 +732,23 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
                 checks.append({'id': f'root:{alias}', 'status': 'error',
                                'detail': f'{resolved} not reachable', 'next_step': doctor_cmd})
                 worst = max(worst, EXIT_ERRORS)
+        # A root that resolves fine can still be the WRONG root: narrowing
+        # `photos:` to a subfolder orphans every filed asset in its siblings,
+        # and until now the first sign was a wall of lint E011 pointing at
+        # `fha reconcile`, which cannot help because nothing moved (#36).
+        for item in roots_change_orphans(archive_root, fha_config):
+            lines.append(
+                f"  {_WARN} {format_roots_orphan_warning(item, archive_root)}  "
+                f'next: revert the {item["alias"]}: value in fha.yaml, or re-point '
+                'the records; use photos_ignore: to exclude a subtree'
+            )
+            checks.append({
+                'id': f'root_change:{item["alias"]}', 'status': 'warn',
+                'detail': f"{item['orphaned']} filed file(s) orphaned by the change "
+                          f"{item['old']!r} -> {item['new']!r}",
+                'next_step': 'revert the roots: value or re-point the records',
+            })
+            worst = max(worst, EXIT_WARNINGS)
         lines.append('')
 
     exiftool_path = shutil.which('exiftool')

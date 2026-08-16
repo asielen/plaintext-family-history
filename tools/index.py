@@ -70,6 +70,8 @@ from _lib import (
     resolve_ref,
     resolve_root_arg,
     resolve_typed_ref,
+    roots_change_orphans,
+    format_roots_orphan_warning,
     sqlite_cache_schema_status,
     strip_link_wrapper,
 )
@@ -1611,11 +1613,20 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         size_kb = db_path.stat().st_size // 1024
         print(f'Done. Index at {db_path} ({size_kb} KB)')
 
-    # Warnings (today: malformed place coords) put the build on the documented
-    # warnings exit path (§1: 1 = warnings only) without failing it - the human
-    # must SEE that a hand-edited line was skipped, but the index is complete.
+    # `fha index` is the one command every workflow runs right after editing
+    # fha.yaml, so it is the earliest place a roots: change that orphaned
+    # filed assets can be caught (#36) - before the next lint's wall of E011.
+    roots_warnings = [
+        format_roots_orphan_warning(item, archive_root)
+        for item in roots_change_orphans(archive_root, fha_config)
+    ]
+
+    # Warnings (today: malformed place coords, an orphaning roots: change) put
+    # the build on the documented warnings exit path (§1: 1 = warnings only)
+    # without failing it - the human must SEE that a hand-edited line was
+    # skipped, but the index is complete.
     return Result(
-        exit_code=EXIT_WARNINGS if place_warnings else EXIT_CLEAN,
+        exit_code=EXIT_WARNINGS if (place_warnings or roots_warnings) else EXIT_CLEAN,
         data={
             'mode': 'full',
             'schema_version': INDEX_SCHEMA_VERSION,
@@ -1626,6 +1637,9 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         messages=[
             Message(level='warning', text=w, path='places/places.yaml')
             for w in place_warnings
+        ] + [
+            Message(level='warning', text=w, path='fha.yaml')
+            for w in roots_warnings
         ],
         changed=[str(db_path)],
     )

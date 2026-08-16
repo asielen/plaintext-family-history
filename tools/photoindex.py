@@ -157,6 +157,7 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -310,13 +311,58 @@ _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 _EXIFTOOL_BATCH_SIZE = 500
 
 
-def _iter_photo_files(photos_root: Path):
-    """Yield catalogable photo files under photos_root, or nothing if it is absent."""
+def _photos_ignore_patterns(fha_config: dict) -> list[str]:
+    """
+    The `photos_ignore:` patterns from fha.yaml, normalized to posix form.
+
+    A photos root often holds material that is not the archive's subject - the
+    motivating case (#35) was a root of 88,131 files, 63,156 of them one bulk
+    photo-service export, drowning the few dozen scanned ancestor photos in
+    every triage ranking. Narrowing `roots: photos` instead is NOT safe (it
+    orphans already-filed `files:` entries, #36), so exclusion has to live at
+    scan level. Accepts a single string or a list; anything else is a clean
+    RuntimeError (the scan callers' existing error path).
+    """
+    raw = fha_config.get('photos_ignore')
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not all(isinstance(p, str) for p in raw):
+        raise RuntimeError(
+            'photos_ignore in fha.yaml must be a list of path patterns '
+            "(e.g.\n  photos_ignore:\n    - 'Flickr Export'\n    - '*.tif')"
+        )
+    return [p.replace('\\', '/').strip().strip('/') for p in raw if p.strip().strip('/')]
+
+
+def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
+    """
+    Yield catalogable photo files under photos_root, or nothing if it is absent.
+
+    `ignore` patterns (photos_ignore in fha.yaml, #35) are fnmatch-style,
+    matched against the posix path relative to the root, platform-native case
+    sensitivity. A pattern matching a directory prunes its whole subtree
+    without walking it - excluding a 63,000-file export costs nothing - and a
+    pattern matching a file skips that file. Note fnmatch's '*' crosses
+    folder boundaries ('Flickr*' also matches 'a/Flickr Export').
+    """
     if not photos_root.is_dir():
         return
-    for p in photos_root.rglob('*'):
-        if p.is_file() and p.suffix.lower() in PHOTO_EXTENSIONS:
-            yield p
+    patterns = ignore or []
+
+    def _ignored(rel: str) -> bool:
+        return any(fnmatch.fnmatch(rel, pat) for pat in patterns)
+
+    for dirpath, dirnames, filenames in os.walk(photos_root):
+        rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
+        prefix = '' if rel_dir == '.' else f'{rel_dir}/'
+        if patterns:
+            dirnames[:] = [d for d in dirnames if not _ignored(f'{prefix}{d}')]
+        for name in filenames:
+            p = Path(dirpath) / name
+            if p.suffix.lower() in PHOTO_EXTENSIONS and not _ignored(f'{prefix}{name}'):
+                yield p
 
 
 def _run_exiftool(paths: list[Path]) -> list[dict]:
@@ -1064,6 +1110,41 @@ def _paths_by_keyword(conn: sqlite3.Connection, term: str) -> set[str]:
     }
 
 
+def _normalize_subtree_arg(value: str) -> str:
+    """
+    Normalize an --under/--not-under argument to the catalog's alias form.
+
+    Catalog paths are stored as 'photos/<relative posix path>', so both the
+    natural relative form ('Woodbury/1950s') and the alias form
+    ('photos/Woodbury/1950s') must mean the same subtree; backslashes are
+    accepted because the person typing them is often on Windows. An empty
+    result is a refusal - a bare '--under /' would silently match everything.
+    """
+    rel = value.replace('\\', '/').strip().strip('/')
+    while rel.startswith('./'):
+        rel = rel[2:]
+    if not rel:
+        raise ValueError('--under/--not-under needs a folder path relative to the photos root.')
+    if rel != 'photos' and not rel.startswith('photos/'):
+        rel = f'photos/{rel}'
+    return rel
+
+
+def _paths_under(conn: sqlite3.Connection, subtree: str) -> set[str]:
+    """Every catalogued path inside `subtree` (already normalized to alias form).
+
+    LIKE with an explicit ESCAPE, because '%' and '_' are ordinary characters
+    in folder names ('family_photos') and must not turn into wildcards.
+    """
+    escaped = subtree.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return {
+        row[0] for row in conn.execute(
+            "SELECT path FROM photos WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+            (subtree, f'{escaped}/%'),
+        )
+    }
+
+
 def _paths_by_edtf(conn: sqlite3.Connection, query: str) -> set[str]:
     """Bounds-overlap filter (TOOLING §1 edtf_bounds) against each photo's own edtf.
 
@@ -1185,6 +1266,8 @@ def _matched_filter_groups(
     keyword: str | None,
     edtf: str | None,
     text: str | None,
+    under: str | None = None,
+    not_under: str | None = None,
 ) -> tuple[set, dict, set[str]]:
     """Resolve the requested filters to the set of matched group keys.
 
@@ -1200,6 +1283,12 @@ def _matched_filter_groups(
       - matched_groups: the group keys satisfying every filter (may be empty)
       - group_key:      {path: group_key} for every path any filter matched
       - all_paths:      the union of every filter's raw paths
+    `under` scopes to a subtree and `not_under` excludes one (#35), both at
+    the same group level: a group with any variant inside --under qualifies,
+    and a group with any variant inside --not-under is dropped (a SOURCE-keyed
+    group can span directories, and half-excluding a logical photo would
+    reintroduce exactly the raw-path splitting the group widening prevents).
+
     Raises ValueError when no filter is supplied, or when --edtf is not valid
     EDTF (mirroring run_find's contract - bad input is a refusal, never a silent
     match-all). Callers pass an already-typechecked P-id; person normalization
@@ -1214,8 +1303,14 @@ def _matched_filter_groups(
         filters.append(_paths_by_edtf(conn, edtf))
     if text:
         filters.append(_paths_by_text(conn, text))
+    if under:
+        filters.append(_paths_under(conn, _normalize_subtree_arg(under)))
+    if not filters and not_under:
+        # A bare exclusion needs a base to exclude from: everything catalogued.
+        filters.append({row[0] for row in conn.execute('SELECT path FROM photos')})
     if not filters:
-        raise ValueError('at least one of --person/--keyword/--edtf/--text is required')
+        raise ValueError(
+            'at least one of --person/--keyword/--edtf/--text/--under/--not-under is required')
 
     all_paths: set[str] = set().union(*filters)
     group_key = _group_keys_for(conn, all_paths)
@@ -1224,6 +1319,10 @@ def _matched_filter_groups(
     matched_groups = group_sets[0]
     for gs in group_sets[1:]:
         matched_groups &= gs
+
+    if not_under:
+        excluded = _paths_under(conn, _normalize_subtree_arg(not_under))
+        matched_groups -= set(_group_keys_for(conn, excluded).values())
     return matched_groups, group_key, all_paths
 
 
@@ -1235,6 +1334,8 @@ def run_find(
     edtf: str | None = None,
     text: str | None = None,
     files: bool = False,
+    under: str | None = None,
+    not_under: str | None = None,
 ) -> Result:
     """
     Apply the requested filters (AND'd together when more than one is given)
@@ -1271,7 +1372,7 @@ def run_find(
             return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
         try:
             matched_groups, group_key, all_paths = _matched_filter_groups(
-                conn, person, keyword, edtf, text
+                conn, person, keyword, edtf, text, under=under, not_under=not_under
             )
             if not matched_groups:
                 return Result(data={'status': status, 'rows': []})
@@ -1594,13 +1695,16 @@ def _edtf_slug(edtf: str) -> str:
 
 
 def _filter_slug_parts(
-    keyword: str | None, edtf: str | None, text: str | None
+    keyword: str | None, edtf: str | None, text: str | None,
+    under: str | None = None, not_under: str | None = None,
 ) -> list[str]:
     """The filename tokens for the non-person filters, e.g. ['keyword-farm'].
 
     One shared builder so the filter-only landing spot and the person-plus-filter
     suffix stay identical (F4). EDTF goes through `_edtf_slug` so its qualifiers
-    survive as distinct tokens (F6).
+    survive as distinct tokens (F6). The subtree filters participate too, so
+    `--under Woodbury` and `--under Church` galleries never overwrite each
+    other (#35).
     """
     parts: list[str] = []
     if keyword:
@@ -1609,6 +1713,10 @@ def _filter_slug_parts(
         parts.append(f'edtf-{_edtf_slug(edtf)}')
     if text:
         parts.append(f'text-{_slugify(text)}')
+    if under:
+        parts.append(f'under-{_slugify(under)}')
+    if not_under:
+        parts.append(f'not-under-{_slugify(not_under)}')
     return parts
 
 
@@ -1620,6 +1728,8 @@ def _gallery_out_path(
     edtf: str | None,
     text: str | None,
     out: str | None,
+    under: str | None = None,
+    not_under: str | None = None,
 ) -> Path:
     """Compute the gallery's output path (default landing or --out override).
 
@@ -1643,7 +1753,7 @@ def _gallery_out_path(
         return out_path
 
     gallery_dir = archive_root / 'generated' / 'gallery'
-    parts = _filter_slug_parts(keyword, edtf, text)
+    parts = _filter_slug_parts(keyword, edtf, text, under, not_under)
     if person:
         pid_display = fmt_id_display(person)
         stem = f'{_slugify(person_name)}_{pid_display}' if person_name else pid_display
@@ -1654,7 +1764,10 @@ def _gallery_out_path(
     return gallery_dir / f'gallery_{"_".join(parts) or "all"}.html'
 
 
-def _filter_phrase(keyword: str | None, edtf: str | None, text: str | None) -> str:
+def _filter_phrase(
+    keyword: str | None, edtf: str | None, text: str | None,
+    under: str | None = None, not_under: str | None = None,
+) -> str:
     """A plain 'matching ...' phrase for the non-person count strip.
 
     Person galleries read "N photos of {name}"; a filter-only gallery has no
@@ -1671,6 +1784,10 @@ def _filter_phrase(keyword: str | None, edtf: str | None, text: str | None) -> s
         bits.append(f'dated {_humanize_edtf(edtf)}')
     if text:
         bits.append(f'text "{text}"')
+    if under:
+        bits.append(f'under "{under}"')
+    if not_under:
+        bits.append(f'not under "{not_under}"')
     if not bits:
         return ''
     return 'matching ' + ' and '.join(bits)
@@ -1960,6 +2077,8 @@ def run_gallery(
     edtf: str | None = None,
     text: str | None = None,
     out: str | None = None,
+    under: str | None = None,
+    not_under: str | None = None,
 ) -> Result:
     """Build a single-file HTML photo gallery from the requested filters.
 
@@ -2004,7 +2123,7 @@ def run_gallery(
         # out of the shared helper to the CLI; only a genuine sqlite fault below
         # is folded into the unreadable-cache result.
         matched_groups, group_key, _all_paths = _matched_filter_groups(
-            conn, person, keyword, edtf, text
+            conn, person, keyword, edtf, text, under=under, not_under=not_under
         )
 
         if not matched_groups:
@@ -2036,6 +2155,7 @@ def run_gallery(
             html = _render_gallery_html(
                 archive_root, person, person_name,
                 keyword, edtf, text, main_groups, verify_groups, counts, css,
+                under, not_under,
             )
         except ImportError:
             raise RuntimeError(
@@ -2045,7 +2165,8 @@ def run_gallery(
             )
 
         out_path = _gallery_out_path(
-            archive_root, person_id, person_name, keyword, edtf, text, out
+            archive_root, person_id, person_name, keyword, edtf, text, out,
+            under, not_under,
         )
         try:
             # The default landing folder (generated/gallery/) is disposable
@@ -2096,6 +2217,8 @@ def _render_gallery_html(
     verify_groups: list[dict],
     counts: dict,
     css: str,
+    under: str | None = None,
+    not_under: str | None = None,
 ) -> str:
     """Assemble the standalone gallery page from the grouped rows.
 
@@ -2136,7 +2259,7 @@ def _render_gallery_html(
     if subject:
         lead += f' of {subject}'
     else:
-        phrase = _filter_phrase(keyword, edtf, text)
+        phrase = _filter_phrase(keyword, edtf, text, under, not_under)
         if phrase:
             lead += f' {phrase}'
     count_strip = f'{lead} - {counts["dated"]} dated, {counts["undated"]} undated'
@@ -2292,7 +2415,13 @@ def _score_group(
     return score, signals
 
 
-def run_triage(archive_root: Path, fha_config: dict, top: int = 10) -> Result:
+def run_triage(
+    archive_root: Path,
+    fha_config: dict,
+    top: int = 10,
+    under: str | None = None,
+    not_under: str | None = None,
+) -> Result:
     """
     Rank unprocessed photo groups (no `source_id`) by evidence signals
     (TOOLING §15b) and return a Result whose data is {'status': ..., 'candidates': [...]}.
@@ -2300,18 +2429,34 @@ def run_triage(archive_root: Path, fha_config: dict, top: int = 10) -> Result:
     Each candidate is {'path': primary_path, 'score': int, 'signals': [...]}.
     Consumed almost entirely through the report's triage section (BUILD.md
     M5.3); this command is the standalone, directly-callable form.
+
+    `under`/`not_under` (#35) scope the ranking to (or away from) a subtree,
+    with the same any-variant group semantics as `find`: a mixed library's
+    bulk-export folders would otherwise drown the few scanned ancestor photos
+    that are triage's actual subject. Case-insensitive to match find's LIKE.
     """
     if top < 1:
         raise ValueError('--top must be a positive integer')
+    under_norm = _normalize_subtree_arg(under).lower() if under else None
+    not_under_norm = _normalize_subtree_arg(not_under).lower() if not_under else None
+
+    def _member_under(members: list[sqlite3.Row], prefix: str) -> bool:
+        return any(
+            m['path'].lower() == prefix or m['path'].lower().startswith(f'{prefix}/')
+            for m in members
+        )
 
     def query(conn: sqlite3.Connection) -> dict:
         members_by_group = _members_by_group(conn)
         pid_keyword_paths = _pid_keyword_paths(conn)
         scored = []
         for group in _candidate_groups(conn):
-            score, signals = _score_group(
-                members_by_group.get(group['group_id'], []), pid_keyword_paths
-            )
+            members = members_by_group.get(group['group_id'], [])
+            if under_norm and not _member_under(members, under_norm):
+                continue
+            if not_under_norm and _member_under(members, not_under_norm):
+                continue
+            score, signals = _score_group(members, pid_keyword_paths)
             scored.append({
                 'path': group['primary_path'],
                 'score': score,
@@ -2433,9 +2578,13 @@ def _group_id_of(conn: sqlite3.Connection, path: str) -> str | None:
 
 
 def _on_disk_aliases(photos_root: Path, fha_config: dict, archive_root: Path) -> dict[str, Path]:
-    """Map alias-form path -> absolute Path for every photo file currently on disk."""
+    """Map alias-form path -> absolute Path for every photo file currently on disk.
+
+    Respects photos_ignore (#35): reconcile must not offer an ignored file as
+    a rematch candidate or count it as 'new' when the scan never catalogs it.
+    """
     out: dict[str, Path] = {}
-    for p in _iter_photo_files(photos_root):
+    for p in _iter_photo_files(photos_root, _photos_ignore_patterns(fha_config)):
         try:
             out[path_to_alias(p, 'photos', fha_config, archive_root)] = p
         except OSError:
@@ -3432,7 +3581,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             'photos_root': str(resolve_path('photos', fha_config, archive_root)),
             'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
-            'unreadable': 0, 'unreadable_sample': [],
+            'unreadable': 0, 'unreadable_sample': [], 'ignore_patterns': [],
             'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         })
 
@@ -3442,14 +3591,15 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         return Result(ok=False, exit_code=EXIT_WARNINGS, data={
             'photos_root': str(photos_root), 'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
-            'unreadable': 0, 'unreadable_sample': [],
+            'unreadable': 0, 'unreadable_sample': [], 'ignore_patterns': [],
             'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         })
 
+    ignore = _photos_ignore_patterns(fha_config)
     on_disk: dict[Path, tuple[float, int]] = {}
     alias_by_path: dict[Path, str] = {}
     stat_failures: list[Path] = []
-    for p in _iter_photo_files(photos_root):
+    for p in _iter_photo_files(photos_root, ignore):
         try:
             st = p.stat()
             on_disk[p] = (st.st_mtime, st.st_size)
@@ -3599,6 +3749,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         'unchanged': len(on_disk) - scraped - len(unreadable), 'removed': removed,
         'unreadable': len(unreadable),
         'unreadable_sample': [str(p) for p in unreadable[:5]],
+        'ignore_patterns': ignore,
         'groups': groups, 'dated_groups': dated_groups, 'conflicts': conflicts,
         'rebuilt_reason': rebuilt_reason,
     })
@@ -3633,6 +3784,8 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     find_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
     find_p.add_argument('--text', metavar='TEXT', help='Full-text search over title/caption/comment/keywords (photo_fts)')
     find_p.add_argument('--files', action='store_true', help='Show every matching raw row instead of one path per group')
+    find_p.add_argument('--under', metavar='PATH', help='Only groups with a variant under this folder (relative to the photos root)')
+    find_p.add_argument('--not-under', metavar='PATH', dest='not_under', help='Drop groups with any variant under this folder (relative to the photos root)')
     find_p.set_defaults(func=_cmd_find)
 
     gallery_p = deferred.add_parser(
@@ -3644,11 +3797,15 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     gallery_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
     gallery_p.add_argument('--text', metavar='TEXT', help='Full-text search over title/caption/comment/keywords (photo_fts)')
     gallery_p.add_argument('--out', metavar='FILE', help='Write the page here instead of the default generated/gallery/ landing spot')
+    gallery_p.add_argument('--under', metavar='PATH', help='Only groups with a variant under this folder (relative to the photos root)')
+    gallery_p.add_argument('--not-under', metavar='PATH', dest='not_under', help='Drop groups with any variant under this folder (relative to the photos root)')
     gallery_p.set_defaults(func=_cmd_gallery)
 
     triage_p = deferred.add_parser('triage', help='Rank unprocessed photo groups by evidence signals')
     triage_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
     triage_p.add_argument('--top', metavar='N', type=int, default=10, help='Show this many top candidates (default 10)')
+    triage_p.add_argument('--under', metavar='PATH', help='Only rank groups with a variant under this folder (relative to the photos root)')
+    triage_p.add_argument('--not-under', metavar='PATH', dest='not_under', help='Skip groups with any variant under this folder (relative to the photos root)')
     triage_p.set_defaults(func=_cmd_triage)
 
     report_p = deferred.add_parser('report', help='List photo groups with conflicting variant dates')
@@ -3849,6 +4006,12 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             f"({summary['rebuilt_reason']}); rebuilt from photo files."
         )
 
+    if summary.get('ignore_patterns'):
+        print(
+            f"photos_ignore: {len(summary['ignore_patterns'])} pattern(s) active - "
+            'matching files are not catalogued, and any previously catalogued '
+            'rows for them are removed.'
+        )
     print(
         f"Scanned {summary['total']} files under {summary['photos_root']} "
         f"({summary['scraped']} scraped, {summary['unchanged']} unchanged, "
@@ -3894,6 +4057,8 @@ def _cmd_find(args: argparse.Namespace) -> int:
             edtf=getattr(args, 'edtf', None),
             text=getattr(args, 'text', None),
             files=getattr(args, 'files', False),
+            under=getattr(args, 'under', None),
+            not_under=getattr(args, 'not_under', None),
         )
     except (ValueError, RuntimeError) as e:
         print(f'ERROR: {e}', file=sys.stderr)
@@ -3947,6 +4112,8 @@ def _cmd_gallery(args: argparse.Namespace) -> int:
             edtf=getattr(args, 'edtf', None),
             text=getattr(args, 'text', None),
             out=getattr(args, 'out', None),
+            under=getattr(args, 'under', None),
+            not_under=getattr(args, 'not_under', None),
         )
     except (ValueError, RuntimeError) as e:
         print(f'ERROR: {e}', file=sys.stderr)
@@ -4000,7 +4167,11 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     archive_root, fha_config = resolved
 
     try:
-        result = run_triage(archive_root, fha_config, top=getattr(args, 'top', 10))
+        result = run_triage(
+            archive_root, fha_config, top=getattr(args, 'top', 10),
+            under=getattr(args, 'under', None),
+            not_under=getattr(args, 'not_under', None),
+        )
     except ValueError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE

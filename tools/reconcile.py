@@ -639,10 +639,19 @@ def run_reconcile(
                     level = 'warning' if (photo_missing or new_count) else 'info'
                     verb = 'would be re-tied' if dry_run else 're-tied'
                     prefix = '[dry-run] ' if dry_run else ''
+                    # Say what each number counts. "0 re-tied, N new" was read
+                    # as "no photos are filed yet" (#36) - but these are CATALOG
+                    # rows, and a filed photo is a source record's `files:`
+                    # entry, an entirely separate question this line does not
+                    # answer. Not saying so once led to narrowing roots: on
+                    # the strength of this line and orphaning every filed photo.
                     result.add(level,
-                               f'photos: {prefix}{rematched} {verb}, '
-                               f'{photo_missing} missing, {new_count} new - run '
-                               '`fha photoindex reconcile` for the per-file detail.')
+                               f'photos: {prefix}{rematched} catalog row(s) {verb}, '
+                               f'{photo_missing} catalog row(s) missing on disk, '
+                               f'{new_count} on-disk file(s) not yet catalogued - run '
+                               '`fha photoindex reconcile` for the per-file detail. '
+                               '(These count the photo CATALOG, not which photos are '
+                               'filed on source records - `fha lint` E011 covers that.)')
                 else:
                     result.add('info',
                                'photos: catalog matches the photo folder - nothing to heal.')

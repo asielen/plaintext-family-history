@@ -491,7 +491,12 @@ backup:                      # optional: where `fha backup` writes its dated zip
   path: D:/ArchiveBackups    # relative to the archive root - same tolerance as roots: values).
                               # Default: a "{root-folder-name}-backups" folder beside the archive.
                               # Must resolve outside the archive and its asset roots (TOOLING §13e).
+photos_ignore:               # optional: fnmatch patterns, relative to the photos root, that the
+  - Flickr Export            # photo catalog (`fha photoindex`, TOOLING §9) skips entirely - for
+  - '*.tif'                  # material inside the library that is not the archive's subject.
 ```
+
+Narrowing `roots: photos` to a subfolder is **not** the way to exclude material: every `files:` entry already filed under that alias stops resolving the moment the root moves (alias paths are relative to the root - lint E011). `photos_ignore:` excludes without moving the root; `fha lint`, `fha doctor` and `fha index` warn (W121) when a `roots:` change has orphaned filed entries (TOOLING §3).
 
 Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name).
 Moving a library is a one-line edit and **no record changes**.
