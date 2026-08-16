@@ -4,7 +4,7 @@
 
 This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: all layers authored (I1-I5; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and thirteen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, and `import-notes`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
+**Status: all layers authored (I1-I6; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and fifteen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, and `transcribe-audio`. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
 
 ---
 
@@ -219,6 +219,32 @@ The guided path for the privacy-sensitive act: route the request to `packet` / `
 ### MI5.3 - `today` connection-reaction extension
 
 **Status: authored** (folded into `.claude/skills/today/SKILL.md` as flow step 6). Completes the loop `tools/report.py` §8 left to the skill layer: "yes, they were neighbors" → `fha confirm cooccur` (dry-run echoed first, minted `suggested` unless the human's flat, unhedged answer is the review); "no, stop suggesting that pair" → `fha confirm dismiss` (tombstone, reversible). No write without an explicit ruling.
+
+## Layer I6 - Recordings skills (Milestone I6 - authored in a live archive, ported 2026-08-15)
+
+Authored against real phone-app exports in a live archive on 2026-08-11..13 and ported here scrubbed of family specifics. Design: TOOLING_INTERFACE.md §2.4.
+
+### MI6.1 - `import-recordings` skill
+
+**Status: authored** (`.claude/skills/import-recordings/SKILL.md` + `scripts/attribute_speakers.py` + `GAP.md`). Session check pending on `example-archive` (needs a synthetic recording + app-transcript pair in the fixture; a whisper-free dry path is enough to exercise dedupe, dating, grouping and the `fha process` sequence).
+
+The recordings on-ramp: dedupe by content, date from the container, group by sitting into one session source, always a fresh whisper pass beside the app transcript, speaker labels only under gates and speaker names only on the human's yes.
+
+**Orchestrates:** `fha search`/`find`, `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha index`, `fha lint`; the skill's own `scripts/` for whisper and label transfer; `ffprobe` and a size-then-SHA-256 check as the two interim enactments recorded in `GAP.md` (wanted: `fha media dedupe` #43, `fha media probe` #44 - core-tool backlog).
+
+**Done when:** see the skill's own "Done when" - one sitting lands as one folder under one S-id with every companion attached by its own `--more` call; a byte-identical repeat is skipped and reported with the path it duplicates; a pair failing the 50% gate degrades to two plain transcripts; speaker → person is a table and no name is written until answered.
+
+### MI6.2 - `transcribe-audio` skill
+
+**Status: authored** (`.claude/skills/transcribe-audio/SKILL.md` + `scripts/transcribe_audio.py`). Requires `faster-whisper` on the machine that holds the audio; not exercised in CI.
+
+Local re-transcription attached beside the original (both kept, always), the `--name` prefix rule that keeps a source's files together in a listing, and the offered claim-by-claim audit of facts mined from the garbled original.
+
+**Orchestrates:** `scripts/transcribe_audio.py`, `fha process --more … whisper-transcript`, `fha claim <C-id> --value` for audited corrections, `review-claims` for new material.
+
+### MI6.3 - `mine-transcript` two-transcript extension
+
+**Status: authored** (folded into `.claude/skills/mine-transcript/SKILL.md` step 1). Mine from the whisper/app comparison, anchor to the transcript actually quoted, and treat a coverage divergence as a signal the app truncated or mis-attached a file.
 
 ---
 

@@ -6,7 +6,7 @@
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "93ba7dbef83de2354057168cb4e95ff3eb64602fdf48e06e62f00729ca137126",
+      "sha256": "3dd38fee8abfccbd46aebf8b5d6db930394fcd086a55e0187bd99f283bb94c6e",
       "spec_version": "1.2"
     },
     {
@@ -28,6 +28,24 @@
       "spec_version": "1.2"
     },
     {
+      "path": ".claude/skills/import-recordings/GAP.md",
+      "category": "operating",
+      "sha256": "c2017877db5ebae8d1e666a6b389e536e1af076135a4689519aa5d7c8d8e30c4",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/import-recordings/SKILL.md",
+      "category": "operating",
+      "sha256": "960a8314a24ba1e925ce9dddc6757ab0633fcbdc6ef1504c7d4c358a5d237393",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/import-recordings/scripts/attribute_speakers.py",
+      "category": "operating",
+      "sha256": "93c3d19737f89fd41d2d60bdcfebb3bcd05a24470bbffa347616a13113825f18",
+      "spec_version": "1.2"
+    },
+    {
       "path": ".claude/skills/merge-identities/GAP.md",
       "category": "operating",
       "sha256": "13a7aaaaf21ada0a6ca3e4686e253f6201697e747648f849b400125a9fba0150",
@@ -42,7 +60,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "e247e286a41f71d541fd972c52c3b4171876c03c907e85674363ae0b58fdfb44",
+      "sha256": "aebe98cd370ebf88926fd84f97a56f8bedff1c8b02fbf330d319ecefb8b8cc77",
       "spec_version": "1.2"
     },
     {
@@ -97,6 +115,18 @@
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
       "sha256": "5b2968c7e037f0ad1132b3e052e8a35279a9854d1901d98198e5ae2196dce352",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/transcribe-audio/SKILL.md",
+      "category": "operating",
+      "sha256": "498a6415c6c9eb96538a840c97612648ba50097108b4ba83840a7eb20778ca6d",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
+      "category": "operating",
+      "sha256": "f05f4de6d15530abb182300e22730fc4a024b6afad4e2c68ed86419245a00c6b",
       "spec_version": "1.2"
     },
     {
@@ -773,13 +803,13 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "71a268429b9f2c4f6872c8134c993cdf67abff2e09dcb0dff93be500e71b78ad",
+      "sha256": "98d91f77da30c49dd634fe6022799c89baf276f498a8e03634e0948b74a8a5dd",
       "spec_version": "1.2"
     },
     {
       "path": "CLAUDE.md",
       "category": "operating",
-      "sha256": "d5d5c3cfee557a94ac26873e0cceed95e946cfa93c0070c987a6713f9c2820f2",
+      "sha256": "a61bc468829de35e8ffdcf86df6704bf98f118bfd5bae60e6f5bdf493a5f1540",
       "spec_version": "1.2"
     },
     {

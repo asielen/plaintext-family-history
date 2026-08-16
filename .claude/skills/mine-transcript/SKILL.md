@@ -40,6 +40,35 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    `.md` and its transcript file. Read the whole thing before drafting — the substantive assertions are
    scattered.
 
+   **If the source carries more than one transcript of the same recording, read them side by side and
+   mine from the comparison.** An app/phone transcript and a local whisper pass (roles `transcript` and
+   `whisper-transcript`) are each right about something the other gets wrong: the app knows the turn
+   structure and who spoke, whisper is far better on proper names, places and numbers — exactly what
+   genealogy needs. `fha find <S-id>` lists every attached transcript; mine the whisper text for content
+   and consult the app transcript for speaker turns.
+
+   Two things fall out of the comparison, and both matter:
+
+   - **Where they disagree on a name, the whisper reading usually wins — but say so in the claim.** Quote
+     the whisper text as the evidence, note what the app transcript had, and cite the whisper timestamp.
+     A real case (names changed): `"Sue walkie"` in the app transcript was drafted as *a person
+     called Sue*; whisper has *Suwałki* — the town — plus a following sentence the app had lost
+     entirely explaining that this is where the family emigrated from.
+   - **Where one transcript covers material the other lacks, mine the fuller one and check why.** A
+     recording app can attach the *same* transcript file to two different recordings, or truncate one at
+     a fixed size — in one real archive a 5001-byte transcript stopped at roughly the eight-minute mark and
+     another was a byte-identical copy of a different recording, so two whole conversations had never
+     been transcribed at all. Compare durations against transcript length before concluding a recording
+     holds nothing.
+
+   Never rewrite either transcript to match the other, and never "correct" the garbled names inside them
+   — the originals stay byte-for-byte (SPEC §6.3). The reconciliation lives in the claim you draft.
+
+   Anchor to the transcript you actually drew the words from, and name it when the source has several
+   (`anchor: "cars-whisper, 00:28:14"`). If the source's existing claims were mined from a transcript that
+   has since been joined by a better one, this is **not** the skill for fixing them — a fresh mining pass
+   would duplicate them. That audit belongs to `transcribe-audio` step 6, which corrects claim by claim.
+
 2. **Draft `suggested` claims for substantive assertions only.** For each real fact stated:
    - add a claim to the source's `## Claims` block: `status: suggested`, a fresh `id:` (`fha id mint C`),
      the right `type:`, resolved `persons:`, a `value:` sentence;

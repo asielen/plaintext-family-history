@@ -323,7 +323,7 @@ patched line in-source with a searchable token - `LOCAL PATCH` plus the register
 
 ### Playbooks (workflow skills)
 
-Thirteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
+Fifteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
 procedures, `fha` invocations and judgment only, no harness APIs (the standard they follow is
 `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the
 human's own words ("process the inbox", "review the census claims", "are these the same

@@ -10,7 +10,8 @@ those two modes do not apply.
 Claude-Code-specific notes:
 - Workflow skills live in `.claude/skills/` - process-source, review-claims,
 mine-transcript, write-biography, today, research-next, merge-identities, place-research,
-reconcile-site-edits, find-photos, share-and-export, photo-context, import-notes (as implemented).
+reconcile-site-edits, find-photos, share-and-export, photo-context, import-notes,
+import-recordings, transcribe-audio (as implemented).
 Prefer them when they match the task. Their design is in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md), their build
 sequence in [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md).
 - `SPEC.md` is the law. The tool design is split by concern: `TOOLING.md` (core tools),
