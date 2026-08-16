@@ -419,5 +419,94 @@ class RenderTests(unittest.TestCase):
             self.assertIn('archive root:', buf.getvalue())
 
 
+class CopyMeNextStepsNameTheLauncherTests(unittest.TestCase):
+    """Doctor's `next:` commands must run when they are pasted back.
+
+    `fha` is a launcher FILE at the archive root - tools/scaffold.py ships
+    `fha` and `fha.cmd` and nothing else - so a bare `fha index --root "…"` is
+    a command-not-found on macOS, on Linux, and in PowerShell. Doctor is the
+    tool a human reaches for when something is already broken, which makes a
+    dead-end next step there worse than anywhere else: he is told what is wrong
+    and handed a fix his shell refuses.
+
+    The convention this pins is the one commit 7c6ee13 settled for the browser
+    companion's copy card and f1a246d reused for transcribe-audio's attach
+    line: a command printed to be copied carries the prefix its shell needs.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _make_archive(self.root)
+        # An unreachable mapped root is what makes doctor name ITSELF as the
+        # next step; nothing else in a healthy report does.
+        _write(self.root / 'fha.yaml',
+               f'roots:\n  photos: {self.root / "no-such-folder"}\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _report(self) -> str:
+        """The full report with every command-bearing check made to fire.
+
+        No `.cache/` exists, so index and photoindex report "not yet built" and
+        no backup stamp is recorded. The other two need help: lint is made to
+        report errors (a clean lint says "no action needed" and names no
+        command), and the staged-captures check only speaks when the browser
+        companion's staging folder exists.
+        """
+        staging = self.root / 'staged'
+        staging.mkdir()
+        import lint as lint_mod
+        orig_lint = lint_mod.run_lint_silent
+        orig_bundles = capture.staged_bundles
+        lint_mod.run_lint_silent = lambda root, cfg: (2, 1, [])
+        capture.staged_bundles = lambda cfg: (staging, [staging / 'bundle-1'])
+        try:
+            result = doctor.run_doctor(self.root, {})
+        finally:
+            lint_mod.run_lint_silent = orig_lint
+            capture.staged_bundles = orig_bundles
+        return '\n'.join(result.data['lines'])
+
+    def test_no_next_step_command_is_spelled_bare(self) -> None:
+        import re
+        report = self._report()
+        for verb in ('index', 'photoindex', 'lint', 'doctor', 'backup',
+                     'capture --ingest'):
+            with self.subTest(verb=verb):
+                # It is there at all (a check that never fired proves nothing).
+                self.assertIn(f'{doctor._LAUNCHER} {verb} --root', report)
+                # And every occurrence carries the launcher: a bare `fha <verb>`
+                # is the bug, wherever in the report it sits.
+                bare = re.findall(
+                    r'(?<![./\\])\bfha ' + re.escape(verb) + r' --root', report)
+                self.assertEqual(bare, [], f'bare `fha {verb}` in the report')
+
+    def test_the_report_explains_the_prefix_once(self) -> None:
+        # The reader is a non-technical genealogist: a command starting with
+        # `./` is unexplained machinery unless the report says what it is, and
+        # someone reading the report on a different shell needs to know what to
+        # change. Once, at the top - not on every line.
+        report = self._report()
+        self.assertEqual(report.count('launcher file in the archive folder'), 1)
+        self.assertIn('not a program on your PATH', report)
+        self.assertIn('Windows Command Prompt', report)
+
+    def test_the_machine_readable_next_step_matches_what_is_printed(self) -> None:
+        # data['checks'] is the headless surface: a consumer that shows
+        # `next_step` to a human must not show a command the printed report
+        # already knows is unrunnable.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / 'fha.yaml', 'roots: {}\n')
+            result = doctor.run_doctor(root, {})
+        steps = [c['next_step'] for c in result.data['checks'] if c['next_step']]
+        named = [s for s in steps if ' --root ' in s]
+        self.assertTrue(named, steps)
+        for step in named:
+            self.assertTrue(step.startswith(doctor._LAUNCHER), step)
+
+
 if __name__ == '__main__':
     unittest.main()

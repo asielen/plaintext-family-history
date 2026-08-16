@@ -163,6 +163,7 @@ configure_utf8_stdout()
 #    _ranked_search             - the merge: aliases + persons + sources + places/place_names
 #                                 + notes_fts, deduped by id, sorted by tier then label
 #    search_json_with_coverage  - one connection, one open: the hits AND the D14 coverage note
+#                                 (the note only for an unfiltered search - see its docstring)
 #    search_json                - public engine: opens/closes its own connection, returns list[dict]
 #    run_find_json               - wraps _ranked_search into the Result contract (own connection,
 #                                 shared with search_json's core, not a second open_index_db call)
@@ -2568,12 +2569,28 @@ def search_json_with_coverage(
     Asking for it separately would mean a second `open_index_db`, which prints
     its own stale/missing-index message as a side effect - the same
     double-message `run_find_json`'s docstring explains avoiding.
+
+    THE NOTE IS FOR AN UNFILTERED SEARCH ONLY (`kinds is None`). A `--kind`
+    lookup is asking "which record do you mean" - a person picker, a place
+    picker, an id resolving to a name - not "what does this archive say", and
+    the caveat answers the second question. So a filtered call returns None and
+    does not pay for the count: two indexed scans (`source_files` and
+    `transcripts_fts`'s key column) that the caller was never going to show,
+    on every debounced keystroke of the workbench's pickers.
+
+    None is the only other answer this can give, and that is the point: the
+    count is archive-wide, so recomputing it over the filtered rows would give a
+    second, smaller number for the same archive and the surface would be
+    answering one question two ways. Absent, or the one sentence - never a rival
+    number.
     """
     conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
     if conn is None:
         return [], None
     try:
         hits = _ranked_search(conn, query, kinds, limit)
+        if kinds is not None:
+            return hits, None
         return hits, _searchable_text_note(conn, found_something=bool(hits))
     except sqlite3.OperationalError:
         # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's

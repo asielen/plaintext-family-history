@@ -11,7 +11,10 @@ reads from the record .md files is written to disk alongside the index rows.
 path under the private name `fha_site` (the same trick fha.py uses).
 """
 
+import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -1002,6 +1005,153 @@ class AssetTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertNotIn('class="source-portrait"', html)
         self.assertIn('image omitted - tagged to a living person', html)
+
+
+class LivingPhotoCheckUnavailableTests(_Base):
+    """The living-person photo gate fails OPEN, and the build says so.
+
+    Owner decision, 2026-08-16: `fha site` must build without
+    `.cache/photos.sqlite`, so a missing or unreadable catalog publishes the
+    source images rather than refusing them - "fine if living photo is
+    included. that should be on the researcher to monitor." Monitoring is only
+    possible if someone is told, so the one thing that is NOT optional is the
+    warning: which check did not run, why, and what to do about it.
+    """
+
+    def _seed_photo_source(self, sid='s-1111111111', name='pic.png'):
+        """A public source with one real image attached, and nothing else."""
+        from PIL import Image
+        self._seed_source(sid, 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / name
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(img)
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            (sid, f'photos/1880/{name}', 'front'))
+
+    def _warnings(self, res):
+        return [m for m in res['messages'] if 'tags naming living people' in m]
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_no_catalog_publishes_the_image_and_warns_once(self):
+        self._seed_photo_source()
+        res = self._run(linked=False)
+        # Behaviour is unchanged: the image is published, the build is clean of
+        # refusals, and the page shows the picture.
+        self.assertIn('media/', self._read('sources/s-1111111111.html'))
+        self.assertEqual(res['status'], 'ok')
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        # Cause, and the state it is in.
+        self.assertIn('the photo catalog has not been built yet', warnings[0])
+        # What did not happen.
+        self.assertIn('NOT', warnings[0])
+        self.assertIn('someone still living', warnings[0])
+        # The next step, and the fallback for a reader who cannot run it now.
+        self.assertIn('fha photoindex', warnings[0])
+        self.assertIn('fha site', warnings[0])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_the_warning_is_not_repeated_per_photo(self):
+        # A site with a wall of scans must not bury the sentence under copies
+        # of itself - one build, one warning.
+        for i, sid in enumerate(('s-1111111111', 's-2222222222')):
+            self._seed_photo_source(sid, name=f'pic{i}.png')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic1.png', 'back'))
+        res = self._run(linked=False)
+        self.assertEqual(len(self._warnings(res)), 1, res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_fresh_catalog_raises_no_alarm(self):
+        # The other half: a warning that fires when the check DID run is a
+        # warning the researcher learns to ignore.
+        self._seed_photo_source()
+        pconn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+        pconn.executescript(PHOTOS_DDL)
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/pic.png', 'g1', 1, ''))
+        pconn.commit()
+        pconn.close()
+        far_future = time.time() + 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+        res = self._run(linked=False)
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_an_unreadable_catalog_names_itself(self):
+        # A file that is not a database at all reads as unreadable, and the
+        # warning must say that rather than "not built yet" - the two have
+        # different fixes.
+        self._seed_photo_source()
+        (self.archive_root / '.cache' / 'photos.sqlite').write_bytes(b'not a database')
+        far_future = time.time() + 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+        res = self._run(linked=False)
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        self.assertIn('could not be read', warnings[0])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_stale_catalog_names_itself(self):
+        # Stale is the state a real archive sits in most often: the catalog
+        # exists, so "not built yet" would send the reader looking for a file
+        # that is right there.
+        self._seed_photo_source()
+        pconn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+        pconn.executescript(PHOTOS_DDL)
+        pconn.commit()
+        pconn.close()
+        long_ago = time.time() - 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (long_ago, long_ago))
+        res = self._run(linked=False)
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        self.assertIn('out of date', warnings[0])
+
+    def test_a_source_with_no_images_says_nothing(self):
+        # Nothing was published that the gate would have looked at, so there is
+        # nothing to warn about - the transcript stays in the archive either way.
+        self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'documents/letters/note_s-1111111111.txt', 'transcript'))
+        res = self._run(linked=False)
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_the_linked_preview_says_nothing(self):
+        # --linked is the unredacted local preview: the gate does not run there
+        # by design, so there is no failed check to report and nothing is
+        # shared out of it.
+        self._seed_photo_source()
+        res = self._run(linked=True)
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_the_warning_reaches_the_person_who_ran_the_command(self):
+        # A warning only in the Result is a warning nobody sees: `fha site`
+        # prints these to stderr and finishes with exit 1 (warnings), which is
+        # what the human at the terminal actually reads.
+        self._seed_photo_source()
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n', encoding='utf-8')
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        args = argparse.Namespace(root=str(self.archive_root), out=str(self.out_dir),
+                                  linked=False, dry_run=False)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = site._cmd_site(args)
+        self.assertEqual(code, 1)
+        self.assertIn('tags naming living people', err.getvalue())
+        self.assertIn('fha photoindex', err.getvalue())
 
 
 class SourcePortraitTests(_Base):

@@ -115,6 +115,23 @@ _OK   = '✓'
 _BAD  = '✗'
 _WARN = '⚠'
 
+# How to spell the launcher in a command meant to be copied and run as it stands.
+#
+# `fha` is a FILE at the archive root - tools/scaffold.py ships `fha` (POSIX sh)
+# and `fha.cmd` and nothing else - never a program on PATH, so a bare `fha …`
+# is a command-not-found for everyone except a Windows Command Prompt user.
+# Doctor's next steps are the report's whole point: they are already filled in
+# with this archive's --root and are meant to be pasted back, so each one
+# carries the prefix this machine's shell needs.
+#
+# Windows gets the PowerShell spelling because cmd.exe resolves a
+# path-qualified `.\fha` through PATHEXT exactly as it resolves the bare name,
+# while PowerShell refuses the bare form - `.\fha` strands nobody. This is the
+# convention commit 7c6ee13 settled for the browser companion's copy card and
+# f1a246d reused for transcribe-audio's attach line; GETTING_STARTED.md and
+# CHEATSHEET.md carry the same two spellings plus the bare cmd.exe one.
+_LAUNCHER = '.\\fha' if os.name == 'nt' else './fha'
+
 
 # ── Freshness helpers (db_mtime / probe_sqlite live in _lib, shared with find) ──
 
@@ -660,10 +677,12 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         roots = {}
     is_fixture = is_fixture_path(archive_root)
     wc_mode = is_working_copy(archive_root)
-    index_cmd = f'fha index --root "{root_arg}"'
-    photoindex_cmd = f'fha photoindex --root "{root_arg}"'
-    lint_cmd = f'fha lint --root "{root_arg}"'
-    doctor_cmd = f'fha doctor --root "{root_arg}"'
+    # Spelled with the launcher (see _LAUNCHER): every one of these is printed
+    # as a copy-me next step, not as prose about a command.
+    index_cmd = f'{_LAUNCHER} index --root "{root_arg}"'
+    photoindex_cmd = f'{_LAUNCHER} photoindex --root "{root_arg}"'
+    lint_cmd = f'{_LAUNCHER} lint --root "{root_arg}"'
+    doctor_cmd = f'{_LAUNCHER} doctor --root "{root_arg}"'
     # docs/ stays at the archive root in every layout (only tools/ and design/
     # are vendored under .fha/), so this path needs no layout probe.
     troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
@@ -755,6 +774,15 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         checks.append({'id': 'working_copy', 'status': 'info',
                        'detail': 'working-copy mode active', 'next_step': None})
 
+    # Said once, at the top, so the reader knows why every command below starts
+    # with `./` (or `.\`) and can retype it for a shell this machine is not
+    # running - the same gloss docs/TROUBLESHOOTING.md gives its bare commands.
+    lines.append(
+        '(Every `next:` below is a command you can copy. `fha` is the launcher '
+        'file in the archive folder, not a program on your PATH, so it is '
+        f'written `{_LAUNCHER}` here; the Windows Command Prompt also takes a '
+        'bare `fha`.)')
+    lines.append('')
     lines.append(f'archive root: {_OK} {archive_root}  next: no action needed')
     lines.append(f'fha.yaml:     {_OK} {archive_root / "fha.yaml"} loaded  next: no action needed')
     lines.append('')
@@ -1042,7 +1070,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
                        'next_step': f'fha capture --ingest --root "{root_arg}"'})
         worst = max(worst, EXIT_WARNINGS)
     if staging_dir is not None and staging_dir.is_dir():
-        ingest_cmd = f'fha capture --ingest --root "{root_arg}"'
+        ingest_cmd = f'{_LAUNCHER} capture --ingest --root "{root_arg}"'
         if pending:
             lines.append(
                 f'staged captures: {len(pending)} bundle(s) in {staging_dir} '
@@ -1111,7 +1139,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     # Real state first (the fha backup stamp), then the always-printed list of
     # paths a full backup must cover - the reminder names the command and the
     # date instead of restating policy with no state behind it.
-    backup_cmd = f'fha backup --root "{root_arg}"'
+    backup_cmd = f'{_LAUNCHER} backup --root "{root_arg}"'
     lines.append('-' * 60)
     _check_backup_stamp(archive_root, lines, checks, backup_cmd)
     lines.append('Backup policy must cover both the archive root and all mapped asset roots.')

@@ -2082,6 +2082,30 @@ class JsonCoverageNoteTests(unittest.TestCase):
         self.assertIn('no searchable text for 1 of its 2 sources', note)
         self.assertEqual(hits, find.search_json(self.archive_root, {}, 'Harkness'))
 
+    def test_a_kind_filtered_search_is_not_charged_for_the_count(self) -> None:
+        # A --kind lookup is "which record do you mean", not "what does this
+        # archive say" - nobody shows the caveat there, and the count is two
+        # indexed scans the caller will throw away. The assertion is that the
+        # work does not happen, not merely that the answer is dropped: a
+        # response that omits the note while still counting is the bug.
+        calls = []
+        real = find._count_sources_without_text
+        find._count_sources_without_text = lambda conn: (calls.append(1), real(conn))[1]
+        try:
+            filtered, note = find.search_json_with_coverage(
+                self.archive_root, {}, 'Harkness', kinds=['source'])
+            self.assertEqual(calls, [])
+            self.assertIsNone(note)
+            # And the search itself is untouched: same hits as the unfiltered
+            # call, minus the kinds it filtered out.
+            self.assertEqual(
+                filtered,
+                [h for h in find.search_json(self.archive_root, {}, 'Harkness')
+                 if h['type'] == 'source'])
+            self.assertEqual(len(calls), 1)   # that unfiltered call DID count
+        finally:
+            find._count_sources_without_text = real
+
 
 class JsonUncheckedKeyTests(unittest.TestCase):
     """A JSON hit whose words nobody has checked against the image says so.

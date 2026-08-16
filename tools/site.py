@@ -262,6 +262,17 @@ def _under_ignored_dir(directory: Path, photos_root: Path, is_ignored) -> bool:
     return _under_ignored_path(rel, is_ignored)
 
 
+# Why the photo catalog cannot answer, in the words `photoindex_status` returns,
+# said the way the archive's owner would say it. The living-person photo gate
+# reads that catalog, so when it is not usable the gate cannot fire and the build
+# has to say so (see `_SiteBuilder._warn_living_photo_check_unavailable`).
+_PHOTO_CATALOG_TROUBLE = {
+    'absent': 'the photo catalog has not been built yet',
+    'stale': 'the photo catalog is out of date',
+    'unreadable': 'the photo catalog could not be read',
+    'old-schema': 'the photo catalog was built by an older version of the tools',
+}
+
 # The largest edge (px) a standalone derivative is resized to (TOOLING §12).
 _DERIVATIVE_MAX_PX = 1200
 # Profile photos are shown small (a person-page plate, a tree square), so their
@@ -1075,6 +1086,13 @@ class _SiteBuilder:
         # every person page, closed by run_site - so the photos-root freshness
         # walk happens once per build, not once per curated person.
         self.photos_conn: sqlite3.Connection | None = None
+        # Why that catalog is not usable, if it is not: one of _PHOTO_CATALOG_
+        # TROUBLE's keys, or 'fresh' once it has opened. Kept because the
+        # living-person photo gate fails OPEN by design - the site is meant to
+        # build without a catalog - so the one thing the build owes the
+        # researcher is to say which check did not run, and why.
+        self.photos_status: str = 'absent'
+        self._living_photo_warning_sent = False
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
@@ -1341,8 +1359,14 @@ class _SiteBuilder:
         so it must run once per build - never once per person. An absent, stale,
         or unreadable photo index simply leaves `self.photos_conn` None and the
         photo strip is omitted (it is enrichment, never a build blocker).
+
+        The status is kept on `self.photos_status` because one thing reading
+        this catalog is NOT enrichment: the living-person photo gate. It fails
+        open, so the build warns once and names which of these states stopped it
+        (`_warn_living_photo_check_unavailable`).
         """
         status, _lag = photoindex_status(self.archive_root, self.fha_config)
+        self.photos_status = status
         if status != 'fresh':
             return
         try:
@@ -1351,6 +1375,7 @@ class _SiteBuilder:
             self.photos_conn = conn
         except sqlite3.DatabaseError:
             self.photos_conn = None
+            self.photos_status = 'unreadable'
 
     def close(self) -> None:
         """Close any auxiliary connection this build opened (the index
@@ -1889,6 +1914,15 @@ class _SiteBuilder:
             is_image = Path(f['path']).suffix.lower() in _IMAGE_SUFFIXES
             if is_image and entry.get('thumb_href'):
                 candidates.append(((f['role'] or '').strip().lower() == 'front', entry))
+                # An image is going into a shareable snapshot. If the living-
+                # person gate at the top of this loop had no catalog to ask,
+                # this is the moment the build learns it published something
+                # unchecked - and the only honest moment to say so. Warned here
+                # rather than inside the gate itself so a build with nothing but
+                # text attachments, or one where Pillow left every image out,
+                # raises no alarm about photos it never published.
+                if not self.linked and self.photos_status != 'fresh':
+                    self._warn_living_photo_check_unavailable()
         portrait = next((e for is_front, e in candidates if is_front), None)
         if portrait is None and candidates:
             portrait = candidates[0][1]
@@ -2475,7 +2509,16 @@ class _SiteBuilder:
         photo missing, its tags move to the 'MISSING:' key while `source_files`
         still names the plain path - so a photo that comes back (a reconnected
         drive) before the next scan would otherwise look untagged and publish
-        the living person the gate exists to protect."""
+        the living person the gate exists to protect.
+
+        THIS GATE FAILS OPEN. With no catalog to ask - it was never built, it is
+        out of date, it will not open - the answer is False and the photo
+        publishes. That is the owner's decision (2026-08-16): the site is meant
+        to build without `.cache/photos.sqlite`, and refusing every source image
+        until someone runs `fha photoindex` costs more than it saves. What the
+        build owes the researcher instead is to say so, once, in words - which
+        is `_warn_living_photo_check_unavailable`'s whole job. Watching for that
+        warning is how this stays safe."""
         if self.photos_conn is None:
             return False
         try:
@@ -2484,6 +2527,10 @@ class _SiteBuilder:
                 (alias_path, f'{_MISSING_PREFIX}{_live_alias(alias_path)}'),
             ).fetchall()
         except sqlite3.DatabaseError:
+            # The catalog opened and then failed a query: from here on it can
+            # answer nothing, so the build's warning must name it as unreadable
+            # rather than as whatever it looked like at open time.
+            self.photos_status = 'unreadable'
             return False
         for row in rows:
             person = self.person_meta.get(row['person_ref'] or '')
@@ -2493,6 +2540,36 @@ class _SiteBuilder:
             if person and self._person_is_redacted(person):
                 return True
         return False
+
+    def _warn_living_photo_check_unavailable(self) -> None:
+        """Say once that this build published photos nobody checked for living-person tags.
+
+        Called when a standalone build has just put a real image on a page while
+        `_is_living_tagged_photo` had no catalog to consult. The check is the
+        only thing standing between a photo tagged to a living person and a
+        snapshot meant to be handed round the family, and it failed open - so
+        the researcher is the check now, and a person cannot watch for something
+        nobody told him about.
+
+        Once per build, not once per photo: a site with two hundred scans would
+        bury the one sentence that matters under two hundred copies of it, and a
+        warning nobody finishes reading is a warning nobody read. It carries the
+        cause and the two ways out - rebuild the catalog, or look through the
+        images yourself - because a message that names no fix is a dead end.
+        """
+        if self._living_photo_warning_sent:
+            return
+        self._living_photo_warning_sent = True
+        reason = _PHOTO_CATALOG_TROUBLE.get(
+            self.photos_status, 'the photo catalog is not available')
+        self.messages.append(
+            f'WARNING: {reason}, so the photos published in this site were NOT '
+            'checked against it for tags naming living people - a photograph '
+            'of someone still living may be in it. Run `fha photoindex`, then '
+            '`fha site` again, to have that check applied; until then, look '
+            'through the images on the source pages yourself before you share '
+            'this site.'
+        )
 
     def _person_family(self, pid: str, page_dir: Path) -> list[dict]:
         """Friends & Family from the relationships edges, grouped by relation."""

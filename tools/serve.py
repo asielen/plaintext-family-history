@@ -2539,6 +2539,14 @@ class _Handler(BaseHTTPRequestHandler):
         # answers with silence and no caveat - and silence read as a finding is
         # what #46 is a record of. Null when there is nothing to caveat; the
         # front end renders it only for the whole-archive search bar.
+        #
+        # A `kind`-filtered request therefore gets no coverage at all: the
+        # engine skips the count for a filtered search (see
+        # search_json_with_coverage), because the person and place pickers ask
+        # "which record do you mean", never "what does the archive say", and
+        # the count is two indexed scans per debounced keystroke. It is skipped
+        # rather than recomputed over the filtered rows - a filtered count
+        # would be a second, different answer to the same question.
         results, coverage = find_mod.search_json_with_coverage(
             self.state.archive_root, self.state.fha_config,
             q, kinds=kinds, limit=limit)

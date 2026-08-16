@@ -322,6 +322,76 @@ class SearchWarningsTests(_ServeCase):
         self.assertIn('.wb-coverage', css)
 
 
+class CoverageIsNotCountedForPickerLookupsTests(_ServeCase):
+    """The coverage count is for the search bar, and only the search bar.
+
+    Counting it means two indexed scans - all of `source_files`, and
+    `transcripts_fts`'s key column - and /api/find runs on every debounced
+    keystroke. The person and place pickers ask "which record do you mean";
+    they never render the caveat and could not use it if they had it. So a
+    `kind`-filtered request must not pay for the count at all, and a response
+    that merely omits the field while still computing it would leave the cost
+    exactly where it was.
+    """
+
+    def _count_calls(self, path):
+        """Drive one request with the counter under a spy; return (calls, payload)."""
+        import find as find_mod
+        calls = []
+        real = find_mod._count_sources_without_text
+
+        def spy(conn):
+            calls.append(1)
+            return real(conn)
+
+        find_mod._count_sources_without_text = spy
+        try:
+            s, d, _h = self.req('GET', path)
+        finally:
+            find_mod._count_sources_without_text = real
+        self.assertEqual(s, 200)
+        return len(calls), json.loads(d)
+
+    def test_a_kind_filtered_lookup_never_runs_the_count(self):
+        calls, payload = self._count_calls('/api/find?q=Hartley&kind=person')
+        self.assertEqual(calls, 0, 'the picker paid for a count nothing renders')
+        self.assertIsNone(payload['coverage'])
+        self.assertTrue(payload['results'], 'the search itself must still work')
+
+    def test_the_search_bar_still_runs_it(self):
+        # The other half: the whole-archive search is the surface the caveat
+        # exists for, and gating the wrong way would silently take it away.
+        calls, payload = self._count_calls('/api/find?q=Hartley')
+        self.assertEqual(calls, 1)
+        self.assertIn('no searchable text for', payload['coverage'] or '')
+
+    def test_the_api_cannot_give_two_coverage_answers_for_one_query(self):
+        # The count is archive-wide. Recomputing it over the filtered rows
+        # would produce a second, smaller number for the same archive - so the
+        # filtered answer is absence, never a rival number.
+        _c, unfiltered = self._count_calls('/api/find?q=Hartley')
+        _c, filtered = self._count_calls('/api/find?q=Hartley&kind=person')
+        self.assertIsNotNone(unfiltered['coverage'])
+        self.assertIsNone(filtered['coverage'])
+
+    def test_the_frontend_asks_for_coverage_only_where_it_shows_it(self):
+        # The gate is only safe because the shipped script never renders the
+        # caveat for a kinded lookup: it is inside the `!opts.kind` branch, and
+        # `j.coverage` appears nowhere else in the file.
+        import re
+        s, js, _h = self.req('GET', '/assets/workbench.js')
+        self.assertEqual(s, 200)
+        js = js.decode('utf-8')
+        guard = js.index("if ((!opts || !opts.kind) && listEl.closest('.wb-search-results'))")
+        end = js.index('wb-search-echo')      # the next statement in that block
+        spots = [m.start() for m in re.finditer('coverage', js)]
+        self.assertTrue(spots, 'the front end stopped reading coverage entirely')
+        for spot in spots:
+            self.assertTrue(guard < spot < end,
+                            'coverage is read outside the unkinded search-bar branch: '
+                            + js[max(0, spot - 80):spot + 80])
+
+
 class ApiRunTests(_ServeCase):
     def test_unknown_verb_400(self):
         s, d, _h = self.post_run('nope.explode', {}, True)
