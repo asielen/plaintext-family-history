@@ -108,6 +108,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Record parsing
 #    read_text_exact            - newline-exact record read (no CRLF/LF translation)
 #    write_text_exact           - its non-atomic mirror; NOT for archive records
+#    _refuse_unwritable_target  - the read-only-record refusal os.replace skips
+#    _carry_ownership           - give the temp the record's owner/group before it lands
 #    write_text_exact_atomic    - the record writer: temp + fsync + os.replace
 #    reapply_newline           - restore a record's CRLF/LF convention after a text edit
 #    yaml_inline                - single-line quoted YAML scalar (every surgical writer's rule)
@@ -1645,6 +1647,73 @@ def write_text_exact(path: str | Path, text: str) -> None:
         f.write(text)
 
 
+def _refuse_unwritable_target(path: Path) -> None:
+    """Raise the `PermissionError` an in-place write would have raised.
+
+    `os.replace` swaps a DIRECTORY ENTRY, so the kernel checks write+execute on
+    the parent FOLDER and never asks whether the caller may write the file being
+    replaced. `open(path, 'w')` asks exactly that. Without this probe, every verb
+    converted to the atomic writer quietly gained the power to overwrite a record
+    the plain writer refused - and a record made read-only is how a careful
+    archivist pins a file he does not want touched. Honour it.
+
+    The probe is a real `os.open(..., O_WRONLY)` rather than `os.access` because
+    only the kernel answering the actual open matches the writer being restored.
+    `os.access` asks with the REAL uid/gid instead of the effective one, and its
+    answer is documented as unreliable under POSIX ACLs and on network
+    filesystems - so it can say "writable" exactly where the old writer refused,
+    and refuse where it wrote. Asking the true question costs one file descriptor
+    and changes nothing: no `O_CREAT` and no `O_TRUNC`, so the record is neither
+    created nor emptied and its timestamps are untouched. `O_NONBLOCK` matters
+    only for the exotic case of a named pipe sitting at a record's path, where it
+    stops the probe waiting forever for a reader.
+
+    Only a `PermissionError` becomes a refusal. Any other error means the
+    question was something else - a directory at the path, a file that vanished
+    between the calls - and is left to the write itself to report in its own
+    words rather than guessed at here.
+
+    Root bypasses file permission bits entirely, so this grants what a plain
+    `open(path, 'w')` also granted: root has always been able to overwrite a 0444
+    record, and this is not the layer that changes that.
+    """
+    try:
+        fd = os.open(str(path), os.O_WRONLY | getattr(os, 'O_NONBLOCK', 0))
+    except FileNotFoundError:
+        return                    # a record that does not exist has no mode to honour
+    except PermissionError:
+        raise                     # byte for byte what open(path, 'w') raised
+    except OSError:
+        return
+    os.close(fd)
+
+
+def _carry_ownership(tmp_name: str, target: os.stat_result) -> None:
+    """Give the temp file the record's owner and group before it lands.
+
+    The mode alone is not the whole permission: the temp file belongs to whoever
+    ran the command, so on a shared archive the replace would hand the record to
+    a new owner and group. A 0640 record whose group flips from `family` to the
+    caller's own is the same lost read access the mode copy above exists to
+    prevent - just spelled with a different field.
+
+    Best effort by necessity, and that is not a weakness: only root may hand a
+    file to another user and only a member may hand one to another group, so
+    every failure here is a change the caller could not have made anyway. The
+    group-only retry is the case that actually fires - two people in one `family`
+    group, neither of them root. Called BEFORE the `chmod` because `chown` clears
+    the setgid bit that the mode copy is about to restore.
+    """
+    if not hasattr(os, 'chown'):            # Windows has no POSIX ownership
+        return
+    for uid, gid in ((target.st_uid, target.st_gid), (-1, target.st_gid)):
+        try:
+            os.chown(tmp_name, uid, gid)
+            return
+        except OSError:
+            continue
+
+
 def write_text_exact_atomic(path: str | Path, text: str) -> None:
     """Crash-safe `write_text_exact`: the target is only ever the old bytes or
     the new bytes, never a torn half.
@@ -1662,11 +1731,34 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
     returns and trust that a raise means the target was never touched. Newline
     handling mirrors `write_text_exact` (`newline=''` - no CRLF translation).
 
-    PERMISSIONS: the record ends up with the temp file's mode, so the mode is
-    fixed up before the replace - an existing target keeps its own permissions,
-    a new record gets the plain-open umask default. See the inline note; without
-    it a promotion would quietly demote a group-readable record to owner-only."""
+    PERMISSIONS: `os.replace` swaps a directory entry, which the kernel judges
+    by the parent FOLDER - it never looks at the record being replaced. Two
+    things follow, both handled here. The record would end up wearing the temp
+    file's identity, so mode and ownership are fixed up before the replace: an
+    existing target keeps its own permission bits, group and owner, a new record
+    gets the plain-open umask default. Without that a promotion would quietly
+    demote a group-readable record to owner-only. And a record the caller may NOT
+    write would be replaced anyway, where `write_text_exact` raised
+    `PermissionError` on the open and the command refused - so
+    `_refuse_unwritable_target` puts that question back before anything is
+    written, and the same `PermissionError` (errno EACCES, the record's own path)
+    reaches the caller's `except OSError`.
+
+    NOT preserved, by nature of an atomic replace: a target that is a symlink or
+    one name of a hard-linked pair is REPLACED by the new regular file rather
+    than written through, so the link breaks and the other name keeps the old
+    bytes. The archive has no symlinks by rule (AGENTS.md Don'ts) and no tool
+    makes a hard link, so this is a hand-built structure the writer cannot honour
+    - not a case it silently gets wrong. Extended attributes and POSIX ACLs do
+    not survive the swap either; mode, group and owner are what the archive's own
+    permission model is written in. And a read-only PARENT folder refuses here
+    where a plain write would have succeeded, because the temp file has to be a
+    sibling for the rename to be atomic: an ordinary OSError refusal that costs
+    the human nothing but a message."""
     path = Path(path)
+    # Refuse a pinned record BEFORE creating anything: the refusal then costs no
+    # I/O and leaves no temp file to clean up.
+    _refuse_unwritable_target(path)
     # Temp file must share the target's directory so os.replace is a same-
     # filesystem rename (atomic); a cross-device temp would fall back to a
     # non-atomic copy. The leading dot keeps the stray temp hidden and out of
@@ -1686,15 +1778,17 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
         # EXISTING target keeps its own mode; a NEW record gets the umask default
         # (0o666 & ~umask), never the 0600 mkstemp handed us.
         try:
-            target_mode = os.stat(str(path)).st_mode
+            target = os.stat(str(path))
         except FileNotFoundError:
             umask = os.umask(0)
             os.umask(umask)
             os.chmod(tmp_name, 0o666 & ~umask)
         else:
-            # Carry the permission bits (incl. setgid/sticky, so a group-shared
-            # archive folder's inheritance survives) onto the temp before it lands.
-            os.chmod(tmp_name, target_mode & 0o7777)
+            # Owner and group first (chown clears setgid), then the permission
+            # bits (incl. setgid/sticky, so a group-shared archive folder's
+            # inheritance survives) onto the temp before it lands.
+            _carry_ownership(tmp_name, target)
+            os.chmod(tmp_name, target.st_mode & 0o7777)
         os.replace(tmp_name, str(path))
     except OSError:
         # The replace never happened, so the original (if any) still stands;

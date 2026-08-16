@@ -168,12 +168,19 @@ class _RefusingReplace:
         return self.real(src, dst, *args, **kwargs)
 
 
-def _install_fake_whisper(testcase, segments):
-    """Stand a fake `faster_whisper` module up for one test, and take it down after."""
+def _install_fake_whisper(testcase, segments, loads=None):
+    """Stand a fake `faster_whisper` module up for one test, and take it down after.
+
+    `loads` is an optional list the fake model appends to every time it is
+    constructed. Loading a model is the expensive step - a first run fetches it
+    over the network - so a test that a refusal happens BEFORE it asserts this
+    list stayed empty.
+    """
 
     class FakeModel:
         def __init__(self, *a, **k):
-            pass
+            if loads is not None:
+                loads.append(1)
 
         def transcribe(self, *a, **k):
             return segments, None
@@ -341,6 +348,195 @@ class PromotionTestCase(unittest.TestCase):
         self.assertIn('--outdir', str(ctx.exception))
 
 
+class _DurabilityRecorder:
+    """Records the calls that decide what survives a power cut, in order.
+
+    A power cut cannot be staged from a test, and a marker that reached the page
+    cache is indistinguishable from one that reached the disk by looking at the
+    folder afterwards. What CAN be checked is the ordering contract the
+    durability argument rests on, which is the thing the fix adds: the marker's
+    bytes and its folder entry are pushed down before the first rename, and the
+    folder is pushed down again after the last rename before the marker is
+    removed. Both barriers are `os.fsync` calls, so patching `os.fsync` (plus
+    `os.open`, to tell a directory descriptor from a file one) is what makes
+    them visible.
+
+    Files are identified by inode rather than by name, because `os.fsync` is
+    handed a descriptor and the folder still holds the file at that moment.
+    """
+
+    def __init__(self, outdir):
+        self.outdir = Path(outdir)
+        self.events = []
+        self._dirs = {}
+        self._real = {n: getattr(os, n) for n in ('open', 'fsync', 'replace', 'unlink')}
+
+    def install(self, testcase):
+        real = self._real
+
+        def opened(path, flags, *a, **k):
+            fd = real['open'](path, flags, *a, **k)
+            # A descriptor number is reused after a close, so any stale entry
+            # for it has to go before this one is recorded.
+            self._dirs.pop(fd, None)
+            try:
+                if os.path.isdir(path):
+                    self._dirs[fd] = os.fspath(path)
+            except TypeError:
+                pass
+            return fd
+
+        def fsynced(fd):
+            if fd in self._dirs:
+                self.events.append(('fsync-dir', Path(self._dirs[fd]).name))
+            else:
+                self.events.append(('fsync', self._name_of(fd)))
+            return real['fsync'](fd)
+
+        def replaced(src, dst, *a, **k):
+            out = real['replace'](src, dst, *a, **k)
+            self.events.append(('replace', Path(dst).name))
+            return out
+
+        def unlinked(path, *a, **k):
+            out = real['unlink'](path, *a, **k)
+            self.events.append(('unlink', Path(path).name))
+            return out
+
+        for name, fake in (('open', opened), ('fsync', fsynced),
+                           ('replace', replaced), ('unlink', unlinked)):
+            setattr(os, name, fake)
+            testcase.addCleanup(setattr, os, name, real[name])
+
+    def _name_of(self, fd):
+        """Which file in the output folder this descriptor is, by inode."""
+        try:
+            ino = os.fstat(fd).st_ino
+        except OSError:  # pragma: no cover - a closed descriptor cannot happen here
+            return None
+        for p in self.outdir.iterdir():
+            try:
+                if p.stat().st_ino == ino:
+                    return p.name
+            except OSError:  # pragma: no cover - a file removed mid-scan
+                continue
+        return None
+
+    def index(self, event):
+        self.events.index(event)  # raises ValueError with the whole list on miss
+        return self.events.index(event)
+
+    def dir_sync_between(self, first, last):
+        """Index of a flush of the output folder strictly between two events."""
+        for i in range(first + 1, last):
+            if self.events[i][0] == 'fsync-dir':
+                return i
+        return None
+
+
+class MarkerDurabilityTestCase(unittest.TestCase):
+    """The marker's promise is only worth what its own durability is worth.
+
+    `_promote_all` writes the marker so that a hard kill leaves evidence behind:
+    the marker survives, `publication_state` reads it, and the recording is
+    redone rather than skipped. An ordinary `write_text` does not deliver that -
+    the bytes, and the folder entry carrying the NAME, can sit in the page cache
+    while the renames land, so a power cut can leave all three final names in a
+    mix of two runs with no marker beside them. That set looks complete, is
+    skipped forever, and is exactly the outcome the protocol calls unsurvivable.
+
+    These tests assert the ordering contract rather than pretending to stage a
+    power cut: marker down before the first rename, renames down before the
+    marker goes.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.marker = ta.marker_path(self.out, 'stem').name
+
+    def _record(self):
+        rec = _DurabilityRecorder(self.out)
+        rec.install(self)
+        return rec
+
+    def test_the_marker_is_flushed_before_the_first_rename(self):
+        """Both halves: the marker's bytes, then the folder entry naming it."""
+        rec = self._record()
+        ta.publish_transcripts(self.out, 'stem', _segments(2), 'medium', 'rec.m4a')
+        marker_fsync = rec.index(('fsync', self.marker))
+        first_rename = min(i for i, e in enumerate(rec.events)
+                           if e == ('replace', 'stem.txt'))
+        folder_flush = rec.dir_sync_between(marker_fsync, first_rename)
+        self.assertIsNotNone(
+            folder_flush,
+            'the folder holding the marker is never flushed between writing the marker '
+            f'and the first rename, so the marker\'s NAME can be lost: {rec.events}')
+
+    def test_the_renames_are_durable_before_the_marker_is_removed(self):
+        """The same window in mirror image: dropping the marker too early."""
+        rec = self._record()
+        ta.publish_transcripts(self.out, 'stem', _segments(2), 'medium', 'rec.m4a')
+        last_rename = max(i for i, e in enumerate(rec.events)
+                          if e[0] == 'replace' and e[1] in ('stem.txt', 'stem.srt', 'stem.md'))
+        marker_gone = rec.index(('unlink', self.marker))
+        self.assertIsNotNone(
+            rec.dir_sync_between(last_rename, marker_gone),
+            'the marker is removed without flushing the renames it covered, so a crash '
+            f'can keep the removal and lose the renames: {rec.events}')
+
+    def test_a_healed_rollback_flushes_before_dropping_the_marker(self):
+        """The put-back is a set of renames too, and it carries the same promise."""
+        _plant_previous_transcript(self.out)
+        finals = ta.output_paths(self.out, 'stem')
+        rec = self._record()
+        refusing = _RefusingReplace(finals[1], OSError(13, 'Permission denied'))
+        os.replace = refusing
+        self.addCleanup(setattr, os, 'replace', refusing.real)
+
+        with self.assertRaises(ta.PublishError):
+            ta.publish_transcripts(self.out, 'stem', _segments(2), 'medium', 'rec.m4a')
+
+        # The rollback finished, so the marker was dropped - after a flush.
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'complete')
+        marker_gone = rec.index(('unlink', self.marker))
+        last_restore = max(i for i, e in enumerate(rec.events[:marker_gone])
+                           if e[0] == 'replace' and e[1] in ('stem.txt', 'stem.srt', 'stem.md'))
+        self.assertIsNotNone(
+            rec.dir_sync_between(last_restore, marker_gone),
+            f'the rollback drops the marker without flushing the put-back: {rec.events}')
+
+    def test_a_platform_that_refuses_a_folder_handle_still_publishes(self):
+        """Windows: a directory cannot be opened, so the barrier degrades quietly.
+
+        A guard, not a proof of durability - it pins that the unavailable
+        barrier costs the guarantee and nothing else: no traceback, no refusal,
+        the three files still land and the marker still goes.
+        """
+        real_open = os.open
+
+        def no_directory_handles(path, flags, *a, **k):
+            try:
+                if os.path.isdir(path):
+                    raise PermissionError(13, 'Permission denied')
+            except TypeError:
+                pass
+            return real_open(path, flags, *a, **k)
+
+        os.open = no_directory_handles
+        self.addCleanup(setattr, os, 'open', real_open)
+        count = ta.publish_transcripts(self.out, 'stem', _segments(2), 'medium', 'rec.m4a')
+        self.assertEqual(count, 2)
+        self.assertEqual(_leftovers(self.out), ['stem.md', 'stem.srt', 'stem.txt'])
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'complete')
+
+    def test_sync_directory_reports_whether_the_barrier_was_taken(self):
+        """A guard on the helper's own contract: True only when it really flushed."""
+        self.assertTrue(ta._sync_directory(self.out))
+        self.assertFalse(ta._sync_directory(self.out / 'not-there'))
+
+
 class PublicationStateTestCase(unittest.TestCase):
     """The "is this recording already done?" test - one a partial set must fail."""
 
@@ -503,6 +699,48 @@ class NameRulesTestCase(unittest.TestCase):
 
     def test_good_stem_passes(self):
         self.assertIsNone(ta.name_problem('hartley-thomas-interview-1998-06-14-farm'))
+
+    def test_a_windows_device_name_is_refused_with_a_valid_example(self):
+        """`CON.txt` cannot exist on Windows, extension or no extension.
+
+        Checked on every platform on purpose: the archive is meant to travel,
+        and a transcript that files happily on Linux and cannot be opened on the
+        machine the archive is read from next is a trap set for later.
+        """
+        for name in ('CON', 'con', 'CON.md', 'prn', 'AUX', 'nul', 'COM1', 'com9',
+                     'LPT1', 'lpt9.notes'):
+            problem = ta.name_problem(name)
+            self.assertIsNotNone(problem, f'--name {name} is a Windows device name')
+            self.assertIn('--name hartley-thomas-1998-06-14-farm', problem,
+                          f'the refusal for {name} shows no valid name to use instead')
+
+    def test_a_reserved_character_is_refused(self):
+        for name in ('family:interview', 'a<b', 'a>b', 'q?', 'star*', 'pipe|d', 'quo"te'):
+            problem = ta.name_problem(name)
+            self.assertIsNotNone(problem, f'--name {name} carries a character Windows refuses')
+            self.assertIn('--name hartley-thomas-1998-06-14-farm', problem)
+
+    def test_a_control_character_is_refused(self):
+        problem = ta.name_problem('stem\x01name')
+        self.assertIsNotNone(problem)
+        self.assertIn('--name hartley-thomas-1998-06-14-farm', problem)
+
+    def test_a_trailing_dot_or_space_is_refused(self):
+        for name in ('stem.', 'stem '):
+            problem = ta.name_problem(name)
+            self.assertIsNotNone(problem, f'--name {name!r} ends in a dot or a space')
+            self.assertIn('--name hartley-thomas-1998-06-14-farm', problem)
+
+    def test_ordinary_names_that_merely_look_reserved_still_pass(self):
+        """The check must not become fussier than Windows itself.
+
+        `console`, `com` and `communion` are not device names, and a dot inside
+        a stem is ordinary. Refusing them would be the other failure - a tool
+        that lectures a genealogist about a perfectly good filename.
+        """
+        for name in ('console', 'com', 'communion', 'lpt', 'nullify',
+                     'grandma.1998', 'auxiliary-notes'):
+            self.assertIsNone(ta.name_problem(name), f'--name {name} is a usable filename')
 
 
 class CliTestCase(unittest.TestCase):
@@ -693,6 +931,174 @@ class CliRecoveryTestCase(unittest.TestCase):
         self.assertIn('transcription failed', err)
         self.assertIn('Nothing was written', err)
         self.assertEqual(_leftovers(self.out), [])
+
+
+class RefuseBeforeTheHourTestCase(unittest.TestCase):
+    """Everything knowable up front is asked up front, not after the decoding.
+
+    The expensive steps are fetching and loading the model (minutes on a first
+    run, over the network) and the decoding itself (an hour on a long
+    interview). A name the filesystem will not take, or a destination that
+    cannot be replaced, is knowable in the first second - and discovering it at
+    publication time both wastes the hour and arrives wearing the wrong advice,
+    because the broad handler that catches it talks about the recording.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.audio = self.tmp / 'rec.m4a'
+        self.audio.write_bytes(b'stands in for real audio')
+        self.out = self.tmp / 'whisper'
+        self.out.mkdir()
+        self.loads = []
+
+    def _run(self, *extra):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = ta.main([str(self.audio), '--outdir', str(self.out), *extra])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_a_platform_invalid_name_is_refused_before_the_model_loads(self):
+        """`--name CON` costs a second, not an hour and then a puzzling message."""
+        _install_fake_whisper(self, iter(_segments(3)), loads=self.loads)
+        rc, out, err = self._run('--name', 'CON')
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        self.assertEqual(self.loads, [], 'the model was loaded before the name was checked')
+        self.assertIn('--name hartley-thomas-1998-06-14-farm', out + err)
+        # And it does not send him back to the recording, which is fine.
+        self.assertNotIn('play the recording', (out + err).lower())
+
+    def test_a_blocked_destination_is_refused_before_the_model_loads(self):
+        """A folder sitting on one of the three names is knowable up front too."""
+        _plant_previous_transcript(self.out, 'rec')
+        finals = ta.output_paths(self.out, 'rec')
+        finals[1].unlink()
+        finals[1].mkdir()
+        _install_fake_whisper(self, iter(_segments(3)), loads=self.loads)
+        rc, out, err = self._run('--force')
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        self.assertEqual(self.loads, [],
+                         'the model was loaded before the destinations were checked')
+        self.assertIn('could not be saved', out + err)
+
+    def test_a_naming_failure_is_not_reported_as_a_recording_problem(self):
+        """The misdirection the broad handler used to produce, pinned.
+
+        A filesystem that refuses the working files - a stem too long for it, an
+        encoding it will not take - is a problem with the name and the folder.
+        Reported through the decode-failure branch it reads as "your recording
+        may be corrupt, try a smaller model", which sends a genealogist off to
+        re-record an interview that was fine.
+        """
+        def refuse(*a, **k):
+            raise OSError(36, 'File name too long')
+
+        real = ta.tempfile.mkstemp
+        ta.tempfile.mkstemp = refuse
+        self.addCleanup(setattr, ta.tempfile, 'mkstemp', real)
+        _install_fake_whisper(self, iter(_segments(3)), loads=self.loads)
+        rc, _out, err = self._run()
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        self.assertIn('could not be saved', err)
+        self.assertIn('--name hartley-thomas-1998-06-14-farm', err)
+        self.assertNotIn('play the recording', err.lower())
+        self.assertNotIn('--model small', err)
+
+    def test_a_filesystem_error_from_the_decoder_names_both_possibilities(self):
+        """An OSError that is NOT the save side must not blame the folder either.
+
+        The save side translates its own failures where they happen, so what is
+        left here cannot be attributed with confidence - and a message that
+        picks one cause and is wrong is what this whole class is about.
+        """
+        def exploding():
+            yield FakeSegment(0, 1, 'hello')
+            raise OSError(5, 'Input/output error')
+
+        _install_fake_whisper(self, exploding(), loads=self.loads)
+        rc, _out, err = self._run()
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        self.assertIn('Input/output error', err)
+        self.assertIn(str(self.out), err)
+        self.assertIn('recording', err.lower())
+        self.assertEqual(_leftovers(self.out), [])
+
+
+class LauncherPrefixTestCase(unittest.TestCase):
+    """`fha` is a launcher FILE at the archive root, never a program on PATH.
+
+    tools/scaffold.py ships `fha` (POSIX sh) and `fha.cmd` and nothing else, so
+    a bare `fha …` offered as a next step is a command-not-found for everyone
+    except a Windows Command Prompt user. The project settled this in commit
+    7c6ee13: a printed block carries all three shell spellings, labelled
+    (GETTING_STARTED.md, CHEATSHEET.md), and prose is bare plus a pointer
+    (docs/TROUBLESHOOTING.md).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_the_finished_run_prints_all_three_spellings(self):
+        """The next step a human reads at the end of a successful transcription."""
+        audio = self.tmp / 'rec.m4a'
+        audio.write_bytes(b'stands in for real audio')
+        out_dir = self.tmp / 'whisper'
+        _install_fake_whisper(self, iter(_segments(2)))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ta.main([str(audio), '--outdir', str(out_dir)])
+        self.assertEqual(rc, ta.EXIT_OK)
+        printed = buf.getvalue()
+        offered = [ln.strip() for ln in printed.splitlines() if 'process' in ln
+                   and '--more' in ln]
+        self.assertEqual(len(offered), 3, f'expected one line per shell, got: {offered}')
+        for prefix, label in (('./fha', 'macOS / Linux'),
+                              ('.\\fha', 'Windows PowerShell'),
+                              ('fha', 'Windows Command Prompt')):
+            match = [ln for ln in offered if ln.endswith(f'# {label}')]
+            self.assertEqual(len(match), 1, f'no line labelled {label}: {offered}')
+            self.assertTrue(match[0].startswith(f'{prefix} process '),
+                            f'the {label} line does not start with {prefix}: {match[0]!r}')
+
+    def test_no_console_string_offers_a_bare_fha_command(self):
+        """The sweep, encoded: every printed command names the launcher.
+
+        Docstrings are exempt - prose about `fha process --more` is allowed to
+        name the verb bare, which is the convention docs/TROUBLESHOOTING.md
+        follows. What is checked is the shape a reader is meant to type: a
+        command at the start of a printed string or on its own indented line.
+        """
+        import ast
+
+        source = SCRIPT.read_text(encoding='utf-8')
+        tree = ast.parse(source)
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+                body = node.body
+                if body and isinstance(body[0], ast.Expr) and \
+                        isinstance(body[0].value, ast.Constant) and \
+                        isinstance(body[0].value.value, str):
+                    docstrings.add(id(body[0].value))
+        offender = re.compile(r'(?:\A|\n|  )fha [a-z]')
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in docstrings:
+                self.assertIsNone(
+                    offender.search(node.value),
+                    f'line {node.lineno} offers a bare `fha …` command: {node.value!r} - '
+                    'the archive ships a launcher file, not a program on PATH')
+
+    def test_the_skill_points_at_the_launcher(self):
+        """SKILL.md keeps the skills' bare-plus-pointer convention, not a third one."""
+        text = SKILL_MD.read_text(encoding='utf-8')
+        self.assertIn('./fha', text)
+        self.assertIn(r'.\fha', text)
 
 
 class SkillDocTestCase(unittest.TestCase):

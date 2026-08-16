@@ -355,18 +355,36 @@ directory — pass `--root <archive>` on every call rather than guessing.
    All four paths must be different — the two inputs, `--out`, and `--report`. The script refuses
    the run rather than let a mistyped filename overwrite a transcript (including `--report` landing
    on `--out`), and both outputs are written through a temporary file, so an interrupted run never
-   leaves a half-written transcript behind.
+   leaves a half-written transcript behind. **Both destinations are checked before the alignment
+   starts**, not after it: a folder standing on the output name, or a path whose parent is a file,
+   is refused for the price of a glance at the folder, so the ordinary typo costs nothing and leaves
+   nothing behind.
+
+   **If the report cannot be saved, the transcript is kept.** The two outputs are not all-or-nothing,
+   and deliberately so: `--out` is the artifact the run exists to produce and the expensive one to
+   remake, while `--report` is an optional JSON record of *how* the labels were decided. If the
+   transcript is written and then the report write fails anyway — a disk that fills, a drive
+   unplugged mid-run — the script keeps the transcript, says so in plain words, names the file you
+   now have, and prints the **complete** command that saves the report too. That command carries
+   `--replace`, because the run has just created `--out` and the next run would otherwise be stopped
+   by the rule below; replacing it costs nothing while it is still the file this run wrote, and stops
+   being safe the moment you correct speaker labels in it by hand. Exit code 1 here means "not
+   everything you asked for happened", not "nothing happened" — read the message, and check the
+   transcript is where it says.
 
    **A second run does not overwrite the first one.** `--out` names the same `<stem>.md` every time,
    and by the second run that file may be the copy somebody went through fixing speaker labels by
    hand — which is exactly what publishing a proposal is for. The script cannot tell its own earlier
    output from a corrected copy of it (the AI marker it writes survives a human's edits, so the
    marker proves nothing), so it refuses both cases the same way: if `--out` or `--report` already
-   exists the run stops with exit 1, names the file, and writes nothing. Send the new run somewhere
-   else (`--out "<stem>-2.md"`) and compare, or — only once you know that file can go — add
-   `--replace` to the same command. `--replace` is the *only* thing that authorises an overwrite:
-   `--force` overrides the mispair gate and nothing else, and a run forced past a mispair suspicion
-   still refuses to write over an existing transcript.
+   exists the run stops with exit 1, names the file, and writes nothing. The refusal offers a free
+   name for **every** destination that is in the way (`--out "<stem>-2.md" --report
+   "<stem>-2.speakers.json"`) so that following it does not walk into the same refusal one file
+   later, and it prints the whole `--replace` command as a second option — copy one or the other
+   rather than retyping four paths. Send the new run somewhere else and compare, or — only once you
+   know that file can go — use the `--replace` line. `--replace` is the *only* thing that authorises
+   an overwrite: `--force` overrides the mispair gate and nothing else, and a run forced past a
+   mispair suspicion still refuses to write over an existing transcript.
 
    These gates are not tuning knobs, and the script enforces them as its defaults — you do not pass
    `--min-confidence` or `--min-match-rate` on the standard run:

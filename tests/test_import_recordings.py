@@ -60,6 +60,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -218,6 +219,22 @@ class DocumentedGatesTest(unittest.TestCase):
         self.assertEqual(len(entry), 1, 'the import-recordings design entry moved')
         self.assertIn('--replace', entry[0])
         self.assertIn('20 matched words', entry[0])
+
+    def test_skill_md_documents_the_kept_transcript_recovery(self):
+        """The one partial result the script can produce has to be in the prose.
+
+        A human who reads "a refusal writes nothing" and then finds a transcript
+        on disk with an error on his screen has been told something false about
+        his own archive.
+        """
+        self.assertIn('the transcript is kept', self.skill.lower())
+        self.assertIn('--replace', self.skill)
+
+    def test_tooling_interface_states_the_kept_transcript_recovery(self):
+        entry = [ln for ln in self.tooling.splitlines()
+                 if ln.startswith('- `import-recordings`')]
+        self.assertEqual(len(entry), 1, 'the import-recordings design entry moved')
+        self.assertIn('kept', entry[0])
 
     def test_replace_and_force_are_separate_flags_in_the_parser(self):
         """The decision itself: one flag must not mean two safety overrides."""
@@ -993,6 +1010,314 @@ class AttributeSpeakersOutputSafetyTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('**[00:00:00] Thomas Hartley:**',
                       self.out.read_text(encoding='utf-8'))
+
+
+# ---------------------------------------------------------------------------
+# 4d. A recovery instruction the tool then refuses is not a recovery
+# ---------------------------------------------------------------------------
+class RecoveryInstructionsRunTest(unittest.TestCase):
+    """Every message that asks for another run must name a run that works.
+
+    The finding: when the transcript was written and the JSON report could not
+    be, the message said only "re-run with a --report path in a writable
+    folder". By then `--out` existed, and the overwrite refusal added earlier in
+    this same branch stops exactly that rerun - so the stated fix was refused
+    the moment it was tried, and the human was left guessing whether he had a
+    transcript at all.
+
+    These tests do not read the messages for keywords and stop there. They pull
+    the command out of the message and RUN it, because "the printed command
+    works" is a claim about behaviour and only an execution can settle it.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-recover-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.script = SCRIPTS / 'attribute_speakers.py'
+        self.whisper = self.tmp / 'session-whisper.md'
+        self.app = self.tmp / 'session-app.txt'
+        rows = [('00:00:00', 'we lived on the farm out past the creek'),
+                ('00:00:06', 'and how long were you there grandpa'),
+                ('00:00:11', 'nineteen years give or take a winter')]
+        self.whisper.write_text(whisper_text(rows), encoding='utf-8')
+        self.app.write_text(app_bracket([
+            (2, 'we lived on the farm out past the creek'),
+            (1, 'and how long were you there grandpa'),
+            (2, 'nineteen years give or take a winter'),
+        ]), encoding='utf-8')
+        self.out = self.tmp / 'session-attributed.md'
+        self.report = self.tmp / 'session.speakers.json'
+
+    def _argv(self, extra=()):
+        return ['--whisper', str(self.whisper),
+                '--app-transcript', str(self.app),
+                '--out', str(self.out),
+                '--report', str(self.report),
+                '--quiet'] + list(extra)
+
+    def _run_as_cli(self, argv):
+        """main(argv) with sys.argv spelled the way a real invocation spells it.
+
+        `rerun_command` echoes `sys.argv[0]` only when it names this script, so
+        under a bare test runner it would fall back to the bare filename and the
+        printed command would not be runnable from here. Setting sys.argv is not
+        staging a convenient answer: it reproduces what the human's shell
+        actually passes, which is the case the message is written for.
+        """
+        with mock.patch.object(sys, 'argv', [str(self.script)] + list(argv)):
+            return run_script(attribute_speakers, argv)
+
+    @staticmethod
+    def _printed_command(stderr):
+        """The one indented command line the message hands back."""
+        lines = [ln.strip() for ln in stderr.splitlines()
+                 if ln.startswith('    python ')]
+        return lines[0] if lines else None
+
+    def _execute(self, command):
+        """Run the printed string as a command, as literally as portable."""
+        parts = shlex.split(command)
+        if shutil.which(parts[0]) is None:      # pragma: no cover
+            parts[0] = sys.executable
+        return subprocess.run(parts, capture_output=True, text=True)
+
+    def _break_the_report_write(self):
+        """A disk that fills between the two writes - the surprise left over.
+
+        Mocked rather than staged on disk, because the pre-flight added with
+        this fix answers every cause a test can create on purpose (a folder on
+        the name, a file for a parent, a read-only destination) before anything
+        is written. What is left is the genuine mid-run surprise, and injecting
+        the exception is the only honest way to reach it.
+        """
+        real = attribute_speakers.atomic_write
+
+        def only_the_report(path, body):
+            if os.path.abspath(path) == os.path.abspath(str(self.report)):
+                raise OSError(28, 'No space left on device')
+            return real(path, body)
+
+        return mock.patch.object(attribute_speakers, 'atomic_write',
+                                 side_effect=only_the_report)
+
+    def test_a_failed_report_keeps_the_transcript_and_says_so(self):
+        with self._break_the_report_write():
+            code, _out, err = self._run_as_cli(self._argv())
+        self.assertEqual(code, 1)
+        self.assertTrue(self.out.is_file(),
+                        'the transcript was written; it must not vanish silently')
+        self.assertIn('**[00:00:00] Speaker 2:**',
+                      self.out.read_text(encoding='utf-8'))
+        self.assertFalse(self.report.exists())
+        self.assertIn('KEPT', err)
+        self.assertIn(str(self.out), err)       # names the file he now has
+
+    def test_the_command_printed_after_a_failed_report_actually_runs(self):
+        """The load-bearing test: capture the recovery command, then run it.
+
+        Nothing else proves the dead end is gone. The old message named no
+        command at all, and the obvious rerun it implied - the same line again -
+        is refused by the overwrite gate, which the next test pins.
+        """
+        with self._break_the_report_write():
+            code, _out, err = self._run_as_cli(self._argv())
+        self.assertEqual(code, 1)
+        command = self._printed_command(err)
+        self.assertIsNotNone(command, 'the message printed no command to run')
+        self.assertIn('--replace', command)
+        self.assertIn(str(self.report), command)
+
+        proc = self._execute(command)
+        self.assertEqual(proc.returncode, 0,
+                         'the printed recovery command was refused:\n%s' % proc.stderr)
+        self.assertTrue(self.report.is_file(),
+                        'the printed command did not produce the report it promised')
+        report = json.loads(self.report.read_text(encoding='utf-8'))
+        self.assertEqual(report['status'], 'ok')
+        self.assertIn('**[00:00:00] Speaker 2:**',
+                      self.out.read_text(encoding='utf-8'))
+
+    def test_the_same_command_without_replace_is_the_dead_end_being_fixed(self):
+        """Why --replace has to be in the printed command, asserted not assumed.
+
+        This is the refusal the old advice walked into. It is pinned here so
+        that if the overwrite gate is ever relaxed, the reason this message
+        carries `--replace` is visibly gone with it.
+        """
+        with self._break_the_report_write():
+            code, _out, _err = self._run_as_cli(self._argv())
+        self.assertEqual(code, 1)
+        code, _out, err = run_script(attribute_speakers, self._argv())
+        self.assertEqual(code, 1)
+        self.assertIn('--replace', err)
+        self.assertFalse(self.report.exists())
+
+    def test_the_existence_refusal_prints_a_command_that_runs(self):
+        """"Add --replace to the same command" is a command; print it."""
+        self.out.write_text('an attributed transcript from an earlier run\n',
+                            encoding='utf-8')
+        code, _out, err = self._run_as_cli(self._argv())
+        self.assertEqual(code, 1)
+        command = self._printed_command(err)
+        self.assertIsNotNone(command, 'the refusal printed no command to run')
+        proc = self._execute(command)
+        self.assertEqual(proc.returncode, 0,
+                         'the printed command was refused:\n%s' % proc.stderr)
+        self.assertTrue(self.report.is_file())
+        self.assertNotEqual(self.out.read_text(encoding='utf-8'),
+                            'an attributed transcript from an earlier run\n')
+
+    def test_a_redirect_offered_for_one_taken_name_is_offered_for_both(self):
+        """Sending the run to a fresh --out while --report is still taken.
+
+        The worked example named only the first destination in the way, so
+        following it produced a command this very check refused again - the same
+        class of dead end, one refusal further along. Both alternatives are
+        pulled out of the message here and run together.
+        """
+        self.out.write_text('an earlier transcript\n', encoding='utf-8')
+        self.report.write_text('{"status": "reviewed by hand"}\n', encoding='utf-8')
+        before = (self.out.read_bytes(), self.report.read_bytes())
+        code, _out, err = self._run_as_cli(self._argv())
+        self.assertEqual(code, 1)
+        m = re.search(r'--out "([^"]+)" --report "([^"]+)"', err)
+        self.assertIsNotNone(
+            m, 'the refusal offered no free name for BOTH taken destinations:\n%s' % err)
+        new_out, new_report = m.group(1), m.group(2)
+        code, _out, err2 = run_script(attribute_speakers, [
+            '--whisper', str(self.whisper), '--app-transcript', str(self.app),
+            '--out', new_out, '--report', new_report, '--quiet'])
+        self.assertEqual(code, 0, 'the suggested redirect was refused:\n%s' % err2)
+        self.assertTrue(Path(new_out).is_file() and Path(new_report).is_file())
+        self.assertEqual((self.out.read_bytes(), self.report.read_bytes()), before)
+
+    def test_the_free_name_offered_is_actually_free(self):
+        """A "-2" that is itself taken is the same dead end, one run later."""
+        self.out.write_text('run one\n', encoding='utf-8')
+        (self.tmp / 'session-attributed-2.md').write_text('run two\n', encoding='utf-8')
+        code, _out, err = self._run_as_cli(self._argv())
+        self.assertEqual(code, 1)
+        m = re.search(r'--out "([^"]+)"', err)
+        self.assertIsNotNone(m, err)
+        self.assertFalse(Path(m.group(1)).exists(),
+                         'the refusal offered a name that is already taken')
+
+
+# ---------------------------------------------------------------------------
+# 4e. The cheapest failure is the one that happens first
+# ---------------------------------------------------------------------------
+class DestinationPreflightTest(unittest.TestCase):
+    """A destination that could never be written is answered before the work.
+
+    Alignment ends by writing a file, so a `--report` that was never saveable
+    is not merely a wasted minute - it is the difference between "nothing
+    happened" and "half of what you asked for happened". Asking first turns
+    every ordinary typo back into a plain refusal that leaves the folder as it
+    found it.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-preflight-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.whisper = self.tmp / 'session-whisper.md'
+        self.app = self.tmp / 'session-app.txt'
+        # Long enough to clear the 20-matched-word floor, so a run that is not
+        # refused up front reaches the writing stage and the test can tell the
+        # difference between "refused early" and "refused for another reason".
+        rows = [('00:00:00', 'we lived on the farm out past the creek'),
+                ('00:00:06', 'and how long were you there grandpa'),
+                ('00:00:11', 'nineteen years give or take a winter')]
+        self.whisper.write_text(whisper_text(rows), encoding='utf-8')
+        self.app.write_text(app_bracket([
+            (2, 'we lived on the farm out past the creek'),
+            (1, 'and how long were you there grandpa'),
+            (2, 'nineteen years give or take a winter'),
+        ]), encoding='utf-8')
+        self.out = self.tmp / 'session-attributed.md'
+        self.report = self.tmp / 'session.speakers.json'
+
+    def _run(self, out, report):
+        return run_script(attribute_speakers, [
+            '--whisper', str(self.whisper), '--app-transcript', str(self.app),
+            '--out', str(out), '--report', str(report), '--quiet'])
+
+    def test_a_report_that_is_a_folder_is_refused_before_the_transcript(self):
+        """Pre-fix this wrote the transcript, then failed on the report."""
+        folder = self.tmp / 'session.speakers.json'
+        folder.mkdir()
+        code, _out, err = self._run(self.out, folder)
+        self.assertEqual(code, 1)
+        self.assertIn('FOLDER', err)
+        self.assertIn('--report', err)
+        self.assertFalse(self.out.exists(),
+                         'a run refused up front must leave nothing behind')
+
+    def test_an_out_that_is_a_folder_is_refused_too(self):
+        folder = self.tmp / 'session-attributed.md'
+        folder.mkdir()
+        code, _out, err = self._run(folder, self.report)
+        self.assertEqual(code, 1)
+        self.assertIn('FOLDER', err)
+        self.assertFalse(self.report.exists())
+
+    def test_a_report_whose_parent_is_a_file_is_refused_before_the_transcript(self):
+        """`atomic_write` would try to makedirs through a regular file."""
+        blocker = self.tmp / 'notes.txt'
+        blocker.write_text('this is a file, not a folder\n', encoding='utf-8')
+        code, _out, err = self._run(self.out, blocker / 'session.speakers.json')
+        self.assertEqual(code, 1)
+        self.assertIn('is a file, not a folder', err)
+        self.assertFalse(self.out.exists())
+
+    def test_a_missing_folder_is_not_a_problem_because_the_writer_makes_it(self):
+        """The pre-flight must refuse what cannot work, not what is merely absent."""
+        fresh = self.tmp / 'not-created-yet'
+        code, _out, err = self._run(fresh / 'session.md',
+                                    fresh / 'session.speakers.json')
+        self.assertEqual(code, 0, err)
+        self.assertTrue((fresh / 'session.md').is_file())
+        self.assertTrue((fresh / 'session.speakers.json').is_file())
+
+    def test_a_read_only_folder_is_named_rather_than_half_written(self):
+        """Read-only STORAGE, the shape a real archive hits.
+
+        The file's own permission bits are deliberately not consulted -
+        `os.replace` needs the folder's write bit, not the file's, so a
+        read-only file inside a writable folder is replaced quite happily on
+        POSIX and refusing it would refuse something that works. The folder is
+        the real gate, and this is it.
+
+        Skipped rather than dropped for a superuser, who is exempt from the bit
+        being tested: a skip that names its reason is more useful than a silent
+        gap.
+        """
+        shed = self.tmp / 'read-only-shelf'
+        shed.mkdir()
+        os.chmod(shed, 0o555)
+        self.addCleanup(os.chmod, shed, 0o755)
+        if os.access(shed, os.W_OK):            # pragma: no cover
+            self.skipTest('running as a user that ignores the write bit (root)')
+        code, _out, err = self._run(self.out, shed / 'session.speakers.json')
+        self.assertEqual(code, 1)
+        self.assertIn('cannot be written to', err)
+        self.assertFalse(self.out.exists())
+
+    def test_a_folder_on_the_output_name_is_not_called_an_earlier_run(self):
+        """The false statement the sweep turned up in the existence refusal.
+
+        `os.path.exists` is true of a directory, so a folder standing on
+        `--report` was announced as "already holds a file from an earlier run"
+        and answered with "add --replace" - a wrong cause and a fix that cannot
+        work, since `os.replace` will not put a file onto a directory however
+        authorised the run is.
+        """
+        folder = self.tmp / 'session.speakers.json'
+        folder.mkdir()
+        code, _out, err = self._run(self.out, folder)
+        self.assertEqual(code, 1)
+        self.assertNotIn('from an earlier run', err)
+        self.assertNotIn('--replace', err)
+        self.assertIn('FOLDER', err)
 
 
 # ---------------------------------------------------------------------------

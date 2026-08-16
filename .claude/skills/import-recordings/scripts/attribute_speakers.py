@@ -181,6 +181,27 @@ SAFETY RULES (all mandatory, none tunable away)
   `--force` does NOT authorise this: forcing past a mispair suspicion is not
   consent to destroy a corrected transcript, and one flag must not mean two
   unrelated things.
+* Every destination is asked whether it could be written BEFORE the alignment
+  runs and before either file is created - a folder sitting on the name, an
+  ancestor that is a file, a folder that cannot be written to. The cheapest
+  failure is the one that happens first, and a `--report` that was never
+  saveable should cost a stat call, not a minute of alignment followed by half a
+  result. That check runs ahead of the existing-file refusal, because a folder
+  standing on the output name is not an earlier run's transcript and answering
+  it with "add --replace" would name a fix that cannot work.
+* When the transcript is written and the report then fails anyway - a disk that
+  fills, a drive pulled out mid-run - THE TRANSCRIPT IS KEPT, the message says
+  so, and it prints the complete command that saves the report too, `--replace`
+  included. The transcript is the expensive artifact and the one that was asked
+  for; `--report` is optional and diagnostic, and throwing away a complete
+  correct transcript to keep the two outputs symmetrical spends the human's work
+  to buy nothing. Under `--replace` it would spend more than nothing: rolling
+  back would mean restoring the previous file on the same filesystem that just
+  refused a write. What the message must NOT do is what it used to do - say
+  "re-run with a writable --report path" and leave the human to discover that
+  the rerun is refused, because `--out` now exists. Any message here that asks
+  for another run states the whole command, and that command has been run in a
+  test (`tests/test_import_recordings.py`).
 
 HONEST LIMITS
 =============
@@ -196,13 +217,16 @@ HONEST LIMITS
 Exit codes: 0 = ok (including honest no-ops), 2 = refused to label (mispair
 gate), 1 = usage/IO error - which includes a refusal to replace an existing
 --out or --report, because the fix is a different command line and not a
-different pairing of files.
+different pairing of files, and the one partial result this tool can produce
+(transcript written, JSON report not). 1 therefore means "not everything you
+asked for happened"; the message says which part did, and names the file.
 
 CODE MAP
 ========
   Normalisation      tokenize                  text to matchable word tokens
   File IO            read_text                 encoding/newline-preserving read
                      canonical_path            one spelling of a path, for collisions
+                     destination_problem       why a name could never be written
                      atomic_write / write_text write via temp file, then move
   Parsing            parse_clock               MM:SS / HH:MM:SS to seconds
                      parse_whisper             segments + flat token stream
@@ -227,6 +251,8 @@ CODE MAP
                      confidence_bucket         histogram bucket for a score
                      decile_coverage/_skew     where the alignment thins out
   CLI                build_parser / fail / main
+                     rerun_command             this run, plus a flag, copyable
+                     alternative_name          a free "-2" name for a taken one
 """
 
 from __future__ import annotations
@@ -237,6 +263,7 @@ import difflib
 import json
 import os
 import re
+import shlex
 import sys
 import unicodedata
 from collections import Counter
@@ -428,6 +455,55 @@ def could_be_same_file(a: str, b: str) -> bool:
         return os.path.samefile(a, b)
     except OSError:
         return _identity_key(a) == _identity_key(b)
+
+
+def destination_problem(path: str, flag: str) -> str:
+    """Why nothing could ever be saved under this name, in plain words, or None.
+
+    The cheapest failure is the one that happens before the work. Alignment on a
+    70-minute pair is a minute of CPU and, more to the point, it ends by writing
+    a file: a destination that was never writable is therefore not just a wasted
+    minute, it is the difference between "nothing happened" and "half of what
+    you asked for happened". So both destinations are asked the question up
+    front, exactly as `transcribe_audio.py` asks its three.
+
+    What is asked is deliberately narrow - is there a FOLDER sitting on this
+    name, and can the folder that must hold it exist and be written to. Those
+    are the shapes no flag can get past. The file's own permission bits are NOT
+    asked about: `os.replace` needs write permission on the containing folder,
+    not on the file it lands on, so a read-only file inside a writable folder is
+    replaced quite happily on POSIX, and refusing it here would be a refusal of
+    something that works. It is a cheap early no, never a promise of a later
+    yes, which is why every write still has its own error path behind it.
+
+    It runs BEFORE the "that file already exists" refusal, because a folder on
+    the name is not an earlier run's transcript: telling the human to add
+    `--replace` to get past a directory would name a fix that cannot work.
+    """
+    if os.path.isdir(path):
+        return ("%s names a FOLDER, not a file (%s), so nothing can be saved "
+                "under that name. Give %s a filename inside that folder - or a "
+                "different name altogether - and run the command again."
+                % (flag, path, flag))
+    # `atomic_write` creates a missing parent, so a parent that is simply absent
+    # is fine; what is not fine is an ancestor that cannot hold a folder.
+    parent = os.path.dirname(os.path.abspath(path))
+    walked = parent
+    while walked and not os.path.exists(walked):
+        nxt = os.path.dirname(walked)
+        if nxt == walked:
+            break
+        walked = nxt
+    if walked and not os.path.isdir(walked):
+        return ("the folder %s cannot hold %s, because %s is a file, not a "
+                "folder. Give %s a path inside a real folder and run the "
+                "command again." % (parent, flag, walked, flag))
+    if walked and not os.access(walked, os.W_OK):
+        return ("the folder %s cannot be written to, so %s has nowhere to go "
+                "(%s). Give %s a path in a folder you can write to, or fix that "
+                "folder's permissions, then run the command again."
+                % (walked, flag, path, flag))
+    return None
 
 
 def atomic_write(path: str, body: str) -> None:
@@ -1286,7 +1362,55 @@ def fail(msg):
     return 1
 
 
+def rerun_command(argv, *extra):
+    """This same run, plus `extra`, as one line the human can copy and paste.
+
+    Naming a flag is not naming a command. The reader here is a genealogist with
+    a folder open, and re-typing an invocation carrying four quoted paths at
+    11pm is where the typos come from - so a message that asks for another run
+    hands back the run he already made, with the flag that changes the answer
+    added to it. A flag already on the line is not added twice.
+
+    `sys.argv[0]` is echoed only when it really names THIS file, so the path he
+    typed comes back to him. Under a test runner or any other embedding it names
+    something else entirely (pytest's own `__main__.py`), and echoing that back
+    would hand him a command that runs the wrong program; the bare filename is
+    the fallback.
+    """
+    args = list(argv) if argv is not None else list(sys.argv[1:])
+    tail = [flag for flag in extra if flag not in args]
+    invoked = sys.argv[0] if sys.argv else ''
+    script = invoked if invoked and os.path.basename(invoked) == TOOL_NAME else TOOL_NAME
+    return 'python ' + shlex.join([script] + args + tail)
+
+
+def alternative_name(flag, path):
+    """`--out "session-2.md"` - the same name with a free number before its extension.
+
+    Its own function because the refusal that uses it must offer an alternative
+    for EVERY destination that is in the way, not just the first: sending the
+    run to a fresh `--out` while `--report` still points at an existing file is
+    refused all over again, for a reason the worked example itself created.
+
+    The number is walked past whatever is already there. A flat "-2" is fine the
+    first time and is itself a taken name on the third run of a session, which
+    would hand the human a suggestion this same check refuses - the small
+    version of the mistake this whole function exists to stop.
+    """
+    stem, ext = os.path.splitext(path)
+    if not ext:
+        ext = ".md" if flag == "--out" else ".json"
+    n = 2
+    while os.path.exists("%s-%d%s" % (stem, n, ext)) and n < 100:
+        n += 1
+    return '%s "%s-%d%s"' % (flag, stem, n, ext)
+
+
 def main(argv=None):
+    # Kept, not just parsed: several refusals hand the human back the command he
+    # ran with one flag added, and reconstructing it from `args` would drop the
+    # spellings he typed and print flags he never passed.
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
     args = build_parser().parse_args(argv)
 
     if not (0.0 <= args.min_confidence <= 1.0):
@@ -1325,6 +1449,26 @@ def main(argv=None):
                        os.path.splitext(args.out)[0] + ".md",
                        os.path.splitext(args.out)[0] + ".speakers.json"))
 
+    # Both destinations are asked whether they could ever be written, BEFORE the
+    # alignment and before either file is created. A --report that was never
+    # going to be saveable is the whole subject of the recovery message further
+    # down; catching it here means that message is reached only by the genuine
+    # surprises (a disk that fills, a drive pulled out, permissions changed
+    # under a running job) rather than by the ordinary typo, which is answered
+    # for the price of a stat call and leaves nothing behind at all.
+    #
+    # Ahead of the existence refusal, deliberately: a FOLDER standing on the
+    # output name is not an earlier run's transcript, and answering it with
+    # "that file already exists, add --replace" would both misname the cause and
+    # hand out a fix that cannot work - `os.replace` will not put a file on a
+    # directory however authorised the run is.
+    for out_path, flag in ((args.out, "--out"), (args.report, "--report")):
+        if not out_path:
+            continue
+        problem = destination_problem(out_path, flag)
+        if problem is not None:
+            return fail(problem)
+
     # Refused, not warned about. The skill's Stage B command names its output
     # deterministically, so the second run of a session aims straight at the
     # first run's file - which by then may be the copy a human went through
@@ -1333,31 +1477,35 @@ def main(argv=None):
     # proves nothing), so it refuses both cases identically and lets him say
     # --replace. Checked before anything is read: the refusal costs nothing and
     # should not arrive after a minute of alignment.
+    #
+    # `isfile`, not `exists`: the sentence this guards says "already holds a
+    # file from an earlier run", and the pre-flight above has already answered
+    # for every other shape a taken name can have.
     warnings = []
     existing = [(flag, out_path)
                 for out_path, flag in ((args.out, "--out"), (args.report, "--report"))
-                if out_path and os.path.exists(out_path)]
+                if out_path and os.path.isfile(out_path)]
     if existing and not args.replace:
         named = " and ".join("%s (%s)" % (flag, os.path.basename(p))
                              for flag, p in existing)
-        # The worked example names the flag that is actually in the way, and
-        # keeps its extension: "--out x-2.md" is no help to somebody whose
-        # --report is the file at risk.
-        first_flag, first_path = existing[0]
-        stem, ext = os.path.splitext(first_path)
+        # The worked example names EVERY flag that is in the way, and keeps each
+        # extension: "--out x-2.md" is no help to somebody whose --report is the
+        # file at risk, and redirecting only the first of two destinations
+        # produces a command this same check refuses on the second.
+        example = " ".join(alternative_name(flag, p) for flag, p in existing)
         many = len(existing) > 1
         return fail(
             "%s already %s from an earlier run, and this tool will not write "
             "over %s. It cannot tell a transcript it wrote itself from one you "
             "have since corrected by hand, and a corrected speaker label cannot "
             "be got back. Either send this run somewhere else - for example %s "
-            "\"%s-2%s\" - or, if %s really can go, add --replace to the same "
-            "command and run it again."
+            "- or, if %s really can go, run this exact command:\n    %s"
             % (named,
                "hold files" if many else "holds a file",
                "them" if many else "it",
-               first_flag, stem, ext or ".md",
-               "those files" if many else "that file"))
+               example,
+               "those files" if many else "that file",
+               rerun_command(argv, "--replace")))
     for flag, out_path in existing:
         warnings.append("%s already existed and was replaced at your request "
                         "(--replace): %s" % (flag, os.path.basename(out_path)))
@@ -1554,9 +1702,45 @@ def main(argv=None):
             atomic_write(args.report,
                          json.dumps(report, indent=2, sort_keys=False) + "\n")
         except OSError as e:
-            return fail("the transcript was written, but the JSON report could not "
-                        "be saved to %s: %s. Re-run with a --report path in a "
-                        "writable folder." % (args.report, e))
+            # The old message here said only "re-run with a --report path in a
+            # writable folder", and that rerun could not work: the transcript
+            # had just been written, so the next run met the existence refusal
+            # and stopped. A recovery instruction the tool then refuses is worse
+            # than none - it costs a round trip and it teaches the human that
+            # the messages are not to be trusted.
+            #
+            # The transcript is KEPT rather than rolled back, and that is the
+            # deliberate half of the fix. It is the expensive artifact and the
+            # thing that was actually asked for; --report is optional and
+            # diagnostic. Discarding a complete, correct transcript to keep a
+            # symmetry with a file that may not even have been requested spends
+            # the human's minute of alignment to buy nothing - and under
+            # --replace it would be worse than nothing, because rolling back
+            # would mean restoring the previous file on the same filesystem that
+            # just refused a write, risking the corrected transcript that
+            # authorising the replace was supposed to be the end of.
+            #
+            # So: say the transcript is there, say where, and print the whole
+            # command that gets the report too - --replace included, because
+            # this run created --out and the next one will be stopped by it.
+            for w in warnings:
+                sys.stderr.write("%s: warning: %s\n" % (TOOL_NAME, w))
+            return fail(
+                "the attributed transcript was written and has been KEPT - it "
+                "is complete, and it is the file this run was for: %s. What "
+                "failed is the JSON report, which could not be saved to %s: %s. "
+                "The report only records how the labels were decided; the "
+                "transcript does not need it, and %d of %d segments are "
+                "labelled in it either way. To get the report too, free up that "
+                "folder (or point --report somewhere else), then run this exact "
+                "command:\n    %s\nIt carries --replace because %s now exists - "
+                "this run wrote it a moment ago, so replacing it costs nothing. "
+                "That stops being true once you have corrected speaker labels in "
+                "it by hand: from then on send the new run to a different --out "
+                "instead."
+                % (args.out, args.report, e, labelled, len(segments),
+                   rerun_command(argv, "--replace"),
+                   os.path.basename(args.out)))
 
     for w in warnings:
         sys.stderr.write("%s: warning: %s\n" % (TOOL_NAME, w))

@@ -15,6 +15,11 @@ draft rather than an archive record, so it lives in this skill's own
 
 ## Flow
 
+Invoke `fha` through the archive-root launcher (`./fha` / `.\fha`, AGENTS.md §Tools); the
+commands below are written bare, so add the prefix your shell wants. The script prints
+its own next step in all three spellings when it finishes — read that line out as it
+came, rather than the bare form.
+
 1. **Locate the audio.** Usually an archived asset under the documents root
    (`documents/interviews/..._S-xxxxxxxxxx.m4a`). Never move or rename it.
 2. **Run the script** (long-running — background it):
@@ -60,6 +65,16 @@ draft rather than an archive record, so it lives in this skill's own
    human; when he has moved things, `fha reconcile --dry-run` (then
    `fha reconcile`) re-ties the paths. This mirrors the naming rule in
    `import-recordings` step 5; the two must stay in agreement.
+
+   **A `--name` is a filename, and it has to be one everywhere.** The script
+   checks it before it loads the model — a path separator, a leftover `_S-id`,
+   a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`,
+   `LPT1`-`LPT9`, with or without an extension), one of `<>:"|?*`, a control
+   character, or a trailing dot or space is refused in the first second with a
+   valid example, not after an hour of transcription. The Windows rules are
+   enforced on Linux and macOS too: the archive travels, and a name that works
+   here and breaks on the machine it is opened on next is a trap, not a
+   convenience. Plain letters, digits and hyphens always pass.
 
    Point `--outdir` at a scratch folder, **never at an asset root**: the run
    writes `<name>.txt`, `<name>.srt` and `<name>.md`, and `<name>.txt` is
@@ -270,6 +285,12 @@ draft rather than an archive record, so it lives in this skill's own
   a failure part way through puts the previous transcript back. The one thing
   no program can undo - a hard kill mid-rename - is marked on disk instead, and
   the next run repairs it. Re-running is always safe.
+  The marker only says that if it is really on the disk, so the script flushes
+  it (its bytes *and* its folder entry) before the first rename and flushes the
+  renames before removing it. On macOS and Linux that survives a power cut. On
+  Windows a folder cannot be flushed at all, so there it is whole against a
+  killed program and rests on the filesystem's own ordering against a power cut
+  - which is why a marked folder is always redone rather than trusted.
 - **The script replaces only what it can show it wrote.** Its own unfinished
   work carries a `.publishing` marker, so that it redoes unasked; a set of
   files without one is not its own to replace, and it refuses rather than

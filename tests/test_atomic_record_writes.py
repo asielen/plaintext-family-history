@@ -27,6 +27,15 @@ would ruin the record and every later verb would then refuse for the wrong
 reason - against a file that was already destroyed - and the sweep would pass
 while proving nothing.
 
+THE OTHER HALF OF THE CONVERSION (section 9). Swapping an in-place write for an
+atomic replace also changes what the operation REFUSES, and that is a defect in
+the opposite direction. `open(path, 'w')` asks the kernel whether the caller may
+write that file; `os.replace` swaps a directory entry and only ever asks about
+the parent folder. So a record the archivist chmod-ed read-only - the plain-files
+way to pin a file - became overwritable the moment a verb turned atomic. Those
+tests hold the writer to the old refusal, and to the record's owner and group,
+which the temp file would otherwise take over.
+
 The last class is the durable guard: a grep-shaped assertion that no tool calls
 the truncating writer at all, so this cannot drift back one call site at a time
 the way it did the first time.
@@ -48,6 +57,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib
 import confirm
 import convert_mining
 import lint
@@ -673,6 +683,174 @@ class NoToolWritesRecordsNonAtomicallyTests(unittest.TestCase):
             'Import `read_text_exact` / `write_text_exact_atomic` from _lib '
             'instead, so the next fix to them reaches every caller: '
             + ', '.join(offenders)))
+
+
+# ── 9. The other half of "atomic": what the writer must still REFUSE ────────
+
+@contextlib.contextmanager
+def kernel_denies_write(target):
+    """Answer the writer's permission probe with "no", whatever uid is running.
+
+    The refusal being tested is a POSIX mode bit, and a `chmod 0444` proves
+    nothing under the uid CI actually runs as: root bypasses permission bits, so
+    the write succeeds before and after the fix and a green test says nothing
+    (AGENTS_TOOLING pre-push gate - a guard test must fail against the pre-fix
+    code). Denying the probe itself asks the same question deterministically on
+    any platform and any uid.
+
+    The patch is aimed at ONE path and delegates everything else to the real
+    `os.open`, because `tempfile.mkstemp` opens the temp file through the same
+    function; a blanket refusal would break the writer somewhere else and the
+    test would pass for the wrong reason. The raised error is spelled the way the
+    kernel spells it for `open(path, 'w')` on a read-only file - errno EACCES,
+    filename set - so the assertions below are about the writer's behaviour, not
+    about a hand-made exception.
+    """
+    real_os_open = os.open
+    target_key = os.path.abspath(str(target))
+
+    def _patched(path, flags, *a, **kw):
+        aimed = (isinstance(path, (str, os.PathLike))
+                 and os.path.abspath(os.fspath(path)) == target_key)
+        if aimed and (flags & os.O_WRONLY):
+            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
+        return real_os_open(path, flags, *a, **kw)
+
+    with mock.patch.object(os, 'open', _patched):
+        yield
+
+
+_PINNED = (
+    '---\nid: L-7c1a9f4e22\n---\n\n'
+    '# A record the archivist pinned\n\nDo not touch this.\n'
+)
+
+
+class ReadOnlyRecordIsHonouredTests(unittest.TestCase):
+    """A record the human made read-only must survive the atomic writer.
+
+    `write_text_exact` opened the record itself, so a read-only record raised
+    PermissionError and the verb refused. `os.replace` swaps a DIRECTORY ENTRY -
+    the kernel checks the parent folder and never asks about the file being
+    replaced - so converting a verb to the atomic writer silently handed it the
+    power to overwrite a file the human had deliberately pinned. Chmod-ing a
+    finished record read-only is the plain-files way to say "leave this alone";
+    the writer probes for that authorization and refuses exactly as before.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.record = self.dir / 'pinned.md'
+        self.record.write_text(_PINNED, encoding='utf-8', newline='')
+
+    def tearDown(self) -> None:
+        # A 0444 record left by the chmod case still deletes cleanly: unlinking
+        # is judged by the parent folder's mode, not the file's.
+        self._tmp.cleanup()
+
+    def _listing(self) -> list[str]:
+        return sorted(p.name for p in self.dir.iterdir())
+
+    def test_a_pinned_record_is_refused_and_left_whole(self) -> None:
+        before = self.record.read_bytes()
+        with kernel_denies_write(self.record):
+            with self.assertRaises(PermissionError) as caught:
+                _lib.write_text_exact_atomic(self.record, 'REPLACEMENT')
+        # The exception a caller's `except OSError` already handles: same class,
+        # same errno, naming the record rather than a temp file the human never
+        # heard of.
+        self.assertEqual(caught.exception.errno, errno.EACCES)
+        self.assertEqual(caught.exception.filename, str(self.record))
+        self.assertEqual(self.record.read_bytes(), before,
+                         'a pinned record was overwritten by the atomic writer')
+        # Refused before anything was created, so there is no temp to clean up.
+        self.assertEqual(self._listing(), ['pinned.md'])
+
+    def test_a_verb_reports_the_refusal_in_plain_words(self) -> None:
+        # The finding's real cost is at the verb level: `fha places note` must
+        # still decline to edit a pinned registry, and say so as a refusal rather
+        # than a traceback. places.py catches OSError, and PermissionError is one.
+        (self.dir / 'places').mkdir()
+        registry = self.dir / 'places' / 'places.yaml'
+        registry.write_text(
+            '- id: L-7c1a9f4e22\n  name: Fairview\n', encoding='utf-8', newline='')
+        before = registry.read_bytes()
+        with kernel_denies_write(registry):
+            result = places.run_place_note(
+                self.dir, 'L-7c1a9f4e22', 'A note the pinned registry must refuse.')
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(registry.read_bytes(), before)
+        said = ' '.join(m.text for m in result.messages)
+        self.assertIn('cannot write', said)
+        self.assertEqual(
+            sorted(p.name for p in registry.parent.iterdir()), ['places.yaml'])
+
+    def test_the_probe_leaves_the_record_exactly_as_it_found_it(self) -> None:
+        # The probe opens the record to ask the kernel a question. It must not
+        # be the thing that damages it: no O_TRUNC, no O_CREAT, no timestamps.
+        before = self.record.read_bytes()
+        stat_before = os.stat(self.record)
+        _lib._refuse_unwritable_target(self.record)
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertEqual(os.stat(self.record).st_mtime_ns, stat_before.st_mtime_ns)
+
+    def test_a_record_that_does_not_exist_yet_has_nothing_to_honour(self) -> None:
+        # The umask branch must keep working: a new record has no permissions to
+        # respect, and the probe must not invent a refusal for a missing file.
+        fresh = self.dir / 'brand-new.md'
+        _lib._refuse_unwritable_target(fresh)          # must not raise
+        _lib.write_text_exact_atomic(fresh, 'NEW RECORD\n')
+        self.assertEqual(fresh.read_text(encoding='utf-8'), 'NEW RECORD\n')
+
+    def test_a_writable_record_is_still_replaced(self) -> None:
+        # The refusal must not become a refusal of ordinary writes.
+        _lib.write_text_exact_atomic(self.record, 'EDITED\n')
+        self.assertEqual(self.record.read_text(encoding='utf-8'), 'EDITED\n')
+        self.assertEqual(self._listing(), ['pinned.md'])
+
+    @unittest.skipIf(sys.platform == 'win32',
+                     'POSIX mode bits: Windows read-only is a file attribute '
+                     'with different semantics (validated on Linux/macOS).')
+    @unittest.skipIf(getattr(os, 'geteuid', lambda: 1)() == 0,
+                     'running as root, which bypasses file permission bits '
+                     'entirely - chmod 0444 would be writable either way, so '
+                     'this case cannot be proved here. The deterministic proof '
+                     'is test_a_pinned_record_is_refused_and_left_whole, which '
+                     'denies the probe itself and runs under every uid.')
+    def test_a_real_chmod_read_only_record_refuses_like_the_plain_writer(self) -> None:
+        before = self.record.read_bytes()
+        os.chmod(self.record, 0o444)
+
+        with self.assertRaises(PermissionError) as plain:
+            _lib.write_text_exact(self.record, 'REPLACEMENT')
+        with self.assertRaises(PermissionError) as atomic:
+            _lib.write_text_exact_atomic(self.record, 'REPLACEMENT')
+
+        # The whole point of the fix: the atomic writer refuses the same way the
+        # writer it replaced did, so every caller's error handling still fits.
+        self.assertEqual(atomic.exception.errno, plain.exception.errno)
+        self.assertEqual(atomic.exception.filename, plain.exception.filename)
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertEqual(self._listing(), ['pinned.md'])
+
+    @unittest.skipUnless(hasattr(os, 'chown') and getattr(os, 'geteuid', lambda: 1)() == 0,
+                         'handing a record to another owner needs root; this is '
+                         'the case root CAN prove, and CI runs as root.')
+    def test_a_records_owner_and_group_survive_the_replace(self) -> None:
+        # The mode is not the whole permission. The temp file belongs to whoever
+        # ran the command, so without carrying the ownership across, a shared
+        # archive's record silently changes hands - and a 0640 record whose group
+        # flips loses exactly the family read access the mode copy protects.
+        nobody = 65534
+        os.chown(self.record, nobody, nobody)
+        os.chmod(self.record, 0o640)
+        _lib.write_text_exact_atomic(self.record, 'EDITED BY ROOT\n')
+        after = os.stat(self.record)
+        self.assertEqual((after.st_uid, after.st_gid), (nobody, nobody),
+                         'the record changed hands during an ordinary edit')
+        self.assertEqual(after.st_mode & 0o777, 0o640)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), 'EDITED BY ROOT\n')
 
 
 if __name__ == '__main__':

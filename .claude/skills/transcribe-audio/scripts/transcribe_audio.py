@@ -39,6 +39,13 @@ Three rules this file exists to keep:
     one thing that must never happen - a mixed set of files that looks finished
     and is therefore skipped forever - cannot survive a single retry.
 
+    A marker only says that if it is on the disk when the lights go out, so it
+    is flushed (bytes and folder entry both) before the first rename, and the
+    renames are flushed before it is removed. That guarantee is whole on
+    macOS/Linux; on Windows, where a folder cannot be flushed, it holds against
+    a killed process and rests on the filesystem's own ordering against a power
+    cut (see `_promote_all`).
+
   * WHAT THIS PROGRAM DID NOT WRITE, IT DOES NOT REPLACE. --outdir is a folder
     the human picked, so a name this run wants can already be taken by a file
     of his - a `family.md` he typed himself, sitting where this run would put
@@ -56,12 +63,17 @@ Three rules this file exists to keep:
     (AGENTS_TOOLING.md privacy rule; SPEC 12.4 stores paths in alias form).
 
 The outputs are WORKING FILES until attached: review, then ALWAYS attach the
-whisper pass to the recording's existing source with
-    fha process <archived-audio> --more <documents-path>/<name>.md whisper-transcript
+whisper pass to the recording's existing source, from the archive folder, with
+    ./fha process <archived-audio> --more <documents-path>/<name>.md whisper-transcript
 so the source record ends up carrying the audio, the original transcript
 (role `transcript`), and the whisper pass (role `whisper-transcript`) side by
 side. Never overwrite or detach the original transcript - the two transcripts
 disagree in exactly the spots a reviewer needs to compare.
+
+That leading `./` is not decoration: `fha` is a launcher FILE at the archive
+root, never a program on PATH, so it is `./fha` on macOS/Linux, `.\\fha` in
+Windows PowerShell and a bare `fha` in the Windows Command Prompt
+(CHEATSHEET.md has the table). A finished run prints all three spellings.
 
 `fha process --more` renames what it attaches to `{stem}-{role}_{S-id}.{ext}`
 and only attaches files that already live under the documents root - so pass
@@ -92,15 +104,19 @@ CODE MAP
   marker_path            - where the "promotion in flight" marker lives
   publication_state      - what is on disk: complete / partial / interrupted / none
   default_output_name    - a sane --name from an already-archived filename
-  name_problem           - plain-language validation of --name
+  _portable_filename_problem - why a name breaks on Windows (checked everywhere)
+  name_problem           - plain-language validation of --name, before the model
   md_header              - the .md preamble (portable: filename, never a path)
   PublishError           - "the transcript could not be saved", with the fix
+  _sync_directory        - push a folder's list of names to disk (POSIX only)
+  _write_marker/_release_marker - the marker's durability barriers
   _destination_problem   - why one final name cannot be replaced, in plain words
   _preflight_destinations- refuse the run before the first rename, not after it
   _set_aside/_restore_previous/_promote_all - the three-file commit protocol
   publish_transcripts    - the all-or-nothing writer (temp siblings + promotion)
   prepare_audio          - ffmpeg extraction with a PyAV fallback
   build_parser           - the CLI surface (kept apart so a test can read it)
+  attach_command_lines   - the attach next step, in each shell's own spelling
   rerun_command          - this run, plus a flag, as one copyable command line
   _leftover_note         - what a failed run actually left on disk
   main                   - CLI: check, transcribe, publish, say what is next
@@ -128,6 +144,19 @@ _SOURCE_ID_SUFFIX = re.compile(r'_S-[0-9abcdefghjkmnpqrstvwxyz]{10}$', re.IGNORE
 # produces `...-audio-whisper-transcript_S-...`, which sorts away from its
 # siblings. An explicit --name always wins over this guess.
 _MEDIA_ROLE_SUFFIXES = ('-audio', '-video', '-recording')
+
+# Names Windows will not give a file, whatever extension follows them, because
+# they are its device names (`CON.md` is the console, not a file). Enforced on
+# every platform: see _portable_filename_problem for why a Linux-only run still
+# has to obey them.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    ('con', 'prn', 'aux', 'nul')
+    + tuple(f'com{d}' for d in range(1, 10))
+    + tuple(f'lpt{d}' for d in range(1, 10)))
+
+# Characters Windows reserves for its own syntax (drive letters, wildcards,
+# redirection). A POSIX filesystem takes all of them happily.
+_WINDOWS_RESERVED_CHARS = '<>:"|?*'
 
 
 def fmt_ts(sec):
@@ -229,13 +258,57 @@ def default_output_name(stem):
     return stem
 
 
+def _portable_filename_problem(filename):
+    """Why this exact filename is not usable everywhere, in half a sentence, or None.
+
+    Checked on EVERY machine, not only on Windows. The transcript is written to
+    be attached to a source record and carried around - onto a backup drive, a
+    family member's laptop, a new computer three years from now - and a name
+    that Linux accepts today but Windows refuses is a trap laid for whoever
+    opens the archive there: the file cannot be copied, opened by name, or
+    deleted without a special incantation. Refusing it here, in the second
+    before the model loads, costs nothing; discovering it on the far machine
+    costs the file.
+
+    The Windows rules, which are the strictest of the platforms this runs on:
+    the reserved device names (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9) are
+    refused whatever extension follows them - `CON.md` is the device just as
+    `CON` is; `<>:"|?*` and the control characters are not allowed in a name at
+    all; and a name may not end in a dot or a space, which Explorer and the
+    shell silently strip and then cannot find again.
+    """
+    stem = filename.split('.', 1)[0]
+    if stem.lower() in _WINDOWS_RESERVED_NAMES:
+        return (f"\"{stem}\" is a name Windows keeps for a device (CON, PRN, AUX, NUL, "
+                f"COM1-COM9, LPT1-LPT9), so no file called {filename} can exist there")
+    bad = sorted({c for c in filename if c in _WINDOWS_RESERVED_CHARS})
+    if bad:
+        return (f"\"{filename}\" contains {' '.join(bad)}, which Windows does not allow in a "
+                f"filename")
+    if any(ord(c) < 32 for c in filename):
+        return f"\"{filename}\" contains a control character, which no filesystem accepts"
+    if filename[-1:] in ('.', ' '):
+        return (f"\"{filename}\" ends in a {'dot' if filename[-1] == '.' else 'space'}, which "
+                f"Windows silently trims off - the name asked for is not the name that "
+                f"comes back")
+    return None
+
+
 def name_problem(name):
     """Return a plain-language complaint about --name, or None if it is usable.
 
     --name becomes three filenames, so a path separator in it would scatter the
     outputs somewhere the caller did not ask for; an S-id in it would produce a
-    file `fha process --more` then refuses to attach. Both are worth catching
-    before an hour of transcription, not after.
+    file `fha process --more` then refuses to attach; and a name the filesystem
+    itself will not take stops the run at `mkstemp`, which is a bare OSError
+    with none of this context in it.
+
+    All of it is worth catching in the second before the model loads rather than
+    an hour later, which is why main calls this before anything expensive: an
+    invalid name discovered at publication time has already cost the whole
+    transcription, and the failure arrives wearing a message about the recording.
+    The three real destination names are checked, not just the stem, because the
+    stem is not what the filesystem is asked for.
     """
     if not name or not name.strip():
         return ("the output name is empty. Pass the recording's shared filename stem, "
@@ -248,6 +321,17 @@ def name_problem(name):
         return (f"--name still carries the source id from the archived filename (\"{name}\"). "
                 "`fha process --more` adds the id itself and refuses a file that already has "
                 f"one - pass --name {stripped} instead")
+    # The stem first, then the three names the filesystem is actually handed:
+    # a stem ending in a dot or a space is trimmed on the way in, so it fails
+    # here while `stem.txt` would sail through, and a reserved word fails in
+    # both places. Cheap enough to check all four.
+    for candidate in (name, *(p.name for p in output_paths('.', name))):
+        problem = _portable_filename_problem(candidate)
+        if problem is not None:
+            return (f"--name \"{name}\" cannot be used as a filename: {problem}. This run "
+                    "would write it on this machine or on the next one the archive is opened "
+                    "on, so pass a plain stem of letters, digits and hyphens instead, "
+                    "e.g. --name hartley-thomas-1998-06-14-farm")
     return None
 
 
@@ -502,7 +586,9 @@ def _promote_all(temps, finals, marker):
             placed.append(final)
     except OSError as e:
         if _restore_previous(placed, kept):
-            _discard(marker)
+            # The put-back is a set of renames like any other, so it gets the
+            # same barrier: durable first, marker dropped second.
+            _release_marker(marker)
         # Translated, not swallowed: a bare OSError here would reach the human
         # through main's decode-failure message and send him off to check a
         # recording that transcribed perfectly well.
@@ -514,11 +600,16 @@ def _promote_all(temps, finals, marker):
         # BaseException on purpose: a Ctrl-C landing between two renames leaves
         # precisely the mixed set this function exists to prevent.
         if _restore_previous(placed, kept):
-            _discard(marker)
+            _release_marker(marker)
         raise
     for _final, aside in kept:
         _discard(aside)
-    _discard(marker)
+    # Last: the folder is flushed and only then does the marker go. Losing the
+    # removal itself is the harmless direction - a marker that outlives the run
+    # it covered has the next run redo a recording that was in fact finished,
+    # which costs an hour; the reverse would call an unfinished set finished and
+    # cost the transcript.
+    _release_marker(marker)
 
 
 def publish_transcripts(outdir, name, segments, model, recording, progress=None):
@@ -560,10 +651,26 @@ def publish_transcripts(outdir, name, segments, model, recording, progress=None)
     handles = []
     count = 0
     try:
-        for final in finals:
-            fd, tmp = tempfile.mkstemp(dir=str(outdir), prefix=final.name + '.', suffix='.part')
-            temps.append(Path(tmp))
-            handles.append(open(fd, 'w', encoding='utf-8', newline='\n'))
+        try:
+            for final in finals:
+                fd, tmp = tempfile.mkstemp(dir=str(outdir), prefix=final.name + '.',
+                                           suffix='.part')
+                temps.append(Path(tmp))
+                handles.append(open(fd, 'w', encoding='utf-8', newline='\n'))
+        except OSError as e:
+            # Translated here, at the one place that knows what was being
+            # attempted. `name_problem` refuses the names this program can
+            # foresee (a device name, a reserved character, a trailing dot), but
+            # a filesystem has limits of its own - a stem too long for it, an
+            # encoding it will not take - and a bare OSError from mkstemp would
+            # surface through main's decode-failure branch and send the human
+            # off to re-record a perfectly good interview.
+            raise PublishError(
+                f"the working files could not be created in {outdir} "
+                f"({e.strerror or e}). That is the output name or the folder, not the "
+                f"recording: run the command again with a shorter plain --name (letters, "
+                f"digits and hyphens, e.g. --name hartley-thomas-1998-06-14-farm) or with "
+                f"--outdir pointing at a folder with room on it") from e
         ftxt, fsrt, fmd = handles
         fmd.write(md_header(name, recording, model))
         for i, seg in enumerate(segments, 1):
@@ -574,10 +681,20 @@ def publish_transcripts(outdir, name, segments, model, recording, progress=None)
             fmd.write(f"**[{fmt_ts(seg.start)}]** {text}\n\n")
             if progress is not None:
                 progress(seg.start)
-        for handle in handles:
-            handle.flush()
-            os.fsync(handle.fileno())
-            handle.close()
+        try:
+            for handle in handles:
+                handle.flush()
+                os.fsync(handle.fileno())
+                handle.close()
+        except OSError as e:
+            # A full disk usually surfaces HERE rather than in the loop above,
+            # because the writes were buffered. Same reason as the mkstemp
+            # translation: this is the save side failing, and the human must not
+            # be sent back to the recording for it.
+            raise PublishError(
+                f"the transcript could not be written into {outdir} ({e.strerror or e}). "
+                f"Check the disk has room and the folder is still there, then run the same "
+                f"command again") from e
         handles = []
         if count == 0:
             return 0
@@ -654,6 +771,41 @@ def build_parser():
                          "run's output names - whether they are a finished transcript or "
                          "files this program cannot show it wrote")
     return ap
+
+
+# The archive root ships exactly two launcher files - `fha` (POSIX sh) and
+# `fha.cmd` (tools/scaffold.py `_ROOT_LAUNCHERS`) - and neither is on PATH, so
+# how the human types it depends on his shell. These are the three spellings the
+# owner docs settled on (GETTING_STARTED.md, CHEATSHEET.md, docs/TROUBLESHOOTING.md).
+_LAUNCHER_FORMS = (
+    ('./fha', 'macOS / Linux'),
+    ('.\\fha', 'Windows PowerShell'),
+    ('fha', 'Windows Command Prompt'),
+)
+
+
+def attach_command_lines(md_name):
+    """The `fha process --more` next step, one line per shell, each labelled.
+
+    A bare `fha …` is a command-not-found for everyone except a Windows Command
+    Prompt user: `fha` is a FILE in the archive folder, not a program on PATH.
+
+    Three lines rather than one chosen for this machine - which is what the
+    browser companion's handoff card does (commit 7c6ee13) - because the two
+    cases differ in the one way that decides it. That card's string is what a
+    Copy button puts on the clipboard, so a three-line block would paste as
+    three commands and the platform HAS to be guessed. Nothing here copies
+    anything: these lines are printed into a terminal to be read and retyped,
+    and they carry two placeholders that must be filled in first, so the reader
+    is already editing the line and can take the one his own shell wants. That
+    is also the safer answer, since `os.name` would name the operating system
+    but not the shell - cmd.exe and PowerShell want different spellings - and it
+    matches the settled convention for a printed block (GETTING_STARTED.md,
+    CHEATSHEET.md both print all three, labelled).
+    """
+    return [f'{launcher} process "<archived-audio>" --more '
+            f'"<documents-path>/{md_name}" whisper-transcript   # {label}'
+            for launcher, label in _LAUNCHER_FORMS]
 
 
 def rerun_command(argv, *extra):
@@ -767,6 +919,19 @@ def main(argv=None):
               "looks right, the leftover files in that folder (the ones ending .part, .kept, "
               "or .publishing) can be deleted.")
 
+    # Asked before the model is fetched and loaded, not just before the first
+    # segment: a folder sitting on one of the three names, or a read-only file
+    # there, is a refusal that costs milliseconds here and a model download plus
+    # its load - minutes, on a first run - a few lines further down.
+    # publish_transcripts asks again on entry, because an hour of decoding is
+    # long enough for the folder to change under it.
+    try:
+        _preflight_destinations(finals)
+    except PublishError as e:
+        print(f"the transcript could not be saved: {e}.", file=sys.stderr)
+        print(_leftover_note(outdir, name), file=sys.stderr)
+        return EXIT_FAILED
+
     # Checked before any decoding: a missing engine should cost a second, not
     # the ffmpeg pass over a two-hour recording.
     try:
@@ -808,6 +973,22 @@ def main(argv=None):
             print(f"\nthe transcript could not be saved: {e}.", file=sys.stderr)
             print(_leftover_note(outdir, name), file=sys.stderr)
             return EXIT_FAILED
+        except OSError as e:
+            # Everything the SAVE side can fail on is translated into a
+            # PublishError where it happens (the temp files, the flush, the
+            # marker, the renames), so an OSError arriving here came from
+            # reading the recording or from the decoder - with one exception
+            # nobody can resolve from here, a disk that filled up inside the
+            # segment loop. So the message names both instead of asserting the
+            # recording is at fault, which is the mistake the branch below
+            # would make with a filesystem error in its hands.
+            print(f"\nthe run stopped before any transcript was written: {e}", file=sys.stderr)
+            print(_leftover_note(outdir, name), file=sys.stderr)
+            print(f"That is a file problem rather than a problem with the words: check that "
+                  f"{outdir} is still there with room on the disk, and that the recording "
+                  f"itself can still be opened (play it), then run the same command again.",
+                  file=sys.stderr)
+            return EXIT_FAILED
         except Exception as e:
             # No traceback for the human: name the cause and the next move.
             print(f"\ntranscription failed: {e}", file=sys.stderr)
@@ -834,9 +1015,11 @@ def main(argv=None):
     for p in finals:
         print(f"  {p.name}")
     print("Review it, then copy the .md under the documents root beside the recording "
-          "and attach it:\n"
-          f'  fha process "<archived-audio>" --more "<documents-path>/{md_path.name}" '
-          "whisper-transcript")
+          "and attach it - from the archive folder, in the form your own terminal wants:")
+    for line in attach_command_lines(md_path.name):
+        print(f"  {line}")
+    print("(`fha` is the launcher file sitting in the archive folder, not a program your "
+          "computer knows by name; CHEATSHEET.md has the same table.)")
     return EXIT_OK
 
 
