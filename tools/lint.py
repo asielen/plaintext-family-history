@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -84,6 +85,8 @@ from _lib import (
     format_bracket_child,
     is_genetic_parent_subtype,
     nonbirth_bracket_label,
+    photos_ignore_matcher,
+    photos_ignore_patterns,
     spouse_extended_base,
     extract_token_ids,
     extract_wikilinks,
@@ -2228,6 +2231,41 @@ def _check_reverse_inventory(
         _check_embedded_source_keywords(registry, findings)
 
 
+def _files_to_keyword_scan(alias: str, root: Path, registry: Registry):
+    """Files under one asset root that E012's exiftool pass should read.
+
+    The photos root honours `photos_ignore:` (#35) exactly as the catalog scan
+    does. Without it this check reads every file in the bulk photo-service
+    export the setting exists to exclude - on the motivating archive that is
+    63,156 files handed to exiftool for keywords nobody filed. An ignored
+    subtree is pruned unwalked rather than filtered afterwards, so the cost
+    goes away rather than moving; `documents` has no such setting and walks
+    whole. A malformed `photos_ignore:` prunes nothing here rather than
+    guessing, and `fha photoindex` is where the human sees the parse error.
+    """
+    if alias != 'photos':
+        yield from (p for p in root.rglob('*') if p.is_file())
+        return
+    try:
+        patterns = photos_ignore_patterns(registry.fha_config)
+    except RuntimeError:
+        patterns = []
+    if not patterns:
+        yield from (p for p in root.rglob('*') if p.is_file())
+        return
+    is_ignored = photos_ignore_matcher(patterns)
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        dirnames[:] = [
+            d for d in dirnames
+            if not is_ignored((here / d).relative_to(root).as_posix())
+        ]
+        for name in filenames:
+            p = here / name
+            if not is_ignored(p.relative_to(root).as_posix()):
+                yield p
+
+
 def _check_embedded_source_keywords(registry: Registry, findings: list[Finding]) -> None:
     """E012 and photo-side E011 checks using exiftool keyword reads."""
     scan_paths: set[Path] = set()
@@ -2236,7 +2274,7 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
     for alias in ('documents', 'photos'):
         root = _mapped_root(alias, registry)
         if root.exists():
-            for file_path in (p for p in root.rglob('*') if p.is_file()):
+            for file_path in _files_to_keyword_scan(alias, root, registry):
                 resolved = file_path.resolve()
                 scan_paths.add(resolved)
                 alias_path = _path_to_alias(file_path, alias, registry)

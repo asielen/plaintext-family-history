@@ -1482,5 +1482,65 @@ class DirectLineStubW119Tests(unittest.TestCase):
         self.assertEqual(w119, [])
 
 
+class KeywordScanRespectsPhotosIgnoreTests(unittest.TestCase):
+    """E012's exiftool pass honours `photos_ignore:` like the catalog scan.
+
+    Without this the check reads every file in the bulk photo-service export
+    the setting exists to exclude - the motivating archive (#35) has 63,156 of
+    them - and hands them all to exiftool for keywords nobody filed.
+    """
+
+    def _roots(self, photos_ignore=None):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, tmp, True)
+        root = Path(tmp)
+        photos = root / 'photos'
+        (photos / 'Woodbury').mkdir(parents=True)
+        (photos / 'Flickr Export' / 'deep').mkdir(parents=True)
+        (photos / 'Woodbury' / 'keep.jpg').write_bytes(b'x')
+        (photos / 'Flickr Export' / 'bulk.jpg').write_bytes(b'x')
+        (photos / 'Flickr Export' / 'deep' / 'deeper.jpg').write_bytes(b'x')
+        cfg = {} if photos_ignore is None else {'photos_ignore': photos_ignore}
+        return root, photos, lint.Registry(root, cfg)
+
+    def _scanned(self, photos_ignore=None):
+        root, photos, registry = self._roots(photos_ignore)
+        return {
+            p.relative_to(photos).as_posix()
+            for p in lint._files_to_keyword_scan('photos', photos, registry)
+        }
+
+    def test_without_the_setting_every_photo_is_scanned(self) -> None:
+        self.assertEqual(self._scanned(), {
+            'Woodbury/keep.jpg',
+            'Flickr Export/bulk.jpg',
+            'Flickr Export/deep/deeper.jpg',
+        })
+
+    def test_an_ignored_subtree_is_skipped_wholesale(self) -> None:
+        self.assertEqual(self._scanned('Flickr Export/*'), {'Woodbury/keep.jpg'})
+
+    def test_matching_is_case_insensitive_like_the_scan(self) -> None:
+        # The photo library sits on a case-insensitive filesystem on Windows
+        # and macOS; 'flickr export' failing to prune reads as a broken feature.
+        self.assertEqual(self._scanned('flickr export/*'), {'Woodbury/keep.jpg'})
+
+    def test_a_malformed_setting_prunes_nothing_rather_than_guessing(self) -> None:
+        # photoindex is where the human is shown the real parse error.
+        self.assertEqual(len(self._scanned(12345)), 3)
+
+    def test_documents_ignores_the_photos_setting(self) -> None:
+        root, _photos, registry = self._roots('Flickr Export/*')
+        docs = root / 'documents' / 'Flickr Export'
+        docs.mkdir(parents=True)
+        (docs / 'deed.pdf').write_bytes(b'x')
+        found = {
+            p.name
+            for p in lint._files_to_keyword_scan(
+                'documents', root / 'documents', registry)
+        }
+        self.assertEqual(found, {'deed.pdf'})
+
+
 if __name__ == '__main__':
     unittest.main()
