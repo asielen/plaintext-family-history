@@ -35,8 +35,21 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     file, not just the index's 0/1, so a free-text type is recognized. Plain
     restrictions open with --include-restricted; `restricted: dna` needs
     --include-dna (DNA is always restricted, lint E017); `restricted: by-request`
-    never opens under any flag. A restricted claim inside an otherwise-included
-    source is withheld from the timeline AND cut from the copied source record
+    never opens under any flag.
+  - A MARKER THAT COULD NOT BE READ IS TREATED AS RESTRICTED, under every flag
+    (`_record_restriction`). Reading the value from the file is what makes the
+    free-text types work, and it is also what makes a failed read look exactly
+    like a person or a source that carries no marker at all. The subject is
+    refused (`restricted-subject`) and an unreadable source is excluded with its
+    files, both saying which file and how to repair it. Under every flag,
+    because `restricted: by-request` is the thing that cannot be ruled out and
+    it is the one type no flag opens. Note what does NOT raise here:
+    `_lib.read_record` reports a gone file, a permission error and malformed
+    YAML as an E010 entry in `parse_errors` rather than an exception, and a
+    record with no frontmatter block at all produces neither - just an empty
+    `meta` that reads as "no marker".
+  - A restricted claim inside an otherwise-included source is withheld from the
+    timeline AND cut from the copied source record
     itself (the README counts what was left out, in plain words) - the withhold
     never requires the claim to carry an `id:`, because id-less claims are a
     valid hand-authored state. The profile copy likewise drops withheld
@@ -54,8 +67,11 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     longer be told from accepted prose, and the centerpiece cannot ship
     verbatim). Research copies stay byte copies by the documented round-2
     scope decision; one carrying a draft marker gets a README caution line.
-  - Excluded sources are still named (ID + title only) in the README so the
-    human knows material exists but was withheld, not silently dropped.
+  - Excluded sources are still named (ID + reason, no title) in the README so
+    the human knows material exists but was withheld, not silently dropped -
+    and the reason distinguishes restricted / DNA / could-not-be-read, because
+    an absence reported under the wrong cause sends him looking in the wrong
+    place.
   - Any *other* person named in the packet's included claims/sources who is
     themselves `living`/`unknown` gets a README caution (their prose/facts
     are still included - packets are private, not for redistribution).
@@ -95,12 +111,21 @@ from the CLI handler that turns the dict into exit codes and stdout text.
 
 CODE MAP
 --------
+  The `restricted` marker
+    _restricted_type              - a raw `restricted:` value → its type, or None
+    _restricted_included          - does a record carrying this value belong in the export?
+    _record_restriction           - one record's own marker, or why it could NOT be read
+                                     (the four ways that happens, and why a failed read
+                                     must never be taken for "no marker")
+
   Helpers
     _today                         - packet directory/README date stamp
     _curated_person                - lookup + curated-tier gate
     _source_ids_for_person        - claim_persons ∪ source_people union (views.py's pattern,
                                      duplicated per-tool per TOOLING §15 "tools never import tools")
-    _classify_sources             - split source ids into included/excluded by privacy rules
+    _source_restricted_value      - one source's marker, index fallback, or unreadable
+    _classify_sources             - split source ids into included/excluded/unreadable by
+                                     the privacy rules
     _other_named_persons          - living/unknown persons named by included sources, for the
                                      README caution
     _resolve_source_files         - source_files rows → resolved paths + missing/unresolvable notes
@@ -224,7 +249,13 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
     Unrestricted material is always included. `dna` opens only with
     `--include-dna`; `by-request` never opens under any flag; every other type
     (and the plain boolean) opens only with `--include-restricted`. Public paths
-    pass both flags False, so anything restricted is excluded."""
+    pass both flags False, so anything restricted is excluded.
+
+    This answers a question about a VALUE, so it has no way to tell a record
+    that said nothing from a record nobody could read - both arrive as None and
+    both read as "include". Every caller that gets its value by reading a file
+    must therefore ask `_record_restriction` first and handle its `trouble`
+    before consulting this function."""
     rtype = _restricted_type(value)
     if rtype is None:
         return True
@@ -233,6 +264,85 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
     if rtype == 'by-request':
         return False
     return include_restricted
+
+
+def _record_restriction(path: Path) -> tuple[object, str | None]:
+    """Read one record's own `restricted:` marker. Returns (value, trouble).
+
+    `trouble` is None when the marker was genuinely read (the value may still
+    be None - that is a record saying it carries no restriction). A non-None
+    `trouble` is a plain phrase saying why the marker could NOT be read, and
+    every caller must treat that as "restricted", never as "no marker": a
+    missing privacy marker is indistinguishable from a person who never asked
+    to be left out, and only one of those two readings is safe to export.
+    This is the same withhold `fha site` makes for the same reason (site.py,
+    `_load_restriction_markers`).
+
+    FOUR ROUTES END HERE, and knowing why matters more than the code does,
+    because guarding only the obvious one leaves the real ones open:
+
+      1. The file cannot be opened or decoded - gone, locked, not UTF-8.
+      2. The frontmatter is not valid YAML.
+      3. The record has no frontmatter block at all. Nothing raises and nothing
+         is reported: `FRONT_RE` simply does not match, so the marker reads as
+         absent. This is the shape that shipped a written packet for a
+         `restricted: by-request` person.
+      4. The frontmatter parses to something that is not a block of fields (a
+         bare scalar, a list), so there is no key to look up.
+
+    WHY THIS PARSES THE FRONTMATTER ITSELF rather than asking `read_record` and
+    checking `parse_errors`, which is the obvious spelling and is wrong in both
+    directions. Too narrow: `read_record` does not RAISE for routes 1 and 2 - a
+    gone file, a permission error and malformed YAML all come back as an E010
+    entry with `meta` empty - so an `except` arm around it catches almost
+    nothing, which is exactly how the bug this replaces survived. Too broad:
+    its `parse_errors` also carries CLAIMS-block failures, and a source whose
+    claims YAML will not parse has a perfectly readable frontmatter marker.
+    Escalating that into a source-level exclusion would take the record's asset
+    files down with it, when the claim-level guard already answers that
+    question correctly and more precisely (`_source_copy_plan` withholds the
+    record and its claims, and lets the assets ship). This function asks one
+    question - can the record's own `restricted:` value be read - and the
+    frontmatter is the whole of where that value can live.
+
+    Route 3 is where the line gets drawn, so draw it explicitly: a frontmatter
+    block that PARSES - even one whose only line is blank, so it parses to no
+    fields at all - is the record STATING that it carries no restriction, and
+    is honored as such. No block is a record with nowhere to put the marker,
+    which is damage rather than a statement. The test of which one this is is
+    `FRONT_RE`, the same reader every other tool uses, so a file the archive
+    treats as having no frontmatter is treated that way here too rather than
+    getting a second opinion from this function.
+
+    Refusing route 3 costs nothing a correct archive would have wanted: `tier:`
+    and `living:` live in that same frontmatter, so a person whose block is
+    gone indexes as a non-living stub on the next `fha index` and could not be
+    a packet subject anyway. The only exports it stops are the ones where the
+    index and the file already disagree.
+
+    The raw parsed value is returned uncoerced, and the marker helpers here are
+    built for that: `_restricted_type` matches the YAML booleans `True`/`False`
+    and `read_record`'s coerced `'true'`/`'false'` strings alike, so the two
+    readers agree on every value the marker can hold."""
+    try:
+        text = read_text_exact(path)
+    except (OSError, UnicodeError) as e:
+        return None, f'the file could not be read ({e})'
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return None, (
+            'the record has no frontmatter block, which is the only place a '
+            'privacy marker can live'
+        )
+    try:
+        meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        return None, 'the frontmatter is not valid YAML'
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        return None, 'the frontmatter did not read as a block of fields'
+    return meta.get('restricted'), None
 
 
 # ── Privacy redaction of copied records ────────────────────────────────────────
@@ -481,7 +591,16 @@ def _redact_profile_text(
     Returns (new_text, names_removed) - (text, 0) when there is nothing to
     strip - or None when a variants list exists but cannot be safely edited;
     the profile is the packet's required centerpiece, so the caller treats
-    None as a structural build failure rather than shipping it unredacted."""
+    None as a structural build failure rather than shipping it unredacted.
+
+    The no-frontmatter arm below reads as "nothing to strip", which is the
+    right answer to the question this function asks (there are no structured
+    name carriers) and the WRONG answer to the privacy question, since a
+    profile with no frontmatter cannot state its `restricted:` marker either.
+    That is why the subject gate in `_packet_payload` settles the marker
+    through `_record_restriction` FIRST and refuses: by the time this runs, the
+    profile is known to have a frontmatter block. Keep it that way round - a
+    reader who moves the gate later re-opens the hole this arm cannot see."""
     fm = FRONT_RE.match(text)
     if not fm:
         return text, 0
@@ -666,8 +785,10 @@ def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[st
     return [r[0] for r in rows]
 
 
-def _source_restricted_value(archive_root: Path, row: sqlite3.Row):
-    """The source's `restricted:` value, for the export decision.
+def _source_restricted_value(archive_root: Path, row: sqlite3.Row) -> tuple[object, str | None]:
+    """The source's `restricted:` value, for the export decision. Returns
+    (value, trouble) - `trouble` non-None means the record's own marker could
+    not be read and the caller must exclude the source outright.
 
     The index stores `restricted` only as 0/1, so a free-text type
     (`restricted: by-request` on a source) is lost there - the type is read from
@@ -675,18 +796,30 @@ def _source_restricted_value(archive_root: Path, row: sqlite3.Row):
     other: if the file states a value it wins (it carries the type), otherwise
     the index's 1 still counts as a plain restriction, and a DNA source_type is
     always treated as restricted (lint E017) even if the flag was hand-dropped.
-    An unreadable record falls back to the index's 0/1 - fail closed."""
-    try:
-        value = read_record(archive_root / row['path'])['meta'].get('restricted')
-    except Exception:
-        value = None
+
+    IT USED TO FALL BACK TO THE INDEX ON AN UNREADABLE RECORD, and its docstring
+    called that "fail closed". It was the opposite. The index's 0 (the common
+    case - the column is only 1 when some earlier index run read a marker) made
+    an unreadable source read as unrestricted and ship, files and title and all.
+    Worse, its 1 cannot carry a type: an unreadable `restricted: by-request`
+    source degraded to a plain restriction, which `--include-restricted` opens -
+    turning the one no-override type in AGENTS.md's contract item 6 into an
+    overridable one. Combining a value with a value is right; combining a value
+    with a GUESS is not, and the index bit is a guess about a file nobody could
+    read. `by-request` is precisely what cannot be ruled out, so an unreadable
+    record now opens under no flag at all. The cost is bounded and recoverable:
+    the source is still named in the README (ID + reason, no title), and the
+    warning names the record and the command that repairs it."""
+    value, trouble = _record_restriction(archive_root / row['path'])
+    if trouble is not None:
+        return None, trouble
     if value in (None, False, '', 'false'):
         if (row['source_type'] or '') == 'dna':
-            return 'dna'
+            return 'dna', None
         if (row['restricted'] or 0):
-            return 'true'
-        return None
-    return value
+            return 'true', None
+        return None, None
+    return value, None
 
 
 def _classify_sources(
@@ -696,18 +829,29 @@ def _classify_sources(
     *,
     include_restricted: bool,
     include_dna: bool,
-) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    messages: list[str],
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row], set[str]]:
     """
-    Split source_ids into (included, excluded) rows per TOOLING §8 privacy rules.
+    Split source_ids into (included, excluded, unreadable) per TOOLING §8's
+    privacy rules; `unreadable` is the subset of `excluded` whose own record
+    could not be read, which the README reports as its own reason rather than
+    miscalling it "restricted".
 
     The `restricted` marker is read from each source record (so a free-text type
     like `restricted: by-request` is honored, not just the index's 0/1), and the
     shared decision applies the no-override rule: `dna` needs --include-dna,
     `by-request` is never opened, everything else (incl. the plain boolean) needs
-    --include-restricted.
+    --include-restricted. A record whose marker could not be read is excluded
+    under every flag - see `_source_restricted_value`.
+
+    Excluding at THIS step rather than later is deliberate: `included_ids` is
+    the single filter the timeline, the copy loop and the asset gather all read,
+    so a source dropped here is dropped from every surface at once. A withhold
+    bolted on further down would have to be repeated at each of them, and the
+    one that got missed would be the leak.
     """
     if not source_ids:
-        return [], []
+        return [], [], set()
     placeholders = ','.join('?' * len(source_ids))
     rows = conn.execute(
         f"""
@@ -719,13 +863,25 @@ def _classify_sources(
     ).fetchall()
 
     included, excluded = [], []
+    unreadable: set[str] = set()
     for row in rows:
-        value = _source_restricted_value(archive_root, row)
+        value, trouble = _source_restricted_value(archive_root, row)
+        if trouble is not None:
+            excluded.append(row)
+            unreadable.add(row['id'])
+            messages.append(
+                f'WARNING: {fmt_id_display(row["id"])} ({row["path"]}) could not be '
+                f'read ({trouble}), so there is no way to tell whether that source - '
+                'or any fact in it - was marked private. It was left out of the '
+                'packet, along with its files. Repair that record (run `fha lint` '
+                'to see what is wrong), run `fha index`, then build the packet again.'
+            )
+            continue
         if _restricted_included(value, include_restricted=include_restricted, include_dna=include_dna):
             included.append(row)
         else:
             excluded.append(row)
-    return included, excluded
+    return included, excluded, unreadable
 
 
 def _other_named_persons(
@@ -986,7 +1142,16 @@ def _source_copy_plan(
     checked). The caller also keeps an 'unsafe' source's indexed claims out
     of the timeline: a fresh real index drops a malformed record's claims on
     its own, but the packet must not depend on that staying true of every
-    index it is ever handed."""
+    index it is ever handed.
+
+    This guard and the source-level one divide the record cleanly, and keeping
+    them apart is what makes each proportionate. `_record_restriction` reads
+    the FRONTMATTER for the source's own marker, and a failure there excludes
+    the source outright - record, claims, assets, title. This one reads the
+    CLAIMS block, and a failure here withholds the record and its claims while
+    the asset files still ship: they carry no claim YAML, and the source-level
+    marker was read and passed. A frontmatter failure therefore never reaches
+    this function; a claims failure never reaches that one."""
     plan: dict[str, str] = {}
     timeline_excluded: set[str] = set()
     if not included_source_ids:
@@ -1231,6 +1396,7 @@ def _write_readme(
     pid: str,
     included_sources: list[sqlite3.Row],
     excluded_sources: list[sqlite3.Row],
+    unreadable_source_ids: set[str],
     other_named: list[sqlite3.Row],
     photo_count: int,
     unverified_photo_count: int,
@@ -1291,12 +1457,20 @@ def _write_readme(
             lines.append(f'  [{fmt_id_display(row["id"])}] {row["title"]}\n')
 
     if excluded_sources:
+        # Reason, not just a count: "restricted" over a record the tool could
+        # not open would blame the wrong cause, and a README that misreports
+        # why something is absent sends the owner looking in the wrong place.
         lines.append(
-            f'\nExcluded sources ({len(excluded_sources)}) - restricted or DNA material '
-            'withheld by default, listed by ID only:\n'
+            f'\nExcluded sources ({len(excluded_sources)}) - restricted, DNA, or '
+            'unreadable material withheld by default, listed by ID only:\n'
         )
         for row in excluded_sources:
-            reason = 'DNA' if row['source_type'] == 'dna' else 'restricted'
+            if row['id'] in unreadable_source_ids:
+                reason = 'could not be read'
+            elif row['source_type'] == 'dna':
+                reason = 'DNA'
+            else:
+                reason = 'restricted'
             lines.append(f'  [{fmt_id_display(row["id"])}] ({reason})\n')
 
     if redaction_notes:
@@ -1454,11 +1628,31 @@ def _packet_payload(
         # this person's material. `by-request` is absolute; a plain/other type is
         # refused unless --include-restricted (dna unless --include-dna), the same
         # no-override rule every export path shares.
-        subject_restricted = None
-        try:
-            subject_restricted = read_record(profile_path)['meta'].get('restricted')
-        except Exception:
-            subject_restricted = None
+        #
+        # A subject whose marker could not be READ is refused the same way, and
+        # under every flag. The marker lives in the person's record file and
+        # nowhere else - `persons` has no `restricted` column - so this decision
+        # is made by reading a file, and a read that fails hands back exactly
+        # what an unrestricted person hands back. It used to be taken as the
+        # latter: the guard here was a bare `except Exception` around
+        # `read_record(...)['meta'].get('restricted')`, and `read_record` does
+        # not raise for the ordinary failures, so that arm caught almost
+        # nothing - while a profile whose frontmatter block was gone entirely
+        # raised nothing and reported nothing at all. That shipped a complete
+        # zipped packet - profile, timeline, sources - for a person whose file
+        # had said `restricted: by-request`.
+        subject_restricted, subject_trouble = _record_restriction(profile_path)
+        if subject_trouble is not None:
+            return {
+                'status': 'restricted-subject', 'packet_dir': None, 'zip_path': None,
+                'messages': [
+                    f'{fmt_id_display(pid)}: {person["path"]} could not be read '
+                    f'({subject_trouble}), so there is no way to tell whether this '
+                    'person asked to be left out of exports. Nothing was exported. '
+                    'Repair that file (run `fha lint` to see what is wrong), run '
+                    '`fha index`, then run `fha packet` again.'
+                ],
+            }
         if not _restricted_included(
             subject_restricted, include_restricted=include_restricted, include_dna=include_dna
         ):
@@ -1487,9 +1681,10 @@ def _packet_payload(
 
         alias_pids = [pid] + _merged_alias_ids(conn, pid)
         source_ids = _source_ids_for_person(conn, alias_pids)
-        included_rows, excluded_rows = _classify_sources(
+        included_rows, excluded_rows, unreadable_source_ids = _classify_sources(
             conn, archive_root, source_ids,
             include_restricted=include_restricted, include_dna=include_dna,
+            messages=messages,
         )
         included_ids = {r['id'] for r in included_rows}
 
@@ -1840,6 +2035,7 @@ def _packet_payload(
                 packet_dir / 'README.txt',
                 person_name=person_name, pid=pid,
                 included_sources=included_rows, excluded_sources=excluded_rows,
+                unreadable_source_ids=unreadable_source_ids,
                 other_named=other_named, photo_count=photo_count,
                 unverified_photo_count=unverified_count, research_included=research_included,
                 research_draft_caution=research_draft_caution,
