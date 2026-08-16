@@ -115,7 +115,7 @@ the owner-facing docs whenever a change affects how a human reads the archive (t
 
 ### Session end (all modes)
 
-Summarize what changed and where; list any proposed-but-unapproved decisions; name any tool defects you logged in `TOOL_ISSUES.md` this session (and whether any wants filing upstream - a proposal, not an action); supply a one-line commit message (git is the change log - commit only when asked).
+Summarize what changed and where; list any proposed-but-unapproved decisions; name any tool defects you logged in `TOOL_ISSUES.md` this session (and whether any wants filing upstream - a proposal, not an action); name any open questions you opened in `notes/questions.md` (and any you raised and did *not* log - saying so here is the last chance to catch the omission); supply a one-line commit message (git is the change log - commit only when asked).
 
 ## The map
 
@@ -379,6 +379,30 @@ Draft prose you write into profiles goes inside `<!-- AI-DRAFT ... -->` markers 
 - **Mine a transcript:** be selective - substantive assertions become `suggested` claims
 with anchors; narrative chunks go to `## Stories`; the rest stays in the transcript (it is preserved and searchable; extraction is indexing, not preservation).
 Record your pass in the source's `## AI Passes` block.
+
+### When you cannot answer a question (log it)
+
+**Open questions do not live in the session.** A session ends and takes everything unwritten with
+it - the same argument that sends tool defects to `TOOL_ISSUES.md`, and it holds just as squarely
+for research findings, which already have a home and have simply never had an instruction
+pointing at it. Any question you raise and cannot settle before moving on - a claim whose value
+does not appear in the source it cites, a person whose `living` flag you could not determine so
+export redaction is undefined for them, a record you could not read, a conflict you noticed but
+did not adjudicate, a batch of `accepted` claims resting on images nobody has transcribed - gets a
+`## Q:` block in **`notes/questions.md`** *before you move on*, not at the end of the session.
+
+Use the block SPEC §17 defines: `origin:` (`human` | `tool` | `agent` - yours is `agent`),
+`status:` (`open`), `refs:`, and a dated `context:` line carrying enough that a reader six months
+later knows why it mattered and what would settle it. A question you only said out loud is a
+question you lost.
+
+This binds in `research` mode as much as any other, and covers questions about **your own work**
+as much as questions about the records - a claim you drafted and could not fully evidence is a
+question, not a loose end. Closing one later without an answer is a legitimate, recordable
+outcome (`closed (not pursuing)`); never writing it down is not. Note what this is *not*: `fha
+lint --spawn-questions` opens these blocks for exactly one machine-detectable case (E009, a
+`contradicts:` with no open question). Everything a human or an agent notices is yours to write,
+and nothing will warn you that you didn't.
 
 ## Don'ts
 
