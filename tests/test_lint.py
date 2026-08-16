@@ -1753,11 +1753,19 @@ class ContentDecidesPersonKindTests(unittest.TestCase):
 def _scandir_denying(unreadable: Path):
     """An os.scandir stand-in that refuses to list `unreadable`.
 
-    `os.walk` and pathlib's `rglob` both reach the filesystem through
-    `os.scandir`, so the failure goes there: os.walk hands it to `onerror`,
-    while rglob swallows it and reports an empty folder - the fault being
-    pinned. chmod is useless here: the test runner is root under CI, which
-    ignores mode bits, and Windows has no equivalent.
+    The fault goes in at `os.scandir` because `os.walk` resolves it at call
+    time on every supported Python - that is what makes the `onerror` seam
+    observable here. chmod cannot produce this: CI runs as root, which ignores
+    mode bits, and Windows has no equivalent.
+
+    What this deliberately does NOT rely on: that pathlib's `rglob` reaches the
+    disk the same way. It does on 3.11/3.12/3.14, but NOT on the 3.10 floor
+    (pathlib routes through an accessor object that bound `os.scandir` at
+    import time, so a later patch is invisible) and not on 3.13. So the
+    injection does not reproduce the pre-fix `rglob` behaviour on every version
+    we support - a regression back to `rglob` is still caught everywhere, but
+    on the floor it is caught by the warning going missing rather than by the
+    folder reading as empty.
     """
     real_scandir = os.scandir
     target = unreadable.resolve()

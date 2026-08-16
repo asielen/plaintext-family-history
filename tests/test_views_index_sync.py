@@ -67,10 +67,19 @@ def _source(sid: str, title: str, value: str, cid: str) -> str:
 def _scandir_denying(unreadable: Path):
     """An os.scandir stand-in that refuses to list `unreadable`.
 
-    One level below `os.walk` - and below pathlib's `rglob`, which reaches the
-    disk the same way - so the one injection reproduces the pre-fix behaviour
-    (the folder reads as empty) and exercises the post-fix `onerror` seam.
-    chmod cannot do it: CI runs as root and Windows has no equivalent.
+    The fault goes in at `os.scandir` because `os.walk` resolves it at call
+    time on every supported Python - that is what makes the `onerror` seam
+    observable here. chmod cannot produce this: CI runs as root, which ignores
+    mode bits, and Windows has no equivalent.
+
+    What this deliberately does NOT rely on: that pathlib's `rglob` reaches the
+    disk the same way. It does on 3.11/3.12/3.14, but NOT on the 3.10 floor
+    (pathlib routes through an accessor object that bound `os.scandir` at
+    import time, so a later patch is invisible) and not on 3.13. So the
+    injection does not reproduce the pre-fix `rglob` behaviour on every version
+    we support - a regression back to `rglob` is still caught everywhere, but
+    on the floor it is caught by the warning going missing rather than by the
+    folder reading as empty.
     """
     real_scandir = os.scandir
     target = unreadable.resolve()
