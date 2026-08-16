@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-07-27",
+  "generated": "2026-08-15",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -521,7 +521,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "ef470d495ccb0a9c507ede97a7e69043d7a4d9225636a002dd92363c5be69cd8",
+      "sha256": "dfadb4a7accb1a0882ff06e8c5a6944d3a9caa4fbe49a34899b78cf42392c6a5",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
