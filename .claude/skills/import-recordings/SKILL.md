@@ -102,10 +102,19 @@ directory — pass `--root <archive>` on every call rather than guessing.
    ```
 
    It reads sizes from the directory entries of the archive's configured media roots, opens nothing
-   unless a size collides, then SHA-256s both sides. Read-only on both sides — it renames, moves and
-   imports nothing. Exit **0** means no incoming file has a byte twin; exit **2** means at least one
-   does, and it prints which archived file (and its S-id, when the filename carries one). Confirm the
-   twin's record with `fha find <S-id>` before you say anything to the human.
+   unless a size collides, then SHA-256s both sides. Every folder inside those roots is walked,
+   including hidden ones like `documents/.private/` — a folder the human made for the material he is
+   most careful about is the last place this check may skip. Read-only on both sides — it renames,
+   moves and imports nothing. Exit **0** means no incoming file has a byte twin; exit **2** means at
+   least one does, and it prints which archived file (and its S-id, when the filename carries one).
+   Confirm the twin's record with `fha find <S-id>` before you say anything to the human.
+
+   Exit **1** is usage or configuration: a path that is not there, or PyYAML not installed. The
+   script needs PyYAML to read which folders hold the recordings (those folders are allowed to sit on
+   another drive) and refuses rather than guessing — a guess searches the wrong folder and calls an
+   already-filed recording new. It is the same PyYAML every `fha` command needs, so the fix is
+   `python -m pip install pyyaml`; the message says so. Do not work around it by pointing
+   `--media-root` at a folder you picked yourself.
 
    `--json <path>` saves the same findings as a file, and that path is the one thing in this step
    that writes: give it a name of its own in the scratchpad, never a recording's name and never a

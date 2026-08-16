@@ -73,9 +73,22 @@ DESIGN RULES (why the code looks the way it does)
   means the warning cannot be offered.)
 - **The edit is text surgery, not a YAML round-trip.** Only the touched
   line(s) change; key order, hand comments, and every other byte survive.
-  Reading and writing go through `read_text_exact`/`write_text_exact` so a
-  CRLF-authored record churns only the edited lines - `set-living`'s pattern,
-  reused by every verb below it.
+  Reading and writing go through `read_text_exact`/`write_text_exact_atomic`
+  so a CRLF-authored record churns only the edited lines - `set-living`'s
+  pattern, reused by every verb below it.
+- **Every write lands whole or not at all.** The writer is
+  `_lib.write_text_exact_atomic` (temp file, fsync, `os.replace`), never the
+  truncating `write_text_exact`. A person record is frequently the archive's
+  only copy of that ancestor. The failure that matters here is therefore not
+  "the edit did not happen" (every verb below refuses cleanly and says so) but
+  a disk that fills, or a process that dies, between the truncate and the last
+  byte: a truncating writer leaves a record that is half a file, and the verb
+  then reports a refusal over a record it has already destroyed. That is the
+  one outcome no message can walk back. With the atomic writer a raise means
+  the old bytes are still there, which is what the refusals already promise.
+  `relate`'s `--reciprocal` rollback rests on the same guarantee: it puts the
+  FIRST file's text back, and can ignore the second because a failed write
+  there left nothing behind to undo.
 - **Refuse rather than guess.** Before anything is written to frontmatter, the
   rewrite is re-parsed with the shared `_lib.frontmatter_edit_problem`: it
   must still parse, `id` must be unchanged, and no field outside the verb's
@@ -248,7 +261,7 @@ from _lib import (
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -531,7 +544,7 @@ def run_set_living(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text))
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
     except OSError as e:
         return _refuse(
             'refused',
@@ -755,7 +768,7 @@ def run_set_profile_photo(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text))
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
     except OSError as e:
         return _refuse(
             'refused',
@@ -971,7 +984,7 @@ def run_set_sex(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text))
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
     except OSError as e:
         return _refuse(
             'refused',
@@ -1311,7 +1324,16 @@ def run_new(
 
     try:
         stubs_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding='utf-8')
+        # Atomic like every other write in this file, for a second reason: a
+        # partial write here cannot truncate an older record (the collision
+        # check above proved there is none), but it would leave a half-written
+        # stub carrying a freshly minted P-id behind a message that says
+        # nothing was created. `fha lint` would then find a malformed record
+        # nobody knows they made. os.replace means the file either exists
+        # complete or does not exist. It also settles the newline question the
+        # same way the rest of the archive does: records are written with no
+        # platform translation, so a stub is LF on every machine.
+        write_text_exact_atomic(path, content)
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -1970,11 +1992,11 @@ def run_relate(
     completed: list[tuple[Path, str]] = []
     for path, old_text, new_text, label in writes:
         try:
-            write_text_exact(path, reapply_newline(new_text, old_text))
+            write_text_exact_atomic(path, reapply_newline(new_text, old_text))
         except OSError as e:
             for done_path, done_text in completed:
                 with contextlib.suppress(OSError):
-                    write_text_exact(done_path, done_text)
+                    write_text_exact_atomic(done_path, done_text)
             rollback_note = (
                 ' The other file was rolled back to how it was - nothing was kept.'
                 if completed else ' Nothing was written.'
@@ -2247,7 +2269,7 @@ def run_estimate(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text))
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -2489,7 +2511,7 @@ def run_edit(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_full_text, old_text))
+        write_text_exact_atomic(path, reapply_newline(new_full_text, old_text))
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -2605,7 +2627,7 @@ def run_note(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_full_text, old_text))
+        write_text_exact_atomic(path, reapply_newline(new_full_text, old_text))
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -2707,7 +2729,7 @@ def run_edit_note(
             result.add('info', dline)
     else:
         try:
-            write_text_exact(path, reapply_newline(new_full_text, full_text))
+            write_text_exact_atomic(path, reapply_newline(new_full_text, full_text))
         except OSError as e:
             return _refuse_result(
                 result, 'refused',

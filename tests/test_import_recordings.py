@@ -57,6 +57,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = ROOT / '.claude' / 'skills' / 'import-recordings'
@@ -917,6 +918,78 @@ class DedupeFailsClosedTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn('fha doctor', err)
         self.assertNotIn('new  ', out)
+
+    def test_without_pyyaml_the_roots_are_refused_not_guessed(self):
+        """The round-5 finding: the hand-rolled fallback read a subset of YAML.
+
+        `roots: {documents: <external>}` is an ordinary inline mapping and a
+        perfectly valid archive. The line-by-line fallback did not recognise
+        it, returned an empty mapping, and `resolve_media_roots` then applied
+        the built-in `<archive>/documents` default - the archive's own empty
+        skeleton. The byte-identical twin below sits on the external root that
+        was never searched, so the gate cleared it as new on exit 0.
+
+        There is no correct guess to make here: a parser that reads part of a
+        format cannot tell "no roots configured" from "roots I could not
+        read". So PyYAML is required and its absence is refused, with the
+        install command in the message.
+        """
+        external = self.tmp / 'elsewhere' / 'FamilyDocuments'
+        external.mkdir(parents=True)
+        shutil.move(str(self.original), str(external / self.original.name))
+        (self.archive / 'fha.yaml').write_text(
+            'roots: {documents: %s}\n' % external.as_posix(), encoding='utf-8')
+        with mock.patch.dict(sys.modules, {'yaml': None}):
+            code, out, err = self._run()
+        self.assertEqual(code, 1, out)
+        self.assertIn('pip install pyyaml', err)
+        self.assertNotIn('new  ', out)
+
+    def test_the_plain_roots_form_is_refused_without_pyyaml_too(self):
+        """Even the form the old fallback DID understand is now refused.
+
+        Reading it by hand looks harmless on this shape, but the same code path
+        is what silently returns {} on every shape it does not understand -
+        and a gate that authorises imports cannot have a path that guesses.
+        """
+        with mock.patch.dict(sys.modules, {'yaml': None}):
+            with self.assertRaises(find_duplicate_media.ConfigProblem) as caught:
+                find_duplicate_media._roots_from_config(str(self.archive))
+        self.assertIn('pip install pyyaml', str(caught.exception))
+
+    def test_a_recording_filed_below_a_hidden_folder_is_still_a_duplicate(self):
+        """The round-5 finding: the walk pruned every dot-prefixed directory.
+
+        `documents/.private/` is a folder a human makes for exactly the
+        material he is most careful about. Pruned from the walk, its recording
+        was not in the size index and did not land in the unreadable list
+        either, so an identical incoming file came back `new` on exit 0 while
+        the script's own docstring promised every archived recording had been
+        checked.
+        """
+        private = self.filed / '.private'
+        private.mkdir()
+        shutil.move(str(self.original), str(private / self.original.name))
+        code, out, _err = self._run()
+        self.assertEqual(code, 2, out)
+        self.assertIn('DUPLICATE', out)
+        self.assertIn('.private', out)
+
+    def test_a_hidden_folder_in_the_incoming_bundle_is_still_checked(self):
+        """The same rule on the incoming side, which the same walk decides.
+
+        A recording the gate never lists is a recording it says nothing about,
+        and `fha process` files the bundle either way.
+        """
+        self.twin.unlink()
+        (self.incoming / 'plainly-new.m4a').write_bytes(b'entirely other bytes')
+        hidden = self.incoming / '.old'
+        hidden.mkdir()
+        (hidden / 'Thursday at 3-11 PM.m4a').write_bytes(self.original.read_bytes())
+        code, out, _err = self._run()
+        self.assertEqual(code, 2, out)
+        self.assertIn('checked 2 recording(s)', out)
+        self.assertIn('DUPLICATE', out)
 
 
 class DedupePathReportingTest(unittest.TestCase):

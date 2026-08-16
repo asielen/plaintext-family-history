@@ -73,6 +73,20 @@ the archive entirely - hardcoding `<archive>/documents` silently finds nothing o
 those archives. `--media-root` overrides the lot when you want to check against
 one folder.
 
+Reading that mapping needs PyYAML, which is the archive tooling's own core
+dependency (`tools/requirements.txt`) - without it no `fha` command runs either.
+There is deliberately no hand-rolled fallback parser: one that understands part
+of YAML cannot tell "this archive configures no roots" from "this archive
+configures roots I could not read", and the second one silently searches the
+wrong folder. Missing PyYAML is refused with the install command, not guessed
+around. See `_roots_from_config`.
+
+Inside a media root, EVERY folder is walked - dot-prefixed ones included. A
+`documents/.private/` is the human's own folder and may hold exactly the
+recording being checked; `.git/`, `.fha/` and `.cache/` hold no media file, so
+walking them changes nothing but a few directory listings. See
+`index_sizes_by_root`.
+
 HOW PATHS ARE REPORTED
 ======================
 Every path this script prints or writes is rendered against a NAMED root:
@@ -104,7 +118,8 @@ Exit codes
   3  the check could not be completed for at least one file (something could not
      be read). Nothing in the run is cleared for import; fix what is named and
      run the same command again
-  1  usage or configuration error (bad path, unreadable archive root)
+  1  usage or configuration error (bad path, unreadable archive root, an
+     fha.yaml that will not parse, PyYAML not installed)
 
 CODE MAP
 ========
@@ -125,7 +140,7 @@ import os
 import sys
 
 TOOL_NAME = "find_duplicate_media.py"
-TOOL_VERSION = "1.2.0"
+TOOL_VERSION = "1.3.0"
 
 REPORT_EXAMPLE = "dedupe-report.json"
 
@@ -193,29 +208,6 @@ def find_archive_root(start):
         cur = parent
 
 
-def _roots_from_text(text):
-    """The two-space `alias: value` entries under `roots:`, read line by line.
-
-    Only used when PyYAML is missing. It has to survive the shape the archive
-    template writes and nothing more exotic; anything it cannot read is caught
-    by the caller, which refuses the run rather than guessing.
-    """
-    roots = {}
-    in_roots = False
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if not line[:1].isspace():
-            in_roots = line.split("#", 1)[0].strip() == "roots:"
-            continue
-        if in_roots and ":" in line:
-            key, _sep, value = line.strip().partition(":")
-            value = value.split("#", 1)[0].strip().strip("'\"")
-            if value:
-                roots[key.strip()] = value
-    return roots
-
-
 def _roots_from_config(archive_root):
     """The `roots:` mapping out of fha.yaml, or {} when the file names none.
 
@@ -224,6 +216,24 @@ def _roots_from_config(archive_root):
     and for such an archive a silent fallback to the built-in default searches
     an empty folder and clears every incoming recording as new - the exact
     failure this script exists to prevent, arriving as a clean exit 0.
+
+    WHY THERE IS NO HAND-ROLLED YAML FALLBACK
+    An earlier version read the `roots:` block line by line when PyYAML was
+    absent. It understood `  documents: documents` and nothing else, so a
+    perfectly valid archive written as `roots: {documents: /external/media}` -
+    or as a quoted key, or an anchor, or a multi-line flow mapping - came back
+    empty and the check ran against the archive's own empty `documents/`
+    skeleton. Three separate review rounds each found a different YAML spelling
+    that fell through it, which is the answer: a parser that understands a
+    subset of a format cannot tell "no roots configured" from "roots I could
+    not read", and this gate's whole value is that it never confuses the two.
+
+    Requiring PyYAML costs nothing real. It is the archive tooling's own
+    declared dependency (`tools/requirements.txt`, "Core (every command)"), so
+    an archive without it cannot run `fha` at all - the duplicate check is not
+    what the human is missing. And `--media-root <folder>` still checks against
+    a named folder with no config read at all, for anyone who truly cannot
+    install it.
     """
     path = os.path.join(archive_root, "fha.yaml")
     if not os.path.isfile(path):
@@ -241,42 +251,37 @@ def _roots_from_config(archive_root):
     try:
         import yaml
     except ImportError:
-        yaml = None
-    if yaml is not None:
-        try:
-            data = yaml.safe_load(text) or {}
-        except Exception as e:
-            raise ConfigProblem(
-                "the archive's fha.yaml is not valid YAML (%s), so the folders "
-                "holding your recordings cannot be read from it. Run "
-                "`fha doctor` to see what is wrong with the file, then run this "
-                "command again." % _reason(e))
-        if not isinstance(data, dict):
-            raise ConfigProblem(
-                "the archive's fha.yaml does not read as a list of settings, so "
-                "the folders holding your recordings cannot be read from it. "
-                "Run `fha doctor`, then run this command again.")
-        roots = data.get("roots")
-        if roots is None:
-            return {}
-        if not isinstance(roots, dict):
-            raise ConfigProblem(
-                "the archive's fha.yaml has a `roots:` setting that is not a "
-                "list of `name: folder` lines (for example `documents: "
-                "documents`). Run `fha doctor`, then run this command again.")
-        return {str(k): str(v) for k, v in roots.items() if v}
-
-    roots = _roots_from_text(text)
-    names_roots = any(line.split("#", 1)[0].strip() == "roots:"
-                      for line in text.splitlines() if not line[:1].isspace())
-    if names_roots and not roots:
         raise ConfigProblem(
-            "the archive's fha.yaml names a `roots:` setting this script could "
-            "not read (PyYAML is not installed here, so only the simple "
-            "`  documents: documents` form is understood). Install PyYAML with "
-            "`python -m pip install pyyaml`, or check against one folder with "
-            "--media-root <folder>.")
-    return roots
+            "the archive's fha.yaml cannot be read here because PyYAML is not "
+            "installed. That file is what says which folders hold your "
+            "recordings - they are allowed to live on another drive - and "
+            "guessing at it would search the wrong folder and call a recording "
+            "new when the archive already holds it. Install it with "
+            "`python -m pip install pyyaml` (the archive's own `fha` commands "
+            "need it too), then run this command again. Or check against one "
+            "folder with --media-root <folder>.") from None
+    try:
+        data = yaml.safe_load(text) or {}
+    except Exception as e:
+        raise ConfigProblem(
+            "the archive's fha.yaml is not valid YAML (%s), so the folders "
+            "holding your recordings cannot be read from it. Run "
+            "`fha doctor` to see what is wrong with the file, then run this "
+            "command again." % _reason(e))
+    if not isinstance(data, dict):
+        raise ConfigProblem(
+            "the archive's fha.yaml does not read as a list of settings, so "
+            "the folders holding your recordings cannot be read from it. "
+            "Run `fha doctor`, then run this command again.")
+    roots = data.get("roots")
+    if roots is None:
+        return {}
+    if not isinstance(roots, dict):
+        raise ConfigProblem(
+            "the archive's fha.yaml has a `roots:` setting that is not a "
+            "list of `name: folder` lines (for example `documents: "
+            "documents`). Run `fha doctor`, then run this command again.")
+    return {str(k): str(v) for k, v in roots.items() if v}
 
 
 def resolve_media_roots(archive_root):
@@ -425,6 +430,20 @@ def index_sizes_by_root(named_roots):
     never saw. Every such path is returned so the caller can refuse to clear
     anything, because a recording sitting in an unlistable folder is exactly
     where a byte-identical twin would hide.
+
+    NO FOLDER IS SKIPPED, INCLUDING DOT-PREFIXED ONES. An earlier version
+    pruned every directory whose name began with a dot. That silently dropped
+    `documents/.private/interview.m4a` - a folder a human makes for exactly the
+    material he is most careful about - from the walk, and dropped it without
+    landing in `unreadable`, so its twin arrived, matched nothing, and was
+    cleared as new. There is no third option here: a skipped subtree can only
+    be honest as `indeterminate`, and an archive that reports indeterminate on
+    every run because it happens to contain a `.git` is a gate nobody obeys.
+    So we walk everything. The machine-owned dot-folders an archive actually
+    has - `.fha/` (vendored tools), `.cache/` (sqlite), `.git/` - hold no file
+    with a media extension, so walking them costs one directory listing each
+    and changes no verdict; every other dot-folder in a media root is the
+    human's own and may well hold a filed recording.
     """
     by_size = {}
     unreadable = []
@@ -433,8 +452,7 @@ def index_sizes_by_root(named_roots):
         unreadable.append(getattr(err, "filename", None) or "a folder")
 
     for _label, root in named_roots:
-        for dirpath, dirnames, filenames in os.walk(root, onerror=on_walk_error):
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for dirpath, _dirnames, filenames in os.walk(root, onerror=on_walk_error):
             for name in filenames:
                 if not is_media(name):
                     continue
@@ -497,6 +515,12 @@ def expand_inputs(paths):
     cannot be listed is reported rather than skipped: the recordings inside it
     were never checked, and a bundle that is imported wholesale would carry them
     past the gate unexamined.
+
+    Dot-prefixed folders are walked, for that same reason and for symmetry with
+    `index_sizes_by_root`. A recording under `incoming/.old/` that this function
+    never returns is a recording the human's bundle still contains and `fha
+    process` will still file, so leaving it out of the list is the gate saying
+    nothing about a file it is about to wave through.
     """
     out = []
     unreadable = []
@@ -506,8 +530,7 @@ def expand_inputs(paths):
 
     for p in paths:
         if os.path.isdir(p):
-            for dirpath, dirnames, filenames in os.walk(p, onerror=on_walk_error):
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for dirpath, _dirnames, filenames in os.walk(p, onerror=on_walk_error):
                 for name in sorted(filenames):
                     if is_media(name):
                         out.append(os.path.join(dirpath, name))

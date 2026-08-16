@@ -52,8 +52,10 @@ copy of example-archive; the real archive is never touched.
 """
 
 import contextlib
+import errno
 import io
 import os
+import pathlib
 import re
 import shutil
 import sqlite3
@@ -179,6 +181,76 @@ def _one_line_diff(before: str, after: str) -> list[tuple[str, str]]:
     b, a = before.split('\n'), after.split('\n')
     assert len(b) == len(a), 'line count changed'
     return [(x, y) for x, y in zip(b, a) if x != y]
+
+
+@contextlib.contextmanager
+def _write_dies_partway(target: Path, keep: int = 12):
+    """Make the next record write die after `keep` characters, as a full disk does.
+
+    The failure being reproduced is not "the edit did not happen" - every verb
+    already refuses cleanly and says so. It is the disk filling, or the process
+    being killed, between the moment the record is opened for writing and the
+    last byte: with a truncating writer the record on disk is then a prefix of
+    the replacement, and the verb reports a refusal over a record it has
+    already destroyed.
+
+    Both of `_lib`'s record writers end in one `handle.write(text)` on a
+    text-mode file object, so intercepting that call reproduces the same
+    interruption for either of them. What differs is WHICH file was open at the
+    time: `write_text_exact` has the record itself open in truncating mode, so
+    the wound lands on the record; `write_text_exact_atomic` has a sibling temp
+    file open and the record is not touched until `os.replace`. That is the
+    whole difference these tests measure, which is why the interception sits
+    this low rather than stubbing out the writer function.
+    """
+    real_path_open = pathlib.Path.open
+    real_fdopen = os.fdopen
+    target_key = os.path.abspath(str(target))
+    # A folder means "whatever record is written directly into it" - the only
+    # way to aim at `new`'s output, whose filename carries an id minted inside
+    # the call being interrupted.
+    by_parent = os.path.isdir(target_key)
+
+    class _TornHandle:
+        def __init__(self, fh):
+            self._fh = fh
+
+        def write(self, text):
+            self._fh.write(text[:keep])
+            raise OSError(errno.ENOSPC, 'No space left on device')
+
+        def __getattr__(self, name):
+            return getattr(self._fh, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            with contextlib.suppress(OSError):
+                self._fh.close()
+            return False
+
+    def _aimed_at(path):
+        here = os.path.abspath(str(path))
+        return os.path.dirname(here) == target_key if by_parent else here == target_key
+
+    def _patched_path_open(self, mode='r', *a, **kw):
+        fh = real_path_open(self, mode, *a, **kw)
+        if str(mode).startswith('w') and _aimed_at(self):
+            return _TornHandle(fh)
+        return fh
+
+    def _patched_fdopen(fd, mode='r', *a, **kw):
+        # The atomic writer's temp file is the only fd opened for writing
+        # inside the calls these tests wrap.
+        fh = real_fdopen(fd, mode, *a, **kw)
+        if str(mode).startswith('w'):
+            return _TornHandle(fh)
+        return fh
+
+    with mock.patch.object(pathlib.Path, 'open', _patched_path_open), \
+            mock.patch.object(os, 'fdopen', _patched_fdopen):
+        yield
 
 
 class SetLivingEditTests(unittest.TestCase):
@@ -438,6 +510,110 @@ class SetSexTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertIn('sex: F', self.curated.read_text(encoding='utf-8'))
         self.assertIn('fha views brackets', out.getvalue())
+
+
+class TornWriteTests(unittest.TestCase):
+    """A person record is often the archive's only copy of that ancestor, so a
+    write that dies partway must leave the OLD bytes, not half a file.
+
+    PR #42 round 5. Every verb here opened the record with a truncating write
+    and then wrote into it: a disk that filled, or a process killed, between
+    the truncate and the last byte left a prefix of the replacement on disk
+    while the verb returned a plain refusal - a message that is a lie about
+    the one file it exists to protect. Nothing is recoverable from that; the
+    fix is `_lib.write_text_exact_atomic`, whose temp-file-then-`os.replace`
+    means a raise leaves the record untouched. These tests measure exactly
+    that: interrupt the write, then read the record back.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.stub = self.root / 'people' / 'stubs' / f'hartley__rose_{PID}.md'
+        self.curated = self.root / 'people' / f'hartley__thomas_{CURATED_PID}.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_torn_set_sex_write_leaves_the_record_byte_identical(self) -> None:
+        before = self.curated.read_bytes()
+        with _write_dies_partway(self.curated):
+            result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertFalse(result.changed)
+        # The refusal says nothing was kept, so nothing may have been kept.
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_a_torn_write_names_the_file_and_leaves_no_debris(self) -> None:
+        before_listing = sorted(p.name for p in self.curated.parent.iterdir())
+        with _write_dies_partway(self.curated):
+            result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('cannot write', text)
+        self.assertIn('retry', text)
+        # The atomic writer's temp file is removed on the way out - a stray
+        # `.hartley__thomas_….md.xxxx.tmp` in people/ is debris the human
+        # would have to recognise and delete himself.
+        self.assertEqual(sorted(p.name for p in self.curated.parent.iterdir()),
+                         before_listing)
+
+    def _reset_curated(self) -> None:
+        """Put the curated record back, with the entry `edit-note` rewrites.
+
+        Each verb in the sweep below needs a whole record to start from. Left
+        shared, the first verb's torn write would corrupt the file and every
+        later verb would then refuse for the wrong reason - on a record that
+        was already ruined - and the sweep would pass while proving nothing.
+        """
+        self.curated.write_text(CURATED, encoding='utf-8')
+        person.run_note(self.root, CURATED_PID, 'stories', 'An older note.')
+
+    def test_every_in_place_verb_survives_a_torn_write(self) -> None:
+        # The sweep the finding asked for: one truncating writer left in any
+        # of these verbs is the same defect wearing a different verb's name.
+        cases = {
+            'set-living': lambda: person.run_set_living(
+                self.root, CURATED_PID, 'false'),
+            'set-profile-photo': lambda: person.run_set_profile_photo(
+                self.root, CURATED_PID, 'thomas-portrait.jpg'),
+            'set-sex': lambda: person.run_set_sex(self.root, CURATED_PID, 'F'),
+            'estimate': lambda: person.run_estimate(
+                self.root, CURATED_PID, birth='1870'),
+            'edit': lambda: person.run_edit(
+                self.root, CURATED_PID, 'biography', text='Replacement prose.'),
+            'note': lambda: person.run_note(
+                self.root, CURATED_PID, 'research', 'A fresh note.'),
+            'edit-note': lambda: person.run_edit_note(
+                self.root, CURATED_PID, 'stories',
+                old_text='An older note.', text='A corrected note.'),
+            'relate': lambda: person.run_relate(
+                self.root, CURATED_PID, 'parent', PID),
+        }
+        for verb, call in cases.items():
+            with self.subTest(verb=verb):
+                self._reset_curated()
+                before = self.curated.read_bytes()
+                with _write_dies_partway(self.curated):
+                    result = call()
+                self.assertEqual(result.data['status'], 'refused', verb)
+                self.assertFalse(result.changed, verb)
+                self.assertEqual(self.curated.read_bytes(), before, verb)
+
+    def test_new_leaves_no_half_written_stub_behind(self) -> None:
+        # `new` cannot truncate an older record - it refuses a collision
+        # first - but a torn write there leaves a half-written stub carrying a
+        # freshly minted P-id behind a message saying nothing was created, and
+        # `fha lint` finds a malformed record nobody knows they made.
+        stubs = self.root / 'people' / 'stubs'
+        before_listing = sorted(p.name for p in stubs.iterdir())
+        # Aimed at the folder, not a filename: `new` mints its P-id inside the
+        # call, so the stub's name is not knowable before it is interrupted.
+        with _write_dies_partway(stubs):
+            result = person.run_new(self.root, 'Alice Hartley')
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertFalse(result.changed)
+        self.assertEqual(sorted(p.name for p in stubs.iterdir()), before_listing)
 
 
 class SetLivingRefusalTests(unittest.TestCase):
@@ -1087,7 +1263,7 @@ class RelateTests(unittest.TestCase):
         target_before = self.target.read_bytes()
 
         calls = {'n': 0}
-        real_write = person.write_text_exact
+        real_write = person.write_text_exact_atomic
 
         def _flaky_write(path, text):
             calls['n'] += 1
@@ -1095,7 +1271,7 @@ class RelateTests(unittest.TestCase):
                 raise OSError('simulated lock')
             return real_write(path, text)
 
-        with mock.patch.object(person, 'write_text_exact', _flaky_write):
+        with mock.patch.object(person, 'write_text_exact_atomic', _flaky_write):
             result = person.run_relate(
                 self.root, CURATED_PID, 'parent', TARGET_PID, reciprocal=True)
 

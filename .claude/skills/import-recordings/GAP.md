@@ -32,6 +32,22 @@ refused before the check runs if it resolves onto an incoming recording, an arch
 `fha.yaml`. A read-only step that can overwrite a recording it has just cleared as safe to import
 is not read-only, and the report lands last, so the damage arrives with a clean exit code.
 
+Two more rules, each learned from a fail-open path found in the interim script's own gate:
+
+- **Read the config with the config parser, or refuse.** Where the recordings live comes out of
+  `fha.yaml`'s `roots:`, and that file is YAML, so it is read with PyYAML (already the tooling's core
+  dependency) or not at all. A hand-rolled line reader understands a subset of the format and
+  therefore cannot distinguish "no roots configured" from "roots I failed to parse"; it returns
+  empty for both, the check scans the archive's empty internal skeleton instead of the external
+  library, and every incoming recording clears as new on exit 0. Three review rounds each found a
+  different spelling (`roots: {documents: /external/media}` among them) that slipped through one.
+  The general form: a mandatory gate never applies a default to input it did not fully parse.
+- **Walk every folder in the root, hidden ones included.** Pruning dot-prefixed directories drops
+  `documents/.private/interview.m4a` out of the comparison *without* marking anything unchecked, so
+  its byte-identical twin comes back `new`. The archive's own dot-folders (`.fha/`, `.cache/`,
+  `.git/`) hold no media file, so walking them costs a directory listing and nothing else; a
+  human's do. A subtree the gate skips has only one honest verdict, and it is not "new".
+
 Not a substitute for it: `fha search "<phrase>"` (which does exist). It searches transcript and
 record text, so it finds a recording that *reads* alike — a useful lead when the bytes differ
 because a sitting was re-exported or re-encoded, but never proof of an identical file.
