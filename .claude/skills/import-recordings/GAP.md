@@ -26,7 +26,11 @@ is cleared for import), 1 = usage or configuration error.
 Whenever `fha media dedupe` does ship, it inherits both of those last two rules: a dedupe answer is
 an authorisation to import, so an unreadable candidate has to come back as an open question rather
 than as "no twin found", and every path it reports belongs in alias form (`documents/…`) rather than
-as this machine's absolute path or as a bare filename that cannot say which file matched.
+as this machine's absolute path or as a bare filename that cannot say which file matched. A third
+rule joins them: any path the verb *writes* (a `--json` report, a cache, a log) is canonicalised and
+refused before the check runs if it resolves onto an incoming recording, an archived one, or
+`fha.yaml`. A read-only step that can overwrite a recording it has just cleared as safe to import
+is not read-only, and the report lands last, so the damage arrives with a clean exit code.
 
 Not a substitute for it: `fha search "<phrase>"` (which does exist). It searches transcript and
 record text, so it finds a recording that *reads* alike — a useful lead when the bytes differ
@@ -35,7 +39,11 @@ because a sitting was re-exported or re-encoded, but never proof of an identical
 ## 2. `fha media probe <file>`
 
 **Wanted:** read a recording's true duration and creation timestamp out of its container, and
-return the derived local start time with the UTC/end-of-recording caveat already applied.
+return the derived local start time with the UTC/end-of-recording caveat already applied - together
+with **which timezone that local time is in, and where that timezone came from**. A UTC instant is
+not a calendar date until the recording's own offset is known, so the verb has to return the
+offset it used (`com.apple.quicktime.creationdate`, solved from a filename clock, or none) and say
+so when it has none, rather than quietly converting with the machine's own zone.
 
 **Why it matters:** `source_date` is a fact about the record and filenames lie about it. The
 container's `creation_time` is written in **UTC at the moment recording stopped**, while an
@@ -44,7 +52,13 @@ recording's own length plus the UTC offset, which can cross midnight. On a real 
 arithmetic also served as a free cross-check: `filename_time + duration == creation_time` held for
 every recording that carried a clock in its name, confirming all ten dates from two directions.
 
-**Interim enactment:** `ffprobe -v quiet -print_format json -show_format <file>`, read-only.
+**Interim enactment:** `ffprobe -v quiet -print_format json -show_format <file>`, read-only. Its
+`format.tags` carry `com.apple.quicktime.creationdate` where the device wrote one, which is local
+time *with* its offset and settles the timezone outright; failing that the skill solves the offset
+from the filename clock, and failing that it asks the human before naming a date. When none of the
+three answers, `source_date` is written as an interval spanning the candidate days rather than as
+an exact date the evidence cannot carry (SKILL.md step 4). Whenever `fha media probe` ships it
+inherits that rule: never present a converted date as exact while the offset behind it is a guess.
 
 ## Not gaps (recorded so they are not re-reported)
 

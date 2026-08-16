@@ -107,6 +107,13 @@ directory — pass `--root <archive>` on every call rather than guessing.
    does, and it prints which archived file (and its S-id, when the filename carries one). Confirm the
    twin's record with `fha find <S-id>` before you say anything to the human.
 
+   `--json <path>` saves the same findings as a file, and that path is the one thing in this step
+   that writes: give it a name of its own in the scratchpad, never a recording's name and never a
+   path inside a media root. The script canonicalises it and refuses the run - before it hashes
+   anything - if it lands on an incoming recording, on an archived one, on `fha.yaml`, or anywhere
+   inside a media root, because a report written over a recording would destroy it *after* clearing
+   it as safe to import. `./`, a different capitalisation and a symlink are all the same file to it.
+
    Exit **3** is the third answer: **the check could not finish**. Nothing it printed as `UNCHECKED`
    is cleared, and the move is to fix what it names and re-run the whole bundle, not to import the
    part that happened to pass. It fires when something could not be read — the drive holding the
@@ -138,29 +145,61 @@ directory — pass `--root <archive>` on every call rather than guessing.
    reviewed. Compare the two transcripts before offering — the archive's copy may be the richer one,
    in which case there is nothing to add and you say so.
 
-4. **Read the real recording date out of the container, not the filename.** Filenames lie; app
-   exports are named for when the *file* was written or for nothing at all. The container's
-   `creation_time` is the honest field — and it carries a trap that goes in the record, not in your
-   head:
+4. **Read the real recording date out of the container, not the filename - and settle the
+   recording's timezone before you convert anything.** Filenames lie; app exports are named for
+   when the *file* was written or for nothing at all. The container's `creation_time` is the honest
+   field - and it carries a trap that goes in the record, not in your head:
 
    > QuickTime/MP4 writes `creation_time` in **UTC, at the moment the recording stopped**. The
    > clock in an app-written filename is **local time at the moment it started**. The two disagree
-   > by the recording's own length plus the UTC offset — enough to cross midnight on a long evening
+   > by the recording's own length plus the UTC offset - enough to cross midnight on a long evening
    > interview.
 
    ```
    ffprobe -v quiet -print_format json -show_format "<file>"
    ```
 
-   So: start ≈ `creation_time` − duration, converted to local. That arithmetic is also a **free
-   cross-check**: when an app filename carries a clock time, `filename_time + duration` should land
-   on `creation_time`. If it does, the date is confirmed from two independent directions; say so.
-   If the UTC date and the local start date land on the same day, write it: `source_date:
-   1998-06-14`. If they straddle midnight, ask **one** short question — *"was this the evening of
-   the 14th or after midnight on the 15th, your time?"* — and if he isn't sure, write the interval
-   `1998-06-14/1998-06-15` and move on. A skill that stalls on a fuzzy date has failed the human.
-   Either way the caveat above is copied verbatim into the source's `## Notes`, because the next
-   reader will hit it too.
+   That trap has a second half, and it is the one that produces a wrong date in silence: **a UTC
+   instant is not a calendar date until you know where the clock was standing.** Converting
+   `creation_time` with *your* machine's timezone answers a question nobody asked - a Sunday
+   afternoon recorded two zones east converts to the wrong day and looks perfectly ordinary doing
+   it. So establish the recording's offset FIRST, before any arithmetic and before you name a date.
+   Three places to get it, strongest first:
+
+   1. **The container's own local timestamp.** Phones and most modern cameras write
+      `com.apple.quicktime.creationdate` alongside `creation_time` - it is already in the
+      `format.tags` of the command above, and it is local time *with* its offset
+      (`1998-06-14T20:15:00-0500`). That is the recording's own timezone, written by the device
+      that was in the room. It settles the question outright; ask nothing.
+   2. **The filename clock, solved for the offset.** When the app filename carries a clock time,
+      the free cross-check runs in the useful direction: local stop is `filename_time + duration`
+      and UTC stop is `creation_time`, so `offset = filename_time + duration − creation_time`.
+      Round to the nearest quarter hour. A fit that misses by more than a couple of minutes means
+      the filename clock is not what you took it for, so it answers nothing - go to 3.
+   3. **Ask him, before you say any date.** *"Where was this recorded - the same timezone you're in
+      now?"* He was there; he knows. One short question up front costs a sentence, and it is the
+      only thing that reaches the truth when the container carries nothing. Asking it *after*
+      converting is the bug: by then a wrong exact date is already on the page.
+
+   Then, and only then, the arithmetic: local start is `creation_time` − duration rendered in
+   **that** zone, and its day is the date - `source_date: 1998-06-14`. If 1 and 2 both answered,
+   the date is confirmed from two independent directions; say so. If the sitting itself runs past
+   midnight, the day it *started* is still the `source_date`; note the overrun rather than
+   splitting one interview across two dates.
+
+   **If the timezone is still unknown, do not write an exact date.** An unconfirmed value must
+   never be presented as exact (AGENTS.md §"The contract"), and the archive's date vocabulary
+   already carries the honest form: write the interval spanning the days the recording could have
+   started on - `source_date: 1998-06-14/1998-06-15` - say in one plain sentence why it is two days
+   instead of one, and move on. A skill that stalls on a fuzzy date has failed the human; so has
+   one that invents a precise one. The interval is a standing invitation to anyone who can narrow
+   it later, while a wrong exact day is invisible forever.
+
+   Either way the caveat above is copied verbatim into the source's `## Notes` - the next reader
+   will hit it too - **together with the timezone you used and where it came from**: *"container
+   offset -0500"*, *"derived from the filename clock"*, *"confirmed with the human"*, or *"not
+   established, so the date is an interval"*. That one line is what lets the next reader redo the
+   arithmetic instead of re-guessing it.
 
 5. **Group by sitting, not by file, then pre-file into one folder per session.** Phone apps split a
    single afternoon into one file per topic. **Those are one source, not many** — one real archive's
@@ -169,9 +208,17 @@ directory — pass `--root <archive>` on every call rather than guessing.
    `documents/interviews/{interviewee}-{yyyy-mm-dd}/`. Recordings on *different* days are different
    sources even when the topic continues.
 
-   Group on the container dates from step 4 — not on filenames, which carry relative weekday labels
-   that collapse different days onto the same word. Ask if a sitting genuinely straddles midnight or
-   a day holds two unrelated visits.
+   Group on the **local** dates from step 4 - the ones you converted with a settled timezone - not
+   on filenames, which carry relative weekday labels that collapse different days onto the same
+   word. Ask if a sitting genuinely straddles midnight or a day holds two unrelated visits. A
+   recording whose date is still an interval is not grouped by guess: ask which sitting it belongs
+   to, or leave it staged and say so.
+
+   The folder name and the slug take **one** day even when `source_date` is an interval. That is
+   not a contradiction and it is not a licence to round: the folder is human convenience with no
+   machine meaning (see below), so it takes the earlier candidate day, you say out loud that you
+   did, and the record keeps the honest interval. Never let a tidy folder name talk you into a tidy
+   `source_date` - the filename is a label, the `source_date` is a claim about the world.
 
    Copy the files in **before** processing: a file pre-filed into a subfolder is renamed **in place**
    by `fha process`, while a file sitting at the documents-root top level gets relocated into
@@ -217,6 +264,12 @@ directory — pass `--root <archive>` on every call rather than guessing.
    ```
    python ".claude/skills/transcribe-audio/scripts/transcribe_audio.py" "<audio-or-video>" --model medium --outdir "<scratch>" --name "<stem>"
    ```
+
+   `--outdir` is the **scratchpad**, always: never the incoming bundle, never a media root. The
+   three whisper outputs are `{name}.txt`, `{name}.srt` and `{name}.md`, and they replace whatever
+   already sits under those names - so a `--name` matching the app transcript's stem, in the folder
+   the app transcript lives in, overwrites an original. Pick the session-and-topic stem, write it
+   into scratch, and let `fha process --more` be the only thing that puts a file into the archive.
 
    `medium` is the floor when the goal is recovering garbled proper names — and it usually is.
    Budget roughly half of realtime per file on CPU. Run recordings **one at a time**: faster-whisper
@@ -372,7 +425,9 @@ proposal-and-confirm is unchanged.
 
 10. **Fill in the source record `fha process` scaffolded.** `source_type: interview` (there is no
     `audio` or `video` type — the media is the recording inside an interview), `source_class:
-    original`, `source_date` from step 4 in EDTF, `aliases` carrying the pre-processing filename, a
+    original`, `source_date` from step 4 in EDTF - an interval like `1998-06-14/1998-06-15` is a
+    legitimate value here when the recording's timezone could not be settled, and a single day you
+    cannot justify is not - `aliases` carrying the pre-processing filename, a
     `citation` sentence in plain words saying what this recording actually is, and `people:` for
     whoever is actually in it. Every `files:` path is in **alias form** — `documents/interviews/…`,
     never `D:/FamilyDocuments/…` (SPEC §12.4).
@@ -380,8 +435,11 @@ proposal-and-confirm is unchanged.
     Every file on disk whose name parses an `_S-id` must appear in `files:` or lint throws **E011**
     in both directions — which is exactly what a hand-placed transcript does if it skips `--more`.
 
-    The timezone caveat from step 4 goes in `## Notes`, along with one sentence saying the folder is
-    human projection and the S-id is the binding.
+    The timezone caveat from step 4 goes in `## Notes`, together with the timezone you actually used
+    and where it came from, and one sentence saying the folder is human projection and the S-id is
+    the binding. Where the folder name's day and the `source_date` differ - a settled folder name
+    over an interval date - say that too, in one line, so nobody later reads the filename as the
+    date.
 
 11. **Record the passes.** One entry per machine pass, before you hand back:
 
@@ -395,7 +453,8 @@ proposal-and-confirm is unchanged.
     ```
 
     Use your real model and harness identifiers — those braces are placeholders, not values to
-    copy. `outputs: []` is valid when a pass produced no claims.
+    copy — and record the whisper model the run **actually** used, which is not always the one you
+    asked for. `outputs: []` is valid when a pass produced no claims.
 
 12. **Fork on the mode.**
 
@@ -432,6 +491,15 @@ proposal-and-confirm is unchanged.
   `fha process`; a cross-root correction is `fha process refile --dry-run` first. Nothing under the
   photos root is ever renamed. Moves *within* a root are the human's to make; `fha reconcile` heals
   the paths.
+- **Every path a script here writes gets a filename of its own.** `--json`, `--out`, `--report`,
+  `--outdir`/`--name`: none may resolve onto an incoming recording, an archived original, another
+  output of the same run, or `fha.yaml` - including through `./`, a differing case, or a symlink.
+  The dedupe report and the two attribution outputs refuse the run on a collision; the whisper
+  outputs do **not** check, so they go to the scratchpad and nowhere else.
+- **A date is not derived until the evidence for it is in hand.** Read the container, settle the
+  timezone, *then* convert (step 4). The same ordering binds anything else computed from evidence:
+  get the information first, and where it cannot be got, write the uncertain form rather than an
+  exact one - a wrong exact value is invisible forever, an honest interval invites correction.
 - **Never alter a byte of any original.** No transcoding, no trimming, no re-encoding, no rewriting,
   condensing, or spell-fixing of transcript text — including the garbled names. Extraction is
   indexing, not preservation (SPEC §6.3).
@@ -458,9 +526,14 @@ proposal-and-confirm is unchanged.
   a single `documents/interviews/{interviewee}-{yyyy-mm-dd}/` folder under one S-id, the first renamed in place by
   one `fha process` call and every sibling attached as `{topic}-audio`, each app transcript and
   whisper transcript attached by one `--more` call each under the session stem, the source record
-  carrying `source_type: interview`, an EDTF `source_date` derived from the container
-  with the UTC/local caveat in `## Notes`, alias-form `files:` paths, and an `## AI Passes` entry per
-  machine pass.
+  carrying `source_type: interview`, an EDTF `source_date` derived from the container **after** the
+  recording's timezone was settled, with the UTC/local caveat and the timezone's provenance in
+  `## Notes`, alias-form `files:` paths, and an `## AI Passes` entry per machine pass.
+- A recording whose timezone cannot be established lands with an honest interval `source_date`
+  (`1998-06-14/1998-06-15`) and a sentence saying why - never a single exact day the evidence does
+  not support, and never a stall.
+- A `--json` report path that resolves onto an incoming recording, an archived one, or `fha.yaml`
+  is refused before anything is hashed, and every one of those files is byte-identical afterwards.
 - A byte-identical repeat of an already-archived recording is detected by hash, **skipped**, and
   reported with the path of the file it duplicates — no second S-id, no second folder, and the
   bundle left intact on disk.

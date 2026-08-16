@@ -55,6 +55,15 @@ no move, no delete, no write to any archived file. It reports; the human and
 `fha process` decide. It also never claims the twin's S-id is correct beyond
 what the filename says - `fha find <S-id>` is how you confirm the record.
 
+The one path this script writes is `--json`, and that flag is the only way the
+read-only promise could ever be broken: a mistyped or tab-completed report path
+that lands on a recording would destroy the file it was reporting on, after
+having already hashed it and cleared it as safe to import. So the report path is
+canonicalised and compared against every incoming recording, every archived
+media file, the archive's own fha.yaml, and the media roots themselves BEFORE
+anything is hashed, and the run is refused outright on a collision. See
+`report_path_collision`.
+
 WHERE IT LOOKS
 ==============
 The archive root is the folder holding `fha.yaml`, found by walking up from
@@ -103,6 +112,7 @@ CODE MAP
   Naming      media_root_label / build_named_roots / portable_path
   Index       is_media / index_sizes_by_root / sha256_file / source_id_in
   Check       expand_inputs / check_one
+  Safety      canonical_path / report_path_collision
   CLI         build_parser / fail / main
 """
 
@@ -115,7 +125,9 @@ import os
 import sys
 
 TOOL_NAME = "find_duplicate_media.py"
-TOOL_VERSION = "1.1.0"
+TOOL_VERSION = "1.2.0"
+
+REPORT_EXAMPLE = "dedupe-report.json"
 
 # Audio and video are the same job here: a video is a recording like any other.
 MEDIA_EXTENSIONS = {
@@ -571,6 +583,86 @@ def check_one(path, by_size, cache):
     return entry
 
 
+# ---------------------------------------------------------------------------
+# Refusing to write onto anything this run reads
+# ---------------------------------------------------------------------------
+def canonical_path(path):
+    """One spelling of a path, so two ways of naming one file compare equal.
+
+    `--json ./report.json` and `--json report.json` are the same file; on Windows
+    and macOS so are `Report.json` and `report.json`; and a symlink is whatever
+    it points at. A collision check that misses any of those spellings is not a
+    check, it is a coin flip - which is why every comparison here goes through
+    this function instead of through a bare string equality test.
+
+    Restated rather than imported from the sibling attribute_speakers.py, for the
+    same reason `find_archive_root` is restated: each of this skill's scripts has
+    to run standalone from any directory, on nothing but the standard library.
+    The two spellings must stay identical; if one changes, change both.
+    """
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def report_path_collision(report_path, incoming, archived, media_roots,
+                          config_path, render):
+    """The plain refusal for a --json path that lands on a file this run reads.
+
+    This script's whole contract is that it changes nothing on either side, and
+    `--json` is the single place that contract could be broken. The failure is
+    silent and total: the report is written last, so the recording it lands on
+    has already been hashed, compared and printed as `new` - the run announces
+    that a file is safe to import at the moment it destroys it. Pointed at an
+    archived candidate instead, the same typo overwrites a filed original.
+
+    Called before the first byte is hashed, so the refusal is instant, and long
+    before anything is written, so nothing is half-done when it fires. `render`
+    turns an archived path into the named-root form used everywhere else, since
+    no message from this script names a machine path.
+
+    Returns the message to refuse with, or None when the path is safe to write.
+    """
+    if not report_path:
+        return None
+    target = canonical_path(report_path)
+    target_real = os.path.realpath(os.path.abspath(report_path))
+    for path in incoming:
+        if canonical_path(path) == target:
+            return ("--json points at one of the recordings being checked (%s). "
+                    "This check only ever reads recordings, and writing the "
+                    "report there would destroy that one. Nothing was written. "
+                    "Give the report a filename of its own - for example "
+                    "--json %s - and run the command again."
+                    % (render(path), REPORT_EXAMPLE))
+    for path in archived:
+        if canonical_path(path) == target:
+            return ("--json points at a recording already filed in the archive "
+                    "(%s). This check never writes to the archive, and the "
+                    "report would replace that recording. Nothing was written. "
+                    "Give the report a filename of its own - for example "
+                    "--json %s - and run the command again."
+                    % (render(path), REPORT_EXAMPLE))
+    if config_path and canonical_path(config_path) == target:
+        return ("--json points at the archive's fha.yaml, the file that says "
+                "which folders hold your recordings. The report would replace "
+                "it. Nothing was written. Give the report a filename of its own "
+                "- for example --json %s - and run the command again."
+                % REPORT_EXAMPLE)
+    # The three checks above name the file that would be destroyed, which is the
+    # message worth having. This last one is the net under them: a filed
+    # transcript or photo is an original too, and it carries no media extension,
+    # so it is not in the size index and none of the checks above can see it.
+    # Nothing this script produces belongs inside a media root anyway.
+    for _label, base in media_roots:
+        if _is_inside(target_real, os.path.realpath(base)):
+            return ("--json would write into the archive's %s folder, which "
+                    "holds your filed recordings and their transcripts. This "
+                    "check never writes to the archive. Nothing was written. "
+                    "Put the report somewhere of your own - for example "
+                    "--json %s - and run the command again."
+                    % (render(base), REPORT_EXAMPLE))
+    return None
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog=TOOL_NAME,
@@ -587,7 +679,8 @@ def build_parser():
                    help="check against this folder instead of the archive's "
                         "configured documents/photos roots (repeatable)")
     p.add_argument("--json", default=None, metavar="PATH",
-                   help="also write the findings as JSON")
+                   help="also write the findings as JSON (a filename of its own; "
+                        "a path landing on a recording is refused)")
     p.add_argument("--quiet", action="store_true", help="suppress the stdout summary")
     return p
 
@@ -653,6 +746,20 @@ def main(argv=None):
         return portable_path(path, named_roots)
 
     by_size, archive_unreadable = index_sizes_by_root(media_roots)
+
+    # Before the first byte is hashed, and long before anything is written: a
+    # report path that resolves onto a recording would destroy the file this run
+    # exists to protect, and would do it after clearing that file for import.
+    # The size index is built from directory entries alone, so it is already in
+    # hand here and costs nothing to check against.
+    archived_paths = [p for paths in by_size.values() for p in paths]
+    collision = report_path_collision(
+        args.json, incoming, archived_paths, media_roots,
+        os.path.join(archive_root, "fha.yaml") if archive_root else None,
+        portable)
+    if collision:
+        return fail(collision)
+
     cache = {}
     results = [check_one(p, by_size, cache) for p in incoming]
     # Where each incoming file came from, in the same named-root form as every
@@ -714,15 +821,24 @@ def main(argv=None):
                           "deliberately not recorded, and no path is shortened to "
                           "a bare filename",
         }
+        dest = os.path.abspath(args.json)
+        tmp = "%s.tmp-%d" % (dest, os.getpid())
         try:
-            parent = os.path.dirname(os.path.abspath(args.json))
+            parent = os.path.dirname(dest)
             if parent and not os.path.isdir(parent):
                 os.makedirs(parent, exist_ok=True)
-            tmp = "%s.tmp-%d" % (os.path.abspath(args.json), os.getpid())
             with open(tmp, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload, indent=2) + "\n")
-            os.replace(tmp, args.json)
+            os.replace(tmp, dest)
         except OSError as e:
+            # A run that could not finish its report must not leave a stray
+            # half-written `.tmp-1234` file sitting in the human's folder for
+            # him to wonder about later.
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
             return fail("could not write %s: %s. Pick a --json path in a writable "
                         "folder and run the command again." % (args.json, e))
 

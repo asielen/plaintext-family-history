@@ -26,6 +26,13 @@ What is covered here:
      destination; a run that refuses or attributes nothing writes neither output
      and leaves an earlier result byte for byte; nothing written to disk carries
      an absolute machine path (AGENTS_TOOLING.md §11).
+  4b. THE READ-ONLY PROMISE - the dedupe check writes exactly one path,
+     `--json`, and that path is refused before a single byte is hashed if it
+     resolves onto an incoming recording, an archived one, or `fha.yaml`. Its
+     temporary file never outlives a failed write.
+  4c. VALIDATE, THEN DERIVE - the workflow settles the recording's timezone
+     before it converts a UTC instant into a calendar date, and writes an
+     uncertain interval rather than an exact day it cannot justify.
   5. THE DEDUPE SCRIPT - size-then-SHA-256 finds a byte-identical twin under a
      configured (including external) documents root, clears a file that only
      shares a size, and never modifies the archive. It is a safety gate, so it
@@ -997,6 +1004,250 @@ class DedupePathReportingTest(unittest.TestCase):
         self.assertIn('incoming/monday/rec.m4a', out)
         self.assertIn('FamilyMedia/2019/filed.m4a', out)
         self.assertIn('new        incoming/tuesday/other.m4a', out)
+
+
+def _filesystem_folds_case(directory):
+    """Does this filesystem treat `A.json` and `a.json` as one file?
+
+    The collision check leans on os.path.normcase, which is a no-op on Linux and
+    a fold on Windows and macOS - so the end-to-end case test can only run where
+    the platform actually folds. Probed rather than guessed from sys.platform,
+    because a case-insensitive volume mounted on Linux is a real thing.
+    """
+    probe = os.path.join(str(directory), 'CaseProbe.tmp')
+    with open(probe, 'w', encoding='utf-8') as fh:
+        fh.write('x')
+    try:
+        return os.path.exists(os.path.join(str(directory), 'caseprobe.tmp'))
+    finally:
+        os.remove(probe)
+
+
+class DedupeReportPathSafetyTest(unittest.TestCase):
+    """The one path this read-only check writes must never be a recording.
+
+    The finding: `--json` was written with no collision check at all. It is
+    written LAST, so a report path that resolved onto an incoming recording
+    destroyed that recording after it had been hashed, compared, and printed as
+    `new` - the run announced a file was safe to import in the same breath as it
+    overwrote it. Pointed at an archived candidate, the same typo destroyed a
+    filed original instead, and both exited 0 or 2 as if nothing had happened.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-report-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.archive = self.tmp / 'archive'
+        self.filed = self.archive / 'documents' / 'interviews'
+        self.filed.mkdir(parents=True)
+        self.config = self.archive / 'fha.yaml'
+        self.config.write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        self.original = self.filed / 'hartley-1998-06-14_S-wb91h3hjrr.m4a'
+        self.original.write_bytes(b'the same bytes as the phone still holds')
+        self.incoming = self.tmp / 'incoming'
+        self.incoming.mkdir()
+        self.twin = self.incoming / 'Thursday at 3-11 PM.m4a'
+        self.twin.write_bytes(self.original.read_bytes())
+
+    def _run(self, *extra):
+        return run_script(find_duplicate_media,
+                          [str(self.incoming), '--root', str(self.archive)]
+                          + list(extra))
+
+    def _refuse_to_hash(self):
+        """Make any hashing an outright test failure, to prove ordering.
+
+        `check_one` catches OSError, so an exception it does not catch is the
+        only honest way to assert that the refusal happens BEFORE the first read.
+        """
+        real = find_duplicate_media.sha256_file
+
+        def never(path, cache):
+            raise AssertionError('a file was hashed before the --json path was '
+                                 'checked: %s' % path)
+
+        find_duplicate_media.sha256_file = never
+        self.addCleanup(setattr, find_duplicate_media, 'sha256_file', real)
+
+    def test_json_over_an_incoming_recording_is_refused_before_hashing(self):
+        self._refuse_to_hash()
+        before = self.twin.read_bytes()
+        code, out, err = self._run('--json', str(self.twin), '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('--json', err)
+        self.assertIn('incoming/Thursday at 3-11 PM.m4a', err)
+        self.assertIn('run the command again', err)
+        self.assertEqual(self.twin.read_bytes(), before,
+                         'the report was written over the recording it checked')
+
+    def test_json_over_an_archived_recording_is_refused_before_hashing(self):
+        self._refuse_to_hash()
+        before = self.original.read_bytes()
+        code, out, err = self._run('--json', str(self.original), '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('documents/interviews/hartley-1998-06-14_S-wb91h3hjrr.m4a', err)
+        self.assertEqual(self.original.read_bytes(), before,
+                         'the report replaced a recording already filed')
+
+    def test_json_over_fha_yaml_is_refused(self):
+        before = self.config.read_bytes()
+        code, out, err = self._run('--json', str(self.config), '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('fha.yaml', err)
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_a_dot_slash_spelling_is_the_same_file(self):
+        before = self.twin.read_bytes()
+        sneaky = os.path.join(str(self.incoming), '.', self.twin.name)
+        code, out, err = self._run('--json', sneaky, '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('--json', err)
+        self.assertEqual(self.twin.read_bytes(), before)
+
+    def test_a_symlink_to_a_recording_is_the_same_file(self):
+        link = self.tmp / 'report-link.json'
+        try:
+            os.symlink(str(self.twin), str(link))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('this platform will not create a symlink')
+        before = self.twin.read_bytes()
+        code, out, err = self._run('--json', str(link), '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('--json', err)
+        self.assertEqual(self.twin.read_bytes(), before)
+
+    def test_a_case_variant_is_the_same_file_where_the_platform_folds(self):
+        if not _filesystem_folds_case(self.tmp):
+            self.skipTest('this filesystem is case-sensitive, so the two names '
+                          'really are two different files')
+        before = self.twin.read_bytes()
+        shouty = str(self.twin).upper()
+        code, out, err = self._run('--json', shouty, '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.twin.read_bytes(), before)
+
+    def test_canonical_path_folds_exactly_what_the_platform_folds(self):
+        """The unit under all of the above, checked on every platform."""
+        canonical = find_duplicate_media.canonical_path
+        plain = str(self.twin)
+        dotted = os.path.join(str(self.incoming), '.', self.twin.name)
+        self.assertEqual(canonical(plain), canonical(dotted))
+        self.assertEqual(canonical(plain) == canonical(plain.upper()),
+                         os.path.normcase('A') == 'a')
+
+    def test_json_anywhere_inside_a_media_root_is_refused(self):
+        """A filed transcript is an original too, and carries no media extension.
+
+        It is therefore invisible to the size index, so the checks that name a
+        specific recording cannot see it. The net under them is that nothing
+        this script writes belongs inside a media root at all.
+        """
+        inside = self.filed / 'dedupe-report.json'
+        code, out, err = self._run('--json', str(inside), '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('documents', err)
+        self.assertIn('never writes to the archive', err)
+        self.assertFalse(inside.exists())
+
+    def test_a_report_path_of_its_own_still_writes_normally(self):
+        """The refusal must not be so broad that the flag stops working."""
+        report = self.tmp / 'dedupe-report.json'
+        code, out, _err = self._run('--json', str(report), '--quiet')
+        self.assertEqual(code, 2, out)
+        payload = json.loads(report.read_text(encoding='utf-8'))
+        self.assertEqual(payload['duplicates'], 1)
+
+    def test_a_failed_report_write_leaves_no_temporary_file_behind(self):
+        """A half-written `.tmp-1234` in his folder is a mystery, not a report."""
+        blocked = self.tmp / 'a-folder-not-a-file'
+        blocked.mkdir()
+        code, _out, err = self._run('--json', str(blocked), '--quiet')
+        self.assertEqual(code, 1)
+        self.assertIn('could not write', err)
+        leftovers = [p.name for p in self.tmp.iterdir() if '.tmp-' in p.name]
+        self.assertEqual(leftovers, [])
+
+
+class RecordingDateOrderingTest(unittest.TestCase):
+    """The date is derived only after the evidence for it is in hand.
+
+    The finding: step 4 converted a UTC `creation_time` to a local calendar date
+    using whatever timezone the processing machine happened to be in, and only
+    then asked the human a question - so an interview recorded two zones away
+    could receive a wrong exact `source_date` with nothing anywhere saying it was
+    a guess. Ordering is the whole fix: establish the recording's own offset
+    first, and where it cannot be established, write the uncertain form.
+    """
+
+    def setUp(self):
+        self.skill = SKILL_MD.read_text(encoding='utf-8')
+        self.step4 = self.skill.split(
+            '\n4. **Read the real recording date', 1)[1].split('\n5. ', 1)[0]
+
+    def _convert_at(self):
+        where = self.step4.find('`creation_time` − duration')
+        self.assertNotEqual(where, -1,
+                            'step 4 no longer shows the creation_time arithmetic')
+        return where
+
+    def test_the_human_is_asked_for_the_timezone_before_the_conversion(self):
+        ask = self.step4.lower().find('where was this recorded')
+        self.assertNotEqual(ask, -1,
+                            'step 4 never asks which timezone the recording was '
+                            'made in, so the conversion has nothing to stand on')
+        self.assertLess(ask, self._convert_at(),
+                        'the timezone question is asked after the date has '
+                        'already been converted - the wrong exact date is on '
+                        'the page by then')
+
+    def test_the_containers_own_offset_is_read_before_the_conversion(self):
+        tag = self.step4.find('com.apple.quicktime.creationdate')
+        self.assertNotEqual(tag, -1,
+                            "step 4 never reads the container's local timestamp, "
+                            'which is the one source that settles the timezone '
+                            'without asking anybody')
+        self.assertLess(tag, self._convert_at())
+
+    def test_an_unsettled_timezone_produces_an_interval_not_an_exact_day(self):
+        unknown = re.search(r'timezone is still unknown', self.step4)
+        self.assertIsNotNone(
+            unknown,
+            'step 4 has no branch for a timezone it could not establish, so it '
+            'writes an exact date either way')
+        self.assertNotEqual(self.step4.find('1998-06-14/1998-06-15', unknown.start()), -1,
+                            'the unknown-timezone branch does not name the EDTF '
+                            'interval it should write instead')
+
+    def test_the_old_after_the_fact_midnight_question_is_gone(self):
+        """The exact sentence that asked its question too late.
+
+        Matched across a line wrap, because the sentence it replaces was split
+        over two lines - a plain substring check would pass on the broken text
+        and prove nothing.
+        """
+        self.assertIsNone(
+            re.search(r'was this the evening of\s+the 14th', self.step4),
+            'step 4 still asks its one question only after converting the date')
+
+    def test_the_record_says_which_timezone_was_used(self):
+        """An exact date is only honest if the reader can redo the arithmetic."""
+        notes = self.skill.split('10. **Fill in the source record', 1)[1]
+        self.assertIn('timezone you actually used', notes)
+
+    def test_an_interval_source_date_is_legitimate_in_the_record(self):
+        step10 = self.skill.split('10. **Fill in the source record', 1)[1] \
+                           .split('\n11. ', 1)[0]
+        self.assertIn('1998-06-14/1998-06-15', step10)
+
+    def test_grouping_waits_for_a_settled_date_and_the_slug_never_rounds_it(self):
+        step5 = self.skill.split('\n5. **Group by sitting', 1)[1].split('\n6. ', 1)[0]
+        self.assertIn('interval is not grouped by guess', step5)
+        self.assertIn('Never let a tidy folder name talk you into a tidy', step5)
+
+    def test_the_skill_states_the_json_report_path_rule(self):
+        step3 = self.skill.split('3. **Content-hash', 1)[1].split('\n4. ', 1)[0]
+        self.assertIn('--json', step3)
+        self.assertIn('refuses the run', step3)
 
 
 # ---------------------------------------------------------------------------
