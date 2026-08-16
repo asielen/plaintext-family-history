@@ -570,7 +570,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "f36bb5452747c814c0e52583f4d74979d4569d0bfb163c4fd9113d4a6adabf16",
+      "sha256": "58a678736402898ca9fdf0f25d58da0eaf028e4d547552c2ee971864691b5734",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -773,7 +773,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "eef11a90909bc1a539a9d5e6e0df57976d6845f54577ee170e7688e0b95dd15e",
+      "sha256": "f954b592c5d7cf9beeb22d281e9a17bc587a7d65ac0ce974b01858ba6b568a63",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
