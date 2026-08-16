@@ -138,7 +138,7 @@
     {
       "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
-      "sha256": "30425d3544e890f1bd49f67460105c9727c75944feee6ba4ff6cc20ab8647acb",
+      "sha256": "f989f9b48f3936769e0feb5d4b44b2e4d9866a6d0d0b3accf6d19470cb9d0031",
       "spec_version": "1.2"
     },
     {
@@ -619,7 +619,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "563ab763dda8dfc251429b94a9b0df260047ab41d5968ca804fbf3e622121092",
+      "sha256": "43ebc8a48aee43074afe0620fcfcd0c6d1c486e3b73c16f5d4f8e1db24ef1220",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
