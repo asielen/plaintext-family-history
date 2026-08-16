@@ -188,6 +188,7 @@ from _lib import (
     GeneratedFileParentMissing,
     GeneratedFileRefused,
     INDEX_SCHEMA_VERSION,
+    PHOTOINDEX_CONFIG_KEY,
     PHOTOINDEX_SCHEMA_VERSION,
     PHOTO_EXTENSIONS,
     ParsedName,
@@ -216,6 +217,8 @@ from _lib import (
     path_to_alias,
     photo_date_markers_to_edtf as _keyword_to_edtf,
     photo_date_pattern_to_edtf as _placeholder_to_edtf,
+    photoindex_config_drift,
+    photoindex_config_fingerprint,
     photoindex_status,
     photos_ignore_matcher,
     photos_ignore_patterns as _photos_ignore_patterns,
@@ -230,6 +233,7 @@ from _lib import (
     select_variation_primary,
     sqlite_cache_schema_status,
     variant_role as _variant_role,
+    write_cache_meta,
     write_generated_file,
 )
 
@@ -3746,6 +3750,18 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             if _is_nonspec_date_keyword(pattern)
         )
 
+        # Record the settings this catalog was built from, in the same
+        # transaction as the rows they produced. The walk above visited every
+        # file the current photos_ignore/roots allow and the sweep removed the
+        # rows for everything else, so as of this commit the catalog and the
+        # config agree - and that is exactly what photoindex_status compares
+        # against later, since editing either setting moves no photo's mtime
+        # and the watermark would never notice. Stamped only here: opening the
+        # cache for a tag-person or a set-summary changes no membership, so
+        # those commands must not claim the catalog has caught up.
+        write_cache_meta(
+            conn, PHOTOINDEX_CONFIG_KEY, photoindex_config_fingerprint(fha_config))
+
         conn.commit()
     finally:
         conn.close()
@@ -3934,6 +3950,7 @@ def _print_photoindex_status(
     *,
     require_fresh: bool = False,
     archive_root: Path | None = None,
+    fha_config: dict | None = None,
 ) -> int | None:
     """
     Print the documented absent/unreadable/stale message for a photoindex_status
@@ -3950,8 +3967,21 @@ def _print_photoindex_status(
     `archive_root` enables working-copy-aware messages: when WC mode is active,
     the next step is "copy a fresh index from the main machine" rather than
     "run fha photoindex" (which is refused in WC mode).
+
+    `fha_config`, with it, adds the reason when the catalog is stale because a
+    setting changed rather than because a photo did. "Run fha photoindex" on
+    its own reads as nagging when the human just edited one line of fha.yaml
+    and touched no photo at all; naming the edit is what makes the rescan make
+    sense (AGENTS.md: every message he can see names the cause and the fix).
     """
     in_wc = archive_root is not None and is_working_copy(archive_root)
+    drift = (
+        photoindex_config_drift(archive_root, fha_config)
+        if status == 'stale' and archive_root is not None and fha_config is not None
+        else None
+    )
+    if drift:
+        print(f'Note: {drift}.')
     if status == 'absent':
         if in_wc:
             print(
@@ -4131,7 +4161,8 @@ def _cmd_find(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
+    exit_code = _print_photoindex_status(
+        result['status'], archive_root=archive_root, fha_config=fha_config)
     if exit_code is not None:
         return exit_code
 
@@ -4196,7 +4227,8 @@ def _cmd_gallery(args: argparse.Namespace) -> int:
         )
         return EXIT_CLEAN
 
-    exit_code = _print_photoindex_status(status, archive_root=archive_root)
+    exit_code = _print_photoindex_status(
+        status, archive_root=archive_root, fha_config=fha_config)
     if exit_code is not None:
         return exit_code
 
@@ -4243,7 +4275,8 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
+    exit_code = _print_photoindex_status(
+        result['status'], archive_root=archive_root, fha_config=fha_config)
     if exit_code is not None:
         return exit_code
 
@@ -4268,7 +4301,8 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
     result = run_report(archive_root, fha_config)
 
-    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
+    exit_code = _print_photoindex_status(
+        result['status'], archive_root=archive_root, fha_config=fha_config)
     if exit_code is not None:
         return exit_code
 
@@ -4315,7 +4349,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f"WARNING: photos root not found: {result['photos_root']}", file=sys.stderr)
         return EXIT_WARNINGS
 
-    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
+    exit_code = _print_photoindex_status(
+        result['status'], archive_root=archive_root, fha_config=fha_config)
     if exit_code is not None:
         return exit_code
 
@@ -4368,7 +4403,9 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(plan['status'], require_fresh=True, archive_root=archive_root)
+    exit_code = _print_photoindex_status(
+        plan['status'], require_fresh=True, archive_root=archive_root,
+        fha_config=fha_config)
     if exit_code is not None:
         return exit_code
 
@@ -4465,7 +4502,9 @@ def _cmd_set_summary(args: argparse.Namespace, confirm=None) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(plan['status'], require_fresh=True, archive_root=archive_root)
+    exit_code = _print_photoindex_status(
+        plan['status'], require_fresh=True, archive_root=archive_root,
+        fha_config=fha_config)
     if exit_code is not None:
         return exit_code
 

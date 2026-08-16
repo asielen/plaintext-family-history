@@ -3933,6 +3933,139 @@ class PhotoindexTests(unittest.TestCase):
             os.utime(archive / 'photos' / 'portrait_1880.jpg', (later, later))
             self.assertEqual(photoindex_status(archive, cfg)[0], 'stale')
 
+    def _scan_with(self, archive: Path, cfg: dict) -> None:
+        """Scan `archive` with every photo readable (the drift tests' setup)."""
+        photoindex._run_exiftool = lambda paths: [
+            {'SourceFile': str(p)} for p in paths]
+        photoindex.run_scan(archive, cfg)
+
+    def test_adding_a_photos_ignore_pattern_stales_the_catalog(self) -> None:
+        # The catalog was built holding the bulk export; adding the pattern
+        # means those rows should not be there any more. Nothing on disk
+        # changed, and the pruned walk now cannot even see the files, so the
+        # mtime watermark says 'fresh' while `fha find` keeps serving the rows
+        # the setting was meant to remove. The stored build configuration is
+        # what notices.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            bulk = archive / 'photos' / 'Bulk Export'
+            bulk.mkdir()
+            (bulk / 'recent_0001.jpg').write_bytes(b'x')
+            plain = {'roots': {'photos': 'photos'}}
+            self._scan_with(archive, plain)
+            self.assertEqual(photoindex_status(archive, plain)[0], 'fresh')
+
+            narrowed = {'roots': {'photos': 'photos'},
+                        'photos_ignore': ['Bulk Export']}
+            self.assertEqual(photoindex_status(archive, narrowed)[0], 'stale')
+
+            # And the rescan the human is now told to run settles it.
+            self._scan_with(archive, narrowed)
+            self.assertEqual(photoindex_status(archive, narrowed)[0], 'fresh')
+
+    def test_removing_a_photos_ignore_pattern_stales_the_catalog(self) -> None:
+        # The direction that never heals on its own: the un-ignored files are
+        # older than photos.sqlite, so they can never raise the watermark. Left
+        # to mtimes alone this catalog reads 'fresh' forever while the photos
+        # the human just brought back into scope stay uncatalogued.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            old_box = archive / 'photos' / 'Old Box'
+            old_box.mkdir()
+            hidden = old_box / 'grandpa_1912.jpg'
+            hidden.write_bytes(b'x')
+            long_ago = time.time() - 86400
+            os.utime(hidden, (long_ago, long_ago))
+            os.utime(old_box, (long_ago, long_ago))
+
+            narrowed = {'roots': {'photos': 'photos'}, 'photos_ignore': ['Old Box']}
+            self._scan_with(archive, narrowed)
+            self.assertEqual(photoindex_status(archive, narrowed)[0], 'fresh')
+
+            plain = {'roots': {'photos': 'photos'}}
+            self.assertEqual(photoindex_status(archive, plain)[0], 'stale')
+
+            self._scan_with(archive, plain)
+            self.assertEqual(photoindex_status(archive, plain)[0], 'fresh')
+            conn = sqlite3.connect(str(archive / '.cache' / 'photos.sqlite'))
+            try:
+                rows = [r[0] for r in conn.execute('SELECT path FROM photos')]
+            finally:
+                conn.close()
+            self.assertIn('photos/Old Box/grandpa_1912.jpg', rows)
+
+    def test_repointing_the_photos_root_stales_the_catalog(self) -> None:
+        # Same class as photos_ignore: `roots: photos` decides which files the
+        # catalog holds, the aliases stored for the old root look exactly like
+        # aliases for the new one, and repointing it touches no file's mtime.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            other = archive / 'other-photos'
+            other.mkdir()
+            moved = other / 'aunt_ada.jpg'
+            moved.write_bytes(b'x')
+            long_ago = time.time() - 86400
+            os.utime(moved, (long_ago, long_ago))
+            os.utime(other, (long_ago, long_ago))
+
+            first = {'roots': {'photos': 'photos'}}
+            self._scan_with(archive, first)
+            self.assertEqual(photoindex_status(archive, first)[0], 'fresh')
+
+            repointed = {'roots': {'photos': 'other-photos'}}
+            self.assertEqual(photoindex_status(archive, repointed)[0], 'stale')
+
+    def test_reordering_photos_ignore_is_not_a_configuration_change(self) -> None:
+        # The comparison is on the pattern SET: re-typing the same two lines in
+        # the other order excludes exactly the same files, and telling the
+        # human to rebuild an 88,000-file catalog over it would be the tool
+        # crying wolf.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'},
+                   'photos_ignore': ['Bulk Export', '*.tif']}
+            self._scan_with(archive, cfg)
+            reordered = {'roots': {'photos': 'photos'},
+                         'photos_ignore': ['*.tif', 'Bulk Export']}
+            self.assertEqual(photoindex_status(archive, reordered)[0], 'fresh')
+
+    def test_catalog_from_an_older_build_is_not_reported_stale(self) -> None:
+        # A photos.sqlite written before the build configuration was stored
+        # cannot be compared against anything. Reporting drift we cannot
+        # actually detect would nag every existing archive into a rescan on
+        # upgrade; the next scan stamps it and the check arms itself.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self._scan_with(archive, cfg)
+            conn = sqlite3.connect(str(archive / '.cache' / 'photos.sqlite'))
+            try:
+                conn.execute('DELETE FROM meta WHERE key=?',
+                             (photoindex.PHOTOINDEX_CONFIG_KEY,))
+                conn.commit()
+            finally:
+                conn.close()
+            narrowed = {'roots': {'photos': 'photos'},
+                        'photos_ignore': ['Bulk Export']}
+            self.assertEqual(photoindex_status(archive, narrowed)[0], 'fresh')
+
+    def test_stale_from_a_setting_change_says_which_setting(self) -> None:
+        # "Run fha photoindex" with no reason reads as nagging to someone who
+        # just edited one line of fha.yaml and touched no photo at all.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            plain = {'roots': {'photos': 'photos'}}
+            self._scan_with(archive, plain)
+            narrowed = {'roots': {'photos': 'photos'},
+                        'photos_ignore': ['Bulk Export']}
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = photoindex._print_photoindex_status(
+                    'stale', archive_root=archive, fha_config=narrowed)
+            self.assertIsNone(code)
+            self.assertIn('photos_ignore', out.getvalue())
+            self.assertIn('fha photoindex', out.getvalue())
+
     def test_unreadable_new_file_keeps_the_catalog_stale(self) -> None:
         # A new or changed photo exiftool could not read never reached the
         # catalog, but the commit stamps photos.sqlite with 'now' - so status

@@ -198,6 +198,52 @@ class IndexPersonResearchTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
 
+class IndexPersonKindTests(unittest.TestCase):
+    """The companion kind comes from the SPEC §13 filename grammar, not from a
+    substring search: a kind word anywhere but immediately before the P-id is
+    part of the given names, and reading it as a companion loses the person."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(index._DDL)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _index(self, filename: str, pid: str) -> None:
+        path = self.archive_root / 'people' / filename
+        _write(path, f'---\nid: {pid}\nname: Test Person\ntier: curated\n---\n\n# Test\n')
+        index._index_person(self.conn, path, self.archive_root)
+
+    def test_given_name_containing_a_kind_word_is_still_a_profile(self) -> None:
+        # A real person whose given names contain a companion kind word was
+        # filed as a companion, so no persons row was written at all: absent
+        # from `fha find`, from every view, and from every count, with nothing
+        # to say why.
+        self._index('mcindoe__timeline_marie_P-dddddddddd.md', 'P-dddddddddd')
+        row = self.conn.execute(
+            'SELECT id FROM persons WHERE id=?', ('p-dddddddddd',)).fetchone()
+        self.assertIsNotNone(row)
+        kind = self.conn.execute(
+            'SELECT kind FROM person_files WHERE person_id=?',
+            ('p-dddddddddd',)).fetchone()['kind']
+        self.assertEqual(kind, 'profile')
+
+    def test_real_companion_is_still_a_companion(self) -> None:
+        # The other half of the same rule: the kind directly before the P-id
+        # is a companion and must not get a persons row of its own.
+        self._index('mcindoe__marie_timeline_P-eeeeeeeeee.md', 'P-eeeeeeeeee')
+        self.assertEqual(
+            self.conn.execute('SELECT COUNT(*) FROM persons').fetchone()[0], 0)
+        kind = self.conn.execute(
+            'SELECT kind FROM person_files WHERE person_id=?',
+            ('p-eeeeeeeeee',)).fetchone()['kind']
+        self.assertEqual(kind, 'timeline')
+
+
 class IndexNotesResearchLogTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

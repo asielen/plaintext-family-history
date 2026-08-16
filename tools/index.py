@@ -804,13 +804,18 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         return
 
     name = str(meta.get('name', '')) or 'unknown'
-    # Determine kind from filename
     stem = path.stem
-    kind = 'profile'
-    for k in ('research', 'timeline', 'sources-index', 'draft-queue'):
-        if f'_{k}_' in stem or stem.endswith(f'_{k}'):
-            kind = k
-            break
+    # Kind comes from the shared filename grammar, not a substring search of
+    # the stem. SPEC §13 puts the companion kind immediately before the P-id
+    # (`hartley__thomas_timeline_P-…`), so anywhere else in the name it is part
+    # of the given names - and a profile whose given names happen to contain
+    # one ('__timeline_marie_P-…') was being filed as a companion, which meant
+    # no persons row at all: a real person absent from `fha find`, from every
+    # view, and from every count, with nothing to say why. parse_filename is
+    # also what `_lib._companion_row` uses when a view write updates these same
+    # rows incrementally, so the two paths now agree on what a companion is.
+    parsed_name = parse_filename(path)
+    kind = (parsed_name or {}).get('kind') or 'profile'
 
     is_companion = kind != 'profile'
 

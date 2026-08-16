@@ -58,6 +58,7 @@ import sqlite3
 import shlex
 import sys
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -98,8 +99,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    probe_sqlite              - does this db open and run this one probe query?
 #    open_index_db             - open .cache/index.sqlite with the freshness check +
 #                                 required-table probe every index-reading tool needs
+#    read_cache_meta / write_cache_meta - one meta(key, value) row of a cache
 #    photos_ignore_patterns    - fha.yaml photos_ignore: patterns, normalized
 #    photos_ignore_matcher     - is_ignored(rel) closure shared by scan + freshness
+#    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
+#    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
 #  Record parsing
@@ -190,6 +194,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    GENERATED_PREFIX, is_generated_text, is_generated_file - GENERATED-header ownership test
 #
 #  Archive freshness
+#    _is_generated_companion   - a real `fha views` output under people/ (not a
+#                                 human file that shares its name)
 #    newest_record_mtime       - max mtime of sources/people/notes .md + places.yaml
 #    newest_source_record_mtime - max mtime of source .md records only
 #    newest_person_record_mtime - max mtime of people/*.md only
@@ -655,6 +661,18 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 INDEX_SCHEMA_VERSION = 6
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
+
+# The `meta` row `fha photoindex` stamps with the fha.yaml settings the catalog
+# was built from. Schema version says "this cache has the right shape"; this
+# says "this cache holds the right files". They are separate questions: a
+# `photos_ignore:` edit changes neither the shape nor any photo's mtime, so
+# without a stored copy of the settings, nothing in the freshness check can
+# tell that the catalog no longer matches the config (see
+# photoindex_config_drift). Stored under the same `meta(key, value)` table the
+# schema version already uses - one place for "what is this cache", and the
+# photoindex DDL's INSERT touches only the schema_version row, so this survives
+# every reopen until the next scan restamps it.
+PHOTOINDEX_CONFIG_KEY = 'build_config'
 
 # ── fha.yaml loading ──────────────────────────────────────────────────────────
 
@@ -1131,6 +1149,45 @@ def sqlite_cache_schema_status(
             conn.close()
 
 
+def read_cache_meta(db_path: str | Path, key: str) -> str | None:
+    """Read one `meta(key, value)` row out of a disposable cache, or None.
+
+    Its own connection, because the freshness callers ask this BEFORE they are
+    willing to open the cache for queries at all - the whole point is to decide
+    whether the rows can be trusted. Every failure reads as None, meaning "this
+    cache does not say": no file, no `meta` table, an unreadable database, or a
+    key an older build never wrote. Callers must treat None as unknown rather
+    than as a mismatch, so that a cache built before a key existed is not
+    reported broken.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        # sqlite3.connect() would CREATE an empty database here, leaving a
+        # bogus cache file behind for a question that was only ever a read.
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    return None if row is None else str(row[0])
+
+
+def write_cache_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Stamp one `meta(key, value)` row on an already-open cache connection.
+
+    Takes the connection rather than a path so the stamp lands inside the
+    writer's own transaction: a build configuration recorded before the rows
+    it describes are committed would claim a catalog that does not exist yet
+    if the run then failed. The caller commits.
+    """
+    conn.execute('INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)', (key, value))
+
+
 def open_index_db(
     archive_root: str | Path,
     required_tables: tuple[str, ...],
@@ -1279,6 +1336,108 @@ def photos_ignore_matcher(patterns: list[str]):
     return is_ignored
 
 
+def photoindex_config_fingerprint(fha_config: dict) -> str:
+    """The fha.yaml settings that decide WHICH photos the catalog holds, as one
+    canonical JSON string to store beside the catalog and compare against later.
+
+    Only settings that change the *membership* of the catalog belong here:
+
+      photos_ignore  - the patterns the scan prunes by. Adding one leaves rows
+                       for newly excluded files in the catalog; removing one
+                       leaves files uncatalogued.
+      photos root    - the folder the scan walks. Repoint it and every row
+                       describes the old folder, under path aliases that look
+                       exactly the same.
+
+    Neither of those touches a photo's mtime, and the freshness watermark is
+    made of mtimes, so a change to either is invisible to it in one direction
+    and worse than invisible in the other: an old file whose mtime predates
+    photos.sqlite can never raise the watermark, so un-ignoring its folder
+    would leave it out of the catalog forever while the catalog read 'fresh'.
+    Storing the settings is what makes the change itself a freshness
+    dependency.
+
+    The root is fingerprinted as the value written in fha.yaml, not as the
+    resolved absolute path, so that moving the whole archive to another folder
+    (or another machine) does not read as a configuration change and force a
+    needless rescan. Patterns are sorted and de-duplicated because reordering
+    the list changes nothing about which files match.
+
+    Nothing else from fha.yaml belongs here: the biography voice, the site
+    title, the promotion threshold and `root_person` change what tools SAY, not
+    what the catalog CONTAINS, and folding them in would nag for a rescan that
+    has nothing to do.
+    """
+    try:
+        patterns = photos_ignore_patterns(fha_config)
+    except RuntimeError:
+        # A malformed photos_ignore: prunes nothing (photoindex_status's own
+        # reading of it) and the scan refuses with the real explanation. Two
+        # readers, one interpretation.
+        patterns = []
+    roots = fha_config.get('roots')
+    raw_root = roots.get('photos') if isinstance(roots, dict) else None
+    # An absent `photos` alias resolves to <archive>/photos (resolve_path), so
+    # it has to fingerprint the same as an explicit `photos: photos` or an
+    # archive that has never touched the key would read as drifted on the
+    # first upgrade. './photos' and 'photos/' are the same folder too, and
+    # re-typing one as the other is not a configuration change.
+    photos_root = str(raw_root or 'photos').replace('\\', '/').rstrip('/')
+    while photos_root.startswith('./'):
+        photos_root = photos_root[2:]
+    return json.dumps(
+        {'photos_ignore': sorted(set(patterns)), 'photos_root': photos_root},
+        sort_keys=True,
+    )
+
+
+def photoindex_config_drift(archive_root: str | Path, fha_config: dict) -> str | None:
+    """Plain words for how fha.yaml has changed since the photo catalog was
+    built, or None when it has not (or the catalog predates the stamp).
+
+    Returned as a sentence fragment a CLI can drop into its own message,
+    because the human's next step is the same either way (rescan) but the
+    reason is not, and "run fha photoindex" with no reason reads as the tool
+    nagging. Callers that only need the yes/no answer test for None.
+
+    A catalog with no stored configuration - written by a build before this
+    existed - returns None rather than a mismatch. It would be true but
+    useless to report drift we cannot actually detect, and the very next scan
+    stamps it, so the check arms itself.
+    """
+    db_path = Path(archive_root) / '.cache' / 'photos.sqlite'
+    stored = read_cache_meta(db_path, PHOTOINDEX_CONFIG_KEY)
+    if stored is None:
+        return None
+    try:
+        was = json.loads(stored)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(was, dict):
+        return None
+    now = json.loads(photoindex_config_fingerprint(fha_config))
+
+    reasons = []
+    if was.get('photos_ignore') != now['photos_ignore']:
+        old_count = len(was.get('photos_ignore') or [])
+        new_count = len(now['photos_ignore'])
+        if new_count > old_count:
+            detail = 'photos you were keeping are now excluded'
+        elif new_count < old_count:
+            detail = 'photos you were excluding are not in the catalog yet'
+        else:
+            detail = 'the catalog was built from the old list'
+        reasons.append(
+            f'the photos_ignore list in fha.yaml changed since the last scan - {detail}')
+    if was.get('photos_root') != now['photos_root']:
+        reasons.append(
+            'the photos folder in fha.yaml changed since the last scan - the '
+            'catalog still describes the old one')
+    if not reasons:
+        return None
+    return '; '.join(reasons)
+
+
 def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
     """Classify the photo index (.cache/photos.sqlite) for find/doctor.
 
@@ -1301,6 +1460,18 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     export would silently switch off caption search until a rescan that has
     nothing to do. The pruning also keeps this check from walking the 60,000
     files the setting exists to avoid walking.
+
+    Editing that setting is itself a freshness dependency, checked before the
+    walk (`photoindex_config_drift`): the patterns decide what the catalog
+    holds, but changing them moves no file's mtime, so the watermark cannot
+    see it. Both directions are real and neither self-heals. Add a pattern and
+    the rows for the newly excluded files stay searchable. Remove one and the
+    files it was hiding are older than photos.sqlite, so they can never raise
+    the watermark - they would stay out of the catalog forever with the status
+    reading 'fresh'. The same is true of repointing `roots: photos`. The
+    catalog is reported 'stale' (the one status every caller already handles
+    correctly) and the reason is available in plain words from
+    `photoindex_config_drift` for the CLI to print alongside it.
     """
     archive_root = Path(archive_root)
     db_path = archive_root / '.cache' / 'photos.sqlite'
@@ -1321,6 +1492,13 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     )
     if schema_status in {'unreadable', 'old-schema'}:
         return (schema_status, 0.0)
+
+    if photoindex_config_drift(archive_root, fha_config) is not None:
+        # A configuration change has no file mtime of its own to be behind, so
+        # the lag reported is the catalog's own age - how long ago it was built
+        # from settings that no longer apply. Returned before the walk because
+        # the walk is the expensive part and its answer cannot change this one.
+        return ('stale', max(0.0, time.time() - mtime))
 
     # photo_people is derived from both .cache/index.sqlite
     # (face_tags/name_variants) and source record `people:` lists. Edits in
@@ -3870,15 +4048,50 @@ def archive_title(cfg: dict) -> str:
 
 # ── Archive freshness ─────────────────────────────────────────────────────────
 
-def _is_generated_companion(path: Path) -> bool:
-    """A `fha views` output under people/: a per-person companion (timeline /
-    sources-index / draft-queue, P-id in the name) or the couple-folder
-    `sources-index.md` (`fha views sources-index --couple-folders`, also
-    written by `fha views refresh`), which carries no P-id at all."""
+def _is_generated_companion(path: Path, archive_root: Path) -> bool:
+    """A `fha views` output under people/, excluded from the freshness
+    watermark: a per-person companion (timeline / sources-index / draft-queue,
+    P-id in the name) or the couple-folder `sources-index.md` (`fha views
+    sources-index --couple-folders`, also written by `fha views refresh`),
+    which carries no P-id at all.
+
+    Three tests, all required, because being wrong here means a human's own
+    file stops counting as a record: text search would keep serving its old
+    `notes_fts` row for as long as he leaves the rest of the archive alone,
+    and nothing would ever tell him to reindex.
+
+      1. It is under people/. The generators write nowhere else in the record
+         tree, while `notes/` is a place a human writes freely - and a note he
+         happens to name `notes/sources-index.md` IS indexed (`_index_notes`
+         reads every .md under notes/), so it has to keep its vote.
+      2. Its name is one the generators use, in the place they use it: the
+         P-id form anywhere under people/, the bare `sources-index.md` only at
+         the root of a couple folder (people/<folder>/, which is any folder
+         directly under people/ that is not stubs/ or connections/ - the same
+         definition views uses when it writes them).
+      3. It actually carries the GENERATED header. The name is a convention;
+         the header is the ownership contract, and it is the only test that
+         separates a file `fha views` wrote from one a human wrote in the same
+         folder with the same name (which `write_generated_file` would then
+         refuse to overwrite, so it can sit there indefinitely). Only files
+         that already passed the two cheap tests are read.
+    """
+    try:
+        rel_parts = path.relative_to(archive_root).parts
+    except ValueError:
+        return False
+    if not rel_parts or rel_parts[0] != 'people':
+        return False
+
     if path.name == 'sources-index.md':
-        return True
-    parsed = parse_filename(path)
-    return bool(parsed) and parsed.get('kind') in GENERATED_COMPANION_KINDS
+        if len(rel_parts) != 3 or rel_parts[1].lower() in ('stubs', 'connections'):
+            return False
+    else:
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('kind') not in GENERATED_COMPANION_KINDS:
+            return False
+
+    return is_generated_file(path)
 
 
 def newest_record_mtime(archive_root: Path) -> float:
@@ -3894,12 +4107,19 @@ def newest_record_mtime(archive_root: Path) -> float:
     per-person close-out (`views timeline`, `views sources-index`, `views
     draft-queue`) failed on its second call and needed a full rebuild between
     every write. Their content is derived; the index only records that they
-    exist (person_files), which the next ordinary rebuild picks up.
+    exist (person_files), which the next ordinary rebuild picks up. The
+    exclusion is deliberately narrow - see `_is_generated_companion`: only a
+    real generated file, in the place the generators write it, loses its vote.
+
+    fha.yaml is part of the watermark because it decides how records are read
+    (the roots a source's `files:` entries resolve through, and every other
+    indexed setting); an edit there stales the index even though no record
+    file changed.
     """
     max_mtime = 0.0
     dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
     for p in itertools.chain.from_iterable(d.rglob('*.md') for d in dirs if d.is_dir()):
-        if _is_generated_companion(p):
+        if _is_generated_companion(p, archive_root):
             continue
         try:
             mtime = p.stat().st_mtime
