@@ -1,6 +1,6 @@
 # BUILD.md - fha tool suite: build sequence
 
-**Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 This file is the complete build guide for the **core** `fha` CLI, written as if nothing exists yet.
 Every tool appears in dependency order with the same level of detail - algorithm, constraints,
@@ -513,7 +513,7 @@ fha lint --root example-archive   # still exits 1 (documented baseline, TOOLING 
 **One PR.** Extend `tools/views.py` with `brackets`; stub `tree`, `clean`, `refresh` as
 "not yet implemented" so the CLI is coherent (TOOLING §7).
 
-**`fha views brackets [--fix] [--dry-run]`** - folder maintenance, originally three concerns in one pass (a fourth, W119 direct-line stub promotion via `--fix-promote`, joined in M11.4):
+**`fha views brackets [--fix] [--dry-run]`** - folder maintenance, originally three concerns in one pass (a fourth, W119 direct-line stub promotion via `--fix-promote`, joined in M11.4; the `+ second spouse` half of W103, the W120 defaulted-slot note, and the combined `--realign` pass joined in M11.7):
 
 1. *Bracket list refresh (W103)*: walk `people/` for couple folders (dirs starting with digits
    directly under `people/` or `people/connections/`). Parse current `[child, …]` suffix.
@@ -722,7 +722,16 @@ CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption, user_comment, ke
 **Scan.** Run `exiftool -j -r <fields> <photos-root>` - one process, JSON, batch 500 files.
 Incremental by `(path, mtime, size)`; `--full` bypasses. For each file:
 - `source_id`: keyword matching `SOURCE:\s*([Ss]-[0-9a-hjkmnp-tv-z]{10})`.
-- `edtf` + `date_pattern`: keywords matching `DATE:EDTF` (strip prefix); confidence per SPEC §20.
+- `date_pattern`: the body of a keyword matching `DATE:\s*(.+)` (strip prefix). Per SPEC §20
+  rule 1 that body is a precision pattern in letters - `Y!M!D!`, `Y!M~`, `Y~` - and nothing
+  else; a digit-bearing body (`DATE: 1880`, `DATE: 1942!-11!-25!`, a raw EDTF string) is
+  outside the grammar and yields no date (counted as `nonspec_date_keywords`).
+- `edtf`: that pattern resolved against the photo's EXIF `DateTimeOriginal` (SPEC §20 rule 2 -
+  the keyword says which components to believe, the EXIF value supplies the digits), stopping
+  at the first component that is not `!` or `~`. NULL when the photo carries no DATE: keyword:
+  the keyword's presence is what marks a date reviewed, so EXIF alone never resolves.
+  One implementation in `_lib` (`resolve_photo_edtf`, `edtf_confidence`) - `fha process`
+  folder triage resolves the same way, so both triage rankings agree.
 - Face regions: parse `XMP-mwg-rs:RegionInfo` → `photo_face_regions`
   `{path, name, region_type, area_json}` rows.
 - Rebuild `photo_people` every scan from cached `photo_keywords` + `photo_face_regions`.
@@ -1372,7 +1381,12 @@ fha process photo.jpg --more photo_back.jpg role:back ... # adds files: entry
 **One PR.** Extend `tools/process.py` (TOOLING §6).
 
 **Folder mode.** Run photoindex triage scorer over the folder; print ranked candidates; prompt
-to select (number, comma-list, or `all`); process selected items one by one.
+to select (number, comma-list, or `all`); process selected items one by one. The signals are
+read per file with exiftool (caption, description, `UserComment`, `Keywords`/`Subject`,
+`DateTimeOriginal`) instead of from the catalog, but the date signal resolves through the same
+`_lib` functions photoindex scores with (`resolve_photo_edtf`, `edtf_confidence`) - the two
+rankings of one folder have to agree, and restating the rule locally is how they stopped
+agreeing once already.
 
 **Tier 1 variation detection.** Before processing any file, scan its directory for siblings
 sharing the same `base_id` (via `parse_media_filename`). If found:
@@ -1598,7 +1612,8 @@ empty one) is M9.2.
 the same as its path in this repo: the tool suite and the design assets are vendored, so
 `tools/index.py` ships as `.fha/tools/index.py` and `design/custom.css` as
 `.fha/design/custom.css`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
-the public `README.md` (project orientation), the agent workflow procedures under
+the two owner entry docs installed at the archive root (`GETTING_STARTED.md`,
+`CHEATSHEET.md`), the agent workflow procedures under
 `.claude/skills/`, the launchers (`fha`, `fha.cmd`, `serve.cmd`), and the skeleton (`fha.yaml`
 template, `.gitignore`, `.gitattributes`, the empty record dirs, seeded `places.yaml`).
 
@@ -1607,7 +1622,8 @@ where tools get built (TOOLING §13c): `AGENTS_TOOLING.md`, every `BUILD*.md`, a
 tooling designs (`TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`). Shipping them would tell an
 agent inside an archive to follow a build sequence it cannot run. The guiding rule is *everything a genealogist needs to operate*,
 not a hand-picked minimum. Also covers the human-facing docs that must ship into every archive:
-`docs/GETTING_STARTED.md`, `docs/SETUP_FROM_ZIP.md`, `docs/CHEATSHEET.md`,
+`GETTING_STARTED.md` and `CHEATSHEET.md` (at the archive ROOT - docs are split by
+audience, and these two are the owner's entry points), plus `docs/SETUP_FROM_ZIP.md`,
 `docs/TROUBLESHOOTING.md`, `docs/FILING_CABINET.md` (create any that don't exist yet as
 stubs - the manifest entry is the commitment that they will be present in every installed
 archive); in practice the *whole* `docs/` folder ships, since those five are a floor and a
@@ -1637,7 +1653,8 @@ fha install ./test-archive --repo .   # skeleton; .plaintext-version written
 # Python < 3.10 → friendly message, no traceback
 # exiftool absent → friendly guidance message, install proceeds (not a hard stop)
 # --repo pointing to an unzipped download (no .git/) → same result as a git clone
-# docs/GETTING_STARTED.md, docs/SETUP_FROM_ZIP.md etc. present in installed archive
+# GETTING_STARTED.md + CHEATSHEET.md at the archive ROOT, docs/SETUP_FROM_ZIP.md
+# etc. under docs/, and NO README.md (the project README is repo-facing)
 ```
 
 ---
@@ -1892,6 +1909,47 @@ since process's parser takes a positional FILE. Exits 0 ok/dry-run ·
 1 not-found/working-copy · 3 refusals. Tests: `tests/test_process_refile.py`
 (25 cases: both directions, the refusal surface, dry-run zero-writes,
 rollback, dispatcher interception).
+
+### M11.7 - Ahnentafel realignment wave (✓ shipped 2026-07-26)
+
+Four live-usage findings from the first real-archive promotion batch
+(2026-07-26 feedback), one wave: **(1)** W103 (both backends, shared
+`_lib.spouse_extended_base`) now proposes the missing `+ second spouse` half
+of a couple-folder name - add-only (exactly two derived partners, no `+` yet,
+base exactly matches one partner's name; hand-crafted names never rewritten,
+never guessed) - and a batch promotion that invents a new couple folder with
+BOTH partners aboard names it for the couple from the start. **(2)** SPEC
+§12.2 wording fixes: the 2n/2n+1 variable reuse, the spouse-half drift
+clause, and the explicit re-anchoring paragraph (`root_person` at a
+descendant shifts the whole tree; realign recovers it). **(3)**
+`fha views brackets --realign` - the whole-tree recovery verb: checks 1-4 in
+ONE previewed pass under one Apply? gate, fixes first, promotions second with
+destinations recomputed against the post-rename tree
+(`views._realign_promotion_dests`; a folder renamed AWAY from a prefix stops
+attracting that prefix's promotions), refused with `--fix`/`--fix-promote`.
+**(4)** W120 (views + lint twins, collected inside the shared Ahnentafel
+BFS): a couple with exactly ONE resolved parent whose `sex:` is unrecorded
+takes the even slot by default - a confident-looking guess W110 can never
+dispute - reported with the one-line fix (record `sex: M`/`sex: F`);
+two resolved parents with unset sex stay silent (the designed same-sex/
+unknown tie-break). Also: AGENTS.md now states the launcher invocation
+convention (`./fha`, not-on-PATH) and maps `.fha/` + which docs ship with an
+archive. Example-archive lint baseline unchanged (W101 + W102 + ten W119).
+Tests: `tests/test_brackets_spouse_w120.py` (new),
+`tests/test_views_brackets_promote.py` (RealignTests + couple-naming),
+fixture `tests/fixtures/broken-W120/`.
+
+Same wave, owner decision: the capture **browser extension now ships with
+every archive** - it is a front-end tool like the serve workbench, has no
+build step (source tree = MV3 loadable artifact), so `fha install`/
+`update-tools` vendor `manifest.json` + `src/` + `icons/` + README into
+`.fha/browser-companion/` ("Load unpacked" works from any archive, no
+workshop clone); dev furniture (`tests/`, `test-bundle/`, `package.json`)
+excluded via the new `_VENDOR_EXCLUDE_*` seams in scaffold.py; manifest.json
+regenerated (+18 entries). Developing the extension stays a workshop
+activity. Docs: TOOLING §13c, TOOLING_INGESTION §5 + status,
+browser-companion/README, AGENTS.md, GETTING_STARTED. Test:
+`test_manifest_vendors_the_browser_companion` in `tests/test_scaffold.py`.
 
 ---
 

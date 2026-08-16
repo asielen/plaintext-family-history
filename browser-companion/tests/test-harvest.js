@@ -244,10 +244,14 @@ test('accessedDate — returns YYYY-MM-DD', () => {
   assert.equal(accessedDate(d), '2026-01-05');
 });
 
-test('bundleName — slug + timestamp', () => {
-  const d = new Date(2026, 5, 29, 10, 30, 0); // 2026-06-29 10:30:00
-  const name = bundleName('1880 Census Thomas', d);
-  assert.equal(name, '1880-census-thomas-20260629-103000');
+test('bundleName — slug + timestamp + per-capture token', () => {
+  const d = new Date(2026, 5, 29, 10, 30, 0, 42); // 2026-06-29 10:30:00.042
+  const name = bundleName('1880 Census Thomas', d, 'qq77zz');
+  assert.equal(name, '1880-census-thomas-20260629-103000-042-qq77zz');
+  // Without an injected token no two captures can share a folder, whatever the
+  // clock says (tests/test-capture-json.js covers why that matters).
+  assert.notEqual(bundleName('1880 Census Thomas', d),
+    bundleName('1880 Census Thomas', d));
 });
 
 test('build — schema version is correct', () => {

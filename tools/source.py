@@ -34,7 +34,7 @@ DESIGN RULES (why the code looks the way it does)
   is always inside those bounds, never outside them. The locate/append itself
   is the shared `_lib.append_paragraph_to_section` engine (the same one
   `fha person edit`/`note` uses); reading and writing go through
-  `read_text_exact`/`write_text_exact` so a CRLF-authored record churns only
+  `read_text_exact`/`write_text_exact_atomic` so a CRLF-authored record churns only
   the lines the edit adds.
 - **Append-only, always.** The new text always lands as a new blank-line-
   separated paragraph at the END of the section; an existing note is never

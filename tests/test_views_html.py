@@ -391,13 +391,20 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
         self.assertTrue(Path(res.changed[0]).name.startswith('second__person_timeline'))
         self.assertIn('WARNING', err.getvalue())
         self.assertIn(PID, err.getvalue())
+        # ...and the batch says so in its exit code: nine of ten files written
+        # is not a clean run, the same way one skipped person is not on the
+        # single-person path.
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['skipped'], 1)
 
 
 class ExitCodeTests(_ViewsHtmlBase):
-    def test_html_write_does_not_stale_index_md_write_does(self):
-        # HTML lands under generated/, which newest_record_mtime never scans:
-        # the strict freshness gate still opens afterwards.  The .md companion
-        # write is byte-for-byte the old behavior - it stales the index.
+    def test_neither_html_nor_md_view_write_stales_the_index(self):
+        # HTML lands under generated/, which newest_record_mtime never scans,
+        # and since #37 the .md companion (a GENERATED file written FROM the
+        # index) is excluded from the watermark too - so the strict freshness
+        # gate opens after either write and the documented per-person
+        # close-out runs without a rebuild between views.
         res = views.run_timeline(self.root, person_id=PID, fmt='html')
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         conn = open_index_db(self.root, ('persons',), strict=True)
@@ -405,7 +412,9 @@ class ExitCodeTests(_ViewsHtmlBase):
         conn.close()
         res_md = views.run_timeline(self.root, person_id=PID)
         self.assertEqual(res_md.exit_code, EXIT_CLEAN)
-        self.assertIsNone(open_index_db(self.root, ('persons',), strict=True))
+        conn = open_index_db(self.root, ('persons',), strict=True)
+        self.assertIsNotNone(conn)
+        conn.close()
 
 
 class CleanSweepTests(_ViewsHtmlBase):
@@ -429,7 +438,9 @@ class CleanSweepTests(_ViewsHtmlBase):
         # Real run: marker-owned files gone from both places; the hand-written
         # file survives (marker-per-file, never folder ownership).
         res = views.run_clean(self.root)
-        self.assertEqual(res.exit_code, EXIT_WARNINGS)  # people/-tree md removed
+        # Clean now drops the deleted companions' index rows in the same pass,
+        # so nothing is left stale and the sweep exits clean.
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertEqual([p.name for p in self._gen_dir().iterdir()],
                          ['keep-me.html'])
         left = sorted(p.name for p in self.profile.parent.iterdir())

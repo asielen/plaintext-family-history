@@ -1,6 +1,6 @@
 # AGENTS.md - Operating Instructions for AI Agents
 
-**Who this is for:** AI agents (and the people configuring them). If you're doing genealogy research, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) instead.
+**Who this is for:** AI agents (and the people configuring them). If you're doing genealogy research, start with [`GETTING_STARTED.md`](GETTING_STARTED.md) instead.
 
 ## Repo context first
 
@@ -107,21 +107,32 @@ mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → 
 Never deletes anything; photos are never renamed even here; only staged files move.
 (A GEDCOM tree has its own deterministic path - `fha gedcom import`, plan-then-apply with rollback - prefer it over hand-migrating one.)
 - **spec-refinement** - edits SPEC.md/TOOLING.md (changes tracked in git history), and MUST update
-README.md whenever a change affects how a human reads the archive (the README rule).
+the owner-facing docs whenever a change affects how a human reads the archive (the README rule):
+`GETTING_STARTED.md` and `CHEATSHEET.md` at the root, the matching page in `docs/`, and the repo
+`README.md` (repo-facing - it does not ship into an archive).
 
 **The status-sweep rule (tool-building and spec-refinement).** Implementation status lives in more docs than the one you're editing: when a build lands, a deferred step ships, or a decision reverses, update every statement of that status in the same change - the owning BUILD doc, the sibling TOOLING doc's build-status section, SPEC.md Part IV status notes, README.md's badge and status section, TOOLING.md §16/§17, and this file - then grep the repo for the phrase being retired ("build pending", "not yet built", "when implemented", "deferred") before closing. Full sweep list and grep guidance: [AGENTS_TOOLING.md](https://github.com/asielen/plaintext-family-history/blob/master/AGENTS_TOOLING.md) (workshop-only, as above).
 
 ### Session end (all modes)
 
-Summarize what changed and where; list any proposed-but-unapproved decisions; supply a one-line commit message (git is the change log - commit only when asked).
+Summarize what changed and where; list any proposed-but-unapproved decisions; name any tool defects you logged in `TOOL_ISSUES.md` this session (and whether any wants filing upstream - a proposal, not an action); name any research questions you opened in `notes/questions.md` (and any you raised and did *not* log - saying so here is the last chance to catch the omission); name any **negative** finding you acted on (something you concluded was absent, and the edit it licensed) - those are the edits most likely to need reverting, and the ones whose evidence is hardest to reconstruct later; supply a one-line commit message (git is the change log - commit only when asked).
 
 ## The map
 
 ```
+GETTING_STARTED.md      the archive owner's entry point (root, not docs/ - and there is
+                        no README.md in an installed archive; this is what replaces it)
+CHEATSHEET.md           the owner's one printable page (root, beside the above)
+docs/                   the rest of the owner's manual (FAQ, GLOSSARY, TROUBLESHOOTING,
+                        UPDATING, SETUP_FROM_ZIP, FILING_CABINET, …)
 SPEC.md                 the law (read before structural work)
-TOOLING*.md             tool design by concern: TOOLING.md (core),
+TOOLING*.md             tool design by concern: TOOLING.md (core - ships with every archive),
                         TOOLING_INGESTION.md (capture/inbox), TOOLING_INTERFACE.md (skills)
 BUILD*.md               build sequences, one per TOOLING doc (BUILD / _INGESTION / _INTERFACE)
+                        NOTE: inside an installed archive only SPEC.md and TOOLING.md are
+                        present - TOOLING_INGESTION/_INTERFACE and every BUILD*.md live in
+                        the project repo (read them there, don't hunt the archive for them):
+                        https://github.com/asielen/plaintext-family-history
 photos/{year}/          originals - read-only to you (except spec'd keyword writes via tools)
                         NOTE: asset roots may live OUTSIDE this folder - resolve any
                         photos/ or documents/ path through fha.yaml roots first
@@ -133,10 +144,19 @@ people/connections/     non-direct people (FAN club), ordinary §13 person files
 people/stubs/           unplaced person stubs
 places/places.yaml      place registry
 notes/                  general research; notes/questions.md = question log
+.fha/                   vendored machinery in an installed archive (tools/, design/) -
+                        run it, never hand-edit it; refreshed by `fha update-tools`
 .cache/                 disposable tool caches (index.sqlite, photos.sqlite) - never truth
 generated/              built deliverables, regenerable (generated/site = fha site output)
 .claude/skills/{name}/   workflow playbooks - portable SKILL.md procedures (see Playbooks)
 ```
+
+The capture **browser extension** (`browser-companion/` in the project repo) runs in the
+*browser*, never inside the archive - but every installed archive carries a ready-to-load
+copy at `.fha/browser-companion/` (chrome://extensions → Developer mode → "Load unpacked" →
+that folder; its README says the same). At run time its whole archive footprint is the
+staged bundles it drops and the `fha capture --ingest` sweep that files them (TOOLING §13b).
+Working ON the extension is a project-repo activity like any other tool-building.
 
 ## Format quick reference
 
@@ -215,6 +235,10 @@ fha person promote <P-id> [--into FOLDER]   graduate a direct-line stub to curat
 fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>   unsourced family-tie
                             belief (always status: hypothesis)
 fha person estimate <P-id> --birth|--death …      provisional, unsourced vitals estimate
+fha person set-sex <P-id> M|F|intersex|unknown    correct the one fact Ahnentafel placement
+                            reads; ends with the `fha index` then `fha views
+                            brackets` nudge, in that order (brackets reads the
+                            placement out of the index)
 fha person edit|note <P-id> --section … --text …  bounded prose write to Biography/Stories/
                             Research Notes (edit replaces/appends; note is append-only)
 fha person edit-note <P-id> --section … --old-text … --text …   rewrite ONE existing
@@ -259,14 +283,61 @@ Text passed to the note verbs (`fha person note/edit-note`, `fha source note/edi
 `fha places note/edit-note`) and to `fha confirm discovery` is prose - any record ID inside it
 takes the `[[ ]]` wikilink form, never bare (see Citations above).
 
-Execution rules (all tools): run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.
+Execution rules (all tools): `fha` is not on PATH - invoke it through the launcher at the archive root: `./fha <command>` (macOS/Linux), `.\fha <command>` (Windows PowerShell), or plain `fha <command>` (Windows cmd). The launcher finds the vendored tools wherever they live (`.fha/tools/` or `tools/`); if it is somehow missing, `python .fha/tools/fha.py <command>` (or `python tools/fha.py …`) runs the same entrypoint. Run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.
 
 Query the index, not the tree: person/claim/photo questions are SQL or `fha` calls.
 Never bulk-ingest `photos/` or `documents/` into context.
 
+### When a tool is wrong (log it, and how to file it upstream)
+
+An archive cannot fix its own tools: `.fha/` is vendored, and any local edit is silently
+reverted by the next `fha update-tools`. So a defect found here dies with the session unless it
+is written down where it can travel back to the project repo. Two tiers:
+
+**Tier 1 - always log locally; no permission needed.** Whenever you hit a bug, a missing
+capability, output that misattributes its own cause, or find yourself working around the tools,
+add an entry to **`TOOL_ISSUES.md` at the archive root** *before moving on* (create the file if
+absent; a `.claude/skills/{name}/GAP.md` may hold the long write-up for a skill-scoped gap, the
+register just points at it). This applies in `research` mode as much as any other - most tool
+bugs are found by ordinary use, not tool-building. An actionable entry names: the component
+(file and function), the date; the symptom **quoted verbatim** as the user saw it (a message that
+blames the wrong cause is itself a bug); the real cause if you worked it out, and a reproduction
+with measured numbers rather than "fails on large libraries"; the impact, and whether it is
+silent; a suggested fix and what a regression test would need; the environment when it might be
+platform-specific. Two rules that go with it: **never silently work around a gap** - a missing
+capability is a halt-and-name (`_STANDARD.md` §6), and that extends to defects; say what is
+wrong, log it, let the human decide, because an unrecorded workaround becomes load-bearing. And
+**log the failed workarounds too** - what looked safe, why it wasn't, and which signal misled you
+is the most valuable entry in the file: it stops the next reader repeating it.
+
+**Tier 2 - filing upstream is a separate, human-authorised step.** Opening a public issue on
+the project repo is outward-facing, effectively permanent, and - uniquely here - can publish
+private family data. **Propose it, then file only on an explicit yes.** Before filing: search
+the tracker (`gh issue list --repo asielen/plaintext-family-history --state all --search
+"<keywords>"`) and comment on a near-match rather than opening a duplicate; reproduce it and
+paste real output; rule out local misconfiguration (`fha doctor`) so an environment problem is
+not filed as a tool bug; one issue per defect, grouped only where one fix addresses several. And
+**scrub before you file:** a reproduction drawn from a real archive carries real names - in
+filenames, folder names, absolute paths, record titles, quoted transcript text. Replace them
+with synthetic equivalents that reproduce the defect just as well (a character-encoding bug
+reproduces from *any* filename with a combining accent; it does not need the 1945 photograph's
+caption naming two families), then re-read the finished body for names, places and paths before
+posting. A bug report is worth nothing that a privacy leak costs. Record the issue number
+against the local entry, and the local entry in the issue, so the two stay connected.
+
+**If the human asks for a local patch anyway** (a blocking bug they cannot wait on), mark every
+patched line in-source with a searchable token - `LOCAL PATCH` plus the register ID - and put a
+"re-apply or drop after `fha update-tools`" note at the top of `TOOL_ISSUES.md`, so
+`grep -rn "LOCAL PATCH" .fha/tools/` finds everything the next update is about to revert. Quote
+in the register entry the SPEC/TOOLING sentence the fix must satisfy, and say which cases you
+verified: upstream will re-derive its tests from the spec, not from your patch, and a "verified
+here" note is evidence about those cases only. The same goes for a skill or script authored in
+the archive that is meant to travel upstream - it will be re-read against the contract and every
+command in it re-run, so document what you actually ran.
+
 ### Playbooks (workflow skills)
 
-Thirteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
+Sixteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
 procedures, `fha` invocations and judgment only, no harness APIs (the standard they follow is
 `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the
 human's own words ("process the inbox", "review the census claims", "are these the same
@@ -309,6 +380,66 @@ Draft prose you write into profiles goes inside `<!-- AI-DRAFT ... -->` markers 
 with anchors; narrative chunks go to `## Stories`; the rest stays in the transcript (it is preserved and searchable; extraction is indexing, not preservation).
 Record your pass in the source's `## AI Passes` block.
 
+### When you cannot answer a research question (log it)
+
+**Open questions about the family history do not live in the session.** A session ends and takes
+everything unwritten with it - the same argument that sends tool defects to `TOOL_ISSUES.md`, and
+it holds just as squarely for research findings, which already have a home and have simply never
+had an instruction pointing at it. Any question about the *records* that you raise and cannot
+settle before moving on - a claim whose value does not appear in the source it cites, a person
+whose `living` flag you could not determine so export redaction is undefined for them, a date
+conflict you noticed but did not adjudicate, a batch of `accepted` claims resting on images nobody
+has transcribed - gets a `## Q:` block in **`notes/questions.md`** *before you move on*, not at the
+end of the session.
+
+Use the block SPEC §17 defines: `origin:` (`human` | `tool` | `agent` - yours is `agent`; this
+records who *raised* the question, not what it is about), `status:` (`open`), `refs:`, and a dated
+`context:` line carrying enough that a reader six months later knows why it mattered and what
+would settle it. A question you only said out loud is a question you lost.
+
+**This file is for the history, not the software.** A bug, a missing capability, a command that
+misreports its own cause - that is a tool defect and it belongs in `TOOL_ISSUES.md` under the rule
+above, never here. The two registers answer different questions for different readers: `notes/`
+is archive content a descendant may one day read, `TOOL_ISSUES.md` is a workshop note aimed
+upstream. Where one causes the other - a tool you could not get an answer out of, leaving a
+genuine gap in the research - log the defect in `TOOL_ISSUES.md` and open the question here only
+for what remains unknown *about the family*, each pointing at the other. Do not restate the bug
+in `notes/`.
+
+Within that scope it binds in `research` mode as much as any other, and covers your own research
+output as much as the records: a claim you drafted and could not fully evidence is a question, not
+a loose end. Closing one later without an answer is a legitimate, recordable outcome (`closed (not
+pursuing)`); never writing it down is not. Note what this is *not*: `fha lint --spawn-questions`
+opens these blocks for exactly one machine-detectable case (E009, a `contradicts:` with no open
+question). Everything a human or an agent notices is yours to write, and nothing will warn you
+that you didn't.
+
+### You cannot conclude absence from a search
+
+A search tells you what is in **what you searched**. Before writing that something "appears in no
+source", "is unsourced", or "was invented", state what your search actually covered and confirm
+the rest of the corpus was reachable by it. It usually is not: an image-only source with no
+transcript is invisible to text search, and a `people:` list holds only what some earlier pass
+wrote down. The gap between *"X is not in the text I searched"* and *"X is in no source"* is
+exactly the size of the corpus you could not read - which you have not measured unless you went
+and measured it. If you cannot establish coverage, the honest finding is **"not present in
+\<what you searched\>"**, and it belongs in `notes/questions.md` as an open question, not in a
+claim correction.
+
+**Absence is never grounds for a destructive edit on its own.** This is the asymmetry that makes
+the rule matter here rather than being ordinary epistemic hygiene: a positive finding *adds* a
+claim, while a negative one takes a name off a person. Striking a value, renaming a person,
+renaming a couple folder, retracting another record's note - each needs positive evidence that the
+thing is **wrong**, not merely that you failed to find it right. Care is not a substitute: this
+fails most often on work that was done attentively, because the flaw sits in the shape of the
+inference rather than in the effort. When you do act on a negative finding, record what you
+searched and how you established coverage, so the next reader can see the shape of the hole rather
+than inheriting your conclusion.
+
+The same reasoning covers every "does this exist" question, not just full-text search - "no claim
+exists for this", "this person has no death record", "nothing links these two". Each is a
+statement about coverage, and coverage is never total.
+
 ## Don'ts
 
 No symlinks.
@@ -317,4 +448,5 @@ No bulk renames.
 NEVER rename or move anything under the photos root (one exception: `fha process refile --to documents` moves a photo OUT of the photos root, renaming it at the crossing - human-confirmed, record updated in the same transaction).
 No editing `places.yaml` coordinates without human confirmation.
 No writing to `.cache/` by hand.
+No hand-editing `.fha/` (vendored - log the defect in `TOOL_ISSUES.md`; a human-requested local patch is marked `LOCAL PATCH` line by line), and no filing an upstream issue without an explicit yes and a scrubbed body.
 No deleting anything without explicit instruction - prefer `status: rejected`/`superseded` and `closed` questions, which preserve the research trail.

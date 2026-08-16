@@ -15,6 +15,15 @@ Uses the SQLite index when present.  If the index is stale, it prints a
 warning and still gives the structured report; if the index is absent or
 unreadable, it degrades to a tree scan.
 
+Both tree-scan passes (the id scan and --text's regex pass) walk with an
+error seam.  A folder that will not list looks exactly like an empty one to
+`os.walk` and `rglob`, so a search over one quietly answers for less than the
+whole archive - and "not found in archive tree" is the one answer a human has
+no way to check.  Nothing here deletes or certifies anything, so an
+unreadable folder is not a refusal; the caveat is printed with the result,
+naming the folders, and the scan exits 1 (warnings) rather than 0 so a script
+does not read a partial answer as a complete one.
+
 fha id check <ID> is wired as an alias in fha.py.  The canonical
 implementation of "where does this ID live?" now lives here.  TOOLING §4a.
 
@@ -25,9 +34,15 @@ Design decisions in TOOLING §4a:
       relational joins it runs have no meaningful tree-scan fallback): an
       absent or unreadable index is a hard error (exit 3), not a degrade.
   D7: --text searches records + notes; photo captions are searched when
-      .cache/photos.sqlite is fresh (else find prints a skip note). The
-      transcripts_fts table exists but is not yet populated - transcript
-      search is deferred to a later milestone.
+      .cache/photos.sqlite is fresh (else find prints a skip note); and
+      transcripts_fts carries every `role: transcript` / `transcription` /
+      `extracted-text` companion `fha index` has loaded.  Whatever it cannot
+      read, it says so: every text search ends with a count of the sources in
+      the archive that hold no text at all (#46), on a hit as readily as on a
+      miss, because a search that only half read its corpus is misleading
+      either way.  And what it read second-hand it also says: a hit whose
+      matching words came from a transcript no human has checked against the
+      image is labelled `[unchecked AI transcript]` on its own result line.
 
   --json (plan 17; documented in TOOLING §4a): a pure, machine-readable ranked
   search over the index - the backend the fha serve reference resolver (and
@@ -39,13 +54,20 @@ Design decisions in TOOLING §4a:
   --related (no defined meaning for "the neighborhood of X, as ranked
   search results" - refused with a plain message naming the supported
   combinations, exit 2).
+  The machine surface carries the same two warnings the human one does, and
+  that is the point of D14/D15 rather than an afterthought: its reader is
+  usually another model, which is precisely the reader whose mistake #46
+  records. stdout stays the bare `[{id, type, label, detail}, …]` array it has
+  always been - the coverage caveat goes to STDERR (so nothing that parses
+  stdout sees a change), and an unchecked transcript hit gains one additive
+  key, `"unchecked": true`, present only when true.
 """
 
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -62,6 +84,7 @@ from _lib import (
     Result,
     configure_utf8_stdout,
     edtf_bounds,
+    file_entry_carries_text,
     format_edtf_error,
     id_type_of,
     is_valid_edtf,
@@ -73,11 +96,15 @@ from _lib import (
     normalize_id,
     normalize_place_text,
     open_index_db,
+    path_to_alias,
     PHOTO_EXTENSIONS,
     photoindex_status,
     read_record,
     resolve_path,
     resolve_root_arg,
+    transcript_text_is_unchecked,
+    unreadable_dir_recorder,
+    walk_files,
 )
 
 configure_utf8_stdout()
@@ -99,6 +126,9 @@ configure_utf8_stdout()
 #    _find_by_scan             - grep all text files for bare ID string
 #
 #  Text search
+#    _count_sources_without_text - how many sources hold no text at all (#46)
+#    _searchable_text_note     - the coverage caveat printed with every result
+#    _indexed_transcript_paths - which paths transcripts_fts holds (for the regex pass)
 #    _find_text                - FTS (when index fresh) + re.search over record bodies
 #
 #  --related (M4.3): neighborhood queries over the relational index
@@ -110,6 +140,8 @@ configure_utf8_stdout()
 #    _person_org_hubs          - recurring occupation/military/membership affiliations shared
 #                                 with others
 #    _person_source_count      - distinct source count for a person
+#    _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
+#    _photo_locator            - which path to show for a group (live member preferred)
 #    _print_person_photos      - photo_people lookup in .cache/photos.sqlite
 #    _related_place            - L-id world: claims, people, sources, micro-places, photos
 #    _print_place_photos       - GPS-proximity photo lookup for a place
@@ -130,10 +162,13 @@ configure_utf8_stdout()
 #    _bare_id_hit               - direct table lookup for a whole-string ID query
 #    _ranked_search             - the merge: aliases + persons + sources + places/place_names
 #                                 + notes_fts, deduped by id, sorted by tier then label
+#    search_json_with_coverage  - one connection, one open: the hits AND the D14 coverage note
+#                                 (the note only for an unfiltered search - see its docstring)
 #    search_json                - public engine: opens/closes its own connection, returns list[dict]
 #    run_find_json               - wraps _ranked_search into the Result contract (own connection,
 #                                 shared with search_json's core, not a second open_index_db call)
-#    _cmd_find_json              - the only layer that prints: one json.dumps document, or nothing
+#    _cmd_find_json              - the only layer that prints: one json.dumps document on stdout,
+#                                 the coverage note on stderr, or nothing
 #    _parse_kind_filter          - CLI --kind comma list → (kinds, error_message)
 #
 #  Public API
@@ -143,7 +178,9 @@ configure_utf8_stdout()
 #
 #  CLI
 #    register                  - attach 'find' to the main fha parser
-#    _run_find                 - argparse → run_find bridge (returns the int exit code)
+#    _reader_went_away         - a closed pipe (`| head`) is normal use, not an error
+#    _run_find / _find_command - argparse → run_find bridge (returns the int exit code)
+#    _run_search / _search_command - the same bridge for `fha search <words>`
 #    _standalone_main          - for `python tools/find.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -300,12 +337,20 @@ def _find_person(
         try:
             pconn = sqlite3.connect(str(photos_db))
             pconn.row_factory = sqlite3.Row
-            count = pconn.execute(
-                "SELECT COUNT(DISTINCT path) FROM photo_people WHERE person_ref = ?",
-                (pid,)
-            ).fetchone()[0]
+            # A photo reconcile has flagged as gone from disk still counts as
+            # a photo of this person (its caption and tags are kept on
+            # purpose), but the human hunting for the file needs to know some
+            # of them will not be there - and this line is often the only
+            # place he looks.
+            count, gone = pconn.execute(
+                "SELECT COUNT(DISTINCT path), "
+                "COUNT(DISTINCT CASE WHEN path LIKE ? THEN path END) "
+                "FROM photo_people WHERE person_ref = ?",
+                (f'{_MISSING_PREFIX}%', pid),
+            ).fetchone()
             pconn.close()
-            print(f'  photos: {count}')
+            suffix = f' ({gone} not on disk - run fha photoindex reconcile)' if gone else ''
+            print(f'  photos: {count}{suffix}')
         except Exception:
             print('  photos: not indexed (run fha photoindex)')
     else:
@@ -623,12 +668,21 @@ def _find_by_scan(id_str: str, archive_root: Path) -> int:
     Grep all text files for id_str when the index is absent or stale.
     Reports one hit per file (enough to locate the record); prints a
     WARNING header so the caller knows this is a degraded fallback.
+
+    Walked with an error seam rather than `rglob`, because the one answer this
+    function gives that a human cannot check is "not found in archive tree" -
+    and a folder that will not list produces exactly that answer for a record
+    sitting inside it. Nothing here is deleted or certified, so an unreadable
+    folder is not a reason to refuse; it is a reason to say so, in the same
+    breath as the result, with the folder named.
     """
     id_norm = id_str.lower()
     hits: list[tuple[str, int]] = []
 
+    unreadable: list[Path] = []
     candidates = [
-        p for p in archive_root.rglob('*')
+        p for p in walk_files(
+            archive_root, on_error=unreadable_dir_recorder(unreadable))
         if p.is_file()
         and p.suffix.lower() in ('.md', '.yaml', '.yml', '.txt')
         and '.cache' not in p.parts
@@ -647,15 +701,197 @@ def _find_by_scan(id_str: str, archive_root: Path) -> int:
 
     if not hits:
         print(f'{id_str}: not found in archive tree.')
+        _print_unseen_folders(unreadable, archive_root, found_something=False)
         return EXIT_WARNINGS
 
     print(f'{id_str}: found in {len(hits)} file(s):')
     for rel, lineno in hits:
         print(f'  {rel}:{lineno}')
-    return EXIT_CLEAN
+    _print_unseen_folders(unreadable, archive_root, found_something=True)
+    return EXIT_WARNINGS if unreadable else EXIT_CLEAN
+
+
+def _print_unseen_folders(
+    unreadable: list[Path], archive_root: Path, *, found_something: bool,
+) -> None:
+    """Say which folders a search could not look in, and what that means.
+
+    A search that quietly looked in less than the whole archive gives a wrong
+    answer in the one direction the human cannot detect: he sees a result, or
+    a clean "not found", and has no way to know a folder was skipped. So the
+    caveat is printed with the result rather than instead of it - the answer
+    is still useful, it is just not the whole archive - and the wording
+    changes with the answer, because "nothing found" over an unread folder
+    means something quite different from "here are three hits, and there may
+    be more".
+    """
+    if not unreadable:
+        return
+    shown = []
+    for path in unreadable:
+        try:
+            shown.append(path.relative_to(archive_root).as_posix())
+        except ValueError:
+            shown.append(str(path).replace('\\', '/'))
+    listed = ', '.join(sorted(shown)[:5])
+    if len(shown) > 5:
+        listed += f' and {len(shown) - 5} more'
+    lead = ('This search could not look everywhere, so "not found" here does '
+            'not mean it is not in your archive'
+            if not found_something else
+            'This search could not look everywhere, so there may be more')
+    print(
+        f'WARNING: {lead}: {len(shown)} folder(s) could not be opened '
+        f'({listed}). This is usually a folder whose permissions changed, or '
+        f'a drive or network share that is not connected - reconnect it (or '
+        f'restore your access to the folder), then search again.',
+        file=sys.stderr,
+    )
 
 
 # ── Text search ───────────────────────────────────────────────────────────────
+
+def _count_sources_without_text(
+    conn: sqlite3.Connection,
+) -> tuple[int, int] | None:
+    """How many of the sources this search covered hold no text at all?
+
+    Returns `(unreadable, total)`, or None when the index cannot answer.
+
+    A source whose files are all scans, photographs, PDFs or recordings puts
+    nothing into the archive as text. A text search over it returns nothing and
+    looks exactly like a text search that read it and found nothing - which is
+    how a null result gets read as a finding about the family rather than a fact
+    about the corpus (#46). Counting them is what lets the search say which of
+    the two it just did.
+
+    Answered entirely from the index, because this runs on EVERY text search:
+    one pass over `source_files` (a handful of rows per source) and one over
+    `transcripts_fts`'s key column (one row per transcript companion), never a
+    walk of the photo or document roots. The transcripts_fts pass is belt and
+    braces - `fha index` only ever fills that table from the same roles the
+    first pass reads - but it means a source the index found text in is never
+    reported as mute, whatever wrote the row.
+
+    A file the index recorded as absent from disk (`exists_on_disk = 0`) does
+    not count as text: a `files:` line promising a transcript that is not there
+    is exactly as unsearchable as no transcript at all. A source with no files
+    listed at all is left out of both halves of the count - there is nothing to
+    read, so nothing was missed.
+    """
+    try:
+        total = conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0]
+        with_files: set[str] = set()
+        with_text: set[str] = set()
+        for sid, role, path, exists in conn.execute(
+            'SELECT source_id, role, path, exists_on_disk FROM source_files'
+        ):
+            if not sid:
+                continue
+            with_files.add(sid)
+            if exists == 0:
+                continue
+            if file_entry_carries_text(role or '', path or ''):
+                with_text.add(sid)
+        for row in conn.execute('SELECT DISTINCT source_id FROM transcripts_fts'):
+            if row[0]:
+                with_text.add(row[0])
+    except sqlite3.Error:
+        # An old-schema or damaged index: the rest of the search still works off
+        # whatever tables it does have, and the caller says plainly that the
+        # coverage question went unanswered rather than implying full coverage.
+        return None
+    return len(with_files - with_text), int(total)
+
+
+def _searchable_text_note(
+    conn: sqlite3.Connection | None, *, found_something: bool,
+) -> str | None:
+    """The line that tells the reader how much of the archive this search read.
+
+    Printed with the result, never instead of it, and printed on a HIT as
+    readily as on a miss. Three matches drawn from a corpus the search could
+    only half read are as misleading as none - more so, because hits feel like
+    confirmation and nobody re-examines a question they think is answered.
+
+    Returns None when there is nothing to say (every source has text, or the
+    count came back zero).
+
+    The named next steps are the ones that exist today: `fha source extract`
+    for a PDF carrying its own text layer, and reading the file. Naming a verb
+    the tools do not have would be a promise this program cannot keep.
+    """
+    if conn is None:
+        return ('Note: could not check which sources have no searchable text - '
+                'there is no usable search index. Run `fha index`, then search '
+                'again.')
+    counted = _count_sources_without_text(conn)
+    if counted is None:
+        return ('Note: could not check which sources have no searchable text - '
+                'the search index is out of date. Run `fha index`, then search '
+                'again.')
+    unreadable, total = counted
+    if not unreadable:
+        return None
+    lead = ('These results are not the whole picture'
+            if found_something else
+            'Nothing was found, but this search could not look everywhere')
+    return (
+        f'Note: {lead} - this archive holds no searchable text for '
+        f'{unreadable} of its {total} sources. Those files are scans, '
+        'photographs, PDFs or recordings with no transcript written out beside '
+        'them, so what those documents say is not in the archive as words and '
+        'this search never read them. `fha source extract <S-id>` makes a PDF '
+        'searchable when it carries its own text layer; a scan or a photograph '
+        'has to be read and typed out. `fha find <S-id>` lists what files a '
+        'source has.'
+    )
+
+
+# ── Marking a hit that came from an unchecked machine reading ────────────────
+# The coverage note above is a caveat on the whole search. This one is a caveat
+# on a single line of it, and it has to be: one search can return a transcript a
+# human has compared to the scan and a transcript no one has ever looked at, and
+# the difference between those two results is the whole question of whether the
+# hit is evidence. #46 closed "the search cannot see"; an unchecked transcript is
+# the same hole facing the other way - it does not return silence, it returns
+# confident hits, and nobody re-examines a question they believe is answered.
+#
+# The label rides on the result line so it cannot be missed while skimming; the
+# sentence explaining it prints ONCE, after the results, because ten identical
+# paragraphs between ten hits would bury exactly the results it is warning about.
+_UNCHECKED_LABEL = '[unchecked AI transcript]'
+_UNCHECKED_NOTE = (
+    'Note: [unchecked AI transcript] marks words a machine read off a picture. '
+    'Nobody has checked them against the image, and the image is the evidence - '
+    'read it before you rely on those words. `fha find <S-id>` lists which files '
+    'a source has.'
+)
+
+
+def _indexed_transcript_paths(conn: sqlite3.Connection | None) -> set[str]:
+    """The paths `fha index` loaded into transcripts_fts, for the regex pass.
+
+    The FTS pass knows a hit came from a transcript because it queried the
+    transcript table. The re.search pass that follows it does not: it walks the
+    documents root for `.md`/`.txt` and a transcript companion looks the same as
+    any other text file there. FTS MATCH and a substring regex do not agree on
+    what matches (a partial word matches one and not the other), so a transcript
+    really can be found only by the second pass - and it would then print
+    unmarked.
+
+    One cheap key-column query answers it. Reading the roles out of
+    `source_files` would work too, but this is the set `fha index` actually
+    loaded, which is the set whose text the marker rule is defined over.
+    """
+    if conn is None:
+        return set()
+    try:
+        return {row[0] for row in conn.execute(
+            'SELECT DISTINCT path FROM transcripts_fts') if row[0]}
+    except sqlite3.Error:
+        return set()   # old-schema or damaged index: the search still runs
+
 
 def _find_text(
     query: str,
@@ -666,31 +902,41 @@ def _find_text(
     """
     Search records and notes for query text, plus photo captions when available.
 
-    When the index is fresh: query notes_fts (and transcripts_fts, currently
-    empty - transcript population is deferred) first, then a re.search pass to
-    catch anything the FTS tables may not cover (e.g. a fresh lint-only run
-    without FTS populated).
+    When the index is fresh: query notes_fts and transcripts_fts (transcript
+    and extracted-text companions) first, then a re.search pass to catch
+    anything the FTS tables may not cover (e.g. a fresh lint-only run without
+    FTS populated).
 
     When the index is absent: re.search only.
+
+    Either way the result carries the coverage note (_searchable_text_note):
+    the sources whose files this search cannot read inside are counted and
+    named as a number, so a null result is never mistaken for a negative
+    finding and a handful of hits is never mistaken for the whole story.
+
+    And a hit whose matching text came from a transcript no human has checked
+    against the image carries its own per-line mark (_UNCHECKED_LABEL). Only the
+    transcript surfaces can earn it: a match in a record body or a claim value
+    is a match on what someone wrote down, not on a machine's reading of a
+    picture, and marking those would train the reader to ignore the mark.
 
     Design decision D7 (TOOLING §4a): photo captions ARE searched when
     .cache/photos.sqlite is verifiably fresh (DB present, schema OK, newer than
     the photos root).  When the photoindex is absent/stale/unreadable, captions
     are skipped and an explicit note tells the user why.
     """
-    hits: list[tuple[str, str]] = []   # (relative path, context snippet)
+    # (relative path, context snippet, matched unchecked machine-read text)
+    hits: list[tuple[str, str, bool]] = []
     seen_paths: set[str] = set()
+    transcript_paths = _indexed_transcript_paths(conn)
 
     # FTS queries from the index
     if conn is not None:
         try:
             # FTS5 snippet: 32 tokens, mark matches with [...]
-            fts_sql = (
-                "SELECT path, snippet({table}, {col}, '[', ']', '…', 32) "
-                "FROM {table} WHERE {table} MATCH ?"
-            )
             for row in conn.execute(
-                fts_sql.format(table='notes_fts', col='1'), (query,)
+                "SELECT path, snippet(notes_fts, 1, '[', ']', '…', 32) "
+                'FROM notes_fts WHERE notes_fts MATCH ?', (query,)
             ):
                 rel = row[0]
                 # Registry place notes share one physical file: every place's
@@ -700,14 +946,21 @@ def _find_text(
                 # way).
                 if rel in seen_paths:
                     continue
-                hits.append((rel, row[1]))
+                # notes_fts is record prose and note bodies - what a person
+                # wrote down. Never a machine's reading of a picture.
+                hits.append((rel, row[1], False))
                 seen_paths.add(rel)
+            # transcripts_fts carries the companion's whole text, so the marker
+            # state is decided from the row already in hand - no file is opened
+            # to answer it.
             for row in conn.execute(
-                fts_sql.format(table='transcripts_fts', col='2'), (query,)
+                "SELECT path, snippet(transcripts_fts, 2, '[', ']', '…', 32), "
+                'content FROM transcripts_fts WHERE transcripts_fts MATCH ?',
+                (query,),
             ):
                 rel = row[0]
                 if rel not in seen_paths:
-                    hits.append((rel, row[1]))
+                    hits.append((rel, row[1], transcript_text_is_unchecked(row[2])))
                     seen_paths.add(rel)
         except Exception:
             pass   # FTS tables absent (index built without note content) - fall through
@@ -729,10 +982,19 @@ def _find_text(
         (archive_root / 'notes',   ('*.md',)),
         (docs_root,                ('*.md', '*.txt')),
     ]
+    # Same error seam as the id scan: this pass IS the answer when the index is
+    # absent, and a folder that will not list turns "no results" into a wrong
+    # answer the human has no way to question.
+    text_unreadable: list[Path] = []
+    text_on_error = unreadable_dir_recorder(text_unreadable)
     for scan_dir, globs in scan_dirs:
         if not scan_dir.is_dir():
             continue
-        for p in sorted(itertools.chain.from_iterable(scan_dir.rglob(g) for g in globs)):
+        suffixes = tuple(g.lstrip('*').lower() for g in globs)
+        for p in sorted(
+            f for f in walk_files(scan_dir, on_error=text_on_error)
+            if f.name.lower().endswith(suffixes)
+        ):
             try:
                 rel = str(p.relative_to(archive_root))
             except ValueError:
@@ -749,7 +1011,23 @@ def _find_text(
                     if line_end == -1:
                         line_end = len(text)
                     context = text[line_start:line_end].strip()[:120]
-                    hits.append((rel, context))
+                    # Is this file one of the transcripts the index loaded? The
+                    # index keys them by their alias-form path ('documents/…'),
+                    # which is what `rel` already is for an internal documents
+                    # root and is NOT what it is for an external one - there
+                    # `rel` is the absolute path. path_to_alias converts back,
+                    # so an archive whose documents live on another drive gets
+                    # the same answer as one that keeps them inside.
+                    key = rel
+                    if scan_dir == docs_root:
+                        key = path_to_alias(
+                            p, 'documents', fha_config or {}, archive_root)
+                    # The transcript's own text is already in hand from the read
+                    # above, so deciding the marker state costs nothing extra.
+                    unchecked = (
+                        key in transcript_paths
+                        and transcript_text_is_unchecked(text))
+                    hits.append((rel, context, unchecked))
                     seen_paths.add(rel)
             except OSError:
                 pass
@@ -769,7 +1047,7 @@ def _find_text(
                     if line_end == -1:
                         line_end = len(text)
                     context = text[line_start:line_end].strip()[:120]
-                    hits.append((rel, context))
+                    hits.append((rel, context, False))
                     seen_paths.add(rel)
             except OSError:
                 pass
@@ -789,9 +1067,20 @@ def _find_text(
                     "FROM photo_fts WHERE photo_fts MATCH ?",
                     (query,),
                 ):
-                    rel = f'[photo] {row[0]}'
+                    # A caption is kept searchable after its photo leaves the
+                    # disk - that is the whole point of reconcile's MISSING:
+                    # row - so the hit is real and belongs in the results.
+                    # Show the path the photo had, marked, rather than the
+                    # internal key: 'MISSING:photos/…' is not a path anyone
+                    # can act on.
+                    if _is_missing_key(row[0]):
+                        rel = f'[photo] {_live_alias(row[0])} (not on disk)'
+                    else:
+                        rel = f'[photo] {row[0]}'
                     if rel not in seen_paths:
-                        hits.append((rel, row[1]))
+                        # A caption is what a person wrote about a photo, not a
+                        # reading of what the photo says.
+                        hits.append((rel, row[1], False))
                         seen_paths.add(rel)
             finally:
                 pconn.close()
@@ -809,17 +1098,30 @@ def _find_text(
         print(f'No results for: {query!r}')
         if photo_note:
             print(photo_note)
-        return EXIT_CLEAN
+        # The coverage caveat prints on a miss AND on a hit - see
+        # _searchable_text_note. This is the miss.
+        text_note = _searchable_text_note(conn, found_something=False)
+        if text_note:
+            print(text_note)
+        _print_unseen_folders(text_unreadable, archive_root, found_something=False)
+        return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN
 
     print(f'Found {len(hits)} result(s) for: {query!r}')
-    for rel_path, context in hits:
-        print(f'\n  {rel_path}')
+    for rel_path, context, unchecked in hits:
+        label = f'  {_UNCHECKED_LABEL}' if unchecked else ''
+        print(f'\n  {rel_path}{label}')
         if context:
             print(f'    … {context} …')
+    if any(unchecked for _rel, _context, unchecked in hits):
+        print(f'\n{_UNCHECKED_NOTE}')
     if photo_note:
         print(f'\n{photo_note}')
+    text_note = _searchable_text_note(conn, found_something=True)
+    if text_note:
+        print(f'\n{text_note}')
+    _print_unseen_folders(text_unreadable, archive_root, found_something=True)
 
-    return EXIT_CLEAN
+    return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN
 
 
 # ── --related (M4.3): neighborhood queries over the relational index ────────
@@ -1067,6 +1369,59 @@ def _photo_edtf_overlaps(edtf_str: str | None, date_bounds: tuple[str, str]) -> 
     return pmax >= lo and pmin <= hi
 
 
+# `fha photoindex reconcile` keeps a vanished photo in the catalog under the
+# synthetic key 'MISSING:' + its last known path, so its caption, keywords and
+# dates outlive the file. photoindex.py owns the rule; it is restated here
+# because tools never import tools (TOOLING §15). `find` is a locator, so it
+# reads THROUGH the prefix (the path still says where the photo was) but must
+# never hand the human a path that cannot be opened without saying so.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The alias a cached photo key names, with any 'MISSING:' prefix off."""
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached photo path is reconcile's synthetic missing-file key."""
+    return path.startswith(_MISSING_PREFIX)
+
+
+# One line for the human when any listed photo is off disk. Named once so the
+# person and place neighborhoods say it identically.
+_MISSING_PHOTO_HINT = (
+    '    (not on disk = the catalog still has the photo, the file does not. '
+    'Put it back, then run fha photoindex reconcile --with-exif.)'
+)
+
+
+def _photo_locator(
+    pconn: sqlite3.Connection, group_id: str | None, primary_path: str,
+) -> tuple[str, bool]:
+    """Where to tell the human one photo group lives: (path to show, is-missing).
+
+    A group's `primary_path` is whatever file the last full scan picked, and
+    reconcile only renames it in place - so the primary of a photo whose front
+    scan vanished is a 'MISSING:' key even when the back scan is still sitting
+    on disk. Printing that key would be a lie about the group twice over: the
+    photo IS locatable, just under another name. So a live member is preferred,
+    exactly as the gallery does; only when every member is gone does the last
+    known path get printed, flagged, with the fix named alongside.
+    """
+    if not _is_missing_key(primary_path):
+        return (primary_path, False)
+    if group_id:
+        row = pconn.execute(
+            'SELECT path FROM photos WHERE group_id = ? AND path NOT LIKE ? '
+            'ORDER BY path LIMIT 1',
+            (group_id, f'{_MISSING_PREFIX}%'),
+        ).fetchone()
+        if row is not None:
+            return (row[0], False)
+    return (_live_alias(primary_path), True)
+
+
 def _print_person_photos(
     pid: str,
     archive_root: Path,
@@ -1077,7 +1432,9 @@ def _print_person_photos(
     Photos tagged to this person via any resolution confidence
     (pid-keyword/face-tag/name-match - photo_people already records the
     winning method per photo). Mirrors _find_person's photo-count lookup but
-    lists the group's primary_path so the photos are actually locatable.
+    lists the group's primary_path so the photos are actually locatable - via
+    `_photo_locator`, which prefers a member that is still on disk and flags a
+    group that has none.
 
     Gated on `photoindex_status()` so a stale photos.sqlite - e.g. after a
     name-variant change or photo rename/delete - is reported as stale rather
@@ -1105,7 +1462,7 @@ def _print_person_photos(
             pconn.row_factory = sqlite3.Row
             rows = pconn.execute(
                 '''
-                SELECT DISTINCT pg.primary_path, pg.edtf_resolved
+                SELECT DISTINCT pg.group_id, pg.primary_path, pg.edtf_resolved
                 FROM photo_people pp
                 JOIN photos p ON p.path = pp.path
                 JOIN photo_groups pg ON pg.group_id = p.group_id
@@ -1113,17 +1470,26 @@ def _print_person_photos(
                 ''',
                 (pid,),
             ).fetchall()
+            if date_bounds is not None:
+                rows = [
+                    r for r in rows
+                    if _photo_edtf_overlaps(r['edtf_resolved'], date_bounds)
+                ]
+            listed = [
+                _photo_locator(pconn, r['group_id'], r['primary_path'])
+                for r in rows
+            ]
         finally:
             pconn.close()
     except Exception:
         print('  photos: not indexed (run fha photoindex)')
         return
-    if date_bounds is not None:
-        rows = [r for r in rows if _photo_edtf_overlaps(r['edtf_resolved'], date_bounds)]
-    if rows:
-        print(f'  photos ({len(rows)}):')
-        for r in rows[:10]:
-            print(f"    {r['primary_path']}")
+    if listed:
+        print(f'  photos ({len(listed)}):')
+        for path_text, gone in listed[:10]:
+            print(f'    {path_text}' + ('   (not on disk)' if gone else ''))
+        if any(gone for _path, gone in listed[:10]):
+            print(_MISSING_PHOTO_HINT)
     else:
         print('  photos: none')
 
@@ -1234,6 +1600,10 @@ def _print_place_photos(
 
     Same `photoindex_status()` gating as `_print_person_photos` so stale GPS
     rows (after photos move or get re-geotagged) aren't surfaced silently.
+    A photo whose file has gone missing is still part of this place's story -
+    the archive knows a picture was taken here - so it is listed through
+    `_photo_locator` (live member preferred, "(not on disk)" when there is
+    none) rather than dropped.
 
     With `date_bounds`, each photo is filtered against its own `photos.edtf`
     via `_photo_edtf_overlaps`, so a 1950 photo near the place doesn't appear
@@ -1259,7 +1629,7 @@ def _print_place_photos(
             pconn.row_factory = sqlite3.Row
             rows = pconn.execute(
                 '''
-                SELECT DISTINCT pg.primary_path,
+                SELECT DISTINCT pg.group_id, pg.primary_path,
                        COALESCE(pg.edtf_resolved, p.edtf) AS edtf
                 FROM photos p JOIN photo_groups pg ON pg.group_id = p.group_id
                 WHERE p.gps_lat IS NOT NULL AND p.gps_lon IS NOT NULL
@@ -1267,17 +1637,23 @@ def _print_place_photos(
                 ''',
                 (place['lat'], place['lon']),
             ).fetchall()
+            if date_bounds is not None:
+                rows = [r for r in rows if _photo_edtf_overlaps(r['edtf'], date_bounds)]
+            listed = [
+                _photo_locator(pconn, r['group_id'], r['primary_path'])
+                for r in rows
+            ]
         finally:
             pconn.close()
     except Exception:
         print('  photos: not indexed (run fha photoindex)')
         return
-    if date_bounds is not None:
-        rows = [r for r in rows if _photo_edtf_overlaps(r['edtf'], date_bounds)]
-    if rows:
-        print(f'  photos near coords ({len(rows)}):')
-        for r in rows[:10]:
-            print(f"    {r['primary_path']}")
+    if listed:
+        print(f'  photos near coords ({len(listed)}):')
+        for path_text, gone in listed[:10]:
+            print(f'    {path_text}' + ('   (not on disk)' if gone else ''))
+        if any(gone for _path, gone in listed[:10]):
+            print(_MISSING_PHOTO_HINT)
     else:
         print('  photos near coords: none')
 
@@ -1999,6 +2375,15 @@ def _ranked_search(
     applied per-candidate before dedup so it also bounds how much work later
     tiers do (a `kinds=['text']` search skips the alias/persons/sources/
     places queries entirely - see the guard on the notes_fts block).
+
+    Every hit carries the four documented keys `{id, type, label, detail}`. A
+    text hit whose words came from a transcript no human has checked against
+    the image carries one more, `'unchecked': True` (D15) - additive, and
+    present only when true, so a consumer written to the four-key contract
+    reads exactly what it always read. The rule is the same one the CLI's
+    `_find_text` applies: the SURFACE decides, so only `transcripts_fts` rows
+    are eligible, and `_lib.transcript_text_is_unchecked` makes the fail-closed
+    call so this file never restates it.
     """
     q = (query or '').strip()
     limit = max(0, limit)
@@ -2125,10 +2510,18 @@ def _ranked_search(
         # are deduped by path through the shared `candidates` dict below. The
         # table/column pairs are code literals, never user input.
         for table, content_col in (('notes_fts', 1), ('transcripts_fts', 2)):
+            # THE SURFACE DECIDES, NOT THE MARKER WORD (D15): only a hit read
+            # out of the transcript table can carry `unchecked`, so only that
+            # table pays to read its content column back. A person profile
+            # carrying `<!-- AI-DRAFT … -->` biography prose arrives through
+            # notes_fts and is never marked - it is the same marker pair on a
+            # file that is nobody's reading of a picture.
+            is_transcript_table = table == 'transcripts_fts'
+            body_col = ', content AS body' if is_transcript_table else ''
             try:
                 fts_rows = conn.execute(
-                    f"SELECT path, snippet({table}, {content_col}, '', '', ' … ', 10) AS snip "
-                    f'FROM {table} WHERE {table} MATCH ? LIMIT ?',
+                    f"SELECT path, snippet({table}, {content_col}, '', '', ' … ', 10) AS snip"
+                    f'{body_col} FROM {table} WHERE {table} MATCH ? LIMIT ?',
                     (q, max(limit * 5, 50)),
                 ).fetchall()
             except sqlite3.OperationalError:
@@ -2141,16 +2534,71 @@ def _ranked_search(
                 path = row['path']
                 existing = candidates.get(path)
                 if existing is None or _TIER_TEXT < existing['tier']:
-                    candidates[path] = {
-                        'tier': _TIER_TEXT,
-                        'hit': {
-                            'id': path, 'type': 'text',
-                            'label': (row['snip'] or '').strip(), 'detail': path,
-                        },
+                    hit = {
+                        'id': path, 'type': 'text',
+                        'label': (row['snip'] or '').strip(), 'detail': path,
                     }
+                    # Present-or-absent, never `"unchecked": false`. A consumer
+                    # reads "the key is here" as the warning; an explicit false
+                    # would read as "checked", which is a claim nobody has made
+                    # about an unmarked transcript or a record body.
+                    if is_transcript_table and transcript_text_is_unchecked(row['body'] or ''):
+                        hit['unchecked'] = True
+                    candidates[path] = {'tier': _TIER_TEXT, 'hit': hit}
 
     ordered = sorted(candidates.values(), key=lambda c: (c['tier'], c['hit']['label'].lower()))
     return [c['hit'] for c in ordered[:limit]]
+
+
+def search_json_with_coverage(
+    archive_root: Path,
+    fha_config: dict,
+    query: str,
+    *,
+    kinds: list[str] | None = None,
+    limit: int = 20,
+) -> tuple[list[dict], str | None]:
+    """The ranked search AND the D14 coverage caveat, from one open connection.
+
+    `(hits, note)`. The note is `_searchable_text_note`'s own sentence - the
+    same words the CLI text search prints, composed once in one place so the
+    two surfaces can never drift into disagreeing about how much of the archive
+    a search could read. It is None when there is nothing to caveat.
+
+    This exists because the caveat needs the connection the search already has.
+    Asking for it separately would mean a second `open_index_db`, which prints
+    its own stale/missing-index message as a side effect - the same
+    double-message `run_find_json`'s docstring explains avoiding.
+
+    THE NOTE IS FOR AN UNFILTERED SEARCH ONLY (`kinds is None`). A `--kind`
+    lookup is asking "which record do you mean" - a person picker, a place
+    picker, an id resolving to a name - not "what does this archive say", and
+    the caveat answers the second question. So a filtered call returns None and
+    does not pay for the count: two indexed scans (`source_files` and
+    `transcripts_fts`'s key column) that the caller was never going to show,
+    on every debounced keystroke of the workbench's pickers.
+
+    None is the only other answer this can give, and that is the point: the
+    count is archive-wide, so recomputing it over the filtered rows would give a
+    second, smaller number for the same archive and the surface would be
+    answering one question two ways. Absent, or the one sentence - never a rival
+    number.
+    """
+    conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
+    if conn is None:
+        return [], None
+    try:
+        hits = _ranked_search(conn, query, kinds, limit)
+        if kinds is not None:
+            return hits, None
+        return hits, _searchable_text_note(conn, found_something=bool(hits))
+    except sqlite3.OperationalError:
+        # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's
+        # table probe confirms the required tables EXIST, not that every
+        # column a query touches is present in an older schema.
+        return [], None
+    finally:
+        conn.close()
 
 
 def search_json(
@@ -2170,6 +2618,10 @@ def search_json(
     caller that must tell those two apart (the CLI) uses `run_find_json`
     instead, which carries the outcome in a `Result`.
 
+    A caller that also wants to tell its reader how much of the archive the
+    search could read uses `search_json_with_coverage`, whose first element
+    this is; this signature is left alone because it is the documented one.
+
     `fha_config` is accepted for signature parity with every other finder in
     this file (`_find_person`, `_related_person`, …) and to leave room for a
     later asset-root-aware hit (e.g. resolving a text hit's path through
@@ -2177,18 +2629,8 @@ def search_json(
     (aliases/persons/sources/places/place_names/notes_fts) all carry
     archive-relative paths and IDs already, so it is not read yet.
     """
-    conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
-    if conn is None:
-        return []
-    try:
-        return _ranked_search(conn, query, kinds, limit)
-    except sqlite3.OperationalError:
-        # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's
-        # table probe confirms the required tables EXIST, not that every
-        # column a query touches is present in an older schema.
-        return []
-    finally:
-        conn.close()
+    return search_json_with_coverage(
+        archive_root, fha_config, query, kinds=kinds, limit=limit)[0]
 
 
 def run_find_json(
@@ -2209,6 +2651,13 @@ def run_find_json(
     connection with `_ranked_search`, `search_json`'s same core, so the
     plain message - and the exit code - are identical to calling
     `search_json` directly, printed exactly once.
+
+    The `Result` carries the D14 coverage caveat alongside the hits, under
+    `data['coverage_note']` (None when there is nothing to caveat). It rides
+    in `data` rather than in `messages` because `_cmd_find_json` prints it
+    verbatim - the sentence already opens with its own "Note:" and is the
+    identical text the human search prints, and running it through the
+    message-level prefixes would emit "NOTE: Note: …".
     """
     conn = open_index_db(archive_root, _SEARCH_REQUIRED_TABLES)
     if conn is None:
@@ -2218,6 +2667,8 @@ def run_find_json(
     try:
         try:
             results = _ranked_search(conn, query, kinds, limit)
+            coverage_note = _searchable_text_note(
+                conn, found_something=bool(results))
         except sqlite3.OperationalError:
             return Result(ok=False, exit_code=EXIT_FAILURE).add(
                 'error',
@@ -2227,7 +2678,8 @@ def run_find_json(
             )
     finally:
         conn.close()
-    return Result(ok=True, exit_code=EXIT_CLEAN, data={'results': results})
+    return Result(ok=True, exit_code=EXIT_CLEAN,
+                  data={'results': results, 'coverage_note': coverage_note})
 
 
 def _cmd_find_json(result: Result) -> int:
@@ -2247,8 +2699,21 @@ def _cmd_find_json(result: Result) -> int:
     list `[{id, type, label, detail}, ...]`, not `Result.data`'s own wrapper
     dict - printing `result.data` whole would hand a consumer written to
     that contract `{"results": [...]}` instead of the array it expects.
+
+    THE COVERAGE CAVEAT GOES ON STDERR (D14, extended to --json). stdout is a
+    parsed contract and stays a bare array, byte for byte what it has always
+    been; the caveat is prose for whoever is reading the stream - which for
+    this surface is usually another model, the exact reader #46 was written
+    about. A pipe consumer sees no change, a terminal or a log sees the
+    warning. It is printed BEFORE the document so it is not mistaken for a
+    trailer on the JSON, and only when there is something to caveat: an
+    archive whose sources all hold text emits nothing on stderr at all,
+    because a warning that always fires is a warning nobody reads.
     """
     if 'results' in result.data:
+        note = result.data.get('coverage_note')
+        if note:
+            print(note, file=sys.stderr)
         print(json.dumps(result.data['results']))
         return result.exit_code
     for m in result.messages:
@@ -2532,6 +2997,29 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     s.set_defaults(func=_run_search)
 
 
+def _reader_went_away() -> int:
+    """Exit quietly after a BrokenPipeError: `fha find … | head` is normal use.
+
+    `head` closes the pipe the moment it has its lines, so the next print
+    raises. That is the shell doing its job, not the archive being broken -
+    but the exception used to travel up to fha.py's catch-all and print
+    `ERROR: something went wrong: [Errno 32] Broken pipe` with a `fha doctor`
+    next step, blaming the archive and sending the human off to fix nothing.
+
+    Pointing stdout at the null device before returning is the standard
+    recipe: without it the interpreter tries to flush the dead pipe on the way
+    out and prints its own `Exception ignored in: <_io.TextIOWrapper …>`
+    afterwards - the traceback we just avoided, arriving late. Under a
+    redirected stdout (tests, the workbench) there is no real file descriptor
+    to swap, which is fine: there is no doomed flush either.
+    """
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):
+        pass
+    return EXIT_CLEAN
+
+
 def _run_find(args: argparse.Namespace) -> int:
     """argparse → run_find bridge; returns the plain int exit code.
 
@@ -2540,7 +3028,19 @@ def _run_find(args: argparse.Namespace) -> int:
     false "not found in archive tree") lives in `_lib.resolve_root_arg`,
     the shared chokepoint. The `fha id check` alias resolves its root in
     fha.py through the same helper, not here.
+
+    A closed pipe is caught here, at find's CLI boundary, rather than in
+    fha.py's generic handler: this is where the reports long enough to be
+    piped through `head` are printed.
     """
+    try:
+        return _find_command(args)
+    except BrokenPipeError:
+        return _reader_went_away()
+
+
+def _find_command(args: argparse.Namespace) -> int:
+    """The dispatch itself - see `_run_find`, which wraps it."""
     archive_root = resolve_root_arg(args, command='fha find')
     if archive_root is None:
         return EXIT_FAILURE
@@ -2636,8 +3136,18 @@ def _run_search(args: argparse.Namespace) -> int:
     The positional phrase arrives as a list of words (nargs='+'); joining with
     spaces lets `fha search rose hartley` work unquoted while `fha search "1880
     census"` still passes a single token. Root resolution goes through the same
-    shared chokepoint as `fha find`.
+    shared chokepoint as `fha find`, and a closed pipe ends the same way (a
+    text search is the longest report this file prints, so `| head` is if
+    anything more likely here).
     """
+    try:
+        return _search_command(args)
+    except BrokenPipeError:
+        return _reader_went_away()
+
+
+def _search_command(args: argparse.Namespace) -> int:
+    """The search dispatch itself - see `_run_search`, which wraps it."""
     archive_root = resolve_root_arg(args, command='fha search')
     if archive_root is None:
         return EXIT_FAILURE

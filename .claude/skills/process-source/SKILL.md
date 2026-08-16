@@ -5,7 +5,9 @@ description: >
   a `fha capture --ingest` sweep drops items in the inbox. Runs `fha process` (Stage A: mint the S-id,
   rename documents / keyword photos, scaffold the record), then drafts `suggested` claims from the
   evidence (Stage B: read the file including images, resolve people and places against the index), then
-  hands off to `review-claims` (Stage C). Handles loosely-written notes without stalling.
+  hands off to `review-claims` (Stage C). An image-only item is transcribed first, via
+  `transcribe-source`, so claims come from text rather than from one pass over pictures. Handles
+  loosely-written notes without stalling.
 ---
 
 # process-source
@@ -14,7 +16,9 @@ The everyday intake path: an inbox item — a scan, a photo, a capture stub, a b
 — becomes a real source record with drafted `suggested` claims. `fha process` owns the deterministic
 Stage A (ID, renames, scaffold); this skill adds Stage B, the AI draft that reads the evidence, resolves
 the people and places, and drafts the claims. Then it hands the drafts to `review-claims` for the human
-gate. See [`../_STANDARD.md`](../_STANDARD.md).
+gate. Between the two sits Stage A½: an item whose files are all images gets transcribed **before** any
+claim is drafted, so Stage B works from words rather than from one pass over pictures.
+See [`../_STANDARD.md`](../_STANDARD.md).
 
 ## When this runs
 
@@ -70,9 +74,35 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      is gone and the `sources/…` record is the truth.
    - A **bare file** with no sidecar starts Stage B from scratch.
 
+### Stage A½ — if the item is image-only, transcribe it BEFORE drafting anything
+
+3. **Check whether the archive will hold any of this source's words.** After `fha process` has filed
+   the item, look at the record's `files:` inventory. A source is **image-only** when none of its
+   entries holds text a search can read — no entry whose `role:` is `transcript`, `transcription` or
+   `extracted-text`, and no `.md`/`.txt` file (`_lib.file_entry_carries_text`, the same rule
+   `fha lint`'s W124 and `fha find --text`'s coverage note use). A scan, a photograph and a PDF with
+   no text layer are all image-only, however much text a human eye can see in them.
+
+   **If it is image-only, run [`transcribe-source`](../transcribe-source/SKILL.md) now, before step 4.**
+   Not after, and not "if there's time". The transcript exists *first* so the claims you draft in
+   Stage B come from text you read out line by line rather than from a single pass over pictures, and
+   this skill is the only place that ordering can be enforced (issue #46 — a surname written plainly on
+   a hand-drawn chart in an image-only scan was judged invented and struck, because nothing in the
+   archive held the document's words). The transcript also carries the `[Page N]` labels your Stage B
+   `anchor:`s will cite.
+
+   It hands back with the source's words attached as a `role: transcript` companion, marked
+   `<!-- AI-DRAFT … -->` — an unreviewed machine reading, and Stage B treats it as exactly that: the
+   image is still the evidence of record, so read the transcript **beside** the file, not instead of
+   it. Then carry on at step 4 with both in front of you.
+
+   Two cases that are not this: a source that already has a transcript (nothing to do), and a PDF that
+   carries its own text layer (`fha source extract` handles it mechanically — `transcribe-source` tries
+   that first anyway, so just run the skill and let it decide).
+
 ### Stage B — the AI draft (judgment)
 
-3. **Read the evidence — embedded text first, then your eyes.** The reading order is: what the file
+4. **Read the evidence — embedded text first, then your eyes.** The reading order is: what the file
    already says about itself, then the file itself.
    - **Embedded metadata first.** A photos-root image often already carries text: a **Caption** is a
      verbatim transcription of what is written on or with the photo — treat it as evidence; an AI
@@ -104,7 +134,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      <primary> --more FILE transcript` — then mine *that* the way `mine-transcript` works a transcript,
      keeping page anchors.
 
-4. **Resolve every named person and place against the index — propose, don't guess.**
+5. **Resolve every named person and place against the index — propose, don't guess.**
    ```
    fha find "Margaret Cole"          # does this name already resolve to a P-id?
    fha find --related <P-id>         # the person's neighborhood, to disambiguate two same-named people
@@ -115,7 +145,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    - A genuinely new person → mint the stub *record* on his confirmation, **by name and before you draft
      any claim about him**. Use the name-based path: plain `fha stubs` only scans claims already written
      (there are none for him yet, so it creates nothing), and a bare `fha id mint P` returns an ID with no
-     record — either way the claim you draft in step 5 would reference a P-id with no stub and trip lint
+     record — either way the claim you draft in step 6 would reference a P-id with no stub and trip lint
      **E005**.
      ```
      fha stubs --from-names "Margaret Cole" --dry-run   # preview what will be created (does NOT reserve an ID)
@@ -126,7 +156,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    Resolve places the same way (`fha find <place text>`; an unlinked place is fine — leave `place_text:`
    as written and let `place-research` / `fha confirm place` elevate a recurring one later).
 
-5. **Draft `suggested` claims with anchors and Mills fields.** For each substantive assertion in the
+6. **Draft `suggested` claims with anchors and Mills fields.** For each substantive assertion in the
    evidence, add a claim to the record's `## Claims` block:
    - `status: suggested` (always), a fresh `id:` (`fha id mint C`), the right `type:` (birth, death,
      marriage, residence, census, occupation, relationship, …), `persons:` (resolved P-ids), and a
@@ -138,13 +168,13 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    - the Mills fields by default (`information:` primary/secondary, `evidence:` direct/indirect;
      `confidence:` defaulted from the source type). A relationship claim carries `roles:` and a `subtype:`.
 
-6. **Route narrative and un-mappable prose.**
+7. **Route narrative and un-mappable prose.**
    - Story-shaped passages (an anecdote, a description) → the record's `## Stories` section, tagged with
      `[[P-…]]` refs.
    - Anything that doesn't map to a claim (a fuzzy lead, a "chase this" note, context) → `## Notes`.
      Folding it here is the correct move, not a failure — never stall because a note is loose.
 
-7. **Record the AI pass** in the source's `## AI Passes` block:
+8. **Record the AI pass** in the source's `## AI Passes` block:
    ```yaml
    ## AI Passes
    - {date: 2026-07-01, model: {your-model-id}, harness: {your-harness},
@@ -158,7 +188,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    words). Give it its discoverability surface instead: fill the record's `people:`/`places:` frontmatter
    links, write a `## Notes` paragraph saying what it is and why it was kept (this prose is full-text
    searched — it is where "keywords" go), delete the empty `## Claims` block or leave it out, record the
-   AI pass with `outputs: []` (step 7), and **skip the `review-claims` hand-off** — there is nothing to
+   AI pass with `outputs: []` (step 8), and **skip the `review-claims` hand-off** — there is nothing to
    review. Close with `fha index` and `fha lint` yourself, since the review close-out won't run.
 
    One flavor of this deserves special respect: **material kept because it was investigated and
@@ -170,7 +200,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 
 ### Stage C — hand off to the gate
 
-8. **Hand off to `review-claims`** for this source. That skill walks each drafted claim with the human,
+9. **Hand off to `review-claims`** for this source. That skill walks each drafted claim with the human,
    captures accept/dispute/edit, and does the close-out (`fha index` — full, since intake usually minted
    new person stubs — `fha xref`, a timeline/sources-index/draft-queue refresh for the people touched, `fha lint`).
    Don't duplicate that work here — the reindex/xref/views/lint belong to the review close-out.
@@ -197,6 +227,8 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   un-mappable prose lands in `## Notes`; informal dates are translated to EDTF in the drafted claims.
 - An item with nothing claim-worthy exits cleanly by the zero-claims path: `people:`/`places:` filled,
   context in `## Notes`, AI pass recorded with `outputs: []`, no review hand-off, no forced claims.
+- An image-only item is transcribed at Stage A½ *before* any claim is drafted: the source carries a
+  `role: transcript` companion, and the Stage B claims cite its `[Page N]` anchors.
 - Every drafted claim is `suggested` (no claim is `accepted` at this stage).
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

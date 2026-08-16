@@ -32,17 +32,21 @@ CLI, so the checks run over a fresh in-memory registry with no prior `fha index`
 """
 
 import datetime
+import io
+import os
 import re
 import sys
 import tempfile
 import unittest
+import unittest.mock
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
-from _lib import CLAIMS_RE, normalize_date, read_record
+from _lib import CLAIMS_RE, EXIT_WARNINGS, normalize_date, read_record
 
 
 _PERSON_MD = '''---
@@ -634,6 +638,98 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         self.assertNotIn('h-7777777777', reg.hypothesis_ids)
         self.assertTrue([f for f in findings
                          if f.code == 'E004' and 'h-7777777777' in f.message])
+
+
+class ResearchCompanionIdentityTests(unittest.TestCase):
+    """`research` is a filename SLOT, not a word found anywhere in the stem.
+
+    SPEC §13 puts the companion kind immediately before the P-id
+    (`hartley__thomas_research_P-…`), so anywhere else in the name it belongs
+    to the given names. A woman recorded as Research Anne Smith
+    (`smith__research_anne_P-…`) has an ordinary profile: its `## Hypotheses`
+    entries are not SPEC §16 hypothesis records, and its `## Open Questions`
+    block is not part of the E009 question scope.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    _BODY = (
+        '## Open Questions\n\n'
+        '## Q: Which ship did she arrive on?\n'
+        '- origin: human\n'
+        '- status: open\n\n'
+        '## Hypotheses\n\n'
+        '- id: H-abcabcabca\n'
+        '  hypothesis: "arrived by ~1869"\n'
+        '  basis: "railroad boom"\n'
+        '  origin: agent\n'
+        '  status: open\n'
+    )
+
+    def _write(self, filename: str) -> Path:
+        """A person record: the SPEC §9 required fields, then the body."""
+        path = self.root / 'people' / filename
+        path.write_text(
+            '---\nid: P-3333333333\nname: Research Anne Smith\nliving: false\n---\n\n'
+            + self._BODY, encoding='utf-8')
+        return path
+
+    def _write_research(self, filename: str) -> Path:
+        """The SPEC §16 research companion, as `fha person promote` scaffolds it.
+
+        An `id:` and a `created:` date and nothing else - which is exactly why
+        `id:` can never be part of the person-record test, and why this file
+        is a research companion while `_write`'s is a person's own record.
+        """
+        path = self.root / 'people' / filename
+        path.write_text(
+            '---\nid: P-3333333333\ncreated: 2026-06-12\n---\n\n' + self._BODY,
+            encoding='utf-8')
+        return path
+
+    def test_a_given_name_containing_the_kind_word_is_still_a_profile(self) -> None:
+        path = self._write('smith__research_anne_P-3333333333.md')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual(list(reg.research_content), [])
+        # The other half of the same reading: it registers as a profile, so the
+        # required-field checks that only profiles get still apply to it.
+        self.assertIn('p-3333333333', reg.person_profile_paths)
+        self.assertEqual(reg.person_companion_paths.get('p-3333333333', []), [])
+        self.assertEqual(reg.person_profile_paths['p-3333333333'], [path])
+
+    def test_the_real_research_companion_is_still_read(self) -> None:
+        path = self._write_research('smith__anne_research_P-3333333333.md')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual(list(reg.research_content), [path])
+
+    def test_a_person_record_in_that_slot_is_her_record_not_research(self) -> None:
+        # The slot before the P-id is also a legal last given name, so this
+        # same filename may be Anne Research Smith's own record. Then SPEC §16
+        # homes neither the hypotheses nor the questions in it - a profile is
+        # not a research file however it is named.
+        self._write('smith__anne_research_P-3333333333.md')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual(list(reg.research_content), [])
+
+    def test_an_id_less_research_companion_is_still_read(self) -> None:
+        # Mid-graduation: the file carries the kind but no id yet. The kind
+        # slot is the last thing in the stem when the id is absent, so the
+        # hypotheses it defines still count as existing records for E004.
+        path = self.root / 'people' / 'smith__anne_research.md'
+        path.write_text(self._BODY, encoding='utf-8')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual(list(reg.research_content), [path])
 
 
 _PLACEHOLDER_PERSON = '''---
@@ -1480,6 +1576,369 @@ class DirectLineStubW119Tests(unittest.TestCase):
     def test_no_root_person_stays_silent(self) -> None:
         w119 = self._w119(self._build(root_person=False))
         self.assertEqual(w119, [])
+
+
+class KeywordScanRespectsPhotosIgnoreTests(unittest.TestCase):
+    """E012's exiftool pass honours `photos_ignore:` like the catalog scan.
+
+    Without this the check reads every file in the bulk photo-service export
+    the setting exists to exclude - the motivating archive (#35) has 63,156 of
+    them - and hands them all to exiftool for keywords nobody filed.
+    """
+
+    def _roots(self, photos_ignore=None):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(__import__('shutil').rmtree, tmp, True)
+        root = Path(tmp)
+        photos = root / 'photos'
+        (photos / 'Woodbury').mkdir(parents=True)
+        (photos / 'Flickr Export' / 'deep').mkdir(parents=True)
+        (photos / 'Woodbury' / 'keep.jpg').write_bytes(b'x')
+        (photos / 'Flickr Export' / 'bulk.jpg').write_bytes(b'x')
+        (photos / 'Flickr Export' / 'deep' / 'deeper.jpg').write_bytes(b'x')
+        cfg = {} if photos_ignore is None else {'photos_ignore': photos_ignore}
+        return root, photos, lint.Registry(root, cfg)
+
+    def _scanned(self, photos_ignore=None):
+        root, photos, registry = self._roots(photos_ignore)
+        return {
+            p.relative_to(photos).as_posix()
+            for p in lint._files_to_keyword_scan('photos', photos, registry)
+        }
+
+    def test_without_the_setting_every_photo_is_scanned(self) -> None:
+        self.assertEqual(self._scanned(), {
+            'Woodbury/keep.jpg',
+            'Flickr Export/bulk.jpg',
+            'Flickr Export/deep/deeper.jpg',
+        })
+
+    def test_an_ignored_subtree_is_skipped_wholesale(self) -> None:
+        self.assertEqual(self._scanned('Flickr Export/*'), {'Woodbury/keep.jpg'})
+
+    def test_matching_is_case_insensitive_like_the_scan(self) -> None:
+        # The photo library sits on a case-insensitive filesystem on Windows
+        # and macOS; 'flickr export' failing to prune reads as a broken feature.
+        self.assertEqual(self._scanned('flickr export/*'), {'Woodbury/keep.jpg'})
+
+    def test_a_malformed_setting_prunes_nothing_rather_than_guessing(self) -> None:
+        # photoindex is where the human is shown the real parse error.
+        self.assertEqual(len(self._scanned(12345)), 3)
+
+    def test_documents_ignores_the_photos_setting(self) -> None:
+        root, _photos, registry = self._roots('Flickr Export/*')
+        docs = root / 'documents' / 'Flickr Export'
+        docs.mkdir(parents=True)
+        (docs / 'deed.pdf').write_bytes(b'x')
+        found = {
+            p.name
+            for p in lint._files_to_keyword_scan(
+                'documents', root / 'documents', registry)
+        }
+        self.assertEqual(found, {'deed.pdf'})
+
+
+_MARIE_PROFILE = (
+    '---\nid: P-3kq9v8x2m1\nname: Marie Timeline Hartley\nliving: false\n'
+    'sex: F\ntier: curated\n---\n\n# Marie Timeline Hartley\n\n'
+    '## Biography\n\nShe kept the farm books.\n'
+)
+
+_MARIE_TIMELINE = (
+    '<!-- GENERATED by fha views timeline on 2026-06-30'
+    ' - do not edit; regenerate instead -->\n\n'
+    '# Timeline: Marie Hartley\n\n- 1880 - birth: born in Fairview\n'
+)
+
+
+class ContentDecidesPersonKindTests(unittest.TestCase):
+    """A person named Marie Timeline was invisible, and lint said so clean.
+
+    SPEC §13's kind slot and the last given-name segment are one slot, so
+    `hartley__marie_timeline_P-….md` reads as a generated timeline. Lint filed
+    her under the companion paths, skipped every §9 profile check, and printed
+    `✓ No issues found.` while she had no `persons` row anywhere in the
+    archive. Content now decides here exactly as it does in the index, and the
+    remaining ambiguity is reported (W122) instead of being resolved silently.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, filename: str, text: str) -> Path:
+        path = self.root / 'people' / filename
+        path.write_text(text, encoding='utf-8')
+        return path
+
+    def _codes(self, findings) -> list[str]:
+        return [f.code for f in findings]
+
+    def test_a_person_named_timeline_registers_as_a_profile(self) -> None:
+        path = self._write('hartley__marie_timeline_P-3kq9v8x2m1.md', _MARIE_PROFILE)
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertEqual(reg.person_profile_paths.get('p-3kq9v8x2m1'), [path])
+        self.assertEqual(reg.person_companion_paths.get('p-3kq9v8x2m1', []), [])
+
+    def test_w122_fires_on_the_contradiction(self) -> None:
+        self._write('hartley__marie_timeline_P-3kq9v8x2m1.md', _MARIE_PROFILE)
+        findings, _reg = lint._run_lint_core(self.root, {})
+        w122 = [f for f in findings if f.code == 'W122']
+        self.assertEqual(len(w122), 1)
+        text = w122[0].message
+        # Plain language for a non-technical genealogist: the reading is
+        # correct, the rename is named, and keeping the name is allowed.
+        self.assertIn('hartley__marie_P-3kq9v8x2m1.md', text)
+        self.assertIn('timeline', text)
+        for jargon in ('frontmatter', 'companion', 'kind slot', 'parse'):
+            self.assertNotIn(jargon, text.lower())
+
+    def test_w122_asks_for_a_name_when_there_is_none_to_suggest(self) -> None:
+        # Someone whose one given name IS the word: dropping it would leave
+        # `hartley___P-…`, so the message must ask for a name instead of
+        # proposing a broken one.
+        self._write(
+            'hartley__timeline_P-3kq9v8x2m1.md',
+            '---\nid: P-3kq9v8x2m1\nname: Timeline Hartley\nliving: false\n---\n\n# T\n')
+        findings, _reg = lint._run_lint_core(self.root, {})
+        text = [f for f in findings if f.code == 'W122'][0].message
+        self.assertNotIn('hartley___P-', text)
+        self.assertIn('give the file a name', text)
+
+    def test_w122_is_silent_for_a_real_generated_companion(self) -> None:
+        self._write('hartley__marie_P-3kq9v8x2m1.md', _MARIE_PROFILE)
+        self._write('hartley__marie_timeline_P-3kq9v8x2m1.md', _MARIE_TIMELINE)
+        findings, _reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('W122', self._codes(findings))
+
+    def test_w122_is_silent_for_an_ordinary_profile(self) -> None:
+        self._write('hartley__marie_P-3kq9v8x2m1.md', _MARIE_PROFILE)
+        findings, _reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('W122', self._codes(findings))
+
+    def test_lint_no_longer_reports_the_archive_clean(self) -> None:
+        # The whole defect in one line: the only person in the archive had no
+        # index row, and `fha lint` said there was nothing to see.
+        self._write('hartley__marie_timeline_P-3kq9v8x2m1.md', _MARIE_PROFILE)
+        result = lint.run_lint(self.root, {})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            lint._cmd_lint(result, self.root)
+        out = buf.getvalue()
+        self.assertNotIn('✓ No issues found.', out)
+        self.assertIn('W122', out)
+
+    def test_a_research_name_over_a_person_record_is_not_research(self) -> None:
+        # SPEC §16 homes ## Hypotheses and ## Open Questions in the research
+        # companion. A person record that happens to be named like one is
+        # neither, so its body must stay out of the E009 research scope.
+        self._write(
+            'smith__anne_research_P-3333333333.md',
+            '---\nid: P-3333333333\nname: Anne Research Smith\nliving: false\n---\n\n'
+            '## Open Questions\n\n## Q: Which ship did she arrive on?\n'
+            '- origin: human\n- status: open\n\n'
+            '## Hypotheses\n\n- id: H-abcabcabca\n'
+            '  hypothesis: "arrived by ~1869"\n  origin: agent\n  status: open\n')
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertEqual(list(reg.research_content), [])
+        self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertIn('W122', self._codes(findings))
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    The fault goes in at `os.scandir` because `os.walk` resolves it at call
+    time on every supported Python - that is what makes the `onerror` seam
+    observable here. chmod cannot produce this: CI runs as root, which ignores
+    mode bits, and Windows has no equivalent.
+
+    What this deliberately does NOT rely on: that pathlib's `rglob` reaches the
+    disk the same way. It does on 3.11/3.12/3.14, but NOT on the 3.10 floor
+    (pathlib routes through an accessor object that bound `os.scandir` at
+    import time, so a later patch is invisible) and not on 3.13. So the
+    injection does not reproduce the pre-fix `rglob` behaviour on every version
+    we support - a regression back to `rglob` is still caught everywhere, but
+    on the floor it is caught by the warning going missing rather than by the
+    folder reading as empty.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class UnreadableRecordFolderTests(unittest.TestCase):
+    """W123: lint must not certify an archive it could not fully read.
+
+    `fha lint` sells one sentence - "your archive matches the spec" - and Pass
+    1's `rglob` handed it that sentence over any subtree that would not list.
+    Every record filed there went unchecked and the summary still read "0
+    errors", which is the most confident possible way to say nothing at all."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.folder = self.root / 'people' / '040 Hartley'
+        self.folder.mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.folder / 'hartley__cur_P-aaaaaaaaaa.md').write_text(
+            '---\nid: P-aaaaaaaaaa\nname: Cur Hartley\nliving: false\n'
+            'tier: curated\nno_known_marriages: true\n---\n\n'
+            '## Biography\n\nx\n', encoding='utf-8')
+
+    def test_a_folder_that_will_not_open_is_reported_not_certified(self) -> None:
+        clean, reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('W123', [f.code for f in clean])
+        self.assertEqual(reg.unreadable_dirs, [])
+        self.assertIn('p-aaaaaaaaaa', reg.person_profile_paths)
+
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            findings, reg = lint._run_lint_core(self.root, {})
+
+        # Pre-fix: the folder's record simply was not there, no W123 was
+        # raised, and lint reported an archive it had never opened as clean.
+        self.assertNotIn('p-aaaaaaaaaa', reg.person_profile_paths)
+        w123 = [f for f in findings if f.code == 'W123']
+        self.assertEqual(len(w123), 1)
+        self.assertEqual(w123[0].severity, 'W')
+        self.assertIn('people/040 Hartley', w123[0].message)
+        self.assertIn('fha lint', w123[0].message)
+
+    def test_run_lint_leaves_exit_0_behind(self) -> None:
+        # The point of the warning: a clean bill of health must not be issued
+        # over records nobody read, so the run moves off exit 0.
+        #
+        # W123 is asserted BY CODE, not by a warning count, and the difference
+        # is the whole test. `n_warnings >= 1` passed against the unfixed lint
+        # on Python 3.10 - the floor, and a CI leg - for a reason that has
+        # nothing to do with this guarantee: pre-fix lint reached records
+        # through `rglob`, which on 3.10 does not observe a patched
+        # `os.scandir` (pathlib binds it at import time there). So the denied
+        # record stayed visible, its missing vitals raised W101, and one
+        # warning was enough to satisfy the assertion. On 3.14 the same test
+        # failed honestly. A count is not evidence when the fixture can supply
+        # the count by itself; the code is.
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            result = lint.run_lint(self.root, {})
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertIn('W123', [m.code for m in result.messages])
+
+
+_W124_SID = 'S-5n7q9s1t3v'
+_W124_SOURCE = '''---
+id: {sid}
+title: Hand-drawn family chart
+source_type: other
+files:{files}
+---
+
+## Claims
+```yaml
+- id: C-5n7q9s1t3v
+  type: name
+  persons: ["Rose Harkness"]
+  value: "Rose Harkness"
+  status: {status}
+  confidence: high
+  reviewed: 2026-08-01
+```
+
+## Notes
+Twenty-two pages, all picture.
+'''
+
+_IMAGE = (f'documents/charts/harkness-chart_{_W124_SID}.jpg', 'front')
+_TRANSCRIPT = (f'documents/charts/harkness-chart-transcript_{_W124_SID}.md',
+               'transcript')
+
+
+class UntranscribedEvidenceTests(unittest.TestCase):
+    """W124: accepted claims resting on evidence the archive holds no words for.
+
+    A source can be processed, mined from its pictures, reviewed and accepted,
+    and the archive still holds no text of what the document says. Nothing in
+    the tools noticed, and nothing warned - so a text search over such an
+    archive answered for what an earlier pass had chosen to write down while
+    looking exactly like a search of the evidence. The archive that produced
+    #46 carried 43 such sources and 135 accepted claims on them."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'people').mkdir()
+        (self.root / 'sources' / 'other').mkdir(parents=True)
+
+    def _write_source(self, entries: list, status: str = 'accepted') -> None:
+        """Write the source record AND the files it lists, so the only finding
+        under test is W124 - a `files:` line with nothing behind it is E011."""
+        block = ''.join(
+            f'\n  - file: {path}\n    role: {role}' for path, role in entries)
+        (self.root / 'sources' / 'other'
+         / f'harkness-chart_{_W124_SID.lower()}.md').write_text(
+            _W124_SOURCE.format(sid=_W124_SID, files=block, status=status),
+            encoding='utf-8')
+        for path, _role in entries:
+            on_disk = self.root / path
+            on_disk.parent.mkdir(parents=True, exist_ok=True)
+            on_disk.write_text('Rose Harkness, married 1871.\n', encoding='utf-8')
+
+    def _codes(self) -> list:
+        findings, _ = lint._run_lint_core(self.root, {})
+        return [f for f in findings if f.code == 'W124']
+
+    def test_an_image_only_source_with_an_accepted_claim_is_flagged(self) -> None:
+        self._write_source([_IMAGE])
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertEqual(found[0].severity, 'W')
+        # The next-step rule: the message names what to do, in commands that
+        # exist. `fha source transcribe` does not.
+        self.assertIn('1 accepted claim(s)', found[0].message)
+        self.assertIn(_W124_SID, found[0].message)
+        self.assertIn('fha source extract', found[0].message)
+        self.assertIn('--more', found[0].message)
+        self.assertNotIn('fha source transcribe', found[0].message)
+
+    def test_a_transcript_beside_the_scan_settles_it(self) -> None:
+        self._write_source([_IMAGE, _TRANSCRIPT])
+        self.assertEqual(self._codes(), [])
+
+    def test_suggested_claims_alone_are_not_flagged(self) -> None:
+        # Nothing has been accepted on the strength of an unread picture yet -
+        # review is where that gets settled, and W102 already names the backlog.
+        self._write_source([_IMAGE], status='suggested')
+        self.assertEqual(self._codes(), [])
+
+    def test_a_source_with_no_files_is_not_flagged(self) -> None:
+        # An accepted claim from an online record with nothing attached has no
+        # evidence file to transcribe; there is nothing here to fix.
+        self._write_source([])
+        self.assertEqual(self._codes(), [])
+
+    def test_the_warning_moves_the_run_off_exit_0(self) -> None:
+        self._write_source([_IMAGE])
+        result = lint.run_lint(self.root, {})
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertIn('W124', [m.code for m in result.messages])
 
 
 if __name__ == '__main__':

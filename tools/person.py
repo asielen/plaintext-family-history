@@ -6,6 +6,7 @@ person.py - fha person: deterministic person-field write-backs (TOOLING §3c).
                  [--birth DATE] [--death DATE] [--dry-run] [--root PATH]
   fha person promote <P-id> [--into FOLDER] [--dry-run] [--root PATH]
   fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
+  fha person set-sex <P-id> M|F|intersex|unknown [--dry-run] [--root PATH]
   fha person relate <P-id> (--parent|--child|--sibling|--spouse) <P-id2>
                      [--subtype WORD] [--reciprocal] [--dry-run]
   fha person estimate <P-id> [--birth DATE|-] [--death DATE|-] [--dry-run]
@@ -72,9 +73,22 @@ DESIGN RULES (why the code looks the way it does)
   means the warning cannot be offered.)
 - **The edit is text surgery, not a YAML round-trip.** Only the touched
   line(s) change; key order, hand comments, and every other byte survive.
-  Reading and writing go through `read_text_exact`/`write_text_exact` so a
-  CRLF-authored record churns only the edited lines - `set-living`'s pattern,
-  reused by every verb below it.
+  Reading and writing go through `read_text_exact`/`write_text_exact_atomic`
+  so a CRLF-authored record churns only the edited lines - `set-living`'s
+  pattern, reused by every verb below it.
+- **Every write lands whole or not at all.** The writer is
+  `_lib.write_text_exact_atomic` (temp file, fsync, `os.replace`), never the
+  truncating `write_text_exact`. A person record is frequently the archive's
+  only copy of that ancestor. The failure that matters here is therefore not
+  "the edit did not happen" (every verb below refuses cleanly and says so) but
+  a disk that fills, or a process that dies, between the truncate and the last
+  byte: a truncating writer leaves a record that is half a file, and the verb
+  then reports a refusal over a record it has already destroyed. That is the
+  one outcome no message can walk back. With the atomic writer a raise means
+  the old bytes are still there, which is what the refusals already promise.
+  `relate`'s `--reciprocal` rollback rests on the same guarantee: it puts the
+  FIRST file's text back, and can ignore the second because a failed write
+  there left nothing behind to undo.
 - **Refuse rather than guess.** Before anything is written to frontmatter, the
   rewrite is re-parsed with the shared `_lib.frontmatter_edit_problem`: it
   must still parse, `id` must be unchanged, and no field outside the verb's
@@ -149,6 +163,7 @@ CODE MAP
   _replace_living_line        - swap only the value, keep any trailing comment
   _frontmatter_edit_problem   - the living-specific wrapper over the shared guard
   run_set_living              - validate, locate, edit; returns a _lib.Result
+  run_set_sex                 - same shape for sex:, ends with the brackets nudge
   -- shared prelude for every verb below set-living --
   _refuse_result / _not_found_result - the two non-happy Result shapes every
                                  verb returns, factored so they cannot drift
@@ -238,6 +253,7 @@ from _lib import (
     promote_person_record,
     read_text_exact,
     reapply_newline,
+    relocate_person_in_index,
     render_stub_content,
     replace_paragraph_in_section,
     resolve_root_arg,
@@ -245,7 +261,7 @@ from _lib import (
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -528,7 +544,7 @@ def run_set_living(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text))
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
     except OSError as e:
         return _refuse(
             'refused',
@@ -551,8 +567,15 @@ def run_set_living(
                    'unknown is treated as living - the safe default - so this '
                    'person will be redacted from every export (the site, GEDCOM, '
                    'and packets all follow this flag).')
+    # Not "when convenient": every export reads living: from the index, not
+    # from the record, and refuses to run while the index is out of date
+    # (`fha site`, `fha packet` and `fha gedcom` all open it strictly). So the
+    # rebuild is what has to happen before the next export, not after it.
     result.add('info',
-               'Next: run `fha index` when convenient so queries see the change.',
+               'Next: run `fha index` so queries and exports see the change - '
+               '`fha site`, `fha packet` and `fha gedcom` read this flag from '
+               'the index, and stop with an "index is stale" message until you '
+               'rebuild it.',
                next_step='fha index')
     return result
 
@@ -745,7 +768,7 @@ def run_set_profile_photo(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text))
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
     except OSError as e:
         return _refuse(
             'refused',
@@ -755,9 +778,243 @@ def run_set_profile_photo(
     result.data['status'] = 'ok'
     result.note_changed(path)
     result.add('info', f'{label} profile photo is now {val}.', path=path)
+    # The workbench rebuilds a stale index itself before rendering, so it needs
+    # no instruction; `fha site` does not - it opens the index strictly and
+    # stops on "index is stale" - so its half of this line has to name the
+    # rebuild first. The portrait itself is read from the record either way.
     result.add('info',
-               'Next: reload the workbench (or run `fha site`) to see it on the '
-               'page and in the tree.')
+               'Next: reload the workbench to see it on the page and in the tree '
+               '(it refreshes the index itself). To rebuild the shared site '
+               'instead, run `fha index` first, then `fha site` - a site build '
+               'stops rather than publish from an out-of-date index.',
+               next_step='fha index')
+    return result
+
+
+def run_set_sex(
+    archive_root: Path, person_id: str, value: str, dry_run: bool = False,
+) -> Result:
+    """Set one person record's `sex:` field (SPEC §9: M | F | intersex |
+    unknown); return a Result.
+
+    The one frontmatter fact the Ahnentafel derivation reads: a parent with
+    `sex: F` takes the mother/odd slot, anything else the father/even one, and
+    a lone linked parent with no usable value is placed by DEFAULT (W120). Until
+    this verb existed a correction was a hand edit with nothing to say "the
+    folder numbers above this person may have shifted" - so a live change ends
+    with that nudge, in the order that actually works: `fha index` first
+    (placement is derived from the INDEXED sex:, and this write just made the
+    index stale), then `fha views brackets` (`--realign` to apply, which
+    refuses on a stale index rather than renaming folders from old data). Same
+    surgical-single-line-replace shape as `run_set_living`/`run_set_profile_photo`:
+    validate before any read, pre-write guard before any write, the file is
+    updated in exactly one line or untouched. `data` is {'status':
+    'ok'|'already'|'dry-run'|'not-found'|'merged'|'refused', 'person_id',
+    'path', 'old', 'new'}.
+    """
+    result = Result(data={
+        'status': None, 'person_id': None, 'path': None, 'old': None, 'new': None,
+    })
+
+    def _refuse(status: str, message: str) -> Result:
+        result.ok = False
+        result.exit_code = EXIT_FAILURE
+        result.data['status'] = status
+        result.add('error', message)
+        return result
+
+    val = _normalize_sex_input(value)
+    if not val or val not in PERSON_SEX_VALUES:
+        return _refuse('refused', format_person_sex_error(value))
+    result.data['new'] = val
+
+    if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
+        return _refuse(
+            'refused',
+            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
+            '- a P followed by a dash and 10 characters from the archive alphabet.')
+    pid = normalize_id(person_id)
+    result.data['person_id'] = fmt_id_display(pid)
+
+    path = find_person_record_path(archive_root, pid)
+    if path is None:
+        result.ok = False
+        result.exit_code = EXIT_WARNINGS
+        result.data['status'] = 'not-found'
+        result.add('warning',
+                   f'No person record found for {fmt_id_display(pid)} under '
+                   f'{archive_root / "people"} - check the id with '
+                   f'`fha find {fmt_id_display(pid)}`.',
+                   next_step='fha find ' + fmt_id_display(pid))
+        return result
+    result.data['path'] = str(path)
+
+    try:
+        text = read_text_exact(path)
+    except OSError as e:
+        return _refuse('refused', f'cannot read {path}: {e}. Check the file is '
+                       'not open in another program and try again.')
+
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return _refuse(
+            'refused',
+            f'{path.name} has no frontmatter block (the header between --- lines '
+            f'at the top of the file), so there is nowhere safe to write the field. '
+            f'Open {path} and add the header by hand, then run `fha lint`. '
+            'Nothing was written.')
+    try:
+        before_meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        before_meta = None
+    if not isinstance(before_meta, dict):
+        return _refuse(
+            'refused',
+            f'the header of {path.name} does not read as YAML, so editing it '
+            f'automatically could make things worse. Open {path}, fix the header '
+            'by hand (run `fha lint` to see the problem line), then retry. '
+            'Nothing was written.')
+
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    if is_merged_meta(before_meta):
+        result.exit_code = EXIT_FAILURE
+        result.ok = False
+        result.data['status'] = 'merged'
+        survivor = normalize_id(str(before_meta.get('merged_into') or ''))
+        if survivor and is_valid_id(survivor):
+            result.add('error',
+                       f'{label} was merged into {fmt_id_display(survivor)} - this record '
+                       'is a tombstone that readers resolve through, so sex: lives on '
+                       'the surviving record. Set it there: '
+                       f'`fha person set-sex {fmt_id_display(survivor)} {val}`.')
+        else:
+            result.add('error',
+                       f'{label} is a merged tombstone, but its merged_into: pointer is '
+                       'missing or malformed, so the surviving record cannot be named. '
+                       f'Find it with `fha find {fmt_id_display(pid)}`. Nothing was written.')
+        return result
+
+    old_raw = before_meta.get('sex')
+    old = str(old_raw).strip() if old_raw is not None and str(old_raw).strip() else None
+    result.data['old'] = old
+
+    if 'sex' in before_meta and old == val:
+        result.data['status'] = 'already'
+        result.add('info', f'{label} is already sex: {val} - nothing to change.')
+        return result
+
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse(
+            'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit '
+            f'safely. Open {path} and set sex: {val} by hand, then run `fha lint`. '
+            'Nothing was written.')
+    start, end = bounds
+
+    key_lines = _key_line_indexes(lines, start + 1, end, 'sex')
+    new_lines = list(lines)
+    if len(key_lines) > 1:
+        return _refuse(
+            'refused',
+            f'{path.name} has more than one top-level sex: line in its header, '
+            'so the right one to edit cannot be chosen safely. Open '
+            f'{path} and fix the duplicate by hand, then run `fha lint`. '
+            'Nothing was written.')
+    if key_lines and 'sex' not in before_meta:
+        return _refuse(
+            'refused',
+            f'{path.name} has a sex: line that belongs to another field\'s value, '
+            'not a real sex field, so it cannot be edited safely. Open '
+            f'{path} and add a top-level sex: {val} line by hand, then run '
+            '`fha lint`. Nothing was written.')
+    if key_lines:
+        new_lines[key_lines[0]] = _replace_scalar_line(lines[key_lines[0]], 'sex', val)
+    elif 'sex' in before_meta:
+        return _refuse(
+            'refused',
+            f'the sex field in {path.name} is not written as its own line, so it '
+            f'cannot be edited safely. Open {path} and set sex: {val} by hand, '
+            'then run `fha lint`. Nothing was written.')
+    else:
+        # Key absent: insert in the person template's field order (SPEC §9 -
+        # after name / name_variants / face_tags, before living:), else just
+        # before the closing ---.
+        cr = '\r' if lines[start].endswith('\r') else ''
+        after = [
+            i for key in ('name', 'name_variants', 'face_tags')
+            for i in _key_line_indexes(lines, start + 1, end, key)
+        ]
+        if after:
+            insert_at = max(after) + 1
+            # A multi-line list value (name_variants:) continues on indented
+            # lines - skip past them so the new key lands at column 0 between
+            # fields, not inside a list.
+            while insert_at < end and (lines[insert_at].startswith((' ', '\t', '-'))
+                                       or not lines[insert_at].strip()):
+                insert_at += 1
+        else:
+            living_lines = _key_line_indexes(lines, start + 1, end, 'living')
+            insert_at = living_lines[0] if living_lines else end
+        new_lines.insert(insert_at, f'sex: {val}{cr}')
+
+    new_text = '\n'.join(new_lines)
+    problem = frontmatter_edit_problem(new_text, before_meta=before_meta,
+                                       changed_keys={'sex'})
+    if problem is not None:
+        return _refuse(
+            'refused',
+            f'Refusing to change {label}: {problem}, so saving could corrupt the '
+            f'record. Nothing was written. Open {path} and set sex: {val} by hand, '
+            'then run `fha lint` to check it.')
+
+    old_display = old if 'sex' in before_meta and old else '(absent)'
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would set {label} sex: {old_display} -> {val}.')
+        for dline in difflib.unified_diff(
+            text.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
+    except OSError as e:
+        return _refuse(
+            'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere and '
+            'the folder is writable, then retry.')
+
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'{label} is now sex: {val} (was {old_display}).', path=path)
+    # The nudge this verb exists for: sex decides which Ahnentafel slot a
+    # parent takes, so a correction can shift every folder number above them.
+    # Order matters here. `fha views brackets` derives placement from the
+    # indexed sex: (`_lib.build_ahnentafel_map` reads persons.sex out of
+    # .cache/index.sqlite), and this write has just made that index stale - so
+    # a bracket check run first reports the OLD placement, and --realign
+    # refuses outright rather than renaming folders from stale data. Reindexing
+    # is the first step, not an afterthought.
+    result.add('info',
+               'Sex decides Ahnentafel placement (father/even vs mother/odd slot). '
+               'Next: run `fha index` so the folder numbering is worked out from '
+               'the corrected record.',
+               next_step='fha index')
+    result.add('info',
+               'Then, if this person is a direct-line ancestor, run '
+               '`fha views brackets` to check the folder numbering - '
+               '`fha views brackets --realign` previews and applies any shift. '
+               'Run them in that order: brackets reads the index, so before the '
+               'rebuild it still shows the old placement and --realign will not '
+               'run at all.',
+               next_step='fha views brackets')
     return result
 
 
@@ -1067,7 +1324,16 @@ def run_new(
 
     try:
         stubs_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding='utf-8')
+        # Atomic like every other write in this file, for a second reason: a
+        # partial write here cannot truncate an older record (the collision
+        # check above proved there is none), but it would leave a half-written
+        # stub carrying a freshly minted P-id behind a message that says
+        # nothing was created. `fha lint` would then find a malformed record
+        # nobody knows they made. os.replace means the file either exists
+        # complete or does not exist. It also settles the newline question the
+        # same way the rest of the archive does: records are written with no
+        # platform translation, so a stub is LF on every machine.
+        write_text_exact_atomic(path, content)
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -1167,8 +1433,11 @@ def run_promote(
     The write is `_lib.promote_person_record` - transactional (any failure
     rolls back every completed step) and shared verbatim with
     `--fix-promote`, so a batch promotion and this verb cannot drift.
-    After a live move the index cache is removed (a moved file is invisible
-    to the mtime staleness check - the `fha views brackets --fix` rule).
+    After a live move the index is updated IN PLACE (`_lib.relocate_person_in_index`:
+    every path-keyed row swapped to the new path, the tier flip applied, a fresh
+    research companion indexed) rather than removed - a moved file is invisible
+    to the mtime staleness check, and dropping the cache made the next promote
+    in a batch fail (#37).
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'path', 'new_path', 'position', 'folder',
@@ -1254,6 +1523,18 @@ def run_promote(
             next_step='fha index')
     try:
         if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone() is None:
+            # Distinguish "the index holds no people at all" (a cache that was
+            # created empty or never fully built - the fix is `fha index`) from
+            # "this person is not in it" (the fix is fha.yaml or a stub). The
+            # old single message sent people to edit a correct fha.yaml (#37).
+            if conn.execute('SELECT COUNT(*) FROM persons').fetchone()[0] == 0:
+                return _refuse_result(
+                    result, 'refused',
+                    'the search index holds no person records at all - it was '
+                    'never fully built, or was recreated empty. Run `fha index`, '
+                    'then retry. Nothing was written (fha.yaml is not the '
+                    'problem).',
+                    next_step='fha index')
             return _refuse_result(
                 result, 'refused',
                 f'root_person {fmt_id_display(root_pid)} (from fha.yaml) has no '
@@ -1354,45 +1635,53 @@ def run_promote(
     else:
         result.add('info', 'Research companion already exists - left as is.')
 
+    # Keep the index correct in place rather than deleting it (#37). A move
+    # keeps the record's mtime, so the staleness check cannot see it - the
+    # old answer was to drop the cache, which made the NEXT promote fail with
+    # a message that read like corruption (or sent the human to fix
+    # root_person and run `fha stubs`, when only the cache was absent). The
+    # relocation rewrites every path-keyed row, applies the tier flip, and
+    # indexes a fresh research companion, so a batch of promotes needs no
+    # rebuild between them.
+    moves: list[tuple[Path, Path]] = []
     if applied['move']:
-        # A moved record keeps its mtime relative to the cache, so the
-        # staleness check cannot see the move - drop the cache outright to
-        # force a rebuild (the `fha views brackets --fix` rule).
-        db_path = archive_root / '.cache' / 'index.sqlite'
-        try:
-            db_path.unlink(missing_ok=True)
-        except OSError as exc:
-            # The record has ALREADY moved on disk - that archive mutation is
-            # done and irreversible. Only the cache drop failed here (a locked
-            # or read-only .cache/index.sqlite). This is the dangerous half:
-            # a move preserves the record's mtime, so the undeleted index
-            # still passes the freshness check while pointing at the record's
-            # OLD path - queries would silently resolve the person to a file
-            # that no longer exists there. Report the promotion as done but
-            # raise a non-zero warning that names the stale cache and the
-            # exact rebuild command, never letting the unlink traceback escape
-            # to the user (AGENTS_TOOLING: no traceback ever reaches him).
-            reason = exc.strerror or str(exc)
-            return result_fail(
-                result, 'ok-index-stale',
-                f'{label} was promoted (Ahnentafel {pos}) and the record is '
-                f'filed in people/{dest_folder.name}/ - that part worked. But '
-                f'the search index cache could not be cleared ({reason}): '
-                f'{db_path}. The record moved, so the leftover index still '
-                'points at its old location and can look up to date, which '
-                'means searches may quietly go stale until you rebuild it. '
-                f'Delete {db_path} (or just run `fha index`) to rebuild the '
-                'index and clear the stale entry.',
-                exit_code=EXIT_WARNINGS, level='warning',
-                next_step='fha index')
+        moves.append((applied['old_path'], applied['new_path']))
+    if applied.get('research_move'):
+        moves.append((applied['research_source_path'], applied['research_path']))
+    new_files = [applied['research_path']] if applied.get('research_create') else []
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    try:
+        outcome = relocate_person_in_index(
+            archive_root, pid, moves, tier='curated',
+            new_research=new_files[0] if new_files else None)
+    except (sqlite3.Error, OSError) as exc:
+        # The record has ALREADY moved on disk - that archive mutation is
+        # done and irreversible; only the in-place index update failed (a
+        # locked or read-only cache). A move preserves the record's mtime, so
+        # the untouched index can pass the freshness check while pointing at
+        # the record's OLD path. Report the promotion as done, warn non-zero,
+        # name the exact rebuild command; no traceback reaches the user.
+        reason = getattr(exc, 'strerror', None) or str(exc)
+        return result_fail(
+            result, 'ok-index-stale',
+            f'{label} was promoted (Ahnentafel {pos}) and the record is '
+            f'filed in people/{dest_folder.name}/ - that part worked. But '
+            f'the search index could not be updated in place ({reason}): '
+            f'{db_path}. The record moved, so the index still points at its '
+            'old location and can look up to date, which means searches may '
+            'quietly go stale until you rebuild it. Run `fha index` to '
+            'rebuild it.',
+            exit_code=EXIT_WARNINGS, level='warning',
+            next_step='fha index')
+    if outcome == 'indexed':
         result.note_changed(db_path)
         result.add('info',
-                   'Next: run `fha index` to rebuild the index - the record '
-                   'moved, so the old index cache was removed.',
-                   next_step='fha index')
+                   'The search index was updated in place - no `fha index` '
+                   'needed before the next promote.')
     else:
         result.add('info',
-                   'Next: run `fha index` so queries see the tier change.',
+                   'Next: run `fha index` so queries see the promotion '
+                   '(no index cache exists yet).',
                    next_step='fha index')
     result.add('info',
                'Then generate their companion views: '
@@ -1703,11 +1992,11 @@ def run_relate(
     completed: list[tuple[Path, str]] = []
     for path, old_text, new_text, label in writes:
         try:
-            write_text_exact(path, reapply_newline(new_text, old_text))
+            write_text_exact_atomic(path, reapply_newline(new_text, old_text))
         except OSError as e:
             for done_path, done_text in completed:
                 with contextlib.suppress(OSError):
-                    write_text_exact(done_path, done_text)
+                    write_text_exact_atomic(done_path, done_text)
             rollback_note = (
                 ' The other file was rolled back to how it was - nothing was kept.'
                 if completed else ' Nothing was written.'
@@ -1980,7 +2269,7 @@ def run_estimate(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_text, text))
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -2222,7 +2511,7 @@ def run_edit(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_full_text, old_text))
+        write_text_exact_atomic(path, reapply_newline(new_full_text, old_text))
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -2338,7 +2627,7 @@ def run_note(
         return result
 
     try:
-        write_text_exact(path, reapply_newline(new_full_text, old_text))
+        write_text_exact_atomic(path, reapply_newline(new_full_text, old_text))
     except OSError as e:
         return _refuse_result(
             result, 'refused',
@@ -2440,7 +2729,7 @@ def run_edit_note(
             result.add('info', dline)
     else:
         try:
-            write_text_exact(path, reapply_newline(new_full_text, full_text))
+            write_text_exact_atomic(path, reapply_newline(new_full_text, full_text))
         except OSError as e:
             return _refuse_result(
                 result, 'refused',
@@ -2503,6 +2792,15 @@ def _cmd_set_profile_photo(args: argparse.Namespace) -> int:
     if archive_root is None:
         return EXIT_FAILURE
     return _emit(run_set_profile_photo(
+        archive_root, person_id=args.person_id, value=args.value,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _cmd_set_sex(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person set-sex')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_set_sex(
         archive_root, person_id=args.person_id, value=args.value,
         dry_run=bool(getattr(args, 'dry_run', False))))
 
@@ -2705,6 +3003,29 @@ def _add_set_profile_photo_arguments(sub: argparse._SubParsersAction) -> None:
     sp.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the one-line change without writing.')
     sp.set_defaults(func=_cmd_set_profile_photo)
+
+
+def _add_set_sex_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the set-sex verb on a group subparser (shared by both mains)."""
+    sp = sub.add_parser(
+        'set-sex',
+        help="Set or correct a person's sex: (M | F | intersex | unknown).",
+        description='Set a person\'s sex: field - the one fact the Ahnentafel '
+                    'derivation reads to place a parent in the father or mother slot. '
+                    'A change ends with the reminder to run `fha index`, then '
+                    '`fha views brackets` (`--realign` applies any folder-number '
+                    'shift) - brackets reads the placement out of the index, so '
+                    'the rebuild comes first.',
+    )
+    sp.add_argument('person_id', metavar='P-id',
+                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    sp.add_argument('value', metavar='SEX',
+                    help='M, F, intersex, or unknown (case-insensitive).')
+    sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    sp.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the one-line change without writing.')
+    sp.set_defaults(func=_cmd_set_sex)
 
 
 _PROMOTE_DESCRIPTION = """\
@@ -2945,7 +3266,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'person',
         help='Person-record write-backs: new, promote, set-living, '
-             'set-profile-photo, relate, estimate, edit, note',
+             'set-profile-photo, set-sex, relate, estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2955,6 +3276,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_promote_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
+    _add_set_sex_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
@@ -2976,6 +3298,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     _add_promote_arguments(sub)
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
+    _add_set_sex_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)

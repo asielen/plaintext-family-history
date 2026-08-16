@@ -69,7 +69,7 @@ Good candidates from the capture corpus (open the actual record while signed in)
 
 **Expected result**
 
-- The bundle stages to `Downloads/fha-inbox/<slug>-<timestamp>/` containing
+- The bundle stages to `Downloads/fha-inbox/<slug>-<timestamp>-<token>/` containing
   `page.html`, `page-snapshot.html` (if the page-copy toggle is on), `record.jpg`,
   and `capture.json`.
 - **`record.jpg` is the full record** - hundreds of KB to multiple MB, multiple

@@ -39,6 +39,13 @@
   letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid var(--rule-strong);
   color: var(--ink-soft); padding: 1px 6px; white-space: nowrap; }
 
+/* the same chip, for a text hit whose words a machine read off a picture and
+   nobody has checked against the image (TOOLING 4a D15). Caution ochre, the
+   colour this design system already uses for "needs review". */
+.wb-unchecked { font-family: var(--font-sans); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; border: 1px solid var(--status-review-fg);
+  color: var(--status-review-fg); padding: 1px 6px; white-space: nowrap; }
+
 /* ---- review view toggle + groups ---- */
 .wb-toggle { display: inline-flex; border: 1px solid var(--rule-strong);
   border-radius: var(--radius-sm); margin: 0 0 var(--space-4); }
@@ -101,6 +108,13 @@ a.wb-mint:hover { border-color: var(--accent); background: var(--surface); }
   border: 1px solid var(--rule-strong); background: var(--surface);
   padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-5);
   max-width: var(--measure); }
+
+/* what the search could NOT read (TOOLING 4a D14) - the same sentence the CLI
+   prints, sitting under the results and above the CLI echo. On a search that
+   found nothing it lands right below "no matches", which is where a null
+   result gets misread as a finding. */
+.wb-coverage { padding: var(--space-2); background: var(--surface-sunken); }
+.wb-coverage .note { display: block; font-size: var(--text-xs); line-height: 1.45; }
 
 /* the search dropdown's CLI-parity footer: `fha find --text "..."` + copy */
 .wb-search-echo { display: flex; align-items: center; gap: var(--space-2);

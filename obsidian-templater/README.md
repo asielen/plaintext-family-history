@@ -4,10 +4,12 @@ A small, **optional** set of [Templater](https://github.com/SilentVoid13/Templat
 templates for people who keep their Plaintext archive open as an Obsidian vault and
 want a one-click "new person / new source" that emits spec-correct frontmatter.
 
-This pack is a **convenience, not part of the durable archive.** Like
-`browser-companion/`, it lives outside the Python `fha` suite: it is never vendored
-by `fha install`, never recorded in `manifest.json`, and nothing depends on it. The
-archive is fully usable without it; the templates just save typing.
+This pack is a **convenience, not part of the durable archive.** It lives outside
+the Python `fha` suite: it is never vendored by `fha install`, never recorded in
+`manifest.json`, and nothing depends on it. (The browser capture extension used to
+sit in this same category but now ships into archives at `.fha/browser-companion/`;
+this pack deliberately does not - it targets one optional editor.) The archive is
+fully usable without it; the templates just save typing.
 
 ## What's here
 

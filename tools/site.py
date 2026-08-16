@@ -36,9 +36,18 @@ Two build modes, one generator:
 This file ships the whole Layer 8 publication suite: M8.1 (foundations: query
 layer, Jinja2, source page), M8.2 (curated person page), M8.3 (place +
 discoveries pages), M8.4 (home page: surname A-Z + discoveries teaser, and the
-standalone redaction audit enforced by the page-set design below), and M8.5
+standalone link/page symmetry enforced by the page-set design below), and M8.5
 (interactive trees - a vendored, dependency-free renderer fed the neutral tree
 JSON through a single adapter seam).
+
+Note what the page-set design is and is not. It guarantees that this site
+never LINKS to a page it did not build; it does not check whether a page
+SHOULD have been built, and there is no separate audit pass that does. So
+every input to the page-set decision has to be right on its own, and the ones
+read from disk (`_load_restriction_markers`) fail closed: a person or source
+record this build could not read is treated as restricted and withheld, with a
+warning naming the file. A missing privacy marker is indistinguishable from no
+privacy marker, and only one of those two readings is safe to publish.
 
 WHY A LIBRARY FUNCTION (`run_site`): mirrors packet/report - a testable
 `run_site(archive_root, out_dir, ...) -> dict` core, with a thin CLI handler
@@ -79,6 +88,13 @@ CODE MAP
     _render_fan_svg            - radial ancestor fan, self-contained SVG
     _render_pedigree_svg       - horizontal family chart: children - subject/spouse(s)
                                  - parents - grandparents, self-contained SVG
+
+  Photo-catalog keys
+    _live_alias                - the real path under a reconcile 'MISSING:' key
+    _is_missing_key            - is this catalog key a photo that is not on disk?
+    _under_ignored_path        - does a photos-root path fall under photos_ignore:?
+    _under_ignored_dir         - the same, for an absolute folder (sifts the
+                                 unreadable list before it can spoil a count)
 
   Paths / hrefs
     _rel_href                  - relative href from a page dir to a target file
@@ -147,6 +163,8 @@ from _lib import (
     normalize_id,
     open_index_db,
     photoindex_status,
+    photos_ignore_matcher,
+    photos_ignore_patterns,
     pip_command,
     PROVISIONAL_VITAL_FIELDS,
     read_record,
@@ -155,7 +173,9 @@ from _lib import (
     Result,
     split_log_entries,
     strip_link_wrapper,
-    strip_unaccepted_drafts,)
+    strip_unaccepted_drafts,
+    unreadable_dir_recorder,
+    walk_files,)
 
 configure_utf8_stdout()
 
@@ -180,6 +200,78 @@ _REQUIRED_TABLES = (
 )
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.gif'}
+
+# `fha photoindex reconcile` keeps a vanished photo's catalog row under the
+# synthetic key 'MISSING:' + its last known path, so the caption, keywords and
+# person tags it carried outlive the file. photoindex.py owns the rule; it is
+# restated here because tools never import tools (TOOLING §15). The site is a
+# page of pictures: anything that ends in an <img> must ask _is_missing_key
+# first, while anything that asks WHERE a photo lived (or WHO is in it) reads
+# through _live_alias instead.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The alias a cached photo key names, with any 'MISSING:' prefix off."""
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached photo path is reconcile's synthetic missing-file key.
+
+    Such a row can never produce an image: there is no file to copy, resize, or
+    link to. Filtering on it early also keeps a vanished variant from being
+    chosen as its group's representative and taking a still-present sibling
+    down with it.
+    """
+    return path.startswith(_MISSING_PREFIX)
+
+
+def _under_ignored_path(rel: str, is_ignored) -> bool:
+    """True when `rel` (posix, relative to the photos root) is itself excluded
+    by `photos_ignore:`, or sits inside a folder that is.
+
+    The scan walks with `os.walk` and prunes a matching directory before
+    descending, so a pattern like 'Flickr Export' never has to match the files
+    beneath it. A `rglob` finds those files directly, so each ancestor folder
+    is tested here instead - otherwise the site would publish out of exactly
+    the subtree the setting exists to keep out of the library.
+    """
+    parts = rel.split('/')
+    return any(is_ignored('/'.join(parts[:i])) for i in range(1, len(parts) + 1))
+
+
+def _under_ignored_dir(directory: Path, photos_root: Path, is_ignored) -> bool:
+    """The same question as `_under_ignored_path`, asked of an absolute folder.
+
+    Used to sift the folders a photos-root walk could not open before they are
+    allowed to spoil a uniqueness count. A folder the setting excludes holds
+    nothing this build would have used, so it can hide nothing from the count
+    either, and refusing over it would be a refusal the guard has not earned.
+
+    A path that is not under the photos root at all (or is the root itself) is
+    reported as NOT ignored: the honest answer for a folder the patterns say
+    nothing about is that it still counts.
+    """
+    try:
+        rel = Path(directory).resolve().relative_to(Path(photos_root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return False
+    if rel in ('', '.'):
+        return False
+    return _under_ignored_path(rel, is_ignored)
+
+
+# Why the photo catalog cannot answer, in the words `photoindex_status` returns,
+# said the way the archive's owner would say it. The living-person photo gate
+# reads that catalog, so when it is not usable the gate cannot fire and the build
+# has to say so (see `_SiteBuilder._warn_living_photo_check_unavailable`).
+_PHOTO_CATALOG_TROUBLE = {
+    'absent': 'the photo catalog has not been built yet',
+    'stale': 'the photo catalog is out of date',
+    'unreadable': 'the photo catalog could not be read',
+    'old-schema': 'the photo catalog was built by an older version of the tools',
+}
 
 # The largest edge (px) a standalone derivative is resized to (TOOLING §12).
 _DERIVATIVE_MAX_PX = 1200
@@ -994,6 +1086,13 @@ class _SiteBuilder:
         # every person page, closed by run_site - so the photos-root freshness
         # walk happens once per build, not once per curated person.
         self.photos_conn: sqlite3.Connection | None = None
+        # Why that catalog is not usable, if it is not: one of _PHOTO_CATALOG_
+        # TROUBLE's keys, or 'fresh' once it has opened. Kept because the
+        # living-person photo gate fails OPEN by design - the site is meant to
+        # build without a catalog - so the one thing the build owes the
+        # researcher is to say which check did not run, and why.
+        self.photos_status: str = 'absent'
+        self._living_photo_warning_sent = False
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
@@ -1141,14 +1240,82 @@ class _SiteBuilder:
         person-level marker, the per-claim marker, the per-name-variant marker,
         and a free-text source type (`restricted: by-request`) are all invisible
         to it. This one pass over the person and source records fills the four
-        sets the redaction predicates consult. A record that cannot be read is
-        skipped (its page still builds; the standalone audit catches any leak)."""
+        sets the redaction predicates consult.
+
+        A RECORD THAT CANNOT BE READ IS TREATED AS RESTRICTED. This is an
+        exclusion set built by reading files, which means the failure mode of a
+        read is not "less content" but "no marker" - and no marker reads
+        exactly like a person who never asked to be left out. "Cannot be read"
+        covers both ways it happens, because both end in the same empty
+        frontmatter: an exception, and the `parse_errors` list `read_record`
+        returns INSTEAD of raising for the ordinary cases (a file that is gone,
+        a permission error, malformed YAML - `_lib.read_record` hands those
+        back as an E010 entry with `meta` empty, so an `except` arm alone would
+        have caught almost none of them). It used to skip:
+        a person carrying `living: false` and `restricted: by-request` whose
+        file would not open got a page on the PUBLIC snapshot, with their name
+        on it, while the only sign was a warning about missing prose. That is
+        fail-open on the one axis this codebase cannot afford it.
+
+        The docstring here used to answer that with "the standalone audit
+        catches any leak". There is no such audit: what it named is the
+        page-set design (module docstring, REDACTION IS COMPUTED ONCE), which
+        guarantees that the site never LINKS to a page it did not build - it
+        has nothing to say about whether a page should have been built. The
+        missing marker corrupts the page set itself, so the thing offered as
+        the backstop is the very thing that was wrong. A mitigation that does
+        not hold is worse than none: it stops the next reader looking.
+
+        Withholding, not failing the build: the page set stays internally
+        consistent (the pid never enters `person_pages`, so every link site -
+        `render_token`, the charts, the trees, the home index - renders the
+        redaction label instead, exactly as for any restricted person), so
+        there is no symmetry to break. Publishing less is always safe;
+        publishing a name is not undoable. The warning names the file so the
+        human can fix it and rebuild.
+
+        An unreadable SOURCE record is handled the same way and covers its
+        claims with it: the per-claim `restricted:` markers live in that file
+        too, so there is no way to know which claims were withheld. Marking
+        the whole source restricted (`restricted_sources`) makes it
+        hard-restricted, which drops its claims from every person, place, and
+        timeline view - the same reach `restricted_claims` would have had, and
+        the only honest one when the claim list itself is unreadable.
+
+        Know what an unreadable PERSON record costs, because it is more than
+        one page: `prepare()` also withholds every source that names a
+        restricted person (`restricted_person_sources`), so one file that will
+        not open can take a visible slice of the site with it. That is the
+        existing rule for `restricted: by-request`, applied consistently - and
+        it is the right size of consequence for "I could not read this
+        person's file", which is why the warning names the file rather than
+        just counting.
+
+        One leak this cannot close: a RESTRICTED name variant (a deadname) of
+        an unreadable person. Those values live in the same file, and the
+        index stores them mangled on purpose, so a `[[deadname]]` written in
+        someone else's prose resolves to nothing and renders as the literal
+        text. Withholding the person does not help - the name never reaches
+        `restricted_names` to be recognised. Only repairing the file does, and
+        the warning says so."""
         for pid, row in self.person_meta.items():
             if not row['path']:
                 continue
             try:
                 rec = read_record(self.archive_root / row['path'])
-            except Exception:
+                trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+            except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+                rec, trouble = None, str(e)
+            if trouble is not None:
+                self.restricted_persons.add(pid)
+                self.messages.append(
+                    f'WARNING: could not read {row["path"]} ({trouble}), so there '
+                    f'is no way to tell whether that person asked to be left out '
+                    f'of public output. They have been withheld from this site '
+                    f'- no page, and their name shown as "{_LIVING_LABEL}" '
+                    f'everywhere it would have appeared. Fix or restore that '
+                    f'file and run `fha site` again.'
+                )
                 continue
             meta = rec['meta']
             if _is_restricted_value(meta.get('restricted')):
@@ -1163,7 +1330,18 @@ class _SiteBuilder:
                 continue   # index-restricted sources are already handled
             try:
                 rec = read_record(self.archive_root / row['path'])
-            except Exception:
+                trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+            except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+                rec, trouble = None, str(e)
+            if trouble is not None:
+                self.restricted_sources.add(sid)
+                self.messages.append(
+                    f'WARNING: could not read {row["path"]} ({trouble}), so there '
+                    f'is no way to tell whether that source - or any fact in it - '
+                    f'was marked private. It has been withheld from this site, '
+                    f'and so has everything it is the evidence for. Fix or '
+                    f'restore that file and run `fha site` again.'
+                )
                 continue
             if _is_restricted_value(rec['meta'].get('restricted')):
                 self.restricted_sources.add(sid)
@@ -1181,8 +1359,14 @@ class _SiteBuilder:
         so it must run once per build - never once per person. An absent, stale,
         or unreadable photo index simply leaves `self.photos_conn` None and the
         photo strip is omitted (it is enrichment, never a build blocker).
+
+        The status is kept on `self.photos_status` because one thing reading
+        this catalog is NOT enrichment: the living-person photo gate. It fails
+        open, so the build warns once and names which of these states stopped it
+        (`_warn_living_photo_check_unavailable`).
         """
         status, _lag = photoindex_status(self.archive_root, self.fha_config)
+        self.photos_status = status
         if status != 'fresh':
             return
         try:
@@ -1191,6 +1375,7 @@ class _SiteBuilder:
             self.photos_conn = conn
         except sqlite3.DatabaseError:
             self.photos_conn = None
+            self.photos_status = 'unreadable'
 
     def close(self) -> None:
         """Close any auxiliary connection this build opened (the index
@@ -1729,6 +1914,15 @@ class _SiteBuilder:
             is_image = Path(f['path']).suffix.lower() in _IMAGE_SUFFIXES
             if is_image and entry.get('thumb_href'):
                 candidates.append(((f['role'] or '').strip().lower() == 'front', entry))
+                # An image is going into a shareable snapshot. If the living-
+                # person gate at the top of this loop had no catalog to ask,
+                # this is the moment the build learns it published something
+                # unchecked - and the only honest moment to say so. Warned here
+                # rather than inside the gate itself so a build with nothing but
+                # text attachments, or one where Pillow left every image out,
+                # raises no alarm about photos it never published.
+                if not self.linked and self.photos_status != 'fresh':
+                    self._warn_living_photo_check_unavailable()
         portrait = next((e for is_front, e in candidates if is_front), None)
         if portrait is None and candidates:
             portrait = candidates[0][1]
@@ -2309,15 +2503,34 @@ class _SiteBuilder:
 
         Source-page image derivatives must skip photos co-tagged to living persons
         even when the source itself is otherwise public - the same rule applied
-        to person photo strips applies here."""
+        to person photo strips applies here.
+
+        Both spellings of the path are checked. When reconcile has flagged a
+        photo missing, its tags move to the 'MISSING:' key while `source_files`
+        still names the plain path - so a photo that comes back (a reconnected
+        drive) before the next scan would otherwise look untagged and publish
+        the living person the gate exists to protect.
+
+        THIS GATE FAILS OPEN. With no catalog to ask - it was never built, it is
+        out of date, it will not open - the answer is False and the photo
+        publishes. That is the owner's decision (2026-08-16): the site is meant
+        to build without `.cache/photos.sqlite`, and refusing every source image
+        until someone runs `fha photoindex` costs more than it saves. What the
+        build owes the researcher instead is to say so, once, in words - which
+        is `_warn_living_photo_check_unavailable`'s whole job. Watching for that
+        warning is how this stays safe."""
         if self.photos_conn is None:
             return False
         try:
             rows = self.photos_conn.execute(
-                'SELECT person_ref FROM photo_people WHERE path = ?',
-                (alias_path,),
+                'SELECT person_ref FROM photo_people WHERE path = ? OR path = ?',
+                (alias_path, f'{_MISSING_PREFIX}{_live_alias(alias_path)}'),
             ).fetchall()
         except sqlite3.DatabaseError:
+            # The catalog opened and then failed a query: from here on it can
+            # answer nothing, so the build's warning must name it as unreadable
+            # rather than as whatever it looked like at open time.
+            self.photos_status = 'unreadable'
             return False
         for row in rows:
             person = self.person_meta.get(row['person_ref'] or '')
@@ -2327,6 +2540,36 @@ class _SiteBuilder:
             if person and self._person_is_redacted(person):
                 return True
         return False
+
+    def _warn_living_photo_check_unavailable(self) -> None:
+        """Say once that this build published photos nobody checked for living-person tags.
+
+        Called when a standalone build has just put a real image on a page while
+        `_is_living_tagged_photo` had no catalog to consult. The check is the
+        only thing standing between a photo tagged to a living person and a
+        snapshot meant to be handed round the family, and it failed open - so
+        the researcher is the check now, and a person cannot watch for something
+        nobody told him about.
+
+        Once per build, not once per photo: a site with two hundred scans would
+        bury the one sentence that matters under two hundred copies of it, and a
+        warning nobody finishes reading is a warning nobody read. It carries the
+        cause and the two ways out - rebuild the catalog, or look through the
+        images yourself - because a message that names no fix is a dead end.
+        """
+        if self._living_photo_warning_sent:
+            return
+        self._living_photo_warning_sent = True
+        reason = _PHOTO_CATALOG_TROUBLE.get(
+            self.photos_status, 'the photo catalog is not available')
+        self.messages.append(
+            f'WARNING: {reason}, so the photos published in this site were NOT '
+            'checked against it for tags naming living people - a photograph '
+            'of someone still living may be in it. Run `fha photoindex`, then '
+            '`fha site` again, to have that check applied; until then, look '
+            'through the images on the source pages yourself before you share '
+            'this site.'
+        )
 
     def _person_family(self, pid: str, page_dir: Path) -> list[dict]:
         """Friends & Family from the relationships edges, grouped by relation."""
@@ -2521,15 +2764,21 @@ class _SiteBuilder:
         """Photo strip from `.cache/photos.sqlite` (`photo_people`), one entry
         per variation group. Omitted silently when the photo index is absent or
         stale (`self.photos_conn` None) - it is an optional enrichment, never a
-        build blocker. Uses the connection opened once in `prepare()`."""
+        build blocker. Uses the connection opened once in `prepare()`.
+
+        Rows reconcile has flagged 'MISSING:' are dropped at the query, not at
+        render time: the file is gone, so it could only ever produce a broken
+        picture - and, worse, a vanished row still carries `is_primary`, so
+        leaving it in would let it win the one-entry-per-group pick below and
+        take the still-present back scan off the page with it."""
         if self.photos_conn is None:
             return []
         try:
             rows = self.photos_conn.execute(
                 'SELECT DISTINCT ph.group_id, ph.path, ph.caption, ph.is_primary, ph.source_id '
                 'FROM photo_people pp JOIN photos ph ON pp.path = ph.path '
-                'WHERE pp.person_ref = ?',
-                (pid,),
+                'WHERE pp.person_ref = ? AND ph.path NOT LIKE ?',
+                (pid, f'{_MISSING_PREFIX}%'),
             ).fetchall()
         except sqlite3.DatabaseError:
             return []
@@ -2650,18 +2899,80 @@ class _SiteBuilder:
         # scan the photos root for a unique basename match so a hero /
         # profile_photo written as "foo.jpg" still resolves without a photo
         # catalog. Restricted to image suffixes to cap traversal cost.
+        #
+        # `photos_ignore:` (#35) prunes this guess exactly as it prunes the
+        # scan: a bulk photo-service export is not the family library, so a
+        # bare filename must not be answered from one - the file was never
+        # cataloged, nobody reviewed who is in it, and the ambiguity warning
+        # below would fire on names the human never meant to offer. An
+        # explicitly written path is a different matter and is honored above:
+        # ignoring a folder says "don't go looking in here", not "this file
+        # may never be published".
         if photos_root and '/' not in ref and Path(ref).suffix.lower() in _IMAGE_SUFFIXES:
             pr = Path(photos_root)
             if not pr.is_absolute():
                 pr = self.archive_root / pr
             try:
+                is_ignored = photos_ignore_matcher(photos_ignore_patterns(self.fha_config))
+            except RuntimeError:
+                # A malformed photos_ignore: is the scan's error to report in
+                # plain words; the site just declines to guess rather than
+                # failing a whole build over a setting it only reads.
+                return None
+            #
+            # Walked with an error seam, not `rglob`. The guard this loop
+            # exists to enforce is "only publish a bare filename when exactly
+            # ONE file answers to it", and a folder that will not list makes
+            # two matches look like one - so the site would publish, on the
+            # front page, a photo chosen by which folder happened to open.
+            # That is the guard failing OPEN, and a published photo cannot be
+            # unpublished. When the walk is incomplete the answer is
+            # 'I don't know', which here means no hero image and a line saying
+            # why.
+            unreadable: list[Path] = []
+            try:
                 matches: list[Path] = []
                 if pr.is_dir():
-                    for m in pr.rglob(ref):
+                    for m in walk_files(
+                            pr, on_error=unreadable_dir_recorder(unreadable)):
+                        # `PurePath.match` on a bare name is exactly what
+                        # `rglob(ref)` matched (same fnmatch rules, same
+                        # platform case-sensitivity), so a ref that happens to
+                        # carry a `*` or `?` still behaves as it always did.
+                        if not m.match(ref):
+                            continue
+                        try:
+                            rel = m.relative_to(pr).as_posix()
+                        except ValueError:  # pragma: no cover - walk result is under pr
+                            continue
+                        if _under_ignored_path(rel, is_ignored):
+                            continue
                         if m.is_file():
                             matches.append(m)
                             if len(matches) > 1:
                                 break
+                # Only a folder this guess would have ANSWERED from can spoil
+                # the count. `unreadable` is collected over the whole photos
+                # root, but the loop above refuses every match under
+                # `photos_ignore:` anyway, so a shut folder inside a
+                # `Flickr Export` subtree cannot hide a second candidate: there
+                # are no candidates in there to hide. Dropping the hero photo
+                # over it is a refusal the guard has not earned - and
+                # `photos_ignore:` exists precisely to name bulk exports, which
+                # are exactly the things that sit on drives that come and go.
+                unreadable = [
+                    d for d in unreadable
+                    if not _under_ignored_dir(d, pr, is_ignored)
+                ]
+                if unreadable and len(matches) < 2:
+                    self.messages.append(
+                        f'WARNING: photo reference {ref!r} was not used: '
+                        f'{len(unreadable)} folder(s) in your photos folder '
+                        f'could not be opened, so there is no way to tell '
+                        f'whether more than one photo has that name. Reconnect '
+                        f'the drive (or fix the folder), or write the '
+                        f'reference as `<year>/{ref}` to name the exact file.')
+                    return None
                 if len(matches) == 1:
                     return matches[0]
                 if len(matches) > 1:
@@ -2754,7 +3065,12 @@ class _SiteBuilder:
     def _catalog_path_for_disk(self, disk: Path) -> str | None:
         """The catalog-stored path (if any) that names the file at `disk`. Tries
         the archive-relative path first, then a basename LIKE. Returns None when
-        the file has no catalog entry."""
+        the file has no catalog entry.
+
+        A row reconcile flagged 'MISSING:' is a valid answer here - this is the
+        "which catalog row describes this file" question, not "can it be
+        opened", and the file in hand may be the very one that came back - but
+        a still-current row is preferred when the basename matches both."""
         if self.photos_conn is None:
             return None
         try:
@@ -2768,8 +3084,9 @@ class _SiteBuilder:
                 if row:
                     return row['path']
             row = self.photos_conn.execute(
-                'SELECT path FROM photos WHERE path = ? OR path LIKE ?',
-                (disk.name, '%/' + disk.name)).fetchone()
+                'SELECT path FROM photos WHERE path = ? OR path LIKE ? '
+                'ORDER BY (path LIKE ?), path',
+                (disk.name, '%/' + disk.name, f'{_MISSING_PREFIX}%')).fetchone()
             if row:
                 return row['path']
         except sqlite3.DatabaseError:
@@ -2812,8 +3129,11 @@ class _SiteBuilder:
     def _resolve_photo_ref(self, ref: str) -> str | None:
         """Map a `profile_photo:` value to a stored photo path via the catalog.
         Tries, in order: an S-id (the source's primary photo), the exact stored
-        path, then a basename match (so a moved file still resolves). Prefers the
-        group's primary variant on ties."""
+        path, then a basename match (so a moved file still resolves). Prefers a
+        photo that is still on disk, then the group's primary variant: the
+        answer here is going to be opened, and a vanished variant's row keeps
+        its `is_primary` flag, so ranking on primary alone would hand back a
+        file that cannot be read while a good sibling sat behind it."""
         if self.photos_conn is None:
             return None
         r = ref.strip().replace('\\', '/')
@@ -2825,7 +3145,11 @@ class _SiteBuilder:
                 return None
             if not rows:
                 return None
-            rows = sorted(rows, key=lambda x: 0 if x['is_primary'] else 1)
+            rows = sorted(
+                rows,
+                key=lambda x: (1 if _is_missing_key(x['path']) else 0,
+                               0 if x['is_primary'] else 1),
+            )
             return rows[0]['path']
 
         if re.match(r'(?i)^s-[0-9a-z]+$', r):

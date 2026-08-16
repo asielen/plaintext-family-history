@@ -1,6 +1,6 @@
 # TOOLING_INGESTION.md - Research, Capture & the Inbox On-Ramp
 
-**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - the path that turns research a genealogist is doing on the open web into staged material the archive can process. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - the path that turns research a genealogist is doing on the open web into staged material the archive can process. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 **Version 1.2 - companion to SPEC.md v1.2 and TOOLING.md v1.2 (versions track the SPEC).**
 
@@ -116,7 +116,7 @@ Every delivery form converges on one artifact: a **staged bundle** the engine ca
 A staged bundle is a folder containing:
 
 ```
-<slug>-<timestamp>/
+<slug>-<timestamp>-<token>/
   page.html        ← the raw captured DOM (always present; the scrape source recipes run on)
   asset.<ext>      ← the asset: case (a) the file/image; case (b) the self-contained
                      preservation copy (single-file .html or .pdf); absent for case (c)
@@ -162,7 +162,7 @@ The human copies the page (or saves the HTML) and pipes it in: `pbpaste | fha ca
 
 ### 4.2 Bookmarklet - *not pursued*
 
-> **Decision (MG2.1):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
+> **Decision (MG2.1):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>-<token>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
 
 ### 4.3 Browser extension - *the nice panel* (§5)
 
@@ -180,7 +180,7 @@ Where available, Claude-in-Chrome reads the open record page and writes the stag
 
 ## 5. The browser extension - full design
 
-The everyday companion. Manifest V3, Chromium-first (the same code loads in Edge; a Firefox port is a packaging detail, not a redesign). It lives **outside** the Python tool suite and outside the archive's operating layer - it is installed in the *browser*, not vendored into an archive by `fha install`, so it is **not** a `manifest.json` operating-layer entry. Its home in the repo is `browser-companion/` (source + build), shipped as an unpacked/load-from-store extension, versioned alongside the spec but distributed through the browser, not the archive.
+The everyday companion. Manifest V3, Chromium-first (the same code loads in Edge; a Firefox port is a packaging detail, not a redesign). It lives **outside** the Python tool suite - it runs in the *browser*, never inside the archive - but it **ships with every archive** (owner decision 2026-07-26): it is a front-end tool exactly like the serve workbench, and since it has no build step, its source tree IS the loadable artifact. `fha install`/`fha update-tools` vendor the loadable files (`manifest.json`, `src/`, `icons/`, the README) into **`.fha/browser-companion/`** as ordinary operating-layer manifest entries, so any archive owner can point chrome://extensions → "Load unpacked" at that folder with no workshop clone; the extension's dev furniture (`tests/`, `test-bundle/`, `package.json`) stays in the repo. Its home in the repo is `browser-companion/` (source = artifact), versioned alongside the spec; *developing* it remains a workshop-repo activity like any other tool-building.
 
 ### 5.1 The transport problem and its solution
 
@@ -188,7 +188,7 @@ The hard constraint that §13b never resolved: **an MV3 extension cannot write t
 
 So the extension cannot, by itself, drop a bundle into `inbox/`. Three honest resolutions, in order of how much they ask of the user:
 
-1. **Staging folder + explicit ingest (default).** The extension writes the bundle to `Downloads/fha-inbox/<slug>-<timestamp>/`. Locally, the human runs **`fha capture --ingest`** (§6), which sweeps that folder into the archive's real `inbox/` - the one sanctioned *move* at intake (SPEC §12.1). No watcher, no daemon: an explicit command, on the human's schedule, exactly like every other refresh-on-use step.
+1. **Staging folder + explicit ingest (default).** The extension writes the bundle to `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. Locally, the human runs **`fha capture --ingest`** (§6), which sweeps that folder into the archive's real `inbox/` - the one sanctioned *move* at intake (SPEC §12.1). No watcher, no daemon: an explicit command, on the human's schedule, exactly like every other refresh-on-use step.
 2. **Download directly into the inbox.** If the archive's `inbox/` lives under the user's Downloads tree (or the browser's download directory is pointed at it), the extension's bundle lands in `inbox/` immediately and `--ingest` is a no-op. A convenience for the common single-machine setup; not assumable in general because `inbox/` is a configurable root (SPEC §12.4) that often lives elsewhere.
 3. **Native-messaging host (§5.7).** A registered local host writes the bundle straight into `inbox/`, anywhere it lives, with no Downloads detour. The seamless upgrade, install-gated.
 
@@ -196,7 +196,7 @@ The default (1) needs zero native install and works in plain Chrome. The extensi
 
 ### 5.2 The staged bundle (what the extension writes)
 
-Exactly the §3 contract: `page.html`, an optional `asset.<ext>`, and `capture.json`. The extension assembles all three in memory (content script + panel), then writes them with `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>/`. `page.html` is **always** saved - it is the raw material the Python recipe re-extracts from, so even a generic in-browser pre-fill that got the title wrong is recoverable at ingest.
+Exactly the §3 contract: `page.html`, an optional `asset.<ext>`, and `capture.json`. The extension assembles all three in memory (content script + panel), then writes them with `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. `page.html` is **always** saved - it is the raw material the Python recipe re-extracts from, so even a generic in-browser pre-fill that got the title wrong is recoverable at ingest.
 
 ### 5.3 The panel workflow (the four phases)
 
@@ -213,13 +213,13 @@ What is it? / anything to remember
 
 The human's job is a glance and a nudge: fix a mangled title, untick an irrelevant person, type a sentence of context. Everything is optional; a hurried human clicks straight through. The panel's *only* insistence is on the asset (Phase 3) - the one thing that cannot be redone once the page is closed.
 
-**Phase 3 - Capture the evidence (asset mode a/b/c).** The panel offers the three modes explicitly, because this is where pages fight back:
+**Phase 3 - Capture the evidence (asset mode a/b/c).** The panel offers the three modes explicitly, because this is where pages fight back. The shipped panel composes them as a page-copy checkbox ("Keep a copy of the whole page", on by default) plus a two-option evidence picker ("Yes, save the actual file" / "No, the page copy is the record") - (a)/(b)/(c) remain the underlying cases:
 
 - **(a) Auto-capture from a link** - the human pastes (or the panel pre-fills from a detected `<img>`/PDF link) the asset URL; the extension `fetch()`es it **in the page's own session** (`credentials: 'include'`) and saves the bytes as `asset.<ext>`. Honest caveat: a cross-origin or DRM-protected viewer image may refuse the fetch - the panel says so and offers (c).
-- **(b) Page-as-asset** - one click stores a **self-contained preservation copy** as the asset (case (b)): a **single-file HTML** with images/CSS/fonts inlined as data-URIs (`asset_mode: "singlefile"`), so the saved page survives the original's rot instead of decaying into broken-image placeholders. When a faithful *rendered* page matters more than re-parsing it, the panel also offers **save-as-PDF** (`asset_mode: "pdf"`); see §5.6 for the MV3 reality of each. The raw `page.html` is saved alongside regardless, so scraping never depends on the bulky preservation copy.
+- **(b) Page-as-asset** - one click stores a **self-contained preservation copy** as the asset (case (b)): a **single-file HTML** with images/CSS/fonts inlined as data-URIs (`asset_mode: "singlefile"`), so the saved page survives the original's rot instead of decaying into broken-image placeholders. Print-to-PDF was dropped - the single-file HTML supersedes it, and a real PDF still enters via the mode-(a) URL fetch or the mode-(c) drop. The raw `page.html` is saved alongside regardless, so scraping never depends on the bulky preservation copy.
 - **(c) Manual hand-off** - the human downloads the file the normal way (or screenshots the viewer), then **drag-drops it into the panel**; the extension folds it into the bundle as `asset.<ext>` (`asset_mode: "manual"`, flagged `provisional-image` when it is a screenshot). This is the always-works escape hatch.
 
-A fourth choice, **none** (case (c) pointer-only), writes citation + `external_links` with no asset.
+A fourth choice, **none** (case (c) pointer-only), writes citation + `external_links` with no asset: with the page-copy toggle off and "No, the page copy is the record" selected, the capture stages citation + link only (an empty `assets` list), and ingest files it as a pointer stub flagged `asset_elsewhere: true`.
 
 **Phase 4 - Stage, don't process (hand-off).** Clicking *Capture* writes the staged bundle (§5.2) and the panel reports where it went. **No source record is minted, no claims drafted, no S-id assigned** - the bundle is pre-source. The human goes back to researching and captures five more the same way; a research sitting yields a dozen bundles, and one later `fha capture --ingest` + `process-source` session works them all. Batch capture is the natural mode.
 
@@ -230,7 +230,7 @@ Batch mode keeps the form honest across navigations: a navigation that lands *du
 ```jsonc
 {
   "manifest_version": 3,
-  "name": "Plaintext Family History - Capture",
+  "name": "Plaintext Family History (Capture)",
   "version": "0.1.0",
   "action": { "default_title": "Capture this record" },
   "background": { "service_worker": "background.js" },
@@ -243,10 +243,10 @@ Batch mode keeps the form honest across navigations: a navigation that lands *du
 
 - `activeTab` + `scripting` - read the current page's DOM only when the human invokes the companion (no ambient page access).
 - `downloads` - write the staged bundle into `Downloads/fha-inbox/…`.
-- `storage` - remember the human's preferences (default asset mode, capture-folder name, whether the native host is installed).
+- `storage` - remember the human's preferences (staging-folder name, default evidence choice, page-copy default). The native-host opt-in is not stored here - it is carried by the optional `nativeMessaging` permission itself.
 - `sidePanel` (+ the `side_panel` key) - show the Phase-1→4 panel (§5.3) over the page via Chrome's side-panel API. Not a privacy-sensitive grant - it only lets the extension open its own panel - so it holds the least-privilege intent while enabling the described UX.
 - `nativeMessaging` is **optional** - requested only if the human opts into the §5.7 seamless path.
-- `host_permissions: <all_urls>` is needed only for the case-(a) cross-site asset `fetch`; it can be narrowed to the recipe domains for a tighter build. The DOM read itself rides on `activeTab` and needs no host grant.
+- `host_permissions: <all_urls>` is load-bearing for two things, neither of them the asset fetch: (1) batch mode re-injects `content.js` when the tab navigates to the next record, and the `activeTab` grant expires at navigation, so cross-navigation `chrome.scripting.executeScript` needs the host grant; (2) the panel reads `tab.url` (the staleness warning, the navigation refresh) without the `tabs` permission, which works only because the host grant exposes tab URLs. The case-(a) fetch - the reason this bullet once gave - does not need the grant at all: it runs in the content script, riding the page's own CORS (Chrome >= 85). It can still be narrowed to the recipe domains for a tighter build, and the single-invoke DOM read rides on `activeTab` with no host grant.
 
 ### 5.5 In-browser pre-fill vs. authoritative Python extraction
 
@@ -264,7 +264,7 @@ This is a deliberate architecture choice, not laziness:
 |---|---|---|
 | (a) fetch | `fetch(url, {credentials:'include'})` in the content-script context | cross-origin / tiled viewer / DRM images may refuse → fall to (c) |
 | (b) singlefile | walk the DOM; `fetch` each referenced image/CSS/font and rewrite its URL to a `data:` URI; serialize to one `.html` | **doable in pure MV3** (the SingleFile approach); cost is fetch volume + base64 bloat on image-heavy pages, and same-origin/CORS limits on a few sub-resources. Capture *after* load so dynamic content has settled. The default for case (b). |
-| (b) pdf | print-to-PDF of the rendered page | **not reliably one-click in MV3**: extensions have no print API; programmatic PDF needs the `chrome.debugger` `Page.printToPDF` protocol (heavyweight, shows a warning banner) or the §5.7 native host. The dependable path is the human's own *Save as PDF* handed in via (c). Offer it, but don't promise a silent one-click. |
+| (b) pdf | print-to-PDF of the rendered page | **not reliably one-click in MV3**: extensions have no print API; programmatic PDF needs the `chrome.debugger` `Page.printToPDF` protocol (heavyweight, shows a warning banner) or the §5.7 native host. Not offered in the panel - dropped, the single-file snapshot supersedes it; the dependable path for a PDF remains the human's own *Save as PDF* handed in via (c), or a direct PDF URL via (a). |
 | (a/b) page images | also pull the page's primary `<img>` as its own asset file | a cheap add-on to (a)/(b): when the record centers on a photo, save that image even if the page itself is the asset, so the evidence isn't trapped inside a snapshot. Schema 2's `assets:` list carries multiple files (record + page snapshot), filed as a SPEC §12.1 bundle (§3) |
 | (c) manual | drag-drop the human's own download (a saved image, a *Save-as-PDF*, a screenshot) into the panel | screenshots are flagged `provisional-image` - a better scan may exist |
 | none | citation + `external_links` only | `asset_elsewhere: true`; lands in the research-to-do |
@@ -287,7 +287,7 @@ The local bridge from a staged-bundle folder to real inbox stubs. A new mode of 
 fha capture --ingest [DIR] [--dry-run]
 ```
 
-`DIR` defaults to the known capture folder (`~/Downloads/fha-inbox/`, overridable by an optional `fha.yaml` `capture_staging:` key). For each `<slug>-<timestamp>/` bundle it finds:
+`DIR` defaults to the known capture folder (`~/Downloads/fha-inbox/`, overridable by an optional `fha.yaml` `capture_staging:` key). For each `<slug>-<timestamp>-<token>/` bundle it finds:
 
 1. **Read** `capture.json`, `page.html`, and the optional asset.
 2. **Run the engine** - feed `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as the explicit overrides (`title`/`type`/`date`/`url`/`accessed`/`notes`/`people`/`repository`), exactly as if a human had typed them. The recipe re-detects on `page.html` (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` names carry through as hints. This **reuses `run_capture` wholesale** - the ingest path produces a byte-identical stub to what the paste-fallback would have, which is the whole point of the staged-bundle seam.
@@ -323,7 +323,7 @@ These bind every delivery form and the engine alike:
 | Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
 | `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD_INGESTION.md MG2.1) |
 | `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD_INGESTION.md MG2.1) - warns when bundles sit in the staging folder waiting for `--ingest` |
-| Browser extension (§5) | **built** ([`browser-companion/`](browser-companion/), MV3) - the four-phase side panel, generic pre-fill, all five asset modes, and the staged-bundle download path; lives outside the archive operating layer (not a `manifest.json` entry). The seamless native-host path (§5.7) now ships end to end: its backend (below) plus the extension front-end that consumes it (IIIF/warning panel wiring and the opt-in `nativeMessaging` permission request in `native-host.js`), which stays OFF by default behind the "file straight into my archive" toggle |
+| Browser extension (§5) | **built** ([`browser-companion/`](browser-companion/), MV3) - the four-phase side panel, generic pre-fill, the fetch / single-file / manual / pointer-only asset modes (print-to-PDF dropped - the single-file snapshot supersedes it; a real PDF enters via URL fetch or drop), and the staged-bundle download path; vendored into every archive at `.fha/browser-companion/` by `fha install`/`update-tools` (load unpacked from there - owner decision 2026-07-26; dev furniture excluded). The seamless native-host path (§5.7) now ships end to end: its backend (below) plus the extension front-end that consumes it (IIIF/warning panel wiring and the opt-in `nativeMessaging` permission request in `native-host.js`), which stays OFF by default behind the "file straight into my archive" toggle |
 | Native-messaging host backend (§5.7) | **built** ([`tools/capture.py`](tools/capture.py) `fha capture --host` / `--install-host`; [`tests/test_capture_host.py`](tests/test_capture_host.py)) - length-prefixed stdin/stdout JSON: files a framed bundle into the configured `inbox/` (via `run_ingest`), plus read-only `suggestNames` / `checkUrl`. The extension front-end that drives it (the opt-in `nativeMessaging` permission request + `isAvailable` gate) also ships, OFF by default behind the "file straight into my archive" toggle |
 | Bookmarklet (§4.2) | **not pursued** - the extension is the front-end; the paste fallback is the floor (see §4.2) |
 

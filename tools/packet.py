@@ -35,8 +35,21 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     file, not just the index's 0/1, so a free-text type is recognized. Plain
     restrictions open with --include-restricted; `restricted: dna` needs
     --include-dna (DNA is always restricted, lint E017); `restricted: by-request`
-    never opens under any flag. A restricted claim inside an otherwise-included
-    source is withheld from the timeline AND cut from the copied source record
+    never opens under any flag.
+  - A MARKER THAT COULD NOT BE READ IS TREATED AS RESTRICTED, under every flag
+    (`_record_restriction`). Reading the value from the file is what makes the
+    free-text types work, and it is also what makes a failed read look exactly
+    like a person or a source that carries no marker at all. The subject is
+    refused (`restricted-subject`) and an unreadable source is excluded with its
+    files, both saying which file and how to repair it. Under every flag,
+    because `restricted: by-request` is the thing that cannot be ruled out and
+    it is the one type no flag opens. Note what does NOT raise here:
+    `_lib.read_record` reports a gone file, a permission error and malformed
+    YAML as an E010 entry in `parse_errors` rather than an exception, and a
+    record with no frontmatter block at all produces neither - just an empty
+    `meta` that reads as "no marker".
+  - A restricted claim inside an otherwise-included source is withheld from the
+    timeline AND cut from the copied source record
     itself (the README counts what was left out, in plain words) - the withhold
     never requires the claim to carry an `id:`, because id-less claims are a
     valid hand-authored state. The profile copy likewise drops withheld
@@ -54,11 +67,22 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     longer be told from accepted prose, and the centerpiece cannot ship
     verbatim). Research copies stay byte copies by the documented round-2
     scope decision; one carrying a draft marker gets a README caution line.
-  - Excluded sources are still named (ID + title only) in the README so the
-    human knows material exists but was withheld, not silently dropped.
+  - Excluded sources are still named (ID + reason, no title) in the README so
+    the human knows material exists but was withheld, not silently dropped -
+    and the reason distinguishes restricted / DNA / could-not-be-read, because
+    an absence reported under the wrong cause sends him looking in the wrong
+    place.
   - Any *other* person named in the packet's included claims/sources who is
     themselves `living`/`unknown` gets a README caution (their prose/facts
     are still included - packets are private, not for redistribution).
+
+ALL THERE OR NOT AT ALL: the finished folder is walked with an error seam
+before it is zipped (`_zip_directory`). `os.walk` and `rglob` both read a
+folder they cannot list as an empty one, so a zip could go out missing the
+very source a claim rests on while the run said "packet written" - and the
+packet is handed to a relative who has no way to check it against the
+archive. A folder that will not open therefore fails the build onto the
+write-failed arm, which clears the half-built folder and names the cause.
 
 PHOTO GATHERING (TOOLING §8's "all photos of grandma" union):
   (a) photos carrying the bare P-id keyword           - photo_people via='pid-keyword'
@@ -71,6 +95,15 @@ PHOTO GATHERING (TOOLING §8's "all photos of grandma" union):
   matched path to its full variation group (front+back+crop, etc.) via
   `photo_groups`/`photos.group_id` so a person's photo entry never ships
   the front scan without its back.
+  A photo the catalog still knows but disk no longer has (reconcile's
+  'MISSING:' key) is never copied - a packet is a physical bundle - but it
+  IS named in the README's missing-files list and warned about with the
+  command that re-links it. Its tags and its unverified-name-match status
+  still count, because they describe the physical photo rather than the one
+  scan of it: whenever a live variant of that photo ships, the vanished
+  side's living-person caution and "matched by name only" caution ship with
+  it. Both cautions are computed from the files actually copied, so a group
+  that contributed nothing to the bundle contributes no cautions either.
 
 WHY A LIBRARY FUNCTION (`run_packet`): mirrors the xref/cooccur/report
 convention of a testable `run_*(archive_root, ...) -> dict` core, separate
@@ -78,21 +111,31 @@ from the CLI handler that turns the dict into exit codes and stdout text.
 
 CODE MAP
 --------
+  The `restricted` marker
+    _restricted_type              - a raw `restricted:` value → its type, or None
+    _restricted_included          - does a record carrying this value belong in the export?
+    _record_restriction           - one record's own marker, or why it could NOT be read
+                                     (the four ways that happens, and why a failed read
+                                     must never be taken for "no marker")
+
   Helpers
     _today                         - packet directory/README date stamp
     _curated_person                - lookup + curated-tier gate
     _source_ids_for_person        - claim_persons ∪ source_people union (views.py's pattern,
                                      duplicated per-tool per TOOLING §15 "tools never import tools")
-    _classify_sources             - split source ids into included/excluded by privacy rules
+    _source_restricted_value      - one source's marker, index fallback, or unreadable
+    _classify_sources             - split source ids into included/excluded/unreadable by
+                                     the privacy rules
     _other_named_persons          - living/unknown persons named by included sources, for the
                                      README caution
     _resolve_source_files         - source_files rows → resolved paths + missing/unresolvable notes
     _is_image_path                - extension sniff for photo-type asset files
 
   Privacy redaction of copied records
-    (read_text_exact / write_text_exact - the newline-preserving IO that keeps a
-                                     redacted copy byte-faithful outside the cuts -
-                                     now live in _lib, shared with claims surgery)
+    (read_text_exact / write_text_exact_atomic - the newline-preserving,
+                                     crash-safe IO that keeps a redacted copy
+                                     byte-faithful outside the cuts - now live in
+                                     _lib, shared with claims surgery)
     _yaml_list_item_spans         - map a YAML list's entries to their line spans
     _redact_source_record_text    - cut the flag-withheld claims from a source record copy
                                      (decided per parsed entry, never by claim id)
@@ -103,8 +146,11 @@ CODE MAP
     _source_copy_plan             - per-source copy mode (byte/redact/unsafe) + timeline excludes
 
   Photo gathering
+    _live_alias                   - the real path under a reconcile 'MISSING:' key
+    _is_missing_key               - is this catalog key a photo that is not on disk?
     _photo_people_paths           - photo_people rows for this pid (a/b/c union, already resolved)
     _expand_photo_groups          - path set → full variation-group path set
+    _name_only_group_aliases      - paths whose whole photo group is an unverified name match
     _source_image_paths           - image-suffixed files among included sources' assets (d)
 
   Timeline
@@ -169,7 +215,9 @@ from _lib import (
     resolve_root_arg,
     strip_link_wrapper,
     strip_unaccepted_drafts,
-    write_text_exact,
+    unreadable_dir_recorder,
+    walk_files,
+    write_text_exact_atomic,
 )
 
 configure_utf8_stdout()
@@ -201,7 +249,13 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
     Unrestricted material is always included. `dna` opens only with
     `--include-dna`; `by-request` never opens under any flag; every other type
     (and the plain boolean) opens only with `--include-restricted`. Public paths
-    pass both flags False, so anything restricted is excluded."""
+    pass both flags False, so anything restricted is excluded.
+
+    This answers a question about a VALUE, so it has no way to tell a record
+    that said nothing from a record nobody could read - both arrive as None and
+    both read as "include". Every caller that gets its value by reading a file
+    must therefore ask `_record_restriction` first and handle its `trouble`
+    before consulting this function."""
     rtype = _restricted_type(value)
     if rtype is None:
         return True
@@ -210,6 +264,85 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
     if rtype == 'by-request':
         return False
     return include_restricted
+
+
+def _record_restriction(path: Path) -> tuple[object, str | None]:
+    """Read one record's own `restricted:` marker. Returns (value, trouble).
+
+    `trouble` is None when the marker was genuinely read (the value may still
+    be None - that is a record saying it carries no restriction). A non-None
+    `trouble` is a plain phrase saying why the marker could NOT be read, and
+    every caller must treat that as "restricted", never as "no marker": a
+    missing privacy marker is indistinguishable from a person who never asked
+    to be left out, and only one of those two readings is safe to export.
+    This is the same withhold `fha site` makes for the same reason (site.py,
+    `_load_restriction_markers`).
+
+    FOUR ROUTES END HERE, and knowing why matters more than the code does,
+    because guarding only the obvious one leaves the real ones open:
+
+      1. The file cannot be opened or decoded - gone, locked, not UTF-8.
+      2. The frontmatter is not valid YAML.
+      3. The record has no frontmatter block at all. Nothing raises and nothing
+         is reported: `FRONT_RE` simply does not match, so the marker reads as
+         absent. This is the shape that shipped a written packet for a
+         `restricted: by-request` person.
+      4. The frontmatter parses to something that is not a block of fields (a
+         bare scalar, a list), so there is no key to look up.
+
+    WHY THIS PARSES THE FRONTMATTER ITSELF rather than asking `read_record` and
+    checking `parse_errors`, which is the obvious spelling and is wrong in both
+    directions. Too narrow: `read_record` does not RAISE for routes 1 and 2 - a
+    gone file, a permission error and malformed YAML all come back as an E010
+    entry with `meta` empty - so an `except` arm around it catches almost
+    nothing, which is exactly how the bug this replaces survived. Too broad:
+    its `parse_errors` also carries CLAIMS-block failures, and a source whose
+    claims YAML will not parse has a perfectly readable frontmatter marker.
+    Escalating that into a source-level exclusion would take the record's asset
+    files down with it, when the claim-level guard already answers that
+    question correctly and more precisely (`_source_copy_plan` withholds the
+    record and its claims, and lets the assets ship). This function asks one
+    question - can the record's own `restricted:` value be read - and the
+    frontmatter is the whole of where that value can live.
+
+    Route 3 is where the line gets drawn, so draw it explicitly: a frontmatter
+    block that PARSES - even one whose only line is blank, so it parses to no
+    fields at all - is the record STATING that it carries no restriction, and
+    is honored as such. No block is a record with nowhere to put the marker,
+    which is damage rather than a statement. The test of which one this is is
+    `FRONT_RE`, the same reader every other tool uses, so a file the archive
+    treats as having no frontmatter is treated that way here too rather than
+    getting a second opinion from this function.
+
+    Refusing route 3 costs nothing a correct archive would have wanted: `tier:`
+    and `living:` live in that same frontmatter, so a person whose block is
+    gone indexes as a non-living stub on the next `fha index` and could not be
+    a packet subject anyway. The only exports it stops are the ones where the
+    index and the file already disagree.
+
+    The raw parsed value is returned uncoerced, and the marker helpers here are
+    built for that: `_restricted_type` matches the YAML booleans `True`/`False`
+    and `read_record`'s coerced `'true'`/`'false'` strings alike, so the two
+    readers agree on every value the marker can hold."""
+    try:
+        text = read_text_exact(path)
+    except (OSError, UnicodeError) as e:
+        return None, f'the file could not be read ({e})'
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return None, (
+            'the record has no frontmatter block, which is the only place a '
+            'privacy marker can live'
+        )
+    try:
+        meta = yaml.safe_load(fm.group(1))
+    except yaml.YAMLError:
+        return None, 'the frontmatter is not valid YAML'
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        return None, 'the frontmatter did not read as a block of fields'
+    return meta.get('restricted'), None
 
 
 # ── Privacy redaction of copied records ────────────────────────────────────────
@@ -221,7 +354,7 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
 # byte-faithful - and every doubt fails CLOSED: a copy that cannot be redacted
 # is not written at all.
 # The newline-preserving IO pair these cuts depend on (read_text_exact /
-# write_text_exact) moved to _lib so the claims-surgery tools share the cure.
+# write_text_exact_atomic) moved to _lib so the claims-surgery tools share the cure.
 
 def _yaml_list_item_spans(block: str) -> list[tuple[int, int]] | None:
     """Offsets of each top-level `- ` entry in a YAML list block.
@@ -458,7 +591,16 @@ def _redact_profile_text(
     Returns (new_text, names_removed) - (text, 0) when there is nothing to
     strip - or None when a variants list exists but cannot be safely edited;
     the profile is the packet's required centerpiece, so the caller treats
-    None as a structural build failure rather than shipping it unredacted."""
+    None as a structural build failure rather than shipping it unredacted.
+
+    The no-frontmatter arm below reads as "nothing to strip", which is the
+    right answer to the question this function asks (there are no structured
+    name carriers) and the WRONG answer to the privacy question, since a
+    profile with no frontmatter cannot state its `restricted:` marker either.
+    That is why the subject gate in `_packet_payload` settles the marker
+    through `_record_restriction` FIRST and refuses: by the time this runs, the
+    profile is known to have a frontmatter block. Keep it that way round - a
+    reader who moves the gate later re-opens the hole this arm cannot see."""
     fm = FRONT_RE.match(text)
     if not fm:
         return text, 0
@@ -643,8 +785,10 @@ def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[st
     return [r[0] for r in rows]
 
 
-def _source_restricted_value(archive_root: Path, row: sqlite3.Row):
-    """The source's `restricted:` value, for the export decision.
+def _source_restricted_value(archive_root: Path, row: sqlite3.Row) -> tuple[object, str | None]:
+    """The source's `restricted:` value, for the export decision. Returns
+    (value, trouble) - `trouble` non-None means the record's own marker could
+    not be read and the caller must exclude the source outright.
 
     The index stores `restricted` only as 0/1, so a free-text type
     (`restricted: by-request` on a source) is lost there - the type is read from
@@ -652,18 +796,30 @@ def _source_restricted_value(archive_root: Path, row: sqlite3.Row):
     other: if the file states a value it wins (it carries the type), otherwise
     the index's 1 still counts as a plain restriction, and a DNA source_type is
     always treated as restricted (lint E017) even if the flag was hand-dropped.
-    An unreadable record falls back to the index's 0/1 - fail closed."""
-    try:
-        value = read_record(archive_root / row['path'])['meta'].get('restricted')
-    except Exception:
-        value = None
+
+    IT USED TO FALL BACK TO THE INDEX ON AN UNREADABLE RECORD, and its docstring
+    called that "fail closed". It was the opposite. The index's 0 (the common
+    case - the column is only 1 when some earlier index run read a marker) made
+    an unreadable source read as unrestricted and ship, files and title and all.
+    Worse, its 1 cannot carry a type: an unreadable `restricted: by-request`
+    source degraded to a plain restriction, which `--include-restricted` opens -
+    turning the one no-override type in AGENTS.md's contract item 6 into an
+    overridable one. Combining a value with a value is right; combining a value
+    with a GUESS is not, and the index bit is a guess about a file nobody could
+    read. `by-request` is precisely what cannot be ruled out, so an unreadable
+    record now opens under no flag at all. The cost is bounded and recoverable:
+    the source is still named in the README (ID + reason, no title), and the
+    warning names the record and the command that repairs it."""
+    value, trouble = _record_restriction(archive_root / row['path'])
+    if trouble is not None:
+        return None, trouble
     if value in (None, False, '', 'false'):
         if (row['source_type'] or '') == 'dna':
-            return 'dna'
+            return 'dna', None
         if (row['restricted'] or 0):
-            return 'true'
-        return None
-    return value
+            return 'true', None
+        return None, None
+    return value, None
 
 
 def _classify_sources(
@@ -673,18 +829,29 @@ def _classify_sources(
     *,
     include_restricted: bool,
     include_dna: bool,
-) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    messages: list[str],
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row], set[str]]:
     """
-    Split source_ids into (included, excluded) rows per TOOLING §8 privacy rules.
+    Split source_ids into (included, excluded, unreadable) per TOOLING §8's
+    privacy rules; `unreadable` is the subset of `excluded` whose own record
+    could not be read, which the README reports as its own reason rather than
+    miscalling it "restricted".
 
     The `restricted` marker is read from each source record (so a free-text type
     like `restricted: by-request` is honored, not just the index's 0/1), and the
     shared decision applies the no-override rule: `dna` needs --include-dna,
     `by-request` is never opened, everything else (incl. the plain boolean) needs
-    --include-restricted.
+    --include-restricted. A record whose marker could not be read is excluded
+    under every flag - see `_source_restricted_value`.
+
+    Excluding at THIS step rather than later is deliberate: `included_ids` is
+    the single filter the timeline, the copy loop and the asset gather all read,
+    so a source dropped here is dropped from every surface at once. A withhold
+    bolted on further down would have to be repeated at each of them, and the
+    one that got missed would be the leak.
     """
     if not source_ids:
-        return [], []
+        return [], [], set()
     placeholders = ','.join('?' * len(source_ids))
     rows = conn.execute(
         f"""
@@ -696,13 +863,25 @@ def _classify_sources(
     ).fetchall()
 
     included, excluded = [], []
+    unreadable: set[str] = set()
     for row in rows:
-        value = _source_restricted_value(archive_root, row)
+        value, trouble = _source_restricted_value(archive_root, row)
+        if trouble is not None:
+            excluded.append(row)
+            unreadable.add(row['id'])
+            messages.append(
+                f'WARNING: {fmt_id_display(row["id"])} ({row["path"]}) could not be '
+                f'read ({trouble}), so there is no way to tell whether that source - '
+                'or any fact in it - was marked private. It was left out of the '
+                'packet, along with its files. Repair that record (run `fha lint` '
+                'to see what is wrong), run `fha index`, then build the packet again.'
+            )
+            continue
         if _restricted_included(value, include_restricted=include_restricted, include_dna=include_dna):
             included.append(row)
         else:
             excluded.append(row)
-    return included, excluded
+    return included, excluded, unreadable
 
 
 def _other_named_persons(
@@ -806,6 +985,36 @@ def _is_image_path(p: Path) -> bool:
 
 # ── Photo gathering ───────────────────────────────────────────────────────────
 
+# `fha photoindex reconcile` keeps a vanished photo's row in the catalog under
+# the synthetic key 'MISSING:' + its last known path, so the caption, keywords
+# and date history it carried survive the file itself. The two helpers below
+# are photoindex.py's own vocabulary, restated here because tools never import
+# tools (TOOLING §15): _live_alias answers "where was this photo" and
+# _is_missing_key answers "can this file be opened". A packet is a physical
+# bundle of files, so every copy path must ask the second question first.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The alias a cached photo key refers to, with any 'MISSING:' prefix off.
+
+    The prefix decorates the path a photo had; it is not a different path. Use
+    this whenever the answer is a place ("where did this photo live"), never to
+    build something to open.
+    """
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached photo path is reconcile's synthetic missing-file key.
+
+    A packet copies real bytes, so a true here means "do not copy, and say why"
+    rather than "resolve it and let the copy fail with a path the human has
+    never seen".
+    """
+    return path.startswith(_MISSING_PREFIX)
+
+
 def _photo_people_paths(photos_conn: sqlite3.Connection, pid: str) -> set[str]:
     """
     Raw photo_people paths for pid - already the union of pid-keyword,
@@ -827,6 +1036,11 @@ def _expand_photo_groups(photos_conn: sqlite3.Connection, paths: set[str]) -> se
     and crop variants (TOOLING §9: a logical photo is the whole group, not
     one file). Paths with no group_id (shouldn't happen post-scan, but a
     stale/partial cache is possible) pass through unchanged.
+
+    A 'MISSING:' member is expanded like any other, and a 'MISSING:' input
+    still finds its group: a vanished front scan must still pull its back
+    scan into the packet. Deciding which of the expanded paths can actually
+    be copied happens at the copy site, not here.
     """
     if not paths:
         return set()
@@ -847,6 +1061,34 @@ def _expand_photo_groups(photos_conn: sqlite3.Connection, paths: set[str]) -> se
         ).fetchall():
             expanded.add(row['path'])
     return expanded
+
+
+def _name_only_group_aliases(photos_conn: sqlite3.Connection, pid: str) -> set[str]:
+    """
+    Every cached photo path whose *logical photo* is tied to pid by name alone.
+
+    "Matched by name only" is a fact about a physical photo, not about one scan
+    of it: group expansion ships the back and the crop alongside a matched
+    front, so the caution has to follow the group. It therefore survives when
+    the name-matched variant is the one that has gone off disk and a sibling is
+    what actually travels, and it lifts only when some stronger link - a P-id
+    keyword or an exact face tag - verifies the same group.
+
+    Returns alias keys with the 'MISSING:' ones left in, because a missing key
+    is still evidence about its group; the caller counts only the files it
+    managed to copy, which is what the recipient can actually look at.
+    """
+    name_matched: set[str] = set()
+    verified: set[str] = set()
+    for row in photos_conn.execute(
+        'SELECT path, via FROM photo_people WHERE person_ref = ?', (pid,)
+    ).fetchall():
+        target = name_matched if row['via'] == 'name-match' else verified
+        target.add(row['path'])
+    return (
+        _expand_photo_groups(photos_conn, name_matched)
+        - _expand_photo_groups(photos_conn, verified)
+    )
 
 
 def _source_image_paths(
@@ -900,7 +1142,16 @@ def _source_copy_plan(
     checked). The caller also keeps an 'unsafe' source's indexed claims out
     of the timeline: a fresh real index drops a malformed record's claims on
     its own, but the packet must not depend on that staying true of every
-    index it is ever handed."""
+    index it is ever handed.
+
+    This guard and the source-level one divide the record cleanly, and keeping
+    them apart is what makes each proportionate. `_record_restriction` reads
+    the FRONTMATTER for the source's own marker, and a failure there excludes
+    the source outright - record, claims, assets, title. This one reads the
+    CLAIMS block, and a failure here withholds the record and its claims while
+    the asset files still ship: they carry no claim YAML, and the source-level
+    marker was read and passed. A frontmatter failure therefore never reaches
+    this function; a claims failure never reaches that one."""
     plan: dict[str, str] = {}
     timeline_excluded: set[str] = set()
     if not included_source_ids:
@@ -1118,7 +1369,18 @@ def _copy_redacted_source(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_dest_path(dest_dir, src.name)
     try:
-        write_text_exact(dest, new_text)
+        # Atomic here specifically, though the packet is regenerable output.
+        # Every other write in the build raises into run_packet's cleanup
+        # handler, which rmtree's the whole half-built directory - a
+        # transaction stronger than any single-file guarantee, so those writes
+        # need nothing. This one is the exception: its OSError is caught right
+        # here and downgraded to a per-file WARNING, so the directory cleanup
+        # never runs and the packet still ships as 'ok'. A truncating write
+        # would leave a half-written source record sitting in sources/ that
+        # the README lists as absent, and a relative opening the packet would
+        # read it as the whole record. Fail closed means the file is either
+        # complete or not there.
+        write_text_exact_atomic(dest, new_text)
     except OSError as e:
         messages.append(f'WARNING: could not copy {src}: {e}')
         return None
@@ -1134,6 +1396,7 @@ def _write_readme(
     pid: str,
     included_sources: list[sqlite3.Row],
     excluded_sources: list[sqlite3.Row],
+    unreadable_source_ids: set[str],
     other_named: list[sqlite3.Row],
     photo_count: int,
     unverified_photo_count: int,
@@ -1194,12 +1457,20 @@ def _write_readme(
             lines.append(f'  [{fmt_id_display(row["id"])}] {row["title"]}\n')
 
     if excluded_sources:
+        # Reason, not just a count: "restricted" over a record the tool could
+        # not open would blame the wrong cause, and a README that misreports
+        # why something is absent sends the owner looking in the wrong place.
         lines.append(
-            f'\nExcluded sources ({len(excluded_sources)}) - restricted or DNA material '
-            'withheld by default, listed by ID only:\n'
+            f'\nExcluded sources ({len(excluded_sources)}) - restricted, DNA, or '
+            'unreadable material withheld by default, listed by ID only:\n'
         )
         for row in excluded_sources:
-            reason = 'DNA' if row['source_type'] == 'dna' else 'restricted'
+            if row['id'] in unreadable_source_ids:
+                reason = 'could not be read'
+            elif row['source_type'] == 'dna':
+                reason = 'DNA'
+            else:
+                reason = 'restricted'
             lines.append(f'  [{fmt_id_display(row["id"])}] ({reason})\n')
 
     if redaction_notes:
@@ -1225,11 +1496,34 @@ def _write_readme(
 
 def _zip_directory(src_dir: Path, zip_path: Path) -> None:
     """Zip src_dir's contents into zip_path with paths relative to src_dir's parent
-    (so the zip extracts back into a single top-level packet folder)."""
+    (so the zip extracts back into a single top-level packet folder).
+
+    Walked with `walk_files` and an error seam rather than `rglob`: this
+    command just wrote every one of these files, so a subfolder that will not
+    list means the zip would go out short of the sources a claim rests on
+    while the run reported a packet built. A packet is handed to a relative
+    who cannot check it against the archive - it has to be all there or not go
+    at all - so the OSError raised here lands on `_packet_payload`'s
+    write-failed arm, which removes the half-built folder and the partial zip
+    and names the cause.
+    """
+    unreadable: list[Path] = []
+    files = sorted(
+        p for p in walk_files(src_dir, on_error=unreadable_dir_recorder(unreadable))
+        if p.is_file()
+    )
+    if unreadable:
+        shown = ', '.join(
+            sorted(p.name for p in unreadable)[:5]) or str(src_dir)
+        raise OSError(
+            f'a folder inside the packet could not be read ({shown}), so the '
+            f'zip would have been missing files without saying so - nothing '
+            f'was kept. Check that folder (a drive or share that went away '
+            f'mid-run is the usual cause), then run `fha packet` again'
+        )
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for p in sorted(src_dir.rglob('*')):
-            if p.is_file():
-                zf.write(p, p.relative_to(src_dir.parent))
+        for p in files:
+            zf.write(p, p.relative_to(src_dir.parent))
 
 
 def _display_path(path: Path, archive_root: Path) -> str:
@@ -1334,11 +1628,31 @@ def _packet_payload(
         # this person's material. `by-request` is absolute; a plain/other type is
         # refused unless --include-restricted (dna unless --include-dna), the same
         # no-override rule every export path shares.
-        subject_restricted = None
-        try:
-            subject_restricted = read_record(profile_path)['meta'].get('restricted')
-        except Exception:
-            subject_restricted = None
+        #
+        # A subject whose marker could not be READ is refused the same way, and
+        # under every flag. The marker lives in the person's record file and
+        # nowhere else - `persons` has no `restricted` column - so this decision
+        # is made by reading a file, and a read that fails hands back exactly
+        # what an unrestricted person hands back. It used to be taken as the
+        # latter: the guard here was a bare `except Exception` around
+        # `read_record(...)['meta'].get('restricted')`, and `read_record` does
+        # not raise for the ordinary failures, so that arm caught almost
+        # nothing - while a profile whose frontmatter block was gone entirely
+        # raised nothing and reported nothing at all. That shipped a complete
+        # zipped packet - profile, timeline, sources - for a person whose file
+        # had said `restricted: by-request`.
+        subject_restricted, subject_trouble = _record_restriction(profile_path)
+        if subject_trouble is not None:
+            return {
+                'status': 'restricted-subject', 'packet_dir': None, 'zip_path': None,
+                'messages': [
+                    f'{fmt_id_display(pid)}: {person["path"]} could not be read '
+                    f'({subject_trouble}), so there is no way to tell whether this '
+                    'person asked to be left out of exports. Nothing was exported. '
+                    'Repair that file (run `fha lint` to see what is wrong), run '
+                    '`fha index`, then run `fha packet` again.'
+                ],
+            }
         if not _restricted_included(
             subject_restricted, include_restricted=include_restricted, include_dna=include_dna
         ):
@@ -1367,9 +1681,10 @@ def _packet_payload(
 
         alias_pids = [pid] + _merged_alias_ids(conn, pid)
         source_ids = _source_ids_for_person(conn, alias_pids)
-        included_rows, excluded_rows = _classify_sources(
+        included_rows, excluded_rows, unreadable_source_ids = _classify_sources(
             conn, archive_root, source_ids,
             include_restricted=include_restricted, include_dna=include_dna,
+            messages=messages,
         )
         included_ids = {r['id'] for r in included_rows}
 
@@ -1486,7 +1801,13 @@ def _packet_payload(
                     'the draft text, then rebuild the packet.'
                 )
             if profile_out_text != profile_text:
-                write_text_exact(
+                # An OSError here raises into the cleanup handler at the bottom
+                # of the build, which rmtree's the whole packet - so atomicity
+                # is not what makes this write safe. It is atomic anyway
+                # because there is no case where the truncating writer is
+                # BETTER, only cases where it is merely sufficient, and one
+                # writer for records is easier to keep right than two.
+                write_text_exact_atomic(
                     _unique_dest_path(profile_dir, profile_path.name), profile_out_text,
                 )
                 if hidden_name_count:
@@ -1582,12 +1903,16 @@ def _packet_payload(
                 pconn.row_factory = sqlite3.Row
                 try:
                     people_paths = _photo_people_paths(pconn, pid)
-                    unverified_count = len({
-                        r['path'] for r in pconn.execute(
-                            "SELECT path FROM photo_people WHERE person_ref=? AND via='name-match'",
-                            (pid,),
-                        ).fetchall()
-                    })
+                    # The README counts these as photos the recipient can look
+                    # at ("N photo(s) in photos/ are matched by name only"), so
+                    # the tally is taken at the copy site below, over files that
+                    # actually landed in photos/. The name match itself belongs
+                    # to the whole logical photo, so the caution has to travel
+                    # with whichever variant ships: a group whose only link to
+                    # this person is an unverified name match stays unverified
+                    # even when the matched scan has gone off disk and only its
+                    # back is left to copy.
+                    name_only_aliases = _name_only_group_aliases(pconn, pid)
 
                     # Source-linked images aren't under photos/ control by tag, but a
                     # scan/copy of one may still share a photo_groups entry with a
@@ -1609,6 +1934,15 @@ def _packet_payload(
                     def _is_photo_alias(a: str) -> bool:
                         return a == 'photos' or a.startswith('photos/')
 
+                    # A group can contain a photo reconcile has flagged as gone
+                    # from disk. Its row is real and worth keeping (the caption
+                    # and the tags on it are), but there are no bytes to put in
+                    # the bundle, so it is separated out here and reported by
+                    # name instead of being resolved into a path that could
+                    # never open.
+                    missing_aliases = {a for a in expanded_aliases if _is_missing_key(a)}
+                    live_aliases = expanded_aliases - missing_aliases
+
                     # photo_people/photos store alias-form paths ('photos/…') that need
                     # resolve_path; a source image outside the photos root falls back to
                     # its own absolute path above and is used as-is. Keep the alias form
@@ -1616,7 +1950,7 @@ def _packet_payload(
                     # it instead of a machine-specific absolute path when the photos
                     # root is mapped outside the archive.
                     photo_targets: dict[Path, str | None] = {}
-                    for alias_path in expanded_aliases:
+                    for alias_path in live_aliases:
                         if _is_photo_alias(alias_path):
                             try:
                                 resolved = resolve_path(alias_path, fha_config, archive_root)
@@ -1626,11 +1960,55 @@ def _packet_payload(
                         else:
                             photo_targets[source_alias_map.get(alias_path, Path(alias_path))] = None
 
+                    # Photos that are in the catalog but not on disk: named in
+                    # the README so the recipient knows the packet is short a
+                    # picture on purpose, and flagged to whoever ran the export
+                    # with the command that puts it back. Sorted so a packet
+                    # built twice reads the same way both times.
+                    for missing_key in sorted(missing_aliases):
+                        note = (
+                            'photo not on disk, so not copied: '
+                            f'{_live_alias(missing_key)}'
+                        )
+                        messages.append(
+                            f'WARNING: {note} - the photo catalog still remembers this '
+                            'photo, but the file has moved or been deleted. Put it back, '
+                            'then run fha photoindex reconcile --with-exif to re-link it.'
+                        )
+                        missing_assets.append(note)
+
+                    copied_aliases: set[str] = set()
+                    if photo_targets:
+                        photos_dir = packet_dir / 'photos'
+                        photos_dir.mkdir(exist_ok=True)
+                        for abs_path in sorted(photo_targets, key=str):
+                            alias_path = photo_targets[abs_path]
+                            if not abs_path.exists():
+                                display = alias_path or _display_path(abs_path, archive_root)
+                                note = f'photo missing on disk: {display}'
+                                messages.append(f'WARNING: {note}')
+                                missing_assets.append(note)
+                                continue
+                            if _copy_into(abs_path, photos_dir, messages=messages):
+                                photo_count += 1
+                                if alias_path is not None:
+                                    copied_aliases.add(alias_path)
+                                if alias_path in name_only_aliases:
+                                    unverified_count += 1
+
                     # A photo-group sibling may be tagged with a different,
                     # still-living/unknown person who never appears in any claim or
                     # source - catch that here so the caution list covers photo-only
-                    # matches too.
-                    tagged_aliases = {a for a in expanded_aliases if _is_photo_alias(a)}
+                    # matches too. The list is built from what was actually copied,
+                    # then re-expanded to those photos' groups: a person tagged only
+                    # on a vanished front scan still belongs in the caution when the
+                    # back scan of the same physical photo ships, while a photo that
+                    # never made it into the bundle at all must not put a living
+                    # person's name in the README for nothing.
+                    tagged_aliases = {
+                        a for a in _expand_photo_groups(pconn, copied_aliases)
+                        if _is_photo_alias(_live_alias(a))
+                    }
                     if tagged_aliases:
                         placeholders = ','.join('?' * len(tagged_aliases))
                         photo_person_ids = {
@@ -1648,20 +2026,6 @@ def _packet_payload(
                                 list(photo_person_ids),
                             ).fetchall():
                                 other_named_by_id.setdefault(row['id'], row)
-
-                    if photo_targets:
-                        photos_dir = packet_dir / 'photos'
-                        photos_dir.mkdir(exist_ok=True)
-                        for abs_path in sorted(photo_targets, key=str):
-                            alias_path = photo_targets[abs_path]
-                            if not abs_path.exists():
-                                display = alias_path or _display_path(abs_path, archive_root)
-                                note = f'photo missing on disk: {display}'
-                                messages.append(f'WARNING: {note}')
-                                missing_assets.append(note)
-                                continue
-                            if _copy_into(abs_path, photos_dir, messages=messages):
-                                photo_count += 1
                 finally:
                     pconn.close()
 
@@ -1671,6 +2035,7 @@ def _packet_payload(
                 packet_dir / 'README.txt',
                 person_name=person_name, pid=pid,
                 included_sources=included_rows, excluded_sources=excluded_rows,
+                unreadable_source_ids=unreadable_source_ids,
                 other_named=other_named, photo_count=photo_count,
                 unverified_photo_count=unverified_count, research_included=research_included,
                 research_draft_caution=research_draft_caution,

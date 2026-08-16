@@ -47,7 +47,8 @@ from __future__ import annotations
 import calendar
 import dataclasses
 import datetime
-import itertools
+import fnmatch
+import json
 import os
 import re
 import secrets
@@ -56,8 +57,11 @@ import sqlite3
 import shlex
 import sys
 import tempfile
+import time
+import unicodedata
 from collections import deque
-from pathlib import Path
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -78,7 +82,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    SOURCE_TYPES              - controlled vocabulary for source_type field
 #    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
+#    TEXT_COMPANION_ROLES      - files: roles that hold a source's words as text
+#    SEARCHABLE_TEXT_SUFFIXES  - file extensions the text search actually reads
 #    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
+#
+#  Which sources a text search can see inside (#46)
+#    file_entry_carries_text   - one files: entry -> is its content searchable text?
+#    files_carry_searchable_text - a source's files: block -> any text at all?
 #
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
@@ -96,10 +106,28 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    probe_sqlite              - does this db open and run this one probe query?
 #    open_index_db             - open .cache/index.sqlite with the freshness check +
 #                                 required-table probe every index-reading tool needs
+#    read_cache_meta / write_cache_meta - one meta(key, value) row of a cache
+#    photos_ignore_patterns    - fha.yaml photos_ignore: patterns, normalized
+#    photos_ignore_matcher     - is_ignored(rel) closure shared by scan + freshness
+#    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
+#    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
+#  Safety copies of originals (`originals_backup:`, TOOLING §13f)
+#    BackupRefused             - "no safety copy, so do not write" (carries the sentence)
+#    originals_backup_dir      - fha.yaml originals_backup: -> resolved folder, or None
+#    _fold_path_text           - case/Unicode-flattened path spelling
+#    _path_contains            - exact / name-fold / no containment, by parent climb
+#    format_size               - bytes -> B/KB/MB/GB a human reads
+#    OriginalBackup            - one run's policy: copy once per file, warn once,
+#                                 fail closed; the ONE rule all four writers use
+#
 #  Record parsing
-#    read_text_exact / write_text_exact - newline-exact record IO (no CRLF/LF translation)
+#    read_text_exact            - newline-exact record read (no CRLF/LF translation)
+#    write_text_exact           - its non-atomic mirror; NOT for archive records
+#    _refuse_unwritable_target  - the read-only-record refusal os.replace skips
+#    _carry_ownership           - give the temp the record's owner/group before it lands
+#    write_text_exact_atomic    - the record writer: temp + fsync + os.replace
 #    reapply_newline           - restore a record's CRLF/LF convention after a text edit
 #    yaml_inline                - single-line quoted YAML scalar (every surgical writer's rule)
 #    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
@@ -122,7 +150,15 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    split_log_entries         - an append-log section's entries (paragraph runs)
 #    replace_paragraph_in_section - swap ONE entry of an append-log section (the
 #                                 workbench's per-entry edit; matched by exact text)
-#    parse_filename            - decompose filename into {id_str, kind, is_companion}
+#    parse_filename            - decompose filename into {id_str, kind, is_companion,
+#                                 kind_ambiguous} (the §13 kind slot is shared with the
+#                                 last given name, so the kind can only ever be a guess)
+#    PERSON_RECORD_FIELDS      - the SPEC §9 fields that mark a file as a person record
+#    carries_person_record_fields - does this frontmatter say "I am a person record"?
+#    person_file_kind          - what a people/ file IS: content first, filename as hint
+#    is_person_file_kind       - is this person file the `research`/`timeline`/… companion?
+#                                 (the §13 kind SLOT, never a substring of the stem;
+#                                  pass `meta` and the file's own content decides)
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
 #
@@ -131,6 +167,15 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    normalize_date            - loose human date ("circa 1870", "1870s") → canonical EDTF
 #    edtf_bounds               - compute (date_min, date_max) ISO strings
 #    _pad_date, _last_day      - internal date-padding helpers
+#    edtf_confidence           - sortable confidence score (components + marker rank)
+#
+#  Photo DATE: keyword resolution (SPEC §20) - shared by photoindex + process
+#    PHOTO_DATE_PATTERN_RE     - the letter grammar a DATE: keyword may carry
+#    PHOTO_EXIF_DATE_RE        - the leading YYYY:MM:DD of an EXIF DateTimeOriginal
+#    photo_date_markers_to_edtf - INTERNAL: digits + confidence markers → EDTF
+#    photo_date_pattern_to_edtf - letter grammar + DateTimeOriginal → EDTF
+#    resolve_photo_edtf        - one photo's date: the letter form only, or nothing
+#    is_nonspec_photo_date_keyword - is this DATE: keyword outside the §20 grammar?
 #
 #  ID utilities
 #    mint_ids                  - mint collision-checked Crockford IDs
@@ -162,6 +207,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    promote_person_record     - the ONE engine: tier flip + move + research scaffold,
 #                                 transactional, shared by person promote and
 #                                 views brackets --fix-promote
+#    relocate_person_in_index  - rewrite every path-keyed index row after a record move
+#    sync_generated_view_rows  - keep notes_fts/person_files in step with the
+#                                 companion views `fha views` writes and deletes
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
 #    extract_bare_ids          - all bare IDs from a text block
@@ -171,9 +219,20 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Alias resolution / publication guards
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    strip_unaccepted_drafts   - drop AI-DRAFT prose + AI markers pre-publication (fail-closed)
+#    transcript_review_state   - has a human checked this transcript against the
+#                                 picture? unreviewed | verified | unmarked | damaged
+#    transcript_text_is_unchecked - that state collapsed to the one question a
+#                                 consumer asks (damaged counts as unchecked)
 #    GENERATED_PREFIX, is_generated_text, is_generated_file - GENERATED-header ownership test
 #
+#  Walking a tree that might not open
+#    unreadable_dir_recorder   - os.walk onerror collector: the folders it failed on
+#    walk_files                - rglob replacement WITH that error seam
+#    unreadable_dir_hold_mtimes - times to hold a cache behind so it reads 'stale'
+#
 #  Archive freshness
+#    _is_generated_companion   - a real `fha views` output under people/ (not a
+#                                 human file that shares its name)
 #    newest_record_mtime       - max mtime of sources/people/notes .md + places.yaml
 #    newest_source_record_mtime - max mtime of source .md records only
 #    newest_person_record_mtime - max mtime of people/*.md only
@@ -339,6 +398,83 @@ def format_bracket_child(given_name: str, label: str | None) -> str:
     both derive byte-identical bracket lists (SPEC §12.2, TOOLING §7)."""
     return f'{given_name} ({label})' if label else given_name
 
+
+def spouse_extended_base(
+    base_name: str, partner_ids: list[str], names: dict[str, str],
+) -> tuple[str, str | None]:
+    """Extend a couple folder's base name with the missing second partner.
+
+    SPEC §12.2's illustrated convention names both partners ('040 Thomas
+    Hartley + Margaret Cole'), but a tool-created folder starts with only the
+    promoted person's name (`{NNN} {name}`, the promote engine's grammar) and
+    nothing ever added the spouse. This derives the `+ second spouse` half from
+    the same folder-occupancy data that drives the W103 bracket refresh -
+    shared by lint and views so both derive byte-identical names.
+
+    Deliberately conservative - folder names are free-form human convenience
+    (SPEC §12.2), so the rule is: only ADD, never rewrite, never guess. The
+    extension fires only when ALL hold:
+      - the folder's derived couple (`partner_ids`: occupants minus occupants
+        who are children of occupants) has exactly two members;
+      - the base name (numeric prefix + text, bracket list already stripped)
+        carries no `+` yet - an existing spouse half, even a hand-written
+        nickname, is never touched;
+      - the text after the numeric prefix exactly matches ONE partner's
+        recorded name (case/whitespace-insensitive) - a base hand-crafted
+        enough not to match is left alone rather than guessed at.
+
+    The placeholder guard runs on BOTH halves. A base that is itself a
+    placeholder (`004 unknown` - the folder a promotion had to invent for a
+    person with no recorded name) is left alone: appending a real partner would
+    bake the placeholder in for good, since this rule only ever adds and never
+    revisits a base that already carries a `+`.
+
+    Returns (new_base, other_name): the possibly-extended base name, and the
+    appended partner's name when it changed (None otherwise).
+    """
+    if len(partner_ids) != 2:
+        return base_name, None
+
+    m = re.match(r'^(\d+[a-z]?\s+)(.*)$', base_name)
+    if not m or '+' in m.group(2):
+        return base_name, None
+    if is_placeholder_name(m.group(2)):
+        return base_name, None
+
+    def _norm(s: str) -> str:
+        return ' '.join(s.split()).casefold()
+
+    base_person = _norm(m.group(2))
+    matched = [pid for pid in partner_ids
+               if names.get(pid) and _norm(names[pid]) == base_person]
+    if len(matched) != 1:
+        return base_name, None
+    other = next(pid for pid in partner_ids if pid != matched[0])
+    other_name = names.get(other)
+    # A partner with no recorded name resolves to their bare P-id, or to one
+    # of the archive's placeholders - a folder name is for humans, so never
+    # write an ID or a placeholder into it.
+    if (not other_name or other_name == other or is_placeholder_name(other_name)
+            or _norm(other_name) == base_person):
+        return base_name, None
+    return f'{base_name} + {other_name}', other_name
+
+
+def is_placeholder_name(name: object) -> bool:
+    """True for the strings that stand in for 'no name recorded'.
+
+    `fha stubs` mints an unnamed reference as `name: unknown`, the index stores
+    'unknown' for a record with no `name:` at all, and a bare `name:` key (YAML
+    null) reaches the index as the string 'None'. None of these may be written
+    into a couple-folder name or offered as a partner label; every naming
+    surface (W103's `+ spouse` half, W119's invented folder, --realign) checks
+    here so they can never disagree.
+    """
+    if name is None:
+        return True
+    text = ' '.join(str(name).split()).casefold()
+    return text in ('', 'unknown', 'none', 'null', 'unnamed', '?')
+
 # The keys that mark a YAML mapping as a claim, used to recognise hand-written
 # claims a human typed under `## Claims` but forgot to fence (read_record reads
 # them anyway so they are never silently lost; lint offers to wrap the fence).
@@ -381,6 +517,42 @@ def format_source_type_error(value: object, *, where: str = 'source_type') -> st
 # (like SOURCE_TYPES) rather than free text so `fha person new` and any future
 # validator can catch a typo ("m" vs "M", "male") before it lands in a record.
 PERSON_SEX_VALUES: frozenset[str] = frozenset({'M', 'F', 'intersex', 'unknown'})
+
+
+def sex_slot_is_defaulted(sex: object) -> bool:
+    """Whether a lone linked parent with this `sex:` value gets a DEFAULTED
+    Ahnentafel slot worth a W120 note.
+
+    The derivation puts a lone parent whose sex is not F in the father/even
+    slot. That is a default, not a derivation, whenever the value is absent,
+    blank, the legacy `U`, or something the vocabulary does not recognise
+    (`f`, `male`) - the human can settle it by recording `sex: M`/`sex: F`.
+    An explicitly recorded `intersex` or `unknown` (SPEC §9's vocabulary) is a
+    fact the human already stated: the tie-break is the designed behaviour
+    for it (TOOLING §7), there is nothing more to record, and a permanent
+    warning against a correct record would only teach the human to overwrite
+    it. Shared by lint and views so the twins fire on the same set.
+    """
+    text = ('' if sex is None else str(sex)).strip()
+    return text not in PERSON_SEX_VALUES
+
+
+def format_w120_message(name: str, pos: int, sex: object, cmd_hint: str) -> str:
+    """The W120 finding text, one wording for lint and views."""
+    text = ('' if sex is None else str(sex)).strip()
+    if text and text != 'U':
+        cause = (f'their record carries `sex: {text}`, which the tools do not '
+                 'recognise (the vocabulary is M | F | intersex | unknown)')
+    else:
+        cause = 'their record has no sex: recorded'
+    return (
+        f'{name} took Ahnentafel position {pos} (the father/even slot) by '
+        f'default: they are the only linked parent of that couple and {cause}, '
+        'so their slot - and every ancestor number above them - is a guess, '
+        'not a derivation. Record `sex: M` or `sex: F` on their record '
+        f'(`fha person set-sex <P-id> M|F`) to confirm or correct the placement, '
+        f'then run {cmd_hint}.'
+    )
 
 
 def format_person_sex_error(value: object) -> str:
@@ -493,11 +665,34 @@ PHOTO_EXTENSIONS: frozenset[str] = frozenset({
     '.cr2', '.nef', '.dng', '.arw', '.orf', '.rw2',
 })
 
+# The `files:` roles whose companion holds a source's words as text: the
+# `transcript` role SPEC §12.1 lists among the filename suffixes, and the
+# `extracted-text` role `fha source extract` stamps on a PDF text-layer dump.
+# `transcription` is the older spelling - it is what the shipped example
+# archive's records say, and hand-written records use it too - and it means the
+# same thing, so it is accepted here rather than read as an unknown role. Being
+# fussy about the spelling would make a fully transcribed source count as one
+# nobody can read, which is the one mistake this vocabulary exists to prevent.
+TEXT_COMPANION_ROLES: frozenset[str] = frozenset({
+    'transcript', 'transcription', 'extracted-text',
+})
+
+# File extensions the archive's text search actually opens and reads. Anything
+# else - a scan, a photograph, a PDF, a recording - is opaque to it: a PDF's own
+# text layer is only searchable once `fha source extract` has dumped it into a
+# companion, and an image or a recording only once somebody has written out what
+# it says.
+SEARCHABLE_TEXT_SUFFIXES: frozenset[str] = frozenset({'.md', '.txt'})
+
 # Companion file kinds: generated view files that share a P-id with their profile
 # and live in the same folder.  Enumerated here so that parse_filename (kind
 # detection) and index.py (person_files.kind column) stay in sync when new view
 # types are added - add the kind here, and both consumers pick it up automatically.
 COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index', 'draft-queue'})
+# The subset a tool writes FROM the index (`fha views`). Their content is
+# derived, so writing one changes nothing the index needs to re-read; the
+# `research` companion is human-written and stays a record for freshness.
+GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-index', 'draft-queue'})
 
 # Disposable cache schema versions. These are deliberately small integers stored
 # in both a meta row and PRAGMA user_version so humans and SQLite tools can see
@@ -522,6 +717,18 @@ COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-in
 INDEX_SCHEMA_VERSION = 6
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
+
+# The `meta` row `fha photoindex` stamps with the fha.yaml settings the catalog
+# was built from. Schema version says "this cache has the right shape"; this
+# says "this cache holds the right files". They are separate questions: a
+# `photos_ignore:` edit changes neither the shape nor any photo's mtime, so
+# without a stored copy of the settings, nothing in the freshness check can
+# tell that the catalog no longer matches the config (see
+# photoindex_config_drift). Stored under the same `meta(key, value)` table the
+# schema version already uses - one place for "what is this cache", and the
+# photoindex DDL's INSERT touches only the schema_version row, so this survives
+# every reopen until the next scan restamps it.
+PHOTOINDEX_CONFIG_KEY = 'build_config'
 
 # ── fha.yaml loading ──────────────────────────────────────────────────────────
 
@@ -781,6 +988,141 @@ def path_to_alias(path: str | Path, alias: str, fha_config: dict, archive_root: 
     return f'{alias}/{rel.as_posix()}' if str(rel) != '.' else alias
 
 
+# The last `roots:` mapping the tools ran against, remembered so a change can
+# be judged BEFORE it does damage. Disposable cache, like everything under
+# .cache/: absent means "nothing to compare", never an error.
+ROOTS_STAMP_NAME = 'roots.json'
+
+
+def _read_roots_stamp(archive_root: Path) -> dict[str, str] | None:
+    path = archive_root / '.cache' / ROOTS_STAMP_NAME
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _write_roots_stamp(archive_root: Path, roots: dict[str, str]) -> None:
+    cache = archive_root / '.cache'
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / ROOTS_STAMP_NAME).write_text(
+            json.dumps(roots, indent=2, sort_keys=True), encoding='utf-8')
+    except OSError:
+        pass  # a stamp that cannot be written just means no warning next time
+
+
+def _iter_filed_asset_paths(archive_root: Path):
+    """Yield every alias-form `files:` entry across the source records."""
+    sources_dir = archive_root / 'sources'
+    if not sources_dir.is_dir():
+        return
+    for path in sorted(sources_dir.rglob('*.md')):
+        try:
+            rec = read_record(path)
+        except Exception:
+            continue
+        for f in (rec.get('meta') or {}).get('files') or []:
+            if isinstance(f, dict) and f.get('file'):
+                yield path, str(f['file']).replace('\\', '/').lstrip('./')
+
+
+def roots_change_orphans(
+    archive_root: str | Path, fha_config: dict, *, record: bool = True,
+) -> list[dict]:
+    """
+    Detect a `roots:` change that has orphaned already-filed assets (#36).
+
+    Compares the current `roots:` mapping with the one remembered in
+    `.cache/roots.json`. For every alias whose value changed, every source
+    record's `files:` entry under that alias is resolved twice: an entry that
+    resolved under the OLD root and does not under the NEW one is an orphan -
+    the record still names it, the file still exists, and only the mapping
+    moved out from under it. This is the check `fha lint` E011 already makes,
+    run at the moment it can still be undone with a one-line revert instead
+    of after a wall of errors whose suggested remedy (`fha reconcile`) cannot
+    apply, because nothing moved.
+
+    Returns one dict per orphaning alias: {alias, old, new, orphaned,
+    sample}. Side effects on the stamp: no stamp yet -> seeded with the
+    current mapping, nothing reported (there is nothing to compare); a change
+    that orphans nothing -> accepted, stamp updated; a change that orphans ->
+    stamp left alone, so the warning stays until the human reverts the value
+    or re-points the records. `roots:` shapes that are not a mapping are
+    doctor's business (it already reports them) and are ignored here.
+
+    `record=False` makes the call read-only: it still compares and reports,
+    but never seeds or advances the stamp. `fha lint` uses that - a linter
+    must not create files under an archive it was pointed at (a fixture, a
+    read-only checkout); `fha index` and `fha doctor`, which already own
+    `.cache/`, do the recording.
+    """
+    archive_root = Path(archive_root)
+    roots_now = get_roots(fha_config)
+    if not isinstance(roots_now, dict):
+        return []
+    roots_now = {str(k): str(v) for k, v in roots_now.items() if v is not None}
+    remembered = _read_roots_stamp(archive_root)
+    if remembered is None:
+        if record:
+            _write_roots_stamp(archive_root, roots_now)
+        return []
+    changed = {
+        alias for alias in set(remembered) | set(roots_now)
+        if remembered.get(alias) != roots_now.get(alias)
+    }
+    if not changed:
+        return []
+
+    old_config = {'roots': remembered}
+    per_alias: dict[str, dict] = {}
+    for _record, entry in _iter_filed_asset_paths(archive_root):
+        alias = entry.split('/', 1)[0]
+        if alias not in changed:
+            continue
+        if resolve_path(entry, fha_config, archive_root).exists():
+            continue
+        if not resolve_path(entry, old_config, archive_root).exists():
+            continue  # was already broken before the change - not this change's doing
+        info = per_alias.setdefault(alias, {
+            'alias': alias,
+            'old': remembered.get(alias),
+            'new': roots_now.get(alias),
+            'orphaned': 0,
+            'sample': [],
+        })
+        info['orphaned'] += 1
+        if len(info['sample']) < 3:
+            info['sample'].append(entry)
+
+    if not per_alias:
+        if record:
+            _write_roots_stamp(archive_root, roots_now)
+        return []
+    return [per_alias[a] for a in sorted(per_alias)]
+
+
+def format_roots_orphan_warning(item: dict, archive_root: str | Path) -> str:
+    """One plain-language warning line for a `roots_change_orphans` item."""
+    fha_yaml = Path(archive_root) / 'fha.yaml'
+    old = item['old'] if item['old'] is not None else '(unset)'
+    new = item['new'] if item['new'] is not None else '(unset)'
+    sample = ', '.join(item['sample'])
+    more = item['orphaned'] - len(item['sample'])
+    more_txt = f' and {more} more' if more > 0 else ''
+    return (
+        f"roots: {item['alias']} changed from {old!r} to {new!r} in {fha_yaml}, and "
+        f"{item['orphaned']} filed file(s) that resolved under the old value no longer "
+        f'do ({sample}{more_txt}). Nothing on disk moved, so `fha reconcile` cannot '
+        're-tie them. Revert the value, or re-point those records - and if the aim '
+        'was to keep part of the library out of the photo catalog, use '
+        '`photos_ignore:` in fha.yaml instead of narrowing the root.'
+    )
+
+
 def db_mtime(db_path: Path) -> float | None:
     """Return the mtime of db_path, or None if it is absent/unreadable."""
     try:
@@ -861,6 +1203,45 @@ def sqlite_cache_schema_status(
     finally:
         if conn is not None:
             conn.close()
+
+
+def read_cache_meta(db_path: str | Path, key: str) -> str | None:
+    """Read one `meta(key, value)` row out of a disposable cache, or None.
+
+    Its own connection, because the freshness callers ask this BEFORE they are
+    willing to open the cache for queries at all - the whole point is to decide
+    whether the rows can be trusted. Every failure reads as None, meaning "this
+    cache does not say": no file, no `meta` table, an unreadable database, or a
+    key an older build never wrote. Callers must treat None as unknown rather
+    than as a mismatch, so that a cache built before a key existed is not
+    reported broken.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        # sqlite3.connect() would CREATE an empty database here, leaving a
+        # bogus cache file behind for a question that was only ever a read.
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    return None if row is None else str(row[0])
+
+
+def write_cache_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Stamp one `meta(key, value)` row on an already-open cache connection.
+
+    Takes the connection rather than a path so the stamp lands inside the
+    writer's own transaction: a build configuration recorded before the rows
+    it describes are committed would claim a catalog that does not exist yet
+    if the run then failed. The caller commits.
+    """
+    conn.execute('INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)', (key, value))
 
 
 def open_index_db(
@@ -949,6 +1330,170 @@ def open_index_db(
         return None
 
 
+def photos_ignore_patterns(fha_config: dict) -> list[str]:
+    """
+    The `photos_ignore:` patterns from fha.yaml, normalized to posix form.
+
+    A photos root often holds material that is not the archive's subject - the
+    motivating case (#35) was a root of 88,131 files, 63,156 of them one bulk
+    photo-service export, drowning the few dozen scanned ancestor photos in
+    every triage ranking. Narrowing `roots: photos` instead is NOT safe (it
+    orphans already-filed `files:` entries, #36), so exclusion has to live at
+    scan level. Accepts a single string or a list; anything else is a clean
+    RuntimeError (the scan callers' existing error path).
+
+    Lives here rather than in photoindex.py because the scan is not the only
+    reader: `photoindex_status` has to prune the same subtrees when it decides
+    whether the catalog is current, or an ignored file would mark an
+    up-to-date catalog stale.
+    """
+    raw = fha_config.get('photos_ignore')
+    if raw is None:
+        return []
+    if isinstance(raw, (str, int, float)):
+        raw = [raw]
+    # Scalars are coerced: YAML reads an unquoted year folder (`- 2019`) as
+    # an int, and the intent is unambiguous. Anything structured is refused.
+    if not isinstance(raw, list) or not all(
+        isinstance(p, (str, int, float)) and not isinstance(p, bool) for p in raw
+    ):
+        raise RuntimeError(
+            'photos_ignore in fha.yaml must be a list of path patterns '
+            "(e.g.\n  photos_ignore:\n    - 'Flickr Export'\n    - '*.tif')"
+        )
+    out = []
+    for p in raw:
+        text = str(p).replace('\\', '/').strip().strip('/')
+        if text:
+            out.append(text)
+    return out
+
+
+def photos_ignore_matcher(patterns: list[str]):
+    """Build `is_ignored(rel_posix)` for a set of `photos_ignore:` patterns.
+
+    Matching is fnmatch-style against the posix path relative to the photos
+    root, case-insensitively - the photo library lives on a case-insensitive
+    filesystem on both Windows and macOS, and 'flickr export' silently failing
+    to prune 'Flickr Export' would read as the feature not working. The
+    patterns are folded once here rather than on every candidate: a walk that
+    tests 88,000 names should fold two patterns, not 176,000 strings.
+
+    Returned as a closure so the walkers (the scan's `_iter_photo_files` and
+    the freshness watermark below) apply one identical rule; a photo the scan
+    skips must not be a photo the freshness check trips over.
+    """
+    folded = [pat.casefold() for pat in patterns]
+
+    def is_ignored(rel: str) -> bool:
+        rel_cf = rel.casefold()
+        return any(fnmatch.fnmatchcase(rel_cf, pat) for pat in folded)
+
+    return is_ignored
+
+
+def photoindex_config_fingerprint(fha_config: dict) -> str:
+    """The fha.yaml settings that decide WHICH photos the catalog holds, as one
+    canonical JSON string to store beside the catalog and compare against later.
+
+    Only settings that change the *membership* of the catalog belong here:
+
+      photos_ignore  - the patterns the scan prunes by. Adding one leaves rows
+                       for newly excluded files in the catalog; removing one
+                       leaves files uncatalogued.
+      photos root    - the folder the scan walks. Repoint it and every row
+                       describes the old folder, under path aliases that look
+                       exactly the same.
+
+    Neither of those touches a photo's mtime, and the freshness watermark is
+    made of mtimes, so a change to either is invisible to it in one direction
+    and worse than invisible in the other: an old file whose mtime predates
+    photos.sqlite can never raise the watermark, so un-ignoring its folder
+    would leave it out of the catalog forever while the catalog read 'fresh'.
+    Storing the settings is what makes the change itself a freshness
+    dependency.
+
+    The root is fingerprinted as the value written in fha.yaml, not as the
+    resolved absolute path, so that moving the whole archive to another folder
+    (or another machine) does not read as a configuration change and force a
+    needless rescan. Patterns are sorted and de-duplicated because reordering
+    the list changes nothing about which files match.
+
+    Nothing else from fha.yaml belongs here: the biography voice, the site
+    title, the promotion threshold and `root_person` change what tools SAY, not
+    what the catalog CONTAINS, and folding them in would nag for a rescan that
+    has nothing to do.
+    """
+    try:
+        patterns = photos_ignore_patterns(fha_config)
+    except RuntimeError:
+        # A malformed photos_ignore: prunes nothing (photoindex_status's own
+        # reading of it) and the scan refuses with the real explanation. Two
+        # readers, one interpretation.
+        patterns = []
+    roots = fha_config.get('roots')
+    raw_root = roots.get('photos') if isinstance(roots, dict) else None
+    # An absent `photos` alias resolves to <archive>/photos (resolve_path), so
+    # it has to fingerprint the same as an explicit `photos: photos` or an
+    # archive that has never touched the key would read as drifted on the
+    # first upgrade. './photos' and 'photos/' are the same folder too, and
+    # re-typing one as the other is not a configuration change.
+    photos_root = str(raw_root or 'photos').replace('\\', '/').rstrip('/')
+    while photos_root.startswith('./'):
+        photos_root = photos_root[2:]
+    return json.dumps(
+        {'photos_ignore': sorted(set(patterns)), 'photos_root': photos_root},
+        sort_keys=True,
+    )
+
+
+def photoindex_config_drift(archive_root: str | Path, fha_config: dict) -> str | None:
+    """Plain words for how fha.yaml has changed since the photo catalog was
+    built, or None when it has not (or the catalog predates the stamp).
+
+    Returned as a sentence fragment a CLI can drop into its own message,
+    because the human's next step is the same either way (rescan) but the
+    reason is not, and "run fha photoindex" with no reason reads as the tool
+    nagging. Callers that only need the yes/no answer test for None.
+
+    A catalog with no stored configuration - written by a build before this
+    existed - returns None rather than a mismatch. It would be true but
+    useless to report drift we cannot actually detect, and the very next scan
+    stamps it, so the check arms itself.
+    """
+    db_path = Path(archive_root) / '.cache' / 'photos.sqlite'
+    stored = read_cache_meta(db_path, PHOTOINDEX_CONFIG_KEY)
+    if stored is None:
+        return None
+    try:
+        was = json.loads(stored)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(was, dict):
+        return None
+    now = json.loads(photoindex_config_fingerprint(fha_config))
+
+    reasons = []
+    if was.get('photos_ignore') != now['photos_ignore']:
+        old_count = len(was.get('photos_ignore') or [])
+        new_count = len(now['photos_ignore'])
+        if new_count > old_count:
+            detail = 'photos you were keeping are now excluded'
+        elif new_count < old_count:
+            detail = 'photos you were excluding are not in the catalog yet'
+        else:
+            detail = 'the catalog was built from the old list'
+        reasons.append(
+            f'the photos_ignore list in fha.yaml changed since the last scan - {detail}')
+    if was.get('photos_root') != now['photos_root']:
+        reasons.append(
+            'the photos folder in fha.yaml changed since the last scan - the '
+            'catalog still describes the old one')
+    if not reasons:
+        return None
+    return '; '.join(reasons)
+
+
 def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
     """Classify the photo index (.cache/photos.sqlite) for find/doctor.
 
@@ -962,6 +1507,27 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     corrupt database is never reported fresh just because there are no photos to
     compare against.  Shared by `find --text` (caption search gating) and
     `doctor` (freshness report) so both agree on whether photos.sqlite is usable.
+
+    `photos_ignore:` prunes this walk exactly as it prunes the scan (#35).
+    Both halves of that matter: an ignored file is not in the catalog and can
+    never make it out of date, so letting one drive the watermark would mark a
+    current catalog stale - and `fha find --text` skips cataloged photo
+    captions whenever the catalog is stale, so a single touched file in a bulk
+    export would silently switch off caption search until a rescan that has
+    nothing to do. The pruning also keeps this check from walking the 60,000
+    files the setting exists to avoid walking.
+
+    Editing that setting is itself a freshness dependency, checked before the
+    walk (`photoindex_config_drift`): the patterns decide what the catalog
+    holds, but changing them moves no file's mtime, so the watermark cannot
+    see it. Both directions are real and neither self-heals. Add a pattern and
+    the rows for the newly excluded files stay searchable. Remove one and the
+    files it was hiding are older than photos.sqlite, so they can never raise
+    the watermark - they would stay out of the catalog forever with the status
+    reading 'fresh'. The same is true of repointing `roots: photos`. The
+    catalog is reported 'stale' (the one status every caller already handles
+    correctly) and the reason is available in plain words from
+    `photoindex_config_drift` for the CLI to print alongside it.
     """
     archive_root = Path(archive_root)
     db_path = archive_root / '.cache' / 'photos.sqlite'
@@ -982,6 +1548,13 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     )
     if schema_status in {'unreadable', 'old-schema'}:
         return (schema_status, 0.0)
+
+    if photoindex_config_drift(archive_root, fha_config) is not None:
+        # A configuration change has no file mtime of its own to be behind, so
+        # the lag reported is the catalog's own age - how long ago it was built
+        # from settings that no longer apply. Returned before the walk because
+        # the walk is the expensive part and its answer cannot change this one.
+        return ('stale', max(0.0, time.time() - mtime))
 
     # photo_people is derived from both .cache/index.sqlite
     # (face_tags/name_variants) and source record `people:` lists. Edits in
@@ -1004,28 +1577,468 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
 
     photos_root = resolve_path('photos', fha_config, archive_root)
     if photos_root.is_dir():
+        try:
+            patterns = photos_ignore_patterns(fha_config)
+        except RuntimeError:
+            # A malformed photos_ignore: is the scan's error to report, in its
+            # own plain words. Here it means "prune nothing": the watermark
+            # covers the whole root, the catalog reads stale, and the human is
+            # sent to `fha photoindex` - which is where the real explanation
+            # of the broken setting is waiting.
+            patterns = []
+        is_ignored = photos_ignore_matcher(patterns)
         # Directory mtimes are included (not just file mtimes) so that a deletion
         # or rename - which bumps the parent directory's mtime but touches no
         # remaining file - still makes the index look stale instead of silently
         # staying 'fresh' with photo_fts rows pointing at files that no longer exist.
-        for p in photos_root.rglob('*'):
-            if p.is_file() or p.is_dir():
+        # os.walk (not rglob) because an ignored folder must be pruned rather
+        # than walked and discarded - pruning is the whole point on a root
+        # holding a 60,000-file export. It also yields the root itself as the
+        # first dirpath, so the root's own mtime needs no separate stat.
+        #
+        # The `onerror` recorder is the freshness half of the rule in "Walking
+        # a tree that might not open": without it, a folder this walk cannot
+        # list contributes NO mtime - neither its files' nor its own - and the
+        # watermark comes back lower than the truth, so a catalog missing
+        # everything inside that folder reports itself `fresh`. Worse, if the
+        # photos ROOT is what will not list, the walk yields nothing at all
+        # and the answer falls back to the index/record mtimes alone.
+        unreadable_dirs: list[Path] = []
+        on_error = unreadable_dir_recorder(unreadable_dirs)
+        for dirpath, dirnames, filenames in os.walk(photos_root, onerror=on_error):
+            rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
+            prefix = '' if rel_dir == '.' else f'{rel_dir}/'
+            if patterns:
+                dirnames[:] = [d for d in dirnames if not is_ignored(f'{prefix}{d}')]
+            candidates = [Path(dirpath)]
+            candidates += [
+                Path(dirpath) / name for name in filenames
+                if not (patterns and is_ignored(f'{prefix}{name}'))
+            ]
+            for p in candidates:
                 try:
                     m = p.stat().st_mtime
                     if m > max_mtime:
                         max_mtime = m
                 except OSError:
+                    # A dangling symlink or a file that vanished mid-walk is
+                    # not a freshness signal we can read; skip it.
                     pass
-        try:
-            root_mtime = photos_root.stat().st_mtime
-            if root_mtime > max_mtime:
-                max_mtime = root_mtime
-        except OSError:
-            pass
+
+        if unreadable_dirs:
+            # Fail closed. There is no honest watermark for a folder nobody
+            # could open: any of its photos may have changed a second ago, and
+            # the folder's own mtime says nothing about the files inside it.
+            # Reporting 'now' means the catalog keeps reading `stale` for as
+            # long as the folder stays shut, which is exactly the state it is
+            # in - `fha photoindex` is the command that says which folder and
+            # why, so the human is never left with an unexplained staleness.
+            max_mtime = max(max_mtime, time.time())
 
     if max_mtime == 0.0 or mtime >= max_mtime:
         return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
     return ('stale', max_mtime - mtime)
+
+
+# ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────
+#
+# Four places in the tools write embedded metadata into an original photo:
+# `fha process` (the SOURCE: keyword and its rollback) and `fha photoindex`
+# (tag-person's P-id keyword, set-summary's UserComment).  All four use
+# exiftool's `-overwrite_original_in_place`, which is deliberate - it edits the
+# file rather than replacing it, so an external photo library (Lightroom) does
+# not lose track of it - but it also means the only copy of a family photograph
+# is being rewritten with no copy anywhere.
+#
+# `originals_backup:` in fha.yaml names a folder outside the archive where ONE
+# pristine copy of each such file is kept before it is first written to.  The
+# rule lives here, not in the two tools, because a data-safety guard duplicated
+# four ways is a guard that drifts.
+
+class BackupRefused(Exception):
+    """The safety copy could not be made, so the write must not go ahead.
+
+    Carries the finished, human-facing sentence (file, cause, next step) that
+    the caller puts straight into its existing per-file failure channel - the
+    writers already report one error string per path, and a refused backup is
+    just another reason a particular file was not written.
+    """
+
+
+def originals_backup_dir(fha_config: dict, archive_root: str | Path) -> Path | None:
+    """The resolved `originals_backup:` folder from fha.yaml, or None if unset.
+
+    Shape and tolerance follow the settings either side of it: one plain path
+    like `roots:`/`backup: path:` (absolute used as-is, relative joined to the
+    archive root - SPEC §12.4), read the way `photos_ignore_patterns` reads its
+    own key, and a value whose shape is not understood raises a plain
+    RuntimeError carrying a copy-pasteable example rather than guessing.
+
+    Degrading differs from `photos_ignore:` in one direction on purpose.  A
+    malformed ignore list, read as "ignore nothing", catalogs too much; a
+    malformed backup setting read as "no backup configured" would silently
+    drop protection the human asked for, at the one moment it matters.  So an
+    unreadable value - including an empty string, which is a half-finished
+    edit, not an "off" switch - is an error the caller must surface, never an
+    absent setting.
+    """
+    raw = fha_config.get('originals_backup')
+    if raw is None:
+        return None
+    text = str(raw).strip() if isinstance(raw, (str, os.PathLike)) else ''
+    if not text:
+        raise RuntimeError(
+            'originals_backup in fha.yaml must be one folder path, outside your '
+            'archive, where a safety copy of each photo is kept before fha '
+            'writes into it (e.g.\n'
+            '  originals_backup: D:/PhotoOriginals)\n'
+            'Remove the line to turn safety copies off.'
+        )
+    p = Path(text)
+    return (p if p.is_absolute() else Path(archive_root) / p).resolve()
+
+
+def _fold_path_text(name: str) -> str:
+    """One path spelling with case and Unicode composition flattened away.
+
+    macOS and Windows both hand back a name whose capitals - and, on HFS+,
+    whose accent composition - differ from the one that was asked for, so two
+    strings can name one folder.  Used only by the containment guard below,
+    where matching too much costs the human one sentence and matching too
+    little costs him a photograph.  (`fha backup`'s destination guard reaches
+    the same conclusion for its zips; the rule is stated twice because tools
+    never import tools and backup.py owns its own copy.)
+    """
+    return unicodedata.normalize('NFC', name).casefold()
+
+
+def _path_contains(parent: str | Path, child: str | Path) -> str | None:
+    """How `parent` contains `child`: 'exact', 'name-fold', or None.
+
+    Answered by climbing `child`'s resolved parents rather than by a string
+    prefix, so a destination that does not exist yet still gets a true answer
+    (the climb reaches the folder that will hold it), and so two spellings of
+    one folder are one folder.  A match found only after folding is reported
+    separately: on a case-sensitive disk those really are two folders, and a
+    refusal that insisted otherwise would be a dead end.
+    """
+    target = Path(child).resolve()
+    base = Path(parent).resolve()
+    cur = target
+    while True:
+        if cur == base:
+            return 'exact'
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    folded = _fold_path_text(str(base))
+    cur = target
+    while True:
+        if _fold_path_text(str(cur)) == folded:
+            return 'name-fold'
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def format_size(n: int) -> str:
+    """Bytes as a size a human reads (B/KB/MB/GB/TB, one decimal place)."""
+    size = float(n)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if size < 1024 or unit == 'TB':
+            return f'{int(size)} {unit}' if unit == 'B' else f'{size:.1f} {unit}'
+        size /= 1024
+    return f'{int(n)} B'
+
+
+class OriginalBackup:
+    """One run's safety-copy policy for originals fha writes metadata into.
+
+    Built once per command and handed to every writer in that run, which is
+    what makes "warn once, not once per photo" true on an 88,000-file library
+    and what lets one line report the run's whole disk cost.
+
+    Three behaviours, decided by `originals_backup:`:
+
+      * configured    - `ensure()` copies the file to a path-mirrored place
+                        under the destination before the first write to it,
+                        and raises `BackupRefused` if that copy fails.  A file
+                        that already has a copy there is left alone: the
+                        valuable artifact is the photo as it was before fha
+                        ever touched it, so the SECOND keyword write must not
+                        overwrite it with an already-modified version.  That
+                        also bounds the cost at one copy of each photo written.
+      * not configured - `ensure()` warns once for the whole run, naming the
+                        setting and what it protects, and proceeds.  Safety
+                        copies are opt-in; refusing here would break every
+                        existing archive on upgrade.
+      * misconfigured  - a value that cannot be read, or a destination inside
+                        the archive or an asset root, refuses every write with
+                        the cause and the fix.  Fail closed: a backup that
+                        silently did not happen is worse than none, because it
+                        is relied on.
+
+    **Identity.** The copy is filed under the file's alias path
+    (`photos/1912/margaret.jpg` -> `<dest>/photos/1912/margaret.jpg`) - the same
+    identity the source record's `files:` entry carries, and the one a human can
+    read.  SPEC §12.1 is right that a photo's filename is not its identity (the
+    embedded `SOURCE:` keyword is, with the path as a hint), and the honest
+    consequence is stated here rather than papered over: if another system later
+    renames or moves the photo, this copy stays where it was made, under the old
+    path.  Nothing is lost - the pristine copy is still on disk with its
+    contents intact - but the next write to the photo at its new path takes a
+    fresh copy there, and that one is of a file fha has already written to.  The
+    durable identity cannot fill the gap: the first write of all is `fha
+    process` MINTING the `SOURCE:` keyword, so at the moment the pristine copy
+    matters most there is no keyword to key it by.
+    """
+
+    def __init__(self, archive_root: str | Path, fha_config: dict) -> None:
+        self.archive_root = Path(archive_root)
+        self.fha_config = fha_config or {}
+        self.copied = 0          # pristine copies made this run
+        self.already = 0         # files that already had one
+        self.bytes = 0           # bytes written this run
+        self.dest: Path | None = None
+        self.refusal: str | None = None   # why no write may proceed, if so
+        self._pending: list[tuple[str, str]] = []
+        self._announced = False
+        self._reported = (0, 0, 0)
+        try:
+            self.dest = originals_backup_dir(self.fha_config, self.archive_root)
+        except RuntimeError as e:
+            self.refusal = str(e)
+            return
+        if self.dest is not None:
+            self.refusal = self._destination_conflict(self.dest)
+
+    # -- configuration ----------------------------------------------------
+
+    def _protected_folders(self) -> list[tuple[str, Path]]:
+        """The folders a safety copy must never land inside, labelled.
+
+        Every mapped asset root (plus the spec defaults, which exist whether or
+        not `roots:` names them) and the archive root itself.  A copy inside an
+        asset root would be scanned, keyworded and counted as a second photo of
+        the same picture - it would defeat the thing it is for.  A copy
+        elsewhere inside the archive is refused for the reason `fha backup`
+        refuses it for zips (§13e): a copy that lives inside the thing it
+        protects shares its disk, its sync folder and its accidents.
+        """
+        out: list[tuple[str, Path]] = []
+        for alias in sorted(set(get_roots(self.fha_config)) | {'photos', 'documents'}):
+            out.append((f'your {alias} root',
+                        resolve_path(alias, self.fha_config, self.archive_root)))
+        out.append(('your archive', self.archive_root))
+        return out
+
+    def _destination_conflict(self, dest: Path) -> str | None:
+        """Plain refusal text if `dest` is not a safe place to keep copies.
+
+        Checked in both directions.  A destination inside a protected folder is
+        the obvious mistake; a destination that CONTAINS one (`originals_backup:
+        D:/Family` with `roots: photos: D:/Family/Photos`) puts the live library
+        inside the safety copies and ends in the same place.
+        """
+        for label, folder in self._protected_folders():
+            inward = _path_contains(folder, dest)
+            outward = _path_contains(dest, folder)
+            if inward is None and outward is None:
+                continue
+            # The archive root is checked last, so an asset root inside the
+            # archive is reported as the asset root - the more specific and
+            # more alarming of the two reasons.
+            if label == 'your archive':
+                harm = ('Copies kept there share the archive\'s disk, its sync '
+                        'folder and its accidents, which is most of what they '
+                        'are meant to survive.')
+            else:
+                harm = ('Copies kept there would be scanned, keyworded and '
+                        'counted as extra photos of the same picture, and a '
+                        'lost disk would take the copies with the originals.')
+            if inward == 'name-fold' or outward == 'name-fold':
+                return (
+                    f'the safety-copy folder {dest} is spelled the same as '
+                    f'{label} ({folder}) apart from capital letters or accents. '
+                    f'On most Macs and on every Windows PC those are ONE folder, '
+                    f'so the copies would land inside the very thing they are '
+                    f'protecting. {harm} Point `originals_backup:` in fha.yaml at a '
+                    f'clearly different folder outside your archive '
+                    f'(e.g. originals_backup: D:/PhotoOriginals), then re-run.'
+                )
+            where = 'inside' if inward else 'the folder holding'
+            return (
+                f'the safety-copy folder {dest} is {where} {label} ({folder}). '
+                f'{harm} Point `originals_backup:` in fha.yaml at a folder '
+                f'outside your archive (e.g. originals_backup: D:/PhotoOriginals), '
+                f'then re-run.'
+            )
+        return None
+
+    # -- the guard --------------------------------------------------------
+
+    def _alias_path(self, path: Path) -> str | None:
+        """`path` as the archive files it (`photos/1912/x.jpg`), or None.
+
+        The most specific root wins, so a documents root nested inside a photos
+        root does not answer for its own files.  One function for both readers -
+        the copy's filename and the refusal's wording - so the file a message
+        names is always the file the copy was filed under.
+        """
+        resolved = Path(path).resolve()
+        best: tuple[int, str] | None = None
+        for alias in sorted(set(get_roots(self.fha_config)) | {'photos', 'documents'}):
+            root = resolve_path(alias, self.fha_config, self.archive_root).resolve()
+            try:
+                rel = resolved.relative_to(root)
+            except ValueError:
+                continue
+            depth = len(root.parts)
+            if best is None or depth > best[0]:
+                best = (depth, f'{alias}/{rel.as_posix()}')
+        return best[1] if best else None
+
+    def _copy_target(self, path: Path) -> Path:
+        """Where `path`'s pristine copy is filed under the destination.
+
+        The alias path when the file is under a mapped root, the
+        archive-relative path when it is inside the archive but under no root,
+        and `_elsewhere/…` for a file outside both - a case `fha process` can
+        still be pointed at.
+        """
+        alias_path = self._alias_path(path)
+        if alias_path is not None:
+            return self.dest / alias_path
+        resolved = Path(path).resolve()
+        try:
+            return self.dest / resolved.relative_to(self.archive_root.resolve())
+        except ValueError:
+            pass
+        stripped = str(resolved)[len(resolved.anchor):].replace('\\', '/').strip('/')
+        return self.dest / '_elsewhere' / stripped
+
+    def ensure(self, path: str | Path) -> None:
+        """Make sure a pristine copy of `path` exists before it is written to.
+
+        Returns quietly when the copy is in place (or was already), warns once
+        per run when the setting is absent, and raises `BackupRefused` when the
+        setting is on and the copy did not happen - the caller must then not
+        write.  The copy lands via a `.part` temporary and `os.replace`, so an
+        interrupted run leaves either a complete copy or none; a half-written
+        one would be indistinguishable from a pristine copy on the next run,
+        which is the one wrong answer this whole feature exists to prevent.
+        """
+        src = Path(path)
+        if self.refusal is not None:
+            raise BackupRefused(
+                f'refused to write to {self._label(src)}: {self.refusal} '
+                f'Nothing was written to the file.'
+            )
+        if self.dest is None:
+            self._warn_unconfigured()
+            return
+        target = self._copy_target(src)
+        if target.exists():
+            self.already += 1
+            return
+        tmp = target.with_name(target.name + '.part')
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, tmp)
+            os.replace(tmp, target)
+        except OSError as e:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise BackupRefused(
+                f'refused to write to {self._label(src)}: its safety copy could '
+                f'not be made at {target} ({e}). Nothing was written to the file. '
+                f'Check that the folder in `originals_backup:` exists and has room, '
+                f'then re-run - or remove `originals_backup:` from fha.yaml to write '
+                f'without safety copies.'
+            ) from e
+        self.copied += 1
+        try:
+            self.bytes += target.stat().st_size
+        except OSError:
+            pass
+
+    def _label(self, path: Path) -> str:
+        """The file named the way the human filed it (alias form when possible)."""
+        return self._alias_path(path) or Path(path).name
+
+    # -- what the human is told -------------------------------------------
+
+    def _warn_unconfigured(self) -> None:
+        if self._announced:
+            return
+        self._announced = True
+        self._pending.append((
+            'warning',
+            'No safety copies are being kept. fha is about to write keywords or '
+            'captions into your original photo files, and there is no copy to '
+            'fall back on if a write is interrupted. Add one line to fha.yaml to '
+            'keep one pristine copy of each photo before it is first written to:\n'
+            '  originals_backup: D:/PhotoOriginals\n'
+            '(any folder outside your archive; copies are made once per photo, '
+            'so the space it needs is one copy of the photos you work on).',
+        ))
+
+    def announce(self) -> None:
+        """Say up front what will happen, before the human confirms a write.
+
+        Called by the command layer ahead of its yes/no prompt so the
+        no-safety-copies warning arrives while it can still be acted on -
+        after 500 photos are written it is only news.
+        """
+        if self.refusal is not None:
+            if not self._announced:
+                self._announced = True
+                self._pending.append((
+                    'warning',
+                    f'Safety copies are configured but unusable: {self.refusal} '
+                    f'Until that is fixed, these writes will be refused.',
+                ))
+            return
+        if self.dest is None:
+            self._warn_unconfigured()
+            return
+        if not self._announced:
+            self._announced = True
+            self._pending.append((
+                'info',
+                f'Safety copies: a pristine copy of each photo is kept in '
+                f'{self.dest} before it is written to.',
+            ))
+
+    def drain_messages(self) -> list[tuple[str, str]]:
+        """Take the messages not yet reported: (level, text) pairs.
+
+        Draining rather than reading keeps "warn once per run" true no matter
+        how many times a caller asks, and lets a batch command (`fha process`
+        over a folder) report each group's copies as they happen without
+        restating the ones it already reported.
+        """
+        out = list(self._pending)
+        self._pending.clear()
+        counts = (self.copied, self.already, self.bytes)
+        if counts != self._reported:
+            copied = self.copied - self._reported[0]
+            already = self.already - self._reported[1]
+            written = self.bytes - self._reported[2]
+            self._reported = counts
+            parts = []
+            if copied:
+                # The size is the point of this line: it is what a human weighs
+                # when deciding whether to keep the setting on.
+                parts.append(f'{copied} original(s) copied to {self.dest} '
+                             f'({format_size(written)})')
+            if already:
+                parts.append(f'{already} already had a copy from an earlier run')
+            if parts:
+                out.append(('info', 'Safety copies: ' + '; '.join(parts) + '.'))
+        return out
 
 
 # ── Record parsing ────────────────────────────────────────────────────────────
@@ -1051,9 +2064,95 @@ def write_text_exact(path: str | Path, text: str) -> None:
     """Write text with no newline translation (the mirror of read_text_exact).
 
     Without `newline=''`, Windows would CRLF-ify an LF-authored record on the
-    write half of a round-trip even when the read half preserved it."""
+    write half of a round-trip even when the read half preserved it.
+
+    DO NOT USE THIS ON AN ARCHIVE RECORD - use `write_text_exact_atomic` below.
+    Opening in `'w'` mode truncates the target before the first byte is
+    written, so a write that dies partway (disk full, the process killed)
+    leaves the record holding its first few bytes and nothing else, while the
+    caller's `except OSError` reports a clean refusal. The archive's truth is
+    destroyed by a command that says nothing happened. That defect reached ten
+    call sites in `person.py` and eight more across `places`, `confirm`,
+    `lint`, `normalize_links`, `serve`, `stubs` and `packet` before it was
+    found, purely because this function and the atomic one sit next to each
+    other with near-identical names and nothing here said which to reach for.
+
+    The only cases where this writer is defensible are ones where the target
+    holds nothing worth keeping - a file being created for the first time on a
+    path a preflight has proven empty (`convert_mining.apply_plan`'s
+    `write_new`, `gedcom_import`'s), or disposable output under `.cache/` or
+    `generated/`. Even there it is merely sufficient, never better: the atomic
+    writer costs one rename and is correct everywhere. If you are adding a new
+    call site, the answer is almost certainly `write_text_exact_atomic`."""
     with Path(path).open('w', encoding='utf-8', newline='') as f:
         f.write(text)
+
+
+def _refuse_unwritable_target(path: Path) -> None:
+    """Raise the `PermissionError` an in-place write would have raised.
+
+    `os.replace` swaps a DIRECTORY ENTRY, so the kernel checks write+execute on
+    the parent FOLDER and never asks whether the caller may write the file being
+    replaced. `open(path, 'w')` asks exactly that. Without this probe, every verb
+    converted to the atomic writer quietly gained the power to overwrite a record
+    the plain writer refused - and a record made read-only is how a careful
+    archivist pins a file he does not want touched. Honour it.
+
+    The probe is a real `os.open(..., O_WRONLY)` rather than `os.access` because
+    only the kernel answering the actual open matches the writer being restored.
+    `os.access` asks with the REAL uid/gid instead of the effective one, and its
+    answer is documented as unreliable under POSIX ACLs and on network
+    filesystems - so it can say "writable" exactly where the old writer refused,
+    and refuse where it wrote. Asking the true question costs one file descriptor
+    and changes nothing: no `O_CREAT` and no `O_TRUNC`, so the record is neither
+    created nor emptied and its timestamps are untouched. `O_NONBLOCK` matters
+    only for the exotic case of a named pipe sitting at a record's path, where it
+    stops the probe waiting forever for a reader.
+
+    Only a `PermissionError` becomes a refusal. Any other error means the
+    question was something else - a directory at the path, a file that vanished
+    between the calls - and is left to the write itself to report in its own
+    words rather than guessed at here.
+
+    Root bypasses file permission bits entirely, so this grants what a plain
+    `open(path, 'w')` also granted: root has always been able to overwrite a 0444
+    record, and this is not the layer that changes that.
+    """
+    try:
+        fd = os.open(str(path), os.O_WRONLY | getattr(os, 'O_NONBLOCK', 0))
+    except FileNotFoundError:
+        return                    # a record that does not exist has no mode to honour
+    except PermissionError:
+        raise                     # byte for byte what open(path, 'w') raised
+    except OSError:
+        return
+    os.close(fd)
+
+
+def _carry_ownership(tmp_name: str, target: os.stat_result) -> None:
+    """Give the temp file the record's owner and group before it lands.
+
+    The mode alone is not the whole permission: the temp file belongs to whoever
+    ran the command, so on a shared archive the replace would hand the record to
+    a new owner and group. A 0640 record whose group flips from `family` to the
+    caller's own is the same lost read access the mode copy above exists to
+    prevent - just spelled with a different field.
+
+    Best effort by necessity, and that is not a weakness: only root may hand a
+    file to another user and only a member may hand one to another group, so
+    every failure here is a change the caller could not have made anyway. The
+    group-only retry is the case that actually fires - two people in one `family`
+    group, neither of them root. Called BEFORE the `chmod` because `chown` clears
+    the setgid bit that the mode copy is about to restore.
+    """
+    if not hasattr(os, 'chown'):            # Windows has no POSIX ownership
+        return
+    for uid, gid in ((target.st_uid, target.st_gid), (-1, target.st_gid)):
+        try:
+            os.chown(tmp_name, uid, gid)
+            return
+        except OSError:
+            continue
 
 
 def write_text_exact_atomic(path: str | Path, text: str) -> None:
@@ -1073,11 +2172,34 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
     returns and trust that a raise means the target was never touched. Newline
     handling mirrors `write_text_exact` (`newline=''` - no CRLF translation).
 
-    PERMISSIONS: the record ends up with the temp file's mode, so the mode is
-    fixed up before the replace - an existing target keeps its own permissions,
-    a new record gets the plain-open umask default. See the inline note; without
-    it a promotion would quietly demote a group-readable record to owner-only."""
+    PERMISSIONS: `os.replace` swaps a directory entry, which the kernel judges
+    by the parent FOLDER - it never looks at the record being replaced. Two
+    things follow, both handled here. The record would end up wearing the temp
+    file's identity, so mode and ownership are fixed up before the replace: an
+    existing target keeps its own permission bits, group and owner, a new record
+    gets the plain-open umask default. Without that a promotion would quietly
+    demote a group-readable record to owner-only. And a record the caller may NOT
+    write would be replaced anyway, where `write_text_exact` raised
+    `PermissionError` on the open and the command refused - so
+    `_refuse_unwritable_target` puts that question back before anything is
+    written, and the same `PermissionError` (errno EACCES, the record's own path)
+    reaches the caller's `except OSError`.
+
+    NOT preserved, by nature of an atomic replace: a target that is a symlink or
+    one name of a hard-linked pair is REPLACED by the new regular file rather
+    than written through, so the link breaks and the other name keeps the old
+    bytes. The archive has no symlinks by rule (AGENTS.md Don'ts) and no tool
+    makes a hard link, so this is a hand-built structure the writer cannot honour
+    - not a case it silently gets wrong. Extended attributes and POSIX ACLs do
+    not survive the swap either; mode, group and owner are what the archive's own
+    permission model is written in. And a read-only PARENT folder refuses here
+    where a plain write would have succeeded, because the temp file has to be a
+    sibling for the rename to be atomic: an ordinary OSError refusal that costs
+    the human nothing but a message."""
     path = Path(path)
+    # Refuse a pinned record BEFORE creating anything: the refusal then costs no
+    # I/O and leaves no temp file to clean up.
+    _refuse_unwritable_target(path)
     # Temp file must share the target's directory so os.replace is a same-
     # filesystem rename (atomic); a cross-device temp would fall back to a
     # non-atomic copy. The leading dot keeps the stray temp hidden and out of
@@ -1097,15 +2219,17 @@ def write_text_exact_atomic(path: str | Path, text: str) -> None:
         # EXISTING target keeps its own mode; a NEW record gets the umask default
         # (0o666 & ~umask), never the 0600 mkstemp handed us.
         try:
-            target_mode = os.stat(str(path)).st_mode
+            target = os.stat(str(path))
         except FileNotFoundError:
             umask = os.umask(0)
             os.umask(umask)
             os.chmod(tmp_name, 0o666 & ~umask)
         else:
-            # Carry the permission bits (incl. setgid/sticky, so a group-shared
-            # archive folder's inheritance survives) onto the temp before it lands.
-            os.chmod(tmp_name, target_mode & 0o7777)
+            # Owner and group first (chown clears setgid), then the permission
+            # bits (incl. setgid/sticky, so a group-shared archive folder's
+            # inheritance survives) onto the temp before it lands.
+            _carry_ownership(tmp_name, target)
+            os.chmod(tmp_name, target.st_mode & 0o7777)
         os.replace(tmp_name, str(path))
     except OSError:
         # The replace never happened, so the original (if any) still stands;
@@ -1913,8 +3037,22 @@ def parse_filename(path: str | Path) -> dict | None:
     Source records: {slug}_{S-id}.md
     Source files:  {slug}[-{copy}][-{role}]_{S-id}.{ext}
 
-    Returns dict with keys: id_str, id_type, kind (for persons), is_companion
-    Returns None if filename doesn't match any expected pattern.
+    Returns dict with keys: id_str, id_type, kind (for persons), is_companion,
+    kind_ambiguous.  Returns None if filename doesn't match any expected pattern.
+
+    What this parser CANNOT do, and why `kind_ambiguous` exists: SPEC §13 allows
+    underscores inside given names, so the optional companion-kind slot and the
+    last given-name segment are the SAME slot.  `hartley__marie_timeline_P-…` is
+    either a generated timeline or the profile of Marie Timeline Hartley, and no
+    reading of the name will ever separate them.  Whenever the kind was matched
+    by suffix - and so could equally be part of the name - `kind_ambiguous` is
+    True and `kind`/`is_companion` are a GUESS.
+
+    A caller that can see the file's frontmatter must let the content decide
+    (`person_file_kind`): a file that says it is a person record outranks a file
+    that is merely named like a companion.  A caller that cannot see the
+    frontmatter - a rename planner, a path-shaped lookup - has to treat
+    `is_companion` as the hint it is.
     """
     name = Path(path).stem          # filename without extension
     ext = Path(path).suffix.lower()
@@ -1933,6 +3071,7 @@ def parse_filename(path: str | Path) -> dict | None:
         'id_type': id_type,
         'kind': None,
         'is_companion': False,
+        'kind_ambiguous': False,
     }
 
     if id_type == 'P' and ext == '.md':
@@ -1944,6 +3083,10 @@ def parse_filename(path: str | Path) -> dict | None:
             if before_id.endswith(suffix):
                 result['kind'] = kind
                 result['is_companion'] = True
+                # Matched by suffix, so it may equally be the last given name
+                # (Marie Timeline Hartley).  Say so rather than let the guess
+                # travel as a fact.
+                result['kind_ambiguous'] = True
                 break
         if result['kind'] is None:
             result['kind'] = 'profile'
@@ -1953,6 +3096,107 @@ def parse_filename(path: str | Path) -> dict | None:
             pass
 
     return result
+
+
+# SPEC §9's required person-record fields are `id`, `name` and `living`.  Only
+# the last two are usable as a "this file is a person record" signal: the
+# research companion (SPEC §16, `RESEARCH_TEMPLATE_FALLBACK`) carries an `id:`
+# of its own, so testing `id` would promote every research file in every
+# archive to a profile.  `name` and `living` appear on person records and on
+# nothing else the person walker meets.
+PERSON_RECORD_FIELDS = ('name', 'living')
+
+
+def carries_person_record_fields(meta: dict) -> bool:
+    """True when a file's own frontmatter asserts it IS a person record (SPEC §9).
+
+    Why content and not the filename: SPEC §13's person grammar is
+    `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` and underscores
+    inside given names are legal, so the optional kind slot and the last
+    given-name segment are the SAME slot.  The grammar is ambiguous by
+    construction - `hartley__marie_timeline_P-…` is either a generated timeline
+    or the profile of Marie Timeline Hartley, and no reading of the name will
+    ever tell them apart.  Reading it the wrong way is the expensive direction:
+    `index._index_person` writes the `persons` row only for a profile, so a
+    misclassified profile gets no row at all and the person vanishes from
+    `fha find`, every view, every count, the tree, the site, GEDCOM, WikiTree
+    and every packet - while the file sits there untouched, so nothing looks
+    broken.  A file that says what it is outranks a file that is merely named
+    something; the filename stays a hint, content overrides it.  The same test
+    catches the inverse error, a generated companion someone hand-edited into a
+    real record.
+
+    Key presence, not truthiness: `living: false` is the commonest value the
+    field takes and is falsy in Python, so a plain `meta.get('living')` would
+    read a long-dead ancestor's record as carrying nothing.
+
+    This lives in `_lib` and nowhere else because index and lint drifting on
+    exactly this question is what lost the person in the first place: the
+    indexer read her file one way and the linter the other, so the archive had
+    no row for her and `fha lint` reported it clean.
+    """
+    for field in PERSON_RECORD_FIELDS:
+        value = meta.get(field)
+        if field in meta and value is not None and str(value).strip():
+            return True
+    return False
+
+
+def person_file_kind(path: str | Path, meta: dict) -> str:
+    """What a file under people/ IS: 'profile' or a SPEC §13 companion kind.
+
+    Content decides, the filename hints.  A file whose frontmatter carries the
+    SPEC §9 person-record fields is a profile whatever its stem says; a
+    kind-suffixed stem with no such frontmatter is the generated companion it
+    looks like (see `carries_person_record_fields` for why the stem alone
+    cannot answer).
+
+    Note the asymmetry: content can only promote a file TO a profile, never
+    demote one.  A profile-named file with sparse frontmatter (a stub carrying
+    just `id:`) stays a profile, which is what it is.
+
+    Callers guard their own non-record files first: the kind slot is read for
+    `.md` only, so a stray `.txt` under people/ answers 'profile' here.
+    """
+    if carries_person_record_fields(meta):
+        return 'profile'
+    parsed = parse_filename(path)
+    return (parsed or {}).get('kind') or 'profile'
+
+
+def is_person_file_kind(path: str | Path, kind: str, meta: dict | None = None) -> bool:
+    """True when a person file is of `kind` - SPEC §13's slot, content first.
+
+    The kind slot is one place - immediately before the P-id
+    (`hartley__thomas_research_P-…`) - so the same word anywhere else in the
+    name is part of the given names. The substring test this replaces
+    (`'_research_' in stem`) read `smith__research_anne_P-…`, the profile of a
+    woman whose given names are Research Anne, as a research companion: her
+    `## Hypotheses` entries became archive-wide hypothesis records and her
+    `## Open Questions` block joined the question scope, neither of which SPEC
+    §16 homes in a profile.
+
+    `meta` closes the other half of the same hole. The slot before the P-id is
+    ALSO a legal last given name, so `smith__anne_research_P-…` may be Anne
+    Research Smith's own record - and read as a research file, her whole file
+    went into lint's E009 research scope and the report's question scope just
+    the same. A caller holding the record passes its frontmatter and gets the
+    content-first answer (`person_file_kind`); one that only has a path keeps
+    the filename-only reading, which is a guess (`parse_filename`'s
+    `kind_ambiguous`) and is documented as one.
+
+    A file with no id at all is the one case the grammar cannot parse. That is
+    a real state, not an error - a mid-graduation companion is named before the
+    id is minted (`smith__anne_research.md`) - and with the id absent the kind
+    slot sits at the end of the stem, so the suffix test is exact there rather
+    than a guess. `smith__research_anne.md` still reads as a profile.
+    """
+    if meta is not None and carries_person_record_fields(meta):
+        return kind == 'profile'
+    parsed = parse_filename(path)
+    if parsed is not None:
+        return parsed.get('id_type') == 'P' and parsed.get('kind') == kind
+    return Path(path).stem.endswith(f'_{kind}')
 
 
 # ── Media filename grammar (TOOLING.md §6, §9) ───────────────────────────────
@@ -2418,6 +3662,197 @@ def _last_day(year: int, month: int) -> str:
     return f'{year}-{month:02d}-{last:02d}'
 
 
+def edtf_confidence(edtf: str | None) -> tuple[int, int]:
+    """
+    Sortable confidence score for an EDTF string: more present components
+    (day > month > year) beats fewer, and an unmarked (fully confident)
+    component beats '~' beats '?' (SPEC §20).
+
+    Two readings of one score. `fha photoindex` sorts by the whole tuple to
+    pick a variation group's best date among its variants; `fha photoindex
+    triage` and `fha process` folder triage read only the second element,
+    where 0 means "no approximation marker anywhere" - the confident-date
+    evidence signal (TOOLING §15b).
+
+    Lives here rather than in photoindex.py because those two triage rankings
+    are documented as ordering the same folder the same way, and a scoring
+    rule copied into the second tool is a rule that drifts (it did: the
+    process-side copy tested a raw keyword body and could never fire).
+    """
+    if not edtf:
+        return (-1, 0)
+    n_components = edtf.count('-') + 1
+    if '?' in edtf:
+        marker_rank = 2
+    elif '~' in edtf:
+        marker_rank = 1
+    else:
+        marker_rank = 0
+    return (n_components, -marker_rank)
+
+
+# ── Photo DATE: keyword resolution (SPEC §20) ─────────────────────────────────
+#
+# Every tool that reads a photo's date reads it here. `fha photoindex` resolves
+# it once per scan into `photos.edtf`; `fha process` folder triage resolves it
+# live off the file it is about to rank. The two are documented as ordering the
+# same folder the same way, so the grammar, the EXIF pairing and the
+# what-counts-as-a-date rule are one implementation, not two.
+
+# The DATE: keyword states the PRECISION of a photo's date and nothing else
+# (SPEC §20 rule 1: 'Y!M!D!', 'Y!M~', 'Y~', 'Y!M?D?' - '!' confident, '~'
+# best guess, '?'/omitted unknown, per component). The date's VALUE lives in
+# EXIF DateTimeOriginal - photo metadata cannot hold a partial date, so the
+# pipeline writes a forced full YYYY-MM-DD there (rule 2: a technical
+# workaround, never truth on its own) and the keyword says which components
+# of it are to be believed. This letter grammar is the whole of what a photo's
+# DATE: keyword may say, and matching it here is what decides whether a photo
+# gets a date at all: the code once also read digits straight off a keyword
+# body ('1942!-11!-25!'), which matched nothing on a real library and left
+# `edtf` NULL on every row with every date feature silently dead (#40), and
+# which the archive owner then ruled out of the spec outright (2026-08-16 -
+# see `resolve_photo_edtf`). Trailing time components (H hour, M minute, S
+# second) are matched and discarded - the archive's EDTF is date-only; note
+# the second 'M' means minutes, so a real pattern can read 'Y!M!D?H!M!'.
+PHOTO_DATE_PATTERN_RE = re.compile(
+    r'^Y([!~?])?(?:(M)([!~?])?(?:(D)([!~?])?((?:[HMS][!~?]?)*))?)?$', re.I
+)
+PHOTO_EXIF_DATE_RE = re.compile(r'^\s*(\d{4})[:\-](\d{2})[:\-](\d{2})(?!\d)')
+
+
+def photo_date_markers_to_edtf(pattern: str) -> str | None:
+    """
+    Assemble an EDTF string from digits carrying per-component confidence
+    markers ('1942!-11!-25!', '1960~') - SPEC §20's table, one step down.
+
+    This is an INTERNAL assembler, not a reader of archive keywords.
+    `photo_date_pattern_to_edtf` builds this digit-plus-marker form by pairing
+    the spec's letter grammar with the EXIF value, then calls this to apply the
+    §20 rules in one place. Nothing reads a digit-bearing string straight off
+    a photo: that form is outside the spec (see `resolve_photo_edtf`).
+
+    Building stops at the first component that is missing or marked '?' -
+    §20 states 'Y!' is deliberately equivalent to 'Y!M?D?', i.e. an
+    unconfirmed component is the same as an absent one, not a reason to guess.
+    """
+    m = re.match(r'^(\d{4})([!~?])?(?:-(\d{2})([!~?])?(?:-(\d{2})([!~?])?)?)?$', pattern.strip())
+    if not m:
+        # The one caller assembles this shape itself, so this cannot fire
+        # today; it stays so the function is total - a future caller gets
+        # "no date" rather than an AttributeError on a None match.
+        return None
+
+    year, year_c, month, month_c, day, day_c = m.groups()
+    if year_c == '?':
+        return None
+
+    # Collect the present, non-'?' components with their per-component markers.
+    comps: list[tuple[str, str | None]] = [(year, year_c)]
+    if month and month_c != '?':
+        comps.append((month, month_c))
+        if day and day_c != '?':
+            comps.append((day, day_c))
+
+    if len(comps) == 1:
+        # Year only: an approximate year trails its qualifier (EDTF `1960~`).
+        edtf = year + ('~' if year_c == '~' else '')
+    else:
+        # Multi-component: EDTF qualifies a component with a '~' written
+        # immediately *before* it (SPEC §20: `Y!M~` -> `1960-~05`), so a
+        # per-component best-guess marker is preserved on the right component
+        # instead of being collapsed into one trailing '~' (or dropped when a
+        # confident component follows the approximate one).
+        edtf = '-'.join(('~' + comp if mark == '~' else comp) for comp, mark in comps)
+
+    return edtf if is_valid_edtf(edtf) else None
+
+
+def photo_date_pattern_to_edtf(pattern: str, exif_date: object) -> str | None:
+    """Resolve a shape-only DATE: keyword against EXIF DateTimeOriginal.
+
+    'Y!M!D?' + '1916:06:10 10:53:21' -> '1916!-06!-10?' -> '1916-06'
+    'Y!M~D?' + '1942:03:15 00:00:00' -> '1942!-03~-15?' -> '1942-~03'
+    'Y~'     + '1960:00:00 00:00:00' -> '1960~'         -> '1960~'
+    'Y!M'    + '1916:06:10 10:53:21' -> '1916!-06?'     -> '1916'
+    'YMD'    + '1942:11:25 10:00:00' -> '1942?-11?-25?' -> None
+
+    Builds the digit-plus-marker form `photo_date_markers_to_edtf` already
+    understands and delegates to it, so SPEC §20's rules (stop at the first
+    unconfirmed component, '~' placement, validation) stay in one place.
+
+    An omitted marker is UNKNOWN, exactly like '?' - SPEC §20 rule 1 spells
+    out the grammar as "'!' confident, '~' best guess, '?'/omitted unknown",
+    and rule 2 says the forced full YYYY-MM-DD in EXIF is a compatibility
+    workaround that never becomes truth. Defaulting a bare component to
+    confident would do precisely that: 'DATE: YMD' would turn a scanner's
+    own clock into an exact archive date. So a component the pipeline did
+    not affirm is dropped, and a pattern with no affirmed component at all
+    ('Y', 'YMD') resolves to nothing - the photo stays undated until someone
+    marks a component confident.
+
+    A keyword body that is not this letter grammar returns None here, and that
+    is the whole answer for the photo: `resolve_photo_edtf` has no second
+    reader behind this one.
+    """
+    m = PHOTO_DATE_PATTERN_RE.match(pattern.strip())
+    if not m or exif_date is None:
+        return None
+    d = PHOTO_EXIF_DATE_RE.match(str(exif_date))
+    if not d:
+        return None
+    year, month, day = d.groups()
+    year_c, has_month, month_c, has_day, day_c, _time_parts = m.groups()
+    parts = year + (year_c or '?')
+    if has_month:
+        parts += '-' + month + (month_c or '?')
+        if has_day:
+            parts += '-' + day + (day_c or '?')
+    return photo_date_markers_to_edtf(parts)
+
+
+def resolve_photo_edtf(date_pattern: str | None, exif_date: object) -> str | None:
+    """
+    One photo's resolved EDTF date, or None when the photo carries no DATE:
+    keyword.
+
+    Only a keyworded date resolves. The keyword's presence is what marks a
+    date as REVIEWED (archive-owner decision, 2026-08-15): a photo without one
+    has not been looked at yet, whatever its EXIF says, and resolving EXIF
+    alone would promote unreviewed machine metadata into the same field as
+    human-confirmed fact - and misdate scans, where DateTimeOriginal is often
+    the scan's own date (a 1925 print dated 2021 is worse than undated). So an
+    un-keyworded photo stays NULL here by design, not as a gap.
+
+    The letter form is the ONLY form this resolves (archive-owner decision,
+    2026-08-16). SPEC §20 rule 1 defines the keyword grammar as per-component
+    precision letters - 'Y!M!D!', 'Y!M~', 'Y~' - and nothing else; the
+    parenthesised '(1942-11-25)' in that table glosses the resulting date, it
+    is not a second syntax. A digit-bearing keyword ('DATE: 1880', or the
+    marker form '1942!-11!-25!') is outside the spec, so the archive does not
+    read a date out of it. An owner is free to type whatever he likes into his
+    own keywords; the system simply does not treat a non-spec form as evidence.
+    Such a photo stays undated - visibly, via the scan's
+    `nonspec_date_keywords` count, rather than silently.
+    """
+    if not date_pattern:
+        return None
+    return photo_date_pattern_to_edtf(date_pattern, exif_date)
+
+
+def is_nonspec_photo_date_keyword(date_pattern: str | None) -> bool:
+    """True for a DATE: keyword that carries something other than the SPEC §20
+    letter grammar - the forms the archive deliberately does not read.
+
+    Counted so a library keyworded in a non-spec form (hand-typed years, the
+    AI pipeline's digit-plus-marker form) reports as undated WITH a reason,
+    instead of the human wondering why photos he can see a date on never
+    acquired one.
+    """
+    if not date_pattern:
+        return False
+    return PHOTO_DATE_PATTERN_RE.match(date_pattern.strip()) is None
+
+
 # ── ID utilities ──────────────────────────────────────────────────────────────
 
 ID_TYPES: frozenset[str] = frozenset('PSCLH')
@@ -2513,6 +3948,46 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
             except OSError:
                 pass
     return found
+
+
+# ── Which sources a text search can see inside (#46) ─────────────────────────
+
+def file_entry_carries_text(role: str, path: str) -> bool:
+    """Does one `files:` entry put the source's words into the archive as text?
+
+    Two ways it can, and they are the only two: the entry is tagged with a role
+    that means "this file is what the evidence says" (`transcript`,
+    `transcription`, `extracted-text`), or the file is itself a plain-text file
+    the search reads anyway (a `.md` or `.txt` attached with no role at all).
+
+    Everything else - a scan, a photograph, a PDF, a recording - holds its words
+    in a form no text search can read. That is true of a PDF with a perfectly
+    good text layer, too, until `fha source extract` dumps it into a companion:
+    the search opens `.md` and `.txt` files and nothing else.
+
+    The role is what decides, not the extension, because a role-tagged companion
+    is a promise about the file's content that outranks any guess from its name.
+    """
+    if str(role or '').strip().lower() in TEXT_COMPANION_ROLES:
+        return True
+    suffix = PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
+    return suffix in SEARCHABLE_TEXT_SUFFIXES
+
+
+def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool:
+    """True when at least one of a source's files holds text a search can read.
+
+    `file_entries` is an iterable of `(role, path)` pairs - the shape both
+    callers already have: `fha lint` reads them straight off a record's `files:`
+    frontmatter, `fha find` reads them out of the index's `source_files` table.
+    Sharing the predicate is what keeps lint's warning and find's coverage note
+    counting the same sources; two hand-written copies of this rule would drift
+    on the first new role.
+
+    A source with no files at all is not "unreadable" - there is nothing to
+    read - so callers test emptiness separately rather than folding it in here.
+    """
+    return any(file_entry_carries_text(role, path) for role, path in file_entries)
 
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────
@@ -3040,6 +4515,84 @@ def strip_unaccepted_drafts(text: str) -> tuple[str, str | None]:
     return _BLANK_RUN_RE.sub('\n\n', cleaned), None
 
 
+# The four states a transcript companion's text can be in, named once so every
+# consumer says the same word. Only two of them matter to a caller deciding
+# whether to trust the words: see transcript_text_is_unchecked below.
+TRANSCRIPT_UNREVIEWED = 'unreviewed'
+TRANSCRIPT_VERIFIED = 'verified'
+TRANSCRIPT_UNMARKED = 'unmarked'
+TRANSCRIPT_DAMAGED = 'damaged'
+
+
+def transcript_review_state(text: str) -> str:
+    """Has a human checked this transcript against the picture it was read from?
+
+    A model that reads a scan and types out what it says produces text that is
+    searchable and, from the outside, indistinguishable from evidence. A misread
+    word does not fail loudly the way a missing transcript does - it returns
+    confident hits nobody re-examines. So a transcript states its own status in
+    its text, and this function reads it.
+
+    The rule is the transcribe-source skill's contract ("The marker - how a
+    consumer tells an unreviewed transcript from a checked one"), and it reuses
+    the archive's existing marker pair rather than inventing a third convention:
+    the same `<!-- AI-DRAFT ... -->` / `<!-- AI-ACCEPTED ... -->` comments
+    `write-biography` writes and `fha confirm draft` flips, read with the same
+    regexes strip_unaccepted_drafts uses above.
+
+    Returns one of four states, decided on the companion's FULL text:
+
+      unreviewed  a complete AI-DRAFT marker is present. A machine read the
+                  images; no human has checked the text against them.
+      verified    a complete AI-ACCEPTED marker and no AI-DRAFT marker. A human
+                  compared it to the image.
+      unmarked    neither marker word appears. A human typed it, or `fha source
+                  extract` dumped it mechanically out of a PDF's own text layer.
+                  The archive makes no AI claim about it either way - and this
+                  is the common case, which is why it must never be reported as
+                  unreviewed: flag every transcript and the flag stops meaning
+                  anything.
+      damaged     the literal word appears outside any complete marker (an
+                  unterminated `<!--`, a stray prose mention). Draft can no
+                  longer be told from checked.
+
+    unreviewed outranks verified: one AI-DRAFT marker anywhere makes the whole
+    file unreviewed, because the marker sits at the END of the span it covers
+    and a file carrying both has an unchecked span in it somewhere.
+    """
+    body = text or ''
+    has_draft_word = 'AI-DRAFT' in body
+    has_accepted_word = 'AI-ACCEPTED' in body
+    if not has_draft_word and not has_accepted_word:
+        return TRANSCRIPT_UNMARKED
+
+    # The same accounting strip_unaccepted_drafts closes with: remove every
+    # complete marker, and any marker word still standing was never inside one.
+    residue = _AI_ACCEPTED_MARK_RE.sub('', _AI_DRAFT_MARK_RE.sub('', body))
+    if 'AI-DRAFT' in residue or 'AI-ACCEPTED' in residue:
+        return TRANSCRIPT_DAMAGED
+    if _AI_DRAFT_MARK_RE.search(body):
+        return TRANSCRIPT_UNREVIEWED
+    return TRANSCRIPT_VERIFIED
+
+
+def transcript_text_is_unchecked(text: str) -> bool:
+    """Should a consumer warn that nobody has checked these words yet?
+
+    True for `unreviewed` and for `damaged`. Damaged fails CLOSED - a file whose
+    markers cannot be read is treated as unchecked, never as checked - matching
+    strip_unaccepted_drafts, which withholds everything rather than guess which
+    prose was accepted. Over-warning costs a reader one glance at the original;
+    under-warning lets a machine's reading of a picture pass for the picture.
+
+    The fail-closed collapse lives here rather than at each call site so that
+    every consumer inherits it by using the function instead of remembering the
+    rule.
+    """
+    return transcript_review_state(text) in (
+        TRANSCRIPT_UNREVIEWED, TRANSCRIPT_DAMAGED)
+
+
 # ── Private-content fence (publication guard) ─────────────────────────────────
 # A general `<!-- private -->…<!-- /private -->` fence hides author-marked prose
 # (research hunches, notes touching living kin) from any shared/standalone output
@@ -3174,6 +4727,15 @@ def write_generated_file(
     photoindex.py; keeping one copy here (tools never import tools, so _lib is
     the only legal shared home) means the ownership rule can never drift between
     the two writers.
+
+    The write is atomic even though generated output is regenerable, because of
+    how the ownership guard above fails otherwise. A truncating write that dies
+    partway leaves a file whose first line is a fragment of the GENERATED
+    marker - so on the NEXT run the guard no longer recognises it, and the
+    human is told the tool refuses to overwrite a file it does not own, about a
+    file the tool wrote itself. Regenerating is supposed to be the cure for a
+    damaged generated file; that failure mode makes it the one thing that
+    cannot fix it, and leaves a non-technical reader with no next step.
     """
     if out_path.exists():
         try:
@@ -3190,7 +4752,7 @@ def write_generated_file(
         if not create_parents:
             raise GeneratedFileParentMissing(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(content, encoding='utf-8')
+    write_text_exact_atomic(out_path, content)
     return out_path
 
 
@@ -3319,7 +4881,178 @@ def archive_title(cfg: dict) -> str:
     )
 
 
+# ── Walking a tree that might not open ────────────────────────────────────────
+#
+# THE RULE (learned the expensive way, photoindex 2026-08): an enumeration that
+# cannot see everything must not let its caller act as though it saw
+# everything.
+#
+# `os.walk` swallows the OSError from a directory it cannot list and simply
+# moves on, so a folder whose permissions changed - or an external drive that
+# unmounted mid-walk - looks exactly like an empty folder. `Path.rglob` and
+# `Path.glob` do the same thing and give you no hook at all to notice. A caller
+# that then DELETES the rows for everything it did not see (a cache sweep, a
+# drop-and-rebuild index) erases real content while reporting a clean run, and
+# a caller that watermarks freshness against what it saw certifies a cache as
+# current when half its inputs were never read.
+#
+# So: walk with `walk_files` and hand it a recorder. A missing row is
+# recoverable; a deleted row and a false 'fresh' are not.
+
+def unreadable_dir_recorder(into: list):
+    """Build an `os.walk` `onerror` callback that records the folders it failed on.
+
+    Appends the offending directory as a `Path` (de-duplicated, first-seen
+    order) to `into`. The caller reads a non-empty list as "this walk is
+    incomplete by at least that much" and fails closed.
+
+    The error carries the path in `err.filename`; an OSError raised with no
+    filename (nothing in the stdlib does this today, but a patched `listdir`
+    in a test might) is ignored rather than recorded as `None`, because a
+    recorder that can put junk in the list is a recorder nobody trusts.
+    """
+    def note(err: OSError) -> None:
+        name = getattr(err, 'filename', None)
+        if not name:
+            return
+        path = Path(name)
+        if path not in into:
+            into.append(path)
+    return note
+
+
+def walk_files(root: Path, suffix: str | None = None, on_error=None):
+    """Yield the files under `root`, with the error seam `rglob` does not have.
+
+    The drop-in replacement for `root.rglob('*')` / `root.rglob('*.md')` in
+    any code that deletes, sweeps, or certifies freshness. `rglob` has no
+    `onerror` equivalent, so the only way to learn that a subdirectory would
+    not open is to walk with `os.walk` and pass one - which is what this does.
+
+    `suffix` filters by extension, case-insensitively ('.md'), because that is
+    what every record walk in this codebase wants and doing it here keeps the
+    call sites short. Pass `on_error` (see `unreadable_dir_recorder`) whenever
+    under-seeing would be worse than slow.
+
+    Order is `os.walk`'s, not sorted - callers that need a stable order sort
+    the result, exactly as they had to with `rglob`.
+    """
+    if not root.is_dir():
+        return
+    want = suffix.lower() if suffix else None
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=on_error):
+        here = Path(dirpath)
+        for name in filenames:
+            if want is not None and not name.lower().endswith(want):
+                continue
+            yield here / name
+
+
+def unreadable_dir_hold_mtimes(dirs) -> list[float]:
+    """File times a cache must sit behind so an incomplete walk keeps reading 'stale'.
+
+    A directory nothing could list has no readable file inside it to watermark
+    against, so the times taken are the directory's own and its parent's. The
+    parent matters: a freshness walk never yields an unreadable directory from
+    its own listing either, so the directory's own mtime may be absent from
+    the watermark entirely - but the parent's is there, because reaching the
+    child means the parent listed fine.
+
+    Accepts an iterable of `Path`s. `photoindex` keeps `(alias, path)` pairs
+    for its own reporting and unwraps them before calling here.
+    """
+    out: list[float] = []
+    for path in dirs:
+        for candidate in (Path(path), Path(path).parent):
+            try:
+                out.append(candidate.stat().st_mtime)
+            except OSError:
+                continue
+    return out
+
+
 # ── Archive freshness ─────────────────────────────────────────────────────────
+
+def _is_generated_companion(path: Path, archive_root: Path) -> bool:
+    """A `fha views` output under people/, excluded from the freshness
+    watermark: a per-person companion (timeline / sources-index / draft-queue,
+    P-id in the name) or the couple-folder `sources-index.md` (`fha views
+    sources-index --couple-folders`, also written by `fha views refresh`),
+    which carries no P-id at all.
+
+    Three tests, all required, because being wrong here means a human's own
+    file stops counting as a record: text search would keep serving its old
+    `notes_fts` row for as long as he leaves the rest of the archive alone,
+    and nothing would ever tell him to reindex.
+
+      1. It is under people/. The generators write nowhere else in the record
+         tree, while `notes/` is a place a human writes freely - and a note he
+         happens to name `notes/sources-index.md` IS indexed (`_index_notes`
+         reads every .md under notes/), so it has to keep its vote.
+      2. Its name is one the generators use, in the place they use it: the
+         P-id form anywhere under people/, the bare `sources-index.md` only at
+         the root of a couple folder (people/<folder>/, which is any folder
+         directly under people/ that is not stubs/ or connections/ - the same
+         definition views uses when it writes them).
+      3. It actually carries the GENERATED header. The name is a convention;
+         the header is the ownership contract, and it is the only test that
+         separates a file `fha views` wrote from one a human wrote in the same
+         folder with the same name (which `write_generated_file` would then
+         refuse to overwrite, so it can sit there indefinitely). Only files
+         that already passed the two cheap tests are read.
+    """
+    try:
+        rel_parts = path.relative_to(archive_root).parts
+    except ValueError:
+        return False
+    if not rel_parts or rel_parts[0] != 'people':
+        return False
+
+    if path.name == 'sources-index.md':
+        if len(rel_parts) != 3 or rel_parts[1].lower() in ('stubs', 'connections'):
+            return False
+    else:
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('kind') not in GENERATED_COMPANION_KINDS:
+            return False
+
+    return is_generated_file(path)
+
+
+def _newest_md_mtime(dirs, keep=None) -> float:
+    """Max mtime across the `.md` files under `dirs` - or 'now' if any folder shut.
+
+    The one walk behind all three record watermarks below, so that a fix to
+    the fail-closed rule lands in every one of them at once (before this, each
+    had its own `rglob` and the rule had three places to be forgotten).
+
+    `keep(path)` filters which files vote; a file whose mtime cannot be read
+    (a dangling symlink, a file deleted mid-walk) simply does not vote.
+
+    When a subdirectory would not list, the answer is `time.time()` rather
+    than the max of what was visible. A watermark is a promise that nothing
+    newer exists, and a walk that skipped a subtree cannot make it: the caller
+    would stamp its cache 'fresh' over records it never read. 'Now' is the
+    honest answer - every cache reads stale until the folder opens again - and
+    it is self-clearing, needing no state anywhere.
+    """
+    unreadable: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable)
+    max_mtime = 0.0
+    for d in dirs:
+        for p in walk_files(Path(d), suffix='.md', on_error=on_error):
+            if keep is not None and not keep(p):
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > max_mtime:
+                max_mtime = mtime
+    if unreadable:
+        return max(max_mtime, time.time())
+    return max_mtime
+
 
 def newest_record_mtime(archive_root: Path) -> float:
     """Max mtime (epoch seconds) across sources/people/notes .md files and places/places.yaml.
@@ -3327,16 +5060,31 @@ def newest_record_mtime(archive_root: Path) -> float:
     Used as the freshness baseline for index.sqlite and photos.sqlite: if the
     cache is older than this, it is stale.  Returns 0.0 on a brand-new archive
     that has no record files yet (trivially up-to-date).
+
+    Generated companion views (timeline, sources-index, draft-queue) are
+    excluded (#37): `fha views` writes them FROM the index, so counting them
+    made every view write stale the index it had just read - the documented
+    per-person close-out (`views timeline`, `views sources-index`, `views
+    draft-queue`) failed on its second call and needed a full rebuild between
+    every write. Their content is derived; the index only records that they
+    exist (person_files), which the next ordinary rebuild picks up. The
+    exclusion is deliberately narrow - see `_is_generated_companion`: only a
+    real generated file, in the place the generators write it, loses its vote.
+
+    fha.yaml is part of the watermark because it decides how records are read
+    (the roots a source's `files:` entries resolve through, and every other
+    indexed setting); an edit there stales the index even though no record
+    file changed.
+
+    A folder under sources/, people/ or notes/ that will not list makes this
+    return 'now' rather than a watermark it cannot stand behind - see
+    `_newest_md_mtime`. Every reader (`fha find`, `fha doctor`, `fha views`)
+    then treats the index as out of date, which is the truth: records it never
+    read may have changed.
     """
-    max_mtime = 0.0
     dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
-    for p in itertools.chain.from_iterable(d.rglob('*.md') for d in dirs if d.is_dir()):
-        try:
-            mtime = p.stat().st_mtime
-            if mtime > max_mtime:
-                max_mtime = mtime
-        except OSError:
-            pass
+    max_mtime = _newest_md_mtime(
+        dirs, keep=lambda p: not _is_generated_companion(p, archive_root))
     for extra in (
         archive_root / 'places' / 'places.yaml',
         archive_root / 'fha.yaml',
@@ -3362,21 +5110,15 @@ def newest_source_record_mtime(archive_root: Path, subdir: str | None = None) ->
     Pass `subdir` to limit the scan to a specific subdirectory under sources/
     (e.g. `'photos'`), which avoids false staleness when unrelated source types
     such as census records are edited.
+
+    Fails closed on a folder that will not list (`_newest_md_mtime`): the
+    photo catalog reads stale rather than certifying itself over source
+    records it never saw.
     """
-    max_mtime = 0.0
     sources_dir = archive_root / 'sources'
     if subdir:
         sources_dir = sources_dir / subdir
-    if not sources_dir.is_dir():
-        return max_mtime
-    for p in sources_dir.rglob('*.md'):
-        try:
-            mtime = p.stat().st_mtime
-            if mtime > max_mtime:
-                max_mtime = mtime
-        except OSError:
-            pass
-    return max_mtime
+    return _newest_md_mtime([sources_dir])
 
 
 def newest_person_record_mtime(archive_root: Path) -> float:
@@ -3388,22 +5130,18 @@ def newest_person_record_mtime(archive_root: Path) -> float:
     `sources-index.md` files under people/ must not bust this freshness
     check just because `fha views refresh` touched them.
     Returns 0.0 on a brand-new archive that has no person records yet.
+
+    Fails closed on a folder that will not list (`_newest_md_mtime`): an
+    unreadable `people/` subtree used to lower this watermark silently, so the
+    photo catalog read `fresh` while face-tag and name-variant edits it never
+    saw sat in the records - and `photo_people` kept serving the old matches.
     """
-    max_mtime = 0.0
-    people_dir = archive_root / 'people'
-    if not people_dir.is_dir():
-        return max_mtime
-    for p in people_dir.rglob('*.md'):
+    def _is_profile(p: Path) -> bool:
         parsed = parse_filename(p)
-        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
-            continue
-        try:
-            mtime = p.stat().st_mtime
-            if mtime > max_mtime:
-                max_mtime = mtime
-        except OSError:
-            pass
-    return max_mtime
+        return (parsed is not None
+                and parsed['id_type'] == 'P' and parsed['kind'] == 'profile')
+
+    return _newest_md_mtime([archive_root / 'people'], keep=_is_profile)
 
 
 def scan_person_record_ids(archive_root: str | Path) -> set[str]:
@@ -3431,7 +5169,9 @@ def scan_person_record_ids(archive_root: str | Path) -> set[str]:
     return found
 
 
-def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | None:
+def find_person_record_path(
+    archive_root: str | Path, person_id: str, unreadable: list | None = None,
+) -> Path | None:
     """Scan `people/` for one P-id's primary person record (not a companion view).
 
     The `.md` files are archive truth, so this never consults
@@ -3443,24 +5183,54 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
     timeline/sources-index/draft-queue) share the P-id but are generated views,
     never the record itself, so they are excluded.
 
+    "Companion" is read the way the rest of the tools read it: SPEC §13's kind
+    slot is shared with the last given name, so a name ending in `_timeline` is
+    only a hint (`parse_filename`'s `kind_ambiguous`). When the id matches and
+    the name says companion, the file's own frontmatter is consulted - a file
+    carrying the SPEC §9 person fields IS the record (`person_file_kind`).
+    Without that, Marie Timeline Hartley's record answered "no record found" to
+    every verb that locates by scanning, while her file sat in plain sight. A
+    plainly-named profile always wins; the content fallback only fills a lookup
+    that would otherwise come back empty, and never redirects one that already
+    worked.
+
     Shared here because several tools need the same lookup (`fha confirm draft`,
     `fha person set-living`, `fha confirm merge`) - the same
     shared-infrastructure rationale as `mint_ids`.
+
+    Pass a list as `unreadable` to learn whether the scan saw all of `people/`
+    (the mirror of `find_source_record_path`'s parameter). A None answer from
+    an incomplete scan means "not found here, and I could not look everywhere";
+    today's callers all refuse on None, which is already fail-closed, so the
+    parameter exists for any future caller that would DELETE on it.
     """
     target = normalize_id(person_id)
     people_dir = Path(archive_root) / 'people'
     if not people_dir.is_dir():
         return None
-    for path in sorted(people_dir.rglob('*.md')):
+    named_like_a_companion: Path | None = None
+    on_error = unreadable_dir_recorder(unreadable) if unreadable is not None else None
+    for path in sorted(walk_files(people_dir, suffix='.md', on_error=on_error)):
         parsed = parse_filename(path)
         if not parsed or parsed.get('id_str') != target:
             continue
-        if parsed.get('id_type') == 'P' and not parsed.get('is_companion'):
+        if parsed.get('id_type') != 'P':
+            continue
+        if not parsed.get('is_companion'):
             return path
-    return None
+        if named_like_a_companion is None and parsed.get('kind_ambiguous'):
+            try:
+                meta = read_record(path)['meta']
+            except Exception:
+                continue
+            if carries_person_record_fields(meta):
+                named_like_a_companion = path
+    return named_like_a_companion
 
 
-def find_source_record_path(archive_root: str | Path, source_id: str) -> Path | None:
+def find_source_record_path(
+    archive_root: str | Path, source_id: str, unreadable: list | None = None,
+) -> Path | None:
     """Scan `sources/` for one S-id's record file, or None.
 
     The source sibling of `find_person_record_path`: identity is the
@@ -3477,12 +5247,22 @@ def find_source_record_path(archive_root: str | Path, source_id: str) -> Path | 
     as `mint_ids` and `find_person_record_path`. The two existing private
     copies are left as-is (out of scope for this change) rather than churned
     just to call through here.
+
+    Pass a list as `unreadable` to learn whether the scan could see all of
+    `sources/`. `rglob` swallowed an unlistable subdirectory silently, so a
+    record sitting behind a folder whose permissions changed came back as
+    None - indistinguishable from "there is no such source". Callers that
+    merely refuse on None are already failing closed and can ignore the
+    parameter; a caller that DELETES on None (photoindex's `source-people`
+    tier, whose rows `_rebuild_photo_people` rewrites) must pass it and hold
+    its rows instead.
     """
     target = normalize_id(source_id)
     sources_dir = Path(archive_root) / 'sources'
     if not sources_dir.is_dir():
         return None
-    for path in sorted(sources_dir.rglob('*.md')):
+    on_error = unreadable_dir_recorder(unreadable) if unreadable is not None else None
+    for path in sorted(walk_files(sources_dir, suffix='.md', on_error=on_error)):
         parsed = parse_filename(path)
         if not parsed or parsed.get('id_str') != target:
             continue
@@ -3631,7 +5411,10 @@ def render_stub_content(
 # claim (SPEC §4: hand-labor scales with curiosity; TOOLING §5's
 # placement-is-a-human-act rule carves out exactly this engine).
 
-def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, int]:
+def build_ahnentafel_map(
+    conn: sqlite3.Connection, root_pid: str,
+    sex_gaps: list[dict] | None = None,
+) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
 
     Seed: root_pid -> 1.  Parents of person at position N:
@@ -3639,6 +5422,17 @@ def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, i
       Same-sex or sex='U' pairs: lexicographically-first P-id -> 2N (deterministic).
     Terminates when no accepted parent edges remain (the relationships table is
     derived from accepted claims only - see index.py).
+
+    `sex_gaps`, when a list is passed, collects the W120 set: every placement
+    made by the single-resolved-parent branch where that parent's `sex:` is not
+    a recorded M/F, appended as {'pid', 'pos'}. Such a person took the father
+    (even) slot by DEFAULT, not by derivation - a completely normal early-
+    research state (SPEC never requires `sex:` up front), but the resulting
+    folder number looks confident while actually being a guess, and W110 can
+    never catch it because the folders match their own flawed derivation. Two
+    RESOLVED parents with unset or matching sex are deliberately NOT collected:
+    that is the genuine same-sex/unknown-pair case the deterministic tie-break
+    below exists for (TOOLING §7).
 
     WHY BFS: Ahnentafel is a breadth-first numbering by definition.  Depth-first
     would produce the same positions but BFS is the natural traversal shape.
@@ -3683,6 +5477,8 @@ def build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, i
             if p_pid not in pid_to_pos:
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
+                if sex_gaps is not None and sex_slot_is_defaulted(p_sex):
+                    sex_gaps.append({'pid': p_pid, 'pos': pos, 'sex': p_sex})
         else:
             # Two or more genetic parent edges - assisted reproduction (a
             # donor-egg mother plus a surrogate-genetic mother plus a
@@ -4199,10 +5995,12 @@ def promote_person_record(
 _SOURCE_RECORD_FILENAME_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})\.md$', re.I)
 
 
-def find_source_record(archive_root: str | Path, source_id: str) -> dict | None:
+def find_source_record(
+    archive_root: str | Path, source_id: str, unreadable: list | None = None,
+) -> dict | None:
     """Return the parsed record dict for a source by its S-id, or None.
 
-    Globs `sources/**/*.md` for a file whose `_{S-id}.md` suffix matches
+    Walks `sources/**/*.md` for a file whose `_{S-id}.md` suffix matches
     `source_id` (case-insensitive). The slug and subdirectory are mutable and
     are not matched - only the suffix carries identity. Used by `fha photoindex`
     to resolve `source-people` person references for photos that carry a matching
@@ -4212,13 +6010,21 @@ def find_source_record(archive_root: str | Path, source_id: str) -> dict | None:
 
     Returns None when the record is absent or its frontmatter has parse errors;
     callers that need `people:` should treat None as "no people known from this source."
+
+    That None is exactly why `unreadable` exists. `rglob` cannot report a
+    subdirectory it failed to list, so a source behind an unreadable folder
+    answered "no people known from this source" - and photoindex, which
+    rebuilds `photo_people` from scratch on every scan, deleted that photo's
+    `source-people` rows on the strength of it. Pass a list here and treat a
+    non-empty one as "unverified", never as "none".
     """
     root = Path(archive_root)
     sources_dir = root / 'sources'
     if not sources_dir.is_dir():
         return None
     sid_norm = normalize_id(source_id)
-    for p in sources_dir.rglob('*.md'):
+    on_error = unreadable_dir_recorder(unreadable) if unreadable is not None else None
+    for p in walk_files(sources_dir, suffix='.md', on_error=on_error):
         m = _SOURCE_RECORD_FILENAME_RE.search(p.name)
         if m and normalize_id(m.group(1)) == sid_norm:
             rec = read_record(p)
@@ -4235,6 +6041,243 @@ def configure_utf8_stdout() -> None:
             sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[union-attr]
         except Exception:
             pass
+
+
+
+def _index_tables_with_path_column(conn: sqlite3.Connection) -> list[str]:
+    """Every index table (FTS included) carrying a `path` column - the
+    relocation set. FTS5 shadow tables are skipped by name."""
+    names = [
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'"
+        )
+        if not re.search(r'_(config|data|idx|docsize|content)$', row[0])
+    ]
+    out = []
+    for name in names:
+        cols = {row[1] for row in conn.execute(f'PRAGMA table_info("{name}")')}
+        if 'path' in cols:
+            out.append(name)
+    return out
+
+
+def relocate_person_in_index(
+    archive_root: Path,
+    pid: str,
+    moves: list[tuple[Path, Path]],
+    *,
+    tier: str | None = None,
+    new_research: Path | None = None,
+) -> str:
+    """
+    Keep .cache/index.sqlite correct across a person-record move without a
+    rebuild (#37) - the index-side twin of `promote_person_record`, here in
+    `_lib` because tools never import tools (TOOLING §1).
+
+    `fha person promote` moves a record out of people/stubs/ - a path change
+    the mtime watermark cannot see (a move keeps the file's time), which is
+    why promote used to DELETE the cache to force a rebuild. That made the
+    second promote in a batch fail with 'index.sqlite is unreadable or has an
+    incompatible schema... (schema version is missing)', which reads like
+    corruption, or with a root_person error that sent the human to fix
+    fha.yaml and run `fha stubs` when only the cache was absent. Rewriting the
+    rows in place is exact and cheap: every table keyed by `path` (persons,
+    person_files, notes_fts, citations, hypotheses, research_log, ...) has its
+    old relative path swapped for the new one; the tier flip is applied to
+    the persons row; a freshly scaffolded research companion gets its
+    person_files row and its body in notes_fts (a scaffold carries no
+    hypotheses or log entries yet - the next full build indexes those). The
+    sqlite write also bumps index.sqlite's own mtime past the record's, so
+    the freshness check reads 'fresh' - correctly, because it is.
+
+    Returns 'indexed', or 'index_absent' when there is no usable full index
+    to update (the caller then just says 'run fha index', as before).
+    """
+    db_path = Path(archive_root) / '.cache' / 'index.sqlite'
+    status, _detail = sqlite_cache_schema_status(
+        db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
+    if status != 'fresh' and status != 'stale':
+        return 'index_absent'
+    pid = normalize_id(pid)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            tables = _index_tables_with_path_column(conn)
+            for old, new in moves:
+                old_rel = str(Path(old).relative_to(archive_root))
+                new_rel = str(Path(new).relative_to(archive_root))
+                if old_rel == new_rel:
+                    continue
+                for table in tables:
+                    conn.execute(
+                        f'UPDATE "{table}" SET path=? WHERE path=?', (new_rel, old_rel))
+            if tier is not None:
+                conn.execute('UPDATE persons SET tier=? WHERE id=?', (tier, pid))
+            if new_research is not None:
+                rel = str(Path(new_research).relative_to(archive_root))
+                conn.execute(
+                    'INSERT OR REPLACE INTO person_files(person_id, kind, path, generated) '
+                    'VALUES (?,?,?,0)', (pid, 'research', rel))
+                try:
+                    body = read_record(new_research).get('body') or ''
+                except Exception:
+                    body = ''
+                conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                if body.strip():
+                    conn.execute(
+                        'INSERT INTO notes_fts(path, content) VALUES (?,?)', (rel, body))
+    finally:
+        conn.close()
+    return 'indexed'
+
+
+def sync_generated_view_rows(
+    archive_root: Path,
+    written: list[Path] | tuple[Path, ...] = (),
+    removed: list[Path] | tuple[Path, ...] = (),
+) -> str:
+    """
+    Keep the index's rows for generated companion views in step with the files
+    `fha views` just wrote or deleted - the row-side twin of the #37 watermark
+    exclusion, here in `_lib` because tools never import tools (TOOLING §1).
+
+    Generated companions (timeline, sources-index, draft-queue) are deliberately
+    left OUT of `newest_record_mtime` (#37): they are written FROM the index, so
+    counting them made every view write stale the index it had just read. But
+    `index._index_person` still puts each companion's body into `notes_fts` and
+    a row in `person_files`, so without this the two halves disagree: after a
+    `fha views refresh`, `fha find --text` would keep returning the PREVIOUS
+    timeline's text (or miss a newly generated one) for as long as the index
+    stayed "fresh", and `fha views clean` would leave rows for files that no
+    longer exist. Rewriting the handful of affected rows is exact and cheap -
+    the same trade `relocate_person_in_index` makes for a promote - and it keeps
+    a batch of view writes from forcing a full rebuild.
+
+    Only per-person `.md` companions under people/ carry rows: the couple-folder
+    `sources-index.md` has no P-id, so `_index_person` skips it, and the
+    standalone `--format html` twins live under generated/ which the indexer
+    never scans. Both are ignored here for the same reason.
+
+    Returns 'indexed' (rows updated), 'index_absent' (no usable index to
+    update - the caller just advises `fha index`), or 'index_error' (the index
+    is there but the write failed; the caller must say so, because the rows are
+    now the stale ones).
+    """
+    db_path = Path(archive_root) / '.cache' / 'index.sqlite'
+    status, _detail = sqlite_cache_schema_status(
+        db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
+    if status != 'fresh':
+        return 'index_absent'
+
+    def _companion_row(path: Path) -> tuple[str, str, str] | None:
+        """(relative path, person_id, kind) for a companion-NAMED file, else None.
+
+        Filename-only: enough for a removed file, whose content is already
+        gone, and the first half of the test for a written one.
+        """
+        path = Path(path)
+        if path.suffix.lower() != '.md':
+            return None
+        try:
+            rel = str(path.relative_to(archive_root))
+        except ValueError:
+            return None
+        if rel.replace('\\', '/').split('/')[0] != 'people':
+            return None
+        parsed = parse_filename(path)
+        if not parsed or parsed['id_type'] != 'P':
+            return None
+        if parsed.get('kind') not in GENERATED_COMPANION_KINDS:
+            return None
+        return rel, parsed['id_str'], parsed['kind']
+
+    def _written_row(path: Path) -> dict | None:
+        """What to write for one just-generated file, or None if it carries no rows.
+
+        The record is READ BEFORE the file is classified, because the filename
+        cannot settle what the file is: SPEC §13's kind slot is shared with the
+        last given name, so `hartley__marie_timeline_P-…` may be Marie Timeline
+        Hartley's own record. Classifying by name alone made this the one path
+        that could put a companion row back over a person record and re-lose
+        her until the next full rebuild - the exact failure the content-first
+        rule exists to prevent (`carries_person_record_fields`).
+
+        So a file that carries person-record fields keeps whatever
+        `person_files` row it has and gets no companion row written over it;
+        its search text is refreshed either way, which is the whole reason this
+        sync runs (#37 keeps these paths out of the freshness watermark, so
+        nothing downstream would notice the file changed).
+
+        `person_id` and `generated` are derived exactly as
+        `index._index_person` derives them - a frontmatter id wins over the
+        filename's, and a file carrying one, or carrying a person record, is
+        never machine output. Deriving them differently would make these
+        incremental rows disagree with a rebuild.
+        """
+        row = _companion_row(path)
+        if row is None:
+            return None
+        rel, filename_pid, kind = row
+        try:
+            rec = read_record(archive_root / rel)
+        except Exception:
+            # Unreadable or unparseable (it was written moments ago, so this is
+            # a filesystem oddity, not a normal state): index it as empty
+            # rather than let a read error surface as a traceback over a view
+            # write that already succeeded. Same posture as
+            # relocate_person_in_index's research-companion read.
+            rec = {'meta': {}, 'body': ''}
+        meta = rec.get('meta') or {}
+        is_person_record = carries_person_record_fields(meta)
+        meta_pid = normalize_id(str(meta.get('id') or ''))
+        return {
+            'rel': rel,
+            'person_id': meta_pid or filename_pid,
+            'kind': kind,
+            'body': rec.get('body') or '',
+            'is_person_record': is_person_record,
+            'generated': 0 if (meta.get('id') or is_person_record) else 1,
+        }
+
+    targets_written = [r for r in (_written_row(p) for p in written) if r]
+    targets_removed = [r for r in (_companion_row(p) for p in removed) if r]
+    if not targets_written and not targets_removed:
+        return 'indexed'
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            with conn:
+                for rel, _pid, _kind in targets_removed:
+                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    conn.execute('DELETE FROM person_files WHERE path=?', (rel,))
+                for row in targets_written:
+                    rel = row['rel']
+                    # Delete before rewrite: notes_fts is an FTS5 table with no
+                    # unique key, so a plain insert would stack a second body
+                    # row for the same path on every regeneration.
+                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    if row['body'].strip():
+                        conn.execute(
+                            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+                            (rel, row['body']))
+                    if row['is_person_record']:
+                        # Her `person_files` row says 'profile' and must keep
+                        # saying it: person_files is keyed by (person_id, kind,
+                        # path), so a companion row here would not replace the
+                        # profile row but sit BESIDE it, and the incremental
+                        # index would stop matching a rebuild.
+                        continue
+                    conn.execute(
+                        'INSERT OR REPLACE INTO person_files'
+                        '(person_id, kind, path, generated) VALUES (?,?,?,?)',
+                        (row['person_id'], row['kind'], rel, row['generated']))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 'index_error'
+    return 'indexed'
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ command or one sentence to the assistant. Find your symptom, read the plain caus
 > *Typing it:* `fha` is a launcher file in your archive folder, and the current folder is not on
 > your PATH by default — so on **macOS or Linux** type `./fha doctor`, in Windows **PowerShell**
 > `.\fha doctor`, and in the Windows **Command Prompt** a bare `fha doctor`. Commands on this
-> page are written bare; add the `./` or `.\` your shell needs. ([CHEATSHEET.md](CHEATSHEET.md)
+> page are written bare; add the `./` or `.\` your shell needs. ([CHEATSHEET.md](../CHEATSHEET.md)
 > has the same table.)
 
 ---
@@ -85,7 +85,7 @@ format.
 
 **Fix.** Just say the date in plain words to the assistant - *"about 1880," "the 1880s," "February
 or March 1871"* - and let it write the formal version. The translation table is on the
-[cheat sheet](CHEATSHEET.md#how-to-write-an-uncertain-date). You never have to learn the codes.
+[cheat sheet](../CHEATSHEET.md#how-to-write-an-uncertain-date). You never have to learn the codes.
 
 ---
 

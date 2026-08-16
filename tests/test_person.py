@@ -37,12 +37,26 @@ nothing (but still drawing a real, unwritten id - matching `fha stubs
 produces, the never-overwrite guard (forced via a monkeypatched `mint_ids`),
 and CLI wiring through `fha.main(['person', 'new', ...])`.
 
+Also pins the ORDER each verb advertises its next steps in (PR #42 round 2).
+The advice has to work when followed top to bottom: `set-sex` names `fha index`
+before `fha views brackets`, because Ahnentafel placement is derived from the
+INDEXED `sex:` and the write has just staled that index; `set-living` names the
+rebuild as a precondition of the exports rather than a convenience; and
+`set-profile-photo` puts the rebuild ahead of `fha site`, which refuses to build
+from a stale index (the workbench refreshes it itself). The last class here is
+`SkillInventoryDocsTests`, which holds the shipped docs' skill count and skill
+list against `.claude/skills/` itself.
+
 Fixtures only (AGENTS_TOOLING §5): everything runs against temp trees or a
 copy of example-archive; the real archive is never touched.
 """
 
 import contextlib
+import errno
 import io
+import os
+import pathlib
+import re
 import shutil
 import sqlite3
 import sys
@@ -169,6 +183,76 @@ def _one_line_diff(before: str, after: str) -> list[tuple[str, str]]:
     return [(x, y) for x, y in zip(b, a) if x != y]
 
 
+@contextlib.contextmanager
+def _write_dies_partway(target: Path, keep: int = 12):
+    """Make the next record write die after `keep` characters, as a full disk does.
+
+    The failure being reproduced is not "the edit did not happen" - every verb
+    already refuses cleanly and says so. It is the disk filling, or the process
+    being killed, between the moment the record is opened for writing and the
+    last byte: with a truncating writer the record on disk is then a prefix of
+    the replacement, and the verb reports a refusal over a record it has
+    already destroyed.
+
+    Both of `_lib`'s record writers end in one `handle.write(text)` on a
+    text-mode file object, so intercepting that call reproduces the same
+    interruption for either of them. What differs is WHICH file was open at the
+    time: `write_text_exact` has the record itself open in truncating mode, so
+    the wound lands on the record; `write_text_exact_atomic` has a sibling temp
+    file open and the record is not touched until `os.replace`. That is the
+    whole difference these tests measure, which is why the interception sits
+    this low rather than stubbing out the writer function.
+    """
+    real_path_open = pathlib.Path.open
+    real_fdopen = os.fdopen
+    target_key = os.path.abspath(str(target))
+    # A folder means "whatever record is written directly into it" - the only
+    # way to aim at `new`'s output, whose filename carries an id minted inside
+    # the call being interrupted.
+    by_parent = os.path.isdir(target_key)
+
+    class _TornHandle:
+        def __init__(self, fh):
+            self._fh = fh
+
+        def write(self, text):
+            self._fh.write(text[:keep])
+            raise OSError(errno.ENOSPC, 'No space left on device')
+
+        def __getattr__(self, name):
+            return getattr(self._fh, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            with contextlib.suppress(OSError):
+                self._fh.close()
+            return False
+
+    def _aimed_at(path):
+        here = os.path.abspath(str(path))
+        return os.path.dirname(here) == target_key if by_parent else here == target_key
+
+    def _patched_path_open(self, mode='r', *a, **kw):
+        fh = real_path_open(self, mode, *a, **kw)
+        if str(mode).startswith('w') and _aimed_at(self):
+            return _TornHandle(fh)
+        return fh
+
+    def _patched_fdopen(fd, mode='r', *a, **kw):
+        # The atomic writer's temp file is the only fd opened for writing
+        # inside the calls these tests wrap.
+        fh = real_fdopen(fd, mode, *a, **kw)
+        if str(mode).startswith('w'):
+            return _TornHandle(fh)
+        return fh
+
+    with mock.patch.object(pathlib.Path, 'open', _patched_path_open), \
+            mock.patch.object(os, 'fdopen', _patched_fdopen):
+        yield
+
+
 class SetLivingEditTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -221,6 +305,16 @@ class SetLivingEditTests(unittest.TestCase):
         nudges = [m for m in result.messages if m.next_step == 'fha index']
         self.assertEqual(len(nudges), 1)
         self.assertEqual(nudges[0].level, 'info')
+
+    def test_index_nudge_is_not_optional_convenience(self) -> None:
+        # Every export reads living: out of the index and refuses on a stale
+        # one, so "when convenient" understated it: the rebuild has to happen
+        # before the next export, not whenever.
+        result = person.run_set_living(self.root, PID, 'false')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('when convenient', text)
+        for command in ('fha site', 'fha packet', 'fha gedcom'):
+            self.assertIn(command, text)
 
     def test_value_case_is_normalized(self) -> None:
         result = person.run_set_living(self.root, PID, 'FALSE')
@@ -290,6 +384,236 @@ class SetLivingEditTests(unittest.TestCase):
         self.assertIn('-living: unknown  # not sure yet', text)
         self.assertIn('+living: false  # not sure yet', text)
         self.assertEqual(self.stub.read_bytes(), before)
+
+
+class SetSexTests(unittest.TestCase):
+    """`fha person set-sex` - the 2026-07-26 feedback's item 3: a surgical
+    single-line edit for the one frontmatter fact the Ahnentafel derivation
+    reads, ending with the brackets/realign nudge that a hand edit could never
+    print. Same contract as set-living / set-profile-photo."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.stub = self.root / 'people' / 'stubs' / f'hartley__rose_{PID}.md'
+        self.curated = self.root / 'people' / f'hartley__thomas_{CURATED_PID}.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_correcting_a_recorded_value_changes_one_line_and_nudges(self) -> None:
+        before = self.curated.read_text(encoding='utf-8')
+        result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'ok')
+        self.assertEqual(result.data['old'], 'M')
+        self.assertEqual(result.data['new'], 'F')
+        self.assertEqual(result.changed, [str(self.curated)])
+        after = self.curated.read_text(encoding='utf-8')
+        self.assertEqual(_one_line_diff(before, after), [('sex: M', 'sex: F')])
+        text = ' '.join(m.text for m in result.messages)
+        # The nudge this verb exists for.
+        self.assertIn('fha views brackets', text)
+        self.assertIn('--realign', text)
+        self.assertIn('fha views brackets', [m.next_step for m in result.messages if m.next_step])
+
+    def test_reindex_is_advertised_before_the_bracket_check(self) -> None:
+        # `fha views brackets` derives placement from persons.sex in
+        # .cache/index.sqlite (_lib.build_ahnentafel_map), and this write has
+        # just staled that index - so a human following the advice in the order
+        # printed would read the OLD placement, and --realign refuses outright.
+        # The reindex is step one, not an afterthought.
+        result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        steps = [m.next_step for m in result.messages if m.next_step]
+        self.assertEqual(steps.index('fha index'), 0)
+        self.assertLess(steps.index('fha index'), steps.index('fha views brackets'))
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('when convenient', text)
+
+    def test_case_folds_onto_the_vocabulary(self) -> None:
+        for typed, canonical in (('f', 'F'), ('m', 'M'), ('Intersex', 'intersex'),
+                                 ('UNKNOWN', 'unknown')):
+            result = person.run_set_sex(self.root, CURATED_PID, typed)
+            self.assertEqual(result.exit_code, EXIT_CLEAN, typed)
+            self.assertEqual(result.data['new'], canonical, typed)
+        self.assertIn('sex: unknown\n', self.curated.read_text(encoding='utf-8'))
+
+    def test_absent_key_is_inserted_in_template_order(self) -> None:
+        # The stub has no sex: line; it lands after name: and before living:,
+        # the person template's order, and the trailing comment on living:
+        # survives untouched.
+        result = person.run_set_sex(self.root, PID, 'F')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['old'], None)
+        after = self.stub.read_text(encoding='utf-8')
+        self.assertIn('name: Rose Hartley\nsex: F\nliving: unknown  # not sure yet\n', after)
+
+    def test_already_is_a_no_op(self) -> None:
+        before = self.curated.read_bytes()
+        result = person.run_set_sex(self.root, CURATED_PID, 'm')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'already')
+        self.assertFalse(result.changed)
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_dry_run_previews_and_writes_nothing(self) -> None:
+        before = self.curated.read_bytes()
+        result = person.run_set_sex(self.root, CURATED_PID, 'F', dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertFalse(result.changed)
+        self.assertEqual(self.curated.read_bytes(), before)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('-sex: M', text)
+        self.assertIn('+sex: F', text)
+
+    def test_invalid_value_refused_naming_the_vocabulary(self) -> None:
+        before = self.curated.read_bytes()
+        result = person.run_set_sex(self.root, CURATED_PID, 'male')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertIn('intersex', result.messages[0].text)
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_unknown_pid_warns_with_next_step(self) -> None:
+        result = person.run_set_sex(self.root, 'P-9zzzzzzzzz', 'F')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result.data['status'], 'not-found')
+        self.assertIn('fha find', result.messages[0].text)
+
+    def test_merged_tombstone_names_survivor(self) -> None:
+        tomb = (
+            '---\n'
+            'id: P-dddddddddd\n'
+            'name: Thomas Hartley\n'
+            'sex: M\n'
+            'living: false\n'
+            'status: merged\n'
+            'merged_into: P-cccccccccc\n'
+            '---\n'
+        )
+        path = self.root / 'people' / 'MERGED-INTO-P-cccccccccc__hartley__thomas_P-dddddddddd.md'
+        path.write_text(tomb, encoding='utf-8')
+        before = path.read_bytes()
+        result = person.run_set_sex(self.root, 'P-dddddddddd', 'F')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'merged')
+        self.assertIn('fha person set-sex P-cccccccccc F', result.messages[0].text)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_cli_round_trip_via_fha(self) -> None:
+        import fha
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main(['person', 'set-sex', CURATED_PID, 'F',
+                           '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('sex: F', self.curated.read_text(encoding='utf-8'))
+        self.assertIn('fha views brackets', out.getvalue())
+
+
+class TornWriteTests(unittest.TestCase):
+    """A person record is often the archive's only copy of that ancestor, so a
+    write that dies partway must leave the OLD bytes, not half a file.
+
+    PR #42 round 5. Every verb here opened the record with a truncating write
+    and then wrote into it: a disk that filled, or a process killed, between
+    the truncate and the last byte left a prefix of the replacement on disk
+    while the verb returned a plain refusal - a message that is a lie about
+    the one file it exists to protect. Nothing is recoverable from that; the
+    fix is `_lib.write_text_exact_atomic`, whose temp-file-then-`os.replace`
+    means a raise leaves the record untouched. These tests measure exactly
+    that: interrupt the write, then read the record back.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        self.stub = self.root / 'people' / 'stubs' / f'hartley__rose_{PID}.md'
+        self.curated = self.root / 'people' / f'hartley__thomas_{CURATED_PID}.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_torn_set_sex_write_leaves_the_record_byte_identical(self) -> None:
+        before = self.curated.read_bytes()
+        with _write_dies_partway(self.curated):
+            result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertFalse(result.changed)
+        # The refusal says nothing was kept, so nothing may have been kept.
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_a_torn_write_names_the_file_and_leaves_no_debris(self) -> None:
+        before_listing = sorted(p.name for p in self.curated.parent.iterdir())
+        with _write_dies_partway(self.curated):
+            result = person.run_set_sex(self.root, CURATED_PID, 'F')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('cannot write', text)
+        self.assertIn('retry', text)
+        # The atomic writer's temp file is removed on the way out - a stray
+        # `.hartley__thomas_….md.xxxx.tmp` in people/ is debris the human
+        # would have to recognise and delete himself.
+        self.assertEqual(sorted(p.name for p in self.curated.parent.iterdir()),
+                         before_listing)
+
+    def _reset_curated(self) -> None:
+        """Put the curated record back, with the entry `edit-note` rewrites.
+
+        Each verb in the sweep below needs a whole record to start from. Left
+        shared, the first verb's torn write would corrupt the file and every
+        later verb would then refuse for the wrong reason - on a record that
+        was already ruined - and the sweep would pass while proving nothing.
+        """
+        self.curated.write_text(CURATED, encoding='utf-8')
+        person.run_note(self.root, CURATED_PID, 'stories', 'An older note.')
+
+    def test_every_in_place_verb_survives_a_torn_write(self) -> None:
+        # The sweep the finding asked for: one truncating writer left in any
+        # of these verbs is the same defect wearing a different verb's name.
+        cases = {
+            'set-living': lambda: person.run_set_living(
+                self.root, CURATED_PID, 'false'),
+            'set-profile-photo': lambda: person.run_set_profile_photo(
+                self.root, CURATED_PID, 'thomas-portrait.jpg'),
+            'set-sex': lambda: person.run_set_sex(self.root, CURATED_PID, 'F'),
+            'estimate': lambda: person.run_estimate(
+                self.root, CURATED_PID, birth='1870'),
+            'edit': lambda: person.run_edit(
+                self.root, CURATED_PID, 'biography', text='Replacement prose.'),
+            'note': lambda: person.run_note(
+                self.root, CURATED_PID, 'research', 'A fresh note.'),
+            'edit-note': lambda: person.run_edit_note(
+                self.root, CURATED_PID, 'stories',
+                old_text='An older note.', text='A corrected note.'),
+            'relate': lambda: person.run_relate(
+                self.root, CURATED_PID, 'parent', PID),
+        }
+        for verb, call in cases.items():
+            with self.subTest(verb=verb):
+                self._reset_curated()
+                before = self.curated.read_bytes()
+                with _write_dies_partway(self.curated):
+                    result = call()
+                self.assertEqual(result.data['status'], 'refused', verb)
+                self.assertFalse(result.changed, verb)
+                self.assertEqual(self.curated.read_bytes(), before, verb)
+
+    def test_new_leaves_no_half_written_stub_behind(self) -> None:
+        # `new` cannot truncate an older record - it refuses a collision
+        # first - but a torn write there leaves a half-written stub carrying a
+        # freshly minted P-id behind a message saying nothing was created, and
+        # `fha lint` finds a malformed record nobody knows they made.
+        stubs = self.root / 'people' / 'stubs'
+        before_listing = sorted(p.name for p in stubs.iterdir())
+        # Aimed at the folder, not a filename: `new` mints its P-id inside the
+        # call, so the stub's name is not knowable before it is interrupted.
+        with _write_dies_partway(stubs):
+            result = person.run_new(self.root, 'Alice Hartley')
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertFalse(result.changed)
+        self.assertEqual(sorted(p.name for p in stubs.iterdir()), before_listing)
 
 
 class SetLivingRefusalTests(unittest.TestCase):
@@ -805,6 +1129,17 @@ class SetProfilePhotoQuotingTests(unittest.TestCase):
         text = Path(result.data['path']).read_text(encoding='utf-8')
         self.assertIn('profile_photo: portrait.jpg\n', text)
 
+    def test_site_advice_puts_the_reindex_first(self) -> None:
+        # `fha site` opens the index strictly and stops on "index is stale",
+        # which this write has just caused; the workbench rebuilds it itself.
+        # So the site half of the advice has to name `fha index` first, and
+        # the two must not be presented as interchangeable.
+        result = person.run_set_profile_photo(self.root, CURATED_PID, 'portrait.jpg')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('fha index', text)
+        self.assertLess(text.index('fha index'), text.index('fha site'))
+        self.assertIn('fha index', [m.next_step for m in result.messages if m.next_step])
+
 
 class RelateTests(unittest.TestCase):
     """fha person relate: an unsourced relationships: belief, both ends."""
@@ -928,7 +1263,7 @@ class RelateTests(unittest.TestCase):
         target_before = self.target.read_bytes()
 
         calls = {'n': 0}
-        real_write = person.write_text_exact
+        real_write = person.write_text_exact_atomic
 
         def _flaky_write(path, text):
             calls['n'] += 1
@@ -936,7 +1271,7 @@ class RelateTests(unittest.TestCase):
                 raise OSError('simulated lock')
             return real_write(path, text)
 
-        with mock.patch.object(person, 'write_text_exact', _flaky_write):
+        with mock.patch.object(person, 'write_text_exact_atomic', _flaky_write):
             result = person.run_relate(
                 self.root, CURATED_PID, 'parent', TARGET_PID, reciprocal=True)
 
@@ -1815,13 +2150,68 @@ class PromoteTests(unittest.TestCase):
                         '## Hypotheses', '## Research Log'):
             self.assertIn(heading, text)
         self.assertNotIn('P-__________', text)
-        # Follow-ups name the three views and fha index; the moved record
-        # dropped the index cache (a move is mtime-invisible).
+        # Follow-ups name the three views; the index was updated IN PLACE
+        # (#37) - it still exists, is fresh, and already knows the new path
+        # and tier, so the next promote needs no rebuild between them.
         all_text = ' '.join(m.text for m in res.messages)
-        for follow in ('fha index', 'fha views timeline', 'fha views sources-index',
-                       'fha views draft-queue'):
+        for follow in ('fha views timeline', 'fha views sources-index',
+                       'fha views draft-queue', 'updated in place'):
             self.assertIn(follow, all_text)
-        self.assertFalse((self.root / '.cache' / 'index.sqlite').exists())
+        db = self.root / '.cache' / 'index.sqlite'
+        self.assertTrue(db.exists())
+        conn = sqlite3.connect(db)
+        try:
+            tier, ppath = conn.execute(
+                'SELECT tier, path FROM persons WHERE id=?', (P_PA.lower(),)).fetchone()
+            self.assertEqual(tier, 'curated')
+            self.assertEqual(Path(ppath), new_path.relative_to(self.root))
+            files = dict(conn.execute(
+                'SELECT kind, path FROM person_files WHERE person_id=?', (P_PA.lower(),)).fetchall())
+            self.assertEqual(Path(files['profile']), new_path.relative_to(self.root))
+            self.assertEqual(Path(files['research']), research.relative_to(self.root))
+            self.assertFalse(any('stubs' in Path(v).parts for v in files.values()))
+        finally:
+            conn.close()
+        # And the freshness check agrees: no reader sees it as stale.
+        from _lib import newest_record_mtime
+        self.assertGreaterEqual(db.stat().st_mtime, newest_record_mtime(self.root))
+
+    def test_two_promotes_back_to_back_need_no_reindex(self) -> None:
+        # The #37 batch: promote deleted the cache, so the SECOND promote died
+        # on 'index.sqlite is unreadable or has an incompatible schema (schema
+        # version is missing)' - reads like corruption - or on a root_person
+        # error pointing at fha.yaml. In-place relocation keeps it fresh.
+        first = person.run_promote(self.root, P_PA)
+        self.assertEqual(first.exit_code, EXIT_CLEAN, first.messages)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            second = person.run_promote(self.root, P_MA)
+        self.assertEqual(second.exit_code, EXIT_CLEAN, second.messages)
+        self.assertEqual(second.data['status'], 'ok')
+        self.assertNotIn('schema version is missing', err.getvalue())
+        self.assertTrue(
+            (self.root / 'people' / PROMOTE_FOLDER / f'line__ma_{P_MA}.md').exists())
+
+    def test_empty_index_names_fha_index_not_fha_yaml(self) -> None:
+        # An index file that exists but holds no persons (created empty, or
+        # never fully built) used to produce 'root_person ... has no person
+        # record ... fix root_person in fha.yaml or run fha stubs' - a message
+        # capable of prompting damage in response to a non-problem (#37).
+        db = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(db)
+        conn.execute('DELETE FROM persons')
+        conn.commit()
+        conn.close()
+        # Keep it 'fresh' so the empty-persons branch is what fires.
+        os.utime(db, None)
+        with contextlib.redirect_stderr(io.StringIO()):
+            res = person.run_promote(self.root, P_PA)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        msg = res.messages[-1].text
+        self.assertIn('no person records at all', msg)
+        self.assertIn('fha index', msg)
+        self.assertNotIn('fha stubs', msg)
+        self.assertTrue(self.pa_stub.exists())
 
     def test_creates_missing_couple_folder(self) -> None:
         res = person.run_promote(self.root, P_GPA)
@@ -1991,33 +2381,28 @@ class PromoteTests(unittest.TestCase):
         all_text = ' '.join(m.text for m in res.messages)
         self.assertIn('Moved the research companion', all_text)
 
-    def _unlink_only_index_fails(self):
-        """A Path.unlink patch that raises for the index cache, else works.
+    def _index_update_fails(self):
+        """Make the in-place index update raise, and nothing else.
 
-        The bug under test is a cache-invalidation unlink that fires AFTER the
-        record has already moved. We must fail ONLY that unlink (a locked or
-        read-only .cache/index.sqlite), not the moves the promotion itself
-        performs, so the archive mutation still reaches disk and we exercise
-        the exact post-mutation failure window.
+        The bug under test is a cache update that fires AFTER the record has
+        already moved. We must fail ONLY that (a locked or read-only
+        .cache/index.sqlite), not the moves the promotion itself performs, so
+        the archive mutation still reaches disk and we exercise the exact
+        post-mutation failure window.
         """
-        real_unlink = Path.unlink
+        return mock.patch.object(
+            person, 'relocate_person_in_index',
+            side_effect=sqlite3.OperationalError('database is locked'))
 
-        def fake_unlink(self, *args, **kwargs):
-            if self.name == 'index.sqlite':
-                raise PermissionError(13, 'Permission denied')
-            return real_unlink(self, *args, **kwargs)
-
-        return mock.patch.object(Path, 'unlink', fake_unlink)
-
-    def test_cache_unlink_failure_after_move_warns_without_traceback(self) -> None:
-        # The record moves, then the index-cache drop fails. The promotion
-        # already succeeded on disk and cannot be rolled back, so the result
-        # is a NON-ZERO warning (not a hard refusal) that names the stale
-        # cache path and the rebuild command - never a leaked traceback.
+    def test_index_update_failure_after_move_warns_without_traceback(self) -> None:
+        # The record moves, then the in-place index update fails. The
+        # promotion already succeeded on disk and cannot be rolled back, so
+        # the result is a NON-ZERO warning (not a hard refusal) that names
+        # the cache path and the rebuild command - never a leaked traceback.
         stale_cache = self.root / '.cache' / 'index.sqlite'
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            with self._unlink_only_index_fails():
+            with self._index_update_fails():
                 res = person.run_promote(self.root, P_PA)
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
         self.assertEqual(res.data['status'], 'ok-index-stale')
@@ -2025,8 +2410,8 @@ class PromoteTests(unittest.TestCase):
         self.assertFalse(self.pa_stub.exists())
         self.assertTrue(
             (self.root / 'people' / PROMOTE_FOLDER / f'line__pa_{P_PA}.md').exists())
-        # The stale cache is still on disk (the unlink failed) - the message
-        # must own that fact and point at the fix.
+        # The now-wrong cache is still on disk - the message must own that
+        # fact and point at the fix.
         self.assertTrue(stale_cache.exists())
         msg = res.messages[-1].text
         self.assertIn('index.sqlite', msg)
@@ -2036,18 +2421,18 @@ class PromoteTests(unittest.TestCase):
         # No traceback leaked to stderr.
         self.assertNotIn('Traceback', err.getvalue())
 
-    def test_cache_unlink_failure_on_half_promotion_still_warns(self) -> None:
-        # The dangerous half the finding calls out: tier already curated by
-        # hand, so the move preserves the record mtime and an undeleted index
-        # can pass the freshness check while holding the OLD path. If the
-        # cache drop fails here, silence would be worst - assert we still warn.
+    def test_index_update_failure_on_half_promotion_still_warns(self) -> None:
+        # The dangerous half: tier already curated by hand, so the move
+        # preserves the record mtime and an un-updated index can pass the
+        # freshness check while holding the OLD path. If the update fails
+        # here, silence would be worst - assert we still warn.
         self.pa_stub.write_text(
             _promote_person_text(P_PA, 'Pa Line', 'M', tier='curated'),
             encoding='utf-8')
         self._reindex()
         stale_cache = self.root / '.cache' / 'index.sqlite'
         with contextlib.redirect_stderr(io.StringIO()):
-            with self._unlink_only_index_fails():
+            with self._index_update_fails():
                 res = person.run_promote(self.root, P_PA)
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
         self.assertEqual(res.data['status'], 'ok-index-stale')
@@ -2066,6 +2451,81 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn('[dry-run]', out.getvalue())
         self.assertTrue(self.pa_stub.exists())
+
+
+class SkillInventoryDocsTests(unittest.TestCase):
+    """The docs' skill inventory must match what `.claude/skills/` actually holds.
+
+    AGENTS_TOOLING.md §7's status sweep keeps failing in the same direction: a
+    skill ships, the BUILD doc that owns it is updated, and the summaries that
+    cross-reference it keep quoting the old count and the old list (PR #42 round
+    2 - `TOOLING.md` §16 still said thirteen after fifteen had shipped). Prose
+    cannot be linted, but a count and a list of folder names can, so this pins
+    both against the directory itself.
+
+    It lives in this file only because the round-2 fix was scoped to
+    `tests/test_person.py` and `tests/test_packet.py`; it belongs in a docs test
+    module of its own the day one exists.
+    """
+
+    # Enough of the range to cover a wave or two in either direction. A count
+    # word outside this map means the docs and the directory have drifted so
+    # far that a person should look, which is what the KeyError says.
+    NUMBER_WORDS = {
+        11: 'eleven', 12: 'twelve', 13: 'thirteen', 14: 'fourteen', 15: 'fifteen',
+        16: 'sixteen', 17: 'seventeen', 18: 'eighteen', 19: 'nineteen', 20: 'twenty',
+    }
+
+    # doc -> the phrase whose number word states the count, as a regex with the
+    # word captured. Each is a shipped summary an archive owner or a builder
+    # reads as the inventory.
+    COUNT_PHRASES = {
+        'AGENTS.md': r'(\w+) workflow playbooks live at',
+        'TOOLING.md': r'all (\w+) authored and shipped',
+        'TOOLING_INTERFACE.md': r'all (\w+) SKILL\.md files',
+        'BUILD_INTERFACE.md': r'and (\w+) SKILL\.md files',
+        # The authoring contract states the count in its own opening sentence
+        # ("so N skills written by different sessions ... don't drift"), and it
+        # is the first file a new skill's author reads - a stale number there
+        # teaches the drift this class exists to catch.
+        '.claude/skills/_STANDARD.md': r'so (\w+) skills',
+    }
+
+    # doc -> True when it also spells the inventory out name by name.
+    # CLAUDE.md is here because it is the harness's own pointer at the skills
+    # ("Workflow skills live in .claude/skills/ - process-source, ..."): a skill
+    # missing from that line is a skill Claude Code is never told it has.
+    NAME_LISTS = ('TOOLING.md', 'BUILD_INTERFACE.md', '.claude/skills/README.md',
+                  'CLAUDE.md')
+
+    def setUp(self) -> None:
+        self.skills_dir = ROOT / '.claude' / 'skills'
+        if not self.skills_dir.is_dir():
+            self.skipTest('no .claude/skills/ here (installed archives carry no BUILD docs either)')
+        self.skills = sorted(
+            d.name for d in self.skills_dir.iterdir()
+            if d.is_dir() and (d / 'SKILL.md').is_file()
+        )
+
+    def test_every_stated_count_matches_the_directory(self) -> None:
+        expected = self.NUMBER_WORDS[len(self.skills)]
+        for doc, pattern in self.COUNT_PHRASES.items():
+            with self.subTest(doc=doc):
+                text = (ROOT / doc).read_text(encoding='utf-8')
+                found = re.search(pattern, text)
+                self.assertIsNotNone(
+                    found, f'{doc} no longer states the skill count in the expected words')
+                self.assertEqual(
+                    found.group(1).lower(), expected,
+                    f'{doc} says {found.group(1)!r} but .claude/skills/ holds '
+                    f'{len(self.skills)} skills')
+
+    def test_every_shipped_skill_is_named_where_the_inventory_is_listed(self) -> None:
+        for doc in self.NAME_LISTS:
+            text = (ROOT / doc).read_text(encoding='utf-8')
+            for name in self.skills:
+                with self.subTest(doc=doc, skill=name):
+                    self.assertIn(name, text, f'{doc} never names the {name} skill')
 
 
 if __name__ == '__main__':

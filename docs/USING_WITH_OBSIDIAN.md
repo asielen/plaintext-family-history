@@ -10,9 +10,12 @@ Obsidian.
 
 Day-to-day genealogy needs no `fha` typing at all:
 
-- **Create** a person or source note. Copy a template from `archive-template/`,
-  or use the optional [Templater pack](../obsidian-templater/) for a one-click
-  new note with the right frontmatter. Leave the ID blank - it is filled in
+- **Create** a person or source note. Copy one of the `_TEMPLATE.*` files your
+  archive already ships (`people/_TEMPLATE.person.md`,
+  `sources/_TEMPLATE.source.md`, and friends), or install the optional
+  [Templater pack](https://github.com/asielen/plaintext-family-history/tree/master/obsidian-templater)
+  from the project repo into your own Obsidian setup for a one-click new note
+  with the right frontmatter. Leave the ID blank - it is filled in
   later (a record with no ID is a valid starting state).
 - **Link** people, sources, and places by name: type `[[` and pick. The link
   resolves to the right record even before any ID exists, and Obsidian draws the

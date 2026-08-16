@@ -34,6 +34,7 @@ from _lib import (
     render_stub_content,
     stub_filename,
     stub_slug_name,
+    write_text_exact_atomic,
 )
 
 
@@ -128,7 +129,14 @@ def create_stubs(
         if dry_run:
             print(f'[dry-run] Would create: people/stubs/{filename}')
         else:
-            stub_path.write_text(content, encoding='utf-8')
+            # Exact + atomic, like every other record writer. The
+            # `stub_path.exists()` guard above makes a torn file lower stakes
+            # than a truncated biography - the next run skips it rather than
+            # repairing it, so the damage is a permanently half-written record
+            # nobody notices, which is its own kind of bad. `write_text` would
+            # also newline-translate, and a stub is a person record that later
+            # grows into a full one.
+            write_text_exact_atomic(stub_path, content)
             print(f'Created: people/stubs/{filename}')
         created += 1
 
@@ -162,7 +170,9 @@ def mint_named_stubs(
         if dry_run:
             print(f'[dry-run] Would create: people/stubs/{filename} ({pid})')
         else:
-            stub_path.write_text(content, encoding='utf-8')
+            # Same reasoning as create_stubs above; this loop has no exists()
+            # guard at all, because every P-id in it was just minted fresh.
+            write_text_exact_atomic(stub_path, content)
             print(f'Created: people/stubs/{filename} ({pid})')
 
 

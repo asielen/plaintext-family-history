@@ -40,6 +40,43 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    `.md` and its transcript file. Read the whole thing before drafting — the substantive assertions are
    scattered.
 
+   **If the source carries more than one transcript of the same recording, read them side by side and
+   mine from the comparison.** An app/phone transcript and a local whisper pass (roles `transcript` and
+   `whisper-transcript`) are each right about something the other gets wrong: the app knows the turn
+   structure and who spoke, whisper is far better on proper names, places and numbers — exactly what
+   genealogy needs. `fha find <S-id>` lists every attached transcript; mine the whisper text for content
+   and consult the app transcript for speaker turns.
+
+   Two things fall out of the comparison, and both matter:
+
+   - **Where they disagree on a name, the whisper reading usually wins — but say so in the claim.** Quote
+     the whisper text as the evidence, note what the app transcript had, and cite the whisper timestamp.
+     A real case (names changed): `"Sue walkie"` in the app transcript was drafted as *a person
+     called Sue*; whisper has *Suwałki* — the town — plus a following sentence the app had lost
+     entirely explaining that this is where the family emigrated from.
+   - **Where one transcript covers material the other lacks, mine the fuller one and check why.** A
+     recording app can attach the *same* transcript file to two different recordings, or truncate one at
+     a fixed size — in one real archive a 5001-byte transcript stopped at roughly the eight-minute mark and
+     another was a byte-identical copy of a different recording, so two whole conversations had never
+     been transcribed at all. Compare durations against transcript length before concluding a recording
+     holds nothing.
+
+   **If the transcript ends in a `<!-- AI-DRAFT … -->` marker, it is an unreviewed machine reading of
+   the images** — [`transcribe-source`](../transcribe-source/SKILL.md) wrote it and nobody has checked
+   it against the original yet. Mine it, but carry that through: the claim's `confidence:` reflects a
+   reading no human has verified, its `notes:` says the reading is unverified, and an `[illegible]`,
+   `[word?]` or `[unclear: a or b]` in the text is **never** silently resolved into a claim value — ask
+   the human, or leave that fact unclaimed. A transcript with no marker, or one carrying
+   `<!-- AI-ACCEPTED … -->`, needs none of this.
+
+   Never rewrite either transcript to match the other, and never "correct" the garbled names inside them
+   — the originals stay byte-for-byte (SPEC §6.3). The reconciliation lives in the claim you draft.
+
+   Anchor to the transcript you actually drew the words from, and name it when the source has several
+   (`anchor: "cars-whisper, 00:28:14"`). If the source's existing claims were mined from a transcript that
+   has since been joined by a better one, this is **not** the skill for fixing them — a fresh mining pass
+   would duplicate them. That audit belongs to `transcribe-audio` step 6, which corrects claim by claim.
+
 2. **Draft `suggested` claims for substantive assertions only.** For each real fact stated:
    - add a claim to the source's `## Claims` block: `status: suggested`, a fresh `id:` (`fha id mint C`),
      the right `type:`, resolved `persons:`, a `value:` sentence;
@@ -65,8 +102,9 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
 4. **Route narrative to `## Stories`; leave the rest in the transcript.** Story-shaped passages (an
    anecdote about the railroad job, a description of the family home) go to the source's `## Stories`
    section as narrative chunks tagged with `[[P-…]]` refs — feedstock for a future biography. Everything
-   else **stays in the transcript**, unchanged (it remains searchable via `transcripts_fts` when that
-   surface is populated).
+   else **stays in the transcript**, unchanged — and it stays searchable: `fha index` loads every
+   `role: transcript` / `transcription` / `extracted-text` companion into `transcripts_fts`, so
+   `fha find --text` reaches inside it.
 
 5. **Record the AI pass** in the source's `## AI Passes` block:
    ```yaml

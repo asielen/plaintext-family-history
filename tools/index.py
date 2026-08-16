@@ -50,10 +50,13 @@ from _lib import (
     EXIT_WARNINGS,
     ID_RE,
     INDEX_SCHEMA_VERSION,
+    SEARCHABLE_TEXT_SUFFIXES,
+    TEXT_COMPANION_ROLES,
     TOKEN_RE,
     FhaConfigError,
     Message,
     Result,
+    carries_person_record_fields,
     edtf_bounds,
     extract_wikilinks,
     id_type_of,
@@ -65,13 +68,18 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     parse_filename,
+    person_file_kind,
     read_record,
     resolve_path,
     resolve_ref,
     resolve_root_arg,
     resolve_typed_ref,
+    roots_change_orphans,
+    format_roots_orphan_warning,
     sqlite_cache_schema_status,
     strip_link_wrapper,
+    unreadable_dir_recorder,
+    walk_files,
 )
 
 import yaml
@@ -351,12 +359,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
 
 _RELATIONSHIPS_SOCIAL_SUBTYPES = {'friend', 'associate', 'neighbor'}
 
-# Mirrors source.py's `_EXTRACT_ROLE`: the files: role that `fha source extract`
-# stamps on a PDF's dumped text layer. Its body is fed into transcripts_fts so
-# JSON/workbench search can reach inside the dump (see _index_source). Kept as a
-# literal here rather than imported from source.py to avoid a build-tool import
-# reaching into a write-tool module; the two must stay in step.
-_EXTRACTED_TEXT_ROLE = 'extracted-text'
+# _lib.TEXT_COMPANION_ROLES holds the files: roles whose body belongs in
+# transcripts_fts: `extracted-text` (what `fha source extract` stamps on a PDF's
+# dumped text layer - source.py's `_EXTRACT_ROLE`) and `transcript` /
+# `transcription` (what a transcript written by any other means carries: by
+# hand, by the transcribe-audio skill, by the transcribe-source skill reading a
+# scan and typing it out). All of them are the same thing to a search - the
+# archive's copy of what the evidence says - and loading only the extract verb's
+# own dumps left every other transcript unsearchable through the index (#46).
+# The vocabulary lives in _lib because `fha lint` counts the same files this
+# loads, and one shared rule is what keeps the two from drifting apart.
+#
+# _lib.SEARCHABLE_TEXT_SUFFIXES is the second half of the gate: a transcript is
+# only a transcript if it is text. A role tag can land on anything - a `.m4a`
+# attached as `role: transcript` by a slip of the hand - and reading a media
+# file as UTF-8 would fail on every build and print a "re-save it as UTF-8"
+# warning naming a file that was never text at all.
 
 
 # ── Build helpers ─────────────────────────────────────────────────────────────
@@ -780,35 +798,67 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     - they don't create a second persons entry, but views can find them by
     person_id and kind.
 
+    Which of the two a file is comes from its CONTENT first and its filename
+    only as a fallback - see `_lib.carries_person_record_fields` for why the
+    filename alone cannot answer the question.
+
     Surname is parsed from the filename's double-underscore convention
     ({surname}__{given}_{P-id}) rather than the name: field, because the
     frontmatter name may include middle names or honorifics while the filename
     slug is always the birth surname.
     """
+    if path.suffix.lower() != '.md':
+        # SPEC §13 spells every person record `.md`, and the walker only ever
+        # hands us `.md` files.  The guard is here because `parse_filename`
+        # reads the companion-kind slot for `.md` alone: give it any other
+        # extension and it returns kind=None, which the fallback below would
+        # turn into 'profile' - minting a full persons row (name 'unknown')
+        # for a stray `.txt` or `.pdf` that happened to land under people/.
+        return
     if is_template_file(path):
         return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
+    parsed_name = parse_filename(path)
 
+    # Identity: the frontmatter id first, the filename's P-id as the fallback.
+    # Generated companions (timeline, sources-index, draft-queue) carry no
+    # frontmatter id at all - the P-id lives in the filename instead - so the
+    # fallback is what puts them in person_files and on `fha find`.
+    #
+    # Both are checked with `is_valid_id`, not a `p-` prefix test.  A hand-typed
+    # `id: P-notanid` passed the prefix test and went straight into persons.id,
+    # where it joins to nothing: claim_persons, relationships, citations and
+    # every view key off a real Crockford id.  The person read as present in one
+    # table and absent from every query built on it.  A malformed id is not an
+    # identity, so fall through to the filename - the id the archive's existing
+    # `[[P-…]]` links already use - and let `fha lint` E002 name the typo.
     pid = normalize_id(str(meta.get('id', '')))
+    if not is_valid_id(pid) or id_type_of(pid) != 'P':
+        pid = ''
+        if parsed_name and parsed_name['id_type'] == 'P':
+            pid = parsed_name['id_str']
     if not pid:
-        # Generated companion files (timeline, sources-index, draft-queue) carry no
-        # frontmatter id - the P-id lives in the filename instead.  Extract it so
-        # these files appear in person_files and are discoverable via fha find.
-        parsed = parse_filename(path)
-        if parsed and parsed['id_type'] == 'P':
-            pid = parsed['id_str']
-    if not pid or not pid.startswith('p-'):
         return
 
     name = str(meta.get('name', '')) or 'unknown'
-    # Determine kind from filename
     stem = path.stem
-    kind = 'profile'
-    for k in ('research', 'timeline', 'sources-index', 'draft-queue'):
-        if f'_{k}_' in stem or stem.endswith(f'_{k}'):
-            kind = k
-            break
+    # Content decides, the filename hints.  The rule itself lives in
+    # `_lib.person_file_kind` - index and lint reading it differently is what
+    # lost a person - and the reasoning is written out in
+    # `_lib.carries_person_record_fields`: SPEC §13 puts the companion kind
+    # immediately before the P-id (`hartley__thomas_timeline_P-…`), but
+    # underscores are legal inside given names, so that slot is shared with the
+    # last given name and the grammar cannot separate them.  A file whose
+    # frontmatter carries the SPEC §9 person-record fields is a profile whatever
+    # its stem says; a kind-suffixed stem with no such frontmatter is the
+    # generated companion it looks like.
+    #
+    # Note the asymmetry: content can only promote a file TO a profile, never
+    # demote one.  A profile-named file with sparse frontmatter (a stub carrying
+    # just `id:`) stays a profile, which is what it is.
+    is_person_record = carries_person_record_fields(meta)
+    kind = person_file_kind(path, meta)
 
     is_companion = kind != 'profile'
 
@@ -929,13 +979,29 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
 
     # Always record the file association.  Generated views have no frontmatter id
     # (their id comes from the filename fallback above) so mark them generated=1.
-    is_generated = not meta.get('id')
+    # A file whose frontmatter names a person is never machine output, even when
+    # its id has not been minted yet - a hand-authored record with no id is a
+    # legal pre-machine state (SPEC §10), not a generated view.
+    is_generated = not meta.get('id') and not is_person_record
     conn.execute(
         'INSERT OR REPLACE INTO person_files(person_id, kind, path, generated) VALUES (?,?,?,?)',
         (pid, kind, str(path.relative_to(archive_root)), 1 if is_generated else 0),
     )
 
-    # FTS index the body
+    # FTS index the body.
+    #
+    # Generated companions are indexed here like any other person file, and
+    # that is deliberate: a companion says things no record does. It resolves
+    # `place_id: L-…` to the place's NAME and `[[S-…]]` to the source's title,
+    # and it attaches all of it to ONE person - so a text search for a town
+    # name lands on "Margaret's timeline" where the claim itself only carries
+    # an ID. Dropping these bodies would narrow what `fha find --text` can
+    # answer, which is why the rows are kept and maintained. The cost is that
+    # these rows go stale invisibly - a companion is outside the freshness
+    # watermark (#37), so nothing would prompt a rebuild after a regeneration.
+    # `fha views` therefore maintains its own rows between rebuilds through
+    # `_lib.sync_generated_view_rows`; this insert and that one must keep
+    # deriving person_id, kind and generated the same way.
     body = rec['body']
     if body.strip():
         conn.execute(
@@ -1061,17 +1127,24 @@ def _index_source(
             (sid, file_path, role, None, derived, orig_name, exists),
         )
 
-        # Extracted-text companion (role: extracted-text, from `fha source
-        # extract`): feed its body into transcripts_fts so JSON/workbench search
-        # reaches inside the dumped page text - the extract command's success
-        # message promises `fha index` makes the dump searchable, and this is
-        # where that promise is kept. This runs inside _index_source, which BOTH
-        # build_index and upsert_source call, so full-rebuild and incremental
-        # stay symmetric (upsert drops this source's transcripts_fts rows first).
-        # Guarded on the file being on disk: a working copy that never synced
-        # the dump simply has nothing to read, and skipping is the graceful
-        # answer - a full build on the main archive fills it in.
-        if role == _EXTRACTED_TEXT_ROLE and resolved.exists():
+        # Text companion (role: transcript / transcription / extracted-text):
+        # feed its body into transcripts_fts so JSON/workbench search reaches
+        # inside what the evidence actually says. `fha source extract`'s success
+        # message promises `fha index` makes its dump searchable, and this is
+        # where that promise is kept - but a transcript written by any other
+        # means is the same kind of text and earns the same treatment, which is
+        # the whole point of #46: an archive can hold a full transcript of a
+        # scan and still answer a search as though the scan were mute. This runs
+        # inside _index_source, which BOTH build_index and upsert_source call,
+        # so full-rebuild and incremental stay symmetric (upsert drops this
+        # source's transcripts_fts rows first). Guarded on the file being on
+        # disk: a working copy that never synced the companion simply has
+        # nothing to read, and skipping is the graceful answer - a full build on
+        # the main archive fills it in.
+        suffix = Path(file_path.replace('\\', '/')).suffix.lower()
+        if (role.strip().lower() in TEXT_COMPANION_ROLES
+                and suffix in SEARCHABLE_TEXT_SUFFIXES
+                and resolved.exists()):
             try:
                 dump_text = resolved.read_text(encoding='utf-8')
             except OSError:
@@ -1195,12 +1268,18 @@ def _index_source(
         )
 
 
-def _index_notes(conn: sqlite3.Connection, archive_root: Path) -> None:
-    """Index notes files for FTS."""
+def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) -> None:
+    """Index notes files for FTS.
+
+    `on_error` is the build's shared unreadable-folder recorder (see
+    `build_index`): notes_fts is dropped and rewritten on every build, so a
+    notes subfolder that will not list silently takes its research out of
+    `fha find --text` with nothing said.
+    """
     notes_dir = archive_root / 'notes'
     if not notes_dir.exists():
         return
-    for path in notes_dir.rglob('*.md'):
+    for path in walk_files(notes_dir, suffix='.md', on_error=on_error):
         try:
             content = path.read_text(encoding='utf-8')
         except OSError:
@@ -1266,6 +1345,7 @@ def _index_citations(
     conn: sqlite3.Connection,
     archive_root: Path,
     alias_map: dict[str, str] | None = None,
+    on_error=None,
 ) -> None:
     """Scan all .md files for citation tokens and record the RESOLVED canonical ID.
 
@@ -1280,6 +1360,11 @@ def _index_citations(
     As a side effect, a cited `[[C-…]]` registers that C-id as an alias of its
     owning source - the on-demand C-id aliasing (added only when the citation
     actually exists, so a 60-claim interview carries no dead weight).
+
+    `on_error` is the build's shared unreadable-folder recorder: the citations
+    table is rebuilt from nothing each time, so a folder that will not list
+    drops every `[[S-…]]` written inside it and `fha find --related` quietly
+    shows fewer connections than the archive really holds.
     """
     from _lib import TOKEN_RE
     # archive_root/out/ is fha packet's default, gitignored output directory
@@ -1289,7 +1374,7 @@ def _index_citations(
     # is real archive content and must still be scanned.
     packet_out_root = archive_root / 'out'
     cited_cids: set[str] = set()
-    for path in archive_root.rglob('*.md'):
+    for path in walk_files(archive_root, suffix='.md', on_error=on_error):
         if '.cache' in path.parts:
             continue
         if path.is_relative_to(packet_out_root):
@@ -1548,6 +1633,11 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
                     # the .sqlite file, e.g. a tempdir-based test's cleanup)
     conn = _get_db(cache_dir)   # recreate tables after drop
 
+    # Every walk below shares one recorder, so the build reports "these
+    # folders would not open" once, whichever tree they were in.
+    unreadable_dirs: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable_dirs)
+
     try:
         with conn:
             # Places. Coord-shape warnings are collected (not printed) so they
@@ -1557,10 +1647,19 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
                 print('  indexed places')
 
             # People
+            #
+            # `walk_files` with a recorder, not rglob: this build DROPS every
+            # table first, so a folder that will not list does not merely go
+            # unread - the persons, claims and citations that live under it
+            # disappear from the index while the build reports success. The
+            # rows themselves are rebuildable from the records (the index is a
+            # cache), but nothing would tell the human that half his tree had
+            # gone quiet, and `photo_people` is derived from these very rows.
+            # Collecting the folders lets the build say so and exit 1.
             people_root = archive_root / 'people'
             person_count = 0
             if people_root.exists():
-                for path in people_root.rglob('*.md'):
+                for path in walk_files(people_root, suffix='.md', on_error=on_error):
                     _index_person(conn, path, archive_root)
                     person_count += 1
             if verbose:
@@ -1579,14 +1678,14 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             sources_root = archive_root / 'sources'
             source_count = 0
             if sources_root.exists():
-                for path in sources_root.rglob('*.md'):
+                for path in walk_files(sources_root, suffix='.md', on_error=on_error):
                     _index_source(conn, path, archive_root, fha_config, link_alias_map)
                     source_count += 1
             if verbose:
                 print(f'  indexed {source_count} source files')
 
             # Notes FTS
-            _index_notes(conn, archive_root)
+            _index_notes(conn, archive_root, on_error)
 
             # Capture log (durability: survives a search_log drop/rebuild)
             _index_capture_log(conn, archive_root)
@@ -1594,7 +1693,8 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             # Citation scan - the full alias map now includes source stems, so a
             # `[[grandmas-album]]` prose link resolves to its S-id and a cited
             # `[[C-…]]` registers its on-demand source alias.
-            _index_citations(conn, archive_root, _resolve_map_from_aliases(conn))
+            _index_citations(
+                conn, archive_root, _resolve_map_from_aliases(conn), on_error)
 
             # Relationship derivation
             _derive_relationships(conn)
@@ -1611,24 +1711,76 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         size_kb = db_path.stat().st_size // 1024
         print(f'Done. Index at {db_path} ({size_kb} KB)')
 
-    # Warnings (today: malformed place coords) put the build on the documented
-    # warnings exit path (§1: 1 = warnings only) without failing it - the human
-    # must SEE that a hand-edited line was skipped, but the index is complete.
+    # `fha index` is the one command every workflow runs right after editing
+    # fha.yaml, so it is the earliest place a roots: change that orphaned
+    # filed assets can be caught (#36) - before the next lint's wall of E011.
+    roots_warnings = [
+        format_roots_orphan_warning(item, archive_root)
+        for item in roots_change_orphans(archive_root, fha_config)
+    ]
+
+    # A folder that would not list is the one warning here that means the
+    # index is INCOMPLETE rather than merely imperfect, so it is worded that
+    # way: name the folders, say what is missing from search until they open,
+    # and give the command to run afterwards. The paths are archive-relative -
+    # this text rides a Result that `fha report` writes into a committed
+    # markdown file, and a local absolute path has no business in one.
+    unreadable_warnings = []
+    if unreadable_dirs:
+        shown = ', '.join(
+            _archive_relative(p, archive_root) for p in unreadable_dirs[:5])
+        if len(unreadable_dirs) > 5:
+            shown += f' and {len(unreadable_dirs) - 5} more'
+        unreadable_warnings.append(
+            f'{len(unreadable_dirs)} folder(s) could not be opened, so nothing '
+            f'inside them was indexed: {shown}. Anything filed there will not '
+            'appear in searches, on timelines, or in exports until it can be '
+            'read. This is usually a folder whose permissions changed, or a '
+            'drive or network share that is not connected - reconnect it (or '
+            'restore your access), then run `fha index` again.'
+        )
+
+    # Warnings (today: malformed place coords, an orphaning roots: change, a
+    # folder that would not open) put the build on the documented warnings
+    # exit path (§1: 1 = warnings only) without failing it - the human must
+    # SEE that a hand-edited line was skipped or a folder went unread.
     return Result(
-        exit_code=EXIT_WARNINGS if place_warnings else EXIT_CLEAN,
+        exit_code=(EXIT_WARNINGS
+                   if (place_warnings or roots_warnings or unreadable_warnings)
+                   else EXIT_CLEAN),
         data={
             'mode': 'full',
             'schema_version': INDEX_SCHEMA_VERSION,
             'persons': person_count,
             'sources': source_count,
+            'unreadable_dirs': [
+                _archive_relative(p, archive_root) for p in unreadable_dirs],
             'db_path': str(db_path),
         },
         messages=[
             Message(level='warning', text=w, path='places/places.yaml')
             for w in place_warnings
+        ] + [
+            Message(level='warning', text=w, path='fha.yaml')
+            for w in roots_warnings
+        ] + [
+            Message(level='warning', text=w) for w in unreadable_warnings
         ],
         changed=[str(db_path)],
     )
+
+
+def _archive_relative(path: Path, archive_root: Path) -> str:
+    """A folder's name as the human filed it - 'people/003 Hartley', not /Users/….
+
+    Index output can end up in a committed report, so it never carries a local
+    absolute path. A folder somehow outside the archive keeps its own spelling
+    (forward-slashed): naming it wrongly is worse than naming it long.
+    """
+    try:
+        return Path(path).relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
 
 
 def _find_source_file(archive_root: Path, sid: str) -> Path | None:

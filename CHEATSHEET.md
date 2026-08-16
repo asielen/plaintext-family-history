@@ -99,6 +99,18 @@ just jot it as a hunch; the assistant keeps the unproved ones on the "still to s
 
 ---
 
+## The five kinds of record (and their ID letters)
+
+| | What it is |
+|---|---|
+| **`P-`** Person | A human - identity, prose, and their ties to other people. |
+| **`S-`** Source | A piece of evidence: a record, document, photo, interview. |
+| **`C-`** Claim | One sourced statement, living inside its source record - *suggested* until you accept it. |
+| **`L-`** Place | A location, with coordinates and a dated name history. |
+| **`H-`** Hypothesis | An unsourced working theory - a guess, never a fact, until evidence promotes it. |
+
+---
+
 ## Where things live
 
 | Folder | What's in it |
@@ -109,9 +121,12 @@ just jot it as a hunch; the assistant keeps the unproved ones on the "still to s
 | `places/` | The list of places, with their locations. |
 | `notes/` | Research in progress and your running questions. |
 | `fha.yaml` | The one settings file - where your photos and documents live. |
+| `.fha/` | The machinery (the program, its design package, the browser add-on). Hidden on purpose; never hand-edited. |
+| `generated/` | Built things - website, printable views, galleries. Rebuildable, never truth. |
 
 Everything is plain text or standard image files. Open any of it with Notepad, TextEdit, or a
-photo viewer - no tool required, now or in fifty years.
+photo viewer - no tool required, now or in fifty years. It opens in **Obsidian** as-is too:
+Markdown, frontmatter, `[[wikilinks]]`, no import step.
 
 ---
 
@@ -124,5 +139,6 @@ photo viewer - no tool required, now or in fifty years.
 
 ---
 
-*Stuck? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md). New here? [GETTING_STARTED.md](GETTING_STARTED.md).
-Every term defined: [GLOSSARY.md](GLOSSARY.md).*
+*Stuck? See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). New here?
+[GETTING_STARTED.md](GETTING_STARTED.md), right beside this page.
+Every term defined: [docs/GLOSSARY.md](docs/GLOSSARY.md).*

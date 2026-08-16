@@ -358,5 +358,442 @@ class CaptureJsonProducibilityTestCase(unittest.TestCase):
                         'no longer produce the sample it claims to mirror')
 
 
+class PointerOnlyCaptureTestCase(unittest.TestCase):
+    """The panel's pointer-only capture files as a citation/link pointer stub.
+
+    §5.3's "none" (TOOLING §13b case (c)): page-copy off + "No, the page copy
+    is the record" stages page.html plus a capture.json with an EMPTY assets
+    list - exactly what capture-json.js build() emits for that state. Ingest
+    must file it as a lone sidecar stub flagged `asset_elsewhere: true` (the
+    deliberate-no-companion marker `fha process` requires before minting a
+    no-asset source), carrying the citation and link.
+    """
+
+    def test_empty_assets_bundle_files_as_pointer_stub(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            staging = tmp / 'staging'
+            bundle = staging / 'deed-index-1854-20260727-120000-000'
+            bundle.mkdir(parents=True)
+            (bundle / 'page.html').write_text(
+                '<!DOCTYPE html>\n<html><head><title>Deed index 1854</title>'
+                '</head><body><h1>Deed index 1854</h1></body></html>\n',
+                encoding='utf-8')
+            (bundle / 'capture.json').write_text(json.dumps({
+                'schema': capture._CAPTURE_JSON_SCHEMA,
+                'url': 'https://county.example.gov/deeds/1854',
+                'accessed': '2026-07-27',
+                'assets': [],
+            }, indent=2), encoding='utf-8')
+
+            archive = tmp / 'archive'
+            archive.mkdir()
+            (archive / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n',
+                encoding='utf-8')
+            config = load_fha_yaml(archive, strict=True)
+
+            res = capture.run_ingest(archive, config, staging_dir=str(staging))
+            self.assertEqual(res.exit_code, EXIT_CLEAN)
+            self.assertEqual(res.data['ingested'], 1)
+
+            stubs = list((archive / 'inbox').glob('*.notes.md'))
+            self.assertEqual(len(stubs), 1, stubs)
+            rec = read_record(stubs[0])
+            self.assertEqual(rec['parse_errors'], [])
+            self.assertTrue(rec['meta'].get('asset_elsewhere'),
+                            'pointer stub must flag asset_elsewhere: true')
+            self.assertEqual(rec['meta']['external_links'][0]['url'],
+                             'https://county.example.gov/deeds/1854')
+            self.assertEqual(rec['meta']['external_links'][0]['accessed'],
+                             '2026-07-27')
+            # No asset files were filed alongside (pointer-only by contract).
+            self.assertEqual(
+                [p.name for p in (archive / 'inbox').iterdir()],
+                [stubs[0].name])
+
+
+class SnapshotUrlRewriteTestCase(unittest.TestCase):
+    """The saved snapshot must anchor every URL it keeps.
+
+    The JS-level behaviour is tested by the node suite
+    (`npm --prefix browser-companion test`, tests/test-srcset.js and
+    tests/test-snapshot-urls.js). These are the structural guards that also fire
+    for anyone running only the Python tests: the two shapes that made the
+    preserved copy quietly useless, pinned so they cannot come back.
+    """
+
+    def setUp(self) -> None:
+        self.content = (COMPANION / 'src' / 'content.js').read_text(encoding='utf-8')
+
+    def test_a_page_that_declares_a_base_is_still_rewritten(self) -> None:
+        # The snapshot used to skip ALL URL rewriting whenever the page carried a
+        # <base>. A relative one (`<base href="/records/">`) resolves against the
+        # live site in the browser and against the local filesystem once the copy
+        # is opened from file://, so every non-inlined link and image in the
+        # saved page broke. Now the base itself is absolutized and the rewrite
+        # runs regardless.
+        self.assertNotIn("if (!clone.querySelector('head base'))", self.content)
+        self.assertIn("clone.querySelector('base[href]')", self.content)
+
+    def test_srcset_is_parsed_never_split_on_commas(self) -> None:
+        # A comma is legal inside a candidate URL (`data:` URLs always carry one),
+        # so splitting on commas cut one URL into fragments and rewrote each as a
+        # path of its own.
+        self.assertNotIn(".split(',')", self.content)
+        self.assertIn('function parseSrcset(', self.content)
+        self.assertIn('rewriteSrcset(', self.content)
+
+    def test_the_url_sweep_covers_the_easily_missed_attributes(self) -> None:
+        # Attributes a snapshot forgets one at a time: each one left relative is
+        # a dead reference in the preserved page.
+        for attr in ("['form', 'action']", "['button', 'formaction']",
+                     "['object', 'data']", "['video', 'poster']"):
+            self.assertIn(attr, self.content, attr)
+        for marker in ('imagesrcset', "'xlink:href'", 'http-equiv', 'absolutizeCss'):
+            self.assertIn(marker, self.content, marker)
+
+    def test_markup_carried_inside_an_attribute_is_disarmed_too(self) -> None:
+        # An <iframe srcdoc="..."> carries a whole second document as an
+        # ATTRIBUTE STRING, so every DOM pass in the snapshot builder walks
+        # straight past it - the script removal, the handler disarm, the URL
+        # sweep, all of it. The frame sandbox then granted allow-scripts, which
+        # made that untouched markup live again in the saved file.
+        #
+        # This guard lives in the Python suite on purpose: CI installs no node
+        # (tests.yml says so outright), so the 100+ browser-companion node tests
+        # never run there. A structural pin here is the only thing standing
+        # between this gap and a silent return.
+        self.assertIn('disarmSrcdocMarkup(', self.content)
+        self.assertIn('iframe[srcdoc]', self.content)
+        # A frame whose markup we carry and have already disarmed gains nothing
+        # legitimate from script; a `src` frame often IS the record viewer and
+        # keeps it.
+        self.assertIn('frameSandboxValue(', self.content)
+
+    def test_no_local_disk_path_can_enter_a_snapshot(self) -> None:
+        # AGENTS.md privacy rule: a local absolute path must never reach a file
+        # that lands in the archive. Capturing a page opened from disk would
+        # otherwise write this machine's folder names into the saved copy.
+        self.assertIn("resolved.protocol === 'file:'", self.content)
+
+    def test_the_srcset_parser_has_a_canonical_home_and_a_sync_guard(self) -> None:
+        # content.js is injected and cannot import, so it carries a copy. The
+        # copy sits between sync markers the node guard extracts and re-runs.
+        self.assertTrue((COMPANION / 'src' / 'lib' / 'srcset.js').is_file())
+        self.assertIn('// FHA-SYNC-BEGIN srcset', self.content)
+        self.assertIn('// FHA-SYNC-END srcset', self.content)
+        sync = (COMPANION / 'tests' / 'test-sync.js').read_text(encoding='utf-8')
+        self.assertIn('FHA-SYNC-BEGIN srcset', sync)
+
+
+class HandoffLocationTestCase(unittest.TestCase):
+    """The handoff command names where the bundle IS, never where it might be.
+
+    Chrome's download directory is a browser setting: moved to OneDrive, to a
+    second volume, or carrying a localized folder name on plenty of machines.
+    The panel used to synthesize `~/Downloads/<folder>` into the copyable
+    command, so a capture that succeeded advertised a sweep of a folder it had
+    never been written to - `fha capture --ingest` then found nothing, with the
+    bundle sitting safely somewhere else and nothing on screen to say where.
+    The browser answers the question itself (`chrome.downloads.search` returns
+    the completed file's absolute path), so the command is built from that, and
+    from nothing when it is absent.
+
+    These are structural pins, kept alongside the node tests
+    (`npm --prefix browser-companion test`, tests/test-capture-json.js) because
+    CI installs no node: the behavioural coverage there never runs in CI, and
+    this is what stands between the guess coming back and nobody noticing.
+    """
+
+    def setUp(self) -> None:
+        self.pure = (COMPANION / 'src' / 'lib' / 'capture-json-pure.js').read_text(
+            encoding='utf-8')
+        self.browser = (COMPANION / 'src' / 'lib' / 'capture-json.js').read_text(
+            encoding='utf-8')
+        self.bundle = (COMPANION / 'src' / 'lib' / 'bundle.js').read_text(encoding='utf-8')
+        self.panel = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+
+    def test_no_home_directory_path_is_synthesized_into_a_command(self) -> None:
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser),
+                           ('panel.js', self.panel),
+                           ('bundle.js', self.bundle)):
+            self.assertNotIn('~/Downloads', text, name)
+
+    def test_the_real_download_path_is_read_from_the_browser(self) -> None:
+        # bundle.js asks the downloads API where the file actually went and
+        # hands that up; the panel turns it into the staging folder.
+        self.assertIn('chrome.downloads.search', self.bundle)
+        self.assertIn('filePath', self.bundle)
+        self.assertIn('stagedPaths(result.filePath)', self.panel)
+
+    def test_the_command_is_built_from_the_reported_path_not_the_setting(self) -> None:
+        # The folder setting cannot say where Downloads is, so it is not what
+        # the command is built from.
+        self.assertIn('ingestCommand(state.stagedDir)', self.panel)
+        self.assertNotIn('ingestCommand(state.folder)', self.panel)
+        # Both the pure twin and the browser file take the reported directory.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn('function ingestCommand(stagingDir, nav)', text, name)
+            self.assertIn('function stagedPaths(filePath)', text, name)
+
+    def test_an_unknown_location_gets_a_hint_naming_the_places_to_look(self) -> None:
+        # With no reported path the command asserts nothing, so the human is
+        # pointed at his browser's own download setting and at the archive's
+        # `capture_staging:` key - the two places that can actually answer.
+        self.assertIn('cmd-hint', (COMPANION / 'src' / 'panel.html').read_text(
+            encoding='utf-8'))
+        self.assertIn('ingestHint(state.folder, state.stagedDir)', self.panel)
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn('capture_staging', text, name)
+
+
+def _strip_js_comments(text: str) -> str:
+    """Drop `//` and `/* */` comments so a sweep reads only what SHIPS.
+
+    The companion's source is heavily commented, and nearly every comment
+    discusses `fha capture --ingest` by name. Those are prose about the command
+    and are correct as they stand (the repo writes commands bare in prose); what
+    must carry a launcher prefix is the text the panel puts on screen. Stripping
+    comments is what separates the two.
+
+    Deliberately naive - no string-literal awareness - which is safe in one
+    direction only: a `//` inside a string (a URL) truncates that line, so the
+    sweep can lose a line but never invent a violation. The one such case here
+    is disarmed by the caller's own regex, which needs `fha ` + a verb.
+    """
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return '\n'.join(re.sub(r'//.*$', '', line) for line in text.splitlines())
+
+
+# An `fha` invocation offered to a human: the bare name, followed by a verb,
+# with no `./` or `.\` in front of it. The lookbehind is what lets `fhaCmd(`,
+# `fha.yaml`, `window.FHA` and an already-prefixed `./fha` all pass.
+_BARE_FHA = re.compile(
+    r'(?<![\w./\\])fha\s+(?:capture|lint|index|process|doctor|report|find|views)\b')
+
+
+class LauncherPrefixTestCase(unittest.TestCase):
+    """A command the panel offers must be one the human's shell can run.
+
+    `fha` is a launcher FILE at the archive root - `fha` (sh) and `fha.cmd`
+    (Windows), both shipped by `tools/scaffold.py` - and it is never put on
+    PATH. AGENTS.md's execution rules spell the consequence out: `./fha` on
+    macOS/Linux, `.\\fha` in Windows PowerShell, a bare `fha` only in the
+    Windows Command Prompt, which is the one shell that searches the current
+    directory. The handoff card used to offer the bare form to everyone, so a
+    capture that had just succeeded handed most users a command-not-found.
+
+    These are structural pins for the same reason the sibling
+    HandoffLocationTestCase is: CI installs no node, so
+    `browser-companion/tests/test-capture-json.js` - which owns the behavioural
+    coverage - never runs here. This class is what actually guards the fix.
+    """
+
+    def setUp(self) -> None:
+        self.pure = (COMPANION / 'src' / 'lib' / 'capture-json-pure.js').read_text(
+            encoding='utf-8')
+        self.browser = (COMPANION / 'src' / 'lib' / 'capture-json.js').read_text(
+            encoding='utf-8')
+        self.panel_js = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+        self.panel_html = (COMPANION / 'src' / 'panel.html').read_text(encoding='utf-8')
+
+    def test_the_copied_command_is_built_from_a_launcher_not_a_bare_name(self) -> None:
+        # The literal the card used to emit. Its absence is the fix.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertNotIn("'fha capture --ingest'", text, name)
+            self.assertIn('launcher(nav)', text, name)
+            # Both project spellings, and only those two - not a third.
+            self.assertIn("'./fha'", text, name)
+            self.assertIn("'.\\\\fha'", text, name)
+
+    def test_the_two_spellings_are_the_ones_the_owner_docs_teach(self) -> None:
+        # A third spelling would be worse than the bug, so the forms are pinned
+        # against the docs an archive owner actually reads.
+        cheatsheet = (ROOT / 'CHEATSHEET.md').read_text(encoding='utf-8')
+        self.assertIn('`./fha <command>`', cheatsheet)
+        self.assertIn('`.\\fha <command>`', cheatsheet)
+
+    def test_windows_gets_the_form_that_runs_in_both_windows_shells(self) -> None:
+        # PowerShell refuses a bare current-directory command; cmd.exe resolves
+        # a path-qualified `.\fha` through PATHEXT to fha.cmd just as it
+        # resolves the bare name. So `.\fha` strands nobody on Windows and the
+        # bare form strands every PowerShell user - hence which one is emitted.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn("LAUNCHER_WINDOWS = '.\\\\fha'", text, name)
+            self.assertIn("LAUNCHER_POSIX = './fha'", text, name)
+            # Unknown platform falls to the POSIX form, which PowerShell also
+            # accepts - the failure mode that leaves fewest people stranded.
+            self.assertIn('if (!n) return LAUNCHER_POSIX;', text, name)
+
+    def test_the_platform_is_read_never_guessed(self) -> None:
+        # The extension cannot know the shell and does not pretend to; it reads
+        # the OS, which is what decides the separator.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn('userAgentData', text, name)
+            self.assertIn('n.platform', text, name)
+            self.assertIn('n.userAgent', text, name)
+
+    def test_no_shipped_string_hands_the_human_a_bare_fha_command(self) -> None:
+        """The sweep: every command the panel RENDERS carries its prefix."""
+        offenders = []
+        for name, text in (('panel.js', _strip_js_comments(self.panel_js)),
+                           ('capture-json.js', _strip_js_comments(self.browser)),
+                           ('capture-json-pure.js', _strip_js_comments(self.pure))):
+            for hit in _BARE_FHA.finditer(text):
+                offenders.append(f'{name}: {hit.group(0)!r}')
+        # panel.html, minus its HTML comments.
+        html = re.sub(r'<!--.*?-->', '', self.panel_html, flags=re.S)
+        for hit in _BARE_FHA.finditer(html):
+            offenders.append(f'panel.html: {hit.group(0)!r}')
+        self.assertEqual(
+            [], offenders,
+            'these render a bare `fha …` to the human, which only a Windows '
+            'Command Prompt can run: ' + '; '.join(offenders))
+
+    def test_the_panel_builds_every_command_through_one_helper(self) -> None:
+        # One place to be right, so the next command added inherits the prefix.
+        self.assertIn('function fhaCmd(rest)', self.panel_js)
+        self.assertIn("captureJson.launcher() + ' ' + rest", self.panel_js)
+        # The settings drawer's two static samples are filled at init.
+        self.assertIn('cmd-install-host', self.panel_html)
+        self.assertIn('cmd-ingest-plain', self.panel_html)
+        self.assertIn('fillStaticCmds()', self.panel_js)
+
+    def test_the_installed_readme_shows_every_shell_not_just_one(self) -> None:
+        """README-ARCHIVE.md ships into archives, so it must not teach the bug.
+
+        The doc used to open its ingest step with a fenced `fha capture
+        --ingest` - the bare form - and correct itself in prose underneath. The
+        block is what gets copied, so the block carries all three forms, the way
+        GETTING_STARTED.md and docs/SETUP_FROM_ZIP.md write theirs.
+        """
+        text = (COMPANION / 'README-ARCHIVE.md').read_text(encoding='utf-8')
+        blocks = [b for b in re.findall(r'```[a-z]*\n(.*?)```', text, flags=re.S)
+                  if 'capture --ingest' in b]
+        self.assertTrue(blocks, 'no fenced ingest command block in README-ARCHIVE.md')
+        for block in blocks:
+            self.assertIn('./fha capture --ingest', block)
+            self.assertIn('.\\fha capture --ingest', block)
+
+
+class BundleIdentityTestCase(unittest.TestCase):
+    """A staged bundle folder is unique per CAPTURE, not per (title, millisecond).
+
+    `chrome.downloads.download` is the extension's only way to write a file, and
+    it takes a Downloads-relative path with `conflictAction: 'uniquify'`. That
+    setting renames each FILE on its own, never the folder - so when two
+    captures compute the same `<slug>-<timestamp>` folder (two side panels in
+    two browser windows, or a clock adjustment handing the same millisecond out
+    twice), Chrome merges them into ONE directory and uniquifies the members:
+
+        1880-census-thomas-20260727-101500-007/
+            page.html          record.jpg          capture.json
+            page (1).html      record (1).jpg      capture (1).json
+
+    Nothing about that folder looks broken. `fha capture --ingest` reads the one
+    file literally named `capture.json`, resolves `assets[].file` to the one
+    literally named `record.jpg` (`capture._resolve_bundle_assets`), files a
+    complete-looking source, and parks the whole folder in `.ingested/`. Two
+    things go wrong silently: the second capture is never read at all, and -
+    because the assets are written in their own order, interleaved - the
+    surviving `record.jpg` can be the OTHER capture's evidence sitting under
+    this capture's citation. Neither leaves a trace to notice later.
+
+    The fix has to make the folder itself unique, so a per-capture random token
+    joins the slug and the timestamp. These are the structural pins; the
+    behaviour is covered by the node suite (`npm --prefix browser-companion
+    test`, tests/test-capture-json.js), which CI never runs because it installs
+    no node.
+    """
+
+    def setUp(self) -> None:
+        self.libs = {
+            p.name: p.read_text(encoding='utf-8')
+            for p in sorted((COMPANION / 'src' / 'lib').glob('capture-json*.js'))
+        }
+        self.assertTrue(self.libs, 'no capture-json*.js found under src/lib')
+        self.panel = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+        self.bundle = (COMPANION / 'src' / 'lib' / 'bundle.js').read_text(encoding='utf-8')
+
+    def test_the_bundle_name_is_not_title_and_clock_alone(self) -> None:
+        # Both the browser file and its kept-in-sync pure twin.
+        for name, src in self.libs.items():
+            body = re.search(r'function\s+bundleName\s*\([^)]*\)\s*\{(.*?)\n\s*\}', src, re.S)
+            self.assertIsNotNone(
+                body, f'{name}: no `function bundleName(...) {{ ... }}` found - it '
+                      'moved; point this pin at the new shape')
+            self.assertIn(
+                'randomToken', body.group(1),
+                f'{name}: bundleName is built from the title and the clock only. Two '
+                'captures made in the same millisecond would share a folder, and '
+                "Chrome's uniquify would then rename the FILES inside it - leaving a "
+                'bundle whose capture.json points at asset names that no longer exist.')
+
+    def test_the_token_is_drawn_from_a_real_random_source(self) -> None:
+        for name, src in self.libs.items():
+            self.assertTrue('function randomToken(' in src,
+                            f'{name}: no randomToken() to break a folder collision')
+            self.assertTrue(
+                'getRandomValues' in src,
+                f'{name}: the collision-breaking token needs a real random source')
+
+    def test_nothing_inside_a_bundle_is_named_from_the_page_or_the_clock(self) -> None:
+        """The folder is the only content-derived name, so no sibling can be renamed.
+
+        `capture.json` names its assets by `assets[].file`. If those filenames
+        were themselves derived from the title or the clock, uniquify could
+        rename one and leave the JSON pointing at a name that is not there. They
+        are fixed literals instead - `page-snapshot.html` and `record.<ext>` -
+        so a unique folder is sufficient to make the whole bundle safe.
+        """
+        self.assertIn("filename: 'page-snapshot.html'", self.panel)
+        self.assertRegex(self.panel, r"filename:\s*'record\.'\s*\+")
+        # bundle.js uses the bundle name in exactly ONE place - building the
+        # directory - and writes every member under it by the member's own name.
+        self.assertIn("'/' + spec.bundleName", self.bundle)
+        self.assertIn("dir + '/' + asset.filename", self.bundle)
+        self.assertEqual(
+            self.bundle.count('spec.bundleName'), 1,
+            'bundle.js uses the bundle name somewhere other than the directory it '
+            'builds; a member named after the bundle would be content-derived too')
+
+    def test_every_sample_asset_name_is_one_the_panel_writes_literally(self) -> None:
+        """The committed sample cannot reference a name uniquify could have moved."""
+        allowed = re.compile(r'^(page-snapshot\.html|record\.[A-Za-z0-9]+)$')
+        samples = sorted((COMPANION / 'test-bundle').glob('*/capture.json'))
+        self.assertTrue(samples, 'no committed test-bundle capture.json found')
+        for path in samples:
+            cap = json.loads(path.read_text(encoding='utf-8'))
+            for entry in cap.get('assets', []):
+                self.assertRegex(
+                    entry['file'], allowed,
+                    f"{path.parent.name}: assets[].file {entry['file']!r} is not one of "
+                    'the fixed names the panel writes, so it may be a name derived '
+                    'from page content - which uniquify can rename out from under the '
+                    'capture.json that points at it')
+
+
+class ArchiveReadmeTestCase(unittest.TestCase):
+    """The README an archive receives is the owner's, not the project's."""
+
+    def test_the_owner_readme_exists_and_avoids_workshop_references(self) -> None:
+        owner = COMPANION / 'README-ARCHIVE.md'
+        self.assertTrue(owner.is_file(),
+                        'the installed capture README must exist')
+        text = owner.read_text(encoding='utf-8')
+        for absent in ('TOOLING_INGESTION', 'ANCESTRY-AUTOFETCH-TEST',
+                       'test-bundle', 'test_browser_companion'):
+            self.assertNotIn(absent, text, absent)
+        self.assertIn('Load unpacked', text)
+        self.assertIn('fha capture --ingest', text)
+
+
 if __name__ == '__main__':
     unittest.main()

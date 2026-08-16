@@ -237,7 +237,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertTrue((self.archive / 'photos' / '1880s' / 'campaign-card.pdf').is_file())
 
     def test_doc_to_photo_exiftool_absent_warns_and_proceeds(self) -> None:
-        def boom(_path, _sid, extra_keywords=None):
+        def boom(_path, _sid, extra_keywords=None, *, backup=None):
             raise RuntimeError('exiftool is not installed or not on PATH.')
         process._run_exiftool_embed_source = boom
         asset, record = self._write_doc_source()
@@ -514,7 +514,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         before = record.read_bytes()
         # Keyword removal fails during rollback.
         process._run_exiftool_remove_source = (
-            lambda p, s_id, extra_keywords=None: 'exiftool: write locked')
+            lambda p, s_id, extra_keywords=None, *, backup=None: 'exiftool: write locked')
         # Fail the FORWARD record write; let the rollback restore (2nd write) land.
         real_atomic = process.write_text_exact_atomic
         rec_writes = {'n': 0}

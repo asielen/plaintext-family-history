@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -80,21 +81,29 @@ from _lib import (
     claim_item_key_indent,
     claims_edit_problem,
     edtf_bounds,
+    files_carry_searchable_text,
     finding_to_message,
     format_bracket_child,
     is_genetic_parent_subtype,
     nonbirth_bracket_label,
+    photos_ignore_matcher,
+    photos_ignore_patterns,
+    spouse_extended_base,
     extract_token_ids,
     extract_wikilinks,
     link_field_refs,
     resolve_ref,
     strip_link_wrapper,
+    carries_person_record_fields,
     fmt_id_display,
     format_edtf_error,
     format_exiftool_error,
+    format_roots_orphan_warning,
     format_source_type_error,
+    format_w120_message,
     id_type_of,
     is_fixture_path,
+    is_person_file_kind,
     is_template_file,
     is_working_copy,
     is_valid_edtf,
@@ -105,8 +114,15 @@ from _lib import (
     normalize_id,
     parse_filename,
     read_record,
+    read_text_exact,
+    reapply_newline,
     resolve_path,
     resolve_root_arg,
+    roots_change_orphans,
+    sex_slot_is_defaulted,
+    unreadable_dir_recorder,
+    walk_files,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -135,18 +151,21 @@ import yaml
 #    _research_hypothesis_ids    - H-ids defined in a research file's ## Hypotheses
 #    _question_blocks            - split a questions.md into per-heading blocks
 #    _metadata_values            - normalise scalar/list exiftool field values
+#    _w122_message               - W122: filename says generated page, content says person
 #
 #  Pass 1 - walk and collect
 #    _walk_archive               - top-level coordinator; calls the _process_* functions
 #    _process_person_file        - index one person file + file-level checks
+#                                   (returns the record it read; content decides the kind)
 #    _process_source_file        - index one source file + file-level checks + claims
 #
-#  Bracket / Ahnentafel checks (W103, W110, W119)
+#  Bracket / Ahnentafel checks (W103, W110, W119, W120)
 #    _build_child_edges          - parent → {child → {nature,…}} from accepted claims
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
-#    _check_bracket_lists        - W103: stale couple-folder bracket lists
+#    _check_bracket_lists        - W103: stale bracket lists + missing `+ spouse` half
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
-#    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder
+#    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder;
+#                                   also emits W120 (slot defaulted, sex: unrecorded)
 #    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
 #                                   (report-only lead; brackets --fix-promote applies)
 #
@@ -166,11 +185,19 @@ import yaml
 #    _check_generated_headers    - W105: hand-edits below a GENERATED header
 #    _check_readme_age           - W108: README.md older than SPEC.md
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
+#    _check_untranscribed_evidence - W124: accepted claims on evidence the
+#                                   archive holds no words for (no transcript)
+#    _check_roots_change         - W121: a roots: change orphaned filed assets
+#                                   (runs first; the E011 fallout follows it)
+#    _check_unreadable_dirs      - W123: a record folder this lint could not open
+#                                   (runs last; the caveat on everything above)
 #
 #  Format checks / fix modes
 #    _check_format               - W109: final newline, CRLF line endings
 #    _fix_format                 - apply conservative format fixes
-#    _read_text_exact / _write_text_exact / _file_newline - byte-preserving IO
+#    _file_newline               - the file's own newline style, for inserted lines
+#                                   (byte-preserving IO itself is _lib's
+#                                    read_text_exact / write_text_exact_atomic)
 #    _wrap_unfenced_claims / _fix_claims_fence - verified ```yaml wrap for W114
 #    _merge_aliases_into_frontmatter - add slug/stem aliases to an existing block
 #    _fix_mint_ids               - complete id-less records: mint + rename + alias
@@ -279,6 +306,12 @@ class Registry:
         # `--fix-reciprocal` can append the mirror without re-parsing messages.
         # Each: {other_pid, owner_pid, mirror_role, subtype, claim_id}
         self.missing_mirrors: list[dict] = []
+
+        # Record folders Pass 1 could not list (W123). A lint that reports
+        # "0 errors" is a certificate, and it must not be issued over records
+        # nobody could read: whatever is filed in these folders was never
+        # checked against the spec at all.
+        self.unreadable_dirs: list[Path] = []
 
         # The alias resolve map (alias_lower → canonical id), built once at the
         # start of Pass 2 from everything Pass 1 collected. Claim persons:/roles:
@@ -684,6 +717,55 @@ def _research_hypothesis_ids(body: str) -> set[str]:
     return ids
 
 
+def _w122_message(path: Path, parsed: dict, meta: dict) -> str:
+    """W122: the file's name says generated page, the file itself says person.
+
+    Written for a genealogist with a paper-filing mental model (AGENTS.md,
+    "Who you serve"), so it says four things and no more: what the tools
+    thought, that reading it as this person's own record is the right answer,
+    the one rename that ends the confusion, and that keeping the name is a
+    perfectly good choice. No jargon - the words "frontmatter", "companion" and
+    "kind slot" are the machinery, and the machinery is ours to operate.
+
+    The suggested name simply drops the last word of the name part. A person
+    filename never has to carry every given name (SPEC §13's slug is a sort
+    aid, not the name itself); the full name lives on the `name:` line and
+    nothing else about the record changes. When dropping that word would leave
+    no name at all (`hartley__timeline_P-…`, someone whose one given name IS
+    the word), no filename is proposed - the message asks for one instead of
+    offering `hartley___P-…`.
+    """
+    kind = parsed['kind']
+    who = str(meta.get('name') or '').strip()
+    # Trim by length, not by matching text: the filename's id may be written in
+    # any case (`_P-…` / `_p-…`) while parse_filename lowercases it.
+    id_display = fmt_id_display(parsed['id_str'])
+    before_id = path.stem[:-(len(parsed['id_str']) + 1)]   # …__marie_timeline
+    shortened = before_id[:-(len(kind) + 1)]               # …__marie
+    if shortened and not shortened.endswith('_'):
+        rename = (f'rename this file to {shortened}_{id_display}{path.suffix} - '
+                  f'the file name does not have to carry every given name, and '
+                  f'the full name stays on the name: line inside')
+    else:
+        rename = (f'give the file a name that does not end in "{kind}" just '
+                  f'before the code - the file name does not have to carry '
+                  f'every given name, and the full name stays on the name: '
+                  f'line inside')
+    subject = f'{who}\'s' if who else 'this person\'s'
+    word = kind.replace('-', ' ')
+    return (
+        f'The name of {path.name} ends in "{kind}", which is how this archive '
+        f'names the {word} page it builds for a person - but the file holds a '
+        f'person\'s own details, so the tools read it as {subject} record. That '
+        f'is the right reading and nothing is missing; the only oddity is that '
+        f'a {word} page built for this person comes out named '
+        f'{before_id}_{kind}_{id_display}{path.suffix}, with the word twice. '
+        f'To clear it up, {rename}. If "{kind}" really is part of this '
+        f'person\'s name, leave the file exactly as it is: the record is read '
+        f'correctly either way, and this note will simply keep appearing.'
+    )
+
+
 def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding]) -> None:
     """
     Pass 1: walk the archive tree and populate the registry.
@@ -720,12 +802,24 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
             pass
 
     # People
+    #
+    # `walk_files` with a recorder, not rglob: lint's whole product is the
+    # sentence "your archive matches the spec", and rglob would hand it that
+    # sentence over a subtree it never opened. Every record walk below shares
+    # one recorder; W123 reports the folders at the end of Pass 2.
+    on_error = unreadable_dir_recorder(registry.unreadable_dirs)
     people_root = archive_root / 'people'
     if people_root.exists():
-        for path in sorted(people_root.rglob('*.md')):
-            _process_person_file(path, registry, findings)
-            # Collect research file content for E009
-            if '_research_' in path.stem or path.stem.endswith('_research'):
+        for path in sorted(walk_files(people_root, suffix='.md', on_error=on_error)):
+            rec = _process_person_file(path, registry, findings)
+            # Collect research file content for E009. The record it just read
+            # comes back so the kind is decided by CONTENT here too: a file
+            # named `…_research_P-….md` that carries a person record is that
+            # person's profile (SPEC §13's kind slot is also a legal last given
+            # name), and SPEC §16 homes neither ## Hypotheses nor ## Open
+            # Questions in a profile. Reading it as research pulled her whole
+            # file into the E009 scope.
+            if rec is not None and is_person_file_kind(path, 'research', rec['meta']):
                 try:
                     registry.research_content[path] = path.read_text(encoding='utf-8')
                 except OSError:
@@ -734,13 +828,13 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     # Sources
     sources_root = archive_root / 'sources'
     if sources_root.exists():
-        for path in sorted(sources_root.rglob('*.md')):
+        for path in sorted(walk_files(sources_root, suffix='.md', on_error=on_error)):
             _process_source_file(path, registry, findings)
 
     # Notes FTS (for token refs)
     notes_root = archive_root / 'notes'
     if notes_root.exists():
-        for path in sorted(notes_root.rglob('*.md')):
+        for path in sorted(walk_files(notes_root, suffix='.md', on_error=on_error)):
             try:
                 text = path.read_text(encoding='utf-8')
                 _collect_token_refs(text, path, registry)
@@ -752,10 +846,18 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
                 pass
 
 
-def _process_person_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
-    """Process one person file into the registry, with file-level checks."""
+def _process_person_file(path: Path, registry: Registry,
+                         findings: list[Finding]) -> dict | None:
+    """Process one person file into the registry, with file-level checks.
+
+    Returns the record it read (frontmatter + body), or None for a file that
+    is not a record at all (a `_TEMPLATE.*` copy). The caller needs the same
+    frontmatter to decide whether this is a research companion, and reading
+    the file twice to answer the same question is how the two readings drifted
+    apart in the first place.
+    """
     if is_template_file(path):
-        return   # `_TEMPLATE.*` is a teaching template, not a record
+        return None   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
 
@@ -773,17 +875,40 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
     if pid_raw and not id_placeholder and not is_valid_id(pid_raw):
         findings.append(Finding('E', 'E002', path, f'Malformed ID: {pid_raw!r}'))
 
-    # Determine kind from filename
+    # What this file IS: its own content first, the filename as a hint.
+    #
+    # SPEC §13 puts the companion kind immediately before the P-id
+    # (`hartley__thomas_timeline_P-…`), but underscores are legal inside given
+    # names, so that slot is shared with the last given name and the grammar
+    # cannot separate them. Reading the stem alone filed Marie Timeline
+    # Hartley's record under the companion paths, where none of the §9 profile
+    # checks run - and lint reported the archive clean while she had no index
+    # row anywhere (`_lib.carries_person_record_fields`). Content can only
+    # promote a file to a profile, never demote one, so a sparse stub named as
+    # a profile stays a profile.
     stem = path.stem
     parsed = parse_filename(path)
-    is_companion = parsed and parsed.get('is_companion', False)
-    kind = (parsed or {}).get('kind', 'profile')
+    is_person_record = carries_person_record_fields(meta)
+    is_companion = bool(
+        parsed and parsed.get('is_companion', False) and not is_person_record)
+
+    # W122: the filename and the content disagree, and the tools resolved it
+    # in the content's favour. Reported rather than settled in silence - the
+    # human is the only one who knows whether "Timeline" is this person's name.
+    if parsed and parsed.get('kind_ambiguous') and is_person_record:
+        findings.append(Finding('W', 'W122', path,
+                                _w122_message(path, parsed, meta)))
 
     # H-ids defined in this file's ## Hypotheses section (SPEC §16 homes them in
-    # `…_research_P-….md`). Same stem test index.py uses to pick research files,
-    # applied before any id checks so a mid-graduation (id-less) research file's
+    # `…_research_P-….md`). The kind comes from the shared filename grammar plus
+    # this file's own frontmatter, not a substring search of the stem:
+    # `research` anywhere but the slot before the P-id is part of the given
+    # names, and a file in that slot that carries a person record is that
+    # person's profile - reading either one as a research file turned one
+    # person's working notes into archive-wide hypothesis records.
+    # Applied before any id checks so a mid-graduation (id-less) research file's
     # hypotheses still count as existing records for E004.
-    if '_research_' in stem or stem.endswith('_research'):
+    if is_person_file_kind(path, 'research', meta):
         registry.hypothesis_ids.update(_research_hypothesis_ids(rec['body']))
 
     if id_placeholder:
@@ -851,7 +976,10 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
             # sources-index.md) and README.md files are id-less BY DESIGN, never
             # mintable - see _never_mintable.
             registry.idless_records.append((path, 'P'))
-        return   # can't do further cross-reference checks without record metadata
+        # Can't do further cross-reference checks without an id, but the record
+        # still goes back to the caller: its content is what decides whether
+        # this is a research companion, id or no id.
+        return rec
 
     # Register in registry
     if is_companion:
@@ -880,6 +1008,8 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
     merged_into = normalize_id(str(meta.get('merged_into', '')))
     if merged_into:
         registry.all_record_ids.setdefault(merged_into, path)
+
+    return rec
 
 
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
@@ -1134,8 +1264,11 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             else:
                 findings.append(Finding('E', 'E011', path,
                     f'Inventory file not found on disk: {file_path_str!r} - if the '
-                    'file was moved within the documents folder, `fha reconcile` '
-                    're-ties it automatically (preview with --dry-run)'))
+                    'file was moved within its asset folder, `fha reconcile` '
+                    're-ties it automatically (preview with --dry-run); if the '
+                    'roots: mapping in fha.yaml changed instead, see the W121 '
+                    'finding on fha.yaml - reconcile cannot help there, because '
+                    'nothing moved'))
     registry.source_inventory[sid] = inventory_paths
 
     # W102: suggested-claim backlog
@@ -1283,16 +1416,36 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
             derived_entries.append(format_bracket_child(name.split()[0], label))
         derived_names = sorted(derived_entries)
 
-        if sorted(current_names) != sorted(derived_names):
+        # The same pass also proposes the missing `+ second spouse` half of the
+        # base name (add-only, never rewrites, never guesses) - the shared
+        # `_lib.spouse_extended_base` rule, mirroring views so both backends
+        # derive identical target names.
+        base_name = re.sub(r'\s*\[[^\]]*\]', '', folder_name).rstrip()
+        partner_names = {
+            pid: str(registry.person_meta.get(pid, {}).get('name', '') or '')
+            for pid in parents
+        }
+        new_base, other_name = spouse_extended_base(
+            base_name, sorted(parents), partner_names)
+
+        bracket_stale = sorted(current_names) != sorted(derived_names)
+        if bracket_stale or new_base != base_name:
+            parts = []
+            if new_base != base_name:
+                parts.append(
+                    f'couple folder names only one partner - add {other_name}')
+            if bracket_stale:
+                parts.append(
+                    f'stale bracket list [{" + ".join(sorted(current_names))}] '
+                    f'-> [{" + ".join(derived_names)}]')
             findings.append(Finding('W', 'W103',
                 people_dir / folder_name,
-                f'stale bracket list [{" + ".join(sorted(current_names))}] '
-                f'-> [{" + ".join(derived_names)}]; '
-                f'run `fha views brackets --fix` to update'))
+                '; '.join(parts) + '; run `fha views brackets --fix` to update'))
 
 
 def _build_ahnentafel_lint(
-    root_pid: str, children_of: dict[str, set[str]], registry: Registry
+    root_pid: str, children_of: dict[str, set[str]], registry: Registry,
+    sex_gaps: list[dict] | None = None,
 ) -> dict[str, int]:
     """BFS from root_pid → {person_id: Ahnentafel position} using in-memory data.
 
@@ -1300,6 +1453,12 @@ def _build_ahnentafel_lint(
     in-memory registry rather than the SQLite relationships table.  Parents are
     determined by inverting children_of: a person P is a parent of Q if Q is
     in children_of[P].
+
+    `sex_gaps`, when a list is passed, collects the W120 set exactly as
+    `_lib.build_ahnentafel_map` does: single-resolved-parent placements where
+    that parent's `sex:` is not a recorded M/F, appended as {'pid', 'pos'} -
+    the slot was a default, not a derivation, and the resulting folder numbers
+    look confident while being a guess W110 can never catch.
 
     Determinism on same-sex / unknown pairs: lex-first P-id takes the even slot.
     With three or more genetic contributors (assisted reproduction), the two
@@ -1330,6 +1489,8 @@ def _build_ahnentafel_lint(
             if pp not in pid_to_pos:
                 pid_to_pos[pp] = pos
                 queue.append((pp, pos))
+                if sex_gaps is not None and sex_slot_is_defaulted(sex):
+                    sex_gaps.append({'pid': pp, 'pos': pos, 'sex': sex})
         else:
             # Two or more genetic parent edges - assisted reproduction (e.g. a
             # donor-egg mother, a surrogate-genetic mother, and a donor-sperm
@@ -1371,6 +1532,11 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     live in the couple folder whose numeric prefix equals their expected position
     (or position−1 if they hold the odd/mother slot).
 
+    Also emits W120 for every placement the map builder made by DEFAULT rather
+    than derivation: a lone linked parent with no recorded `sex:` silently
+    takes the father (even) slot, so the folder numbers above them look
+    confirmed while being a guess (the views twin reports the same set).
+
     Skips persons in people/connections/ or people/stubs/.
 
     Returns the derived {P-id: position} map (empty when root_person is absent
@@ -1391,7 +1557,23 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
     # and legal parent edges are shown in the bracket list but never numbered.
     children_of = _build_children_of(registry, genetic_only=True)
-    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry)
+    sex_gaps: list[dict] = []
+    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry, sex_gaps)
+
+    # W120: a lone linked parent with no recorded sex took the father (even)
+    # slot by DEFAULT - a normal early-research state (SPEC never requires
+    # `sex:` up front), but the derived folder numbers above them look
+    # confident while being a guess, and W110 can never catch it because the
+    # folders match their own flawed derivation. Report-only: the fix is a
+    # fact about a person, which only the human can record.
+    for gap in sex_gaps:
+        pid = gap['pid']
+        name = str(registry.person_meta.get(pid, {}).get('name', pid))
+        profile_paths = registry.person_profile_paths.get(pid, [])
+        where = (profile_paths[0] if profile_paths
+                 else registry.archive_root / 'fha.yaml')
+        findings.append(Finding('W', 'W120', where, format_w120_message(
+            name, gap['pos'], gap.get('sex'), '`fha views brackets`')))
 
     people_dir = registry.archive_root / 'people'
     excluded = {'stubs', 'connections'}
@@ -2099,6 +2281,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     findings.append(Finding('W', 'W106', src_path,
                         f'Accepted claim {cid} missing Mills field(s): {", ".join(missing_mills)}'))
 
+    # W124: accepted claims resting on evidence nobody has written out
+    _check_untranscribed_evidence(registry, findings)
+
     # E016: new claims referencing a merged person
     for pid, meta in registry.person_meta.items():
         if str(meta.get('status', '')) == 'merged':
@@ -2142,6 +2327,98 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     if not registry.is_working_copy:
         _check_reverse_inventory(registry, findings, with_exif)
 
+    # W123: a record folder Pass 1 could not open. Last, so it reads as the
+    # caveat on everything above it rather than as one more finding among many.
+    _check_unreadable_dirs(registry, findings)
+
+
+def _check_untranscribed_evidence(
+    registry: Registry, findings: list[Finding],
+) -> None:
+    """W124: accepted claims resting on evidence nobody has written out (#46).
+
+    A source can be processed, have claims drafted from its pictures, reviewed
+    and accepted - and the archive still holds no text of what the document
+    says. The pictures are the only copy. Every later reader then reads the
+    claim values instead, inheriting whatever the first pass misread, and a text
+    search over the archive answers for what some earlier pass chose to write
+    down while looking exactly like a search of the evidence.
+
+    That second effect is why this is a lint rule and not just a nicety. A null
+    text search on such an archive is a statement about coverage, not about the
+    family, and it has already been read the other way: a surname was searched
+    for, found only in one claim's value, judged invented, and struck - while it
+    sat in plain handwriting on a chart in a 22-page image-only scan. The
+    archive where that happened held 43 such sources carrying 135 accepted
+    claims and had no way to say so.
+
+    Read entirely from the record's own `files:` roles, never from the files
+    themselves: lint does not open a PDF to ask whether it has a text layer (it
+    would need an optional dependency and every source's worth of reading to
+    answer a warning). A source with no files listed is not flagged - there is
+    nothing to transcribe. Warning, not error: an untranscribed source is a
+    normal state of research, and the fix is work, not a correction.
+    """
+    for sid, meta in sorted(registry.source_meta.items()):
+        raw_files = meta.get('files') or []
+        entries = [
+            (str(f.get('role', '')), str(f.get('file', '')))
+            for f in raw_files if isinstance(f, dict)
+        ]
+        if not entries or files_carry_searchable_text(entries):
+            continue
+
+        accepted = [
+            c for c in registry.source_claims.get(sid, [])
+            if isinstance(c, dict) and str(c.get('status', '')) == 'accepted'
+        ]
+        if not accepted:
+            continue
+
+        path = registry.source_paths.get(sid, registry.archive_root / str(sid))
+        display = fmt_id_display(sid)
+        findings.append(Finding('W', 'W124', path,
+            f'{len(accepted)} accepted claim(s) rest on evidence this archive '
+            f'holds no words for: every file of {display} is a scan, '
+            'photograph, PDF or recording with no transcript beside it. '
+            'A search of your archive cannot look inside them, so '
+            'anything written in this document reads as though it were not '
+            'there. If it is a PDF that carries its own text layer, run '
+            f'`fha source extract {display}`; otherwise read the file and type '
+            'out what it says, then attach it with `fha process <one of its '
+            'files> --more <your-transcript.md> transcript`. Either way, run '
+            '`fha index` afterwards so the words become searchable.'))
+
+
+def _check_unreadable_dirs(registry: Registry, findings: list[Finding]) -> None:
+    """W123: name every record folder this lint could not open.
+
+    Without it, `fha lint` answers "0 errors" for an archive whose `people/`
+    or `sources/` subtree it never listed - the most confident possible way to
+    say nothing at all. The finding is a warning rather than an error because
+    the archive itself is very probably fine: what failed is this machine's
+    access to it, and calling a permissions change a spec violation would be
+    both wrong and unfixable by editing a record. But it does move lint off
+    exit 0, which is the whole point - a clean bill of health must not be
+    issued over records nobody read.
+
+    Worded for someone who has never seen a permission bit: what was skipped,
+    what it means for the answer above, the two ordinary causes, and the one
+    command to run afterwards.
+    """
+    for path in registry.unreadable_dirs:
+        try:
+            shown = path.relative_to(registry.archive_root).as_posix()
+        except ValueError:
+            shown = str(path).replace('\\', '/')
+        findings.append(Finding(
+            'W', 'W123', path,
+            f'This folder could not be opened, so nothing filed in {shown} was '
+            'checked - the rest of this report says nothing about it either way. '
+            'Usually a folder whose permissions changed, or a drive or network '
+            'share that is not connected. Reconnect it (or restore your access '
+            'to the folder), then run `fha lint` again.'))
+
 
 def _check_reverse_inventory(
     registry: Registry,
@@ -2168,6 +2445,41 @@ def _check_reverse_inventory(
         _check_embedded_source_keywords(registry, findings)
 
 
+def _files_to_keyword_scan(alias: str, root: Path, registry: Registry):
+    """Files under one asset root that E012's exiftool pass should read.
+
+    The photos root honours `photos_ignore:` (#35) exactly as the catalog scan
+    does. Without it this check reads every file in the bulk photo-service
+    export the setting exists to exclude - on the motivating archive that is
+    63,156 files handed to exiftool for keywords nobody filed. An ignored
+    subtree is pruned unwalked rather than filtered afterwards, so the cost
+    goes away rather than moving; `documents` has no such setting and walks
+    whole. A malformed `photos_ignore:` prunes nothing here rather than
+    guessing, and `fha photoindex` is where the human sees the parse error.
+    """
+    if alias != 'photos':
+        yield from (p for p in root.rglob('*') if p.is_file())
+        return
+    try:
+        patterns = photos_ignore_patterns(registry.fha_config)
+    except RuntimeError:
+        patterns = []
+    if not patterns:
+        yield from (p for p in root.rglob('*') if p.is_file())
+        return
+    is_ignored = photos_ignore_matcher(patterns)
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        dirnames[:] = [
+            d for d in dirnames
+            if not is_ignored((here / d).relative_to(root).as_posix())
+        ]
+        for name in filenames:
+            p = here / name
+            if not is_ignored(p.relative_to(root).as_posix()):
+                yield p
+
+
 def _check_embedded_source_keywords(registry: Registry, findings: list[Finding]) -> None:
     """E012 and photo-side E011 checks using exiftool keyword reads."""
     scan_paths: set[Path] = set()
@@ -2176,7 +2488,7 @@ def _check_embedded_source_keywords(registry: Registry, findings: list[Finding])
     for alias in ('documents', 'photos'):
         root = _mapped_root(alias, registry)
         if root.exists():
-            for file_path in (p for p in root.rglob('*') if p.is_file()):
+            for file_path in _files_to_keyword_scan(alias, root, registry):
                 resolved = file_path.resolve()
                 scan_paths.add(resolved)
                 alias_path = _path_to_alias(file_path, alias, registry)
@@ -2416,6 +2728,24 @@ def _check_agent_drift(archive_root: Path, findings: list[Finding]) -> None:
         pass   # too ambiguous to check textually
 
 
+def _check_roots_change(archive_root: Path, fha_config: dict, findings: list[Finding]) -> None:
+    """W121: a `roots:` value changed and orphaned already-filed assets (#36).
+
+    The E011s that follow such a change name each orphan individually and
+    suggest `fha reconcile`, which cannot help - nothing moved. This one
+    finding names the cause (the changed value, and what it was), sits on
+    fha.yaml where the fix lives, and appears at the top of the report ahead
+    of the per-record fallout. Sticky until reverted or re-pointed (see
+    `_lib.roots_change_orphans` for the stamp semantics).
+    """
+    # record=False: lint reads and reports, it does not seed the stamp - a
+    # linter pointed at a fixture or a read-only checkout must not create
+    # files there. `fha index` / `fha doctor` own the recording.
+    for item in roots_change_orphans(archive_root, fha_config, record=False):
+        findings.append(Finding('W', 'W121', archive_root / 'fha.yaml',
+                                format_roots_orphan_warning(item, archive_root)))
+
+
 # ── Format check ─────────────────────────────────────────────────────────────
 
 _FRONTMATTER_KEY_ORDER_PERSONS = [
@@ -2459,7 +2789,16 @@ def _fix_format(
     stays here in the compute layer.
     """
     try:
-        text = path.read_text(encoding='utf-8')
+        # Exact IO, not `Path.read_text`. The default read translates CRLF to LF
+        # before this function ever sees it, so `.replace('\r\n', '\n')` below
+        # found nothing and the CRLF half of the fix only worked by accident -
+        # via the default WRITE translating back to os.linesep, which happens to
+        # be LF on Linux and CRLF on Windows. That means the fix for W109 "File
+        # uses CRLF line endings" did nothing on a CRLF file that already ended
+        # in a newline, and on Windows converted a clean LF archive TO CRLF.
+        # Reading and writing exactly makes the code do what its docstring says
+        # on every platform.
+        text = read_text_exact(path)
     except OSError:
         return
     fixed = text.replace('\r\n', '\n')
@@ -2469,7 +2808,7 @@ def _fix_format(
         if dry_run:
             progress.append(f'Would fix formatting: {path.name}')
         else:
-            path.write_text(fixed, encoding='utf-8')
+            write_text_exact_atomic(path, fixed)
             progress.append(f'Fixed formatting: {path.name}')
             changed.append(str(path))
 
@@ -2490,6 +2829,7 @@ def _run_lint_core(
     """
     findings: list[Finding] = []
     registry = Registry(archive_root, fha_config)
+    _check_roots_change(archive_root, fha_config, findings)
     _walk_archive(archive_root, registry, findings)
     _cross_file_checks(registry, findings, with_exif=with_exif)
     _check_agent_drift(archive_root, findings)
@@ -2802,25 +3142,15 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
     return lines
 
 
-# TODO: swap to _lib exact-IO helpers once the pre-wave lands (a shared
-# _read_text_exact/_write_text_exact pair is being added to _lib.py by the
-# packet/lib consolidation work; these local copies exist so lint's surgery
-# does not depend on that landing first).
-def _read_text_exact(path: Path) -> str:
-    """Read a file preserving its own newlines (no universal-newline mangling).
-
-    The fix modes' contract is byte-preserving surgery outside the edited
-    spans. `Path.read_text`/`write_text` silently translate line endings
-    (an LF archive rewritten wholesale to CRLF on Windows, and vice versa),
-    which turns a one-line fix into a full-file rewrite of someone's
-    version-controlled evidence."""
-    return path.read_bytes().decode('utf-8')
-
-
-def _write_text_exact(path: Path, text: str) -> None:
-    """Write text with newline='' so the newlines in `text` land verbatim."""
-    with path.open('w', encoding='utf-8', newline='') as fh:
-        fh.write(text)
+# Byte-preserving IO for the fix modes comes from `_lib`
+# (`read_text_exact` / `write_text_exact_atomic`). lint used to keep private
+# copies of that pair here while the shared ones were still being added to
+# `_lib.py`; they landed, lint was never switched over, and so lint alone
+# missed the later upgrade from the truncating writer to the atomic one. The
+# lesson is worth the comment: a private copy of shared code does not get the
+# shared code's fixes. The fix modes are the wrong place to learn that - they
+# rewrite person and source records in bulk and unattended, so nobody is
+# watching when one goes wrong.
 
 
 def _file_newline(text: str) -> str:
@@ -2857,7 +3187,7 @@ def _wrap_unfenced_claims(path: Path) -> tuple[str | None, str | None]:
         lines from the human's evidence.
     """
     try:
-        text = _read_text_exact(path)
+        text = read_text_exact(path)
     except OSError:
         return None, None
     nl = _file_newline(text)
@@ -2931,7 +3261,7 @@ def _fix_claims_fence(
         if dry_run:
             progress.append(f'--fix-claims-fence dry-run: would wrap the claims in {rel} in a ```yaml fence')
         else:
-            _write_text_exact(path, wrapped)
+            write_text_exact_atomic(path, wrapped)
             progress.append(f'Wrapped claims fence: {rel}')
             changed.append(str(path))
 
@@ -3196,7 +3526,7 @@ def _fix_mint_ids(
         if path.stem.lower() != slug:
             aliases.append(path.stem)
         try:
-            text = _read_text_exact(path)
+            text = read_text_exact(path)
         except OSError:
             remaining.append((path, kind))
             continue
@@ -3234,7 +3564,7 @@ def _fix_mint_ids(
                 'add the id by hand')
             remaining.append((path, kind))
             continue
-        _write_text_exact(path, new_text)
+        write_text_exact_atomic(path, new_text)
         if new_path != path and not new_path.exists():
             path.rename(new_path)
             changed.append(str(new_path))
@@ -3389,7 +3719,7 @@ def _mint_claim_ids_in_file(
     if not any(isinstance(c, dict) and _claim_id_missing(c) for c in claims):
         return
     try:
-        text = _read_text_exact(path)
+        text = read_text_exact(path)
     except OSError:
         progress.append(f'--fix-ids: could not read {rel}; its claims were left alone.')
         return
@@ -3584,7 +3914,7 @@ def _mint_claim_ids_in_file(
             f'hand instead (mint codes with `fha id mint C`).')
         return
 
-    _write_text_exact(path, new_text)
+    write_text_exact_atomic(path, new_text)
     changed.append(str(path))
     progress.append(f'Minted {len(plans)} claim id(s) in {rel}{ph_note}')
     if n_stamped:
@@ -3636,7 +3966,10 @@ def _fix_mint_stubs(
                 f'created: {_today()}\n'
                 f'tier: stub\n---\n'
             )
-            stub_path.write_text(stub_content, encoding='utf-8')
+            # Exact + atomic like every other record write: a stub is a real
+            # person record from the moment it lands, and this loop creates them
+            # in bulk with nobody watching.
+            write_text_exact_atomic(stub_path, stub_content)
             progress.append(f'Created stub: {stub_path.relative_to(archive_root)}')
             changed.append(str(stub_path))
 
@@ -3663,7 +3996,7 @@ def _fix_spawn_questions(
         progress.append(f'Would append {len(to_spawn)} question(s) to notes/questions.md')
         return
     (archive_root / 'notes').mkdir(parents=True, exist_ok=True)
-    existing = questions_path.read_text(encoding='utf-8') if questions_path.exists() else ''
+    existing = read_text_exact(questions_path) if questions_path.exists() else ''
     appended = []
     for f in to_spawn:
         appended.append(
@@ -3672,7 +4005,12 @@ def _fix_spawn_questions(
             f'- context:\n  - (tool, {_today()}) Auto-spawned by fha lint E009.\n'
         )
     if appended:
-        questions_path.write_text(existing + '\n'.join(appended), encoding='utf-8')
+        # The question log is the human's research trail. Appending rewrites it
+        # whole, so a torn write would trade every logged question for the new
+        # ones - and this runs unattended under --fix.
+        write_text_exact_atomic(
+            questions_path,
+            reapply_newline(existing + '\n'.join(appended), existing))
         progress.append(f'Appended {len(appended)} question(s) to {questions_path.relative_to(archive_root)}')
         changed.append(str(questions_path))
 
@@ -3776,7 +4114,7 @@ def _fix_reciprocal(
                 f"{owner_name} (claim {fmt_id_display(m['claim_id'])}) in {rel}")
             continue
         try:
-            text = path.read_text(encoding='utf-8')
+            text = read_text_exact(path)
         except OSError:
             progress.append(f"--fix-reciprocal: could not read {rel}; skipped.")
             continue
@@ -3788,7 +4126,9 @@ def _fix_reciprocal(
                 f"--fix-reciprocal: couldn't safely place the mirror in {rel} "
                 f"(its relationships: block isn't a simple list) - add it by hand.")
             continue
-        path.write_text(new_text, encoding='utf-8')
+        # A person record, edited in a loop over every missing mirror edge:
+        # atomic so one failure costs one skipped edge, not one lost ancestor.
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
         changed.append(str(path))
         progress.append(
             f"Added reciprocal '{m['mirror_role']}' edge to {owner_name} "

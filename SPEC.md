@@ -2,7 +2,7 @@
 
 *The durable, file-first family-history archive - the specification.*
 
-**Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 **Version 1.2 - 2026-06-12**
 
@@ -388,7 +388,9 @@ Julian/Gregorian judgment goes in `notes`.
 ```
 family_archive/              ← the root (default name; rename freely - nothing parses it)
   SPEC.md  TOOLING.md        ← the archive carries its own spec
-  README.md                  ← plain-language how-to (§21a)
+  GETTING_STARTED.md         ← the owner's entry point, plain language (no README.md
+  CHEATSHEET.md                here: the project one is repo-facing and never installed)
+  docs/                      ← the rest of the owner's manual (FAQ, GLOSSARY, …)
   AGENTS.md  CLAUDE.md       ← agent operating instructions
   fha.yaml                   ← config + root mapping (§12.4)
   ── plain-text core (git-versioned) ──────────────────────────
@@ -444,13 +446,13 @@ Reorganizing or rescanning assets must never orphan a source or claim; the recor
 
 ### 12.2 People: Ahnentafel couple folders
 
-- One folder per **direct-line ancestral couple**, numbered with the even (male-partner) Ahnentafel number; the wife is implicitly 2n+1. Root: **#1 = the children, collectively** - valid because full siblings share one ancestor tree. (#2 their father, #4 his father, … T.E. Hartley = 040.)
-- Folder names are free-form human convenience - spaces, `+`, bracketed child lists: `040 Thomas Hartley + Margaret Cole [Ethel + Frances + Calvin + Edward]`. **Folder names carry no machine meaning**; scripts never parse them (files inside are self-identifying). Bracket lists may drift until a tool refreshes them from relationship claims.
+- One folder per **direct-line ancestral couple**, numbered with the even (male-partner) Ahnentafel number; the wife's number is the folder's plus one (a child at position n has father 2n and mother 2n+1, so folder 040 holds #40 and #41). Root: **#1 = the children, collectively** - valid because full siblings share one ancestor tree. (#2 their father, #4 his father, … T.E. Hartley = 040.)
+- Folder names are free-form human convenience - spaces, `+`, bracketed child lists: `040 Thomas Hartley + Margaret Cole [Ethel + Frances + Calvin + Edward]`. **Folder names carry no machine meaning**; scripts never parse them (files inside are self-identifying). Bracket lists - and the `+ second spouse` half of the name - may drift until a tool refreshes them from relationship claims (a tool-created folder starts with one partner's name; the refresh adds the other once both are curated there).
 - A couple folder contains both partners' person files and the stub/person files of their **non-direct children** - that is where a human looks for an ancestor's siblings.
 - Direct-line children get their own numbered folder, never a subfolder.
 - **A direct ancestor's non-ancestral marriages** get suffix folders sorting beside the ancestral one: `040b Thomas Hartley + (second spouse) [children]`. Occupants beyond the ancestor are connections-tier people; half-siblings of the line live here.
 - Ahnentafel's even/odd convention is a sorting convenience, not an assumption - use one partner's even number consistently; nothing in the model requires opposite-sex couples.
-- The whole tree is a projection, regenerable from relationship claims; Ahnentafel numbers are derivable, never stored in records. The derivation root - the person at position #1 - is declared in `fha.yaml` as `root_person` (§12.4); any direct-line descendant works as the anchor, since all full siblings share one ancestor tree. With that declaration, tools compute every ancestral couple's Ahnentafel number by following only the **genetic** parent edges among accepted `relationship` claims (`subtype: biological` - the default - `surrogate-genetic`, `donor-sperm`, `donor-egg`); social and legal parent edges (`adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `social`) are shown in the folder's bracket list and the relationship views, clearly marked, but are not numbered into the pedigree. Tools also verify and correct folder placement (see `fha views brackets`, `TOOLING.md §7`).
+- The whole tree is a projection, regenerable from relationship claims; Ahnentafel numbers are derivable, never stored in records. The derivation root - the person at position #1 - is declared in `fha.yaml` as `root_person` (§12.4); any direct-line descendant works as the anchor, since all full siblings share one ancestor tree. Pointing `root_person` at a descendant instead of yourself re-anchors the whole tree down a generation (the researcher's children become #1, researcher and spouse #2/#3, and every ancestral couple's number doubles); after editing it, one previewed pass realigns the already-promoted folders (`fha views brackets --realign`, TOOLING §7). With that declaration, tools compute every ancestral couple's Ahnentafel number by following only the **genetic** parent edges among accepted `relationship` claims (`subtype: biological` - the default - `surrogate-genetic`, `donor-sperm`, `donor-egg`); social and legal parent edges (`adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `social`) are shown in the folder's bracket list and the relationship views, clearly marked, but are not numbered into the pedigree. Tools also verify and correct folder placement (see `fha views brackets`, `TOOLING.md §7`).
 - A person who occupies **multiple Ahnentafel positions** - cousin marriage, endogamy, pedigree collapse - **homes to the lowest position number**; their files live in that one couple folder, and every higher position carries a cross-link entry in its folder's bracket list (`Thomas Hartley (also #128 - see 040)`). The lowest-number rule is deterministic, so placement and bracket refreshes are stable across runs. The folder is a projection, so the cross-link lives in the regenerated bracket text, not in an extra file.
 
 ### 12.3 Connections (everyone beyond)
@@ -491,7 +493,12 @@ backup:                      # optional: where `fha backup` writes its dated zip
   path: D:/ArchiveBackups    # relative to the archive root - same tolerance as roots: values).
                               # Default: a "{root-folder-name}-backups" folder beside the archive.
                               # Must resolve outside the archive and its asset roots (TOOLING §13e).
+photos_ignore:               # optional: fnmatch patterns, relative to the photos root, that the
+  - Flickr Export            # photo catalog (`fha photoindex`, TOOLING §9) skips entirely - for
+  - '*.tif'                  # material inside the library that is not the archive's subject.
 ```
+
+Narrowing `roots: photos` to a subfolder is **not** the way to exclude material: every `files:` entry already filed under that alias stops resolving the moment the root moves (alias paths are relative to the root - lint E011). `photos_ignore:` excludes without moving the root; `fha lint`, `fha doctor` and `fha index` warn (W121) when a `roots:` change has orphaned filed entries (TOOLING §3).
 
 Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name).
 Moving a library is a one-line edit and **no record changes**.

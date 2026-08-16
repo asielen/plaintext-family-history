@@ -10,6 +10,11 @@ Covers the round-2 consolidation wave (private/plans/review-round2-fixes.md):
     grammar cannot account for returns ('', problem), never the draft) and the
     `[ \t]` heading-boundary fix (finding 17/X2: a bare `##` line no longer
     swallows the next line into the "heading").
+  - transcript_review_state / transcript_text_is_unchecked - the same marker
+    pair read from the other end: has a human checked this transcript against
+    the picture it was read from? Four states (unreviewed / verified / unmarked
+    / damaged), with damaged failing closed like the stripper above, per the
+    transcribe-source skill's marker contract.
   - is_generated_text / is_generated_file - first-non-blank-line GENERATED
     ownership, BOM tolerated (finding 12/K3).
   - resolve_typed_ref - the shared typed resolver (K4); index/lint/confirm
@@ -49,6 +54,8 @@ from _lib import (
     resolve_root_arg,
     resolve_typed_ref,
     strip_unaccepted_drafts,
+    transcript_review_state,
+    transcript_text_is_unchecked,
     write_text_exact,
 )
 
@@ -525,6 +532,88 @@ class ReadUnfencedClaimsStrictFirstTests(unittest.TestCase):
             '## Claims\n\n```\n')
         self.assertEqual(rec['claims'], [])
         self.assertFalse(rec['unfenced_claims'])
+
+
+class TranscriptReviewStateTests(unittest.TestCase):
+    """The transcribe-source contract, "The marker - how a consumer tells an
+    unreviewed transcript from a checked one", walked row by row.
+
+    A transcript a model read off a scan is searchable and, once indexed, looks
+    exactly like evidence. Unlike the hole #46 closed, it does not return
+    silence - it returns confident hits, and a misread word then travels as a
+    fact nobody re-examines. So the file states its own status and this pair of
+    functions reads it. Expected values come from the contract's table, not from
+    what the implementation happens to return.
+    """
+
+    def test_a_draft_marker_means_nobody_has_checked_it(self):
+        text = ('[Page 1]\nAged 57 years.\n\n'
+                '<!-- AI-DRAFT 2026-08-16 some-model - transcript of '
+                'probate.jpg, pages 1-1; not yet checked against the image by a '
+                'human -->\n')
+        self.assertEqual(transcript_review_state(text), 'unreviewed')
+        self.assertTrue(transcript_text_is_unchecked(text))
+
+    def test_an_accepted_marker_means_a_human_compared_it(self):
+        text = ('[Page 1]\nAged 57 years.\n\n'
+                '<!-- AI-ACCEPTED 2026-08-16 some-model - transcript of '
+                'probate.jpg (accepted 2026-08-20) -->\n')
+        self.assertEqual(transcript_review_state(text), 'verified')
+        self.assertFalse(transcript_text_is_unchecked(text))
+
+    def test_a_transcript_with_no_marker_is_unmarked_not_unreviewed(self):
+        # The common case, and the one that decides whether the flag is worth
+        # anything: a human's typing and an `fha source extract` dump of a PDF's
+        # own text layer both arrive with no marker. Flagging those would flag
+        # nearly every transcript in the archive and teach the reader to skip
+        # the flag - which is how the marked ones get read as evidence.
+        typed = '[Page 1]\nAged 57 years.\n'
+        dumped = '[Page 1]\nIn the matter of the estate of Caleb Hartley.\n'
+        for text in (typed, dumped, ''):
+            self.assertEqual(transcript_review_state(text), 'unmarked')
+            self.assertFalse(transcript_text_is_unchecked(text))
+
+    def test_a_draft_marker_outranks_an_accepted_one(self):
+        # Precedence: any AI-DRAFT marker anywhere makes the whole file
+        # unreviewed. The marker sits at the END of the span it covers, so a
+        # file carrying both has an unchecked span somewhere inside it.
+        text = ('[Page 1]\nChecked passage.\n'
+                '<!-- AI-ACCEPTED 2026-08-16 m (accepted 2026-08-20) -->\n'
+                '[Page 2]\nA passage added later.\n'
+                '<!-- AI-DRAFT 2026-08-21 m - pages 2-2 -->\n')
+        self.assertEqual(transcript_review_state(text), 'unreviewed')
+        self.assertTrue(transcript_text_is_unchecked(text))
+
+    def test_a_marker_missing_its_closer_is_damaged_and_fails_closed(self):
+        text = '[Page 1]\nAged 57 years.\n<!-- AI-DRAFT 2026-08-16 m\n'
+        self.assertEqual(transcript_review_state(text), 'damaged')
+        self.assertTrue(transcript_text_is_unchecked(text))
+
+    def test_an_orphan_closer_is_damaged_not_verified(self):
+        # `<!-- /AI-DRAFT -->` is a wrap-style closer the complete-marker
+        # grammar cannot account for. Reading it as "no draft marker, therefore
+        # checked" is the one wrong direction to fail in.
+        text = '[Page 1]\nAged 57 years.\n<!-- /AI-DRAFT -->\n'
+        self.assertEqual(transcript_review_state(text), 'damaged')
+        self.assertTrue(transcript_text_is_unchecked(text))
+
+    def test_a_stray_word_beside_a_good_accepted_marker_is_damaged(self):
+        # The accepted marker alone would read `verified`; the loose mention
+        # means the file's markers can no longer be trusted to describe it, and
+        # `damaged` is treated as unchecked exactly as strip_unaccepted_drafts
+        # withholds rather than guesses.
+        text = ('[Page 1]\nThe clerk wrote AI-DRAFT in the margin.\n'
+                '<!-- AI-ACCEPTED 2026-08-16 m (accepted 2026-08-20) -->\n')
+        self.assertEqual(transcript_review_state(text), 'damaged')
+        self.assertTrue(transcript_text_is_unchecked(text))
+
+    def test_a_multi_line_marker_is_complete(self):
+        # Same DOTALL grammar as confirm.py's flip regex: a marker comment may
+        # span lines, and one that does is not damaged.
+        text = ('[Page 1]\nAged 57 years.\n'
+                '<!--\n  AI-DRAFT 2026-08-16 some-model\n'
+                '  transcript of probate.jpg, pages 1-1\n-->\n')
+        self.assertEqual(transcript_review_state(text), 'unreviewed')
 
 
 if __name__ == '__main__':

@@ -1,3 +1,19 @@
+"""
+test_packet.py - fha packet: the gather/copy/redact/zip contract.
+
+Fixtures only (AGENTS_TOOLING §5): every test builds a synthetic
+`.cache/index.sqlite` (and `.cache/photos.sqlite` where photos are involved)
+from index.py's and photoindex.py's own DDL inside a temp tree.
+
+One thread runs through the photo tests and is worth stating once: a packet
+ships **logical photos**, not scans. Group expansion puts the back and the crop
+of a matched front in the bundle, so every README caution about a photo is a
+statement about the group and is counted over the files actually copied - a
+name-match whose matched variant has gone off disk still warns while a sibling
+travels, and a group that put nothing in the bundle warns about nothing
+(PR #42 round 2).
+"""
+
 import os
 import sqlite3
 import sys
@@ -485,16 +501,220 @@ class PacketTests(unittest.TestCase):
         self.assertIn('Missing files', readme)
         self.assertIn('ghost.jpg', readme)
 
-    def test_missing_profile_file_is_structural_failure(self):
+    def test_reconcile_missing_photo_is_skipped_and_explained(self):
+        # `fha photoindex reconcile` keeps a vanished photo as the synthetic
+        # key 'MISSING:photos/…' so its caption survives. A packet copies real
+        # bytes, so the live back scan ships, the vanished front does not, and
+        # the README says so under its real path (no MISSING: jargon, and no
+        # 'photos/1' style half-key).
+        self._seed_person()
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'portrait-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/portrait.jpg', 'g1')"
+        )
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/portrait-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/portrait.jpg', 'p-aaaaaaaaaa', 'pid-keyword')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+
+        photos_out = result['packet_dir'] / 'photos'
+        self.assertTrue((photos_out / 'portrait-back.jpg').exists())
+        self.assertFalse(any(p.name.startswith('MISSING') for p in photos_out.iterdir()))
+
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('photo not on disk, so not copied: photos/portrait.jpg', readme)
+        self.assertNotIn('MISSING:', readme)
+        self.assertTrue(any(
+            'fha photoindex reconcile' in m and 'photos/portrait.jpg' in m
+            for m in result['messages']
+        ))
+
+    def test_missing_photo_row_not_counted_as_unverified(self):
+        # The README's "matched by name only" count describes files the
+        # recipient can actually open in photos/, so a name-matched photo whose
+        # whole group is off disk - nothing of it copied - must not inflate it.
+        self._seed_person()
+        self._commit_fresh()
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/guess.jpg', 'g1')"
+        )
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/guess.jpg', 'p-aaaaaaaaaa', 'name-match')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('matched by name only', readme)
+        self.assertIn('photo not on disk, so not copied: photos/guess.jpg', readme)
+
+    def test_name_match_caution_survives_when_only_matched_variant_is_missing(self):
+        # The name match is a fact about the physical photo, not about one scan
+        # of it: the vanished front is what carried the unverified match, but
+        # the live back of the same group is what ships - so the recipient must
+        # still be told the photo in photos/ was picked by name alone.
+        self._seed_person()
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'guess-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/guess.jpg', 'g1')"
+        )
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/guess-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/guess.jpg', 'p-aaaaaaaaaa', 'name-match')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        self.assertTrue((result['packet_dir'] / 'photos' / 'guess-back.jpg').exists())
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('1 photo(s) in photos/ are matched by name only', readme)
+
+    def test_verified_tag_anywhere_in_group_lifts_the_name_match_caution(self):
+        # A group the person is tagged into by P-id keyword is verified as a
+        # whole, so a weaker name-match row left on a sibling variant must not
+        # make the packet call the copied photos unverified.
+        self._seed_person()
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'sure-front.jpg').write_bytes(b'front')
+        (photos_dir / 'sure-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/sure-front.jpg', 'g1')")
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/sure-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('photos/sure-front.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
+            "('photos/sure-back.jpg', 'p-aaaaaaaaaa', 'name-match')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('matched by name only', readme)
+
+    def test_living_person_tagged_only_on_missing_variant_still_cautioned(self):
+        # The vanished front scan keeps its tags through reconcile, and the
+        # live back scan of the same physical photo does ship - so the caution
+        # about a living person must not disappear with the file.
+        self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Living Cousin', living='unknown',
+                          surname='Cousin')
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'group-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/group.jpg', 'g1')"
+        )
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/group-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('photos/group-back.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
+            "('MISSING:photos/group.jpg', 'p-bbbbbbbbbb', 'pid-keyword')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('CAUTION', readme)
+        self.assertIn('Living Cousin', readme)
+
+    def test_living_person_from_a_wholly_missing_group_is_not_cautioned(self):
+        # The mirror of the test above: when every variant of that photo is off
+        # disk, nothing of it reaches the bundle - so naming the living person
+        # in the README would put a name in the packet that the packet does not
+        # otherwise contain.
+        self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Living Cousin', living='unknown',
+                          surname='Cousin')
+        self._commit_fresh()
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/gone.jpg', 'g1')"
+        )
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/gone.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
+            "('MISSING:photos/gone.jpg', 'p-bbbbbbbbbb', 'pid-keyword')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Living Cousin', readme)
+        self.assertIn('photo not on disk, so not copied: photos/gone.jpg', readme)
+
+    def test_missing_profile_file_is_refused_on_the_privacy_arm(self):
+        """A profile that is not on disk is refused as unreadable, not as a
+        missing file.
+
+        This case used to land on `write-failed`, several hundred lines later,
+        because the profile copy checks `exists()`. That was an accident of
+        ordering, not a safeguard: the subject's `restricted:` marker had
+        already been read as "no marker" and the export had already been
+        allowed. The refusal now happens at the privacy gate that owns the
+        question, before any output directory is created, so it holds however
+        the rest of the build is reordered.
+        """
         profile_path = self._seed_person()
         profile_path.unlink()
         self._commit_fresh()
 
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
 
-        self.assertEqual(result['status'], 'write-failed')
-        self.assertTrue(any('profile' in m for m in result['messages']))
-        self.assertFalse(any(self.out_dir.glob('packet_*')))
+        self.assertEqual(result['status'], 'restricted-subject')
+        self.assertTrue(any('left out of exports' in m for m in result['messages']))
+        self.assertFalse(self.out_dir.exists())
 
     def test_living_person_named_only_in_prose_gets_caution(self):
         profile_path = self._seed_person()
@@ -789,6 +1009,339 @@ class PacketTests(unittest.TestCase):
         self.assertIn('not redacted', readme)             # the privacy caution
         self.assertIn('living or restricted', readme)
         self.assertNotIn('unreviewed draft text', readme)  # no draft marker present
+
+    def test_a_packet_folder_it_cannot_read_fails_instead_of_shipping_short(self):
+        """A packet zip that could not read part of itself is not handed over.
+
+        The bundle goes to a relative who cannot check it against the archive,
+        so a zip silently missing the source a claim rests on is a false
+        success that travels. The walk fails closed onto the existing
+        write-failed arm, which also clears the half-built folder.
+        """
+        self._seed_person()
+        self._seed_source('s-1111111111', 'A letter',
+                          asset_rel='documents/letters/letter.pdf')
+        self._commit_fresh()
+        with unittest.mock.patch('os.scandir', new=_scandir_denying('/files')):
+            result = packet.run_packet(
+                self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'write-failed')
+        text = '\n'.join(result['messages'])
+        self.assertIn('could not be read', text)
+        self.assertIn('fha packet', text)
+        # Nothing half-built is left behind to block or mislead a retry.
+        self.assertFalse(any(self.out_dir.glob('*.zip')))
+        self.assertFalse(any(q.is_dir() for q in self.out_dir.glob('*')))
+
+    # ── A privacy marker that could not be read is not a missing marker ────────
+    #
+    # `restricted:` lives in the record file and nowhere else for a person, so
+    # the export decision is made by READING a file. Every one of these tests
+    # is the same shape: the marker cannot be read, and the question is which
+    # way the gate falls. The pre-fix answer was "include" in all of them, and
+    # the packet is the person's entire material.
+    #
+    # `_lib.read_record` is why the shape is easy to miss: it does not raise
+    # for the ordinary failures. A gone file, a permission error and malformed
+    # YAML all come back as an E010 entry in `parse_errors` with `meta` empty,
+    # so an `except` arm alone guards almost nothing - and a record with no
+    # frontmatter block at all comes back with `meta` empty and NO parse error,
+    # which is the shape that shipped a written packet.
+
+    def _profile_text(self, text: str, pid='p-aaaaaaaaaa'):
+        """Seed the standard curated subject, then replace their profile text.
+
+        The index row keeps `tier: curated` / `living: false` while the file on
+        disk no longer says either. That divergence is the whole scenario: it
+        is what a restore-from-backup (unzip preserves the old mtime, so the
+        index still looks fresh), a truncated write, or a half-finished
+        hand-edit leaves behind. `_commit_fresh` after the rewrite reproduces
+        the fresh-index half.
+        """
+        profile_path = self._seed_person(pid=pid)
+        profile_path.write_text(text, encoding='utf-8')
+        self._commit_fresh()
+        return profile_path
+
+    def test_subject_with_no_frontmatter_is_not_exported(self):
+        """The reachable shape: frontmatter gone, index still says curated.
+
+        Nothing errors. `FRONT_RE` does not match, so `read_record` reports no
+        parse error and hands back an empty `meta`; `_redact_profile_text`
+        returns `(text, 0)` for the same reason and the profile is byte-copied.
+        Pre-fix this wrote a complete packet - profile, timeline, sources, zip -
+        for a person whose file may have said `restricted: by-request` an hour
+        ago. There is nowhere left in the file for the marker to live, so the
+        only honest reading is "unknown", and unknown is withheld.
+        """
+        self._profile_text('# Test Person\n\nBorn in Kansas.\n')
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'restricted-subject')
+        self.assertFalse(self.out_dir.exists())
+        text = '\n'.join(result['messages'])
+        self.assertIn('left out of exports', text)
+        self.assertIn('fha lint', text)
+
+    def test_subject_whose_frontmatter_will_not_parse_is_not_exported(self):
+        """The `parse_errors` route: malformed frontmatter YAML.
+
+        `read_record` returns E010 and an empty `meta` rather than raising, so
+        the pre-fix `except Exception` arm never fired and the marker read as
+        absent. The frontmatter fence is intact here, so `_redact_profile_text`
+        finds a block to work on, finds no `name_variants`, and reports nothing
+        to strip - the profile shipped verbatim, malformed YAML and all.
+        """
+        self._profile_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\nrestricted: [unclosed\n---\n# Test Person\n'
+        )
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'restricted-subject')
+        self.assertFalse(self.out_dir.exists())
+
+    def test_subject_whose_frontmatter_is_not_a_block_of_fields_is_not_exported(self):
+        """Frontmatter that parses to a scalar, not a mapping.
+
+        `meta` is then a string, and the pre-fix `meta.get('restricted')` raised
+        `AttributeError` into the `except` arm - which set the marker to None
+        and carried on. An exception on the read is the same failure as a parse
+        error: the marker was not read.
+        """
+        self._profile_text('---\njust a sentence, not fields\n---\n# Test Person\n')
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'restricted-subject')
+        self.assertFalse(self.out_dir.exists())
+
+    def test_subject_with_an_empty_frontmatter_block_still_exports(self):
+        """The boundary, pinned: a block that is present and states nothing.
+
+        This is the line the fix draws, and it is drawn deliberately. A
+        frontmatter block that parses is the record SAYING it carries no
+        restriction - the same reading every other consumer makes of an absent
+        key. No block at all is a record that cannot say anything. Only the
+        second is treated as unknown, so the guard cannot creep into refusing
+        ordinary records with nothing to declare.
+
+        (A bare `---\\n---\\n` is not this case: `_lib.FRONT_RE` wants a content
+        line between the fences, so that file has no frontmatter block as far as
+        every tool here is concerned, and the test below holds it to the
+        withhold arm.)
+        """
+        self._profile_text('---\n\n---\n# Test Person\n')
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+
+    def test_subject_with_only_a_doubled_fence_is_not_exported(self):
+        """`---\\n---\\n` reads as no frontmatter, and is withheld on that reading.
+
+        Worth pinning because it looks like the empty block above and is not
+        one. The rule the fix applies is "does this file have a frontmatter
+        block the shared reader can see", and the answer here is no - so it
+        must be withheld, consistently with the reader every other tool uses,
+        rather than by some second opinion about what the fences meant.
+        """
+        self._profile_text('---\n---\n# Test Person\n')
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'restricted-subject')
+
+    def test_unreadable_source_is_left_out_with_its_files(self):
+        """A source whose own record cannot be read takes its assets with it.
+
+        `_source_copy_plan` already refuses to COPY such a record, so the
+        pre-fix leak was not the .md: it was everything hanging off the
+        source-level decision, which fell back to the index's 0/1 and read
+        `not restricted`. The source was counted as included, so its scan was
+        copied into files/ and its title was printed in the README - for a
+        record that may have carried `restricted: by-request`.
+        """
+        self._seed_person()
+        src_path = self._seed_source(
+            's-1111111111', 'Private Title',
+            asset_rel='documents/other/scan.jpg',
+        )
+        src_path.unlink()
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        self.assertFalse((result['packet_dir'] / 'files').exists())
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Private Title', readme)
+        self.assertIn('Excluded sources', readme)
+        self.assertIn('(could not be read)', readme)
+        self.assertTrue(any('could not be read' in m for m in result['messages']))
+
+    def test_unreadable_source_is_not_opened_by_include_restricted(self):
+        """The no-override half, and the more serious one.
+
+        The index column is a boolean, so an unreadable record that falls back
+        to it cannot express `restricted: by-request` - the one type AGENTS.md
+        contract item 6 says is honored everywhere with no override. Falling
+        back silently turned a no-override restriction into a plain one that
+        `--include-restricted` opens. An unreadable record therefore opens
+        under no flag at all, because `by-request` is exactly what cannot be
+        ruled out.
+        """
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Private Title')
+        src_path.unlink()
+        self._commit_fresh()
+
+        result = packet.run_packet(
+            self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True,
+            include_restricted=True, include_dna=True,
+        )
+
+        self.assertEqual(result['status'], 'ok')
+        self.assertFalse((result['packet_dir'] / 'sources').exists())
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Private Title', readme)
+        self.assertIn('(could not be read)', readme)
+
+    def test_unreadable_source_claims_stay_off_the_timeline(self):
+        """GUARD - this one passes pre-fix, and says so on purpose.
+
+        The timeline is generated from the index, not from the record, so a
+        source dropped at the gather step can still leak its facts there if the
+        filter set is not updated with it. Pre-fix that was already held, by a
+        different mechanism: `_source_copy_plan` marked the record `unsafe` and
+        `run_packet` subtracted `unsafe_source_ids` from the timeline's source
+        set. Moving the withhold up to classification must not lose that, so
+        this pins the outcome rather than the mechanism - the proof of the fix
+        lives in its two neighbours above.
+        """
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Private Title')
+        _insert_claim(
+            self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+            'cause of death was suicide', persons=['p-aaaaaaaaaa'],
+        )
+        src_path.unlink()
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        timeline = (result['packet_dir'] / 'timeline.md').read_text(encoding='utf-8')
+        self.assertNotIn('suicide', timeline)
+
+    def test_source_with_unparseable_frontmatter_is_left_out(self):
+        """Route 2 for a source: the frontmatter itself will not parse.
+
+        Distinct from the gone-file case above because the file opens fine -
+        `read_record` reports E010 and hands back an empty `meta` rather than
+        raising, which is what made the marker read as absent. The `restricted:`
+        key could be sitting in the very text that would not parse.
+        """
+        self._seed_person()
+        src_path = self._seed_source('s-1111111111', 'Private Title')
+        src_path.write_text(
+            '---\nid: s-1111111111\nrestricted: [unclosed\n---\n## Claims\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Private Title', readme)
+        self.assertIn('(could not be read)', readme)
+
+    def test_source_with_unparseable_claims_keeps_its_source_level_verdict(self):
+        """The narrowing, pinned: a broken CLAIMS block is not a broken marker.
+
+        The first draft of this fix asked `read_record` for `parse_errors`,
+        which also carries claims-block failures - so a source whose claims YAML
+        would not parse was excluded at the source level and its scan was
+        dropped with it. That is over-reach: the frontmatter opened fine and
+        said what it says, and the claim-level guard already handles the claims
+        (`_source_copy_plan` marks the record unsafe, so the record and its
+        claims are withheld while the assets, which carry no claim YAML, still
+        ship). The marker read and the claims read are separate questions with
+        separately correct answers; this holds them apart.
+        """
+        self._seed_person()
+        src_path = self._seed_source(
+            's-1111111111', 'Ordinary Title', asset_rel='documents/other/scan.jpg',
+        )
+        src_path.write_text(
+            '---\nid: s-1111111111\ntitle: Ordinary Title\n---\n'
+            '## Claims\n```yaml\n- {broken: [\n```\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Included sources', readme)
+        self.assertNotIn('(could not be read)', readme)
+        # The record itself is still withheld by the claim-level guard...
+        self.assertEqual(list((result['packet_dir'] / 'sources').glob('*')), [])
+        self.assertTrue(any('left out of sources/' in m for m in result['messages']))
+        # ...while the asset, which carries no claim YAML, still travels.
+        self.assertTrue((result['packet_dir'] / 'files' / 'scan.jpg').exists())
+
+    def test_readable_source_with_no_marker_is_still_included(self):
+        """The guard against over-reach: an ordinary source still ships.
+
+        The three tests above all withhold; this one proves the withhold is
+        keyed on the read failing, not on the marker being absent. Without it a
+        fix that excluded every source would pass the whole group.
+        """
+        self._seed_person()
+        self._seed_source('s-1111111111', 'Ordinary Title',
+                          asset_rel='documents/other/scan.jpg')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Included sources', readme)
+        self.assertIn('Ordinary Title', readme)
+        self.assertTrue((result['packet_dir'] / 'files' / 'scan.jpg').exists())
+
+
+def _scandir_denying(match: str):
+    """An os.scandir stand-in that refuses to list any path ending in `match`.
+
+    The fault goes in at `os.scandir` because `os.walk` resolves it at call
+    time on every supported Python - that is what makes the `onerror` seam
+    observable here. chmod cannot produce this: CI runs as root, which ignores
+    mode bits, and Windows has no equivalent.
+
+    What this deliberately does NOT rely on: that pathlib's `rglob` reaches the
+    disk the same way. It does on 3.11/3.12/3.14, but NOT on the 3.10 floor
+    (pathlib routes through an accessor object that bound `os.scandir` at
+    import time, so a later patch is invisible) and not on 3.13. So the
+    injection does not reproduce the pre-fix `rglob` behaviour on every version
+    we support - a regression back to `rglob` is still caught everywhere, but
+    on the floor it is caught by the warning going missing rather than by the
+    folder reading as empty.
+    """
+    real_scandir = os.scandir
+
+    def scandir(path='.'):
+        if str(path).endswith(match):
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
 
 
 if __name__ == '__main__':

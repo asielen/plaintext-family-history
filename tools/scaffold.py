@@ -5,9 +5,9 @@ private archive and keep it current (TOOLING §13c, BUILD.md M9.1-M9.2).
 
 A real family archive is a *separate, private* repository: the user's records
 plus a vendored copy of the generic operating layer (the `tools/`, the spec docs,
-the agent rulebooks, the human docs). This file is the ritual that copies that
-operating layer in, and later refreshes it from an improved public clone -
-without ever destroying the human's work.
+the agent rulebooks, the human docs, the capture browser extension). This file is
+the ritual that copies that operating layer in, and later refreshes it from an
+improved public clone - without ever destroying the human's work.
 
 THE MANIFEST (the package's own packing list)
 ---------------------------------------------
@@ -31,6 +31,13 @@ Skeleton entries carry a `src` field (their source path *inside* the public
 repo, e.g. `archive-template/fha.yaml`) because their archive `path` strips the
 `archive-template/` prefix - the template folder seeds the skeleton but is never
 itself copied into an archive. Operating entries omit `src` (source == dest).
+
+A folder in the clone that will not list REFUSES the regeneration
+(`generate_manifest` raises ScaffoldError). `rglob` reports an unlistable
+folder as an empty one, and a short packing list is not a smaller download:
+`update-tools` reads a file the list does not name as retired upstream and
+moves the installed copy aside in every archive that updates. One re-run of
+`write-manifest` is the cheap side of that trade.
 
 The manifest is committed data, regenerated from the repo by `_write_manifest`
 (`python tools/scaffold.py write-manifest --repo .`). A regression test
@@ -69,6 +76,8 @@ CODE MAP
     _sha256_bytes/_sha256_file - content checksums (binary, exact)
 
   Manifest definition + IO
+    _repo_relative             - a clone folder's name without the local path
+    _walk_repo_files           - the repo walk WITH an unreadable-folder seam
     _operating_files           - the operating-layer file list (repo walk)
     _skeleton_files            - the skeleton file list (archive-template remap)
     generate_manifest          - build the manifest dict from a repo clone
@@ -118,6 +127,10 @@ from _lib import (
     Result,
     configure_utf8_stdout,
     find_archive_root,
+    load_fha_yaml,
+    roots_change_orphans,
+    unreadable_dir_recorder,
+    walk_files,
 )
 
 configure_utf8_stdout()
@@ -131,15 +144,33 @@ MANIFEST_VERSION = '1'
 # never enters an archive (PRIVACY.md - the *public-repo* "no real data" policy,
 # which is contradictory inside a real archive; RELEASE_CHECKLIST.md - the public
 # release process; CNAME, manifest.json, .git*, …). TOOLING §13c / BUILD.md M9.1.
-# README.md is shipped (project orientation a genealogist benefits from).
+#
+# Docs are split by AUDIENCE, and the split is expressed through LOCATION (owner
+# decision 2026-08-16). The two an archive owner needs on day one -
+# GETTING_STARTED.md (what to do) and CHEATSHEET.md (the one printable page) -
+# sit at the archive root where they cannot be missed; the rest of the owner's
+# manual stays in `docs/` and is linked from those two. They live at the REPO
+# root too, not under docs/: there is no install-time link rewriting anywhere in
+# this file, so a doc whose repo depth differs from its archive depth would have
+# relative links that resolve in exactly one of the two contexts.
+#
+# README.md is deliberately NOT shipped. It is repo-facing - badges, a milestone
+# roadmap, contributing, and links to example-archive/, quickstart-template/,
+# archive-template/ and obsidian-templater/, none of which an archive receives -
+# so an owner opening it got a page of dead links about someone else's project.
+# What an owner genuinely needed from it (what the archive is, the record types,
+# the two-repo relationship, backup, Obsidian) is folded into GETTING_STARTED.md
+# and CHEATSHEET.md instead. An installed archive has no root README.md; the
+# entry point is GETTING_STARTED.md, whose name says what to do with it.
 #
 # The tool-BUILDING docs (the BUILD*.md family, TOOLING_INGESTION/INTERFACE,
-# AGENTS_TOOLING) are deliberately NOT shipped: no tool reads them at run time
+# AGENTS_TOOLING) are likewise NOT shipped: no tool reads them at run time
 # and a genealogist operating an archive never needs them - they describe how to
 # BUILD the tools, which is a workshop-clone activity. Extending vendored tools
 # in place is out of scope; do it in the public repo and re-vendor.
 _ROOT_OPERATING_DOCS = (
-    'README.md',
+    'GETTING_STARTED.md',
+    'CHEATSHEET.md',
     'SPEC.md',
     'TOOLING.md',
     'AGENTS.md',
@@ -220,7 +251,13 @@ _ROOT_LAUNCHERS = (
 # agent's genealogy workflow procedures (process-source, review-claims, …) - the
 # "how to operate" an archive, so it ships. `.claude/settings.json` is *not*
 # walked: it is this spec-repo's own agent config, not an archive's.
-_OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
+# `browser-companion/` is the capture extension - a front-end tool exactly like
+# the serve workbench, so it ships ready to use (owner decision 2026-07-26): the
+# extension has no build step, so its source tree IS the loadable artifact and
+# vendoring it gives every archive a chrome://extensions "Load unpacked" target
+# with no workshop clone. Its dev furniture stays home (_VENDOR_EXCLUDE_*).
+_OPERATING_SUBTREES = ('tools', 'docs', 'design', 'browser-companion',
+                       '.claude/skills')
 
 # The archive subfolder that holds the vendored machinery, so a real archive's
 # root reads as the genealogy - not the tooling. The install remaps the movable
@@ -228,26 +265,72 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', '.claude/skills')
 # the manifest's src/path seam records the repo-flat `src` against the archive
 # `.fha/…` `path`.
 #
-# Only the MACHINERY moves: `tools/` (the program) and `design/` (its stylesheet
-# and self-hosted fonts). Neither is ever opened by hand.
+# Only the MACHINERY moves: `tools/` (the program), `design/` (its stylesheet
+# and self-hosted fonts), and `browser-companion/` (the capture extension - the
+# one folder a human DOES open by hand, exactly once, to point
+# chrome://extensions "Load unpacked" at `.fha/browser-companion/`; its README
+# rides along and says so).
 #
 # `docs/` deliberately stays at the archive ROOT, alongside the rulebooks it is
 # part of. It is human-facing reading matter, not machinery, and it is one half
-# of a two-way link graph: the root rulebooks link to `docs/…`, and the docs link
-# back to `../SPEC.md`, `../AGENTS.md`, `../README.md`. Remapping either side
-# under `.fha/` breaks every one of those links in an installed archive - a
+# of a two-way link graph: the root docs and rulebooks link to `docs/…`, and the
+# docs link back to `../SPEC.md`, `../AGENTS.md`, `../GETTING_STARTED.md`.
+# Remapping either side under `.fha/` breaks every one of those links in an
+# installed archive - a
 # `docs/…` link from a root rulebook would resolve to nothing, and `../SPEC.md`
 # from a vendored doc would resolve inside `.fha/`, where no rulebook lives.
 # Keeping docs at the root costs one visible folder and keeps the archive
 # navigable in a plain file browser, with no install-time link rewriting anywhere
 # in the install/update engine.
 #
+# The same rule is why GETTING_STARTED.md and CHEATSHEET.md live at the REPO
+# root and not under docs/: repo path == install path, so their relative links
+# mean one thing in both places. A doc whose two depths differ can only be
+# link-correct in one of them, and nothing here rewrites links to fix it.
+#
 # Also deliberately at the archive root: the rulebooks themselves
-# (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers, and `.claude/skills`
-# (Claude Code discovers skills at the root). `_VENDOR_DIR` is the shared
-# `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on the name.
+# (SPEC/TOOLING/AGENTS/CLAUDE), the two owner entry docs, the launchers, and
+# `.claude/skills` (Claude Code discovers skills at the root). `_VENDOR_DIR` is
+# the shared `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on
+# the name.
 _VENDOR_DIR = VENDOR_DIR
-_VENDORED_SUBTREES = ('tools', 'design')
+_VENDORED_SUBTREES = ('tools', 'design', 'browser-companion')
+
+# Dev-only furniture inside a vendored subtree that never enters an archive:
+# the extension's node test-suite, its capture-bundle fixtures, the npm test
+# manifest, and the hand-test walkthrough. What ships is exactly what the
+# browser loads unpacked - manifest.json, src/, icons/ - plus the README that
+# says how to load it. (Repo-relative src paths / path prefixes.)
+#
+# browser-companion/README.md is on this list because it is the PROJECT readme:
+# it is addressed to whoever works on the extension, and it links to
+# ../TOOLING_INGESTION.md, ../tests/test_browser_companion.py, test-bundle/ and
+# ANCESTRY-AUTOFETCH-TEST.md - every one of which the installer deliberately
+# leaves behind. Shipping it gave an archive owner a guide full of dead links
+# and a test command that cannot run. The owner's copy is README-ARCHIVE.md,
+# remapped onto README.md by _VENDOR_RENAMES below.
+# Tool-generated caches that appear inside an operating subtree after an
+# ordinary dev session. Never package content, wherever they turn up.
+_DEV_CACHE_DIRS = frozenset({'__pycache__', '.pytest_cache'})
+
+_VENDOR_EXCLUDE_PREFIXES = ('browser-companion/tests/',
+                            'browser-companion/test-bundle/')
+_VENDOR_EXCLUDE_FILES = frozenset({
+    'browser-companion/package.json',
+    'browser-companion/ANCESTRY-AUTOFETCH-TEST.md',
+    'browser-companion/README.md',
+})
+
+# Files that ship under a DIFFERENT name than they carry in the repo, because
+# the archive wants a different document at that spot than the project does.
+# (repo src -> archive path.) The one case is the capture extension's README:
+# an owner opening `.fha/browser-companion/README.md` gets plain instructions
+# for loading the add-on and filing what it captures, with no link that leads
+# outside an installed archive. The project README stays home (excluded above).
+_VENDOR_RENAMES: dict[str, str] = {
+    'browser-companion/README-ARCHIVE.md':
+        f'{VENDOR_DIR}/browser-companion/README.md',
+}
 
 # Individual docs that are PROJECT documentation rather than owner documentation,
 # and so belong with the machinery rather than in the archive's readable `docs/`.
@@ -266,7 +349,10 @@ _VENDORED_DOCS = frozenset({
 _SKELETON_SRC_DIR = 'archive-template'
 
 # A file under archive-template/ that is repo furniture, not skeleton: it tells a
-# human how to start an archive, which the docs/ guides already cover.
+# human how to start an archive, which GETTING_STARTED.md already covers. Without
+# this exclusion its archive path would be a bare `README.md` at the archive
+# root - putting back the very file the operating layer deliberately stopped
+# shipping, and pointing the owner at a page about the public project.
 _SKELETON_EXCLUDE = {'README.md'}
 
 # Files that live under an operating subtree but are user-owned skeleton seeds:
@@ -317,24 +403,60 @@ def _sha256_file(path: Path) -> str:
 
 # ── Manifest definition + IO ────────────────────────────────────────────────────
 
-def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
+def _repo_relative(path: Path, repo_root: Path) -> str:
+    """A folder's name as it reads in the clone - 'tools', not /Users/….
+
+    Keeps the refusal message portable between the maintainer's machine and a
+    bug report; a folder somehow outside the clone keeps its own spelling,
+    because naming it wrongly is worse than naming it long.
+    """
+    try:
+        return Path(path).relative_to(repo_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
+
+
+def _walk_repo_files(base: Path, unreadable: list[Path]):
+    """Every file under `base`, sorted, recording folders that would not list.
+
+    The manifest is the package's packing list, and `update-tools` treats a
+    file the list does not name as RETIRED UPSTREAM - it moves that file aside
+    in every archive that updates. So a folder this walk cannot open does not
+    merely make a short manifest: it eventually takes those tools out of
+    working archives, from a `write-manifest` run that reported success.
+    `rglob` cannot tell an unreadable folder from an empty one, so the walk
+    goes through `walk_files` with a recorder and `generate_manifest` refuses
+    on a non-empty list.
+    """
+    return sorted(
+        p for p in walk_files(base, on_error=unreadable_dir_recorder(unreadable))
+        if p.is_file()
+    )
+
+
+def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str, Path]]:
     """Yield (archive_path, source_path) for every operating-layer file.
 
     The operating layer is the generic, regenerable glue a genealogist needs to
-    operate an archive: the root rulebooks + README, everything under tools/
-    (minus Python bytecode caches), everything under docs/, and the agent's
-    workflow skills under .claude/skills/. docs/ is included whole rather than
-    cherry-picked: BUILD.md M9.1 names five docs as the floor ("must ship into
-    every archive"), but the whole folder is generic human-facing documentation
-    with no family data, and a directory rule auto-covers future docs and keeps
-    their cross-links intact in an installed archive.
+    operate an archive: the root rulebooks + the two owner entry docs
+    (GETTING_STARTED.md, CHEATSHEET.md), everything under tools/
+    (minus Python bytecode caches), everything under docs/, the capture
+    extension under browser-companion/ (minus its dev furniture - it is a
+    front-end tool like the serve workbench, shipped ready to load unpacked),
+    and the agent's workflow skills under .claude/skills/. docs/ is included
+    whole rather than cherry-picked: BUILD.md M9.1 names five docs as the floor
+    ("must ship into every archive"), but the whole folder is generic
+    human-facing documentation with no family data, and a directory rule
+    auto-covers future docs and keeps their cross-links intact in an installed
+    archive.
 
-    The machinery subtrees (tools/, design/) install UNDER .fha/ (see
-    _VENDOR_DIR) so the archive root reads as the genealogy, not the tooling;
-    their archive path is `.fha/…` while the repo source stays flat, recorded by
-    the manifest's src/path seam. The root rulebooks, docs/, the launchers, and
-    .claude/skills keep source == archive path at the root - docs/ among them so
-    its two-way link graph with the rulebooks survives an install (_VENDOR_DIR).
+    The machinery subtrees (tools/, design/, browser-companion/) install UNDER
+    .fha/ (see _VENDOR_DIR) so the archive root reads as the genealogy, not the
+    tooling; their archive path is `.fha/…` while the repo source stays flat,
+    recorded by the manifest's src/path seam. The root rulebooks, docs/, the
+    launchers, and .claude/skills keep source == archive path at the root -
+    docs/ among them so its two-way link graph with the rulebooks survives an
+    install (_VENDOR_DIR).
     """
     out: list[tuple[str, Path]] = []
 
@@ -353,28 +475,40 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
         if not base.is_dir():
             continue
         moved = sub in _VENDORED_SUBTREES
-        for p in sorted(base.rglob('*')):
-            if not p.is_file():
-                continue
-            if '__pycache__' in p.parts or p.suffix in ('.pyc', '.pyo'):
+        for p in _walk_repo_files(base, unreadable):
+            # Dev debris, not package content. `.pytest_cache/` is gitignored
+            # but a walk still finds it, so on any machine that had run the
+            # test suite `write-manifest` quietly added four cache files to
+            # the packing list - a manifest that differs by who generated it,
+            # and a pytest cache vendored into every archive.
+            if _DEV_CACHE_DIRS.intersection(p.parts) or p.suffix in ('.pyc', '.pyo'):
                 continue
             rel = p.relative_to(repo_root).as_posix()
             # Skip skeleton-override files - they live under an operating
             # subtree but are user-owned (see _SKELETON_OVERRIDES).
             if rel in _SKELETON_OVERRIDE_SRCS:
                 continue
+            # Skip dev-only furniture inside a vendored subtree (the
+            # extension's tests/fixtures - see _VENDOR_EXCLUDE_*).
+            if (rel in _VENDOR_EXCLUDE_FILES
+                    or rel.startswith(_VENDOR_EXCLUDE_PREFIXES)):
+                continue
             # Vendored subtrees (tools/, design/) install UNDER .fha/ so the
             # archive root stays uncluttered; owner-facing docs/ and
             # .claude/skills stay at the root (readable documentation /
             # agent-discovered skills). Individual project docs are vendored too.
-            archive_path = (f'{_VENDOR_DIR}/{rel}'
-                            if moved or rel in _VENDORED_DOCS else rel)
+            # A handful of files ship under a different name than they carry
+            # here (_VENDOR_RENAMES) because the archive wants a different
+            # document at that spot than the project does.
+            archive_path = _VENDOR_RENAMES.get(rel) or (
+                f'{_VENDOR_DIR}/{rel}'
+                if moved or rel in _VENDORED_DOCS else rel)
             out.append((archive_path, p))
 
     return out
 
 
-def _skeleton_files(repo_root: Path) -> list[tuple[str, Path]]:
+def _skeleton_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str, Path]]:
     """Yield (archive_path, source_path) for every skeleton seed file.
 
     The skeleton is the empty starting structure an archive grows from. Its
@@ -387,9 +521,7 @@ def _skeleton_files(repo_root: Path) -> list[tuple[str, Path]]:
     base = repo_root / _SKELETON_SRC_DIR
     if not base.is_dir():
         return out
-    for p in sorted(base.rglob('*')):
-        if not p.is_file():
-            continue
+    for p in _walk_repo_files(base, unreadable):
         rel_in_template = p.relative_to(base)
         if rel_in_template.as_posix() in _SKELETON_EXCLUDE:
             continue
@@ -412,16 +544,37 @@ def generate_manifest(repo_root: Path, spec_version: str | None = None) -> dict:
     returns the JSON-serializable manifest. Entries are sorted by archive path so
     the committed manifest.json has a stable, diff-friendly order. `spec_version`
     defaults to the value parsed from SPEC.md's "**Version X.Y …**" line.
+
+    Refuses (ScaffoldError) when any folder in the clone would not list. A
+    packing list is a claim that this is everything; a walk that skipped a
+    subtree cannot make it, and the consequence is not a smaller download -
+    `update-tools` reads an absent entry as "retired upstream" and moves the
+    installed copy aside in every archive. Better a maintainer re-runs one
+    command.
     """
     repo_root = Path(repo_root).resolve()
     if spec_version is None:
         spec_version = _read_spec_version(repo_root)
 
+    unreadable: list[Path] = []
+    file_sets = (
+        ('operating', _operating_files(repo_root, unreadable)),
+        ('skeleton', _skeleton_files(repo_root, unreadable)),
+    )
+    if unreadable:
+        shown = ', '.join(sorted(
+            _repo_relative(p, repo_root) for p in unreadable)[:5])
+        raise ScaffoldError(
+            f'The packing list was NOT written: {len(unreadable)} folder(s) in '
+            f'{repo_root} could not be opened, so the files in them would have '
+            f'been left off it: {shown}. An archive updating from a list that '
+            f'is missing them would set those files aside as retired. Fix the '
+            f'folder (permissions, or a drive that is not connected), then run '
+            f'`python tools/scaffold.py write-manifest --repo .` again.'
+        )
+
     entries: list[dict] = []
-    for category, pairs in (
-        ('operating', _operating_files(repo_root)),
-        ('skeleton', _skeleton_files(repo_root)),
-    ):
+    for category, pairs in file_sets:
         for archive_path, src in pairs:
             entry = {
                 'path': archive_path,
@@ -716,6 +869,22 @@ def _stamp_dict(manifest: dict, checksums: dict[str, str]) -> dict:
     }
 
 
+def _seed_roots_stamp(archive_root: Path) -> None:
+    """Remember the archive's current `roots:` so W121 has a baseline (#36).
+
+    The roots-change check compares fha.yaml against the mapping the tools last
+    ran with; with no baseline there is nothing to compare, and the first
+    `fha index` would silently accept whatever it finds - including a value
+    already narrowed into the trap. Install and update-tools are the two
+    moments an archive first meets this build, so they seed the stamp from the
+    fha.yaml as it stands. Best-effort: a malformed fha.yaml is doctor's job.
+    """
+    try:
+        roots_change_orphans(archive_root, load_fha_yaml(archive_root))
+    except Exception:
+        pass
+
+
 def _write_version_stamp(archive_root: Path, stamp: dict) -> None:
     """Write .plaintext-version (pretty JSON, trailing newline), atomically.
 
@@ -898,18 +1067,18 @@ def run_install(
     # place (sha256 match) it was left by a partial previous install that never wrote
     # the stamp - safe to overwrite so the user can simply re-run install to finish.
     #
-    # Checked for EVERY category, not just skeleton. `README.md` is an operating
-    # file, and the documented "copy this template, then point install at it"
-    # path leads a human straight to editing one: install used to copy over it
-    # with no backup and exit 0, while the template's own README promises that
+    # Checked for EVERY category, not just skeleton: the documented "copy this
+    # template, then point install at it" path puts template bytes at operating
+    # destinations as well as skeleton ones, and install used to copy over them
+    # with no backup and exit 0 while the template's own README promised that
     # starting to edit makes installation stop.
     #
     # Three byte patterns are acceptable at a destination: what the manifest
     # predicts, what THIS COPY of the source actually holds, and what the
     # TEMPLATE ships there (a pristine hand-copy - the documented path, which
-    # must keep working; the template's README differs from the installed one by
-    # design, so comparing against stock alone would refuse exactly the copy the
-    # guide tells people to make).
+    # must keep working even when the template's copy of a file differs from the
+    # installed one, since comparing against stock alone would refuse exactly the
+    # copy the guide tells people to make).
     #
     # The middle one is what makes an interrupted install resumable. The manifest
     # is generated in a git checkout, where .gitattributes materializes the .cmd
@@ -1012,6 +1181,7 @@ def run_install(
             changed.append(str(dest))
         _write_version_stamp(archive_path, _stamp_dict(manifest, checksums))
         changed.append(str(archive_path / VERSION_FILE))
+        _seed_roots_stamp(archive_path)
         _hide_vendor_dir(archive_path)
     except OSError as exc:
         raise ScaffoldError(
@@ -1598,6 +1768,7 @@ def run_update_tools(
             'Run `fha update-tools` again to re-record the state.',
             file=sys.stderr,
         )
+    _seed_roots_stamp(archive_root)
 
     print()
     print(
@@ -1841,6 +2012,12 @@ def _cmd_write_manifest(args: argparse.Namespace) -> int:
     repo_root = _resolve_repo_root(getattr(args, 'repo', None))
     try:
         path = _write_manifest(repo_root)
+    except ScaffoldError as exc:
+        # A folder that would not list (generate_manifest's refusal). Plain
+        # message, no traceback - the maintainer reads the same voice the
+        # archive owner does.
+        print(f'ERROR: {exc}', file=sys.stderr)
+        return EXIT_FAILURE
     except OSError as exc:
         print(f'ERROR: could not write manifest: {exc}', file=sys.stderr)
         return EXIT_FAILURE

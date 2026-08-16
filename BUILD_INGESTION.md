@@ -1,6 +1,6 @@
 # BUILD_INGESTION.md - intake pipeline (capture + browser companion): build sequence
 
-**Who this is for:** developers implementing the **intake on-ramp** - `fha capture`, its recipes, the `--ingest` sweep, the browser companion, and the native-messaging host. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** developers implementing the **intake on-ramp** - `fha capture`, its recipes, the `--ingest` sweep, the browser companion, and the native-messaging host. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 This file is the build guide for the **ingestion layer** - the capture engine and every front-end that feeds it. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) (workbench skills). Design rationale lives in [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); this file tells you the sequence and how to verify it.
 
@@ -117,7 +117,7 @@ browser-staged bundle to a real inbox stub - the prerequisite for the browser co
 (§5), whose only output is such a bundle.
 
 Algorithm: resolve `DIR` (explicit arg → `fha.yaml` `capture_staging:` → default
-`~/Downloads/fha-inbox`). For each `<slug>-<timestamp>/` bundle (`page.html` + optional
+`~/Downloads/fha-inbox`). For each `<slug>-<timestamp>-<token>/` bundle (`page.html` + optional
 `asset.*` + `capture.json`, §3): read + validate it, then run `run_capture` wholesale -
 `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as explicit
 overrides (`url`/`title`/`type`/`date`/`accessed`/`notes`/`people`). `run_capture` gained
@@ -156,9 +156,40 @@ fha capture --ingest <staging-dir>                                   # stubs in 
 
 **One PR.** A Manifest V3 browser extension in [`browser-companion/`](browser-companion/)
 (TOOLING_INGESTION §5), the everyday front-end that produces the staged bundles MG2.1's
-`--ingest` already consumes. It lives **outside** the Python tool suite and the archive
-operating layer - installed in the browser, not vendored by `fha install`, so it is **not**
-a `manifest.json` entry. No new Python; the backend contract was finished in MG2.1.
+`--ingest` already consumes. It lives **outside** the Python tool suite - installed in the
+browser, never running inside the archive. *(Amended 2026-07-26, owner decision: it now
+SHIPS with every archive - `fha install`/`update-tools` vendor the loadable files into
+`.fha/browser-companion/` as ordinary manifest entries, ready for "Load unpacked", dev
+furniture excluded; see TOOLING_INGESTION §5 and BUILD.md M11.7. Original build scope
+below is unchanged.)* No new Python; the backend contract was finished in MG2.1.
+
+*(Review wave 2026-07-27, from a full code review of the shipped companion:
+pointer-only capture restored - page-copy off + "No" stages an empty `assets`
+list that ingest files as an `asset_elsewhere: true` pointer stub, per §5.3;
+the handoff card's copyable command now names a renamed staging folder
+(`fha capture --ingest "~/Downloads/<folder>"` - the bare command only sweeps
+the default); the folder setting is sanitized to a Downloads-relative subpath;
+bundle timestamps carry milliseconds so same-second captures cannot share a
+folder; the single-file snapshot gains a `<base href>` so un-inlined relative
+references survive offline; §5.3/§5.4/§5.6 doc drift corrected (print-to-PDF
+removal, the real `<all_urls>` justification, the real storage keys). New
+tests: `tests/test-capture-json.js`, `tests/test-sync.js` - the latter turns
+every "keep in sync" comment pair (content.js copies ↔ lib canonical modules,
+capture-json.js ↔ its pure twin) into failing builds instead of hopes - and a
+pointer-only ingest round-trip in `tests/test_browser_companion.py`.)*
+
+*(Review wave 2026-08-16, PR #42 round 4: that handoff command's
+`~/Downloads/<folder>` was itself a guess - the download directory is a browser
+setting, so a bundle staged into a relocated Downloads (OneDrive, a second
+volume) was advertised at a path it had never been written to, and the sweep
+reported nothing waiting. The command is now built from the completed
+download's own absolute path (`chrome.downloads.search` →
+`DownloadItem.filename`), and from nothing when the browser reports nothing:
+the bare command stands and a hint names the browser's download setting and
+`fha.yaml`'s `capture_staging:`. New coverage: `stagedPaths` / `ingestCommand`
+/ `ingestHint` in `tests/test-capture-json.js`, extended parity in
+`tests/test-sync.js`, and - because CI installs no node - structural pins in
+`tests/test_browser_companion.py`.)*
 
 Scope is the **core** extension only:
 - The four-phase side panel (§5.3): Invoke → Confirm (generic pre-fill, editable) → Capture
@@ -170,7 +201,7 @@ Scope is the **core** extension only:
   `page.html` at ingest. The browser captures; Python extracts.
 - The §5.1 transport: assemble `page.html` + optional `asset.<ext>` + `capture.json`
   (schema 2 today; shipped at schema 1 - §3) in memory, write them via
-  `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>/`. The panel
+  `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. The panel
   reports exactly where the bundle went and that `fha capture --ingest` files it - it never
   pretends Downloads is the archive.
 - A minimal single-file inliner (§9): images + stylesheet text inlined, scripts dropped,

@@ -22,6 +22,14 @@ The contracts locked here (plan 04, TOOLING §13e):
   - Working copy: a records-only run succeeds (with the honest note) and
     still stamps; `--include-assets` is refused warning-level (ok=True,
     exit 0, data.status='working-copy').
+  - A folder that will not open: no zip at all (exit 3, status
+    'unreadable-folders', nothing written, the folder named and
+    --allow-incomplete offered), and with that flag a zip whose NAME and whose
+    BACKUP_INCOMPLETE.txt member both say what is missing, plus a stamp
+    doctor can read it from.
+  - Path identity: which of two names is one folder is asked of the
+    filesystem, not of a string, so a destination that a case-insensitive
+    volume would put inside the archive is refused rather than written there.
   - Restore = unzip, literally: an extracted backup lints with zero errors.
 
 Synthetic tmp archives only - the real archive is never a test bed.
@@ -30,9 +38,12 @@ Synthetic tmp archives only - the real archive is never a test bed.
 import datetime
 import hashlib
 import json
+import os
 import sys
 import tempfile
+import unicodedata
 import unittest
+import unittest.mock
 import zipfile
 from pathlib import Path
 
@@ -385,7 +396,7 @@ class FailureInjectionTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_write_failure_removes_partial_zip(self) -> None:
-        def _boom(zip_path, entries):
+        def _boom(zip_path, entries, notice=None):
             zip_path.write_bytes(b'partial garbage')
             raise OSError('disk full')
 
@@ -409,7 +420,7 @@ class FailureInjectionTests(unittest.TestCase):
         """The docstring promise - an interrupted run leaves nothing behind -
         must hold for BaseException too: a Ctrl-C mid-write used to skip the
         typed cleanup arms and leave a partial zip on disk."""
-        def _interrupt(zip_path, entries):
+        def _interrupt(zip_path, entries, notice=None):
             zip_path.write_bytes(b'partial garbage')
             raise KeyboardInterrupt
 
@@ -478,7 +489,8 @@ class ResultDataContractTests(unittest.TestCase):
     name-collision, write-failed)."""
 
     _KEYS = {'status', 'zip_path', 'files', 'bytes', 'assets_included',
-             'skipped_roots', 'folders', 'excluded'}
+             'skipped_roots', 'folders', 'excluded', 'unreadable_dirs',
+             'complete'}
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -503,7 +515,7 @@ class ResultDataContractTests(unittest.TestCase):
         self._assert_documented_keys(result, 'bad-destination')
 
     def test_write_failed_arm_carries_all_documented_keys(self) -> None:
-        def _boom(zip_path, entries):
+        def _boom(zip_path, entries, notice=None):
             raise OSError('disk full')
 
         orig = backup._write_zip
@@ -524,9 +536,394 @@ class ResultDataContractTests(unittest.TestCase):
         result = _run(self.root, include_assets=True)
         self._assert_documented_keys(result, 'name-collision')
 
+    def test_unreadable_folders_arm_carries_all_documented_keys(self) -> None:
+        with unittest.mock.patch(
+                'os.scandir',
+                new=_scandir_denying(self.root / 'sources' / 'other')):
+            result = _run(self.root)
+        self._assert_documented_keys(result, 'unreadable-folders')
+
     def test_ok_and_dry_run_arms_carry_all_documented_keys(self) -> None:
         self._assert_documented_keys(_run(self.root, dry_run=True), 'dry-run')
         self._assert_documented_keys(_run(self.root), 'ok')
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    The fault goes in at `os.scandir` because `os.walk` resolves it at call
+    time on every supported Python - that is what makes the `onerror` seam
+    observable here. chmod cannot produce this: CI runs as root, which ignores
+    mode bits, and Windows has no equivalent.
+
+    What this deliberately does NOT rely on: that pathlib's `rglob` reaches the
+    disk the same way. It does on 3.11/3.12/3.14, but NOT on the 3.10 floor
+    (pathlib routes through an accessor object that bound `os.scandir` at
+    import time, so a later patch is invisible) and not on 3.13. So the
+    injection does not reproduce the pre-fix `rglob` behaviour on every version
+    we support - a regression back to `rglob` is still caught everywhere, but
+    on the floor it is caught by the warning going missing rather than by the
+    folder reading as empty.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class UnreadableFolderTests(unittest.TestCase):
+    """A backup that could not read a folder must not be written at all.
+
+    The zip outlives the terminal session: the human keeps it for years
+    believing it is his archive, and finds out otherwise on the one day
+    recovery is impossible. So the plan itself is the failure, exactly like a
+    duplicate in-zip name."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.root = _make_archive(self.parent)
+        self.shut = self.root / 'sources' / 'other'
+        self.dest = self.parent / 'my-archive-backups'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_no_zip_is_written_and_the_folder_is_named(self) -> None:
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.shut)):
+            result = _run(self.root)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'unreadable-folders')
+        self.assertEqual(result.data['unreadable_dirs'], ['sources/other'])
+        self.assertFalse(result.data['complete'])
+        text = _message_text(result)
+        self.assertIn('no backup was written', text)
+        self.assertIn('sources/other', text)
+        self.assertIn('--allow-incomplete', text)
+        # Nothing on disk, not even an empty destination folder.
+        self.assertFalse(self.dest.exists())
+        self.assertFalse((self.root / '.cache' / 'last_backup.json').is_file())
+
+    def test_dry_run_previews_the_same_refusal(self) -> None:
+        # A preview that promises a backup the real run would refuse is not a
+        # preview of that run.
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.shut)):
+            result = _run(self.root, dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'unreadable-folders')
+        self.assertFalse(self.dest.exists())
+
+    def test_allow_incomplete_marks_the_zip_in_its_name_and_inside_it(self) -> None:
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.shut)):
+            result = _run(self.root, allow_incomplete=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        zip_path = Path(result.data['zip_path'])
+        self.assertIn('-INCOMPLETE', zip_path.name)
+        self.assertFalse(result.data['complete'])
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            self.assertIn('BACKUP_INCOMPLETE.txt', names)
+            notice = zf.read('BACKUP_INCOMPLETE.txt').decode('utf-8')
+            self.assertEqual(zf.testzip(), None)
+        self.assertIn('THIS BACKUP IS INCOMPLETE', notice)
+        self.assertIn('sources/other', notice)
+        # The zip really is short of the archive - the notice is not decoration.
+        self.assertNotIn('sources/other/letter_S-1111111111.md', names)
+        # And doctor can say so months later.
+        stamp = json.loads(
+            (self.root / '.cache' / 'last_backup.json').read_text(encoding='utf-8'))
+        self.assertIs(stamp['complete'], False)
+        self.assertEqual(stamp['unreadable_dirs'], ['sources/other'])
+
+    def test_an_unreadable_folder_in_a_SKIPPED_asset_root_does_not_refuse(self) -> None:
+        # The records-only run only ESTIMATES the size of the photo root it is
+        # not packing. A folder it could not read there makes one printed
+        # number low; refusing the records backup over that would be the
+        # opposite of the rule.
+        with unittest.mock.patch(
+                'os.scandir', new=_scandir_denying(self.root / 'photos' / '1920')):
+            result = _run(self.root)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'ok')
+        self.assertTrue(result.data['complete'])
+
+    def test_included_asset_root_is_covered_by_the_refusal(self) -> None:
+        with unittest.mock.patch(
+                'os.scandir', new=_scandir_denying(self.root / 'photos' / '1920')):
+            result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'unreadable-folders')
+        self.assertEqual(result.data['unreadable_dirs'], ['photos/1920'])
+
+
+class MissingAssetRootTests(unittest.TestCase):
+    """The whole photos root gone is not milder than one folder inside it.
+
+    An unreadable SUBFOLDER of the photos root already refused; the root
+    itself vanishing - the unplugged external drive the refusal was written
+    for - exited 0, reported `complete: True`, wrote an unmarked zip with no
+    photos in it, and stamped `assets_included: true` for `fha doctor` to read
+    back as reassurance. That severity inversion is the defect."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        # An external photos root, mapped in fha.yaml and then taken away -
+        # exactly what an unmounted drive leaves behind.
+        self.ext = self.parent / 'PhotoDrive'
+        self.root = _make_archive(self.parent, photos_root=str(self.ext))
+        self.gone = self.ext
+        import shutil
+        shutil.rmtree(self.gone)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_requested_root_that_is_not_there_refuses(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'unreadable-folders')
+        self.assertFalse(result.data['complete'])
+        self.assertIn(str(self.gone).replace('\\', '/'),
+                      result.data['unreadable_dirs'])
+        text = _message_text(result)
+        self.assertIn('no backup was written', text)
+        # Names the cause the human can act on, not "permissions".
+        self.assertIn('roots: photos:', text)
+        self.assertIn('--allow-incomplete', text)
+        self.assertFalse((self.parent / 'my-archive-backups').exists())
+        self.assertFalse((self.root / '.cache' / 'last_backup.json').is_file())
+
+    def test_allow_incomplete_marks_the_zip_and_the_stamp(self) -> None:
+        result = _run(self.root, include_assets=True, allow_incomplete=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertFalse(result.data['complete'])
+        zip_path = Path(result.data['zip_path'])
+        self.assertIn('-INCOMPLETE', zip_path.name)
+        with zipfile.ZipFile(zip_path) as zf:
+            self.assertIn('BACKUP_INCOMPLETE.txt', zf.namelist())
+        stamp = json.loads(
+            (self.root / '.cache' / 'last_backup.json').read_text(encoding='utf-8'))
+        self.assertIs(stamp['complete'], False)
+
+    def test_a_records_only_run_is_untouched_by_the_missing_root(self) -> None:
+        # Nobody asked for the photos; their root being away is not this
+        # backup's business.
+        result = _run(self.root)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+
+    def test_an_unconfigured_default_root_that_is_absent_does_not_refuse(self) -> None:
+        # `documents` and `photos` exist as spec defaults for every archive.
+        # An archive that simply never made a documents/ folder has not lost
+        # anything, and refusing would be the tool inventing a problem.
+        root = self.parent / 'plain'
+        _write(root / 'fha.yaml', 'title: Plain\n')
+        _write(root / 'sources' / 'other' / 'letter_S-2222222222.md',
+               _SOURCE.format(sid='S-2222222222', title='A letter'))
+        _write(root / 'photos' / '1899' / 'pic.jpg', 'jpegbytes')
+        result = _run(root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+        self.assertEqual(result.data['unreadable_dirs'], [])
+
+    def test_an_included_root_that_opens_empty_is_warned_about_not_refused(self) -> None:
+        # A mount point whose drive is away still exists as an empty folder,
+        # and nothing here can tell that from a library with no files yet. So:
+        # said plainly, exit 0, still complete.
+        self.gone.mkdir(parents=True)
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+        text = _message_text(result)
+        self.assertIn('no files in it at all', text)
+        self.assertIn('not plugged in', text)
+
+
+class SymlinkedFolderTests(unittest.TestCase):
+    """A subfolder that is a shortcut is a folder this walk did not read.
+
+    `os.walk` defaults to `followlinks=False` and drops the subtree without
+    calling `onerror` - no listing is attempted, so there is no error to
+    report. The files simply were not there, and `complete` said True."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.ext = self.parent / 'PhotoDrive'
+        self.root = _make_archive(self.parent, photos_root=str(self.ext))
+        self.elsewhere = self.parent / 'old-photos' / '2019'
+        _write(self.elsewhere / 'reunion.jpg', 'jpegbytes')
+        self.link = self.ext / '2019'
+        try:
+            self.link.symlink_to(self.elsewhere, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_linked_subfolder_refuses_and_is_named(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'unreadable-folders')
+        self.assertFalse(result.data['complete'])
+        self.assertIn(str(self.link).replace('\\', '/'),
+                      result.data['unreadable_dirs'])
+        text = _message_text(result)
+        self.assertIn('shortcuts (symbolic links)', text)
+
+    def test_allow_incomplete_says_the_linked_folder_is_missing(self) -> None:
+        result = _run(self.root, include_assets=True, allow_incomplete=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertFalse(result.data['complete'])
+        zip_path = Path(result.data['zip_path'])
+        self.assertIn('-INCOMPLETE', zip_path.name)
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            notice = zf.read('BACKUP_INCOMPLETE.txt').decode('utf-8')
+        # The zip really is short the linked folder - the notice is not decor.
+        self.assertFalse([n for n in names if n.endswith('reunion.jpg')], names)
+        self.assertIn('2019', notice)
+
+    def test_a_link_in_the_archive_tree_is_recorded_too(self) -> None:
+        link = self.root / 'notes' / 'shared'
+        target = self.parent / 'shared-notes'
+        _write(target / 'memo.md', '# memo\n')
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+        result = _run(self.root)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['unreadable_dirs'], ['notes/shared'])
+
+    def test_a_link_that_IS_a_mapped_asset_root_is_an_exclusion_not_a_miss(self) -> None:
+        # `photos -> /Volumes/Photos` inside the archive folder with
+        # `roots: photos: /Volumes/Photos` is an ordinary way to keep a big
+        # library elsewhere. A records-only backup leaves the photos out by
+        # design; calling that deliberate exclusion an unread folder would
+        # refuse every backup this archive ever tries to make.
+        link = self.root / 'photos'
+        try:
+            link.symlink_to(self.ext, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+        self.link.unlink()          # no linked subfolder for this case
+        result = _run(self.root)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            names = zf.namelist()
+        self.assertFalse([n for n in names if n.startswith('photos/')], names)
+
+
+class PathIdentityTests(unittest.TestCase):
+    """Which of two names is one folder is a question for the filesystem.
+
+    `os.path.normcase` folds case on Windows only, so on macOS - where a
+    case-insensitive volume is the default - a destination spelled
+    `.../Archive` compared unequal to a root spelled `.../archive` and the
+    backup was written INSIDE the tree it was backing up, to be swept into the
+    next backup and lost with the same disk.
+
+    What this container can and cannot prove: it is a case-sensitive
+    filesystem, so the samefile arm cannot be shown doing something the old
+    string comparison did not (with no case folding and no second mount, the
+    two agree here). The folded arm is exercised directly, and `_file_id` is
+    checked on aliases that DO exist here - a symlink and a relative spelling.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.root = _make_archive(self.parent)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_destination_differing_only_in_capitals_is_refused(self) -> None:
+        # On this Linux volume those are two folders; on the Mac or Windows PC
+        # the same archive will be opened on, they are one. Refusing costs a
+        # sentence, writing costs the backup.
+        dest = self.parent / 'MY-ARCHIVE' / 'backups'
+        result = _run(self.root, to=str(dest))
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'bad-destination')
+        text = _message_text(result)
+        self.assertIn('capital letters or accents', text)
+        self.assertIn('--to', text)
+        self.assertFalse(dest.exists())
+
+    def test_destination_differing_only_in_unicode_form_is_refused(self) -> None:
+        root = _make_archive(self.parent, name=unicodedata.normalize('NFC', 'Ärchiv'))
+        nfd = unicodedata.normalize('NFD', 'Ärchiv')
+        result = _run(root, to=str(self.parent / nfd / 'backups'))
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('capital letters or accents', _message_text(result))
+
+    def test_a_plainly_different_destination_is_still_allowed(self) -> None:
+        # The blunt arm must not swallow ordinary destinations.
+        result = _run(self.root, to=str(self.parent / 'elsewhere'))
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_destination_reached_through_a_symlink_is_refused(self) -> None:
+        # Guard, not proof: resolve() already followed the link before this
+        # change. It is here so the rewrite of _inside cannot lose it.
+        link = self.parent / 'archive-link'
+        try:
+            link.symlink_to(self.root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+        result = _run(self.root, to=str(link / 'backups'))
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('inside', _message_text(result))
+
+    def test_fold_flattens_case_and_unicode_form(self) -> None:
+        self.assertEqual(backup._fold('Archive'), backup._fold('archive'))
+        self.assertEqual(
+            backup._fold(unicodedata.normalize('NFC', 'Ärchiv')),
+            backup._fold(unicodedata.normalize('NFD', 'Ärchiv')))
+        self.assertNotEqual(backup._fold('archive'), backup._fold('archives'))
+
+    def test_file_id_is_one_key_for_two_names_of_one_folder(self) -> None:
+        link = self.parent / 'photos-link'
+        try:
+            link.symlink_to(self.root / 'photos', target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+        self.assertEqual(backup._file_id(link), backup._file_id(self.root / 'photos'))
+        self.assertNotEqual(
+            backup._file_id(self.root / 'photos'),
+            backup._file_id(self.root / 'documents'))
+
+    def test_an_internal_mapped_root_is_pruned_from_the_records_walk(self) -> None:
+        # Guard, not proof: the pre-fix string comparison already pruned this
+        # one, so it passes against the unfixed walk. It is here because the
+        # move to _file_id changed HOW the exclusion is decided, and an
+        # identity test can lose a case that prefix matching happened to get
+        # right. The cases _file_id is actually needed for - a root reached
+        # through a link, a root outside the archive - are its neighbours.
+        # A records-only backup carries no photo files, and a photos root
+        # mapped inside the archive must not sneak in through the records walk.
+        root = _make_archive(self.parent, name='mapped', photos_root='media/photos')
+        result = _run(root)
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            names = zf.namelist()
+        self.assertFalse([n for n in names if n.startswith('media/photos/')], names)
 
 
 class RestoreSmokeTests(unittest.TestCase):

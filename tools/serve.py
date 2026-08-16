@@ -102,7 +102,7 @@ from _lib import (  # noqa: E402
     resolve_root_arg,
     Result,
     VENDOR_DIR,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,)
 
 # The engines serve drives in-process. Front-door imports (see module docstring).
@@ -1127,6 +1127,15 @@ def _echo_set_profile_photo(kw):
     return f'fha person set-profile-photo {kw.get("person_id", "?")} {_q(kw.get("value", "?"))}'
 
 
+def _verb_set_sex(state, kw, dry_run):
+    return person.run_set_sex(
+        state.archive_root, kw['person_id'], kw['value'], dry_run=dry_run)
+
+
+def _echo_set_sex(kw):
+    return f'fha person set-sex {kw.get("person_id", "?")} {kw.get("value", "?")}'
+
+
 def _verb_person_new(state, kw, dry_run):
     return person.run_new(
         state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
@@ -1613,7 +1622,7 @@ def _verb_home_edit(state, kw, dry_run):
     """Bounded write of notes/home.md - parity with editing the file directly.
     Dry-run shows a unified diff (contract SS6).
 
-    Reads/writes through `read_text_exact`/`write_text_exact` and reapplies the
+    Reads/writes through `read_text_exact`/`write_text_exact_atomic` and reapplies the
     file's own newline convention with `reapply_newline` (the same byte-faithful
     pattern the surgical claim/profile editors use) - a plain `Path.read_text`/
     `write_text` round-trip would silently convert every line of a CRLF-authored
@@ -1643,7 +1652,10 @@ def _verb_home_edit(state, kw, dry_run):
         return result
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        write_text_exact(path, new)
+        # Atomic so the refusal below is true: the human typed this homepage
+        # intro into a browser form and gets one line of feedback, so 'could
+        # not write' has to mean the old text is still there.
+        write_text_exact_atomic(path, new)
     except OSError as e:
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not write notes/home.md: {e}')
     result.note_changed(path)
@@ -1680,6 +1692,8 @@ VERBS: dict[str, dict] = {
     'person.set-profile-photo': {'schema': {'person_id': 'str', 'value': 'str'},
                                  'run': _verb_set_profile_photo, 'echo': _echo_set_profile_photo,
                                  'reindex': 'full'},
+    'person.set-sex': {'schema': {'person_id': 'str', 'value': 'str'},
+                       'run': _verb_set_sex, 'echo': _echo_set_sex, 'reindex': 'full'},
     'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
                              'birth': 'str', 'death': 'str', 'person_id': 'str',
                              'birth_place': 'str', 'death_place': 'str'},
@@ -2518,9 +2532,25 @@ class _Handler(BaseHTTPRequestHandler):
         if kind_err is not None:
             self._reject(400, kind_err)
             return
-        results = find_mod.search_json(self.state.archive_root, self.state.fha_config,
-                                       q, kinds=kinds, limit=limit)
-        self._send_json(200, {'results': results})
+        # `coverage` is the same sentence `fha find --text` prints and
+        # `fha find --json` puts on stderr (find._searchable_text_note, D14):
+        # how many of this archive's sources hold no text a search can read.
+        # The workbench box would otherwise be the one search surface that
+        # answers with silence and no caveat - and silence read as a finding is
+        # what #46 is a record of. Null when there is nothing to caveat; the
+        # front end renders it only for the whole-archive search bar.
+        #
+        # A `kind`-filtered request therefore gets no coverage at all: the
+        # engine skips the count for a filtered search (see
+        # search_json_with_coverage), because the person and place pickers ask
+        # "which record do you mean", never "what does the archive say", and
+        # the count is two indexed scans per debounced keystroke. It is skipped
+        # rather than recomputed over the filtered rows - a filtered count
+        # would be a second, different answer to the same question.
+        results, coverage = find_mod.search_json_with_coverage(
+            self.state.archive_root, self.state.fha_config,
+            q, kinds=kinds, limit=limit)
+        self._send_json(200, {'results': results, 'coverage': coverage})
 
     def _handle_root_asset(self, path: str) -> None:
         rest = unquote(path[len('/root/'):])

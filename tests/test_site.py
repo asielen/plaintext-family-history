@@ -11,7 +11,10 @@ reads from the record .md files is written to disk alongside the index rows.
 path under the private name `fha_site` (the same trick fha.py uses).
 """
 
+import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -20,6 +23,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +36,40 @@ _spec = importlib.util.spec_from_file_location('fha_site', ROOT / 'tools' / 'sit
 site = importlib.util.module_from_spec(_spec)
 sys.modules['fha_site'] = site
 _spec.loader.exec_module(site)
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    The fault goes in at `os.scandir` because `os.walk` resolves it at call
+    time on every supported Python - that is what makes the `onerror` seam
+    observable here. chmod cannot produce this: CI runs as root, which ignores
+    mode bits, and Windows has no equivalent.
+
+    What this deliberately does NOT rely on: that pathlib's `rglob` reaches the
+    disk the same way. It does on 3.11/3.12/3.14, but NOT on the 3.10 floor
+    (pathlib routes through an accessor object that bound `os.scandir` at
+    import time, so a later patch is invisible) and not on 3.13. So the
+    injection does not reproduce the pre-fix `rglob` behaviour on every version
+    we support - a regression back to `rglob` is still caught everywhere, but
+    on the floor it is caught by the warning going missing rather than by the
+    folder reading as empty.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
 
 
 class _Base(unittest.TestCase):
@@ -476,6 +514,139 @@ class FamilyStripTests(_Base):
         self.assertIn('Living Child', linked)
 
 
+class UnreadableRecordPrivacyTests(_Base):
+    """A record this build could not read is treated as restricted.
+
+    The `restricted:` marker lives ONLY in the record file - the index carries
+    `restricted` for sources and nothing at all for persons - so the exclusion
+    set is built by reading files. That makes a failed read fail OPEN: no
+    marker read exactly like no marker written, and a person carrying
+    `restricted: by-request` whose file would not open got a page on the
+    PUBLIC snapshot, with their name on it. The only sign was a warning about
+    missing prose, which reads as less content, not as a privacy marker lost.
+
+    The docstring's stated mitigation - "the standalone audit catches any
+    leak" - could not: what it named is the page-set design, which promises
+    only that no link points at a page that was not built. The missing marker
+    corrupts the page set itself.
+    """
+
+    def _all_output_text(self) -> str:
+        return '\n'.join(
+            p.read_text(encoding='utf-8', errors='replace')
+            for p in sorted(self.out_dir.rglob('*'))
+            if p.is_file() and p.suffix in ('.html', '.json')
+        )
+
+    def _seed_trio(self):
+        # One restricted person whose file reads (the control - already
+        # withheld today), one restricted person whose file will not, and one
+        # ordinary person whose biography links to both.
+        self._seed_person(
+            'p-aaaaaaaaaa', 'Public Pat', surname='Pat',
+            body='# Public Pat\n\n## Biography\n\n'
+                 'Worked with [[p-bbbbbbbbbb]] and [[p-cccccccccc]].\n')
+        self._seed_person('p-bbbbbbbbbb', 'Quiet Quinn', surname='Quinn',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-cccccccccc', 'Hidden Hollis', surname='Hollis',
+                          frontmatter_extra='restricted: by-request')
+
+    def test_a_person_record_that_is_gone_is_withheld_not_published(self):
+        self._seed_trio()
+        gone = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+        gone.unlink()
+        res = self._run(linked=False)
+
+        # The control: restricted and readable, correctly no page.
+        self.assertFalse((self.out_dir / 'persons' / 'p-bbbbbbbbbb.html').exists())
+        # The fix: restricted and unreadable, also no page.
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertTrue((self.out_dir / 'persons' / 'p-aaaaaaaaaa.html').exists())
+
+        text = self._all_output_text()
+        self.assertNotIn('Hidden Hollis', text)
+        self.assertNotIn('Hollis', text)
+        self.assertNotIn('Quiet Quinn', text)
+        self.assertIn('Living Person', self._read('persons/p-aaaaaaaaaa.html'))
+
+        # And the message says what actually happened, naming the file.
+        self.assertTrue(
+            any('hollis__test_p-cccccccccc.md' in m and 'withheld' in m
+                for m in res['messages']), res['messages'])
+        self.assertTrue(
+            any('left out of public output' in m for m in res['messages']),
+            res['messages'])
+
+    def test_a_person_record_whose_read_raises_is_withheld_too(self):
+        # `read_record` normally reports a bad file through `parse_errors`
+        # rather than raising, so both routes have to land in the same place.
+        self._seed_trio()
+        real = site.read_record
+        target = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+
+        def boom(path, *a, **kw):
+            if Path(path) == target:
+                raise RuntimeError('injected read failure')
+            return real(path, *a, **kw)
+
+        with unittest.mock.patch.object(site, 'read_record', new=boom):
+            res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertNotIn('Hidden Hollis', self._all_output_text())
+        self.assertTrue(
+            any('injected read failure' in m for m in res['messages']),
+            res['messages'])
+
+    def test_malformed_person_frontmatter_is_withheld(self):
+        # A hand-edit that breaks the YAML empties `meta` without raising,
+        # which loses the marker just as completely as a deleted file.
+        self._seed_trio()
+        broken = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+        broken.write_text(
+            '---\nid: p-cccccccccc\nname: "unterminated\n  : : :\n---\n# H\n',
+            encoding='utf-8')
+        self._run(linked=False)
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertNotIn('Hidden Hollis', self._all_output_text())
+
+    def test_linked_mode_is_unchanged(self):
+        # The developer preview applies no redaction at all and never reads
+        # these markers; withholding there would be a behaviour change for a
+        # mode that has no privacy contract to keep.
+        self._seed_trio()
+        (self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md').unlink()
+        self._run(linked=True)
+        self.assertTrue((self.out_dir / 'persons' / 'p-bbbbbbbbbb.html').exists())
+        self.assertTrue((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+
+    def test_an_unreadable_source_withholds_its_page_and_its_facts(self):
+        # The per-claim `restricted:` markers live in the source file too, so
+        # an unreadable source record means an unknown number of withheld
+        # facts. The whole source is withheld, and its claims with it.
+        self._seed_person('p-aaaaaaaaaa', 'Public Pat', surname='Pat')
+        self._seed_source('s-1111111111', 'Sealed Adoption File',
+                          people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'A private detail', status='accepted', date_edtf='1901',
+                         persons=('p-aaaaaaaaaa',))
+        (self.archive_root / 'sources' / 'census' / 'src_s-1111111111.md').unlink()
+        res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        text = self._all_output_text()
+        self.assertNotIn('A private detail', text)
+        self.assertNotIn('Sealed Adoption File', text)
+        self.assertTrue(
+            any('src_s-1111111111.md' in m and 'withheld' in m
+                for m in res['messages']), res['messages'])
+
+    def test_a_readable_person_record_still_publishes(self):
+        # The guard on the guard: fail-closed must not become closed-always.
+        self._seed_person('p-aaaaaaaaaa', 'Public Pat', surname='Pat')
+        self._run(linked=False)
+        self.assertTrue((self.out_dir / 'persons' / 'p-aaaaaaaaaa.html').exists())
+        self.assertIn('Public Pat', self._read('persons/p-aaaaaaaaaa.html'))
+
+
 class ResilienceTests(_Base):
     def test_malformed_source_yaml_warns_and_continues(self):
         # Broken frontmatter YAML in one source; another source is fine.
@@ -597,6 +768,162 @@ class AssetTests(_Base):
         self.assertIn('Jane in 1880', html)
         self.assertIn('jane.jpg', html)
 
+    def test_missing_photo_row_does_not_hide_its_live_variant(self):
+        # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
+        # leaves its is_primary flag alone, so the photo strip's
+        # one-entry-per-group pick would choose the row that cannot be
+        # rendered and drop the whole physical photo - back scan included -
+        # off the person page.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        back = self.archive_root / 'photos' / '1880' / 'jane-back.jpg'
+        back.parent.mkdir(parents=True, exist_ok=True)
+        back.write_bytes(b'not-a-real-image-but-exists')
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('MISSING:photos/1880/jane.jpg', 'g1', 1, 'Jane in 1880'))
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/jane-back.jpg', 'g1', 0, 'Reverse of the 1880 portrait'))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('MISSING:photos/1880/jane.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/jane-back.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('jane-back.jpg', html)
+        self.assertNotIn('MISSING:', html)
+
+    def test_living_tagged_gate_reads_missing_keyed_tags(self):
+        # The file came back (a reconnected drive) but the catalog has not
+        # been rescanned, so the living person's tag still sits on the
+        # 'MISSING:' key while source_files names the plain path. The gate
+        # must still fire - a stale catalog may not publish a living person.
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('MISSING:photos/1880/pic.jpg', 'g1', 1, ''))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('MISSING:photos/1880/pic.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('image omitted - tagged to a living person', html)
+
+    def test_a_photo_folder_that_will_not_open_stops_the_bare_name_guess(self):
+        # The bare-filename guess is allowed to publish a photo ONLY when
+        # exactly one file in the library answers to that name - one match is
+        # the whole guard. A folder that will not list hides the second match,
+        # so the site would publish, on a page it may hand to the family, a
+        # photo picked by which folder happened to open. Under-seeing here
+        # fails the guard OPEN, and a published photo cannot be unpublished.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n', encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        # The second copy sits one level below the folder that will not
+        # open. (`rglob('mystery.jpg')` stats a literal name rather than
+        # listing the folder holding it, so a file directly inside the shut
+        # folder is still found - it is the subtree below it that vanishes.)
+        for rel in ('1890/mystery.jpg', '1975/summer/mystery.jpg'):
+            stray = self.archive_root / 'photos' / rel
+            stray.parent.mkdir(parents=True, exist_ok=True)
+            stray.write_bytes(b'not-a-real-image-but-exists')
+        shut = self.archive_root / 'photos' / '1975'
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(shut)):
+            res = self._run(linked=True)
+        self.assertNotIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertTrue(
+            any('could not be opened' in m and 'mystery.jpg' in m
+                for m in res['messages']), res['messages'])
+        self.assertTrue(
+            any('<year>/mystery.jpg' in m for m in res['messages']),
+            res['messages'])
+
+    def test_a_shut_folder_inside_an_ignored_subtree_does_not_stop_the_guess(self):
+        # The guard is "publish a bare filename only when exactly ONE file in
+        # the library answers to it". A folder under `photos_ignore:` holds no
+        # candidate the guess would ever have accepted, so it can hide no
+        # second match and the count is not in doubt. Refusing over it is a
+        # refusal the guard has not earned - and photos_ignore: is there to
+        # name bulk exports, which are exactly the folders that live on drives
+        # that come and go.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\nphotos_ignore:\n  - "Flickr Export"\n',
+            encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        real = self.archive_root / 'photos' / '1890' / 'mystery.jpg'
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_bytes(b'not-a-real-image-but-exists')
+        shut = self.archive_root / 'photos' / 'Flickr Export' / '2019'
+        shut.mkdir(parents=True, exist_ok=True)
+        (shut / 'filler.jpg').write_bytes(b'x')
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(shut)):
+            res = self._run(linked=True)
+        self.assertIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertFalse(
+            [m for m in res['messages'] if 'could not be opened' in m],
+            res['messages'])
+
+    def test_a_shut_folder_outside_the_ignored_subtree_still_stops_the_guess(self):
+        # The other half of the same rule: a folder the setting says nothing
+        # about can still be hiding the second copy, so the refusal stands.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\nphotos_ignore:\n  - "Flickr Export"\n',
+            encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        for rel in ('1890/mystery.jpg', '1975/summer/mystery.jpg'):
+            stray = self.archive_root / 'photos' / rel
+            stray.parent.mkdir(parents=True, exist_ok=True)
+            stray.write_bytes(b'not-a-real-image-but-exists')
+        shut = self.archive_root / 'photos' / '1975'
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(shut)):
+            res = self._run(linked=True)
+        self.assertNotIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertTrue(
+            any('could not be opened' in m for m in res['messages']),
+            res['messages'])
+
+    def test_photos_ignore_excludes_bare_filename_guess(self):
+        # A bare `profile_photo: mystery.jpg` is answered by scanning the
+        # photos root. photos_ignore: marks a subtree as not part of the
+        # family library, so the scan must not answer out of it (#35).
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\nphotos_ignore:\n  - "Flickr Export"\n',
+            encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        stray = self.archive_root / 'photos' / 'Flickr Export' / 'mystery.jpg'
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_bytes(b'not-a-real-image-but-exists')
+        res = self._run(linked=True)
+        self.assertTrue(any('matched no photo' in m for m in res['messages']))
+        self.assertNotIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+
+        # Same file, same reference, with the setting removed: it resolves.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n', encoding='utf-8')
+        res = self._run(linked=True)
+        self.assertIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+
     @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
     def test_standalone_image_derivative(self):
         from PIL import Image
@@ -678,6 +1005,153 @@ class AssetTests(_Base):
         html = self._read('sources/s-1111111111.html')
         self.assertNotIn('class="source-portrait"', html)
         self.assertIn('image omitted - tagged to a living person', html)
+
+
+class LivingPhotoCheckUnavailableTests(_Base):
+    """The living-person photo gate fails OPEN, and the build says so.
+
+    Owner decision, 2026-08-16: `fha site` must build without
+    `.cache/photos.sqlite`, so a missing or unreadable catalog publishes the
+    source images rather than refusing them - "fine if living photo is
+    included. that should be on the researcher to monitor." Monitoring is only
+    possible if someone is told, so the one thing that is NOT optional is the
+    warning: which check did not run, why, and what to do about it.
+    """
+
+    def _seed_photo_source(self, sid='s-1111111111', name='pic.png'):
+        """A public source with one real image attached, and nothing else."""
+        from PIL import Image
+        self._seed_source(sid, 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / name
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(img)
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            (sid, f'photos/1880/{name}', 'front'))
+
+    def _warnings(self, res):
+        return [m for m in res['messages'] if 'tags naming living people' in m]
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_no_catalog_publishes_the_image_and_warns_once(self):
+        self._seed_photo_source()
+        res = self._run(linked=False)
+        # Behaviour is unchanged: the image is published, the build is clean of
+        # refusals, and the page shows the picture.
+        self.assertIn('media/', self._read('sources/s-1111111111.html'))
+        self.assertEqual(res['status'], 'ok')
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        # Cause, and the state it is in.
+        self.assertIn('the photo catalog has not been built yet', warnings[0])
+        # What did not happen.
+        self.assertIn('NOT', warnings[0])
+        self.assertIn('someone still living', warnings[0])
+        # The next step, and the fallback for a reader who cannot run it now.
+        self.assertIn('fha photoindex', warnings[0])
+        self.assertIn('fha site', warnings[0])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_the_warning_is_not_repeated_per_photo(self):
+        # A site with a wall of scans must not bury the sentence under copies
+        # of itself - one build, one warning.
+        for i, sid in enumerate(('s-1111111111', 's-2222222222')):
+            self._seed_photo_source(sid, name=f'pic{i}.png')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic1.png', 'back'))
+        res = self._run(linked=False)
+        self.assertEqual(len(self._warnings(res)), 1, res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_fresh_catalog_raises_no_alarm(self):
+        # The other half: a warning that fires when the check DID run is a
+        # warning the researcher learns to ignore.
+        self._seed_photo_source()
+        pconn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+        pconn.executescript(PHOTOS_DDL)
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/pic.png', 'g1', 1, ''))
+        pconn.commit()
+        pconn.close()
+        far_future = time.time() + 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+        res = self._run(linked=False)
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_an_unreadable_catalog_names_itself(self):
+        # A file that is not a database at all reads as unreadable, and the
+        # warning must say that rather than "not built yet" - the two have
+        # different fixes.
+        self._seed_photo_source()
+        (self.archive_root / '.cache' / 'photos.sqlite').write_bytes(b'not a database')
+        far_future = time.time() + 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (far_future, far_future))
+        res = self._run(linked=False)
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        self.assertIn('could not be read', warnings[0])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_stale_catalog_names_itself(self):
+        # Stale is the state a real archive sits in most often: the catalog
+        # exists, so "not built yet" would send the reader looking for a file
+        # that is right there.
+        self._seed_photo_source()
+        pconn = sqlite3.connect(str(self.archive_root / '.cache' / 'photos.sqlite'))
+        pconn.executescript(PHOTOS_DDL)
+        pconn.commit()
+        pconn.close()
+        long_ago = time.time() - 10_000
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (long_ago, long_ago))
+        res = self._run(linked=False)
+        warnings = self._warnings(res)
+        self.assertEqual(len(warnings), 1, res['messages'])
+        self.assertIn('out of date', warnings[0])
+
+    def test_a_source_with_no_images_says_nothing(self):
+        # Nothing was published that the gate would have looked at, so there is
+        # nothing to warn about - the transcript stays in the archive either way.
+        self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
+        doc = self.archive_root / 'documents' / 'letters' / 'note_s-1111111111.txt'
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text('a letter', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'documents/letters/note_s-1111111111.txt', 'transcript'))
+        res = self._run(linked=False)
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_the_linked_preview_says_nothing(self):
+        # --linked is the unredacted local preview: the gate does not run there
+        # by design, so there is no failed check to report and nothing is
+        # shared out of it.
+        self._seed_photo_source()
+        res = self._run(linked=True)
+        self.assertEqual(self._warnings(res), [], res['messages'])
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_the_warning_reaches_the_person_who_ran_the_command(self):
+        # A warning only in the Result is a warning nobody sees: `fha site`
+        # prints these to stderr and finishes with exit 1 (warnings), which is
+        # what the human at the terminal actually reads.
+        self._seed_photo_source()
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n', encoding='utf-8')
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        args = argparse.Namespace(root=str(self.archive_root), out=str(self.out_dir),
+                                  linked=False, dry_run=False)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = site._cmd_site(args)
+        self.assertEqual(code, 1)
+        self.assertIn('tags naming living people', err.getvalue())
+        self.assertIn('fha photoindex', err.getvalue())
 
 
 class SourcePortraitTests(_Base):

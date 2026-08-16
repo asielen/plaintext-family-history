@@ -20,8 +20,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import photoindex
 import process
-from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, load_fha_yaml, read_record
+from _lib import (
+    EXIT_CLEAN,
+    EXIT_ERRORS,
+    EXIT_FAILURE,
+    grouping_stem,
+    load_fha_yaml,
+    parse_media_filename,
+    read_record,
+    select_variation_primary,
+)
 
 
 def _make_archive(tmp: Path) -> Path:
@@ -56,7 +66,8 @@ class FakePhotoStore:
         return list(self.keywords.get(str(file_path), []))
 
     def embed(
-        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
+        *, backup=None,
     ) -> str | None:
         key = str(file_path)
         if key in self.fail_paths:
@@ -68,7 +79,8 @@ class FakePhotoStore:
         return None
 
     def remove(
-        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
+        *, backup=None,
     ) -> str | None:
         key = str(file_path)
         to_remove = {f'SOURCE: {s_id}'} | set(extra_keywords or [])
@@ -2023,6 +2035,180 @@ class SourceIdOverrideTests(unittest.TestCase):
             self._args(renamed, more=[str(page2), 'page-2']))
         self.assertEqual(more_result.exit_code, EXIT_CLEAN)
         self.assertIsNone(more_result.data['source_id'])
+
+
+class TriageDateSignalTests(unittest.TestCase):
+    """The confident-date signal in folder triage (TOOLING §15b, SPEC §20).
+
+    A photo's date is never the DATE: keyword body. The keyword states
+    precision in letters ('Y!M!D!', 'Y~'); the digits come from the photo's
+    EXIF DateTimeOriginal, and the two are paired by `_lib.resolve_photo_edtf`.
+    Folder triage used to test the raw keyword body with `is_valid_edtf`, which
+    no spec-conformant keyword can ever satisfy, so the signal fired for the
+    retired digit form and nothing else - while `fha photoindex triage`, which
+    resolves properly, scored the same photo a point higher.
+
+    exiftool is not installed in this container, so each test hands the real
+    row-to-signals mapping (`_photo_meta_from_row`) the JSON row the binary
+    would have returned. That keeps the resolution under test rather than
+    stubbed out.
+    """
+
+    def setUp(self) -> None:
+        self._orig_read_meta = process._run_exiftool_read_meta
+        self._orig_run_exiftool = photoindex._run_exiftool
+
+    def tearDown(self) -> None:
+        process._run_exiftool_read_meta = self._orig_read_meta
+        photoindex._run_exiftool = self._orig_run_exiftool
+
+    def _score(self, row: dict, name: str = 'portrait.jpg') -> tuple[int, list[str]]:
+        """Score a one-photo group whose metadata is `row` (never touches disk)."""
+        process._run_exiftool_read_meta = lambda _p: process._photo_meta_from_row(row)
+        return process._score_photo_group([Path(name)])
+
+    def test_letter_keyword_with_exif_date_scores_the_confident_date_signal(self) -> None:
+        score, signals = self._score(
+            {'Keywords': ['DATE: Y!M!D!'], 'DateTimeOriginal': '1942:11:25 10:00:00'})
+        self.assertIn('date:Y!+', signals)
+        self.assertEqual(score, 1)
+
+        # A confident year on its own is still a confident date.
+        self.assertIn('date:Y!+', self._score(
+            {'Keywords': ['DATE: Y!'], 'DateTimeOriginal': '1955:08:04 12:00:00'})[1])
+        # SPEC §20 calls 'Y!' and 'Y!M?D?' the same statement - an unknown
+        # month is dropped, and what remains ('1955') carries no marker, so
+        # this scores exactly like 'Y!'. `fha photoindex triage` agrees (see
+        # the parity test below); the signal is "year-precise or finer".
+        self.assertIn('date:Y!+', self._score(
+            {'Subject': ['DATE: Y!M?'], 'DateTimeOriginal': '1955:08:04 12:00:00'})[1])
+
+    def test_approximate_or_unaffirmed_precision_scores_no_date_signal(self) -> None:
+        # '~' is a best guess, not a confident date; a component the pipeline
+        # never affirmed ('Y', 'YMD', 'Y?') yields no date at all.
+        for pattern in ('Y~', 'Y!M~', 'Y?', 'Y', 'YMD'):
+            with self.subTest(pattern=pattern):
+                score, signals = self._score(
+                    {'Keywords': [f'DATE: {pattern}'],
+                     'DateTimeOriginal': '1960:05:01 00:00:00'})
+                self.assertNotIn('date:Y!+', signals)
+                self.assertEqual(score, 0)
+
+        # And the letter form alone is not a date: with no capture date in the
+        # file there are no digits to resolve against.
+        self.assertNotIn('date:Y!+', self._score({'Keywords': ['DATE: Y!M!D!']})[1])
+
+    def test_retired_digit_keyword_forms_score_nothing(self) -> None:
+        # The forms the archive owner ruled outside SPEC §20 on 2026-08-16.
+        # The digit-plus-marker one is the form the old code scored on, so it
+        # is the one that must now score zero.
+        for body in ('1880', '1942!-11!-25!', '1942-11-25', '[..1900]', '188X'):
+            with self.subTest(body=body):
+                score, signals = self._score(
+                    {'Keywords': [f'DATE: {body}'],
+                     'DateTimeOriginal': '1880:01:01 00:00:00'})
+                self.assertNotIn('date:Y!+', signals)
+                self.assertEqual(score, 0)
+
+    def test_both_tools_resolve_dates_through_the_same_lib_function(self) -> None:
+        # Tools never import tools, so "the same rule" can only mean the same
+        # `_lib` function. Re-adding a local copy in either tool - the drift
+        # this whole area is recovering from - breaks this immediately.
+        self.assertIs(process.resolve_photo_edtf, photoindex._resolve_photo_edtf)
+        self.assertIs(process.edtf_confidence, photoindex._edtf_confidence)
+
+    def test_triage_metadata_read_asks_exiftool_for_the_capture_date(self) -> None:
+        # Without DateTimeOriginal in the request there is nothing for the
+        # keyword's precision letters to resolve against, and every photo
+        # comes back undated however it is keyworded.
+        captured: dict = {}
+
+        class _FakeProc:
+            returncode = 0
+            stdout = '[{}]'
+            stderr = ''
+
+        def fake_run(cmd, **_kwargs):
+            captured['cmd'] = cmd
+            return _FakeProc()
+
+        real_run = process.subprocess.run
+        process.subprocess.run = fake_run
+        try:
+            process._run_exiftool_read_meta(Path('portrait.jpg'))
+        finally:
+            process.subprocess.run = real_run
+        self.assertIn('-DateTimeOriginal', captured['cmd'])
+
+    def test_process_and_photoindex_rank_the_same_folder_the_same_way(self) -> None:
+        # `fha process <folder>` and `fha photoindex triage` are documented as
+        # ordering the same folder the same way. Score the same four photos
+        # through both engines and require the scores AND signal lists to
+        # match exactly - a comment claiming parity is what let the date
+        # signal drift, so the parity is asserted instead of described.
+        rows = {
+            # Letter-form date + a bare P-id keyword; its back carries the
+            # human caption, so the whole group scores 3+2+1+1.
+            'portrait_1880.jpg': {
+                'Keywords': ['DATE: Y!M!D!', 'P-de957bcda1'],
+                'DateTimeOriginal': '1880:06:14 00:00:00',
+            },
+            # The back also carries a retired digit-form keyword, which both
+            # tools must read as no date at all - the group's date point comes
+            # from the front's letter form, and nothing here scores twice.
+            'portrait_1880-back.jpg': {
+                'Caption-Abstract': 'Written on the back: Margaret, aged nine',
+                'Keywords': ['DATE: 1942!-11!-25!'],
+                'DateTimeOriginal': '2010:05:06 07:08:09',
+            },
+            # Approximate date + an AI-only comment: no date point, -2.
+            'wedding_1902.jpg': {
+                'Keywords': ['DATE: Y~'],
+                'UserComment': 'AI: a wedding party on a porch',
+                'DateTimeOriginal': '1902:06:14 00:00:00',
+            },
+            # Confident year, unknown month - SPEC §20's 'Y!M?D?' row, which
+            # resolves to a bare confident year and scores.
+            'family_reunion.jpg': {
+                'Keywords': ['DATE: Y!M?'],
+                'DateTimeOriginal': '1955:08:04 12:00:00',
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            archive = Path(d) / 'photo-fixture'
+            shutil.copytree(ROOT / 'tests' / 'fixtures' / 'photo-fixture', archive,
+                            ignore=shutil.ignore_patterns('.cache'))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), **rows.get(p.name, {})} for p in paths
+            ]
+            photoindex.run_scan(archive, cfg)
+            catalog_scores = {
+                Path(c['path']).name: (c['score'], c['signals'])
+                for c in photoindex.run_triage(archive, cfg, top=10)['candidates']
+            }
+
+            process._run_exiftool_read_meta = (
+                lambda p: process._photo_meta_from_row(rows.get(p.name, {})))
+            groups: dict[str, list[Path]] = {}
+            for p in sorted((archive / 'photos').iterdir()):
+                groups.setdefault(
+                    grouping_stem(parse_media_filename(p.stem)), []).append(p)
+            folder_scores = {}
+            for members in groups.values():
+                primary = select_variation_primary(
+                    members, lambda q: parse_media_filename(q.stem))
+                folder_scores[primary.name] = process._score_photo_group(members)
+
+            self.assertEqual(folder_scores, catalog_scores)
+            # Not vacuous: the date signal is actually in play on both sides.
+            self.assertEqual(
+                folder_scores['portrait_1880.jpg'],
+                (7, ['caption', 'pid-keyword', 'date:Y!+', 'back-variant']))
+            self.assertEqual(folder_scores['family_reunion.jpg'], (1, ['date:Y!+']))
+            self.assertEqual(folder_scores['wedding_1902.jpg'], (-2, ['ai-only']))
 
 
 if __name__ == '__main__':

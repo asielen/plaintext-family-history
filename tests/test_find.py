@@ -1,10 +1,14 @@
 import argparse
 import io
 import json
+import os
+import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -783,6 +787,107 @@ class RelatedPhotoDateTests(unittest.TestCase):
         self.assertNotIn('photos/p1950.jpg', out)
 
 
+class RelatedPhotoMissingTests(unittest.TestCase):
+    """Covers reconcile's 'MISSING:' catalog keys in the person and place
+    neighborhoods: a group whose primary vanished must be listed by a member
+    that is still on disk, and a group with no live member at all must say so
+    in plain words instead of printing the internal key."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        self.conn.execute(
+            "INSERT INTO places(id, name, lat, lon) VALUES ('l-1111111111', 'Fairview', 39.0, -95.0)"
+        )
+        self.conn.commit()
+        self._make_photo_db()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _make_photo_db(self) -> None:
+        cache = self.archive_root / '.cache'
+        cache.mkdir(exist_ok=True)
+        pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
+        pconn.executescript(
+            '''
+            PRAGMA user_version=1;
+            CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+            CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
+                                gps_lat REAL, gps_lon REAL, edtf TEXT);
+            CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY,
+                                       primary_path TEXT, edtf_resolved TEXT);
+            CREATE TABLE photo_people(path TEXT, person_ref TEXT);
+            CREATE TABLE photo_face_regions(path TEXT);
+            CREATE TABLE photo_keywords(path TEXT);
+            CREATE VIRTUAL TABLE photo_fts USING fts5(path, name, caption);
+            -- Group 1: the front scan vanished, the back scan is still here.
+            INSERT INTO photo_groups VALUES (1, 'MISSING:photos/front.jpg', '1880');
+            INSERT INTO photos VALUES ('MISSING:photos/front.jpg', 1, 39.0, -95.0, '1880');
+            INSERT INTO photos VALUES ('photos/front-back.jpg', 1, 39.0, -95.0, '1880');
+            INSERT INTO photo_people VALUES ('MISSING:photos/front.jpg', 'p-aaaaaaaaaa');
+            -- Group 2: every member is gone.
+            INSERT INTO photo_groups VALUES (2, 'MISSING:photos/gone.jpg', '1890');
+            INSERT INTO photos VALUES ('MISSING:photos/gone.jpg', 2, 39.0, -95.0, '1890');
+            INSERT INTO photo_people VALUES ('MISSING:photos/gone.jpg', 'p-aaaaaaaaaa');
+            '''
+        )
+        pconn.commit()
+        pconn.close()
+
+    def test_person_photos_prefer_live_member_and_flag_vanished_group(self) -> None:
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('MISSING:', out)
+        self.assertIn('photos/front-back.jpg', out)
+        self.assertIn('photos/gone.jpg   (not on disk)', out)
+        self.assertIn('fha photoindex reconcile', out)
+
+    def test_place_photos_prefer_live_member_and_flag_vanished_group(self) -> None:
+        rc, out = _run(find.run_related, 'l-1111111111', None,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('MISSING:', out)
+        self.assertIn('photos/front-back.jpg', out)
+        self.assertIn('photos/gone.jpg   (not on disk)', out)
+        self.assertIn('fha photoindex reconcile', out)
+
+    def test_caption_search_shows_the_path_the_photo_had(self) -> None:
+        # A caption stays searchable after its file leaves the disk (that is
+        # what reconcile's kept row is for), so the hit is right - but the
+        # human is given the path the photo had, marked, not the internal key.
+        cache = self.archive_root / '.cache'
+        pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
+        pconn.executescript(
+            "INSERT INTO photo_fts(path, name, caption) VALUES "
+            "('MISSING:photos/gone.jpg', '', 'Alice at the county fair');"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 600
+        os.utime(cache / 'photos.sqlite', (future, future))
+
+        with unittest.mock.patch.object(find, 'photoindex_status',
+                                        return_value=('fresh', 0.0)):
+            rc, out = _run(find._find_text, 'fair', self.archive_root, {}, None)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('[photo] photos/gone.jpg (not on disk)', out)
+        self.assertNotIn('MISSING:', out)
+
+    def test_person_photo_count_names_the_files_that_are_gone(self) -> None:
+        # `fha find P-id` prints one photo count; it must not promise two
+        # files the human then cannot find.
+        rc, out = _run(find._find_person, 'p-aaaaaaaaaa', self.conn,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('photos: 2 (2 not on disk - run fha photoindex reconcile)', out)
+
+
 class RelatedSchemaFailureTests(unittest.TestCase):
     """Covers the run_related sqlite3.OperationalError guard: a partial /
     incompatible schema (table exists but a column the query uses doesn't)
@@ -1426,6 +1531,694 @@ class SearchJsonPhotoSourceKindTests(unittest.TestCase):
             find.search_json(self.archive_root, {}, 'census-stem-1900',
                              kinds=['photo-source']),
             [])
+
+
+class _ClosedPipe(io.StringIO):
+    """A stdout whose reader has gone away, exactly as `| head` leaves it."""
+
+    def write(self, s):    # noqa: D102 - stands in for a real pipe
+        raise BrokenPipeError(32, 'Broken pipe')
+
+
+class BrokenPipeTests(unittest.TestCase):
+    """`fha find P-… | head` is ordinary use, not an archive problem.
+
+    `head` closes the pipe as soon as it has its lines, so the next print
+    raises BrokenPipeError. It used to travel to fha.py's catch-all and print
+    `ERROR: something went wrong: [Errno 32] Broken pipe` with a `fha doctor`
+    next step - blaming the archive for the shell doing its job.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _args(self, argv: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers()
+        find.register(subs)
+        args = parser.parse_args(argv)
+        args.root = str(self.archive_root)
+        return args
+
+    def test_find_exits_quietly_when_the_reader_closes_the_pipe(self) -> None:
+        args = self._args(['find', 'p-aaaaaaaaaa'])
+        with redirect_stdout(_ClosedPipe()):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_CLEAN)
+
+    def test_search_exits_quietly_too(self) -> None:
+        args = self._args(['search', 'alice'])
+        with redirect_stdout(_ClosedPipe()):
+            rc = find._run_search(args)
+        self.assertEqual(rc, EXIT_CLEAN)
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    One level below `os.walk` - and below pathlib's `rglob`, which reaches the
+    disk the same way - so the same injection reproduces the pre-fix
+    behaviour (the folder reads as empty) and exercises the post-fix `onerror`
+    seam. chmod is no use: CI runs as root, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class ScanFallbackCoverageTests(unittest.TestCase):
+    """A search that looked in less than the whole archive must say so.
+
+    Nothing here is deleted or certified, so an unreadable folder is no reason
+    to refuse - but "not found in archive tree" over a folder nobody could
+    open is a wrong answer in the one direction the human cannot check, and
+    the fallback said nothing at all."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.shut = self.archive_root / 'people' / 'stubs'
+        self.shut.mkdir(parents=True)
+        (self.shut / 'webb__nancy_P-cccccccccc.md').write_text(
+            '---\nid: P-cccccccccc\nname: Nancy Webb\n---\n\n# Nancy Webb\n',
+            encoding='utf-8')
+        (self.archive_root / 'notes').mkdir()
+        (self.archive_root / 'notes' / 'log.md').write_text(
+            '# Log\n\nNothing about her here.\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _scan(self, fn, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = fn(*args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_not_found_over_a_shut_folder_is_qualified(self) -> None:
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.shut)):
+            code, out, err = self._scan(
+                find._find_by_scan, 'P-cccccccccc', self.archive_root)
+        self.assertEqual(code, EXIT_WARNINGS)
+        self.assertIn('not found in archive tree', out)
+        self.assertIn('does not mean it is not in your archive', err)
+        self.assertIn('people/stubs', err)
+
+    def test_a_clean_scan_says_nothing_extra(self) -> None:
+        code, out, err = self._scan(
+            find._find_by_scan, 'P-cccccccccc', self.archive_root)
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('found in 1 file', out)
+        self.assertNotIn('could not be opened', err)
+
+    def test_text_search_says_there_may_be_more(self) -> None:
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.shut)):
+            code, out, err = self._scan(
+                find._find_text, 'Nancy', self.archive_root, {}, None)
+        self.assertEqual(code, EXIT_WARNINGS)
+        self.assertIn('No results', out)
+        self.assertIn('could not be opened', err)
+        self.assertIn('people/stubs', err)
+
+
+# Two valid Crockford S-ids (SPEC §10) for the coverage fixtures below.
+_MUTE_SID = 's-2h4k6m8p0r'      # a scan: nothing of it is in the archive as text
+_SPOKEN_SID = 's-3j5n7q9s1t'    # the same evidence, typed out beside the original
+
+
+class TextSearchCoverageNoteTests(unittest.TestCase):
+    """A text search must say how much of the archive it could actually read.
+
+    A source whose files are all scans, photographs or PDFs puts nothing into
+    the archive as text. Search it and you get nothing back - which looks
+    exactly like searching it and finding nothing, and that is how a null
+    result gets read as a fact about the family rather than a fact about the
+    corpus. It has already cost a person her surname: the name was searched
+    for, found only in one claim's value, judged invented, and struck, while it
+    sat in plain handwriting on a 22-page image-only scan (#46).
+
+    The note therefore prints on a HIT as readily as on a miss. Three results
+    drawn from a corpus half of which nobody could read are as misleading as
+    none, and worse in practice, because hits feel like confirmation."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+        _add_source(self.conn, _MUTE_SID, 'Hand-drawn family chart')
+        self._add_file(_MUTE_SID, 'documents/charts/chart_S-2h4k6m8p0r.pdf', 'page-1')
+        _add_source(self.conn, _SPOKEN_SID, 'Farm interview')
+        self._add_file(
+            _SPOKEN_SID,
+            'documents/interviews/farm-transcript_S-3j5n7q9s1t.md', 'transcript')
+        self.conn.execute(
+            'INSERT INTO transcripts_fts(source_id, path, content) VALUES (?,?,?)',
+            (_SPOKEN_SID, 'documents/interviews/farm-transcript_S-3j5n7q9s1t.md',
+             'Rose Harkness kept the west field.'))
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _add_file(self, sid: str, path: str, role: str, exists: int = 1) -> None:
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, derived, '
+            'exists_on_disk, in_inventory) VALUES (?,?,?,0,?,1)',
+            (sid, path, role, exists))
+
+    def _search(self, query: str, *, indexed: bool = True):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = find._find_text(
+                query, self.archive_root, {}, self.conn if indexed else None)
+        return code, buf.getvalue()
+
+    def test_a_miss_names_the_sources_it_could_not_read(self) -> None:
+        code, out = self._search('Harkness-and-nobody-else')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('No results', out)
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+        self.assertIn('could not look everywhere', out)
+
+    def test_a_hit_carries_the_same_caveat(self) -> None:
+        # The general case, not just the null one: a search that returned
+        # something out of a corpus it could only half read is exactly as
+        # misleading as one that returned nothing.
+        code, out = self._search('Harkness')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('Found 1 result(s)', out)
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+        self.assertIn('not the whole picture', out)
+
+    def test_the_note_names_only_commands_that_exist(self) -> None:
+        # `fha source transcribe` does not exist. Naming it in shipped output
+        # would be a promise this program cannot keep, so the next steps are
+        # the extract verb (for a PDF with its own text layer) and reading the
+        # file. See the write-up in TOOLING §4a.
+        _, out = self._search('nothing-matches-this')
+        self.assertIn('fha source extract', out)
+        self.assertNotIn('fha source transcribe', out)
+
+    def test_an_archive_that_can_be_read_throughout_says_nothing(self) -> None:
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self.conn.execute('DELETE FROM sources WHERE id=?', (_MUTE_SID,))
+        self.conn.commit()
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
+
+    def test_a_promised_transcript_that_is_not_on_disk_is_not_text(self) -> None:
+        # A `files:` line naming a transcript nobody synced is exactly as
+        # unsearchable as no transcript at all, so it must not buy coverage.
+        self.conn.execute('DELETE FROM transcripts_fts')
+        self.conn.execute(
+            'UPDATE source_files SET exists_on_disk=0 WHERE source_id=?',
+            (_SPOKEN_SID,))
+        self.conn.commit()
+        _, out = self._search('anything')
+        self.assertIn('no searchable text for 2 of its 2 sources', out)
+
+    def test_a_source_with_no_files_is_not_counted_as_unreadable(self) -> None:
+        # An online record with nothing attached has no evidence to transcribe;
+        # counting it would inflate the number and teach the reader to ignore it.
+        _add_source(self.conn, 's-4k6m8p0r2t', 'A citation with no attachment')
+        self.conn.commit()
+        _, out = self._search('anything')
+        self.assertIn('no searchable text for 1 of its 3 sources', out)
+
+    def test_without_an_index_the_question_is_declared_unanswered(self) -> None:
+        # Silence on coverage is the failure mode; a scan-only search reads even
+        # less than an indexed one, so it must not imply it read everything.
+        _, out = self._search('anything', indexed=False)
+        self.assertIn('could not check which sources have no searchable text', out)
+        self.assertIn('fha index', out)
+
+
+# Four transcripts of the same kind of evidence, in the four states the
+# transcribe-source marker contract defines.
+_DRAFTED_SID = 's-5m7p9r1t3v'    # a machine read the scan; nobody has checked it
+_CHECKED_SID = 's-6n8q0s2v4w'    # a human compared it to the image
+_TYPED_SID = 's-7p0r2t4w6x'      # a human typed it, or extract dumped it: no marker
+_BROKEN_SID = 's-8q1s3v5x7y'     # its marker is damaged and cannot be read
+
+
+class UncheckedTranscriptHitTests(unittest.TestCase):
+    """A hit that came from an unchecked machine reading says so, on its line.
+
+    #46 closed the hole where a search could not see an image-only source and a
+    null result was read as a finding. This is the same hole facing the other
+    way: a transcript a model produced and nobody checked against the image is
+    searchable and indistinguishable from evidence, and it does not fail
+    quietly - it returns confident hits, which nobody re-examines. By the
+    reasoning in AGENTS.md's "You cannot conclude absence from a search", that
+    is a coverage claim too.
+
+    The mark is per RESULT, not per search: one search can return a transcript a
+    human has compared to the scan and a transcript nobody has ever looked at,
+    and the difference between those two matters at the line. Which is also why
+    `unmarked` and `verified` must stay silent - flag every transcript and the
+    flag stops meaning anything."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+
+        page = '[Page 1]\nHartlee kept the {field} field.\n'
+        self.paths = {}
+        for sid, name, body in (
+            (_DRAFTED_SID, 'drafted', page.format(field='west')
+             + '\n<!-- AI-DRAFT 2026-08-16 a-model - transcript of chart.jpg, '
+               'pages 1-1; not yet checked against the image by a human -->\n'),
+            (_CHECKED_SID, 'checked', page.format(field='east')
+             + '\n<!-- AI-ACCEPTED 2026-08-16 a-model - transcript of '
+               'chart.jpg (accepted 2026-08-20) -->\n'),
+            (_TYPED_SID, 'typed', page.format(field='north')),
+            (_BROKEN_SID, 'broken', page.format(field='south')
+             + '\n<!-- AI-DRAFT 2026-08-16 a-model\n'),
+        ):
+            _add_source(self.conn, sid, f'A {name} transcript')
+            rel = f'documents/charts/{name}-transcript_{sid.upper()}.md'
+            self.paths[name] = rel
+            self.conn.execute(
+                'INSERT INTO transcripts_fts(source_id, path, content) '
+                'VALUES (?,?,?)', (sid, rel, body))
+
+        # The other surface: a claim value. `fha index` puts a source record's
+        # whole body into notes_fts, `## Claims` block included, so this is what
+        # a claim-value hit looks like to the search. It is deliberately the
+        # record of the source whose transcript IS unreviewed - the same source,
+        # a different surface - because that is the pair an implementation which
+        # marked the search (or the source) instead of the hit would get wrong.
+        self.paths['record'] = f'sources/other/drafted_{_DRAFTED_SID.upper()}.md'
+        self.conn.execute(
+            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+            (self.paths['record'],
+             '## Claims\n\n- id: C-aaaaaaaaaa\n  type: name\n'
+             '  value: Hartlee\n  status: accepted\n'))
+        # And a person profile carrying AI-DRAFT biography prose. The SAME
+        # marker word, in a file that is not a transcript of anything: nothing
+        # here was read off a picture, so calling it an unchecked transcript
+        # would be a false statement about where the words came from.
+        self.paths['profile'] = 'people/stubs/hartlee__rose_P-aaaaaaaaaa.md'
+        self.conn.execute(
+            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+            (self.paths['profile'],
+             '## Biography\n\nRose Hartlee farmed the west field.\n'
+             '<!-- AI-DRAFT 2026-08-16 a-model - biography from 2 claims -->\n'))
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _search(self, query: str):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = find._find_text(query, self.archive_root, {}, self.conn)
+        return code, buf.getvalue()
+
+    @staticmethod
+    def _marked(out: str, rel: str) -> bool:
+        """Is the result line for `rel` carrying the unchecked label?"""
+        for line in out.splitlines():
+            if line.strip().startswith(rel):
+                return '[unchecked AI transcript]' in line
+        raise AssertionError(f'{rel} is not in the results:\n{out}')
+
+    def test_an_unreviewed_transcript_hit_is_marked(self) -> None:
+        code, out = self._search('Hartlee')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertTrue(self._marked(out, self.paths['drafted']))
+
+    def test_a_verified_transcript_hit_is_silent(self) -> None:
+        # A human compared this one to the image. Marking it would say the
+        # opposite of what is true.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['checked']))
+
+    def test_an_unmarked_transcript_hit_is_silent(self) -> None:
+        # `unmarked` is not `unreviewed`. A human's typing and an `fha source
+        # extract` dump of a PDF's own text layer both carry no marker, and
+        # they are most of the transcripts in an archive: flag them and the
+        # reader learns to skip the flag, which is how the ones that matter get
+        # read as evidence.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['typed']))
+
+    def test_a_damaged_marker_is_marked_failing_closed(self) -> None:
+        # Its marker has no closing `-->`, so draft cannot be told from checked.
+        # Treated as unchecked, exactly as _lib.strip_unaccepted_drafts
+        # withholds rather than guesses.
+        _, out = self._search('Hartlee')
+        self.assertTrue(self._marked(out, self.paths['broken']))
+
+    def test_a_record_body_hit_is_not_a_transcript_hit(self) -> None:
+        # The match here is on what someone wrote down in a claim value, not on
+        # a machine's reading of a picture.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['record']))
+
+    def test_a_drafted_biography_hit_is_not_a_transcript_hit(self) -> None:
+        # The surface decides, not the marker word. An AI-drafted biography
+        # carries the identical `<!-- AI-DRAFT ... -->` comment - it is the same
+        # marker pair - but nobody read a picture to write it, and the profile
+        # is not a transcript of anything. Marking it would say something false
+        # about where the words came from, and put the label on a large share of
+        # ordinary profile hits.
+        _, out = self._search('Hartlee')
+        self.assertFalse(self._marked(out, self.paths['profile']))
+
+    def test_the_mark_explains_itself_once(self) -> None:
+        _, out = self._search('Hartlee')
+        self.assertIn('the image is the evidence', out)
+        self.assertIn('Nobody has checked them against the image', out)
+        # Once for the whole result list, not once per hit: two of these five
+        # results are marked, and repeating the paragraph between them would
+        # bury the results it is warning about.
+        self.assertEqual(out.count('Nobody has checked them against the image'), 1)
+
+    def test_nothing_is_said_when_every_hit_is_trustworthy(self) -> None:
+        # Only the checked and the unmarked transcripts match this one.
+        self.conn.execute('DELETE FROM transcripts_fts WHERE source_id IN (?,?)',
+                          (_DRAFTED_SID, _BROKEN_SID))
+        self.conn.commit()
+        _, out = self._search('Hartlee')
+        self.assertIn('Found 4 result(s)', out)
+        self.assertNotIn('unchecked AI transcript', out)
+
+    def test_the_regex_pass_marks_what_fts_did_not_match(self) -> None:
+        # The two halves must agree. FTS matches whole tokens and the fallback
+        # regex matches substrings, so a transcript really can be found only by
+        # the second pass - and printing it unmarked there would make the label
+        # depend on which pass happened to find it.
+        body = ('[Page 1]\nHartlee kept the west field.\n'
+                '\n<!-- AI-DRAFT 2026-08-16 a-model - pages 1-1 -->\n')
+        rel = self.paths['drafted']
+        on_disk = self.archive_root / rel
+        on_disk.parent.mkdir(parents=True, exist_ok=True)
+        on_disk.write_text(body, encoding='utf-8')
+        self.conn.execute('UPDATE transcripts_fts SET content=? WHERE source_id=?',
+                          (body, _DRAFTED_SID))
+        self.conn.commit()
+        _, out = self._search('artlee')          # a substring, not a token
+        self.assertTrue(self._marked(out, rel))
+
+    def test_an_external_documents_root_is_marked_too(self) -> None:
+        # The index keys a transcript by its alias-form path ('documents/…');
+        # the scan pass keys a file in an EXTERNAL documents root by its
+        # absolute path, because it is not under the archive root at all. An
+        # archive whose documents live on another drive must get the same
+        # answer as one that keeps them inside.
+        outside = Path(self._tmp.name + '-docs')
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        body = ('[Page 1]\nHartlee kept the west field.\n'
+                '\n<!-- AI-DRAFT 2026-08-16 a-model - pages 1-1 -->\n')
+        (outside / 'charts').mkdir()
+        on_disk = outside / 'charts' / Path(self.paths['drafted']).name
+        on_disk.write_text(body, encoding='utf-8')
+        self.conn.execute('UPDATE transcripts_fts SET content=? WHERE source_id=?',
+                          (body, _DRAFTED_SID))
+        self.conn.commit()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            find._find_text('artlee', self.archive_root,
+                            {'roots': {'documents': str(outside)}}, self.conn)
+        self.assertTrue(self._marked(buf.getvalue(), str(on_disk)))
+
+
+class JsonCoverageNoteTests(unittest.TestCase):
+    """`fha find --json` says what it could not read - on stderr, never stdout.
+
+    The human search has said this since #46. The JSON surface had not, and its
+    reader is usually another model - the exact reader whose null-result
+    reasoning cost a person her surname. So the caveat has to reach it.
+
+    It reaches it on STDERR because stdout is a parsed contract: a bare hit
+    array, and anything already reading it must keep reading exactly what it
+    read before. Nothing on stdout changes here at all."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+        # One source the archive holds no words for (a scan), and one that was
+        # typed out - the D14 fixture, seen through the JSON door.
+        _add_source(self.conn, _MUTE_SID, 'Hand-drawn family chart')
+        self._add_file(_MUTE_SID, 'documents/charts/chart_S-2h4k6m8p0r.pdf', 'page-1')
+        _add_source(self.conn, _SPOKEN_SID, 'Farm interview')
+        self._add_file(
+            _SPOKEN_SID,
+            'documents/interviews/farm-transcript_S-3j5n7q9s1t.md', 'transcript')
+        self.conn.execute(
+            'INSERT INTO transcripts_fts(source_id, path, content) VALUES (?,?,?)',
+            (_SPOKEN_SID, 'documents/interviews/farm-transcript_S-3j5n7q9s1t.md',
+             'Rose Harkness kept the west field.'))
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _add_file(self, sid: str, path: str, role: str) -> None:
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role, derived, '
+            'exists_on_disk, in_inventory) VALUES (?,?,?,0,1,1)', (sid, path, role))
+
+    def _parse(self, argv: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers()
+        find.register(subs)
+        args = parser.parse_args(['find', *argv])
+        args.root = str(self.archive_root)
+        return args
+
+    def _json_cli(self, query: str):
+        """Run `fha find --json <query>` and return (rc, stdout, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = find._run_find(self._parse([query, '--json']))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_the_caveat_reaches_the_json_caller_on_stderr(self) -> None:
+        rc, out, err = self._json_cli('Harkness')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(json.loads(out))
+        self.assertIn('no searchable text for 1 of its 2 sources', err)
+        self.assertIn('not the whole picture', err)
+
+    def test_stdout_stays_the_bare_array_while_the_note_fires(self) -> None:
+        # The pin: whatever else this command says, stdout is one JSON document
+        # and nothing else. A consumer that pipes stdout into a parser must not
+        # be able to tell that the note exists.
+        _rc, out, err = self._json_cli('Harkness')
+        self.assertTrue(err.strip())              # the note really did fire
+        self.assertEqual(len(out.splitlines()), 1)
+        payload = json.loads(out)
+        self.assertEqual(out, json.dumps(payload) + '\n')
+        for hit in payload:
+            self.assertLessEqual({'id', 'type', 'label', 'detail'}, set(hit))
+
+    def test_a_miss_carries_the_caveat_and_still_prints_an_empty_array(self) -> None:
+        # The #46 shape exactly: nothing came back. stdout is still the array a
+        # caller parses, and the reason the nothing might not mean anything is
+        # on stderr beside it.
+        rc, out, err = self._json_cli('Harkness-and-nobody-else')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(out, '[]\n')
+        self.assertIn('no searchable text for 1 of its 2 sources', err)
+        self.assertIn('could not look everywhere', err)
+
+    def test_an_archive_with_nothing_to_caveat_is_silent(self) -> None:
+        # Silence is correct when there is nothing to say. A warning that fires
+        # on every search is a warning nobody reads.
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self.conn.execute('DELETE FROM sources WHERE id=?', (_MUTE_SID,))
+        self.conn.commit()
+        rc, out, err = self._json_cli('Harkness')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(json.loads(out))
+        self.assertEqual(err, '')
+
+    def test_the_note_is_the_same_sentence_the_human_search_prints(self) -> None:
+        # One composer, not two: if these ever drift, the two surfaces are
+        # making different claims about the same archive.
+        _rc, _out, err = self._json_cli('Harkness')
+        self.assertEqual(
+            err.strip(),
+            find._searchable_text_note(self.conn, found_something=True))
+
+    def test_the_engine_hands_callers_the_same_note(self) -> None:
+        # serve reads it through here rather than composing its own.
+        hits, note = find.search_json_with_coverage(
+            self.archive_root, {}, 'Harkness')
+        self.assertTrue(hits)
+        self.assertIn('no searchable text for 1 of its 2 sources', note)
+        self.assertEqual(hits, find.search_json(self.archive_root, {}, 'Harkness'))
+
+    def test_a_kind_filtered_search_is_not_charged_for_the_count(self) -> None:
+        # A --kind lookup is "which record do you mean", not "what does this
+        # archive say" - nobody shows the caveat there, and the count is two
+        # indexed scans the caller will throw away. The assertion is that the
+        # work does not happen, not merely that the answer is dropped: a
+        # response that omits the note while still counting is the bug.
+        calls = []
+        real = find._count_sources_without_text
+        find._count_sources_without_text = lambda conn: (calls.append(1), real(conn))[1]
+        try:
+            filtered, note = find.search_json_with_coverage(
+                self.archive_root, {}, 'Harkness', kinds=['source'])
+            self.assertEqual(calls, [])
+            self.assertIsNone(note)
+            # And the search itself is untouched: same hits as the unfiltered
+            # call, minus the kinds it filtered out.
+            self.assertEqual(
+                filtered,
+                [h for h in find.search_json(self.archive_root, {}, 'Harkness')
+                 if h['type'] == 'source'])
+            self.assertEqual(len(calls), 1)   # that unfiltered call DID count
+        finally:
+            find._count_sources_without_text = real
+
+
+class JsonUncheckedKeyTests(unittest.TestCase):
+    """A JSON hit whose words nobody has checked against the image says so.
+
+    The same D15 rule the CLI prints as `[unchecked AI transcript]`, carried to
+    the machine surface as one additive key. Present ONLY when true: a key that
+    is there-or-not-there cannot be misread as "checked", which is a claim
+    nobody has made about an unmarked transcript, a record body or a caption.
+
+    THE SURFACE DECIDES, NOT THE MARKER WORD - so an AI-DRAFT biography, which
+    carries the identical marker comment, is never keyed."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+
+        page = '[Page 1]\nHartlee kept the {field} field.\n'
+        self.paths = {}
+        for sid, name, body in (
+            (_DRAFTED_SID, 'drafted', page.format(field='west')
+             + '\n<!-- AI-DRAFT 2026-08-16 a-model - transcript of chart.jpg, '
+               'pages 1-1; not yet checked against the image by a human -->\n'),
+            (_CHECKED_SID, 'checked', page.format(field='east')
+             + '\n<!-- AI-ACCEPTED 2026-08-16 a-model - transcript of '
+               'chart.jpg (accepted 2026-08-20) -->\n'),
+            (_TYPED_SID, 'typed', page.format(field='north')),
+            (_BROKEN_SID, 'broken', page.format(field='south')
+             + '\n<!-- AI-DRAFT 2026-08-16 a-model\n'),
+        ):
+            _add_source(self.conn, sid, f'A {name} transcript')
+            rel = f'documents/charts/{name}-transcript_{sid.upper()}.md'
+            self.paths[name] = rel
+            self.conn.execute(
+                'INSERT INTO transcripts_fts(source_id, path, content) '
+                'VALUES (?,?,?)', (sid, rel, body))
+
+        # A claim value in a source record's body, and an AI-drafted biography
+        # in a person profile: both reach the ranked search through notes_fts,
+        # and neither is anybody's reading of a picture.
+        self.paths['record'] = f'sources/other/drafted_{_DRAFTED_SID.upper()}.md'
+        self.conn.execute(
+            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+            (self.paths['record'],
+             '## Claims\n\n- id: C-aaaaaaaaaa\n  type: name\n'
+             '  value: Hartlee\n  status: accepted\n'))
+        self.paths['profile'] = 'people/stubs/hartlee__rose_P-aaaaaaaaaa.md'
+        self.conn.execute(
+            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+            (self.paths['profile'],
+             '## Biography\n\nRose Hartlee farmed the west field.\n'
+             '<!-- AI-DRAFT 2026-08-16 a-model - biography from 2 claims -->\n'))
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _hits(self, query: str = 'Hartlee') -> dict:
+        return {h['id']: h for h in
+                find.search_json(self.archive_root, {}, query, limit=50)}
+
+    def test_an_unreviewed_transcript_hit_carries_the_key(self) -> None:
+        self.assertIs(self._hits()[self.paths['drafted']].get('unchecked'), True)
+
+    def test_a_damaged_marker_carries_it_too_failing_closed(self) -> None:
+        # Draft can no longer be told from checked, so it is treated as
+        # unchecked - the posture _lib.strip_unaccepted_drafts already takes.
+        self.assertIs(self._hits()[self.paths['broken']].get('unchecked'), True)
+
+    def test_a_verified_transcript_hit_has_no_key_at_all(self) -> None:
+        # Not `"unchecked": false` - absent. A human compared this one to the
+        # image, and the key's job is to warn, not to certify.
+        self.assertNotIn('unchecked', self._hits()[self.paths['checked']])
+
+    def test_an_unmarked_transcript_hit_has_no_key(self) -> None:
+        # `fha source extract`'s dump of a PDF's own text layer, and anything a
+        # human typed. Most transcripts are these; keying them would train a
+        # reader to ignore the key.
+        self.assertNotIn('unchecked', self._hits()[self.paths['typed']])
+
+    def test_a_claim_value_hit_has_no_key(self) -> None:
+        self.assertNotIn('unchecked', self._hits()[self.paths['record']])
+
+    def test_a_drafted_biography_hit_has_no_key(self) -> None:
+        # The identical `<!-- AI-DRAFT … -->` comment on a file that is not a
+        # transcript of anything. The surface decides.
+        self.assertNotIn('unchecked', self._hits()[self.paths['profile']])
+
+    def test_record_hits_keep_exactly_the_four_documented_keys(self) -> None:
+        # The back-compat pin: nothing that is not an unchecked transcript hit
+        # gains anything at all.
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Rose Hartlee')
+        _add_alias(self.conn, 'Rose Hartlee', 'p-aaaaaaaaaa', 'name')
+        self.conn.commit()
+        for hit in find.search_json(self.archive_root, {}, 'Rose Hartlee'):
+            self.assertEqual(set(hit), {'id', 'type', 'label', 'detail'})
+
+    def test_the_cli_json_document_carries_the_key(self) -> None:
+        # End to end through the printed document, not just the engine.
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers()
+        find.register(subs)
+        args = parser.parse_args(['find', 'Hartlee', '--json', '--limit', '50'])
+        args.root = str(self.archive_root)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_CLEAN)
+        by_id = {h['id']: h for h in json.loads(out.getvalue())}
+        self.assertIs(by_id[self.paths['drafted']].get('unchecked'), True)
+        self.assertNotIn('unchecked', by_id[self.paths['checked']])
 
 
 if __name__ == '__main__':

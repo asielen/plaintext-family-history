@@ -56,7 +56,7 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    status sentences - "What this is not", Quick start step 3),
    `TOOLING.md` §16/§17 summaries, `AGENTS.md`, `tools/README.md`, and any companion README
    the change touches (e.g. `browser-companion/README.md`) - plus
-   `docs/GETTING_STARTED.md` for anything user-facing. Then grep the repo for the phrase
+   `GETTING_STARTED.md` / `CHEATSHEET.md` for anything user-facing. Then grep the repo for the phrase
    being retired - "build pending", "not yet built", "when implemented", "deferred", the
    old schema or version constant - and fix every survivor before closing. A working tool
    that a README still calls "not yet implemented," or whose flags the getting-started
@@ -70,6 +70,79 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    **AGENTS.md wins** - it limits tool-building to `tools/`/`tests/` and forbids SPEC/TOOLING
    edits outside spec-refinement.
 9. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
+10. **Pre-push gate.** Mechanical, per push - the rules below already exist in the
+   code-review checklist; this step exists because a checklist you can skip is a checklist
+   that gets skipped (PR #42, 2026-08-15: three rounds of review findings, most in commits
+   pushed after the one review pass).
+   - Run the code-review checklist (§Code-review mode) against the **final** diff. A
+     commit added after a review is unreviewed - re-run before pushing. Never push a range
+     the review has not seen.
+   - **Freshness is a contract.** Touching anything that decides fresh/stale
+     (`newest_record_mtime`, `photoindex_status`, `_index_is_fresh`, a cache drop or a
+     skip-and-continue branch): list every table and consumer the excluded or skipped input
+     feeds (`notes_fts`, `person_files`, `photo_people`, `find --text`, …). Either keep those
+     rows correct in place or keep the signal - and ship a test for the consumer, not just
+     the watermark.
+   - **Knobs and sentinels reach every walker.** A new config key that filters a tree
+     (`photos_ignore`) or a value that flows through a table is applied to *every* code path
+     that walks that root or reads that column: grep for the root alias, the column, or the
+     constant and enumerate the sites before shipping. Sentinels (`MISSING:`, `unknown`,
+     `None`, a bare P-id standing in for a name) are vocabulary - a new consumer handles them
+     explicitly or refuses them.
+   - **Two-sided rules get two-sided tests.** A guard on one half of a symmetric pair
+     (namer/partner, find/triage, full rebuild/incremental recompute, views twin/lint twin)
+     is a bug until the other half is tested.
+   - **New mutation branches inherit the transaction rule.** Any new apply or skip path in
+     a batch verb: preflight everything the apply can fail on *before* the Apply? gate,
+     `--dry-run` prints the identical refusal, and a test proves a mid-way failure leaves
+     nothing half-done.
+   - **Next-step lines are ordered by what the next command reads.** Before writing "run X,
+     then Y", check whether Y reads the index or the disk. If X changed a record and Y reads
+     the index, `fha index` comes first and is a precondition - never "when convenient".
+   - **Guard tests prove they fail pre-fix.** Every regression test added for a finding is
+     run once against the pre-fix code (stash, or monkey-patch the old logic back). An
+     assertion that pins the implementation's current output is not a test - derive expected
+     values from SPEC/TOOLING.
+   - **Inventory changes are grep-driven, not list-driven.** A count word or an enumeration
+     (skills, verbs, milestones, codes) changes → repo-wide grep of the old value across all
+     `*.md` including `.claude/skills/` and `TOOLING.md` §16/§17, not a hand-picked file
+     list; where the inventory is derivable (skills directory → docs) add the assertion test
+     so it cannot drift again.
+   - **Runtime output is scrubbed too.** Anything a tool or script writes into an artifact
+     that can be attached to a record or committed (a transcript header, a JSON report, a
+     README it vendors) carries alias-form paths or basenames, never an absolute path - and
+     links only to files that ship (class 11; the manifest link test reads vendored files
+     through their `src`).
+   - **Spec'd grammars are not hand-parsed.** If a browser/OS/format spec defines the
+     grammar (`srcset`, EXIF timestamps, `.gitattributes`), implement that grammar or call
+     the platform API - never a `split()` on the obvious delimiter.
+
+### Porting from an archive (skills, scripts, local patches)
+
+Work authored inside a live archive - a `.claude/skills/*` folder, a script under it, a
+`LOCAL PATCH` in `.fha/tools/` - arrives here through this loop like anything else. **Porting is
+authoring**, not copying:
+
+- Every ported line is read against AGENTS.md's Don'ts, the contract, and `_STANDARD.md`
+  before it lands. A skill telling an agent to rename an original, hand-edit a `files:` entry,
+  or attach from outside the documents root fails that read.
+- Every `fha` invocation a ported skill documents is **executed** against `example-archive`
+  (or its argparse and behaviour verified - `attach_more` appends the role to the stem;
+  `--more` needs a documents-root path) and the resulting filename or state is asserted, not
+  described from memory.
+- Ported scripts are reviewed as tools: every default equals the gate the prose documents
+  (and a test pins both); multi-file outputs publish atomically and a retry can tell complete
+  from partial; a mandatory gate fails **closed** (unreadable → indeterminate, never "new");
+  the exit-code / status ladder is written down and every non-ok status stops before the
+  write; nothing emitted into an attachable artifact carries an absolute path.
+- A `LOCAL PATCH` and its "verified N cases" note are evidence about those N cases and
+  nothing more. The SPEC/TOOLING table wins: write the test cases *from the table* (every row,
+  plus the omitted/unknown row) before the code, then port. #40's `?`/omitted-means-unknown
+  row was in the table and the patch defaulted it to confident.
+- The scrub covers what the code *writes at run time*, not only the static text you grep.
+- The archive keeps its copy until `fha update-tools` replaces it; a ported skill that
+  differs from the archive's is a customization the next update backs up and overwrites, so
+  say so in the handoff.
 
 ### Spec-discovery protocol
 
@@ -208,7 +281,8 @@ work first, then clearly list what remains.
 
 ## Code-review mode
 
-**Invoked** as a pre-push review of the current branch.
+**Invoked** as a pre-push review of the current branch - and re-invoked for any commit added
+after it (implementation loop step 10, the pre-push gate: never push a range the review has not seen).
 **First share code review results before requesting to continue to fix the issues**
 
 Use the full repository context, not just the diff. Read the changed files, nearby files,

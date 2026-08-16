@@ -12,6 +12,7 @@ import datetime
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import sqlite3
 from pathlib import Path
 
@@ -287,6 +288,123 @@ class ReportTests(unittest.TestCase):
     def test_photo_triage_section_reports_absent_index(self) -> None:
         result = report.run_report(self.archive_root, {}, full=True)
         self.assertIn('Photo index absent', result['markdown'])
+
+    def test_unreadable_photos_explain_why_the_catalog_stays_out_of_date(self) -> None:
+        # run_scan pulls the catalog's date back behind the oldest photo it
+        # could not read, so `fha find` will keep calling the photo index out
+        # of date. Unexplained, that looks like a second, permanent fault -
+        # the report has to say why, and how to clear it.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 2, 'unchanged': 0, 'removed': 0,
+            'unreadable': 1, 'unreadable_sample': ['photos/1950/locked.jpg'],
+            'unreadable_unindexed': 1, 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('could not be read by exiftool', md)
+        self.assertIn('stays marked out of date', md)
+        self.assertIn('`fha photoindex` again', md)
+
+    def test_unreadable_photos_that_are_already_cataloged_say_nothing_extra(self) -> None:
+        # A photo that is unreadable but whose catalog row still matches the
+        # file does NOT hold the catalog back (run_scan only counts the
+        # unindexed ones), so the report must not claim it does.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 2, 'unchanged': 0, 'removed': 0,
+            'unreadable': 1, 'unreadable_sample': ['photos/1950/odd.jpg'],
+            'unreadable_unindexed': 0, 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('could not be read by exiftool', md)
+        self.assertNotIn('stays marked out of date', md)
+
+    def test_a_photo_folder_that_would_not_open_is_named_in_section_6(self) -> None:
+        # Section 6 is where the human reliably looks, and it read only the
+        # exiftool-unreadable-FILE keys. A whole folder the scan could not
+        # open - the case where cached rows were held rather than swept -
+        # went unmentioned, so the report looked clean about a subtree the
+        # scan never saw.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 0, 'unchanged': 3, 'removed': 0,
+            'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
+            'unreadable_dirs': ['photos/Attic'], 'held_unreadable': 2,
+            'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('photos/Attic', md)
+        self.assertIn('could not be opened', md)
+        self.assertIn('2 photo(s) already catalogued from there were kept', md)
+        self.assertIn('`fha photoindex` again', md)
+
+    def test_a_source_folder_that_would_not_open_is_named_in_section_6(self) -> None:
+        # The other half: the photos were all readable, but the source records
+        # saying who is in them were not. The rows were held rather than
+        # recomputed, and the human has to be told which folder to restore.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 0, 'unchanged': 3, 'removed': 0,
+            'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
+            'unreadable_dirs': [], 'held_unreadable': 0,
+            'unreadable_record_dirs': ['sources/photos'], 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('sources/photos', md)
+        self.assertIn('which people your sources say are in each photo', md)
+        self.assertIn('left exactly as they were', md)
+
+    def test_all_three_unseen_conditions_get_their_own_note(self) -> None:
+        # Three different faults with three different fixes; folding them into
+        # one line would send the human to the wrong one.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 0, 'unchanged': 2, 'removed': 0,
+            'unreadable': 1, 'unreadable_sample': ['photos/1950/locked.jpg'],
+            'unreadable_unindexed': 1,
+            'unreadable_dirs': ['photos/Attic'], 'held_unreadable': 0,
+            'unreadable_record_dirs': ['sources/photos'], 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertEqual(md.count('Note: '), 3)
+        self.assertIn('Nothing was removed from the catalog for them', md)
+        self.assertIn('could not be read by exiftool', md)
+
+    def test_a_scan_payload_missing_the_new_keys_still_reports(self) -> None:
+        # An older cached payload (or a partially filled summary) must degrade
+        # to fewer notes, never to a KeyError inside the session-start feed.
+        self.assertEqual(report._photo_scan_notes({}), [])
+        self.assertEqual(
+            report._photo_scan_notes({'root_found': True, 'total': 1}), [])
+
+    def test_triage_candidate_that_is_not_on_disk_names_the_real_fix(self) -> None:
+        # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
+        # leaves it as its group's primary, so triage can name one. Telling
+        # the human to run `fha process MISSING:photos/…` would be a dead end.
+        triage = report.Result(data={
+            'status': 'fresh',
+            'candidates': [
+                {'path': 'MISSING:photos/1950/reunion.jpg', 'score': 3,
+                 'signals': ['caption']},
+            ],
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_triage', return_value=triage):
+            result = report.run_report(self.archive_root, {}, full=True, section='photo-triage')
+        md = result['markdown']
+        self.assertIn('photos/1950/reunion.jpg', md)
+        self.assertNotIn('MISSING:', md)
+        self.assertNotIn('fha process', md)
+        self.assertIn('fha photoindex reconcile --with-exif', md)
 
     def test_answerable_questions_skips_marriage_for_no_known_marriages_person(self) -> None:
         # lint.py's W101 rule never requires a marriage claim for a person
@@ -568,6 +686,39 @@ class QuestionNamespacingTests(unittest.TestCase):
         self.assertTrue(
             statuses['people/test__person_research_P-aaaaaaaaaa.md'].startswith('answered')
         )
+
+    def test_a_given_name_containing_the_kind_word_is_not_a_research_file(self) -> None:
+        # SPEC §13 puts the companion kind immediately before the P-id, so
+        # `smith__research_anne_P-…` is Research Anne Smith's own profile.
+        # Merging a profile's body into the research-notes scan would let the
+        # report propose closures for questions lint's E009 scope never saw -
+        # the two are documented to cover the same set.
+        (self.archive_root / 'people' / 'smith__research_anne_P-bbbbbbbbbb.md').write_text(
+            _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'people' / 'smith__anne_research_P-bbbbbbbbbb.md').write_text(
+            _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
+        )
+        questions = report._parse_questions(self.archive_root)
+        self.assertEqual(
+            sorted({info['file'] for info in questions.values()}),
+            ['people/smith__anne_research_P-bbbbbbbbbb.md'],
+        )
+
+    def test_a_person_record_named_like_a_research_file_is_not_one(self) -> None:
+        # The other half of the same ambiguity: SPEC §13's kind slot is also
+        # the last given-name slot, so a file may be NAMED like a research
+        # companion and BE Anne Research Smith's own record. Content settles
+        # it, here and in lint's E009 scope alike - the two are documented to
+        # see the same question set, and a profile's ## Open Questions block
+        # is in neither.
+        (self.archive_root / 'people' / 'smith__anne_research_P-cccccccccc.md').write_text(
+            '---\nid: P-cccccccccc\nname: Anne Research Smith\nliving: false\n---\n\n'
+            + _RESEARCH_SAME_HEADING_MD,
+            encoding='utf-8',
+        )
+        questions = report._parse_questions(self.archive_root)
+        self.assertEqual(questions, {})
 
     def test_discoveries_show_plain_heading_and_accept_old_snapshot_keys(self) -> None:
         heading = 'When was Test Person born?'

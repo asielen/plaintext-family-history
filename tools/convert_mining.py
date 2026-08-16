@@ -109,9 +109,12 @@ from _lib import (
     mint_ids,
     normalize_id,
     path_to_alias,
+    read_text_exact,
+    reapply_newline,
     resolve_path,
     resolve_root_arg,
     scan_person_record_ids,
+    write_text_exact_atomic,
 )
 
 import yaml
@@ -993,6 +996,16 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
         # Register the cleanup before writing, same as copy_new - a
         # write_text() that fails partway (e.g. disk full) can still leave a
         # partially-written file behind.
+        #
+        # This one keeps the plain writer rather than the atomic one, and the
+        # reason is the function's name: _preflight_apply has already refused
+        # the whole apply if any planned destination exists, so every path
+        # here is a file being CREATED. A torn write therefore destroys
+        # nothing - there is no previous complete version to lose - and the
+        # unlink above removes the partial. The atomic writer protects against
+        # replacing good bytes with half of new ones, which cannot happen on a
+        # path that held no bytes a moment ago. (The questions.md branch below
+        # is the opposite case and does use the atomic writer.)
         undo.append(lambda p=path: p.unlink(missing_ok=True))
         path.write_text(text, encoding='utf-8')
 
@@ -1023,9 +1036,19 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
             qpath = root / 'notes' / 'questions.md'
             block = _render_questions_block(plan.questions)
             if qpath.exists():
-                existing = qpath.read_text(encoding='utf-8')
-                undo.append(lambda p=qpath, text=existing: p.write_text(text, encoding='utf-8'))
-                qpath.write_text(existing.rstrip('\n') + '\n\n' + block, encoding='utf-8')
+                # The one write in this apply that touches a file the human
+                # already has. write_new's unlink-the-partial undo is no use
+                # here - unlinking would delete his question log - so this
+                # branch needs the guarantee write_new does not: atomic, so
+                # the log is either the old text or the old text plus the new
+                # block. The restore is atomic for the same reason; a rollback
+                # is the worst moment for a second truncation. Byte-faithful
+                # IO too, so appending does not rewrite a CRLF log's every line.
+                existing = read_text_exact(qpath)
+                undo.append(
+                    lambda p=qpath, text=existing: write_text_exact_atomic(p, text))
+                appended = existing.rstrip('\n') + '\n\n' + block
+                write_text_exact_atomic(qpath, reapply_newline(appended, existing))
             else:
                 write_new(qpath, '# Open Questions (general)\n\n' + block)
 

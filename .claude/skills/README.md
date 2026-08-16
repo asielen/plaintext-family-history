@@ -29,6 +29,9 @@ gate to `accepted`.**
 | [`find-photos`](find-photos/SKILL.md) | **authored** | The photo front door: resolve "show me grandma's photos" to the right filters, answer from the photo index in plain language (one line per physical photo), offer a clickable `fha photoindex gallery` page. Read-only; identification hands off to `tag-person`'s own prompt. | Sonnet |
 | [`share-and-export`](share-and-export/SKILL.md) | **authored** | The guided sharing path: pick the right exporter (packet / gedcom / site / wikitree / backup) for the recipient, speak the privacy defaults in plain words before running, preview first, then report what went out and what stayed home. Import is not this skill. | Opus |
 | [`import-notes`](import-notes/SKILL.md) | **authored** | The legacy-notes on-ramp: chunk a pile of freeform notes, propose a home per chunk under FILING_CABINET's routing rule (evidence → inbox → `process-source`; question / hypothesis / research-log entry / `notes/research/`), write only on the human's confirmed ruling. Drafts no claims; originals preserved by default, a scraps file dissolves only on explicit say-so after everything landed. | Opus |
+| [`import-recordings`](import-recordings/SKILL.md) | **authored** | The recordings on-ramp (2026-08): content-hash incoming audio/video against what is filed and skip duplicates, read the real recording date from the container (UTC-at-stop vs local-at-start caveat), group one sitting into one session source under `documents/interviews/{interviewee}-{yyyy-mm-dd}/`, always add a local whisper pass beside the app transcript (never replacing it), transfer speaker labels only under measured gates, and propose - never assign - who is speaking. Interactive by default; hands off to `process-source` / `mine-transcript`. Its two interim enactments (dedupe hash, container probe) are recorded in [`import-recordings/GAP.md`](import-recordings/GAP.md) as wanted `fha media` verbs (#43, #44). |
+| [`transcribe-audio`](transcribe-audio/SKILL.md) | **authored** | Local faster-whisper re-transcription (2026-08) of an archived or new recording via the skill's own `scripts/transcribe_audio.py`; attaches the pass as `whisper-transcript` beside the original transcript (both always kept), and offers the claim-by-claim audit of facts mined from the garbled original. |
+| [`transcribe-source`](transcribe-source/SKILL.md) | **authored** | The image-only on-ramp (2026-08, #46): a source whose files are all scans puts no text in the archive, so a text search answers for what one earlier pass wrote into a claim value while looking like a search of the evidence. Reads the images and writes a `[Page N]`-labeled `role: transcript` companion (`fha process --more`), marked `<!-- AI-DRAFT … -->` until a human checks it — the image stays the evidence of record. Runs from `process-source` (Stage A½, before claims are drafted) or standalone in bounded backfill batches. Drafts no claims; a contradiction with an accepted claim becomes a `## Q:` block. Its one blocked gap is in [`transcribe-source/GAP.md`](transcribe-source/GAP.md). | Opus |
 
 Statuses track [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
 verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session
@@ -42,8 +45,10 @@ check** against `example-archive/` (capture the transcript).
   below a GENERATED header or overwrite human text.
 - No skill imports another; the only cross-skill links are the documented hand-offs into `review-claims`
   (from `process-source` whenever it drafted claims — its zero-claims exit skips review — and from
-  `mine-transcript` when the human reviews right away) and `import-notes`' hand-off of evidence into
-  `process-source` (its inbox items enter the normal intake path) — hand-offs, not code dependencies.
+  `mine-transcript` when the human reviews right away), `import-notes`' hand-off of evidence into
+  `process-source` (its inbox items enter the normal intake path), and `transcribe-source`'s two —
+  called from `process-source`'s Stage A½ when an item is image-only, and handing the text it wrote to
+  `mine-transcript` for the facts no claim covers — hand-offs, not code dependencies.
 - Verification is behavioral — run the skill against `example-archive/` and confirm the documented writes,
   graceful degradation, and that `fha lint` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

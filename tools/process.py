@@ -40,7 +40,12 @@ transaction. Within-root moves are NOT refile's business (free + healed by
 
 Every mutating path is transactional: each filesystem effect registers an undo,
 and any failure unwinds them in reverse so an interrupted run leaves no partial
-state (AGENTS.md contract). `--dry-run` performs no effect at all - which means
+state (AGENTS.md contract).  The keyword write goes one step further: before
+exiftool touches a photo for the first time, `_lib.OriginalBackup` puts one
+pristine copy of it under the `originals_backup:` folder (TOOLING §13f), and a
+copy that fails refuses the write rather than proceeding without one.
+
+`--dry-run` performs no effect at all - which means
 an inbox relocation is then only *virtual* (the previewed destination does not
 exist yet), so every preview read (embedded keywords, the sidecar and its
 hints, variation grouping) is threaded back to the file's real pre-move
@@ -82,6 +87,8 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _run_exiftool_read_keywords - read embedded Keywords/Subject of one file
 #    _run_exiftool_embed_source  - write `SOURCE: {S-id}` into one file
 #    _run_exiftool_remove_source - remove a just-written `SOURCE: {S-id}`
+#    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
+#    _flush_backup_messages      - print its notices (warnings to stderr)
 #    _read_source_keyword        - the S-id embedded in a photo, or None
 #
 #  Record scaffolding
@@ -100,6 +107,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _photo_variation_siblings - photos in a dir sharing one base_id
 #    _variation_role_copy      - (role, copy) annotation for a grouped member
 #    _batch_type               - A–D label for a multi-image set (informational)
+#    _photo_meta_from_row      - one exiftool row -> triage signals (date resolved via _lib)
 #    _run_exiftool_read_meta   - caption/date/keyword signals for triage scoring
 #    _score_photo_group        - TOOLING §15b evidence score (mirrors photoindex)
 #
@@ -152,11 +160,14 @@ from _lib import (
     Result,
     PHOTO_EXTENSIONS,
     SOURCE_TYPES,
+    BackupRefused,
     FhaConfigError,
+    OriginalBackup,
     ParsedName,
     append_paragraph_to_section,
     claims_edit_problem,
     configure_utf8_stdout,
+    edtf_confidence,
     find_source_record_path,
     format_edtf_error,
     format_exiftool_error,
@@ -165,7 +176,6 @@ from _lib import (
     frontmatter_fence_span,
     grouping_stem,
     id_type_of,
-    is_valid_edtf,
     is_valid_id,
     load_fha_yaml,
     mint_ids,
@@ -178,6 +188,7 @@ from _lib import (
     read_text_exact,
     reapply_newline,
     resolve_path,
+    resolve_photo_edtf,
     resolve_root_arg,
     scan_ids_in_tree,
     scan_person_record_ids,
@@ -339,7 +350,8 @@ def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
 
 
 def _run_exiftool_embed_source(
-    file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+    file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
+    *, backup: OriginalBackup,
 ) -> str | None:
     """Append `SOURCE: {s_id}` (and any extra keywords) to a photo's Keywords.
 
@@ -349,9 +361,21 @@ def _run_exiftool_embed_source(
     `extra_keywords` carries bare P-id strings (e.g. `['P-de957bcda1']`) added
     in the same call so SOURCE: and people are atomic: one exiftool invocation
     per file, one rollback path if the record scaffold fails.
+
+    `backup` is the run's safety-copy policy (`_lib.OriginalBackup`, TOOLING
+    §13f). This is the write that matters most to it: it is the FIRST time fha
+    touches the file, so the copy it takes is the photo exactly as the human's
+    camera or scanner left it. A copy that fails refuses the write, returned
+    through the same per-file error string an exiftool failure uses, so the
+    caller's existing rollback runs unchanged.
+
     Returns None on success, the stderr text on a per-file failure; raises
     RuntimeError only when exiftool itself is absent.
     """
+    try:
+        backup.ensure(file_path)
+    except BackupRefused as e:
+        return str(e)
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
     kw_args = [f'-keywords+={kw}' for kw in keywords]
     cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
@@ -363,7 +387,8 @@ def _run_exiftool_embed_source(
 
 
 def _run_exiftool_remove_source(
-    file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+    file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
+    *, backup: OriginalBackup,
 ) -> str | None:
     """Remove a just-added SOURCE keyword (and any extra keywords) during rollback.
 
@@ -373,7 +398,18 @@ def _run_exiftool_remove_source(
     pre-run identity state so the command remains transactional. `extra_keywords`
     must match what was passed to `_run_exiftool_embed_source` so the rollback
     removes exactly what was added.
+
+    It takes the same `backup` guard as the forward write, and for the same
+    reason: this is a write to an original photo file, and the rule is on the
+    act of writing, not on the caller's intention. In practice the copy is
+    already there - the forward write made it, or refused and left nothing to
+    roll back - so this call costs one `exists()` check and can only refuse in
+    the case where the forward write would have refused too.
     """
+    try:
+        backup.ensure(file_path)
+    except BackupRefused as e:
+        return str(e)
     keywords = [f'SOURCE: {s_id}'] + (extra_keywords or [])
     kw_args = [f'-keywords-={kw}' for kw in keywords]
     cmd = ['exiftool'] + kw_args + ['-overwrite_original_in_place', str(file_path)]
@@ -382,6 +418,31 @@ def _run_exiftool_remove_source(
     except FileNotFoundError as e:
         raise RuntimeError(format_exiftool_error('fha process')) from e
     return None if proc.returncode == 0 else proc.stderr.strip()
+
+
+def _open_backup(
+    archive_root: Path, fha_config: dict, backup: OriginalBackup | None,
+) -> OriginalBackup:
+    """The run's safety-copy policy, announced once and reported (TOOLING §13f).
+
+    `fha process` is print-based rather than Result-based, so the notices go
+    straight to the terminal here: the warning to stderr with the other
+    warnings, the "N originals copied" line to stdout with the rest of the
+    run's report. An operation called as part of a larger run (a triage folder
+    processing group after group) is handed the outer run's object so the
+    "no safety copies" warning is said once, not once per group.
+    """
+    if backup is None:
+        backup = OriginalBackup(archive_root, fha_config)
+    backup.announce()
+    _flush_backup_messages(backup)
+    return backup
+
+
+def _flush_backup_messages(backup: OriginalBackup) -> None:
+    """Print any safety-copy notices not yet reported."""
+    for level, text in backup.drain_messages():
+        print(text, file=(sys.stderr if level == 'warning' else sys.stdout))
 
 
 def _read_source_keyword(file_path: Path) -> str | None:
@@ -945,24 +1006,73 @@ def _batch_type(members: list[Path]) -> tuple[str, str]:
 # read the few needed fields straight off the files via exiftool, degrading to
 # filename-only signals (back-variant) when exiftool is unavailable so a triage
 # still ranks rather than crashing on a machine without the binary.
+#
+# "The same signals" has to mean the same code, or the two rankings drift apart
+# silently. The date signal is the one that did: it read the DATE: keyword body
+# as if it were an EDTF date, which no spec-conformant keyword ever is. So the
+# date vocabulary now lives in _lib (resolve_photo_edtf, edtf_confidence) and
+# both tools call it (tools never import tools).
 
 # A user_comment that is purely machine-authored is weak evidence (TOOLING §15b);
 # mirrors photoindex._AI_COMMENT_RE.
 _AI_COMMENT_RE = re.compile(r'^\s*(AI|Model):', re.I)
+# The keyword that carries a photo's date precision (SPEC §20); its body is a
+# letter pattern, resolved against DateTimeOriginal - never read as a date itself.
 _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
+
+
+def _photo_meta_from_row(row: dict) -> dict:
+    """Map one exiftool JSON row to the triage signals `_score_photo_group` reads.
+
+    Returns {'caption', 'user_comment', 'edtf', 'has_pid_keyword'}, where `edtf`
+    is the photo's RESOLVED date - never the raw keyword body. A DATE: keyword
+    carries only precision letters ('Y!M!D!', 'Y~'); the date itself is the
+    photo's EXIF DateTimeOriginal, and `_lib.resolve_photo_edtf` pairs the two
+    (SPEC §20). Reading the keyword body as a date is the bug this replaced: a
+    spec-conformant 'Y!M!D!' is not valid EDTF, so the confident-date signal
+    could never fire and only the retired digit form ever scored.
+
+    Split out from the exiftool call so a test can drive the real mapping from
+    a fake metadata row - the parsing is where the tools have to agree, and the
+    subprocess is what a test cannot run.
+    """
+    keywords: list[str] = []
+    for key in ('Keywords', 'Subject'):
+        val = row.get(key)
+        if val is None:
+            continue
+        for v in (val if isinstance(val, list) else [val]):
+            keywords.append(str(v))
+
+    date_pattern = None
+    for kw in keywords:
+        m = _DATE_KEYWORD_RE.match(kw.strip())
+        if m:
+            date_pattern = m.group(1).strip()
+            break
+    has_pid = any(id_type_of(kw.strip()) == 'P' for kw in keywords)
+
+    return {
+        'caption': row.get('Caption-Abstract') or row.get('Description'),
+        'user_comment': row.get('UserComment'),
+        'edtf': resolve_photo_edtf(date_pattern, row.get('DateTimeOriginal')),
+        'has_pid_keyword': has_pid,
+    }
 
 
 def _run_exiftool_read_meta(file_path: Path) -> dict:
     """Read the caption/date/keyword signals one photo contributes to triage.
 
-    Returns {'caption', 'user_comment', 'edtf', 'has_pid_keyword'}. A separate
-    seam from `_run_exiftool_read_keywords` (which reads only Keywords/Subject
-    to detect a SOURCE: marker) because triage also needs the caption and
-    description fields. Monkeypatched in tests; raises RuntimeError when exiftool
-    is absent so the caller can degrade rather than fail.
+    Returns `_photo_meta_from_row`'s dict. A separate seam from
+    `_run_exiftool_read_keywords` (which reads only Keywords/Subject to detect a
+    SOURCE: marker) because triage also needs the caption, description and
+    capture-date fields - DateTimeOriginal is requested here because a DATE:
+    keyword alone cannot yield a date (SPEC §20 rule 2). Monkeypatched in tests;
+    raises RuntimeError when exiftool is absent so the caller can degrade rather
+    than fail.
     """
     cmd = ['exiftool', '-j', '-Caption-Abstract', '-XMP-dc:Description',
-           '-UserComment', '-Keywords', '-Subject', str(file_path)]
+           '-UserComment', '-DateTimeOriginal', '-Keywords', '-Subject', str(file_path)]
     try:
         proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
     except FileNotFoundError as e:
@@ -973,30 +1083,7 @@ def _run_exiftool_read_meta(file_path: Path) -> dict:
         rows = json.loads(proc.stdout or '[]')
     except json.JSONDecodeError as e:
         raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
-    row = rows[0] if rows else {}
-
-    keywords: list[str] = []
-    for key in ('Keywords', 'Subject'):
-        val = row.get(key)
-        if val is None:
-            continue
-        for v in (val if isinstance(val, list) else [val]):
-            keywords.append(str(v))
-
-    edtf = None
-    for kw in keywords:
-        m = _DATE_KEYWORD_RE.match(kw.strip())
-        if m:
-            edtf = m.group(1).strip()
-            break
-    has_pid = any(id_type_of(kw.strip()) == 'P' for kw in keywords)
-
-    return {
-        'caption': row.get('Caption-Abstract') or row.get('Description'),
-        'user_comment': row.get('UserComment'),
-        'edtf': edtf,
-        'has_pid_keyword': has_pid,
-    }
+    return _photo_meta_from_row(rows[0] if rows else {})
 
 
 def _score_photo_group(members: list[Path]) -> tuple[int, list[str]]:
@@ -1010,6 +1097,12 @@ def _score_photo_group(members: list[Path]) -> tuple[int, list[str]]:
     photo). Per-file metadata is read best-effort; a member whose metadata can't
     be read (no exiftool, unreadable file) contributes only its filename-derived
     back-variant signal.
+
+    The confident-date signal shares photoindex's actual code, not a
+    restatement of it: `_lib.resolve_photo_edtf` resolves the date and
+    `_lib.edtf_confidence` scores it, exactly as photoindex does from its
+    cached rows. This used to be a local re-expression carrying a comment that
+    claimed parity, and it was wrong for every spec-conformant keyword.
     """
     metas = []
     for p in members:
@@ -1029,10 +1122,7 @@ def _score_photo_group(members: list[Path]) -> tuple[int, list[str]]:
     if any(m['has_pid_keyword'] for m in metas):
         score += 2
         signals.append('pid-keyword')
-    # A confident date is year-precise (or finer) with no approximation marker -
-    # photoindex's _edtf_confidence marker_rank 0 condition, expressed directly.
-    if any(m['edtf'] and is_valid_edtf(m['edtf']) and '~' not in m['edtf'] and '?' not in m['edtf']
-           for m in metas):
+    if any(m['edtf'] and edtf_confidence(m['edtf'])[1] == 0 for m in metas):
         score += 1
         signals.append('date:Y!+')
     if any(parse_media_filename(p.stem).part_kind == 'back' for p in members):
@@ -1396,6 +1486,7 @@ def process_photo(
     real_path: Path | None = None,
     source_id: str | None = None,
     report: dict | None = None,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """M7.2: embed a SOURCE keyword in a photo and scaffold its source record.
 
@@ -1489,6 +1580,10 @@ def process_photo(
     )
 
     if dry_run:
+        # Announce-only: says where the safety copy would go (or that none is
+        # configured) and writes nothing - a preview must show the guard the
+        # live run would apply, or it is not a preview of that run.
+        _open_backup(archive_root, fha_config, backup)
         print(f'[dry-run] Would mint {sid}')
         kw_desc = f'SOURCE: {sid}' + (f' + {len(new_people)} P-id keyword(s)' if new_people else '')
         print(f'[dry-run] Would embed {kw_desc} in {file_path.name} (no rename)')
@@ -1499,7 +1594,9 @@ def process_photo(
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
 
-    err = _run_exiftool_embed_source(file_path, sid, extra_keywords=new_people or None)
+    backup = _open_backup(archive_root, fha_config, backup)
+    err = _run_exiftool_embed_source(
+        file_path, sid, extra_keywords=new_people or None, backup=backup)
     if err is not None:
         print(f'ERROR: exiftool could not embed SOURCE keyword in {file_path.name}: {err}',
               file=sys.stderr)
@@ -1517,7 +1614,8 @@ def process_photo(
         except Exception:
             pass
         try:
-            rollback_err = _run_exiftool_remove_source(file_path, sid, extra_keywords=new_people or None)
+            rollback_err = _run_exiftool_remove_source(
+                file_path, sid, extra_keywords=new_people or None, backup=backup)
         except RuntimeError as rollback_exc:
             rollback_err = str(rollback_exc)
         print(f'ERROR: SOURCE keyword was embedded in {file_path.name} but the record '
@@ -1529,6 +1627,7 @@ def process_photo(
                   f'{rollback_err}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _flush_backup_messages(backup)
     print(f'Minted {sid}')
     print(f'Embedded SOURCE: {sid} in {file_path.name} (not renamed)')
     if new_people:
@@ -1568,6 +1667,7 @@ def process_photo_group(
     dry_run: bool,
     people: list[str] | None = None,
     real_paths: dict[Path, Path] | None = None,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """M7.3: process a variation set as ONE source sharing a single S-id.
 
@@ -1670,6 +1770,7 @@ def process_photo_group(
     )
 
     if dry_run:
+        _open_backup(archive_root, fha_config, backup)
         print(f'[dry-run] Would mint {sid} for a {len(members)}-file variation set')
         for m in ordered:
             tag = 'primary' if m == primary else _variation_role_copy(m, False)[0]
@@ -1681,10 +1782,12 @@ def process_photo_group(
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
 
+    backup = _open_backup(archive_root, fha_config, backup)
     embedded: list[Path] = []
     try:
         for m in ordered:
-            err = _run_exiftool_embed_source(m, sid, extra_keywords=per_member_new_people[m] or None)
+            err = _run_exiftool_embed_source(
+                m, sid, extra_keywords=per_member_new_people[m] or None, backup=backup)
             if err is not None:
                 raise RuntimeError(f'exiftool could not embed SOURCE keyword in {m.name}: {err}')
             embedded.append(m)
@@ -1704,7 +1807,7 @@ def process_photo_group(
         for m in reversed(embedded):
             try:
                 kw_err = _run_exiftool_remove_source(
-                    m, sid, extra_keywords=per_member_new_people[m] or None)
+                    m, sid, extra_keywords=per_member_new_people[m] or None, backup=backup)
             except RuntimeError as kw_exc:
                 kw_err = str(kw_exc)
             if kw_err is not None:
@@ -1721,6 +1824,7 @@ def process_photo_group(
             print(f'ERROR: processing the variation set failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _flush_backup_messages(backup)
     print(f'Minted {sid}')
     for m in ordered:
         tag = 'primary' if m == primary else _variation_role_copy(m, False)[0]
@@ -1746,6 +1850,7 @@ def _process_variation_set(
     real_paths: dict[Path, Path] | None = None,
     source_id: str | None = None,
     report: dict | None = None,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """Surface a variation set and process it per the human's one/separate/skip choice.
 
@@ -1772,7 +1877,7 @@ def _process_variation_set(
                              slug=slug, title=title, source_date=source_date,
                              dry_run=dry_run, people=people,
                              real_path=real_paths.get(members[0]),
-                             source_id=source_id, report=report)
+                             source_id=source_id, report=report, backup=backup)
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     letter, desc = _batch_type(members)
@@ -1792,14 +1897,14 @@ def _process_variation_set(
         return process_photo_group(archive_root, fha_config, members,
                                    slug=slug, title=title, source_date=source_date,
                                    dry_run=dry_run, people=people,
-                                   real_paths=real_paths or None)
+                                   real_paths=real_paths or None, backup=backup)
     if answer.startswith('sep'):
         rc = EXIT_CLEAN
         for m in members:
             rc = max(rc, process_photo(archive_root, fha_config, m,
                                        slug=None, title=None, source_date=source_date,
                                        dry_run=dry_run, people=people,
-                                       real_path=real_paths.get(m)))
+                                       real_path=real_paths.get(m), backup=backup))
         return rc
     print('Skipped - deferred to a later session.')
     return EXIT_CLEAN
@@ -1841,6 +1946,7 @@ def process_folder(
     source_date: str | None,
     dry_run: bool,
     people: list[str] | None = None,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """M7.3: triage a folder's unprocessed photos, then process selected groups.
 
@@ -1885,12 +1991,18 @@ def process_folder(
         print('Nothing selected.')
         return EXIT_CLEAN
 
+    # One policy for the whole triage run, built here rather than per group:
+    # a folder of twelve sets must not say "no safety copies are being kept"
+    # twelve times, and its copy report is the run's total.
+    if backup is None:
+        backup = OriginalBackup(archive_root, fha_config)
     rc = EXIT_CLEAN
     for idx in chosen:
         members = scored[idx]['members']
         rc = max(rc, _process_variation_set(
             archive_root, fha_config, members, slug=None, title=None,
-            source_date=source_date, dry_run=dry_run, people=people))
+            source_date=source_date, dry_run=dry_run, people=people,
+            backup=backup))
     return rc
 
 
@@ -1901,6 +2013,7 @@ def process_bundle(
     *,
     source_date: str | None,
     dry_run: bool,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """M7.4: dissolve a `notes.md` bundle folder into one source (SPEC §12.1).
 
@@ -2060,6 +2173,8 @@ def process_bundle(
     )
 
     if dry_run:
+        if any(item['embed'] for item in plan):
+            _open_backup(archive_root, fha_config, backup)
         print(f'[dry-run] Would mint {sid} for bundle {folder.name} ({len(assets)} files)')
         for item in plan:
             verb = 'move + embed SOURCE in' if item['kind'] == 'photo' else 'rename + file'
@@ -2069,6 +2184,10 @@ def process_bundle(
         print(f'[dry-run] Would delete the dissolved bundle folder {folder.name}')
         return EXIT_CLEAN
 
+    # Only when the bundle actually holds a photo to keyword: a bundle of
+    # documents is renamed and filed, never written into.
+    if any(item['embed'] for item in plan):
+        backup = _open_backup(archive_root, fha_config, backup)
     undo: list = []
     embedded: list[tuple[Path, str]] = []
     notes_text = notes_path.read_text(encoding='utf-8')
@@ -2080,7 +2199,7 @@ def process_bundle(
             undo.append((f'move {dest.name} back to {src.name}',
                          lambda s=src, d=dest: d.rename(s)))
             if item['embed']:
-                err = _run_exiftool_embed_source(dest, sid)
+                err = _run_exiftool_embed_source(dest, sid, backup=backup)
                 if err is not None:
                     raise RuntimeError(f'exiftool could not embed SOURCE keyword in {dest.name}: {err}')
                 embedded.append((dest, sid))
@@ -2101,7 +2220,7 @@ def process_bundle(
         failed: list[str] = []
         for dest, dsid in reversed(embedded):
             try:
-                kw_err = _run_exiftool_remove_source(dest, dsid)
+                kw_err = _run_exiftool_remove_source(dest, dsid, backup=backup)
             except RuntimeError as kw_exc:
                 kw_err = str(kw_exc)
             if kw_err is not None:
@@ -2119,6 +2238,8 @@ def process_bundle(
             print(f'ERROR: bundle dissolution failed, rolled back: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    if backup is not None:
+        _flush_backup_messages(backup)
     print(f'Minted {sid} for bundle {folder.name}')
     for item in plan:
         if item['kind'] == 'photo':
@@ -2141,6 +2262,7 @@ def attach_more(
     *,
     dry_run: bool,
     real_path: Path | None = None,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """M7.2 `--more`: attach an additional file to an existing source record.
 
@@ -2212,6 +2334,7 @@ def attach_more(
         if copy:
             entry.append(f'    copy: {_yaml_inline(copy)}')
         if dry_run:
+            _open_backup(archive_root, fha_config, backup)
             print(f'[dry-run] Would embed SOURCE: {sid} in {more_file.name} (no rename)')
             print(f'[dry-run] Would add files: entry (role: {role}) to '
                   f'{_rel(record_path, archive_root)}')
@@ -2220,26 +2343,33 @@ def attach_more(
         # (permission issue, transient I/O error, non-UTF-8 record), nothing
         # has been written to the photo yet, so there's nothing to roll back.
         try:
-            old_text = record_path.read_text(encoding='utf-8')
+            old_text = read_text_exact(record_path)
         except (OSError, UnicodeDecodeError) as e:
             print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}',
                   file=sys.stderr)
             return EXIT_FAILURE
-        err = _run_exiftool_embed_source(more_file, sid)
+        backup = _open_backup(archive_root, fha_config, backup)
+        err = _run_exiftool_embed_source(more_file, sid, backup=backup)
         if err is not None:
             print(f'ERROR: exiftool could not embed SOURCE keyword in {more_file.name}: {err}',
                   file=sys.stderr)
             return EXIT_FAILURE
         try:
             new_text = _append_file_entry(old_text, entry)
-            record_path.write_text(new_text, encoding='utf-8')
+            # Atomic, unlike the scaffolding writes above: those CREATE a record
+            # and their undo unlinks the partial, but this one REPLACES a
+            # complete source record to add one files: entry. A truncating write
+            # here would trade the whole record for a fragment, and the rollback
+            # below would be trying to restore a file the failure had already
+            # destroyed.
+            write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
         except Exception as e:
             try:
-                rollback_err = _run_exiftool_remove_source(more_file, sid)
+                rollback_err = _run_exiftool_remove_source(more_file, sid, backup=backup)
             except RuntimeError as rollback_exc:
                 rollback_err = str(rollback_exc)
             try:
-                record_path.write_text(old_text, encoding='utf-8')
+                write_text_exact_atomic(record_path, old_text)
             except Exception:
                 pass
             print(f'ERROR: attach failed after keyword write: {e}', file=sys.stderr)
@@ -2249,6 +2379,7 @@ def attach_more(
                 print(f'WARNING: could not roll back SOURCE: {sid} from {more_file.name}: '
                       f'{rollback_err}', file=sys.stderr)
             return EXIT_FAILURE
+        _flush_backup_messages(backup)
         print(f'Embedded SOURCE: {sid} in {more_file.name} (not renamed)')
         print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
         return EXIT_CLEAN
@@ -2301,7 +2432,7 @@ def attach_more(
 
     undo: list = []
     try:
-        old_text = record_path.read_text(encoding='utf-8')
+        old_text = read_text_exact(record_path)
     except (OSError, UnicodeDecodeError) as e:
         print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
         return EXIT_FAILURE
@@ -2311,14 +2442,16 @@ def attach_more(
         undo.append((f'move {new_path.name} back to {more_file.name}',
                      lambda: new_path.rename(more_file)))
         new_text = _append_file_entry(old_text, entry)
-        record_path.write_text(new_text, encoding='utf-8')
+        # Atomic for the same reason as the photos branch above: an existing
+        # source record is being replaced, not created.
+        write_text_exact_atomic(record_path, reapply_newline(new_text, old_text))
     except Exception as e:
         # Undo the record entry and the rename best-effort, but keep any failure:
         # a file left renamed while the record no longer lists it is inconsistent,
         # so the owner is told rather than shown a false "rolled back".
         failed: list[str] = []
         try:
-            record_path.write_text(old_text, encoding='utf-8')
+            write_text_exact_atomic(record_path, old_text)
         except Exception as rec_exc:
             failed.append(f'restore {record_path.name} ({rec_exc})')
         failed.extend(_run_undo(undo))
@@ -2676,6 +2809,7 @@ def process_refile(
     dest: str | None = None,
     dry_run: bool = False,
     assume_yes: bool = False,
+    backup: OriginalBackup | None = None,
 ) -> int:
     """Move one of a source's files to the other asset root - the correction verb.
 
@@ -2708,7 +2842,7 @@ def process_refile(
     provenance paragraph appended to `## Notes` via the shared
     `append_paragraph_to_section` engine, both computed BEFORE anything moves
     so an unmatchable line refuses up front instead of rolling back. Line
-    endings are preserved exactly (read_text_exact/write_text_exact).
+    endings are preserved exactly (read_text_exact/write_text_exact_atomic).
 
     Deliberately out of scope for v1: re-typing (`refile` moves location,
     never `source_type`), same-root moves (reconcile's domain), and moving the
@@ -2889,6 +3023,8 @@ def process_refile(
     keyword_supported = dest_path.suffix.lower() in PHOTO_EXTENSIONS
 
     if dry_run:
+        if embed_keyword and keyword_supported:
+            _open_backup(archive_root, fha_config, backup)
         if to == 'documents':
             print('[dry-run] Note: your photo tool (Lightroom) would show this '
                   'photo as missing after the move - removing it from the '
@@ -2951,6 +3087,14 @@ def process_refile(
     file_moved = False
     keyword_warning: str | None = None
     keyword_embedded = False
+    # One policy object for the whole transaction: the forward keyword write and
+    # the rollback that strips it must share it, or the run would take two
+    # safety copies and say "no safety copies are being kept" twice. Opened only
+    # when this refile actually writes into the file - a move to the documents
+    # root renames and never touches the file's contents, so warning about
+    # safety copies there would be about a risk this run does not run.
+    if embed_keyword and keyword_supported:
+        backup = _open_backup(archive_root, fha_config, backup)
     try:
         # Track which destination folders this run creates, so a rollback can
         # remove them again (deepest-first, once the file has moved back out).
@@ -2971,7 +3115,8 @@ def process_refile(
                     'The record\'s files: inventory still carries the identity.')
             else:
                 try:
-                    err = _run_exiftool_embed_source(dest_path, sid)
+                    err = _run_exiftool_embed_source(
+                        dest_path, sid, backup=backup)
                 except RuntimeError as e:
                     keyword_warning = (
                         f'WARNING: {e}\nThe SOURCE: {sid} keyword was not '
@@ -3005,7 +3150,8 @@ def process_refile(
         #    on the file's current path and undoes exactly what the embed added.
         if keyword_embedded:
             try:
-                kw_err = _run_exiftool_remove_source(dest_path, sid)
+                kw_err = _run_exiftool_remove_source(
+                    dest_path, sid, backup=backup)
             except RuntimeError as kw_exc:
                 kw_err = str(kw_exc)
             if kw_err is None:
@@ -3155,6 +3301,8 @@ def process_refile(
                   'again.', file=sys.stderr)
         return EXIT_FAILURE
 
+    if backup is not None:
+        _flush_backup_messages(backup)
     print(f'Refiled {stored_alias} -> {new_alias}')
     if src.name != new_name:
         print(f'Renamed {src.name} -> {new_name} at the crossing')

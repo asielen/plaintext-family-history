@@ -126,7 +126,7 @@ from _lib import (
     resolve_root_arg,
     result_fail,
     split_log_entries,
-    write_text_exact,
+    write_text_exact_atomic,
     yaml_inline,
 )
 
@@ -920,7 +920,10 @@ def run_geocode(
             continue
 
         try:
-            text = places_yaml.read_text(encoding='utf-8')
+            # Byte-faithful IO, same as the other registry editors: the plain
+            # read/write pair translates newlines, so geocoding one place in a
+            # CRLF-authored registry would rewrite every line ending in the file.
+            text = read_text_exact(places_yaml)
         except OSError as e:
             messages.append(f'ERROR: cannot read {places_yaml}: {e}')
             return _geo_result('failed', written, messages, changed)
@@ -931,7 +934,11 @@ def run_geocode(
             )
             continue
         try:
-            places_yaml.write_text(new_text, encoding='utf-8')
+            # One place per loop pass, but the whole registry is rewritten each
+            # time. A torn write here loses every place, and the loop reports
+            # 'coords written' for the ones it already did - so the surviving
+            # file must be all-old-or-all-new.
+            write_text_exact_atomic(places_yaml, reapply_newline(new_text, text))
         except OSError as e:
             messages.append(f'ERROR: cannot write {places_yaml}: {e}')
             return _geo_result('failed', written, messages, changed)
@@ -1136,7 +1143,14 @@ def _finish_place_write(result: Result, path: Path, old_text: str, new_text: str
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
     try:
-        write_text_exact(path, reapply_newline(new_text, old_text))
+        # Atomic, not the plain writer: this one file is the registry for EVERY
+        # place in the archive, so a write that dies partway (disk full, the
+        # process killed) would truncate every other place's block along with
+        # the one being edited - and the refusal below would tell the human
+        # nothing had changed. `write_text_exact_atomic` writes a sibling temp
+        # and renames it over the target, so the registry holds either the old
+        # text or the new one and the message stays true.
+        write_text_exact_atomic(path, reapply_newline(new_text, old_text))
     except OSError as e:
         return result_fail(result, 'refused',
                            f'cannot write {path}: {e}. Check the file is not open '

@@ -8,8 +8,8 @@
 // closed; everything else is optional and a hurried human clicks straight to
 // Capture.
 //
-// The design (private/capture-panel-mockup.html) composes two independent
-// choices in Step 2:
+// The design (the capture-panel mockup in the workshop repo's design notes;
+// not vendored into archives) composes two independent choices in Step 2:
 //   • a "keep a copy of the whole page" CHECKBOX (its own toggle, default on)
 //     that produces a self-contained single-file snapshot (role `webpage`), AND
 //   • a two-option evidence picker: "Yes, save the actual file" (a pre-filled
@@ -90,6 +90,11 @@
     // state (not the service worker's), so it exists exactly as long as the
     // form it protects; if the panel closes mid-capture, both die together.
     pendingNav: false,
+    // The folder the browser really staged the last bundle into, absolute, as
+    // the downloads API reported it - '' until a capture in this sitting says
+    // so. The handoff command names a location only from this: the download
+    // directory is a browser setting, so it cannot be derived from `folder`.
+    stagedDir: '',
   };
 
   const $ = (id) => document.getElementById(id);
@@ -295,12 +300,17 @@
       } else {
         parts.push('Record file: add an address or drop a file');
       }
-    } else {
+    } else if (pageCopyOn()) {
       parts.push('the page copy is the record');
+    } else {
+      // Pointer-only (§5.3's "none", TOOLING §13b case (c)): both controls
+      // off is a deliberate, legitimate capture - citation + link, no file.
+      // Ingest files it as a pointer stub flagged asset_elsewhere: true.
+      parts.push('Citation + link only - no file saved (a pointer for later retrieval)');
     }
-    const ok = pageCopyOn() || hasEvidence();
+    const ok = pageCopyOn() || evidenceMode() !== 'yes' || hasEvidence();
     setAssetStatus(
-      parts.join('   ·   ') || 'Nothing yet. Tick the page copy or pick a file.',
+      parts.join('   ·   '),
       ok ? 'ok' : 'warn'
     );
   }
@@ -505,13 +515,11 @@
 
     const wantPageCopy = pageCopyOn();
     const wantEvidence = evidenceMode() === 'yes';
-    if (!wantPageCopy && !wantEvidence) {
-      setStageResult(
-        'Tick "Keep a copy of the whole page", or choose to save the actual file.',
-        'warn'
-      );
-      return;
-    }
+    // Both controls off is NOT a refusal: it is the pointer-only capture
+    // (§5.3's "none", TOOLING §13b case (c)) - page.html + an empty assets
+    // list, which ingest files as a citation/link pointer stub
+    // (asset_elsewhere: true). The status line above the button already says
+    // "Citation + link only", so the human sees what they are staging.
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
         && !state.ancestryViewer && !state.iiif) {
       setStageResult(
@@ -641,14 +649,23 @@
           viaHost = false;
           hostWarning =
             "Your archive connection didn't answer (" + shortHostReason(e) +
-            ') - this capture was saved to Downloads instead. Run' +
-            ' `fha capture --ingest` to sweep it in, and `fha capture --install-host`' +
-            ' if this keeps happening.';
+            ') - this capture was saved to Downloads instead. Run `' +
+            fhaCmd('capture --ingest') + '` to sweep it in, and `' +
+            fhaCmd('capture --install-host') + '` if this keeps happening.';
         }
       }
       if (!viaHost) {
         const result = await bundle.writeBundle(spec);
-        reportStaged(result.dir, false, evidenceWarning, hostWarning);
+        // Where it really went, from the browser itself. Both the "staged to"
+        // line and the ingest command are built from this, never from a
+        // home-directory path we assumed.
+        const paths = captureJson.stagedPaths(result.filePath);
+        state.stagedDir = paths.staging;
+        updateIngestCmd();
+        reportStaged(
+          paths.bundle || result.dir + " (inside your browser's download folder)",
+          false, evidenceWarning, hostWarning
+        );
       }
 
       resetForNext();
@@ -707,8 +724,10 @@
     }
     // Be exact about where it went, and reveal the handoff card with the
     // copyable ingest command (§5.1): the panel never pretends Downloads is the
-    // archive.
-    setStageResult('Staged to Downloads/' + where + suffix, cls);
+    // archive. `where` is the browser's own absolute path when it reported one,
+    // and the Downloads-relative folder named as such when it did not - the
+    // panel does not fill the gap with a guessed home directory.
+    setStageResult('Staged to ' + where + suffix, cls);
     $('handoff').classList.add('show');
   }
 
@@ -792,22 +811,65 @@
   function loadSettings() {
     return new Promise((resolve) => {
       chrome.storage.local.get(
-        { captureFolder: 'fha-inbox', defaultEvidence: 'yes', pageCopyDefault: true },
+        {
+          captureFolder: captureJson.DEFAULT_FOLDER,
+          defaultEvidence: 'yes',
+          pageCopyDefault: true,
+        },
         (cfg) => {
-          state.folder = cfg.captureFolder || 'fha-inbox';
+          // Sanitize on the way in too: a value stored by an older build (or
+          // edited by hand) must not carry an escape the API rejects later.
+          state.folder = captureJson.sanitizeFolder(cfg.captureFolder);
           $('f-folder').value = state.folder;
           $('f-default-evidence').value = cfg.defaultEvidence || 'yes';
           $('cb-pagecopy').checked = cfg.pageCopyDefault !== false;
+          updateIngestCmd();
           resolve(cfg);
         }
       );
     });
   }
 
+  // Keep the handoff card's copyable command pointing where captures actually
+  // stage. The DIR argument is filled in only once a capture has told us the
+  // real folder (the download directory is the browser's own setting, which no
+  // home-relative path can stand in for); until then the bare command stands
+  // and the hint line says what the human can check. Called on settings load,
+  // on a folder change, and after every staged bundle.
+  function updateIngestCmd() {
+    $('cmd-text').textContent = captureJson.ingestCommand(state.stagedDir);
+    const hint = $('cmd-hint');
+    if (hint) hint.textContent = captureJson.ingestHint(state.folder, state.stagedDir);
+  }
+
+  // Every `fha` command this panel shows carries the launcher prefix the
+  // human's machine needs. `fha` is a launcher file at the archive root, not a
+  // program on PATH, so a bare `fha capture --ingest` is a command-not-found
+  // for everyone outside the Windows Command Prompt - see capture-json.js
+  // `launcher`. This is the one place the panel builds such a string.
+  function fhaCmd(rest) {
+    return captureJson.launcher() + ' ' + rest;
+  }
+
+  // Fill the settings drawer's two static command samples. They are markup
+  // rather than generated text, so they need one pass at init; the hint that
+  // later replaces `seamless-hint` wholesale builds its own via fhaCmd.
+  function fillStaticCmds() {
+    const host = $('cmd-install-host');
+    if (host) host.textContent = fhaCmd('capture --install-host');
+    const ingest = $('cmd-ingest-plain');
+    if (ingest) ingest.textContent = fhaCmd('capture --ingest');
+  }
+
   function wireSettings() {
     $('f-folder').addEventListener('change', () => {
-      state.folder = $('f-folder').value.trim() || 'fha-inbox';
+      state.folder = captureJson.sanitizeFolder($('f-folder').value);
+      $('f-folder').value = state.folder; // reflect the sanitized form back
       chrome.storage.local.set({ captureFolder: state.folder });
+      // A path learned from an earlier capture describes the OLD folder, so it
+      // stops being the truth the moment the setting changes.
+      state.stagedDir = '';
+      updateIngestCmd();
     });
     $('f-default-evidence').addEventListener('change', () => {
       chrome.storage.local.set({ defaultEvidence: $('f-default-evidence').value });
@@ -820,7 +882,8 @@
       seamless.addEventListener('change', async () => {
         if (!seamless.checked) {
           await nativeHost.removePermission();
-          setSeamlessHint('Off - captures stage to Downloads for `fha capture --ingest`.');
+          setSeamlessHint('Off - captures stage to Downloads for `'
+            + fhaCmd('capture --ingest') + '`.');
           return;
         }
         const granted = await nativeHost.requestPermission();
@@ -832,8 +895,9 @@
         const ready = await nativeHost.isAvailable();
         setSeamlessHint(ready
           ? 'On - captures file straight into your archive inbox.'
-          : "Permission granted, but no capture host answered. Run "
-            + '`fha capture --install-host` in your archive, then reopen this panel.');
+          : 'Permission granted, but no capture host answered. Run `'
+            + fhaCmd('capture --install-host')
+            + '` in your archive, then reopen this panel.');
       });
     }
   }
@@ -892,6 +956,7 @@
 
   async function init() {
     populateTypeSelect();
+    fillStaticCmds();
     wireEvents();
     wireSettings();
     const cfg = await loadSettings();
