@@ -15,8 +15,15 @@ it: the app had renamed them to relative weekday labels ("Thursday at 3-11 PM").
 all six would have been re-imported under fresh S-ids, giving one recording two source records and
 splitting its claims.
 
-**Interim enactment:** size comparison against archived media, then SHA-256 only on a size
-collision. Read-only; touches nothing.
+**Interim enactment:** [`scripts/find_duplicate_media.py`](scripts/find_duplicate_media.py) — size
+comparison against archived media (read straight off the directory entry, so nothing is opened),
+then SHA-256 only on a size collision. Media roots resolve through `fha.yaml`'s `roots:` mapping, so
+an external documents root is found rather than silently missed. Read-only; touches nothing. Exit 0
+= no byte twin, 2 = at least one duplicate found, 1 = usage or IO error.
+
+Not a substitute for it: `fha search "<phrase>"` (which does exist). It searches transcript and
+record text, so it finds a recording that *reads* alike — a useful lead when the bytes differ
+because a sitting was re-exported or re-encoded, but never proof of an identical file.
 
 ## 2. `fha media probe <file>`
 

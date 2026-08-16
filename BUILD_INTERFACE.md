@@ -226,21 +226,29 @@ Authored against real phone-app exports in a live archive on 2026-08-11..13 and 
 
 ### MI6.1 - `import-recordings` skill
 
-**Status: authored** (`.claude/skills/import-recordings/SKILL.md` + `scripts/attribute_speakers.py` + `GAP.md`). Session check pending on `example-archive` (needs a synthetic recording + app-transcript pair in the fixture; a whisper-free dry path is enough to exercise dedupe, dating, grouping and the `fha process` sequence).
+**Status: authored** (`.claude/skills/import-recordings/SKILL.md` + `scripts/attribute_speakers.py` + `scripts/find_duplicate_media.py` + `GAP.md`), with `tests/test_import_recordings.py` covering both scripts (the 0.90 confidence gate, the 80% timestamp gate and its blind-span rule, the output-collision refusals, and the size-then-SHA-256 dedupe). Session check pending on `example-archive` (needs a synthetic recording + app-transcript pair in the fixture; a whisper-free dry path is enough to exercise dedupe, dating, grouping and the `fha process` sequence).
 
 The recordings on-ramp: dedupe by content, date from the container, group by sitting into one session source, always a fresh whisper pass beside the app transcript, speaker labels only under gates and speaker names only on the human's yes.
 
-**Orchestrates:** `fha search`/`find`, `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha index`, `fha lint`; the skill's own `scripts/` for whisper and label transfer; `ffprobe` and a size-then-SHA-256 check as the two interim enactments recorded in `GAP.md` (wanted: `fha media dedupe` #43, `fha media probe` #44 - core-tool backlog).
+**Orchestrates:** `fha find` (and `fha search` for a same-sitting lead when the bytes differ), `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha index`, `fha lint`; the skill's own `scripts/` for whisper, label transfer, and the size-then-SHA-256 duplicate check; `ffprobe` for the container probe. The last two are the interim enactments recorded in `GAP.md` (wanted: `fha media dedupe` #43, `fha media probe` #44 - core-tool backlog).
 
 **Done when:** see the skill's own "Done when" - one sitting lands as one folder under one S-id with every companion attached by its own `--more` call; a byte-identical repeat is skipped and reported with the path it duplicates; a pair failing the 50% gate degrades to two plain transcripts; speaker → person is a table and no name is written until answered.
 
 ### MI6.2 - `transcribe-audio` skill
 
-**Status: authored** (`.claude/skills/transcribe-audio/SKILL.md` + `scripts/transcribe_audio.py`). Requires `faster-whisper` on the machine that holds the audio; not exercised in CI.
+**Status: authored** (`.claude/skills/transcribe-audio/SKILL.md` + `scripts/transcribe_audio.py`), with the script's non-model logic covered by [`tests/test_transcribe_audio.py`](tests/test_transcribe_audio.py). The transcription itself requires `faster-whisper` on the machine that holds the audio and is not exercised in CI; the tests inject fake segment iterators instead, which is where the failure modes actually live.
 
 Local re-transcription attached beside the original (both kept, always), the `--name` prefix rule that keeps a source's files together in a listing, and the offered claim-by-claim audit of facts mined from the garbled original.
 
+The `--name` value is the source's **shared stem with no role suffix**: `attach_more` appends the role itself, so `--name …-whisper` files as `…-whisper-whisper-transcript_S-….md`. The reviewed `.md` is copied under the documents root before `--more` (which refuses a file filed anywhere else), and a filed name that looks wrong is reported, never renamed - `fha process` renames a documents-root file once and no verb renames it again, so the human reorganizes and `fha reconcile` re-ties.
+
+Two script invariants the skill's batch advice rests on, both regression-tested: **all-or-nothing publication** (`.part` siblings renamed into place only after the segment iterator is exhausted; an interruption, a decode failure or a zero-speech run leaves no file behind, so a "skip what already exists" queue can never mistake a stump for a finished pass, and an existing output is a clean no-op unless `--force`) and a **portable `.md` header** (the recording is named by filename, never by the absolute path typed on the command line - AGENTS_TOOLING.md §11, SPEC §12.4).
+
 **Orchestrates:** `scripts/transcribe_audio.py`, `fha process --more … whisper-transcript`, `fha claim <C-id> --value` for audited corrections, `review-claims` for new material.
+
+```
+python -m unittest tests.test_transcribe_audio -v   # atomic publish, portable header, documented commands
+```
 
 ### MI6.3 - `mine-transcript` two-transcript extension
 
@@ -250,7 +258,7 @@ Local re-transcription attached beside the original (both kept, always), the `--
 
 ## Testing invariants (all phases)
 
-There is no automated test harness for SKILL.md prose - skills are verified by session behavior. For every skill PR, confirm in a real session against `example-archive`:
+There is no automated test harness for SKILL.md prose - skills are verified by session behavior. The exception is a skill that ships a `scripts/` file: that code is tested like any other code, and the test may also pin the parts of its SKILL.md that are mechanically checkable - that every flag the prose names exists in the script's parser, and that a worked example really produces the filename it shows when run through the owning tool's naming rule (`tests/test_transcribe_audio.py` is the pattern). For every skill PR, confirm in a real session against `example-archive`:
 
 1. The skill produces exactly the documented archive writes (suggested claims, recorded AI passes, view refreshes, confirm-driven entries) and **no** write the contract forbids - nothing reaches `accepted` without a human `fha claim`, nothing edits below a GENERATED header, no human text is overwritten.
 2. Every AI pass is recorded in the source's `## AI Passes` block.

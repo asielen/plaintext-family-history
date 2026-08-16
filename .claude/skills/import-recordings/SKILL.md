@@ -6,7 +6,7 @@ description: >
   "there's a video from the family reunion". Content-hashes every incoming audio or video file
   against what is already archived and skips the duplicates, reads the real recording date out of
   the container instead of trusting the filename, groups the recordings from one sitting into a
-  single session source under `documents/interviews/{yyyy-mm-dd}/` beside the transcripts they
+  single session source under `documents/interviews/{interviewee}-{yyyy-mm-dd}/` beside the transcripts they
   shipped with, always adds a fresh local
   whisper pass (never replacing the app transcript), and proposes — never assumes — which speaker is
   which person. Interactive by default: it confirms each recording and hands off to process-source
@@ -66,10 +66,11 @@ your first reply and don't drift out of it.
 
 Two things in this flow are **not** `fha` verbs and are enacted here only under the owner exception
 in `_STANDARD.md` §6 — recorded in this folder's [`GAP.md`](GAP.md), never silently: the content-hash
-duplicate check (wanted: `fha media dedupe`) and the container-metadata date read (wanted:
-`fha media probe`). The local whisper run and the speaker-label transfer are owned by this skill's
-own `scripts/`. If a further capability turns out to be missing, **stop and name it** — do not
-hand-roll it in prose.
+duplicate check (wanted: `fha media dedupe`, enacted by `scripts/find_duplicate_media.py`) and the
+container-metadata date read (wanted: `fha media probe`, enacted by `ffprobe`). The local whisper run
+and the speaker-label transfer are owned by this skill's own `scripts/`. All three scripts are
+read-only on the archive: they report, and `fha process` is still the only thing that writes.
+If a further capability turns out to be missing, **stop and name it** — do not hand-roll it in prose.
 
 ## Flow
 
@@ -93,12 +94,24 @@ directory — pass `--root <archive>` on every call rather than guessing.
 3. **Content-hash every incoming media file against what is already archived, and skip the
    duplicates.** This is not hypothetical: in a real 16-zip phone export, **6 were byte-identical to
    audio already filed**. Compare byte size first and hash only on a size collision — a whole-root
-   hash sweep is wasteful and a whole-root read is discouraged (_STANDARD.md §8). To find the
-   likely twin by content rather than by name:
+   hash sweep is wasteful and a whole-root read is discouraged (_STANDARD.md §8). That is exactly
+   what this skill's own script does, and it is the only thing that answers the question:
 
    ```
-   fha search "<distinctive phrase from the transcript's first minute>"
+   python ".claude/skills/import-recordings/scripts/find_duplicate_media.py" "<incoming file or folder>" --root "<archive>"
    ```
+
+   It reads sizes from the directory entries of the archive's configured media roots, opens nothing
+   unless a size collides, then SHA-256s both sides. Read-only on both sides — it renames, moves and
+   imports nothing. Exit **0** means no incoming file has a byte twin; exit **2** means at least one
+   does, and it prints which archived file (and its S-id, when the filename carries one). Confirm the
+   twin's record with `fha find <S-id>` before you say anything to the human.
+
+   `fha search "<distinctive phrase from the transcript's first minute>"` is a *different* question
+   and a weaker answer: it finds a transcript that reads alike, which is a lead, not proof of an
+   identical recording. Use it only to explain a near-miss (same sitting re-exported, trimmed, or
+   re-encoded, so the bytes differ) — never in place of the hash check. Until `fha media dedupe`
+   ships (GAP.md, project issue #43) the script is the check.
 
    On a match: **report and stop for that item** — *"this is the same file as the recording already
    filed at `documents/interviews/…` — skipping it, nothing imported."* Do not re-process it:
@@ -161,7 +174,8 @@ directory — pass `--root <archive>` on every call rather than guessing.
    along as `{topic}-audio`:
 
    ```
-   documents/interviews/hartley-thomas-1998-06-14/          # source record: hartley-thomas-1998-06-14_S-wb91h3hjrr.md
+   documents/interviews/hartley-thomas-1998-06-14/          # the assets; the record it shares an S-id with
+                                                            # is sources/interview/hartley-thomas-1998-06-14_S-wb91h3hjrr.md
      hartley-thomas-1998-06-14-farm-audio_S-wb91h3hjrr.m4a
      hartley-thomas-1998-06-14-farm-transcript_S-wb91h3hjrr.txt
      hartley-thomas-1998-06-14-farm-whisper-transcript_S-wb91h3hjrr.md
@@ -217,15 +231,31 @@ directory — pass `--root <archive>` on every call rather than guessing.
    python ".claude/skills/import-recordings/scripts/attribute_speakers.py" --whisper "<whisper.md>" --app-transcript "<app.txt>" --out "<stem>.md" --report "<stem>.speakers.json"
    ```
 
-   These gates are not tuning knobs, and the script enforces them:
+   All four paths must be different — the two inputs, `--out`, and `--report`. The script refuses
+   the run rather than let a mistyped filename overwrite a transcript (including `--report` landing
+   on `--out`), and both outputs are written through a temporary file, so an interrupted run never
+   leaves a half-written transcript behind.
+
+   These gates are not tuning knobs, and the script enforces them as its defaults — you do not pass
+   `--min-confidence` or `--min-match-rate` on the standard run:
 
    - **Hard abort below a 50% global token match rate.** Correctly paired files measure 70–83%; a
      deliberately mispaired transcript measured 5.9% — and, ungated, still confidently labeled 80% of
-     segments. This guard is what stands between the archive and fluent nonsense.
-   - **Label a whisper segment only at `coverage × agreement ≥ 0.90`, and never when contested.**
-     Below 0.9 the measured agreement falls toward a coin flip. At the 0.9 operating point, ~75% of
-     segments get a label at ~95% agreement and **25% are honestly left unlabeled**.
+     segments. This guard is what stands between the archive and fluent nonsense. (`--min-match-rate`,
+     default 0.50; below it the script refuses to label anything and exits 2.)
+   - **Label a whisper segment only at a confidence of 0.90 or better, and never when contested.**
+     The score is `coverage × (2 × agreement − 1)` — the winner's votes minus everybody else's, over
+     the segment's token count — so 0.90 demands a segment be nearly fully covered *and* nearly
+     unanimous: fully covered needs ≥ 95% agreement, unanimous needs ≥ 90% coverage. At that
+     operating point ~75% of segments get a label at ~95% agreement and **25% are honestly left
+     unlabeled**. (`--min-confidence`, default 0.90. Lowering it is a decision you own and must say
+     out loud; below 0.9 the measured agreement falls toward a coin flip, and nothing downstream may
+     treat a lowered run as if it met this contract.)
    - **Never interpolate across a speaker change**, and never across a gap wider than ~25 tokens.
+   - **Timestamp evidence needs real coverage.** The interval path only switches on when at least
+     80% of the app's turns actually carry a timestamp, and a turn with no timestamp sitting between
+     two timed ones blanks that whole span rather than letting the earlier speaker's interval run
+     over it. A gappy export gets the text alignment alone, not a confident wrong answer.
    - A tie is contested; contested is unlabeled. Never break it with "same as the previous speaker" —
      that manufactures false continuity.
 
@@ -284,20 +314,35 @@ proposal-and-confirm is unchanged.
    one `FILE ROLE` pair (`nargs=2`, no `append`), and it attaches to an **already-filed** source —
    so repeating the flag in one command silently keeps only the last pair, leaving the other files
    on disk with an `_S-id` in their name but no `files:` entry, which is lint **E011** in both
-   directions. One call per file, primary first:
+   directions. One call per file, primary first.
+
+   Two names are in play and mixing them up is how the folder stops sorting: `<session>` is the
+   session slug (`hartley-thomas-1998-06-14`), and `<session>-<topic>` is what each file is called on
+   disk before processing (`hartley-thomas-1998-06-14-wedding.m4a`). The primary's `--slug` is
+   `<session>`, so its audio loses the topic and takes the bare stem; every companion keeps its own
+   stem and gains the role.
 
    ```
-   fha process "<folder>\<stem>.m4a" --type interview --title "<title>" --date <edtf> --slug "<stem>" --dry-run
-   fha process "<folder>\<stem>.m4a" --type interview --title "<title>" --date <edtf> --slug "<stem>"
+   fha process "<folder>/<session>-<topic>.m4a" --type interview --title "<title>" --date <edtf> --slug "<session>" --dry-run
+   fha process "<folder>/<session>-<topic>.m4a" --type interview --title "<title>" --date <edtf> --slug "<session>"
    ```
 
-   That renames the primary in place to `<stem>_S-id.m4a` and scaffolds the record. Then, pointing
-   at the **renamed** primary, one call per companion:
+   That renames the primary in place to `<session>_S-id.m4a` and scaffolds the record at
+   `sources/interview/<session>_S-id.md`. Then, pointing at the **renamed** primary, one call per
+   companion — `--more` renames each attachment to `{its own stem}-{role}_{S-id}`, which is why the
+   topic survives on the companions and not on the primary's audio:
 
    ```
-   fha process "<folder>\<stem>_S-id.m4a" --more "<folder>\<stem>.txt" transcript
-   fha process "<folder>\<stem>_S-id.m4a" --more "<folder>\<stem>.md" whisper-transcript
+   fha process "<folder>/<session>_S-id.m4a" --more "<folder>/<session>-<topic>.txt" transcript
+   fha process "<folder>/<session>_S-id.m4a" --more "<folder>/<session>-<topic>.md" whisper-transcript
+   fha process "<folder>/<session>_S-id.m4a" --more "<folder>/<session>-<other-topic>.m4a" audio
    ```
+
+   Worked through with the step 5 example: the primary is `hartley-thomas-1998-06-14-wedding.m4a`
+   with `--slug hartley-thomas-1998-06-14`, so it lands as
+   `hartley-thomas-1998-06-14_S-wb91h3hjrr.m4a`; `--more …-wedding.txt transcript` lands as
+   `hartley-thomas-1998-06-14-wedding-transcript_S-wb91h3hjrr.txt`; and `--more …-farm.m4a audio`
+   lands as `hartley-thomas-1998-06-14-farm-audio_S-wb91h3hjrr.m4a`.
 
    Show him the dry-run's rename/scaffold plan before applying — every mutating verb previews first
    (_STANDARD.md §8). Check the exit code; never proceed past a 2 or a 3 silently. In automatic mode,
@@ -388,7 +433,7 @@ proposal-and-confirm is unchanged.
 ## Done when
 
 - A mixed bundle imports in a session on `example-archive`: recordings from one sitting grouped into
-  a single `documents/interviews/{yyyy-mm-dd}/` folder under one S-id, the first renamed in place by
+  a single `documents/interviews/{interviewee}-{yyyy-mm-dd}/` folder under one S-id, the first renamed in place by
   one `fha process` call and every sibling attached as `{topic}-audio`, each app transcript and
   whisper transcript attached by one `--more` call each under the session stem, the source record
   carrying `source_type: interview`, an EDTF `source_date` derived from the container

@@ -84,12 +84,20 @@ linear-ish in practice, and hard-capped against quadratic blowup by the cell gat
 OPPORTUNISTIC TIMESTAMP PATH
 ============================
 Some app exports carry per-turn timestamps (`1 / Speaker 1 / 00:01 / text…`).
-When ≥80% of turns have monotone timestamps, the problem collapses to an interval
-lookup, which is strictly better than any text alignment. Rather than choosing
-between the two, both are run and their evidence is pooled in the same vote space
-(each method may contribute at most one vote per token of the segment). Agreement
-saturates confidence; disagreement cancels to zero and the segment goes out
-unlabeled. Nothing is assumed about which method is right.
+When at least 80% of turns have monotone timestamps, the problem collapses to an
+interval lookup, which is strictly better than any text alignment. Rather than
+choosing between the two, both are run and their evidence is pooled in the same
+vote space (each method may contribute at most one vote per token of the
+segment). Agreement saturates confidence; disagreement cancels to zero and the
+segment goes out unlabeled. Nothing is assumed about which method is right.
+
+The 80% gate is a real fraction, not a truncated one: 4 of 6 turns is 66.7% and
+fails it. And an interval only carries a speaker when the turn that ends it is
+the very next turn in the app's own order. A turn with no timestamp sitting
+between two timed turns leaves the boundary between those speakers unknown, so
+that whole span is treated as BLIND and casts no vote at all - otherwise a
+single dropped middle turn would silently stretch the previous speaker's
+interval across segments that belong to somebody else.
 
 CONFIDENCE
 ==========
@@ -100,8 +108,16 @@ Per Whisper segment, every token that carries evidence votes for one speaker.
 which is algebraically identical to  coverage × (2·agreement − 1), clipped to
 [0, 1]. It penalises thin coverage and contested segments in one number: a fully
 covered segment split 60/40 scores 0.20; a 40%-covered unanimous segment scores
-0.40. The default gate of 0.35 sits just above the "one speaker has a two-thirds
-majority of a fully-covered segment" line.
+0.40.
+
+The gate is 0.90, and it is the safety contract this skill advertises rather
+than a tuning knob (SKILL.md "Transfer speaker turns…", TOOLING_INTERFACE.md
+§import-recordings). At that operating point a segment must be nearly fully
+covered AND nearly unanimous: a fully covered segment needs >= 95% agreement,
+a unanimous one needs >= 90% coverage. Everything below stays unlabelled, which
+is what "an unlabelled turn means unknown, not unimportant" promises the reader.
+Lowering it with --min-confidence is possible and is the caller's decision to
+defend; nothing downstream may treat a lowered run as if it met the contract.
 
 SAFETY RULES (all mandatory, none tunable away)
 ==============================================
@@ -110,6 +126,8 @@ SAFETY RULES (all mandatory, none tunable away)
   paired with the wrong audio still matches ~6% of tokens and will happily label
   most segments with confident nonsense; correct pairs match 70–85%. The
   separation is enormous, so the gate is cheap and the failure it prevents is not.
+  `--force` overrides it for a deliberate experiment; the override is recorded in
+  the run's warnings and in the JSON report, never silent.
 * Gap interpolation only between anchors that agree on the speaker, and only
   across ≤25 tokens. Never interpolate across a speaker change.
 * A tie is contested, and contested is unlabeled. There is no "same as previous
@@ -118,7 +136,12 @@ SAFETY RULES (all mandatory, none tunable away)
 * Never overwrite a label a human already wrote: any segment already carrying a
   non-`Speaker N` label is left byte-for-byte alone.
 * Inputs are opened read-only and never written. The tool refuses to run if
-  --out or --report resolves to either input path.
+  --out or --report resolves to either input path, OR to each other - a mistyped
+  command must not let the JSON report quietly replace the transcript it
+  reported on.
+* Both outputs are written through a temporary file and then moved into place,
+  so an interrupted or failing run leaves the previous file intact rather than a
+  half-written one. An existing destination is replaced, with a warning saying so.
 
 HONEST LIMITS
 =============
@@ -133,6 +156,32 @@ HONEST LIMITS
 
 Exit codes: 0 = ok (including honest no-ops), 2 = refused to label (mispair
 gate), 1 = usage/IO error.
+
+CODE MAP
+========
+  Normalisation      tokenize                  text to matchable word tokens
+  File IO            read_text                 encoding/newline-preserving read
+                     canonical_path            one spelling of a path, for collisions
+                     atomic_write / write_text write via temp file, then move
+  Parsing            parse_clock               MM:SS / HH:MM:SS to seconds
+                     parse_whisper             segments + flat token stream
+                     parse_app                 app turns (bracket/numbered/plain)
+  Alignment          _lis                      order filter for candidate anchors
+                     _unique_ngram_anchors     patience-style unique-gram anchors
+                     _fuzzy_pairs              character-similarity repair
+                     _local_match              bounded difflib on a small range
+                     align_tokens              the recursive driver + stats
+  Evidence           collect_align_votes       votes from token pairs, gap-filled
+                     timestamp_coverage_ok     the 80% timed-turn gate
+                     speaker_intervals         turn spans, blind where unknowable
+                     collect_time_votes        votes from the interval lookup
+  Decision           enclosing_agree           do the anchors around a segment agree
+                     decide                    the gate: label, or say why not
+  Rendering          render                    rewrite segment header lines
+  Reporting          speaker_evidence          per-speaker share / role signals
+                     confidence_bucket         histogram bucket for a score
+                     decile_coverage/_skew     where the alignment thins out
+  CLI                build_parser / fail / main
 """
 
 from __future__ import annotations
@@ -153,7 +202,7 @@ TOOL_VERSION = "1.0.0"
 # ---------------------------------------------------------------------------
 # Tunables (documented above; changing these changes the safety story)
 # ---------------------------------------------------------------------------
-DEFAULT_MIN_CONFIDENCE = 0.35
+DEFAULT_MIN_CONFIDENCE = 0.90   # the documented safety contract, not a knob
 DEFAULT_MIN_MATCH_RATE = 0.50
 GAP_CAP = 25              # max tokens interpolated between two agreeing anchors
 SMALL_BLOCK = 64          # ranges this small go straight to difflib
@@ -164,6 +213,12 @@ FUZZY_MIN_RATIO = 0.78
 FUZZY_MIN_LEN = 4
 FUZZY_WINDOW = 12
 TIME_MIN_TURN_COVERAGE = 0.8  # fraction of app turns that must carry a timestamp
+TIME_MIN_TIMED_TURNS = 3      # and never fewer than this many, whatever the fraction
+MIN_TOTAL_VOTE_WEIGHT = 2.0   # below this a segment rests on one or two stray tokens
+
+# Fractions are compared with a hair of slack so that a ratio which is exactly
+# the gate (8 of 10 turns) is not pushed under it by binary floating point.
+FRACTION_EPSILON = 1e-9
 
 # ---------------------------------------------------------------------------
 # Normalisation
@@ -234,13 +289,47 @@ def read_text(path: str):
     return lines, newline, trailing
 
 
-def write_text(path: str, lines, newline: str, trailing: bool) -> None:
+def canonical_path(path: str) -> str:
+    """One spelling of a path, for comparing two command-line arguments.
+
+    `--out ./x.md` and `--out x.md` are the same file, and on Windows and macOS
+    so are `X.md` and `x.md`. Collision checks that miss those spellings let a
+    mistyped command destroy the file it was told to protect, so every
+    comparison in this tool goes through here rather than through a bare
+    string equality test.
+    """
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def atomic_write(path: str, body: str) -> None:
+    """Write `body` to `path` via a temporary file in the same directory.
+
+    A transcript half-written by an interrupted run is worse than no transcript
+    at all: it looks finished, and the reader has no way to tell which turns
+    went missing. Writing beside the destination and then moving into place
+    means the file the human sees is always either the previous complete one or
+    the new complete one. Same directory, because `os.replace` is only atomic
+    within a filesystem.
+    """
     parent = os.path.dirname(os.path.abspath(path))
     if parent and not os.path.isdir(parent):
         os.makedirs(parent, exist_ok=True)
+    tmp = "%s.tmp-%d" % (os.path.abspath(path), os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            fh.write(body)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def write_text(path: str, lines, newline: str, trailing: bool) -> None:
     body = newline.join(lines) + (newline if trailing else "")
-    with open(path, "w", encoding="utf-8", newline="") as fh:
-        fh.write(body)
+    atomic_write(path, body)
 
 
 # ---------------------------------------------------------------------------
@@ -618,22 +707,75 @@ def collect_align_votes(pairs, app_owner, wh_owner, n_segments):
     return votes, anchored, filled
 
 
+def timestamp_coverage_ok(turns):
+    """True when enough app turns carry a timestamp to trust the interval path.
+
+    Written as a true fraction rather than `int(0.8 * len(turns))` because the
+    truncating form quietly passes coverage the gate is meant to reject: it
+    admits 4 of 6 turns (66.7%) and 7 of 9 (77.8%). Timestamp evidence is the
+    stronger of the two methods, so it is also the one that does the most damage
+    when it is turned on for a transcript that has holes in it.
+    """
+    if not turns:
+        return False
+    timed = sum(1 for t in turns if t.start is not None)
+    if timed < TIME_MIN_TIMED_TURNS:
+        return False
+    return (timed / float(len(turns))) >= (TIME_MIN_TURN_COVERAGE - FRACTION_EPSILON)
+
+
+def speaker_intervals(turns, audio_end):
+    """Turn timestamps as (start, end, speaker-or-None) spans, in order.
+
+    A timed turn's interval runs to the start of the next timed turn. That end
+    is only honest when the next turn in the app's OWN order is the one that
+    owns it. When an untimed turn sits in between, the boundary between the two
+    speakers is somewhere inside the span and nothing here knows where - so the
+    span is emitted with speaker None, a BLIND interval that casts no vote.
+
+    This is the whole point of the function. Dropping untimed turns and then
+    letting the previous timed turn's interval run on to the next timestamp is
+    the absorption bug: one missing middle turn hands the previous speaker
+    full-strength votes over segments that are somebody else's words, and
+    nothing downstream can tell that happened.
+    """
+    n = len(turns)
+    next_timed_start = [None] * n
+    seen = None
+    for i in range(n - 1, -1, -1):
+        next_timed_start[i] = seen
+        if turns[i].start is not None:
+            seen = turns[i].start
+
+    out = []
+    for i, turn in enumerate(turns):
+        if turn.start is None:
+            continue
+        end = next_timed_start[i]
+        if end is None:
+            end = max(audio_end, turn.start + 1.0)
+        if end <= turn.start:
+            continue                       # zero-length: two turns share a stamp
+        blind = (i + 1 < n and turns[i + 1].start is None)
+        out.append((turn.start, end, None if blind else turn.speaker))
+    return out
+
+
 def collect_time_votes(segments, turns, n_segments, warnings):
     """Interval lookup when the app export carries timestamps. Opportunistic."""
-    timed = [t for t in turns if t.start is not None]
-    if not turns or len(timed) < max(3, int(TIME_MIN_TURN_COVERAGE * len(turns))):
+    if not timestamp_coverage_ok(turns):
         return None
-    starts = [t.start for t in timed]
+    starts = [t.start for t in turns if t.start is not None]
     if any(starts[k] < starts[k - 1] for k in range(1, len(starts))):
         warnings.append("app timestamps are not monotone; timestamp path disabled")
         return None
     seg_times = [s.time_s for s in segments]
+    if not seg_times:
+        return None
     if any(t is None for t in seg_times):
         return None
     if any(seg_times[k] < seg_times[k - 1] for k in range(1, len(seg_times))):
         warnings.append("whisper timestamps are not monotone; timestamp path disabled")
-        return None
-    if not seg_times:
         return None
     audio_end = seg_times[-1] + max(1.0, 0.35 * max(1, len(segments[-1].tokens)))
     if starts[-1] < 0.5 * seg_times[-1]:
@@ -642,9 +784,9 @@ def collect_time_votes(segments, turns, n_segments, warnings):
             "timestamp path disabled (partial coverage)" % (starts[-1], seg_times[-1]))
         return None
 
-    ends = []
-    for k in range(len(timed)):
-        ends.append(starts[k + 1] if k + 1 < len(timed) else max(audio_end, starts[k] + 1.0))
+    intervals = speaker_intervals(turns, audio_end)
+    if not intervals:
+        return None
 
     votes = [Counter() for _ in range(n_segments)]
     used = [False] * n_segments
@@ -657,18 +799,24 @@ def collect_time_votes(segments, turns, n_segments, warnings):
         ntok = len(seg.tokens)
         if ntok == 0:
             continue
-        while k + 1 < len(timed) and ends[k] <= s0:
+        while k + 1 < len(intervals) and intervals[k][1] <= s0:
             k += 1
         kk = k
         acc = Counter()
-        while kk < len(timed) and starts[kk] < s1:
-            ov = min(s1, ends[kk]) - max(s0, starts[kk])
-            if ov > 0:
-                acc[timed[kk].speaker] += ov
+        while kk < len(intervals) and intervals[kk][0] < s1:
+            i0, i1, spk = intervals[kk]
             kk += 1
+            if spk is None:
+                continue                   # blind span: no vote in either direction
+            ov = min(s1, i1) - max(s0, i0)
+            if ov > 0:
+                acc[spk] += ov
         dur = s1 - s0
         if dur <= 0 or not acc:
             continue
+        # Overlaps that fell in a blind span are simply absent from `acc`, so a
+        # partly-blind segment gets proportionally less timestamp weight. That
+        # is the intended behaviour: less certainty, less vote.
         for spk, ov in acc.items():
             votes[idx][spk] += (ov / dur) * ntok
         used[idx] = True
@@ -717,7 +865,8 @@ def decide(segments, votes, time_used, pairs, app_owner, min_confidence):
             seg.reason = "contested"
             counts["contested"] += 1
             continue
-        thin = total_w < 2.0 and not (time_used and time_used[seg.idx])
+        thin = (total_w < MIN_TOTAL_VOTE_WEIGHT
+                and not (time_used and time_used[seg.idx]))
         if thin and not enclosing_agree(pair_js, pair_speakers, seg.t0, seg.t1, top_spk):
             seg.reason = "insufficient-evidence"
             counts["thin"] += 1
@@ -810,6 +959,18 @@ def speaker_evidence(turns):
     return out
 
 
+def confidence_bucket(conf):
+    """Name the 0.1-wide bucket a confidence score belongs in.
+
+    The obvious `conf - conf % 0.1` misfiles exact tenths: in binary floating
+    point 0.3 % 0.1 is 0.0999…, so a confidence of 0.3 was reported in the
+    "0.2-0.3" bucket. Scaling to an integer with a hair of slack puts every
+    value in the bucket a reader of the report would name for it.
+    """
+    lo = min(9, max(0, int(conf * 10.0 + FRACTION_EPSILON))) / 10.0
+    return "%.1f-%.1f" % (lo, lo + 0.1)
+
+
 def decile_coverage(pairs, n_tokens):
     if n_tokens <= 0:
         return []
@@ -866,20 +1027,50 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
 
     if not (0.0 <= args.min_confidence <= 1.0):
-        return fail("--min-confidence must be between 0 and 1")
+        return fail("--min-confidence must be a number between 0 and 1 "
+                    "(the documented gate is %.2f); try --min-confidence %.2f"
+                    % (DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_CONFIDENCE))
     if not (0.0 <= args.min_match_rate <= 1.0):
-        return fail("--min-match-rate must be between 0 and 1")
+        return fail("--min-match-rate must be a number between 0 and 1; "
+                    "try --min-match-rate %.2f" % DEFAULT_MIN_MATCH_RATE)
     for path in (args.whisper, args.app):
         if not os.path.isfile(path):
-            return fail("input not found: %s" % path)
-    inputs = {os.path.abspath(args.whisper), os.path.abspath(args.app)}
+            return fail("input not found: %s - check the path and run the command again"
+                        % path)
+
+    # Collision checks, in the order a mistyped command actually goes wrong.
+    # Output-against-input was already covered; output-against-OTHER-OUTPUT was
+    # not, and it is the quieter failure: the transcript is written first, the
+    # JSON report lands on top of it, and the run still exits 0 announcing the
+    # transcript it just destroyed.
+    inputs = {canonical_path(args.whisper), canonical_path(args.app)}
     for out_path, flag in ((args.out, "--out"), (args.report, "--report")):
-        if out_path and os.path.abspath(out_path) in inputs:
-            return fail("%s would overwrite an input file; inputs are never modified" % flag)
+        if out_path and canonical_path(out_path) in inputs:
+            return fail("%s points at one of the two transcripts this tool reads "
+                        "(%s); inputs are never modified. Give %s a new filename "
+                        "and run the command again."
+                        % (flag, os.path.basename(out_path), flag))
+    if args.report and canonical_path(args.out) == canonical_path(args.report):
+        return fail("--out and --report point at the same file (%s). The JSON report "
+                    "would be written over the attributed transcript. Give them "
+                    "different filenames - for example --out \"%s\" --report \"%s\" - "
+                    "and run the command again."
+                    % (args.out,
+                       os.path.splitext(args.out)[0] + ".md",
+                       os.path.splitext(args.out)[0] + ".speakers.json"))
 
     warnings = []
-    wh_lines, newline, trailing = read_text(args.whisper)
-    app_lines, _an, _at = read_text(args.app)
+    for out_path, flag in ((args.out, "--out"), (args.report, "--report")):
+        if out_path and os.path.exists(out_path):
+            warnings.append("%s already exists and is being replaced: %s"
+                            % (flag, os.path.basename(out_path)))
+
+    try:
+        wh_lines, newline, trailing = read_text(args.whisper)
+        app_lines, _an, _at = read_text(args.app)
+    except OSError as e:
+        return fail("could not read a transcript: %s. Check the file is readable, "
+                    "then run the command again." % e)
 
     segments, wh_stream, wh_owner = parse_whisper(wh_lines)
     turns, variant, app_stream, app_owner = parse_app(app_lines)
@@ -937,19 +1128,30 @@ def main(argv=None):
             % (TOOL_NAME, TOOL_VERSION, os.path.basename(args.app),
                labelled, len(segments), args.min_confidence))
     out_lines = render(wh_lines, segments, note if labelled else None)
-    write_text(args.out, out_lines, newline, trailing)
+    try:
+        write_text(args.out, out_lines, newline, trailing)
+    except OSError as e:
+        return fail("could not write %s: %s. Check the folder exists and is "
+                    "writable, then run the command again." % (args.out, e))
 
     n_wh = len(wh_stream)
+    # Filenames only, never absolute paths. This JSON sits beside the recording
+    # it describes and can end up attached to a source record; an archived file
+    # must not carry the layout of one person's hard drive
+    # (AGENTS_TOOLING.md §11 privacy, SPEC §12.4 alias-form paths).
     report = {
         "tool": TOOL_NAME,
         "version": TOOL_VERSION,
         "status": status,
         "method": method,
         "inputs": {
-            "whisper": os.path.abspath(args.whisper),
-            "app_transcript": os.path.abspath(args.app),
+            "whisper": os.path.basename(args.whisper),
+            "app_transcript": os.path.basename(args.app),
         },
-        "output": os.path.abspath(args.out),
+        "output": os.path.basename(args.out),
+        "paths_note": "filenames only - absolute machine paths are deliberately "
+                      "not recorded, so this report is safe to file beside the "
+                      "transcripts it describes",
         "settings": {
             "min_confidence": args.min_confidence,
             "min_match_rate": args.min_match_rate,
@@ -989,9 +1191,7 @@ def main(argv=None):
             "per_speaker_segments": dict(Counter(
                 s.speaker for s in segments if s.speaker)),
             "confidence_histogram": dict(Counter(
-                "%.1f-%.1f" % (min(0.9, round(s.confidence - s.confidence % 0.1, 1)),
-                               min(1.0, round(s.confidence - s.confidence % 0.1, 1) + 0.1))
-                for s in segments if s.votes)),
+                confidence_bucket(s.confidence) for s in segments if s.votes)),
         },
         "speaker_evidence": speaker_evidence(turns),
         "warnings": warnings,
@@ -1007,12 +1207,13 @@ def main(argv=None):
         ],
     }
     if args.report:
-        parent = os.path.dirname(os.path.abspath(args.report))
-        if parent and not os.path.isdir(parent):
-            os.makedirs(parent, exist_ok=True)
-        with open(args.report, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, indent=2, sort_keys=False)
-            fh.write("\n")
+        try:
+            atomic_write(args.report,
+                         json.dumps(report, indent=2, sort_keys=False) + "\n")
+        except OSError as e:
+            return fail("the transcript was written, but the JSON report could not "
+                        "be saved to %s: %s. Re-run with a --report path in a "
+                        "writable folder." % (args.report, e))
 
     for w in warnings:
         sys.stderr.write("%s: warning: %s\n" % (TOOL_NAME, w))
@@ -1043,9 +1244,19 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # A Python traceback on the reader's screen is always a defect here
+    # (AGENTS_TOOLING.md, "No traceback ever reaches the user"), so the last
+    # filesystem surprise - a read-only folder, a vanished drive - is turned
+    # into a plain sentence with a next step. Everything else still raises,
+    # because a genuine bug should be loud during tool-building.
     try:
         sys.exit(main())
     except KeyboardInterrupt:
+        sys.stderr.write("\n%s: stopped before anything was written.\n" % TOOL_NAME)
         sys.exit(130)
     except BrokenPipeError:
         sys.exit(0)
+    except OSError as exc:
+        sys.exit(fail("the filesystem refused an operation: %s. Check the paths you "
+                      "passed to --whisper, --app-transcript, --out and --report, "
+                      "then run the command again." % exc))
