@@ -58,6 +58,12 @@ CODE MAP
     _is_missing_key           - is this key a vanished photo? (can the file be opened?)
     _alias_is_ignored         - does a cached alias sit under photos_ignore:? (the
                                  stored-path half of the scan walk's pruning)
+    _unreadable_dir_recorder  - os.walk onerror collector: (alias, path) per folder
+                                 the walk could not list
+    _under_unreadable_dir     - is this cached row inside one of those folders?
+                                 (unverified, not absent - never swept)
+    _unreadable_dir_hold_mtimes - times to backdate the cache behind so an
+                                 incomplete walk cannot read 'fresh'
 
   exiftool integration
     PHOTO_EXTENSIONS          - recognised photo/scan file extensions (imported from _lib)
@@ -82,6 +88,10 @@ CODE MAP
   Variation grouping
     (_edtf_confidence, the sortable SPEC §20 confidence score, is an imported
      _lib alias - `fha process` triage scores the confident-date signal with it)
+    _parsed_of_cached_path    - parse a cached key's filename, MISSING: prefix aside
+    _select_group_primary     - the group's primary file (shared: full rebuild + reconcile)
+    _group_date_fields        - the group's (edtf_resolved, date_conflict), primary-first
+                                 tie-break (shared: full rebuild + reconcile)
     _group_photos             - assign group_id/is_primary/variant_role; build photo_groups
 
   Query (fha photoindex find - M3.2)
@@ -124,7 +134,11 @@ CODE MAP
   Reconcile (fha photoindex reconcile - M3.4)
     _hold_cache_stale         - backdate photos.sqlite so it keeps reading 'stale'
                                  (shared with run_scan; False when the hold failed)
+    _move_cached_path         - rename one cached path across every path-keyed table
+    _recompute_group_fields   - re-derive one group's primary + resolved date after a
+                                 move (same rules as the full rebuild)
     _on_disk_aliases          - alias path -> absolute Path for every file under the photos root
+                                 (+ optional collector for folders it could not read)
     _scrape_source_ids        - exiftool SOURCE: keyword read over untracked candidate files
     run_reconcile             - re-match moved files by source_id, flag the rest as MISSING
 
@@ -370,7 +384,7 @@ _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 _EXIFTOOL_BATCH_SIZE = 500
 
 
-def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
+def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_error=None):
     """
     Yield catalogable photo files under photos_root, or nothing if it is absent.
 
@@ -383,13 +397,25 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
     fnmatch's '*' crosses folder boundaries ('Flickr*' also matches
     'a/Flickr Export'), and '[' opens a character class - a folder whose name
     contains brackets is matched by escaping them ('Scans [[]2019]').
+
+    `on_error` is os.walk's `onerror` callback, and passing one is not
+    optional bookkeeping for any caller that DELETES rows for files it did not
+    see. Without it os.walk swallows the OSError from a directory it cannot
+    list and simply moves on, so a folder that lost its read permission, or an
+    external drive whose subtree unmounted mid-scan, is indistinguishable from
+    an empty folder - and the scan's stale-row sweep would then erase the
+    catalog rows (keywords, face regions, person matches) for photos still
+    sitting on disk, while reporting a clean run. Callers hand in a collector
+    and treat every path under a reported directory as unverified rather than
+    absent. Callers that only READ the listing (a preview, a count) may pass
+    None and simply see fewer files.
     """
     if not photos_root.is_dir():
         return
     patterns = list(ignore or [])
     _ignored = photos_ignore_matcher(patterns)
 
-    for dirpath, dirnames, filenames in os.walk(photos_root):
+    for dirpath, dirnames, filenames in os.walk(photos_root, onerror=on_error):
         rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
         prefix = '' if rel_dir == '.' else f'{rel_dir}/'
         if patterns:
@@ -428,6 +454,68 @@ def _alias_is_ignored(alias: str, is_ignored) -> bool:
         return False
     parts = alias[len('photos/'):].split('/')
     return any(is_ignored('/'.join(parts[:i])) for i in range(1, len(parts) + 1))
+
+
+def _unreadable_dir_recorder(fha_config: dict, archive_root: Path, into: list):
+    """Build the `on_error` callback that records directories the walk failed on.
+
+    Appends `(alias, absolute Path)` for each one, de-duplicated. The alias is
+    what the catalog's own keys are written in, so the sweep can ask "is this
+    stored row underneath a folder I could not read?" with `_under_subtree` -
+    the same containment rule `--under` uses - instead of inventing a second
+    one. The absolute Path is kept because the stale-hold needs a real mtime
+    off the filesystem.
+
+    A directory whose name will not convert to an alias (an unreadable path
+    outside the configured photos root) is still recorded, under its
+    forward-slash spelling: forgetting it entirely would be the one outcome
+    that lets the sweep delete rows the scan could not verify.
+    """
+    def note(err: OSError) -> None:
+        name = getattr(err, 'filename', None)
+        if not name:
+            return
+        path = Path(name)
+        try:
+            alias = path_to_alias(path, 'photos', fha_config, archive_root)
+        except OSError:
+            alias = str(name).replace('\\', '/')
+        if not any(existing == alias for existing, _p in into):
+            into.append((alias, path))
+    return note
+
+
+def _under_unreadable_dir(alias: str, unreadable: list) -> bool:
+    """True when a catalogued alias sits inside a directory the walk could not read.
+
+    'Inside' includes the directory itself, and the comparison runs on the live
+    alias underneath any 'MISSING:' prefix - `_under_subtree` handles both, and
+    reusing it is what keeps this from becoming a third spelling of "is this
+    path under that folder".
+    """
+    return any(_under_subtree(alias, d) for d, _p in unreadable)
+
+
+def _unreadable_dir_hold_mtimes(unreadable: list) -> list[float]:
+    """File times the cache must sit behind so an incomplete walk reads 'stale'.
+
+    A directory the scan could not list has no readable file inside it to
+    watermark against, so the times taken are the directory's own and its
+    parent's. The parent matters: `photoindex_status` never yields an
+    unreadable directory from its own walk (os.walk drops it), so the
+    directory's mtime may not be in the watermark at all - but the parent's
+    is, because reaching the child means the parent listed fine. Sitting
+    behind both is what makes the catalog keep reporting itself out of date
+    until a scan can actually see the subtree.
+    """
+    out: list[float] = []
+    for _alias, path in unreadable:
+        for candidate in (path, path.parent):
+            try:
+                out.append(candidate.stat().st_mtime)
+            except OSError:
+                continue
+    return out
 
 
 def _run_exiftool(paths: list[Path]) -> list[dict]:
@@ -551,6 +639,67 @@ def _best_group_date(edtfs: list[str]) -> tuple[str | None, int | None]:
             if bounds[i][1] < bounds[j][0] or bounds[j][1] < bounds[i][0]:
                 conflict = 1
     return best, conflict
+
+
+def _parsed_of_cached_path(path: str) -> ParsedName:
+    """Parse the filename a cached key names, ignoring any 'MISSING:' prefix.
+
+    A vanished row's key is a decoration on the path it had (`_live_alias`),
+    so the variation grammar is read off the real filename underneath - or a
+    missing front scan would parse as a file literally named
+    'MISSING:photos/x-front.jpg' and stop looking like a front scan at all.
+    """
+    return parse_media_filename(Path(_live_alias(path)).stem)
+
+
+def _select_group_primary(paths: list[str]) -> str:
+    """The primary member of a variation group, from its cached path keys.
+
+    Primary = a file with no variant/role/crop suffix at all (the plain scan),
+    then a front scan, then the lexicographically-first path - the rule
+    `_lib.select_variation_primary` owns, shared with `fha process` so both
+    tools flag the same file. A vanished member is passed over while any live
+    one remains: the primary is the file a human opens, and naming a MISSING:
+    path for a photo still on disk under another name would be a lie about the
+    group. An all-missing group keeps its own path, which is what tells
+    reconcile and the reader what it is.
+
+    One function because two callers need the answer: the full rebuild
+    (`_group_photos`) and reconcile's narrower patch
+    (`_recompute_group_fields`) both write `photo_groups.primary_path` and
+    both break equal-confidence date ties by it. When they decided it
+    separately they disagreed, and a group's primary and resolved date
+    depended on which maintenance command ran last.
+    """
+    live = [p for p in paths if not _is_missing_key(p)]
+    return select_variation_primary(live or paths, _parsed_of_cached_path)
+
+
+def _group_date_fields(
+    members: list[tuple[str, str | None]], primary: str,
+) -> tuple[str | None, int | None]:
+    """A group's (edtf_resolved, date_conflict) from its members' cached dates.
+
+    `members` is [(cached path, edtf or None), ...] for the whole group,
+    vanished members included - they are dropped here, in one place: a group
+    must not keep reporting a resolved date, or a conflict badge, that only a
+    file no longer on disk carried.
+
+    Candidates are ordered with the primary file first, then lexicographically,
+    so a confidence tie (two variants both 'year only, no marker') resolves to
+    the primary's date rather than to whichever path happens to sort first -
+    `_best_group_date` keeps the first of equals. That ordering is the whole
+    reason this is a shared function: the full rebuild applied it and
+    reconcile's patch did not, so flagging an unrelated third variant missing
+    changed a group's date to the lexicographically-first variant and the next
+    full scan changed it back, leaving date filters and galleries dependent on
+    which command ran last.
+    """
+    dated = sorted(
+        ((edtf, path) for path, edtf in members if edtf and not _is_missing_key(path)),
+        key=lambda pair: (pair[1] != primary, pair[1]),
+    )
+    return _best_group_date([e for e, _p in dated])
 
 
 def _extract_face_regions(row: dict) -> list[tuple[str, str, str | None]]:
@@ -971,7 +1120,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
         # group - the group would lose the file_count and the caption history
         # reconcile deliberately kept (see run_reconcile).
         p = Path(_live_alias(path))
-        parsed = parse_media_filename(p.stem)
+        parsed = _parsed_of_cached_path(path)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
         source_id_by_path[path] = source_id
@@ -996,33 +1145,13 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     conn.execute('DELETE FROM photo_groups')
 
     for group_id, paths in groups.items():
-        # Primary = a file with no variant/role/crop suffix at all (the plain
-        # scan), then a front scan, then the lexicographically-first path when
-        # every member carries some other suffix (e.g. a back-only group).
-        # Shared with `fha process` so both tools agree on the primary file.
-        # A vanished member is passed over while any live one remains: the
-        # primary is the file a human opens, and `find` printing a MISSING:
-        # path for a photo still sitting on disk under another name would be
-        # a lie about the group. An all-missing group keeps its own path,
-        # which is what tells reconcile and the reader what it is.
-        live_paths = [p for p in paths if not _is_missing_key(p)]
-        primary = select_variation_primary(
-            live_paths or paths, parsed_by_path.__getitem__)
-
-        # Order candidates with the primary file first, then lexicographically,
-        # so a confidence tie (e.g. two variants both 'year only, no marker')
-        # resolves deterministically to the primary's date rather than
-        # insertion order - and falls back to path order only when the
-        # primary itself carries no date. Vanished members contribute no date:
-        # a group must not keep reporting a resolved date, or a conflict badge,
-        # that only a file no longer on disk carried - the same rule
-        # reconcile's own `_recompute_group_dates` applies, kept identical here
-        # so a later full scan cannot undo what reconcile just corrected.
-        dated = sorted(
-            ((edtf_by_path[p], p) for p in live_paths if edtf_by_path[p]),
-            key=lambda pair: (pair[1] != primary, pair[1]),
-        )
-        best_edtf, date_conflict = _best_group_date([e for e, _p in dated])
+        # Primary choice and date resolution both live in shared helpers, and
+        # both are shared with reconcile's `_recompute_group_fields` on purpose:
+        # two implementations of one rule is what let a full scan and a
+        # reconcile disagree about a group's date.
+        primary = _select_group_primary(paths)
+        best_edtf, date_conflict = _group_date_fields(
+            [(p, edtf_by_path[p]) for p in paths], primary)
 
         conn.execute(
             'INSERT INTO photo_groups(group_id, primary_path, edtf_resolved, '
@@ -2666,42 +2795,56 @@ def _move_cached_path(conn: sqlite3.Connection, old_path: str, new_path: str) ->
     )
 
 
-def _recompute_group_dates(conn: sqlite3.Connection, group_ids: set[str]) -> None:
-    """Recompute edtf_resolved/date_conflict for the given groups from only
-    their still-on-disk (non-MISSING:) members.
+def _recompute_group_fields(conn: sqlite3.Connection, group_ids: set[str]) -> None:
+    """Re-derive primary_path, is_primary, edtf_resolved and date_conflict for
+    the given groups, from their rows as they now stand.
 
-    _move_cached_path renames path text as cache maintenance and never
-    touches photo_groups' resolved-date fields (only its own docstring),
-    so a group whose most-confident date - or a conflicting one - lived on
-    a variant that reconcile just flagged MISSING: would otherwise keep
-    reporting a date, or a date_conflict badge, contributed by a file no
-    longer on disk. Called for every group a rematch or a mark-missing
-    touched, right before commit.
+    _move_cached_path renames path text as cache maintenance; it does not
+    re-decide anything derived FROM those paths. So a group whose primary, or
+    whose most-confident date, or whose conflicting date lived on a variant
+    reconcile just flagged MISSING: would otherwise keep naming a file that is
+    not on disk and keep reporting a date only that file carried. Called for
+    every group a rematch or a mark-missing touched, right before commit.
 
-    Group membership, primary_path, and file_count are reconcile's usual
-    bookkeeping and are intentionally left alone here: _gallery_group_dict
-    already treats a MISSING: primary_path as absent and falls back to a
-    live member, and _group_photos (the full-rebuild path used by an
-    ordinary scan) is the only writer of group membership itself - this is
-    a narrower, reconcile-specific patch of just the two fields its own
-    mutation can silently stale.
+    Everything here is computed by the same `_select_group_primary` /
+    `_group_date_fields` pair the full rebuild uses. Narrower in what it
+    writes than `_group_photos` - group membership and file_count stay
+    reconcile's usual bookkeeping, and `_group_photos` remains the only writer
+    of those - but identical in how it decides, which is the point. Two
+    implementations of one rule is what produced both divergences this
+    replaced: the date ordering (filename-only here, primary-first there, so
+    flagging an unrelated third variant missing flipped `edtf_resolved` and
+    the next full scan flipped it back) and the primary itself (left pointing
+    at 'MISSING:photos/...' until a scan re-picked a live member, so
+    `fha photoindex find` showed a whole group as missing while a readable
+    variant of it sat on disk).
     """
     for group_id in group_ids:
-        rows = conn.execute(
-            'SELECT path, edtf FROM photos WHERE group_id = ?', (group_id,)
-        ).fetchall()
-        live = sorted(
-            (
-                (edtf, path) for path, edtf in rows
-                if edtf and not _is_missing_key(path)
-            ),
-            key=lambda pair: pair[1],
-        )
-        best_edtf, date_conflict = _best_group_date([e for e, _path in live])
+        members = [
+            (path, edtf) for path, edtf in conn.execute(
+                'SELECT path, edtf FROM photos WHERE group_id = ?', (group_id,))
+        ]
+        if not members:
+            # A photo_groups row whose members have all gone has nothing to
+            # derive. Nothing reconcile does empties a group today, but
+            # _select_group_primary has no answer for an empty list and a
+            # crash here would land mid-reconcile, after rows had moved.
+            conn.execute(
+                'UPDATE photo_groups SET edtf_resolved=NULL, date_conflict=NULL '
+                'WHERE group_id=?', (group_id,))
+            continue
+        primary = _select_group_primary([path for path, _edtf in members])
+        best_edtf, date_conflict = _group_date_fields(members, primary)
         conn.execute(
-            'UPDATE photo_groups SET edtf_resolved=?, date_conflict=? WHERE group_id=?',
-            (best_edtf, date_conflict, group_id),
+            'UPDATE photo_groups SET primary_path=?, edtf_resolved=?, date_conflict=? '
+            'WHERE group_id=?',
+            (primary, best_edtf, date_conflict, group_id),
         )
+        for path, _edtf in members:
+            conn.execute(
+                'UPDATE photos SET is_primary=? WHERE path=?',
+                (1 if path == primary else 0, path),
+            )
 
 
 def _group_id_of(conn: sqlite3.Connection, path: str) -> str | None:
@@ -2710,7 +2853,10 @@ def _group_id_of(conn: sqlite3.Connection, path: str) -> str | None:
     return row[0] if row and row[0] else None
 
 
-def _on_disk_aliases(photos_root: Path, fha_config: dict, archive_root: Path) -> dict[str, Path]:
+def _on_disk_aliases(
+    photos_root: Path, fha_config: dict, archive_root: Path,
+    unreadable_dirs: list | None = None,
+) -> dict[str, Path]:
     """Map alias-form path -> absolute Path for every photo file currently on disk.
 
     Respects photos_ignore (#35): reconcile must not offer an ignored file as
@@ -2718,9 +2864,22 @@ def _on_disk_aliases(photos_root: Path, fha_config: dict, archive_root: Path) ->
     The cached side of run_reconcile applies the same rule to the rows it
     reads (`_alias_is_ignored`), or every row for a just-excluded subtree
     would read as a photo that vanished off the disk.
+
+    Pass a list as `unreadable_dirs` to collect the (alias, path) of every
+    directory the walk could not read. Reconcile decides what is missing by
+    subtracting this listing from the catalog, so a folder that refused to be
+    listed reads as "every photo in it vanished" unless the caller is told -
+    which would flag a whole shelf MISSING:, blank out its groups' dates, and
+    report the loss to the human as fact.
     """
+    on_error = (
+        _unreadable_dir_recorder(fha_config, archive_root, unreadable_dirs)
+        if unreadable_dirs is not None else None
+    )
     out: dict[str, Path] = {}
-    for p in _iter_photo_files(photos_root, _photos_ignore_patterns(fha_config)):
+    for p in _iter_photo_files(
+        photos_root, _photos_ignore_patterns(fha_config), on_error=on_error,
+    ):
         try:
             out[path_to_alias(p, 'photos', fha_config, archive_root)] = p
         except OSError:
@@ -2786,16 +2945,27 @@ def run_reconcile(
         the row's source_id/path history survives until a later --with-exif
         retry heals it - the two exceptions being a file back at the alias its
         row remembers, and an alias now excluded by `photos_ignore:`, which no
-        retry could ever heal. Either mutation also recomputes that row's group's
-        edtf_resolved/date_conflict from its still-live members
-        (_recompute_group_dates), so a group's resolved date or conflict
-        badge can never keep reflecting a variant that just vanished.
+        retry could ever heal. Either mutation also re-derives that row's
+        group's primary and resolved date from its still-live members
+        (_recompute_group_fields, the rule a full scan uses), so a group can
+        never keep naming a vanished variant as the file to open, nor keep a
+        resolved date or conflict badge only that variant carried.
       - left untracked: a file with no claimed missing row is reported as new.
         With --with-exif, its SOURCE: keyword (if any) is read so it can be
         attached to that source's inventory in the report rather than being
         reduced to a bare count (TOOLING §9: "if they carry a SOURCE:/S-id,
         attach to the source's inventory"); a full content rescrape remains
         the ordinary scan's job, not reconcile's.
+      - held: the row sits under a directory the walk could not read, so
+        whether its photo is still there is not something this run found out.
+        Missing is decided by subtracting the on-disk listing from the
+        catalog, and an unlistable folder contributes nothing to that
+        listing - so without this every row beneath it would be flagged
+        MISSING:, its groups' dates recomputed without it, and the human told
+        a shelf of photos had been lost. Those rows are left exactly as they
+        are, the folders are named in `unreadable_dirs`, and the cache is held
+        stale so nothing downstream treats this pass as a complete look at the
+        disk. Same reason `run_scan` refuses to sweep them.
 
     With dry_run=True, the plan (rematched/missing/new) is computed and
     reported exactly as it would be applied, but no cache row is moved and
@@ -2824,11 +2994,13 @@ def run_reconcile(
     Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...],
     'missing': [path, ...], 'new_count': int,
     'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...],
-    'stale_hold_failed': bool}.
+    'stale_hold_failed': bool, 'unreadable_dirs': [alias, ...],
+    'held_unreadable': int}.
     """
     empty = {
         'rematched': [], 'missing': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [], 'stale_hold_failed': False,
+        'unreadable_dirs': [], 'held_unreadable': 0,
     }
     if is_working_copy(archive_root):
         return Result(exit_code=EXIT_CLEAN, data={
@@ -2847,7 +3019,8 @@ def run_reconcile(
         # A missing photos root is a warning, not a failure (mirrors _cmd_reconcile).
         return Result(ok=False, exit_code=EXIT_WARNINGS, data={
             'status': status, 'root_found': False, 'photos_root': str(photos_root), **empty})
-    on_disk = _on_disk_aliases(photos_root, fha_config, archive_root)
+    unreadable_dirs: list[tuple[str, Path]] = []
+    on_disk = _on_disk_aliases(photos_root, fha_config, archive_root, unreadable_dirs)
 
     db_path = archive_root / '.cache' / 'photos.sqlite'
     conn = sqlite3.connect(str(db_path))
@@ -2868,9 +3041,26 @@ def run_reconcile(
             # the scan's business (it owns which files the catalog holds);
             # reconcile only has to stop calling them missing.
             is_ignored = photos_ignore_matcher(_photos_ignore_patterns(fha_config))
+            # A row under a folder the walk could not list is likewise not a
+            # photo that went missing - it is a photo this run did not get to
+            # look at. Held back before the missing set is built, so no
+            # MISSING: rename, no group-date recompute and no "lost" line in
+            # the report can be produced from a folder nobody could read.
+            # Tested on the live alias so an already-flagged row under that
+            # folder is held too, rather than being re-reported every run.
+            held_unreadable = 0
+            absent = [path for path in cached if path not in on_disk]
+            if unreadable_dirs:
+                held = [
+                    path for path in absent
+                    if _under_unreadable_dir(_live_alias(path), unreadable_dirs)
+                ]
+                held_unreadable = len(held)
+                held_set = set(held)
+                absent = [path for path in absent if path not in held_set]
             missing = {
-                path: sid for path, sid in cached.items()
-                if path not in on_disk and not _alias_is_ignored(_live_alias(path), is_ignored)
+                path: cached[path] for path in absent
+                if not _alias_is_ignored(_live_alias(path), is_ignored)
             }
             untracked = {alias: p for alias, p in on_disk.items() if alias not in cached}
 
@@ -2881,8 +3071,8 @@ def run_reconcile(
             rematched: list[tuple[str, str]] = []
             rematched_paths: list[Path] = []
             # Groups touched by a rematch or a mark-missing below: their
-            # edtf_resolved/date_conflict need recomputing from surviving
-            # members before commit (_recompute_group_dates).
+            # primary and resolved date need re-deriving from surviving
+            # members before commit (_recompute_group_fields).
             affected_group_ids: set[str] = set()
             if missing and candidate_source_ids:
                 claimed: set[str] = set()
@@ -2936,7 +3126,7 @@ def run_reconcile(
                 conn.rollback()
             else:
                 if affected_group_ids:
-                    _recompute_group_dates(conn, affected_group_ids)
+                    _recompute_group_fields(conn, affected_group_ids)
                 conn.commit()
             result = {
                 'status': status,
@@ -2946,6 +3136,8 @@ def run_reconcile(
                 'new_count': len(untracked),
                 'new_sourced': new_sourced,
                 'new_unsourced': new_unsourced,
+                'unreadable_dirs': [alias for alias, _p in unreadable_dirs],
+                'held_unreadable': held_unreadable,
             }
         except sqlite3.Error:
             return Result(ok=False, exit_code=EXIT_FAILURE,
@@ -2954,28 +3146,35 @@ def run_reconcile(
         conn.close()
 
     stale_hold_failed = False
-    if not dry_run and (untracked or rematched_paths):
+    if not dry_run and (untracked or rematched_paths or unreadable_dirs):
         # Cover both still-untracked files (never scraped) and files just
         # rematched by SOURCE: keyword (path renamed in cache, but mtime/size
         # never refreshed) - either can leave photos.sqlite newer than a file
         # whose on-disk content the cache doesn't actually reflect yet, which
-        # would make photoindex_status() report 'fresh' regardless. A photo
-        # root on removable/network storage can also vanish mid-stat once the
-        # cache write has already committed; that leaves no time to sit behind,
-        # which `_hold_cache_stale` reads as the failure it is.
+        # would make photoindex_status() report 'fresh' regardless. An
+        # unreadable folder is the same signal with no file behind it: this
+        # pass did not see what is in there, so the catalog must not be left
+        # certifying that it has. A photo root on removable/network storage
+        # can also vanish mid-stat once the cache write has already committed;
+        # that leaves no time to sit behind, which `_hold_cache_stale` reads
+        # as the failure it is.
         try:
             behind = [p.stat().st_mtime
                       for p in (*untracked.values(), *rematched_paths)]
         except OSError:
             behind = []
+        behind += _unreadable_dir_hold_mtimes(unreadable_dirs)
         stale_hold_failed = not _hold_cache_stale(db_path, behind)
     result['stale_hold_failed'] = stale_hold_failed
     # photos.sqlite is a disposable cache (AGENTS.md), so reconcile's row moves
     # are not archive-content changes; `changed` stays empty. Unresolved missing
     # files are a warning (mirrors _cmd_reconcile) - and so is a catalog left
-    # looking current when it is not, because every later reader trusts it.
+    # looking current when it is not, because every later reader trusts it, and
+    # so is a folder that would not open, because this run's answer about what
+    # is on disk is incomplete by exactly that much.
     return Result(
-        exit_code=(EXIT_WARNINGS if (result['missing'] or stale_hold_failed)
+        exit_code=(EXIT_WARNINGS
+                   if (result['missing'] or stale_hold_failed or unreadable_dirs)
                    else EXIT_CLEAN),
         data=result,
     )
@@ -3737,6 +3936,7 @@ _EMPTY_SCAN_SUMMARY = {
     'root_found': False,
     'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
     'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
+    'unreadable_dirs': [], 'held_unreadable': 0,
     'stale_hold_failed': False,
     'ignore_patterns': [],
     'groups': 0, 'dated_groups': 0, 'nonspec_date_keywords': 0,
@@ -3758,6 +3958,25 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     everything. Files that have disappeared from disk since the last scan are
     deleted from the cache so stale entries never linger as phantom search
     hits.
+
+    That deletion is why the walk is not allowed to under-see the tree
+    quietly. "Absent" here means "the walk reached its folder and the file was
+    not in it" - a folder the walk could not LIST proves nothing about the
+    files under it, so every cached row beneath one is kept, counted in
+    `held_unreadable`, and the folders are named in `unreadable_dirs`. Two
+    reasons to preserve rather than abort. The asymmetry of the mistake: a
+    phantom row for a photo genuinely deleted inside an unreadable folder is
+    visible, harmless, and swept by the next scan that can see in there, while
+    a deleted row takes the photo out of `find`, galleries and packets with no
+    trace that anything was dropped - and its confirmed person tags cost the
+    human real work to put back. And the cost of aborting: one folder that
+    lost its read permission would stop the other 60,000 photos from being
+    catalogued at all, for a fault that has nothing to do with them. Preserving
+    is not the whole answer though, because a scan that reports success is a
+    scan that certifies the catalog: the run also holds the cache stale
+    (`_hold_cache_stale`, the same mechanism an unreadable FILE uses) and
+    exits with warnings naming the folders, so no later reader treats this
+    catalog as a complete picture of the disk.
 
     In working-copy mode this function refuses: the photo files aren't here.
     Use _cmd_scan to surface a friendly refusal message; run_scan itself
@@ -3781,7 +4000,11 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     on_disk: dict[Path, tuple[float, int]] = {}
     alias_by_path: dict[Path, str] = {}
     stat_failures: list[Path] = []
-    for p in _iter_photo_files(photos_root, ignore):
+    unreadable_dirs: list[tuple[str, Path]] = []
+    for p in _iter_photo_files(
+        photos_root, ignore,
+        on_error=_unreadable_dir_recorder(fha_config, archive_root, unreadable_dirs),
+    ):
         try:
             st = p.stat()
             on_disk[p] = (st.st_mtime, st.st_size)
@@ -3862,6 +4085,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                 scraped += 1
 
         removed = 0
+        held_unreadable = 0
         alias_on_disk = set(alias_by_path.values())
         is_ignored = photos_ignore_matcher(ignore)
         for path_key in list(existing):
@@ -3896,6 +4120,18 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                     removed += 1
                 continue
             if path_key not in alias_on_disk:
+                # Not on disk, or in a folder that would not open. The ignore
+                # test comes first because that answer does not depend on the
+                # walk at all: an excluded row is swept whether or not its
+                # folder could be listed, which keeps the photos_ignore
+                # promise exact. Everything else under an unreadable folder is
+                # unverified, not absent, and unverified rows are kept - see
+                # this function's docstring for why preserving beats both
+                # deleting and aborting.
+                if (not _alias_is_ignored(path_key, is_ignored)
+                        and _under_unreadable_dir(path_key, unreadable_dirs)):
+                    held_unreadable += 1
+                    continue
                 conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key)
                 removed += 1
@@ -3978,26 +4214,46 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     # stored mtime/size still match the file, and its row is as current as it
     # ever was. Holding the whole catalog stale for that would mean one
     # permanently corrupt photo could never be scanned clean again.
+    #
+    # A folder the walk could not list is the same missed signal one level up:
+    # its photos never reached the catalog either, and this run cannot say
+    # whether the rows it kept for them still describe anything. It has no
+    # readable file inside to sit behind, so the times come from the folder
+    # and its parent (_unreadable_dir_hold_mtimes).
     unindexed = [
         p for p in unreadable
         if existing.get(alias_by_path[p]) != on_disk[p]
     ]
-    stale_hold_failed = bool(unindexed) and not _hold_cache_stale(
-        db_path, [on_disk[p][0] for p in unindexed])
+    behind = [on_disk[p][0] for p in unindexed]
+    behind += _unreadable_dir_hold_mtimes(unreadable_dirs)
+    stale_hold_failed = (
+        bool(unindexed or unreadable_dirs) and not _hold_cache_stale(db_path, behind))
 
-    return Result(data={
-        'stale_hold_failed': stale_hold_failed,
-        'photos_root': str(photos_root), 'root_found': True,
-        'total': len(on_disk), 'scraped': scraped,
-        'unchanged': len(on_disk) - scraped - len(unreadable), 'removed': removed,
-        'unreadable': len(unreadable),
-        'unreadable_sample': [str(p) for p in unreadable[:5]],
-        'unreadable_unindexed': len(unindexed),
-        'ignore_patterns': ignore,
-        'groups': groups, 'dated_groups': dated_groups,
-        'nonspec_date_keywords': nonspec_dates, 'conflicts': conflicts,
-        'rebuilt_reason': rebuilt_reason,
-    })
+    # The Result carries the exit code and `_cmd_scan` renders it (TOOLING §1),
+    # so anything that made the CLI warn has to make the engine's own Result
+    # say so too - otherwise a headless caller reading `.exit_code` is told the
+    # scan was clean when the CLI would have printed a warning about the very
+    # same run.
+    incomplete = bool(unreadable_dirs or unreadable)
+    return Result(
+        ok=not incomplete,
+        exit_code=(EXIT_WARNINGS if incomplete else EXIT_CLEAN),
+        data={
+            'stale_hold_failed': stale_hold_failed,
+            'photos_root': str(photos_root), 'root_found': True,
+            'total': len(on_disk), 'scraped': scraped,
+            'unchanged': len(on_disk) - scraped - len(unreadable), 'removed': removed,
+            'unreadable': len(unreadable),
+            'unreadable_sample': [str(p) for p in unreadable[:5]],
+            'unreadable_unindexed': len(unindexed),
+            'unreadable_dirs': [alias for alias, _p in unreadable_dirs],
+            'held_unreadable': held_unreadable,
+            'ignore_patterns': ignore,
+            'groups': groups, 'dated_groups': dated_groups,
+            'nonspec_date_keywords': nonspec_dates, 'conflicts': conflicts,
+            'rebuilt_reason': rebuilt_reason,
+        },
+    )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
@@ -4297,6 +4553,32 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             'its DATE: keyword in the letter form, set its capture date to '
             'the date you mean, and run `fha photoindex` again.'
         )
+    unreadable_dirs = summary.get('unreadable_dirs') or []
+    if unreadable_dirs:
+        # The one thing the owner must not be left believing is that a scan
+        # which could not open a folder counted the photos in it. Name the
+        # folders, say plainly that nothing was removed, and give the one
+        # command to run after the folder opens again.
+        shown = ', '.join(unreadable_dirs[:5])
+        extra_dirs = len(unreadable_dirs) - 5
+        if extra_dirs > 0:
+            shown += f' and {extra_dirs} more'
+        held = summary.get('held_unreadable') or 0
+        held_line = (
+            f" The {held} photo(s) already catalogued from there were left in "
+            'place rather than treated as deleted'
+            if held else
+            ' Nothing was removed from the catalog for them'
+        )
+        print(
+            f'WARNING: {len(unreadable_dirs)} photo folder(s) could not be '
+            f'opened, so this scan did not see what is inside them: {shown}.'
+            f'{held_line}, and the catalog stays marked out of date. This is '
+            'usually a folder whose permissions changed, or a drive or network '
+            'share that is not connected. Reconnect it (or restore your access '
+            'to the folder), then run fha photoindex again.',
+            file=sys.stderr,
+        )
     if summary.get('unreadable'):
         sample_list = summary.get('unreadable_sample', [])
         sample = ', '.join(sample_list)
@@ -4307,33 +4589,35 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             f'skipped (any prior catalog entry was kept): {sample}{more}',
             file=sys.stderr,
         )
-        # Only a file that is new or changed AND unreadable holds the catalog
-        # back, so `stale_hold_failed` can only arise inside this branch.
-        if summary.get('stale_hold_failed'):
-            # The catalog is missing those files' metadata AND now looks
-            # current, so nothing later will prompt a rescan. Say what is
-            # wrong and name the one command that rebuilds regardless of what
-            # the cache claims about itself.
-            print(
-                'WARNING: the photo catalog could not be marked out of date '
-                'afterwards (the .cache folder may be read-only), so searches '
-                'and exports will treat it as up to date even though those '
-                'files are missing from it. Run `fha photoindex --full` once '
-                'they are readable to rebuild it from scratch.',
-                file=sys.stderr,
-            )
-        elif summary.get('unreadable_unindexed'):
-            # Those files are new or changed and never made it into the
-            # catalog, so the catalog is deliberately left marked out of date
-            # (see run_scan). Say so, or the next `fha find` warning about a
-            # stale photo index reads as a second, unexplained fault.
-            print(
-                f"The photo catalog stays marked out of date until those "
-                f"{summary['unreadable_unindexed']} file(s) can be read. "
-                'Close anything holding them open (or restore them from '
-                'backup if they are damaged), then run fha photoindex again.',
-                file=sys.stderr,
-            )
+    # A new-or-changed file exiftool could not read, and a folder that would
+    # not open, both hold the catalog back, so the hold report sits outside
+    # both branches - it belongs to whichever of them happened.
+    if summary.get('stale_hold_failed'):
+        # The catalog is missing content AND now looks current, so nothing
+        # later will prompt a rescan. Say what is wrong and name the one
+        # command that rebuilds regardless of what the cache claims about
+        # itself.
+        print(
+            'WARNING: the photo catalog could not be marked out of date '
+            'afterwards (the .cache folder may be read-only), so searches '
+            'and exports will treat it as up to date even though those '
+            'photos are missing from it. Run `fha photoindex --full` once '
+            'they are readable to rebuild it from scratch.',
+            file=sys.stderr,
+        )
+    elif summary.get('unreadable_unindexed'):
+        # Those files are new or changed and never made it into the
+        # catalog, so the catalog is deliberately left marked out of date
+        # (see run_scan). Say so, or the next `fha find` warning about a
+        # stale photo index reads as a second, unexplained fault.
+        print(
+            f"The photo catalog stays marked out of date until those "
+            f"{summary['unreadable_unindexed']} file(s) can be read. "
+            'Close anything holding them open (or restore them from '
+            'backup if they are damaged), then run fha photoindex again.',
+            file=sys.stderr,
+        )
+    if unreadable_dirs or summary.get('unreadable'):
         return EXIT_WARNINGS
     return EXIT_CLEAN
 
@@ -4578,6 +4862,33 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             'run fha photoindex to add them.'
         )
 
+    unreadable_dirs = result.get('unreadable_dirs') or []
+    if unreadable_dirs:
+        # Reconcile decides what is missing by subtracting what it found on
+        # disk from the catalog, so a folder it could not open would otherwise
+        # have read as a shelf of lost photos. Say what was skipped and that
+        # nothing was declared lost on its account.
+        shown = ', '.join(unreadable_dirs[:5])
+        extra_dirs = len(unreadable_dirs) - 5
+        if extra_dirs > 0:
+            shown += f' and {extra_dirs} more'
+        held = result.get('held_unreadable') or 0
+        held_line = (
+            f' The {held} photo(s) catalogued from there were left alone rather '
+            'than reported lost'
+            if held else
+            ' No photo was reported lost on their account'
+        )
+        print(
+            f'WARNING: {len(unreadable_dirs)} photo folder(s) could not be '
+            f'opened, so this check did not see what is inside them: {shown}.'
+            f'{held_line}. This is usually a folder whose permissions changed, '
+            'or a drive or network share that is not connected. Reconnect it '
+            '(or restore your access to the folder), then run fha photoindex '
+            'reconcile again.',
+            file=sys.stderr,
+        )
+
     if result.get('stale_hold_failed'):
         # Reconcile leaves files the catalog has not scraped, and the marker
         # that says so could not be written. Nothing later will notice, so
@@ -4592,11 +4903,12 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         )
         return EXIT_WARNINGS
 
-    if not result['rematched'] and not result['missing'] and not result['new_count']:
+    if (not result['rematched'] and not result['missing']
+            and not result['new_count'] and not unreadable_dirs):
         print('reconcile: no drift between the catalog and disk.')
         return EXIT_CLEAN
 
-    return EXIT_WARNINGS if result['missing'] else EXIT_CLEAN
+    return EXIT_WARNINGS if (result['missing'] or unreadable_dirs) else EXIT_CLEAN
 
 
 def _cmd_tag_person(args: argparse.Namespace) -> int:

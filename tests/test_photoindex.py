@@ -2610,7 +2610,7 @@ class PhotoindexTests(unittest.TestCase):
     def test_reconcile_recomputes_group_date_after_its_dated_variant_goes_missing(self) -> None:
         # A group's edtf_resolved must never keep reflecting a variant that
         # reconcile just flagged MISSING: - _move_cached_path renames path
-        # text only, so without _recompute_group_dates the group's resolved
+        # text only, so without _recompute_group_fields the group's resolved
         # date would silently survive its own source file's disappearance.
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -2958,8 +2958,10 @@ class PhotoindexTests(unittest.TestCase):
 
             orig_on_disk_aliases = photoindex._on_disk_aliases
 
-            def patched_on_disk_aliases(photos_root, fha_config, archive_root):
-                aliases = orig_on_disk_aliases(photos_root, fha_config, archive_root)
+            def patched_on_disk_aliases(photos_root, fha_config, archive_root,
+                                        unreadable_dirs=None):
+                aliases = orig_on_disk_aliases(
+                    photos_root, fha_config, archive_root, unreadable_dirs)
                 aliases['photos/brand_new.jpg'] = _VanishingStat()
                 return aliases
 
@@ -3954,7 +3956,7 @@ class PhotoindexTests(unittest.TestCase):
         # it out of its own physical photo - losing the caption/date history
         # reconcile kept it for. The group must also refuse to take its date
         # back from the vanished variant, matching what reconcile itself
-        # computed (_recompute_group_dates).
+        # computed (_recompute_group_fields).
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
             cfg = {'roots': {'photos': 'photos'}}
@@ -4339,6 +4341,394 @@ class PhotoindexTests(unittest.TestCase):
             text = stderr.getvalue()
             self.assertIn('stays marked out of date', text)
             self.assertIn('fha photoindex', text)
+
+
+def _walk_with_unreadable_dir(unreadable: Path):
+    """An os.walk stand-in whose listing of `unreadable` fails, like a real one.
+
+    chmod cannot produce this condition in a test run as root (CI is), and it
+    does nothing at all on Windows, so the failure is injected at the seam
+    os.walk itself reports it from. CPython's os.walk calls scandir(top), hands
+    the OSError to `onerror`, and returns - the directory is never yielded and
+    its subtree is never descended. This reproduces all three, so a walker with
+    no `onerror` sees exactly what it sees in the field: an empty folder.
+    """
+    real_walk = os.walk
+    target = unreadable.resolve()
+
+    def walk(top, topdown=True, onerror=None, followlinks=False):
+        for dirpath, dirnames, filenames in real_walk(top, topdown, onerror, followlinks):
+            if Path(dirpath).resolve() == target:
+                err = PermissionError(13, 'Permission denied')
+                err.filename = str(dirpath)
+                if onerror is not None:
+                    onerror(err)
+                dirnames[:] = []
+                continue
+            yield dirpath, dirnames, filenames
+
+    return walk
+
+
+class UnreadableDirectoryTests(unittest.TestCase):
+    """A folder the walk cannot list is unverified, never empty.
+
+    os.walk swallows the error from a directory it cannot list unless an
+    `onerror` callback is supplied, so a permissions change or an unmounted
+    network folder used to reach the scan as "these photos are gone". The scan
+    then deleted their photos/keyword/face-region/person rows and reported a
+    clean run. These tests pin the three halves of the fix: the rows survive,
+    the catalog does not certify itself fresh, and a file that really is gone
+    is still swept."""
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [
+            {
+                'SourceFile': str(p),
+                'Keywords': ['P-de957bcda1', 'SOURCE: S-1111111111'],
+                'RegionInfo': {'RegionList': [
+                    {'Name': 'Margaret Cole', 'Type': 'Face',
+                     'Area': {'X': 0.5, 'Y': 0.5, 'W': 0.1, 'H': 0.1}},
+                ]},
+            }
+            for p in paths
+        ]
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+
+    @staticmethod
+    def _with_attic(archive: Path) -> Path:
+        attic = archive / 'photos' / 'Attic'
+        attic.mkdir()
+        (attic / 'shelf_one.jpg').write_bytes(b'x')
+        (attic / 'shelf_two.jpg').write_bytes(b'x')
+        return attic
+
+    @staticmethod
+    def _cached_paths(archive: Path, table: str = 'photos') -> set:
+        conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+        try:
+            return {row[0] for row in conn.execute(f'SELECT path FROM {table}')}
+        finally:
+            conn.close()
+
+    def test_iter_photo_files_reports_a_directory_it_could_not_read(self) -> None:
+        # The walker's own contract: without an onerror callback os.walk drops
+        # the error, and every caller that deletes rows for files it did not
+        # see is then working from a listing it has no way to distrust.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'Keep').mkdir()
+            (root / 'Keep' / 'y.jpg').write_bytes(b'x')
+            attic = root / 'Attic'
+            attic.mkdir()
+            (attic / 'x.jpg').write_bytes(b'x')
+
+            errors: list = []
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                found = sorted(p.name for p in photoindex._iter_photo_files(
+                    root, None, on_error=errors.append))
+            self.assertEqual(found, ['y.jpg'])
+            self.assertEqual([Path(e.filename).name for e in errors], ['Attic'])
+
+    def test_scan_keeps_rows_under_a_directory_it_could_not_read(self) -> None:
+        # The deletion half. Every cached row below an unreadable folder -
+        # photos, keywords, face regions, person matches - must survive: a
+        # phantom row is swept by the next scan that can see in there, a
+        # deleted confirmed person tag costs the human real work to put back.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            attic = self._with_attic(archive)
+            photoindex.run_scan(archive, cfg)
+
+            attic_rows = {p for p in self._cached_paths(archive)
+                          if p.startswith('photos/Attic/')}
+            self.assertEqual(len(attic_rows), 2)
+
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                summary = photoindex.run_scan(archive, cfg)
+
+            self.assertEqual(summary['removed'], 0)
+            self.assertEqual(summary['held_unreadable'], 2)
+            self.assertEqual(summary['unreadable_dirs'], ['photos/Attic'])
+            for table in ('photos', 'photo_keywords', 'photo_face_regions', 'photo_people'):
+                self.assertEqual(
+                    {p for p in self._cached_paths(archive, table)
+                     if p.startswith('photos/Attic/')},
+                    attic_rows,
+                    f'{table} rows under an unreadable folder were not preserved',
+                )
+
+    def test_scan_does_not_report_a_clean_run_for_an_unreadable_directory(self) -> None:
+        # The false-fresh half. Preserving the rows is not enough on its own:
+        # a scan that exits clean certifies the catalog, and every later reader
+        # (find --text, packet, site) trusts that certificate.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            attic = self._with_attic(archive)
+            photoindex.run_scan(archive, cfg)
+
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                summary = photoindex.run_scan(archive, cfg)
+
+            self.assertEqual(summary.exit_code, EXIT_WARNINGS)
+            self.assertFalse(summary['stale_hold_failed'])
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'stale')
+
+    def test_cmd_scan_names_the_unreadable_folder_and_the_next_step(self) -> None:
+        # AGENTS.md "Who you serve": the owner must be able to act on this
+        # without knowing what os.walk is - which folder, what was NOT done to
+        # his catalog, and the one command to run once it opens again.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            attic = self._with_attic(archive)
+            photoindex.run_scan(archive, cfg)
+
+            args = type('Args', (), {'root': str(archive), 'full': False})()
+            stderr = io.StringIO()
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(stderr):
+                    code = photoindex._cmd_scan(args)
+
+            self.assertEqual(code, EXIT_WARNINGS)
+            text = stderr.getvalue()
+            self.assertIn('photos/Attic', text)
+            self.assertIn('could not be opened', text)
+            self.assertIn('left in place', text)
+            self.assertIn('fha photoindex', text)
+
+    def test_scan_still_sweeps_a_file_that_really_is_gone(self) -> None:
+        # The control: the fix must not disable removal. A photo deleted from a
+        # folder the walk COULD read is still swept in the same run that holds
+        # the unreadable folder's rows back - the guard is scoped to the
+        # subtree nobody could see, not to the sweep as a whole.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            attic = self._with_attic(archive)
+            photoindex.run_scan(archive, cfg)
+
+            (archive / 'photos' / 'wedding_1902.jpg').unlink()
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                summary = photoindex.run_scan(archive, cfg)
+
+            self.assertEqual(summary['removed'], 1)
+            self.assertEqual(summary['held_unreadable'], 2)
+            paths = self._cached_paths(archive)
+            self.assertNotIn('photos/wedding_1902.jpg', paths)
+            self.assertIn('photos/Attic/shelf_one.jpg', paths)
+
+    def test_scan_still_sweeps_an_ignored_row_under_an_unreadable_directory(self) -> None:
+        # photos_ignore is a decision about what the catalog holds, and it does
+        # not depend on the walk seeing anything - so an excluded subtree is
+        # still swept even when it is the unreadable one. Without that the
+        # ignore promise ("its rows are removed") would quietly lapse.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            attic = self._with_attic(archive)
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            cfg = {'roots': {'photos': 'photos'}, 'photos_ignore': ['Attic']}
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                summary = photoindex.run_scan(archive, cfg)
+
+            self.assertEqual(summary['removed'], 2)
+            self.assertEqual(summary['held_unreadable'], 0)
+            self.assertEqual(
+                {p for p in self._cached_paths(archive) if p.startswith('photos/Attic/')},
+                set(),
+            )
+
+    def test_reconcile_holds_rows_under_a_directory_it_could_not_read(self) -> None:
+        # Reconcile decides "missing" by subtracting the on-disk listing from
+        # the catalog, so an unlistable folder reads as a shelf of lost photos:
+        # every row renamed MISSING:, its groups' dates recomputed without it,
+        # and the loss reported to the human as fact.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            attic = self._with_attic(archive)
+            photoindex.run_scan(archive, cfg)
+
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                result = photoindex.run_reconcile(archive, cfg)
+
+            self.assertEqual(result['missing'], [])
+            self.assertEqual(result['held_unreadable'], 2)
+            self.assertEqual(result['unreadable_dirs'], ['photos/Attic'])
+            self.assertEqual(result.exit_code, EXIT_WARNINGS)
+            self.assertIn('photos/Attic/shelf_one.jpg', self._cached_paths(archive))
+
+    def test_reconcile_still_flags_a_photo_that_really_is_gone(self) -> None:
+        # The reconcile-side control, matching the scan's: a photo deleted from
+        # a readable folder is still flagged MISSING: in the same run that
+        # holds the unreadable folder's rows back.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            attic = self._with_attic(archive)
+            photoindex.run_scan(archive, cfg)
+
+            (archive / 'photos' / 'wedding_1902.jpg').unlink()
+            with mock.patch('os.walk', new=_walk_with_unreadable_dir(attic)):
+                result = photoindex.run_reconcile(archive, cfg)
+
+            self.assertEqual(result['missing'], ['MISSING:photos/wedding_1902.jpg'])
+            self.assertEqual(result['held_unreadable'], 2)
+
+
+class GroupDateSymmetryTests(unittest.TestCase):
+    """The full rebuild and reconcile's narrower patch resolve one group date.
+
+    `_group_photos` orders a group's dated variants primary-first so an equal-
+    confidence tie lands on the primary's date; reconcile's
+    `_recompute_group_fields` used to order by filename alone. Marking an
+    unrelated third variant missing therefore changed `edtf_resolved`, and the
+    next full scan changed it back - date filters and gallery headings
+    depending on which maintenance command ran last (AGENTS_TOOLING
+    "Symmetry gaps": full rebuild vs incremental recompute)."""
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+
+    @staticmethod
+    def _group_date(archive: Path) -> tuple:
+        conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+        try:
+            return conn.execute(
+                'SELECT edtf_resolved, date_conflict FROM photo_groups '
+                "WHERE group_id LIKE 'STEM:%portrait_1880%'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def _tied_variants_archive(self, tmp: Path) -> Path:
+        """Three variants of one photo: the primary and the back scan carry
+        equally confident but different years, the negative carries no date.
+
+        The tie is what makes the ordering visible. 'photos/portrait_1880-back.jpg'
+        sorts before 'photos/portrait_1880.jpg' (a dash sorts before a dot), so
+        filename order and primary-first order disagree about which year wins.
+        """
+        archive = _copy_fixture(tmp)
+        shutil.copy(
+            archive / 'photos' / 'portrait_1880.jpg',
+            archive / 'photos' / 'portrait_1880-negative.jpg',
+        )
+
+        def fake_exiftool(paths: list) -> list:
+            rows = {
+                'portrait_1880.jpg': {
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1950:01:01 00:00:00',
+                },
+                'portrait_1880-back.jpg': {
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1940:01:01 00:00:00',
+                },
+            }
+            return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+        photoindex._run_exiftool = fake_exiftool
+        return archive
+
+    def test_reconcile_keeps_the_primary_first_date_tie_break(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._tied_variants_archive(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, cfg)
+            self.assertEqual(self._group_date(archive), ('1950', 1))
+
+            # An unrelated third variant vanishes. It carries no date at all,
+            # so it cannot change which year the group resolves to - only the
+            # ordering rule can.
+            (archive / 'photos' / 'portrait_1880-negative.jpg').unlink()
+            result = photoindex.run_reconcile(archive, cfg)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880-negative.jpg'])
+
+            self.assertEqual(self._group_date(archive), ('1950', 1))
+
+    def test_full_scan_after_reconcile_leaves_the_group_date_alone(self) -> None:
+        # The other half of the same rule: whichever command ran last, the
+        # group's date is the same. Before the shared ordering this flipped
+        # 1940 -> 1950 on every scan and back on every reconcile.
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._tied_variants_archive(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, cfg)
+
+            (archive / 'photos' / 'portrait_1880-negative.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg)
+            after_reconcile = self._group_date(archive)
+
+            photoindex.run_scan(archive, cfg, full=True)
+            self.assertEqual(self._group_date(archive), after_reconcile)
+
+    def test_reconcile_repoints_the_group_primary_at_a_live_file(self) -> None:
+        # The other half of the same shared rule. _move_cached_path rewrites
+        # photo_groups.primary_path to 'MISSING:photos/...' as ordinary text
+        # maintenance; until a full scan re-picked one, `fha photoindex find`
+        # showed the whole group as missing while a readable variant of it sat
+        # on disk. Reconcile now re-picks by the rebuild's own rule.
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._tied_variants_archive(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, cfg)
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                after_reconcile = conn.execute(
+                    'SELECT primary_path FROM photo_groups '
+                    "WHERE group_id LIKE 'STEM:%portrait_1880%'").fetchone()[0]
+                primary_rows = {
+                    row[0] for row in conn.execute(
+                        'SELECT path FROM photos WHERE is_primary=1')
+                }
+            finally:
+                conn.close()
+            self.assertEqual(after_reconcile, 'photos/portrait_1880-back.jpg')
+            self.assertIn('photos/portrait_1880-back.jpg', primary_rows)
+
+            # And the full rebuild lands on the same file, so neither command
+            # can undo the other.
+            photoindex.run_scan(archive, cfg, full=True)
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                after_scan = conn.execute(
+                    'SELECT primary_path FROM photo_groups '
+                    "WHERE group_id LIKE 'STEM:%portrait_1880%'").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(after_scan, after_reconcile)
+
+    def test_reconcile_uses_a_live_primary_when_the_primary_itself_vanished(self) -> None:
+        # The primary is chosen from the live members (_select_group_primary),
+        # so when the plain scan itself goes missing the tie-break falls to the
+        # best remaining file - and the full rebuild agrees.
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._tied_variants_archive(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, cfg)
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            photoindex.run_reconcile(archive, cfg)
+            after_reconcile = self._group_date(archive)
+            self.assertEqual(after_reconcile, ('1940', None))
+
+            photoindex.run_scan(archive, cfg, full=True)
+            self.assertEqual(self._group_date(archive), after_reconcile)
 
 
 class GalleryTests(unittest.TestCase):
