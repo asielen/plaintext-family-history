@@ -7,7 +7,7 @@ simply a folder in a box; unzip it and you have a folder.
 
 This page stands on its own. If you follow it start to finish, you'll have a working archive and
 have run your first command - no other setup page required (though the
-[five-minute walkthrough in GETTING_STARTED](GETTING_STARTED.md#part-3--file-your-first-document-five-minutes)
+[five-minute walkthrough in GETTING_STARTED](../GETTING_STARTED.md#part-3--file-your-first-document-five-minutes)
 is the natural next read).
 
 ---
@@ -34,7 +34,7 @@ live here. Your actual family records will live in a folder *inside* it, which y
 The tools run on Python - free, and the only *program* you install. (A few small helper
 packages complete it in Step 5, with a single command - no installer, no download page.
 `exiftool`, for photo metadata, is optional and can wait; the AI assistant that operates the
-archive is covered in [GETTING_STARTED](GETTING_STARTED.md#4-your-ai-assistant-required).)
+archive is covered in [GETTING_STARTED](../GETTING_STARTED.md#4-your-ai-assistant-required).)
 
 1. Go to **<https://www.python.org/downloads/>** and click "Download Python."
 2. Run the installer. **On Windows, tick "Add Python to PATH"** before clicking Install.
@@ -86,8 +86,8 @@ TextEdit on Mac - not Word). It tells the tools where your files live.
 - **Starting with nothing yet?** Leave it as-is. The defaults work; come back when you have a
   photo library to connect.
 - **Already have folders of photos or documents?** Copy-paste examples for a plain local folder,
-  an external drive, and an existing photo library are in
-  [`../archive-template/README.md`](../archive-template/README.md).
+  an external drive, and an existing photo library are commented right inside `fha.yaml` itself,
+  just above the settings they explain - uncomment the one that matches you and edit the path.
 
 ---
 
@@ -136,11 +136,11 @@ in Windows **PowerShell**, `.\fha lint …`; the Windows **Command Prompt** take
 ## You're set - what now
 
 - **File your first document:** the
-  [five-minute walkthrough in GETTING_STARTED](GETTING_STARTED.md#part-3--file-your-first-document-five-minutes)
+  [five-minute walkthrough in GETTING_STARTED](../GETTING_STARTED.md#part-3--file-your-first-document-five-minutes)
   picks up exactly here - drop a scan in `inbox/`, let the assistant process it, accept the facts
   it suggests.
 - **Set up the AI assistant** that operates the archive day to day:
-  [GETTING_STARTED, Part 1 §4](GETTING_STARTED.md#4-your-ai-assistant-required).
+  [GETTING_STARTED, Part 1 §4](../GETTING_STARTED.md#4-your-ai-assistant-required).
 
 ## Keeping up to date (still no git)
 
@@ -166,7 +166,8 @@ download and stay exactly as they are.
 
 > **The assisted way (optional).** If you'd rather have the tools live *inside* your archive -
 > with the program itself tucked into a hidden `.fha/` folder so the archive root stays clean,
-> showing only your data plus the rulebooks, the guides in `docs/`, the launchers, and `fha.yaml` -
+> showing only your data plus the rulebooks, `GETTING_STARTED.md` and `CHEATSHEET.md`, the rest
+> of the manual in `docs/`, the launchers, and `fha.yaml` -
 > use `fha install` **instead of**
 > copying `archive-template` in Step 3. It sets up the archive folder with both the skeleton files
 > and the tools in one step:

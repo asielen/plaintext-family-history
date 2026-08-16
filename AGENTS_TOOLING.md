@@ -56,7 +56,7 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    status sentences - "What this is not", Quick start step 3),
    `TOOLING.md` §16/§17 summaries, `AGENTS.md`, `tools/README.md`, and any companion README
    the change touches (e.g. `browser-companion/README.md`) - plus
-   `docs/GETTING_STARTED.md` for anything user-facing. Then grep the repo for the phrase
+   `GETTING_STARTED.md` / `CHEATSHEET.md` for anything user-facing. Then grep the repo for the phrase
    being retired - "build pending", "not yet built", "when implemented", "deferred", the
    old schema or version constant - and fix every survivor before closing. A working tool
    that a README still calls "not yet implemented," or whose flags the getting-started

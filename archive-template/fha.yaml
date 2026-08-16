@@ -2,7 +2,8 @@
 #
 # This one file tells the tools where your photos and documents live. Edit it with
 # any plain text editor (Notepad, TextEdit - not Word). Copy-paste examples for the
-# common setups are in README.md ("Where your photos and documents live").
+# common setups are right below, under "Examples" - uncomment the one that matches
+# your setup and edit the path.
 #
 # root_person: P-xxxxxxxxxx
 #   Set to the P-id of your direct-line descendant at Ahnentafel position #1

@@ -2,7 +2,7 @@
 
 *The durable, file-first family-history archive - the specification.*
 
-**Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 **Version 1.2 - 2026-06-12**
 
@@ -388,7 +388,9 @@ Julian/Gregorian judgment goes in `notes`.
 ```
 family_archive/              ← the root (default name; rename freely - nothing parses it)
   SPEC.md  TOOLING.md        ← the archive carries its own spec
-  README.md                  ← plain-language how-to (§21a)
+  GETTING_STARTED.md         ← the owner's entry point, plain language (no README.md
+  CHEATSHEET.md                here: the project one is repo-facing and never installed)
+  docs/                      ← the rest of the owner's manual (FAQ, GLOSSARY, …)
   AGENTS.md  CLAUDE.md       ← agent operating instructions
   fha.yaml                   ← config + root mapping (§12.4)
   ── plain-text core (git-versioned) ──────────────────────────

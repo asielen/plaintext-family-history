@@ -43,6 +43,21 @@ def _write(path: Path, text: str) -> None:
 
 
 _MD_LINK = re.compile(r'\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)')
+_FENCED_CODE = re.compile(r'^```.*?^```', re.MULTILINE | re.DOTALL)
+_CODE_SPAN = re.compile(r'`[^`\n]*`')
+
+
+def _strip_code(text: str) -> str:
+    """Blank out fenced blocks and inline code spans before hunting for links.
+
+    A link shape inside code is an EXAMPLE, not a link: tools/README.md's
+    allowlist row documents `[text](url)` in backticks, and a fenced block may
+    show a snippet of markdown. Neither is something a reader clicks, so neither
+    should be resolved against the shipped file set. Replaced with blank lines
+    rather than deleted so nothing outside the code accidentally joins up.
+    """
+    text = _FENCED_CODE.sub(lambda m: '\n' * m.group(0).count('\n'), text)
+    return _CODE_SPAN.sub(' ', text)
 
 
 def _dead_relative_links(archive_path: str, text: str,
@@ -55,6 +70,7 @@ def _dead_relative_links(archive_path: str, text: str,
     also accepted when it is an ancestor of some shipped file. Absolute URLs,
     bare fragments and protocol-relative links are somebody else's problem.
     """
+    text = _strip_code(text)
     directories = set()
     for path in shipped:
         parts = path.split('/')
@@ -147,8 +163,10 @@ class ManifestSyncTest(unittest.TestCase):
 
     def test_manifest_includes_operating_extras(self):
         paths = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
-        # Project orientation + the agent's workflow procedures ship into archives.
-        self.assertIn('README.md', paths)
+        # The owner's entry point + the agent's workflow procedures ship into
+        # archives. (The project README does NOT - see
+        # test_no_readme_ships_into_an_archive.)
+        self.assertIn('GETTING_STARTED.md', paths)
         self.assertIn('.claude/skills/README.md', paths)
         # but the spec-repo's own agent config does not.
         self.assertNotIn('.claude/settings.json', paths)
@@ -162,7 +180,8 @@ class ManifestSyncTest(unittest.TestCase):
                         'AGENTS_TOOLING.md'):
             self.assertNotIn(builder, paths, builder)
         # The operating spec/agent docs that DO ship stay.
-        for shipped in ('SPEC.md', 'TOOLING.md', 'AGENTS.md', 'CLAUDE.md', 'README.md'):
+        for shipped in ('SPEC.md', 'TOOLING.md', 'AGENTS.md', 'CLAUDE.md',
+                        'GETTING_STARTED.md', 'CHEATSHEET.md'):
             self.assertIn(shipped, paths, shipped)
 
     def test_manifest_vendors_the_browser_companion(self):
@@ -394,6 +413,62 @@ class ManifestSyncTest(unittest.TestCase):
                         offenders.append(f'{rel} -> {form}')
         self.assertEqual(offenders, [], f'relative links to workshop-only docs: {offenders}')
 
+    def test_no_shipped_markdown_has_a_dead_relative_link(self):
+        # The general form of the check above, and the one that catches the whole
+        # class: EVERY markdown file the installer copies, resolved at the path it
+        # LANDS on, must have every relative link land on something the installer
+        # also copied. The narrow version only looked for six named workshop docs,
+        # so a guide pointing at `../archive-template/` or `../example-archive/` -
+        # repo folders no archive receives - sailed through, and the owner
+        # following it hit a folder that does not exist with no way to tell
+        # whether the archive was broken or they were.
+        manifest = scaffold.generate_manifest(ROOT)['files']
+        shipped = {e['path'] for e in manifest}
+        offenders: list[str] = []
+        # Read through the manifest `src`, not the archive path: a vendored file's
+        # archive path (.fha/tools/README.md) does not exist in this repo, so
+        # resolving by path would skip every vendored document silently.
+        for entry in sorted(manifest, key=lambda e: e['path']):
+            rel = entry['path']
+            src = ROOT / entry.get('src', rel)
+            if src.suffix != '.md' or not src.is_file():
+                continue
+            for dead in _dead_relative_links(
+                    rel, src.read_text(encoding='utf-8', errors='replace'),
+                    shipped):
+                offenders.append(f'{rel}: {dead}')
+        self.assertEqual(
+            offenders, [],
+            'links an installed archive cannot follow:\n  '
+            + '\n  '.join(offenders))
+
+    def test_the_two_owner_entry_docs_install_at_the_archive_root(self):
+        # Owner decision (2026-08-16): docs are split by audience, expressed
+        # through location. The two an archive owner needs on day one sit at the
+        # archive ROOT where they cannot be missed; everything else stays in
+        # docs/. Their repo path is identical to their install path, because the
+        # installer does no link rewriting - a doc whose repo depth differs from
+        # its archive depth has relative links that can only be right in one of
+        # the two places.
+        by_path = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
+        for doc in ('GETTING_STARTED.md', 'CHEATSHEET.md'):
+            self.assertIn(doc, by_path, f'{doc} must install at the archive root')
+            self.assertEqual(by_path[doc]['category'], 'operating')
+            self.assertNotIn('src', by_path[doc],
+                             f'{doc} must not be remapped - repo path == install path')
+            self.assertNotIn(f'docs/{doc}', by_path,
+                             f'{doc} must not also ship under docs/')
+            self.assertTrue((ROOT / doc).is_file(),
+                            f'{doc} must live at the repo root too')
+
+    def test_no_readme_ships_into_an_archive(self):
+        # The repo README is repo-facing: badges, milestone tables, contributing,
+        # and links to example-archive/, quickstart-template/, obsidian-templater/
+        # - none of which an archive has. GETTING_STARTED.md is the archive's
+        # entry point, and its name says what to do with it.
+        by_path = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
+        self.assertNotIn('README.md', by_path)
+
     def test_skeleton_and_operating_categories(self):
         files = scaffold.generate_manifest(ROOT)['files']
         by_path = {e['path']: e for e in files}
@@ -401,12 +476,13 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(by_path['fha.yaml']['category'], 'skeleton')
         self.assertEqual(by_path['fha.yaml']['src'], 'archive-template/fha.yaml')
         self.assertEqual(by_path['places/places.yaml']['category'], 'skeleton')
-        # The five BUILD-mandated docs ship, at the archive ROOT: only the
-        # machinery (tools/, design/) is vendored under .fha/. docs/ stays put so
-        # its two-way link graph with the rulebooks keeps resolving - see
-        # test_docs_stay_at_archive_root.
-        for doc in ('docs/GETTING_STARTED.md', 'docs/SETUP_FROM_ZIP.md',
-                    'docs/CHEATSHEET.md', 'docs/TROUBLESHOOTING.md',
+        # The five BUILD-mandated docs ship: only the machinery (tools/,
+        # design/) is vendored under .fha/. The two an owner needs on day one sit
+        # at the archive ROOT; the rest of the manual stays in docs/, which stays
+        # put so its two-way link graph with the root docs keeps resolving - see
+        # test_owner_docs_stay_at_root_and_project_docs_are_vendored.
+        for doc in ('GETTING_STARTED.md', 'CHEATSHEET.md',
+                    'docs/SETUP_FROM_ZIP.md', 'docs/TROUBLESHOOTING.md',
                     'docs/FILING_CABINET.md'):
             self.assertIn(doc, by_path, doc)
             self.assertEqual(by_path[doc]['category'], 'operating')
@@ -418,9 +494,9 @@ class ManifestSyncTest(unittest.TestCase):
     def test_owner_docs_stay_at_root_and_project_docs_are_vendored(self):
         # Owner-facing docs are the manual someone reaches for when something is
         # wrong - exactly when a hidden folder helps least - and they sit in a
-        # two-way link graph with the root rulebooks (README.md ->
-        # `docs/GETTING_STARTED.md`; docs -> `../SPEC.md`), which only survives if
-        # both ends stay put. Project docs (the visual-language reference, the
+        # two-way link graph with the root docs and rulebooks
+        # (`GETTING_STARTED.md` -> `docs/FAQ.md`; docs -> `../SPEC.md`), which
+        # only survives if both ends stay put. Project docs (the visual-language reference, the
         # roadmap) are not owner material and ride with the machinery instead.
         by_path = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
         doc_paths = [p for p in by_path if p.split('/')[0] == 'docs']
@@ -437,8 +513,8 @@ class ManifestSyncTest(unittest.TestCase):
         for d in scaffold._VENDORED_DOCS:
             self.assertNotIn(d, by_path, f'{d} must not also install at the root')
         # Both ends of the link graph land where the links expect them.
-        self.assertIn('README.md', by_path)
-        self.assertIn('docs/GETTING_STARTED.md', by_path)
+        self.assertIn('GETTING_STARTED.md', by_path)
+        self.assertIn('docs/FAQ.md', by_path)
         # Meanwhile the machinery IS vendored.
         self.assertTrue([p for p in by_path if p.startswith('.fha/tools/')])
         self.assertTrue([p for p in by_path if p.startswith('.fha/design/')])
@@ -1034,8 +1110,6 @@ class InstallUnreadableTargetTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.repo = _make_fake_repo(self.tmp / 'repo')
-        _write(self.repo / 'README.md', '# stock\n')
-        scaffold._write_manifest(self.repo)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -1043,12 +1117,12 @@ class InstallUnreadableTargetTest(unittest.TestCase):
     def test_unreadable_target_file_is_a_plain_refusal(self):
         archive = self.tmp / 'archive'
         archive.mkdir()
-        _write(archive / 'README.md', 'mine\n')
+        _write(archive / 'SPEC.md', 'mine\n')
 
         real_sha = scaffold._sha256_file
 
         def unreadable(path, *a, **kw):
-            if Path(path).name == 'README.md' and archive in Path(path).parents:
+            if Path(path).name == 'SPEC.md' and archive in Path(path).parents:
                 raise OSError(13, 'Permission denied')
             return real_sha(path, *a, **kw)
 
@@ -1057,7 +1131,7 @@ class InstallUnreadableTargetTest(unittest.TestCase):
                 scaffold.run_install(archive, self.repo)
         # A ScaffoldError is what _cmd_install knows how to print; an OSError
         # escaping here is the traceback this guard exists to prevent.
-        self.assertIn('README.md', str(caught.exception))
+        self.assertIn('SPEC.md', str(caught.exception))
         self.assertIn('permission', str(caught.exception).lower())
 
 
@@ -1143,24 +1217,25 @@ class PipCommandTest(unittest.TestCase):
 class InstallTemplateHandCopyTest(unittest.TestCase):
     """The documented zip on-ramp: copy archive-template/, then run install.
 
-    SETUP_FROM_ZIP.md tells people to do exactly this, and README.md is an
-    operating file whose template copy differs from the installed one BY DESIGN.
-    So install's preflight has to accept the template bytes at a destination it
-    would otherwise refuse - the permissive half of `_acceptable`. Without a test
-    here, dropping the template sha from that set passes the whole suite while
-    silently blocking every hand-copy user.
+    SETUP_FROM_ZIP.md tells people to do exactly this, so install's preflight has
+    to accept bytes that are already sitting at a destination when they are
+    pristine stock - the permissive half of `_acceptable` - while still refusing
+    bytes the owner has started editing. Without a test here, tightening that set
+    passes the whole suite while silently blocking every hand-copy user.
+
+    (`_acceptable`'s third branch - "what the TEMPLATE ships at this path" -
+    existed for README.md, the one operating file whose archive-template
+    counterpart differed by design. README.md no longer ships, and any other
+    archive-template file at an operating path would be a duplicate manifest
+    entry, so that branch now only ever agrees with the source branch. It is left
+    in place as the guard for the hand-copy path; nothing currently exercises it
+    on its own.)
     """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
         self.repo = _make_fake_repo(self.tmp / 'repo')
-        # An operating file whose archive-template counterpart DIFFERS, which is
-        # the real README.md situation the branch exists for.
-        _write(self.repo / 'README.md', '# stock readme\n')
-        _write(self.repo / 'archive-template' / 'README.md',
-               '# template readme - different by design\n')
-        scaffold._write_manifest(self.repo)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -1169,28 +1244,29 @@ class InstallTemplateHandCopyTest(unittest.TestCase):
         archive = self.tmp / 'archive'
         archive.mkdir()
         # What the guide tells the user to do: copy the template across first.
-        _write(archive / 'README.md',
-               (self.repo / 'archive-template' / 'README.md').read_text(encoding='utf-8'))
-        _write(archive / 'fha.yaml',
-               (self.repo / 'archive-template' / 'fha.yaml').read_text(encoding='utf-8'))
+        for rel in ('fha.yaml', 'places/places.yaml'):
+            _write(archive / rel,
+                   (self.repo / 'archive-template' / rel).read_text(encoding='utf-8'))
 
         with contextlib.redirect_stdout(io.StringIO()):
             rc = scaffold.run_install(archive, self.repo)
 
         self.assertEqual(rc.exit_code, EXIT_CLEAN)
-        # And the template copy is upgraded to stock, not left behind.
-        self.assertEqual((archive / 'README.md').read_text(encoding='utf-8'),
-                         '# stock readme\n')
+        # The operating layer landed alongside the copy, and the stamp knows it.
+        self.assertTrue((archive / 'SPEC.md').is_file())
+        stamp = json.loads(
+            (archive / '.plaintext-version').read_text(encoding='utf-8'))
+        self.assertIn('fha.yaml', stamp['files'])
 
     def test_install_still_refuses_an_edited_operating_file(self):
         # The refusal side must survive the permissive branch: bytes that are
         # neither stock nor the template are the owner's own work.
         archive = self.tmp / 'archive'
         archive.mkdir()
-        _write(archive / 'README.md', '# my own notes, do not clobber\n')
+        _write(archive / 'SPEC.md', '# my own notes, do not clobber\n')
         with self.assertRaises(scaffold.ScaffoldError) as caught:
             scaffold.run_install(archive, self.repo)
-        self.assertIn('README.md', str(caught.exception))
+        self.assertIn('SPEC.md', str(caught.exception))
 
 
 class UpdateToolsTest(unittest.TestCase):

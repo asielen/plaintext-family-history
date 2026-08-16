@@ -133,15 +133,33 @@ MANIFEST_VERSION = '1'
 # never enters an archive (PRIVACY.md - the *public-repo* "no real data" policy,
 # which is contradictory inside a real archive; RELEASE_CHECKLIST.md - the public
 # release process; CNAME, manifest.json, .git*, …). TOOLING §13c / BUILD.md M9.1.
-# README.md is shipped (project orientation a genealogist benefits from).
+#
+# Docs are split by AUDIENCE, and the split is expressed through LOCATION (owner
+# decision 2026-08-16). The two an archive owner needs on day one -
+# GETTING_STARTED.md (what to do) and CHEATSHEET.md (the one printable page) -
+# sit at the archive root where they cannot be missed; the rest of the owner's
+# manual stays in `docs/` and is linked from those two. They live at the REPO
+# root too, not under docs/: there is no install-time link rewriting anywhere in
+# this file, so a doc whose repo depth differs from its archive depth would have
+# relative links that resolve in exactly one of the two contexts.
+#
+# README.md is deliberately NOT shipped. It is repo-facing - badges, a milestone
+# roadmap, contributing, and links to example-archive/, quickstart-template/,
+# archive-template/ and obsidian-templater/, none of which an archive receives -
+# so an owner opening it got a page of dead links about someone else's project.
+# What an owner genuinely needed from it (what the archive is, the record types,
+# the two-repo relationship, backup, Obsidian) is folded into GETTING_STARTED.md
+# and CHEATSHEET.md instead. An installed archive has no root README.md; the
+# entry point is GETTING_STARTED.md, whose name says what to do with it.
 #
 # The tool-BUILDING docs (the BUILD*.md family, TOOLING_INGESTION/INTERFACE,
-# AGENTS_TOOLING) are deliberately NOT shipped: no tool reads them at run time
+# AGENTS_TOOLING) are likewise NOT shipped: no tool reads them at run time
 # and a genealogist operating an archive never needs them - they describe how to
 # BUILD the tools, which is a workshop-clone activity. Extending vendored tools
 # in place is out of scope; do it in the public repo and re-vendor.
 _ROOT_OPERATING_DOCS = (
-    'README.md',
+    'GETTING_STARTED.md',
+    'CHEATSHEET.md',
     'SPEC.md',
     'TOOLING.md',
     'AGENTS.md',
@@ -244,19 +262,26 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', 'browser-companion',
 #
 # `docs/` deliberately stays at the archive ROOT, alongside the rulebooks it is
 # part of. It is human-facing reading matter, not machinery, and it is one half
-# of a two-way link graph: the root rulebooks link to `docs/…`, and the docs link
-# back to `../SPEC.md`, `../AGENTS.md`, `../README.md`. Remapping either side
-# under `.fha/` breaks every one of those links in an installed archive - a
+# of a two-way link graph: the root docs and rulebooks link to `docs/…`, and the
+# docs link back to `../SPEC.md`, `../AGENTS.md`, `../GETTING_STARTED.md`.
+# Remapping either side under `.fha/` breaks every one of those links in an
+# installed archive - a
 # `docs/…` link from a root rulebook would resolve to nothing, and `../SPEC.md`
 # from a vendored doc would resolve inside `.fha/`, where no rulebook lives.
 # Keeping docs at the root costs one visible folder and keeps the archive
 # navigable in a plain file browser, with no install-time link rewriting anywhere
 # in the install/update engine.
 #
+# The same rule is why GETTING_STARTED.md and CHEATSHEET.md live at the REPO
+# root and not under docs/: repo path == install path, so their relative links
+# mean one thing in both places. A doc whose two depths differ can only be
+# link-correct in one of them, and nothing here rewrites links to fix it.
+#
 # Also deliberately at the archive root: the rulebooks themselves
-# (SPEC/TOOLING/AGENTS/README/CLAUDE), the launchers, and `.claude/skills`
-# (Claude Code discovers skills at the root). `_VENDOR_DIR` is the shared
-# `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on the name.
+# (SPEC/TOOLING/AGENTS/CLAUDE), the two owner entry docs, the launchers, and
+# `.claude/skills` (Claude Code discovers skills at the root). `_VENDOR_DIR` is
+# the shared `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on
+# the name.
 _VENDOR_DIR = VENDOR_DIR
 _VENDORED_SUBTREES = ('tools', 'design', 'browser-companion')
 
@@ -309,7 +334,10 @@ _VENDORED_DOCS = frozenset({
 _SKELETON_SRC_DIR = 'archive-template'
 
 # A file under archive-template/ that is repo furniture, not skeleton: it tells a
-# human how to start an archive, which the docs/ guides already cover.
+# human how to start an archive, which GETTING_STARTED.md already covers. Without
+# this exclusion its archive path would be a bare `README.md` at the archive
+# root - putting back the very file the operating layer deliberately stopped
+# shipping, and pointing the owner at a page about the public project.
 _SKELETON_EXCLUDE = {'README.md'}
 
 # Files that live under an operating subtree but are user-owned skeleton seeds:
@@ -364,7 +392,8 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
     """Yield (archive_path, source_path) for every operating-layer file.
 
     The operating layer is the generic, regenerable glue a genealogist needs to
-    operate an archive: the root rulebooks + README, everything under tools/
+    operate an archive: the root rulebooks + the two owner entry docs
+    (GETTING_STARTED.md, CHEATSHEET.md), everything under tools/
     (minus Python bytecode caches), everything under docs/, the capture
     extension under browser-companion/ (minus its dev furniture - it is a
     front-end tool like the serve workbench, shipped ready to load unpacked),
@@ -970,18 +999,18 @@ def run_install(
     # place (sha256 match) it was left by a partial previous install that never wrote
     # the stamp - safe to overwrite so the user can simply re-run install to finish.
     #
-    # Checked for EVERY category, not just skeleton. `README.md` is an operating
-    # file, and the documented "copy this template, then point install at it"
-    # path leads a human straight to editing one: install used to copy over it
-    # with no backup and exit 0, while the template's own README promises that
+    # Checked for EVERY category, not just skeleton: the documented "copy this
+    # template, then point install at it" path puts template bytes at operating
+    # destinations as well as skeleton ones, and install used to copy over them
+    # with no backup and exit 0 while the template's own README promised that
     # starting to edit makes installation stop.
     #
     # Three byte patterns are acceptable at a destination: what the manifest
     # predicts, what THIS COPY of the source actually holds, and what the
     # TEMPLATE ships there (a pristine hand-copy - the documented path, which
-    # must keep working; the template's README differs from the installed one by
-    # design, so comparing against stock alone would refuse exactly the copy the
-    # guide tells people to make).
+    # must keep working even when the template's copy of a file differs from the
+    # installed one, since comparing against stock alone would refuse exactly the
+    # copy the guide tells people to make).
     #
     # The middle one is what makes an interrupted install resumable. The manifest
     # is generated in a git checkout, where .gitattributes materializes the .cmd

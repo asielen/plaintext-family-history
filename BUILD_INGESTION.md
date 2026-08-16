@@ -1,6 +1,6 @@
 # BUILD_INGESTION.md - intake pipeline (capture + browser companion): build sequence
 
-**Who this is for:** developers implementing the **intake on-ramp** - `fha capture`, its recipes, the `--ingest` sweep, the browser companion, and the native-messaging host. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** developers implementing the **intake on-ramp** - `fha capture`, its recipes, the `--ingest` sweep, the browser companion, and the native-messaging host. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 This file is the build guide for the **ingestion layer** - the capture engine and every front-end that feeds it. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) (workbench skills). Design rationale lives in [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); this file tells you the sequence and how to verify it.
 

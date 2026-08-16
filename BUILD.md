@@ -1,6 +1,6 @@
 # BUILD.md - fha tool suite: build sequence
 
-**Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 This file is the complete build guide for the **core** `fha` CLI, written as if nothing exists yet.
 Every tool appears in dependency order with the same level of detail - algorithm, constraints,
@@ -1612,7 +1612,8 @@ empty one) is M9.2.
 the same as its path in this repo: the tool suite and the design assets are vendored, so
 `tools/index.py` ships as `.fha/tools/index.py` and `design/custom.css` as
 `.fha/design/custom.css`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
-the public `README.md` (project orientation), the agent workflow procedures under
+the two owner entry docs installed at the archive root (`GETTING_STARTED.md`,
+`CHEATSHEET.md`), the agent workflow procedures under
 `.claude/skills/`, the launchers (`fha`, `fha.cmd`, `serve.cmd`), and the skeleton (`fha.yaml`
 template, `.gitignore`, `.gitattributes`, the empty record dirs, seeded `places.yaml`).
 
@@ -1621,7 +1622,8 @@ where tools get built (TOOLING §13c): `AGENTS_TOOLING.md`, every `BUILD*.md`, a
 tooling designs (`TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`). Shipping them would tell an
 agent inside an archive to follow a build sequence it cannot run. The guiding rule is *everything a genealogist needs to operate*,
 not a hand-picked minimum. Also covers the human-facing docs that must ship into every archive:
-`docs/GETTING_STARTED.md`, `docs/SETUP_FROM_ZIP.md`, `docs/CHEATSHEET.md`,
+`GETTING_STARTED.md` and `CHEATSHEET.md` (at the archive ROOT - docs are split by
+audience, and these two are the owner's entry points), plus `docs/SETUP_FROM_ZIP.md`,
 `docs/TROUBLESHOOTING.md`, `docs/FILING_CABINET.md` (create any that don't exist yet as
 stubs - the manifest entry is the commitment that they will be present in every installed
 archive); in practice the *whole* `docs/` folder ships, since those five are a floor and a
@@ -1651,7 +1653,8 @@ fha install ./test-archive --repo .   # skeleton; .plaintext-version written
 # Python < 3.10 → friendly message, no traceback
 # exiftool absent → friendly guidance message, install proceeds (not a hard stop)
 # --repo pointing to an unzipped download (no .git/) → same result as a git clone
-# docs/GETTING_STARTED.md, docs/SETUP_FROM_ZIP.md etc. present in installed archive
+# GETTING_STARTED.md + CHEATSHEET.md at the archive ROOT, docs/SETUP_FROM_ZIP.md
+# etc. under docs/, and NO README.md (the project README is repo-facing)
 ```
 
 ---
@@ -1945,7 +1948,7 @@ workshop clone); dev furniture (`tests/`, `test-bundle/`, `package.json`)
 excluded via the new `_VENDOR_EXCLUDE_*` seams in scaffold.py; manifest.json
 regenerated (+18 entries). Developing the extension stays a workshop
 activity. Docs: TOOLING §13c, TOOLING_INGESTION §5 + status,
-browser-companion/README, AGENTS.md, docs/GETTING_STARTED. Test:
+browser-companion/README, AGENTS.md, GETTING_STARTED. Test:
 `test_manifest_vendors_the_browser_companion` in `tests/test_scaffold.py`.
 
 ---

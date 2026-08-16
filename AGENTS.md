@@ -1,6 +1,6 @@
 # AGENTS.md - Operating Instructions for AI Agents
 
-**Who this is for:** AI agents (and the people configuring them). If you're doing genealogy research, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) instead.
+**Who this is for:** AI agents (and the people configuring them). If you're doing genealogy research, start with [`GETTING_STARTED.md`](GETTING_STARTED.md) instead.
 
 ## Repo context first
 
@@ -107,7 +107,9 @@ mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → 
 Never deletes anything; photos are never renamed even here; only staged files move.
 (A GEDCOM tree has its own deterministic path - `fha gedcom import`, plan-then-apply with rollback - prefer it over hand-migrating one.)
 - **spec-refinement** - edits SPEC.md/TOOLING.md (changes tracked in git history), and MUST update
-README.md whenever a change affects how a human reads the archive (the README rule).
+the owner-facing docs whenever a change affects how a human reads the archive (the README rule):
+`GETTING_STARTED.md` and `CHEATSHEET.md` at the root, the matching page in `docs/`, and the repo
+`README.md` (repo-facing - it does not ship into an archive).
 
 **The status-sweep rule (tool-building and spec-refinement).** Implementation status lives in more docs than the one you're editing: when a build lands, a deferred step ships, or a decision reverses, update every statement of that status in the same change - the owning BUILD doc, the sibling TOOLING doc's build-status section, SPEC.md Part IV status notes, README.md's badge and status section, TOOLING.md §16/§17, and this file - then grep the repo for the phrase being retired ("build pending", "not yet built", "when implemented", "deferred") before closing. Full sweep list and grep guidance: [AGENTS_TOOLING.md](https://github.com/asielen/plaintext-family-history/blob/master/AGENTS_TOOLING.md) (workshop-only, as above).
 
@@ -118,6 +120,11 @@ Summarize what changed and where; list any proposed-but-unapproved decisions; na
 ## The map
 
 ```
+GETTING_STARTED.md      the archive owner's entry point (root, not docs/ - and there is
+                        no README.md in an installed archive; this is what replaces it)
+CHEATSHEET.md           the owner's one printable page (root, beside the above)
+docs/                   the rest of the owner's manual (FAQ, GLOSSARY, TROUBLESHOOTING,
+                        UPDATING, SETUP_FROM_ZIP, FILING_CABINET, …)
 SPEC.md                 the law (read before structural work)
 TOOLING*.md             tool design by concern: TOOLING.md (core - ships with every archive),
                         TOOLING_INGESTION.md (capture/inbox), TOOLING_INTERFACE.md (skills)

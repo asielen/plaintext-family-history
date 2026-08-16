@@ -1,6 +1,6 @@
 # TOOLING_INGESTION.md - Research, Capture & the Inbox On-Ramp
 
-**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - the path that turns research a genealogist is doing on the open web into staged material the archive can process. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - the path that turns research a genealogist is doing on the open web into staged material the archive can process. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 **Version 1.2 - companion to SPEC.md v1.2 and TOOLING.md v1.2 (versions track the SPEC).**
 

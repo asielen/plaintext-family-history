@@ -4,17 +4,45 @@
 document. No programming required - you'll work with an AI assistant that runs the commands for you.
 
 - **Were you sent here to hand over photos or documents?** You don't need any of this - see
-  [`CONTRIBUTING_SOURCES.md`](CONTRIBUTING_SOURCES.md) instead.
+  [`docs/CONTRIBUTING_SOURCES.md`](docs/CONTRIBUTING_SOURCES.md) instead.
 - **Do you want to build or extend the `fha` tools?** That's a different door - the build
   guide and tool design live in the project repo on GitHub
   ([plaintext-family-history](https://github.com/asielen/plaintext-family-history)).
 - **Did someone send you a zip of this project?** You can skip the download below and follow
-  [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md), then come back here for the walkthrough.
+  [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md), then come back here for the walkthrough.
 
 This page takes you from a blank machine to your first filed record. Two parts: a one-time
 **setup** (install four things), then a **five-minute walkthrough** (drop a scan in, get a
 suggested fact back, accept it). Take the setup slowly; do the walkthrough once and the daily
 rhythm is yours.
+
+---
+
+## What you're setting up
+
+Your archive is a **filing cabinet made of plain files**. For a hundred years genealogy lived in
+one and anyone could open the drawer - no login, no subscription, no format that stopped opening.
+That is the whole idea here: the files on your disk are the real thing, and everything else -
+the search index, the family website, the AI assistant - is a helper built *from* them that you
+could delete tomorrow without losing a single record.
+
+You keep five kinds of record, all plain Markdown and YAML you can open in Notepad or TextEdit:
+
+| Type | What it is |
+|---|---|
+| **Person** `P-` | A human - identity, prose, and the ties to other people. |
+| **Source** `S-` | A piece of evidence: a record, document, photo, interview. |
+| **Claim** `C-` | One sourced statement (a date, a place, a relationship), living inside its source record and moving from *suggested* to *accepted* only when you say so. |
+| **Place** `L-` | A location, with coordinates and a dated name history. |
+| **Hypothesis** `H-` | An unsourced working theory - a guess, never a fact, until evidence turns it into a claim. |
+
+Two things follow from that, and they never bend:
+
+- **Every important fact traces to a source.** Prose with no citation is story or context, never
+  fact.
+- **Nothing generated is load-bearing.** The index, the trees, the website - all rebuildable, all
+  disposable. Delete every layer above the files and the archive still works, the way the drawer
+  still works.
 
 ---
 
@@ -111,16 +139,20 @@ you don't have to point it at anything.)
 ## Part 2 - Make your archive
 
 Your family records live in **their own folder**, separate from the tools. The starting skeleton
-is already in this project at [`../archive-template/`](../archive-template/).
+is the `archive-template` folder in your copy of the project (on GitHub it is
+[archive-template/](https://github.com/asielen/plaintext-family-history/tree/master/archive-template)).
+If you already have an archive - someone ran `fha install` for you, or you unzipped one - you
+have all this already; skip to Part 3.
 
 1. **Copy the `archive-template` folder** and rename the copy to something like
    `my-family-archive`. Keep it next to the `tools` folder so the tools can reach it. (If you
-   got here from a zip, [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md) shows the exact layout.)
+   got here from a zip, [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) shows the exact
+   layout.)
 2. **Point it at your photos and documents.** Open `fha.yaml` inside your new folder in a plain
    text editor and tell it where your files live. Copy-paste examples - a plain local folder, an
-   external drive, an existing photo library - are in
-   [`../archive-template/README.md`](../archive-template/README.md). If you're starting fresh
-   with nothing yet, the defaults are fine; leave it as-is.
+   external drive, an existing photo library - are commented right inside that file, just below
+   the settings they explain. If you're starting fresh with nothing yet, the defaults are fine;
+   leave it as-is.
 
 **Did it work?** From the project folder, run the check against your archive (it looks for
 anything shaped the wrong way). How you type it depends on your system - on macOS and Linux a
@@ -215,8 +247,11 @@ window and pick up in the assistant exactly where you left off.
 
 ## Doing it by hand (no tools, no IDs)
 
-You don't need the assistant or the tools to add to your archive - the copy-paste templates in
-[`../archive-template/`](../archive-template/) let you write a record in any text editor.
+You don't need the assistant or the tools to add to your archive - the copy-paste templates let
+you write a record in any text editor. Every record folder in your archive ships one: open
+`people/_TEMPLATE.person.md`, `people/stubs/_TEMPLATE.stub.md`, `sources/_TEMPLATE.source.md`,
+`inbox/_TEMPLATE.notes.md`, or the commented `_TEMPLATE` entry at the top of
+`places/places.yaml`, copy it, and fill it in.
 
 - **Name files plainly.** Call a file `grandpas-letter.md` or `hartley-thomas.md` - whatever makes
   sense to you. Don't worry about making an ID; that's the tools' job.
@@ -289,10 +324,16 @@ Do this at the end of any session where you added something you'd hate to lose.
 | `places/` | The list of places, with their locations. |
 | `notes/` | Research in progress and your running list of questions. |
 | `fha.yaml` | The one settings file - where your photos and documents live. |
+| `.fha/` | The machinery: the program itself, its design package, and the browser add-on. Hidden on purpose, so the archive root shows your genealogy rather than the tooling. You never edit anything in here. |
+| `generated/` | Built things - the family website, printable views, galleries. All rebuildable, none of it truth. |
 
 Everything is plain text or standard image files. You can open any of it with Notepad, TextEdit,
 or a photo viewer - no tool required, now or in fifty years. The tools only ever help; they're
 never the thing holding your archive together.
+
+**It opens in Obsidian too.** Your archive is Markdown with frontmatter and `[[wikilinks]]` -
+point Obsidian (or any other Markdown app) at the folder and it opens as-is, no import, no
+conversion. See [`docs/USING_WITH_OBSIDIAN.md`](docs/USING_WITH_OBSIDIAN.md).
 
 Your `documents/` drawer (wherever `fha.yaml` says it lives) is yours to lay out: make any
 folders you like inside it - by type, by family line, by decade - anything you place in a
@@ -301,31 +342,71 @@ gets filed into a type folder for you), and you can rearrange it later too: the 
 filed item's name ties it to its evidence folder, so after a reshuffle one command
 (`fha reconcile`, or just ask the assistant) re-ties every moved file. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
 you're not sure where a stray research note belongs, the "Where does a note go?" list in
-[`FILING_CABINET.md`](FILING_CABINET.md) answers it in four lines.
+[`docs/FILING_CABINET.md`](docs/FILING_CABINET.md) answers it in four lines.
+
+---
+
+## Your archive and the project are two separate things
+
+This matters more than it sounds, because it is what makes the archive outlive the software:
+
+- **The project** is public: the rules (`SPEC.md`, `TOOLING.md`, `AGENTS.md`), the guides, and
+  the generic `fha` tools. The tools hold no family data and work on *any* archive built to
+  these rules.
+- **Your archive** is private and entirely yours: your records, your photos, your `fha.yaml`.
+  Your family data never goes into the public project. The cookbook is public; your groceries
+  are not.
+
+The tools reach your archive by being **copied into it** - `fha install` puts the whole
+operating layer inside, and from then on the archive is self-contained: it works on any machine,
+offline, forever, even if the project disappears. `fha` is never `pip install`ed for exactly
+that reason; your archive owns its own copy so it cannot be uninstalled out from under you.
+(Its Python dependencies *are* ordinary packages - Part 1 §2 installs them, and `fha doctor`
+names any that go missing.)
+
+When a newer version comes out, `fha update-tools` refreshes that copy. Be clear about what
+"refresh" means:
+
+- **Never touched:** your records, `fha.yaml`, your place list, and your `custom.css` stylesheet.
+- **Replaced:** tool files and rulebooks. If you had edited one, your version is moved into
+  `.plaintext-backup/` first and the new stock file takes its place - so your edit survives, but
+  stops being in effect until you re-apply it.
+- **Never deleted:** anything the update retires is moved aside and reported, never thrown away.
+  You are always the one who throws things away.
+
+The full ritual - preview, apply, review - is in [`docs/UPDATING.md`](docs/UPDATING.md).
 
 ---
 
 ## A note on the example archive
 
-The project ships with [`../example-archive/`](../example-archive/) - a small, **entirely
-fictional** family (the Hartleys). It's there so the tools have something real-shaped to run
-against, and so you can see what finished, processed records look like before you have many of
-your own. Poke around in it freely; none of it is real genealogy, so you can't break anything.
+The project keeps a small, **entirely fictional** family (the Hartleys) as a worked example, so
+you can see what finished, processed records look like before you have many of your own. Two
+ways to look at it, neither of them inside your own archive:
+
+- The **[live example site](https://asielen.github.io/plaintext-family-history/)** - that family
+  compiled by `fha site`, which is the same self-contained, privacy-redacted output you would
+  publish or hand a cousin on a USB stick.
+- The files behind it, in the project repo:
+  [example-archive/](https://github.com/asielen/plaintext-family-history/tree/master/example-archive).
+
+None of it is real genealogy, so you can't break anything by poking around.
 
 ---
 
 ## What's next
 
 - A one-page **cheat sheet** of the commands and phrases you'll actually use:
-  [`CHEATSHEET.md`](CHEATSHEET.md) - print it and keep it by the keyboard.
-- Hit a snag? [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) maps each common "something went wrong"
-  to its exact fix.
-- A newer version of the project came out? [`UPDATING.md`](UPDATING.md) is the two-minute update
-  ritual - your records are never part of it.
-- New to filing research at all? [`FILING_CABINET.md`](FILING_CABINET.md) explains the whole
-  archive as the paper filing cabinet you already know.
+  [`CHEATSHEET.md`](CHEATSHEET.md), right beside this file - print it and keep it by the keyboard.
+- Hit a snag? [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) maps each common "something
+  went wrong" to its exact fix.
+- A newer version of the project came out? [`docs/UPDATING.md`](docs/UPDATING.md) is the
+  two-minute update ritual - your records are never part of it.
+- New to filing research at all? [`docs/FILING_CABINET.md`](docs/FILING_CABINET.md) explains the
+  whole archive as the paper filing cabinet you already know.
 - Want the deeper "why" behind files-not-a-database and human-approved facts?
-  See [`FAQ.md`](FAQ.md).
-- Every term and ID type, defined: [`GLOSSARY.md`](GLOSSARY.md).
-- The full rulebook, if you ever want it: [`../SPEC.md`](../SPEC.md). You never *have* to read
+  See [`docs/FAQ.md`](docs/FAQ.md).
+- Every term and ID type, defined: [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
+- Everything else in the manual: [`docs/README.md`](docs/README.md) indexes the lot.
+- The full rulebook, if you ever want it: [`SPEC.md`](SPEC.md). You never *have* to read
   it to use the archive - the assistant already follows it for you.
