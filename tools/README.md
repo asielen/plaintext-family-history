@@ -54,7 +54,7 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 
 | Tool | File | Status |
 |---|---|---|
-| `fha photoindex [--full]` | `photoindex.py` | ✓ M3.1 - schema, exiftool scan (incremental by mtime/size; `--full` rescans all; `photos_ignore:` patterns in fha.yaml prune subtrees/files; paths travel via an exiftool argfile so no OS command-line limit applies; unreadable files are reported and skipped, never fatal), variation grouping, EXIF/DATE:-pattern date resolution, person resolution |
+| `fha photoindex [--full]` | `photoindex.py` | ✓ M3.1 - schema, exiftool scan (incremental by mtime/size; `--full` rescans all; `photos_ignore:` patterns in fha.yaml prune subtrees/files; paths travel to exiftool via stdin (`-@ -`) so no OS command-line limit applies; unreadable files are reported and skipped, never fatal), variation grouping, `DATE:` precision-keyword + EXIF-value date resolution (SPEC §20; no keyword = undated by design), person resolution |
 | `fha photoindex find` | `photoindex.py` | ✓ M3.2 - `--person`/`--keyword`/`--edtf`/`--text`/`--under`/`--not-under` filters (AND'd at the group level when combined); one path per group by default, `--files` for raw rows |
 | `fha photoindex triage` | `photoindex.py` | ✓ M3.3 - ranks unprocessed (no `source_id`) groups by evidence signals; `--top N` (default 10); `--under`/`--not-under PATH` scope to/away from a subtree |
 | `fha photoindex report` | `photoindex.py` | ✓ M3.3 - lists `photo_groups` with `date_conflict=1` and each variant's date/caption |

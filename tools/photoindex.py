@@ -165,7 +165,6 @@ import shlex
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -326,14 +325,23 @@ def _photos_ignore_patterns(fha_config: dict) -> list[str]:
     raw = fha_config.get('photos_ignore')
     if raw is None:
         return []
-    if isinstance(raw, str):
+    if isinstance(raw, (str, int, float)):
         raw = [raw]
-    if not isinstance(raw, list) or not all(isinstance(p, str) for p in raw):
+    # Scalars are coerced: YAML reads an unquoted year folder (`- 2019`) as
+    # an int, and the intent is unambiguous. Anything structured is refused.
+    if not isinstance(raw, list) or not all(
+        isinstance(p, (str, int, float)) and not isinstance(p, bool) for p in raw
+    ):
         raise RuntimeError(
             'photos_ignore in fha.yaml must be a list of path patterns '
             "(e.g.\n  photos_ignore:\n    - 'Flickr Export'\n    - '*.tif')"
         )
-    return [p.replace('\\', '/').strip().strip('/') for p in raw if p.strip().strip('/')]
+    out = []
+    for p in raw:
+        text = str(p).replace('\\', '/').strip().strip('/')
+        if text:
+            out.append(text)
+    return out
 
 
 def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
@@ -341,18 +349,23 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
     Yield catalogable photo files under photos_root, or nothing if it is absent.
 
     `ignore` patterns (photos_ignore in fha.yaml, #35) are fnmatch-style,
-    matched against the posix path relative to the root, platform-native case
-    sensitivity. A pattern matching a directory prunes its whole subtree
-    without walking it - excluding a 63,000-file export costs nothing - and a
-    pattern matching a file skips that file. Note fnmatch's '*' crosses
-    folder boundaries ('Flickr*' also matches 'a/Flickr Export').
+    matched case-insensitively against the posix path relative to the root -
+    the photo library lives on a case-insensitive filesystem on both Windows
+    and macOS, and 'flickr export' silently failing to prune 'Flickr Export'
+    would read as the feature not working. A pattern matching a directory
+    prunes its whole subtree without walking it - excluding a 63,000-file
+    export costs nothing - and a pattern matching a file skips that file.
+    fnmatch's '*' crosses folder boundaries ('Flickr*' also matches
+    'a/Flickr Export'), and '[' opens a character class - a folder whose name
+    contains brackets is matched by escaping them ('Scans [[]2019]').
     """
     if not photos_root.is_dir():
         return
-    patterns = ignore or []
+    patterns = [pat.casefold() for pat in (ignore or [])]
 
     def _ignored(rel: str) -> bool:
-        return any(fnmatch.fnmatch(rel, pat) for pat in patterns)
+        rel_cf = rel.casefold()
+        return any(fnmatch.fnmatchcase(rel_cf, pat) for pat in patterns)
 
     for dirpath, dirnames, filenames in os.walk(photos_root):
         rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
@@ -361,8 +374,14 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
             dirnames[:] = [d for d in dirnames if not _ignored(f'{prefix}{d}')]
         for name in filenames:
             p = Path(dirpath) / name
-            if p.suffix.lower() in PHOTO_EXTENSIONS and not _ignored(f'{prefix}{name}'):
-                yield p
+            if p.suffix.lower() not in PHOTO_EXTENSIONS or _ignored(f'{prefix}{name}'):
+                continue
+            # os.walk lists a dangling symlink among the files; the old
+            # rglob walker's is_file() dropped it silently, and without this
+            # the scan's stat() pass would abort on it.
+            if not p.is_file():
+                continue
+            yield p
 
 
 def _run_exiftool(paths: list[Path]) -> list[dict]:
@@ -379,8 +398,8 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
     """
     if not paths:
         return []
-    # The file list travels via an exiftool argfile (-@), never on the command
-    # line, for two reasons (#34):
+    # The file list travels to exiftool on STDIN (`-@ -`), never on the
+    # command line, for two reasons (#34):
     #   * no OS command-line limit applies - 500 paths averaging ~110 chars
     #     overflow Windows' 32,767-char cap, and CreateProcess's WinError 206
     #     reaches Python as FileNotFoundError, which used to be misreported as
@@ -388,53 +407,60 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
     #   * decomposed-Unicode filenames (NFD, typical of files that came via
     #     macOS) resolve only this way - measured: a name carrying a combining
     #     grave accent (U+0300) failed as "File not found" both bare and with
-    #     `-charset filename=utf8` on the command line, and read cleanly via a
-    #     UTF-8 argfile with that charset flag.
-    argfile = None
+    #     `-charset filename=utf8` on the command line, and read cleanly as a
+    #     UTF-8 argfile line under that charset flag.
+    # Stdin rather than a temp argfile because `-charset filename=utf8` also
+    # governs how exiftool decodes the argfile's own PATH, and a %TEMP% under
+    # a non-ASCII Windows profile ('C:\Users\José\...') then fails to open
+    # on every batch. surrogateescape round-trips a POSIX filename that is not
+    # valid UTF-8 as its raw bytes, the way subprocess argv would have.
+    # `-Error` asks for exiftool's per-file error as a JSON field, so a file
+    # it could open but not read (empty, truncated) is identifiable per row.
+    stdin_bytes = b''.join(
+        str(p).encode('utf-8', 'surrogateescape') + b'\n' for p in paths)
+    cmd = [
+        'exiftool', '-charset', 'filename=utf8', '-@', '-',
+        '-j', '-struct', '-n', '-Error',
+    ] + _EXIFTOOL_FIELDS
     try:
-        with tempfile.NamedTemporaryFile(
-            'w', suffix='.args', delete=False, encoding='utf-8'
-        ) as fh:
-            argfile = fh.name
-            for p in paths:
-                fh.write(f'{p}\n')
-        cmd = [
-            'exiftool', '-charset', 'filename=utf8', '-@', argfile,
-            '-j', '-struct', '-n',
-        ] + _EXIFTOOL_FIELDS
-        try:
-            proc = subprocess.run(
-                cmd, check=False, capture_output=True, text=True, encoding='utf-8'
-            )
-        except FileNotFoundError as e:
-            # Defensive: with the argfile a too-long command line should be
-            # impossible, but if one ever reappears, do not blame a binary
-            # that is present.
-            if getattr(e, 'winerror', None) == 206:
-                raise RuntimeError(
-                    'exiftool could not be started: the command line was too '
-                    'long. This is a bug in fha, not a problem with your '
-                    'photos - please report it.'
-                ) from e
-            raise RuntimeError(format_exiftool_error('fha photoindex')) from e
-    finally:
-        if argfile:
-            try:
-                os.unlink(argfile)
-            except OSError:
-                pass
+        proc = subprocess.run(
+            cmd, check=False, capture_output=True, input=stdin_bytes)
+    except FileNotFoundError as e:
+        # Defensive: with the paths on stdin a too-long command line should be
+        # impossible, but if one ever reappears, do not blame a binary that
+        # is present.
+        if getattr(e, 'winerror', None) == 206:
+            raise RuntimeError(
+                'exiftool could not be started: the command line was too '
+                'long. This is a bug in fha, not a problem with your '
+                'photos - please report it.'
+            ) from e
+        raise RuntimeError(format_exiftool_error('fha photoindex')) from e
+    # Decode leniently: exiftool writes stderr in the console codepage on
+    # Windows, and a stray undecodable byte there must not become a
+    # UnicodeDecodeError that hides the real message.
+    stdout = proc.stdout.decode('utf-8', 'replace')
+    stderr = proc.stderr.decode('utf-8', 'replace').strip()
     # exiftool exits non-zero when ANY file in the batch fails while still
     # emitting valid JSON for the ones that succeeded. Take the partial result
     # and let the caller decide what a missing row means (#34) - raising here
     # threw away a whole batch of good reads over one unreadable file.
     rows: list[dict] = []
-    if proc.stdout:
+    if stdout.strip():
         try:
-            rows = json.loads(proc.stdout)
+            rows = json.loads(stdout)
         except json.JSONDecodeError as e:
             raise RuntimeError(f'exiftool returned invalid JSON: {e}') from e
     if proc.returncode != 0 and not rows:
-        raise RuntimeError(f'exiftool failed while scanning photos: {proc.stderr.strip()}')
+        # No JSON at all. Either every file in the batch was unreadable (the
+        # common shape: an incremental scan whose one changed file is locked,
+        # or a one-file tail batch) - exiftool then reports the per-file
+        # errors and a 'N files could not be read' tally - or exiftool itself
+        # failed (bad option, broken install). Only the latter is fatal; the
+        # former is exactly the skip-and-warn case the caller handles.
+        if re.search(r'files? could not be read|^Error: .+ - ', stderr, re.M):
+            return []
+        raise RuntimeError(f'exiftool failed while scanning photos: {stderr}')
     return rows
 
 
@@ -499,93 +525,96 @@ def _keyword_to_edtf(pattern: str) -> str | None:
     return edtf if is_valid_edtf(edtf) else None
 
 
-# exiftool emits EXIF timestamps as 'YYYY:MM:DD HH:MM:SS' (colon-separated
-# date, optional time/zone tail) - NOT ISO-8601, which is why a naive ISO
-# parse left photos.edtf empty for every row that had only an EXIF date (#40).
-_EXIF_DATE_RE = re.compile(r'^(\d{4}):(\d{2}):(\d{2})(?!\d)')
+# The DATE: keyword states the PRECISION of a photo's date and nothing else
+# (SPEC §20 rule 1: 'Y!M!D!', 'Y!M~', 'Y~', 'Y!M?D?' - '!' confident, '~'
+# best guess, '?'/omitted unknown, per component). The date's VALUE lives in
+# EXIF DateTimeOriginal - photo metadata cannot hold a partial date, so the
+# pipeline writes a forced full YYYY-MM-DD there (rule 2: a technical
+# workaround, never truth on its own) and the keyword says which components
+# of it are to be believed. `_keyword_to_edtf` above expected the keyword body
+# to carry digits with markers ('1942!-11!-25!'), a form that never occurs in
+# practice; so `edtf` stayed NULL on every row of a real library and every
+# date feature was silently dead (#40). Trailing time components (H hour, M
+# minute, S second) are matched and discarded - the archive's EDTF is
+# date-only; note the second 'M' means minutes, so a real pattern can read
+# 'Y!M!D?H!M!'.
+_DATE_PLACEHOLDER_RE = re.compile(
+    r'^Y([!~?])?(?:(M)([!~?])?(?:(D)([!~?])?((?:[HMS][!~?]?)*))?)?$', re.I
+)
+_EXIF_DATE_RE = re.compile(r'^\s*(\d{4})[:\-](\d{2})[:\-](\d{2})(?!\d)')
 
 
-def _exif_to_edtf(exif_date: object) -> str | None:
+def _placeholder_to_edtf(pattern: str, exif_date: object) -> str | None:
+    """Resolve a shape-only DATE: keyword against EXIF DateTimeOriginal.
+
+    'Y!M!D?' + '1916:06:10 10:53:21' -> '1916!-06!-10?' -> '1916-06'
+    'Y!M~D?' + '1942:03:15 00:00:00' -> '1942!-03~-15?' -> '1942-~03'
+    'Y~'     + '1960:00:00 00:00:00' -> '1960~'         -> '1960~'
+
+    Builds the digit-plus-marker form `_keyword_to_edtf` already understands
+    and delegates to it, so SPEC §20's rules (stop at the first unconfirmed
+    component, '~' placement, validation) stay in one place. An unmarked
+    component ('Y' alone) reads as confident, matching the digit form's
+    treatment of a bare '1880'.
     """
-    Resolve an EXIF DateTimeOriginal value to an EDTF date, or None.
-
-    Precision degrades component by component the way EXIF's own zero-filled
-    convention does: '2015:00:00 00:00:00' means "2015, month unknown" and
-    resolves to '2015'; an all-zero or unparseable value resolves to nothing.
-    The time-of-day is always dropped - the archive dates photos, not moments.
-    """
-    if exif_date is None:
+    m = _DATE_PLACEHOLDER_RE.match(pattern.strip())
+    if not m or exif_date is None:
         return None
-    m = _EXIF_DATE_RE.match(str(exif_date).strip())
-    if not m:
+    d = _EXIF_DATE_RE.match(str(exif_date))
+    if not d:
         return None
-    year, month, day = m.groups()
-    if year == '0000':
-        return None
-    edtf = year
-    if 1 <= int(month) <= 12:
-        edtf += f'-{month}'
-        if 1 <= int(day) <= 31:
-            edtf += f'-{day}'
-    return edtf if is_valid_edtf(edtf) else None
+    year, month, day = d.groups()
+    year_c, has_month, month_c, has_day, day_c, _time_parts = m.groups()
+    parts = year + (year_c or '!')
+    if has_month:
+        parts += '-' + month + (month_c or '!')
+        if has_day:
+            parts += '-' + day + (day_c or '!')
+    return _keyword_to_edtf(parts)
 
 
 def _resolve_photo_edtf(date_pattern: str | None, exif_date: object) -> str | None:
     """
-    One photo's resolved EDTF date: the DATE: keyword first, EXIF as fallback.
+    One photo's resolved EDTF date, or None when the photo carries no DATE:
+    keyword.
 
-    The precedence is a statement about evidence, not recency: a DATE:
-    keyword is curated (human transcription or the confidence-coded pipeline,
-    SPEC §20), while DateTimeOriginal is machine metadata - for a scanned
-    ancestor photo it is typically the *scanner's* clock, which dates the
-    file, not the photograph. It fills in only where no curated date exists.
+    Only a keyworded date resolves. The keyword's presence is what marks a
+    date as REVIEWED (archive-owner decision, 2026-08-15): a photo without one
+    has not been looked at yet, whatever its EXIF says, and resolving EXIF
+    alone would promote unreviewed machine metadata into the same field as
+    human-confirmed fact - and misdate scans, where DateTimeOriginal is often
+    the scan's own date (a 1925 print dated 2021 is worse than undated). So an
+    un-keyworded photo stays NULL here by design, not as a gap.
+
+    With a keyword: the shape-only form resolves against EXIF; a keyword that
+    embeds its own digits (a hand-typed 'DATE: 1880') resolves on its own.
     """
-    if date_pattern:
-        from_pattern = _keyword_to_edtf(date_pattern)
-        if from_pattern:
-            return from_pattern
-    return _exif_to_edtf(exif_date)
+    if not date_pattern:
+        return None
+    return (
+        _placeholder_to_edtf(date_pattern, exif_date)
+        or _keyword_to_edtf(date_pattern)
+    )
 
 
-def _is_pattern_derived(date_pattern: str | None, edtf: str | None) -> bool:
-    """
-    Whether a stored edtf value came from the row's DATE: keyword.
-
-    Provenance is re-derived rather than stored so the catalog schema stays
-    unchanged (a new column would invalidate every existing cache and force a
-    full re-scrape). Exact by construction: _resolve_photo_edtf prefers the
-    pattern, so a stored edtf equal to the pattern's derivation IS the
-    pattern's (a coincidental EXIF match carries the same value, making the
-    distinction moot for ranking).
-    """
-    return bool(edtf) and bool(date_pattern) and _keyword_to_edtf(date_pattern) == edtf
-
-
-def _best_group_date(dated: list[tuple[str, bool]]) -> tuple[str | None, int | None]:
+def _best_group_date(edtfs: list[str]) -> tuple[str | None, int | None]:
     """
     Resolve a group's (edtf_resolved, date_conflict) from its dated variants.
 
-    `dated` is [(edtf, pattern_derived)] in the caller's deterministic
-    tie-break order (max() keeps the first of equals). Curated DATE:-keyword
-    dates outrank EXIF-derived ones outright - however precise, a scanner
-    timestamp must never displace a researched '1912~' - and conflicts are
-    likewise judged only among the best provenance class present: a curated
-    1912 "conflicting" with a 2009 scan date is digitisation noise, not the
-    front-vs-back evidence the conflict report exists to surface. Among
-    EXIF-only groups the EXIF dates are compared with each other as before.
-
-    date_conflict is three-state (#40): None when the compared class has
-    fewer than two dates ("nothing to compare" - previously reported as 0,
-    which read as "no conflict" and was indistinguishable from it), else 0/1.
+    `edtfs` is in the caller's deterministic tie-break order (max() keeps the
+    first of equals); the best-confidence variant wins (SPEC §20 scoring via
+    _edtf_confidence). date_conflict is three-state (#40): None when fewer
+    than two variants carry a date ("nothing to compare" - previously
+    reported as 0, which read as "no conflict" and was indistinguishable
+    from it), else 0/1 from a bounds-overlap check.
     """
-    if not dated:
+    if not edtfs:
         return None, None
-    best = max(dated, key=lambda t: (t[1], *_edtf_confidence(t[0])))[0]
-    compare = [e for e, is_pattern in dated if is_pattern] or [e for e, _ in dated]
-    if len(compare) < 2:
+    best = max(edtfs, key=_edtf_confidence)
+    if len(edtfs) < 2:
         return best, None
     conflict = 0
-    bounds = [edtf_bounds(e) for e in compare]
+    bounds = [edtf_bounds(e) for e in edtfs]
     for i in range(len(bounds)):
         for j in range(i + 1, len(bounds)):
             if bounds[i][1] < bounds[j][0] or bounds[j][1] < bounds[i][0]:
@@ -1016,19 +1045,17 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     is cheap pure-SQL/Python and a partial re-group after an incremental scan
     would silently miss a newly-added sibling joining an existing group.
     """
-    rows = conn.execute('SELECT path, source_id, edtf, date_pattern FROM photos').fetchall()
+    rows = conn.execute('SELECT path, source_id, edtf FROM photos').fetchall()
     parsed_by_path: dict[str, ParsedName] = {}
     edtf_by_path: dict[str, str | None] = {}
-    pattern_by_path: dict[str, str | None] = {}
     stem_key_by_path: dict[str, str] = {}
     source_id_by_path: dict[str, str | None] = {}
 
-    for path, source_id, edtf, date_pattern in rows:
+    for path, source_id, edtf in rows:
         p = Path(path)
         parsed = parse_media_filename(p.stem)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
-        pattern_by_path[path] = date_pattern
         source_id_by_path[path] = source_id
         stem_key_by_path[path] = f'{p.parent.as_posix()}:{_grouping_stem(parsed)}'
 
@@ -1066,9 +1093,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
             ((edtf_by_path[p], p) for p in paths if edtf_by_path[p]),
             key=lambda pair: (pair[1] != primary, pair[1]),
         )
-        best_edtf, date_conflict = _best_group_date([
-            (e, _is_pattern_derived(pattern_by_path[p], e)) for e, p in dated
-        ])
+        best_edtf, date_conflict = _best_group_date([e for e, _p in dated])
 
         conn.execute(
             'INSERT INTO photo_groups(group_id, primary_path, edtf_resolved, '
@@ -1110,17 +1135,38 @@ def _paths_by_keyword(conn: sqlite3.Connection, term: str) -> set[str]:
     }
 
 
-def _normalize_subtree_arg(value: str) -> str:
+def _normalize_subtree_arg(
+    value: str,
+    fha_config: dict | None = None,
+    archive_root: Path | None = None,
+) -> str:
     """
     Normalize an --under/--not-under argument to the catalog's alias form.
 
     Catalog paths are stored as 'photos/<relative posix path>', so both the
     natural relative form ('Woodbury/1950s') and the alias form
     ('photos/Woodbury/1950s') must mean the same subtree; backslashes are
-    accepted because the person typing them is often on Windows. An empty
-    result is a refusal - a bare '--under /' would silently match everything.
+    accepted because the person typing them is often on Windows - and so is
+    an absolute path pasted from Explorer, which resolves through the
+    configured photos root (`path_to_alias`) when the caller supplies the
+    config. An absolute path outside the photos root, or an empty result, is
+    a refusal - never a silent no-match, and a bare '--under /' would
+    otherwise match everything.
     """
-    rel = value.replace('\\', '/').strip().strip('/')
+    text = value.replace('\\', '/').strip()
+    if os.path.isabs(text) or re.match(r'^[A-Za-z]:/', text):
+        if fha_config is None or archive_root is None:
+            raise ValueError(
+                f'--under/--not-under takes a folder relative to the photos root, '
+                f'not an absolute path: {value!r}.')
+        alias = path_to_alias(text, 'photos', fha_config, archive_root)
+        if not (alias == 'photos' or alias.startswith('photos/')):
+            raise ValueError(
+                f'{value!r} is not inside the photos root '
+                f'({resolve_path("photos", fha_config, archive_root)}); '
+                '--under/--not-under only scope within it.')
+        return alias.rstrip('/')
+    rel = text.strip('/')
     while rel.startswith('./'):
         rel = rel[2:]
     if not rel:
@@ -1130,18 +1176,20 @@ def _normalize_subtree_arg(value: str) -> str:
     return rel
 
 
-def _paths_under(conn: sqlite3.Connection, subtree: str) -> set[str]:
-    """Every catalogued path inside `subtree` (already normalized to alias form).
+def _under_subtree(path: str, subtree: str) -> bool:
+    """Case-insensitive 'is this alias path inside that subtree' - one rule
+    for find/gallery/triage so the three can never disagree (Python casefold
+    rather than SQLite LIKE, which folds ASCII only)."""
+    p = path.casefold()
+    t = subtree.casefold()
+    return p == t or p.startswith(t + '/')
 
-    LIKE with an explicit ESCAPE, because '%' and '_' are ordinary characters
-    in folder names ('family_photos') and must not turn into wildcards.
-    """
-    escaped = subtree.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+def _paths_under(conn: sqlite3.Connection, subtree: str) -> set[str]:
+    """Every catalogued path inside `subtree` (already normalized to alias form)."""
     return {
-        row[0] for row in conn.execute(
-            "SELECT path FROM photos WHERE path = ? OR path LIKE ? ESCAPE '\\'",
-            (subtree, f'{escaped}/%'),
-        )
+        row[0] for row in conn.execute('SELECT path FROM photos')
+        if _under_subtree(row[0], subtree)
     }
 
 
@@ -1204,6 +1252,19 @@ def _group_keys_for(conn: sqlite3.Connection, paths: set[str]) -> dict[str, obje
     a real group_id. Used to AND filters at the logical-photo level - see run_find.
     """
     keys: dict[str, object] = {}
+    if not paths:
+        return keys
+    # One point query per path is fine for a filter's handful of hits; a
+    # subtree filter over a 60,000-file export is not (#35). Past a small
+    # set, read the whole map once instead.
+    if len(paths) > 64:
+        by_path = {
+            row[0]: row[1] for row in conn.execute('SELECT path, group_id FROM photos')
+        }
+        for path in paths:
+            group_id = by_path.get(path)
+            keys[path] = group_id if group_id else ('path', path)
+        return keys
     for path in paths:
         row = conn.execute('SELECT group_id FROM photos WHERE path=?', (path,)).fetchone()
         group_id = row['group_id'] if row and row['group_id'] else None
@@ -1268,6 +1329,8 @@ def _matched_filter_groups(
     text: str | None,
     under: str | None = None,
     not_under: str | None = None,
+    fha_config: dict | None = None,
+    archive_root: Path | None = None,
 ) -> tuple[set, dict, set[str]]:
     """Resolve the requested filters to the set of matched group keys.
 
@@ -1304,7 +1367,8 @@ def _matched_filter_groups(
     if text:
         filters.append(_paths_by_text(conn, text))
     if under:
-        filters.append(_paths_under(conn, _normalize_subtree_arg(under)))
+        filters.append(_paths_under(
+            conn, _normalize_subtree_arg(under, fha_config, archive_root)))
     if not filters and not_under:
         # A bare exclusion needs a base to exclude from: everything catalogued.
         filters.append({row[0] for row in conn.execute('SELECT path FROM photos')})
@@ -1321,7 +1385,8 @@ def _matched_filter_groups(
         matched_groups &= gs
 
     if not_under:
-        excluded = _paths_under(conn, _normalize_subtree_arg(not_under))
+        excluded = _paths_under(
+            conn, _normalize_subtree_arg(not_under, fha_config, archive_root))
         matched_groups -= set(_group_keys_for(conn, excluded).values())
     return matched_groups, group_key, all_paths
 
@@ -1372,7 +1437,8 @@ def run_find(
             return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
         try:
             matched_groups, group_key, all_paths = _matched_filter_groups(
-                conn, person, keyword, edtf, text, under=under, not_under=not_under
+                conn, person, keyword, edtf, text, under=under, not_under=not_under,
+                fha_config=fha_config, archive_root=archive_root,
             )
             if not matched_groups:
                 return Result(data={'status': status, 'rows': []})
@@ -2123,7 +2189,8 @@ def run_gallery(
         # out of the shared helper to the CLI; only a genuine sqlite fault below
         # is folded into the unreadable-cache result.
         matched_groups, group_key, _all_paths = _matched_filter_groups(
-            conn, person, keyword, edtf, text, under=under, not_under=not_under
+            conn, person, keyword, edtf, text, under=under, not_under=not_under,
+            fha_config=fha_config, archive_root=archive_root,
         )
 
         if not matched_groups:
@@ -2431,20 +2498,20 @@ def run_triage(
     M5.3); this command is the standalone, directly-callable form.
 
     `under`/`not_under` (#35) scope the ranking to (or away from) a subtree,
-    with the same any-variant group semantics as `find`: a mixed library's
-    bulk-export folders would otherwise drown the few scanned ancestor photos
-    that are triage's actual subject. Case-insensitive to match find's LIKE.
+    with the same any-variant group semantics and the same matcher
+    (`_under_subtree`) as `find`: a mixed library's bulk-export folders would
+    otherwise drown the few scanned ancestor photos that are triage's actual
+    subject.
     """
     if top < 1:
         raise ValueError('--top must be a positive integer')
-    under_norm = _normalize_subtree_arg(under).lower() if under else None
-    not_under_norm = _normalize_subtree_arg(not_under).lower() if not_under else None
+    under_norm = (
+        _normalize_subtree_arg(under, fha_config, archive_root) if under else None)
+    not_under_norm = (
+        _normalize_subtree_arg(not_under, fha_config, archive_root) if not_under else None)
 
-    def _member_under(members: list[sqlite3.Row], prefix: str) -> bool:
-        return any(
-            m['path'].lower() == prefix or m['path'].lower().startswith(f'{prefix}/')
-            for m in members
-        )
+    def _member_under(members: list[sqlite3.Row], subtree: str) -> bool:
+        return any(_under_subtree(m['path'], subtree) for m in members)
 
     def query(conn: sqlite3.Connection) -> dict:
         members_by_group = _members_by_group(conn)
@@ -2553,18 +2620,16 @@ def _recompute_group_dates(conn: sqlite3.Connection, group_ids: set[str]) -> Non
     """
     for group_id in group_ids:
         rows = conn.execute(
-            'SELECT path, edtf, date_pattern FROM photos WHERE group_id = ?', (group_id,)
+            'SELECT path, edtf FROM photos WHERE group_id = ?', (group_id,)
         ).fetchall()
         live = sorted(
             (
-                (edtf, path, date_pattern) for path, edtf, date_pattern in rows
+                (edtf, path) for path, edtf in rows
                 if edtf and not path.startswith(_MISSING_PREFIX)
             ),
-            key=lambda item: item[1],
+            key=lambda pair: pair[1],
         )
-        best_edtf, date_conflict = _best_group_date([
-            (e, _is_pattern_derived(pattern, e)) for e, _path, pattern in live
-        ])
+        best_edtf, date_conflict = _best_group_date([e for e, _path in live])
         conn.execute(
             'UPDATE photo_groups SET edtf_resolved=?, date_conflict=? WHERE group_id=?',
             (best_edtf, date_conflict, group_id),
@@ -3556,6 +3621,16 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
         raise RuntimeError(f'photos.sqlite is corrupt or unreadable: {e}') from e
 
 
+# The scan summary's zero shape, shared by every early return so a new key is
+# added in one place (the callers read them unconditionally).
+_EMPTY_SCAN_SUMMARY = {
+    'root_found': False,
+    'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
+    'unreadable': 0, 'unreadable_sample': [], 'ignore_patterns': [],
+    'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+}
+
+
 def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result:
     """
     Scan the photos root, scrape new/changed files via exiftool, regroup, and
@@ -3577,22 +3652,16 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     """
     if is_working_copy(archive_root):
         return Result(ok=False, exit_code=EXIT_CLEAN, data={
+            **_EMPTY_SCAN_SUMMARY,
             'working_copy': True,
             'photos_root': str(resolve_path('photos', fha_config, archive_root)),
-            'root_found': False,
-            'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
-            'unreadable': 0, 'unreadable_sample': [], 'ignore_patterns': [],
-            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         })
 
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
         # A missing photos root is a warning, not a failure (mirrors _cmd_scan).
         return Result(ok=False, exit_code=EXIT_WARNINGS, data={
-            'photos_root': str(photos_root), 'root_found': False,
-            'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
-            'unreadable': 0, 'unreadable_sample': [], 'ignore_patterns': [],
-            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+            **_EMPTY_SCAN_SUMMARY, 'photos_root': str(photos_root),
         })
 
     ignore = _photos_ignore_patterns(fha_config)
@@ -3632,17 +3701,19 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         for start in range(0, len(to_scrape), _EXIFTOOL_BATCH_SIZE):
             batch = to_scrape[start:start + _EXIFTOOL_BATCH_SIZE]
             resolved = {p: p.resolve() for p in batch}
+            # A file exiftool returned no row for (locked, vanished) or a row
+            # carrying exiftool's own `Error` field (empty, truncated, format
+            # error - it opened the file but could not read it) is unreadable.
+            # An archive of scanned family photos will always hold a few, and
+            # one must not make the whole catalog unbuildable (#34) - record
+            # it, skip it, carry on. Any prior cache row it has survives
+            # untouched: the file still exists on disk, so the stale-row sweep
+            # below never removes it, and stale metadata beats none.
             rows_by_file = {
                 Path(row['SourceFile']).resolve(): row
-                for row in _run_exiftool(batch) if row.get('SourceFile')
+                for row in _run_exiftool(batch)
+                if row.get('SourceFile') and not row.get('Error')
             }
-            # A file exiftool returned no row for is unreadable (corrupt,
-            # locked, truncated). An archive of scanned family photos will
-            # always hold a few, and one must not make the whole catalog
-            # unbuildable (#34) - record it, skip it, carry on. Any prior
-            # cache row it has survives untouched: the file still exists on
-            # disk, so the stale-row sweep below never removes it, and stale
-            # metadata beats none.
             missing = [p for p in batch if resolved[p] not in rows_by_file]
             unreadable.extend(missing)
             for p in batch:
@@ -3703,14 +3774,18 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key)
                 removed += 1
 
-        # Re-resolve every row's edtf from its stored columns, not just the
-        # re-scraped ones. edtf derives entirely from (date_pattern,
-        # exif_date), both already cached, so this is cheap pure-Python with
-        # no exiftool involved - and it is what heals a catalog scanned
-        # before EXIF dates resolved at all (#40): those rows are unchanged
-        # on disk, so the incremental scrape above never revisits them.
+        # Re-resolve edtf for the keyworded rows from their stored columns,
+        # not just the re-scraped ones. edtf derives entirely from
+        # (date_pattern, exif_date), both already cached, so this is cheap
+        # pure-Python with no exiftool involved - and it is what heals a
+        # catalog scanned before the DATE: keyword resolved at all (#40):
+        # those rows are unchanged on disk, so the incremental scrape above
+        # never revisits them. Only rows with a keyword can resolve, so only
+        # those are visited (a few hundred on a real library, not the whole
+        # catalog).
         for path_key, exif_date, date_pattern, edtf in conn.execute(
-            'SELECT path, exif_date, date_pattern, edtf FROM photos'
+            'SELECT path, exif_date, date_pattern, edtf FROM photos '
+            'WHERE date_pattern IS NOT NULL'
         ).fetchall():
             resolved = _resolve_photo_edtf(date_pattern, exif_date)
             if resolved != edtf:
@@ -4020,11 +4095,10 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         f"{summary['conflicts']} with date conflicts)."
     )
     if summary.get('unreadable'):
-        sample = ', '.join(summary.get('unreadable_sample', []))
-        more = (
-            f" and {summary['unreadable'] - len(summary.get('unreadable_sample', []))} more"
-            if summary['unreadable'] > len(summary.get('unreadable_sample', [])) else ''
-        )
+        sample_list = summary.get('unreadable_sample', [])
+        sample = ', '.join(sample_list)
+        extra = summary['unreadable'] - len(sample_list)
+        more = f' and {extra} more' if extra > 0 else ''
         print(
             f"WARNING: exiftool could not read {summary['unreadable']} file(s), "
             f'skipped (any prior catalog entry was kept): {sample}{more}',

@@ -836,7 +836,8 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
 # ── Section 6: Photo processing triage ────────────────────────────────────────
 
 def _section_photo_triage(
-    archive_root: Path, fha_config: dict, scan_error: str | None = None
+    archive_root: Path, fha_config: dict, scan_error: str | None = None,
+    scan_note: str | None = None,
 ) -> list[str]:
     if is_working_copy(archive_root):
         return [
@@ -853,11 +854,11 @@ def _section_photo_triage(
     if result['status'] in ('absent', 'unreadable'):
         return [f'Photo index {result["status"]} - run `fha photoindex` to enable triage.']
 
+    lines = [f'Note: {scan_note}'] if scan_note else []
     candidates = result['candidates']
     if not candidates:
-        return ['No unprocessed photo groups found.']
+        return lines + ['No unprocessed photo groups found.']
 
-    lines = []
     for c in candidates:
         signals = ', '.join(c['signals']) if c['signals'] else 'no signals'
         lines.append(
@@ -1220,8 +1221,20 @@ def run_report(
     index_result = index.build_index(archive_root, fha_config)
     archive_notes = [m.text for m in index_result.messages]
     photo_scan_error: str | None = None
+    photo_scan_note: str | None = None
     try:
-        photoindex.run_scan(archive_root, fha_config, full=False)
+        scan = photoindex.run_scan(archive_root, fha_config, full=False)
+        # A file exiftool could not read no longer aborts the scan (#34) - it
+        # is skipped with its prior row kept. The report is the one place the
+        # human reliably looks, so say so here rather than only on the
+        # standalone command's stderr.
+        n_unreadable = int((scan.data or {}).get('unreadable') or 0)
+        if n_unreadable:
+            sample = ', '.join((scan.data or {}).get('unreadable_sample') or [])
+            photo_scan_note = (
+                f'{n_unreadable} photo file(s) could not be read by exiftool and were '
+                f'skipped (any prior catalog entry kept): {sample}'
+            )
     except (RuntimeError, OSError) as e:
         # `fha report` is the session-start feed across many sections
         # (0-5b/7/8); a photo-scan failure (e.g. exiftool missing or
@@ -1253,7 +1266,8 @@ def run_report(
             'contradictions': _section_contradictions(findings),
             'search-log': _section_search_log(conn, current),
             'answerable-questions': _section_answerable_questions(conn, archive_root),
-            'photo-triage': _section_photo_triage(archive_root, fha_config, photo_scan_error),
+            'photo-triage': _section_photo_triage(
+                archive_root, fha_config, photo_scan_error, photo_scan_note),
             'place-candidates': _section_place_candidates(archive_root, fha_config),
             'hypotheses': _section_hypotheses(conn, archive_root),
             'promotion-candidates': _section_promotion_candidates(conn, fha_config),

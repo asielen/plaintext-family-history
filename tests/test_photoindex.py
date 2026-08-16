@@ -184,50 +184,75 @@ class PhotoindexTests(unittest.TestCase):
                 'photos/Bulk Export/recent_snap.jpg',
                 [c['path'] for c in res['candidates']])
 
-    def test_exif_to_edtf_resolves_exiftool_timestamps(self) -> None:
-        # exiftool emits 'YYYY:MM:DD HH:MM:SS' - not ISO-8601 (#40). Precision
-        # degrades with EXIF's zero-filled convention; time-of-day is dropped.
-        self.assertEqual(photoindex._exif_to_edtf('2009:04:20 10:58:33'), '2009-04-20')
-        self.assertEqual(photoindex._exif_to_edtf('2009:04:20'), '2009-04-20')
-        self.assertEqual(photoindex._exif_to_edtf('2009:04:20 10:58:33-05:00'), '2009-04-20')
-        self.assertEqual(photoindex._exif_to_edtf('2015:00:00 00:00:00'), '2015')
-        self.assertEqual(photoindex._exif_to_edtf('2015:06:00 00:00:00'), '2015-06')
-        self.assertEqual(photoindex._exif_to_edtf('2009:13:40 00:00:00'), '2009')
-        self.assertIsNone(photoindex._exif_to_edtf('0000:00:00 00:00:00'))
-        self.assertIsNone(photoindex._exif_to_edtf('not a date'))
-        self.assertIsNone(photoindex._exif_to_edtf(''))
-        self.assertIsNone(photoindex._exif_to_edtf(None))
+    def test_placeholder_keyword_resolves_against_exif_date(self) -> None:
+        # SPEC §20: the DATE: keyword states precision only ('Y!M!D?'); the
+        # value lives in EXIF DateTimeOriginal (exiftool's 'YYYY:MM:DD HH:MM:SS'
+        # form, not ISO). Resolution stops at the first unconfirmed component
+        # and keeps a '~' on the right one; time parts (H, then M=minutes, S)
+        # are accepted and ignored.
+        r = photoindex._placeholder_to_edtf
+        self.assertEqual(r('Y!M!D!', '1942:11:25 10:00:00'), '1942-11-25')
+        self.assertEqual(r('Y!M!D?', '1916:06:10 10:53:21'), '1916-06')
+        self.assertEqual(r('Y!M?D?', '1916:06:10 10:53:21'), '1916')
+        self.assertEqual(r('Y!', '1960:05:01 00:00:00'), '1960')
+        self.assertEqual(r('Y~', '1960:01:01 00:00:00'), '1960~')
+        self.assertEqual(r('Y!M~', '1960:05:01 00:00:00'), '1960-~05')
+        self.assertEqual(r('Y!M~D?', '1942:03:15 00:00:00'), '1942-~03')
+        self.assertEqual(r('Y!M!D~', '1960:05:12 00:00:00'), '1960-05-~12')
+        self.assertEqual(r('Y!M!D?H!M!', '1916:06:10 10:53:21'), '1916-06')
+        self.assertEqual(r('y!m!d!', '1942:11:25 10:00:00'), '1942-11-25')
+        self.assertEqual(r('YMD', '1942:11:25 10:00:00'), '1942-11-25')
+        self.assertEqual(r('Y!M!D!', '1942-11-25T10:00:00'), '1942-11-25')
+        self.assertIsNone(r('Y?', '1960:05:01 00:00:00'))
+        self.assertIsNone(r('Y!M!D!', None))
+        self.assertIsNone(r('Y!M!D!', 'not a date'))
+        self.assertIsNone(r('1880!', '1960:05:01 00:00:00'))   # digit form: not a placeholder
 
-    def test_exif_date_resolves_to_edtf_and_date_keyword_outranks_it(self) -> None:
-        # The catalog's date features all read `edtf`; an EXIF-only photo must
-        # populate it (#40), and a curated DATE: keyword must win over the
-        # machine timestamp when both are present - for a scanned ancestor
-        # photo DateTimeOriginal is typically the scanner's clock.
+    def test_resolve_photo_edtf_needs_a_keyword_and_keeps_digit_form(self) -> None:
+        # The keyword's presence marks a date as REVIEWED (archive-owner
+        # decision, 2026-08-15): EXIF alone never resolves - a scanner clock
+        # must not enter the same field as human-confirmed fact, and a 1925
+        # print dated 2021 is worse than undated. A keyword that embeds its
+        # own digits (hand-typed 'DATE: 1880') still resolves on its own.
+        r = photoindex._resolve_photo_edtf
+        self.assertIsNone(r(None, '2009:04:20 10:58:33'))
+        self.assertIsNone(r('', '2009:04:20 10:58:33'))
+        self.assertEqual(r('Y!M!D!', '2009:04:20 10:58:33'), '2009-04-20')
+        self.assertEqual(r('1880!', '2009:04:20 10:58:33'), '1880')
+        self.assertEqual(r('1880', None), '1880')
+        self.assertIsNone(r('Y!M!D!', None))
+
+    def test_scan_resolves_keyworded_dates_and_leaves_exif_only_undated(self) -> None:
+        # The catalog's date features all read `edtf`. Keyworded photos must
+        # populate it from pattern + EXIF (#40); EXIF-only photos stay NULL by
+        # design; and the group report distinguishes 'nothing to compare'
+        # (NULL) from 'compared, no conflict' (0).
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 rows = {
-                    # EXIF only -> edtf from EXIF, day precision.
+                    # EXIF only, no keyword -> undated by design.
                     'family_reunion.jpg': {'DateTimeOriginal': '2009:04:20 10:58:33'},
-                    # Both -> the curated keyword wins.
+                    # Precision keyword + EXIF value -> resolved.
                     'wedding_1902.jpg': {
-                        'Keywords': ['DATE: 1902!'],
-                        'DateTimeOriginal': '2011:01:02 03:04:05',
+                        'Keywords': ['DATE: Y!M!D?'],
+                        'DateTimeOriginal': '1902:06:14 00:00:00',
                     },
-                    # Front carries a curated date, back only a scan date: the
-                    # group resolves to the curated one, and the 2010-vs-1880
-                    # gap is digitisation noise, not a date conflict - but
-                    # with only one curated date there is also nothing to
-                    # compare, so the conflict state is unknown (NULL), not 0.
-                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880~']},
+                    # Front keyworded, back EXIF-only: the group resolves to
+                    # the front's date; with one dated variant there is
+                    # nothing to compare, so conflict is unknown (NULL).
+                    'portrait_1880.jpg': {
+                        'Keywords': ['DATE: Y~'],
+                        'DateTimeOriginal': '1880:01:01 00:00:00',
+                    },
                     'portrait_1880-back.jpg': {'DateTimeOriginal': '2010:05:06 07:08:09'},
                 }
                 return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
 
             photoindex._run_exiftool = fake_exiftool
             summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
-            self.assertEqual(summary['dated_groups'], 3)
+            self.assertEqual(summary['dated_groups'], 2)
             self.assertEqual(summary['conflicts'], 0)
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
@@ -236,10 +261,10 @@ class PhotoindexTests(unittest.TestCase):
                     Path(path).name: edtf
                     for path, edtf in conn.execute('SELECT path, edtf FROM photos')
                 }
-                self.assertEqual(edtf_by_name['family_reunion.jpg'], '2009-04-20')
-                self.assertEqual(edtf_by_name['wedding_1902.jpg'], '1902')
+                self.assertIsNone(edtf_by_name['family_reunion.jpg'])
+                self.assertEqual(edtf_by_name['wedding_1902.jpg'], '1902-06')
                 self.assertEqual(edtf_by_name['portrait_1880.jpg'], '1880~')
-                self.assertEqual(edtf_by_name['portrait_1880-back.jpg'], '2010-05-06')
+                self.assertIsNone(edtf_by_name['portrait_1880-back.jpg'])
 
                 resolved, conflict = conn.execute(
                     "SELECT edtf_resolved, date_conflict FROM photo_groups "
@@ -250,23 +275,28 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            # find --edtf now matches an EXIF-dated photo - the headline
-            # symptom of #40 was that it could never match anything.
+            # find --edtf now matches a keyworded photo - the headline symptom
+            # of #40 was that it could never match anything.
+            res = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, edtf='1902')
+            self.assertTrue(
+                any('wedding_1902' in r['path'] for r in res['rows']), res.data)
             res = photoindex.run_find(
                 archive, {'roots': {'photos': 'photos'}}, edtf='2009')
-            self.assertTrue(
-                any('family_reunion' in r['path'] for r in res['rows']), res.data)
+            self.assertEqual(res['rows'], [])
 
     def test_scan_backfills_edtf_for_rows_scraped_before_the_fix(self) -> None:
-        # A catalog scanned before #40 holds exif_date but edtf NULL on every
-        # row, and an incremental scan never revisits unchanged files - the
-        # backfill must heal them from the stored columns, no exiftool needed.
+        # A catalog scanned before #40 holds date_pattern + exif_date but edtf
+        # NULL on every keyworded row, and an incremental scan never revisits
+        # unchanged files - the backfill must heal them from the stored
+        # columns, no exiftool needed.
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 return [
-                    {'SourceFile': str(p), 'DateTimeOriginal': '1998:07:15 12:00:00'}
+                    {'SourceFile': str(p), 'Keywords': ['DATE: Y!M!D!'],
+                     'DateTimeOriginal': '1998:07:15 12:00:00'}
                     for p in paths
                 ]
 
@@ -1060,11 +1090,13 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_run_exiftool_fails_on_documented_error_exit_status(self) -> None:
+    def test_run_exiftool_fails_on_a_genuine_exiftool_error(self) -> None:
+        # rc != 0 with no JSON and no per-file error lines = exiftool itself
+        # broke (bad option, broken install): fatal, with its stderr.
         class FakeProc:
             returncode = 1
-            stdout = '[]'
-            stderr = 'Error: File not found - missing.jpg'
+            stdout = b''
+            stderr = b'Unknown option: -bogus'
 
         orig_run = subprocess.run
         subprocess.run = lambda *a, **k: FakeProc()
@@ -1074,23 +1106,45 @@ class PhotoindexTests(unittest.TestCase):
         finally:
             subprocess.run = orig_run
 
-    def test_run_exiftool_passes_paths_via_argfile_never_the_command_line(self) -> None:
+    def test_run_exiftool_all_unreadable_batch_is_empty_not_fatal(self) -> None:
+        # The common #34 shape: an incremental scan whose ONE changed file is
+        # locked, or a one-file tail batch. exiftool exits 1 with per-file
+        # errors and NO JSON; that is the caller's skip-and-warn case, not a
+        # tool failure - and raising here used to discard every earlier
+        # batch's inserts too (the scan commits at the end).
+        class FakeProc:
+            returncode = 1
+            stdout = b''
+            stderr = (b'Error: File not found - a.jpg\n'
+                      b'    0 image files read\n    1 files could not be read\n')
+
+        orig_run = subprocess.run
+        subprocess.run = lambda *a, **k: FakeProc()
+        try:
+            self.assertEqual(photoindex._run_exiftool([Path('a.jpg')]), [])
+        finally:
+            subprocess.run = orig_run
+
+    def test_run_exiftool_passes_paths_on_stdin_never_the_command_line(self) -> None:
         # 500 realistic Windows paths overflow the 32,767-char command-line
-        # cap (#34), so the file list must travel via `-@ argfile` - the
-        # command line then stays bounded no matter how many paths are passed.
+        # cap (#34), so the file list must travel via `-@ -` on stdin - the
+        # command line then stays bounded no matter how many paths are passed,
+        # and no temp file (whose own path exiftool would decode under
+        # -charset filename=utf8) is involved.
         long_dir = 'D:/Family Photos/' + ('a descriptive folder name/' * 3)
         paths = [Path(f'{long_dir}photo with a long name {i:04}.jpg') for i in range(500)]
+        # A decomposed-Unicode name (combining grave, U+0300) must round-trip.
+        paths.append(Path(long_dir + 'de G.a\u0300 D. 1945.jpg'))
         seen: dict[str, object] = {}
 
         class FakeProc:
             returncode = 0
-            stdout = '[]'
-            stderr = ''
+            stdout = b'[]'
+            stderr = b''
 
         def fake_run(cmd, **kwargs):
             seen['cmd'] = cmd
-            at = cmd.index('-@')
-            seen['argfile_content'] = Path(cmd[at + 1]).read_text(encoding='utf-8')
+            seen['input'] = kwargs.get('input')
             return FakeProc()
 
         orig_run = subprocess.run
@@ -1104,15 +1158,14 @@ class PhotoindexTests(unittest.TestCase):
         self.assertLess(len(' '.join(str(c) for c in cmd)), 2000)
         for p in paths:
             self.assertNotIn(str(p), cmd)
-        # -charset filename=utf8 + a UTF-8 argfile is what lets decomposed
-        # (NFD) filenames resolve; bare -charset on the command line does not.
+        at = cmd.index('-@')
+        self.assertEqual(cmd[at + 1], '-')
         charset_at = cmd.index('-charset')
         self.assertEqual(cmd[charset_at + 1], 'filename=utf8')
-        lines = seen['argfile_content'].splitlines()
+        self.assertIn('-Error', cmd)
+        self.assertIsInstance(seen['input'], bytes)
+        lines = seen['input'].decode('utf-8', 'surrogateescape').splitlines()
         self.assertEqual(lines, [str(p) for p in paths])
-        # The temp argfile must not leak.
-        argfile = cmd[cmd.index('-@') + 1]
-        self.assertFalse(Path(argfile).exists())
 
     def test_run_exiftool_never_blames_a_present_binary_for_winerror_206(self) -> None:
         # CreateProcess's WinError 206 (command line too long) reaches Python
@@ -1135,11 +1188,12 @@ class PhotoindexTests(unittest.TestCase):
     def test_run_exiftool_keeps_partial_results_on_error_exit(self) -> None:
         # exiftool exits non-zero when ANY file fails while still emitting
         # valid JSON for the ones it read - a single unreadable file must not
-        # discard the rest of the batch (#34).
+        # discard the rest of the batch (#34). Undecodable stderr bytes must
+        # not turn into a UnicodeDecodeError either.
         class FakeProc:
             returncode = 1
-            stdout = '[{"SourceFile": "a.jpg"}, {"SourceFile": "b.jpg"}]'
-            stderr = 'Error: File not found - c.jpg'
+            stdout = b'[{"SourceFile": "a.jpg"}, {"SourceFile": "b.jpg"}]'
+            stderr = b'Error: File not found - c\xe9.jpg\xff'
 
         orig_run = subprocess.run
         subprocess.run = lambda *a, **k: FakeProc()
@@ -1148,6 +1202,57 @@ class PhotoindexTests(unittest.TestCase):
         finally:
             subprocess.run = orig_run
         self.assertEqual([r['SourceFile'] for r in rows], ['a.jpg', 'b.jpg'])
+
+    def test_scan_treats_exiftool_error_rows_as_unreadable(self) -> None:
+        # exiftool emits a SourceFile-only row WITH an `Error` field for a
+        # file it opened but could not read (empty, truncated). That row must
+        # count as unreadable and never overwrite a good prior row with
+        # blanks - the file still exists, so its stale metadata is kept.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), 'Title': f'good {p.name}'} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            def error_row_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {'SourceFile': str(p), 'Error': 'File is empty'}
+                    if p.name == 'family_reunion.jpg'
+                    else {'SourceFile': str(p), 'Title': f'good {p.name}'}
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = error_row_exiftool
+            summary = photoindex.run_scan(
+                archive, {'roots': {'photos': 'photos'}}, full=True)
+            self.assertEqual(summary['unreadable'], 1)
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                title = conn.execute(
+                    "SELECT title FROM photos WHERE path LIKE '%family_reunion.jpg'"
+                ).fetchone()[0]
+                self.assertEqual(title, 'good family_reunion.jpg')
+            finally:
+                conn.close()
+
+    def test_photos_ignore_coerces_scalars_and_matches_case_insensitively(self) -> None:
+        # YAML reads `- 2019` as an int; the intent is unambiguous. And a
+        # photo library sits on a case-insensitive filesystem on Windows and
+        # macOS alike, so 'flickr export' must prune 'Flickr Export'.
+        pats = photoindex._photos_ignore_patterns({'photos_ignore': [2019, 'Flickr Export']})
+        self.assertEqual(pats, ['2019', 'Flickr Export'])
+        self.assertEqual(photoindex._photos_ignore_patterns({'photos_ignore': 2019}), ['2019'])
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'Flickr Export').mkdir()
+            (root / 'Flickr Export' / 'x.jpg').write_bytes(b'x')
+            (root / 'Keep').mkdir()
+            (root / 'Keep' / 'y.jpg').write_bytes(b'x')
+            (root / 'Scans [2019]').mkdir()
+            (root / 'Scans [2019]' / 'z.jpg').write_bytes(b'x')
+            got = sorted(p.name for p in photoindex._iter_photo_files(
+                root, ['flickr export', 'Scans [[]2019]']))
+            self.assertEqual(got, ['y.jpg'])
 
     def test_catalog_carries_group_and_path_indexes(self) -> None:
         # Without idx_photos_group_id, _candidate_groups()'s correlated NOT

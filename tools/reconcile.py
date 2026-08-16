@@ -604,8 +604,16 @@ def run_reconcile(
     # Photos side (TOOLING §9: one command reconciles every file type). Only
     # when a catalog exists - an archive that never built one should not fail.
     if (archive_root / '.cache' / 'photos.sqlite').exists():
-        photo_result = photoindex.run_reconcile(
-            archive_root, fha_config, with_exif=with_exif, dry_run=dry_run)
+        try:
+            photo_result = photoindex.run_reconcile(
+                archive_root, fha_config, with_exif=with_exif, dry_run=dry_run)
+        except RuntimeError as e:
+            # A malformed photos_ignore: (or any other refusal photoindex
+            # raises for its own config) must land as a plain error line in
+            # this front door's summary, beside the documents-side results -
+            # never as a traceback that hides them.
+            result.add('error', f'photos: {e}')
+            return _finalize(result)
         for msg in photo_result.messages:
             result.add(msg.level, f'photos: {msg.text}',
                        next_step=getattr(msg, 'next_step', None))
