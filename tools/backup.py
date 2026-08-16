@@ -51,6 +51,30 @@ gone for good), and it does not merely warn: the zip is NAMED
 `…-INCOMPLETE.zip` and carries a `BACKUP_INCOMPLETE.txt` member listing what
 was not read.  A warning scrolls past; the artifact outlives the terminal.
 
+Three things count as "did not read it", not one.  A folder that raises on
+listing is the obvious one.  The other two get to the same place by a route
+`onerror` never sees, and both were reported as complete backups before:
+
+  - A mapped asset root that is not a directory at all, on a run that asked
+    for the assets (`--include-assets`).  An external drive that is simply
+    not plugged in makes `/Volumes/PhotoDrive` vanish, and vanishing is not
+    an error `os.walk` can raise because `os.walk` is never called.  A root
+    the human NAMED in fha.yaml's `roots:` is one he asked to pack, so its
+    absence refuses like any unreadable folder.  A root that exists only as
+    the spec default (an archive with no `photos/` folder and no `roots:`
+    line) is not something he asked for and is still just skipped.
+  - A subfolder that is a symbolic link.  `os.walk` defaults to
+    `followlinks=False` and drops such a subtree in silence - nothing listed,
+    nothing handed to `onerror`.  These are recorded as unread rather than
+    followed; `_walk_files` carries the reasoning.
+
+The one honest gap left is a mount point that still exists as an empty folder
+while its drive is away: nothing on this side can tell that from a folder that
+really is empty.  So an included asset root that contributed no files at all
+gets a plain warning naming the possibility, not a refusal - refusing every
+archive that has yet to file its first photo would teach the human to reach
+for `--allow-incomplete` by reflex, which costs more than it saves.
+
 Safety posture: the archive tree is only ever read; the one in-tree mutation
 is the `.cache/` stamp.  The destination must resolve OUTSIDE the archive root
 and every mapped asset root (a zip inside the tree would be swept into the
@@ -74,7 +98,8 @@ Exit codes: 0 = backup written + verified, or dry-run plan printed, or the WC
 unresolvable, destination inside the archive/an asset root, a duplicate
 in-zip name (refused before anything is written - extraction of a zip with
 duplicate members silently keeps one copy, and a backup tool never guesses),
-a folder that would not open (refused the same way, unless
+a folder that was not read - would not open, is a symbolic link, or is a
+requested asset root that is not there (refused the same way, unless
 --allow-incomplete), malformed fha.yaml, or a write/verify failure (partial
 zip deleted).  There is no exit-1 arm: a partial or suspect backup is never a
 warning, it is a failure.  An --allow-incomplete run exits 0 - the human
@@ -134,8 +159,9 @@ configure_utf8_stdout()
 #    _arcname_collisions      - names claimed by 2+ files (run_backup refuses)
 #    _fmt_size                - human-readable byte counts for the notes
 #
-#  A folder that would not open
+#  A folder that was not read
 #    _display_dir             - name a folder the way the human filed it
+#    _unread_causes           - the cause + fix sentences, one per kind of miss
 #    _incomplete_notice       - the text that rides INSIDE an incomplete zip
 #
 #  Execution
@@ -472,6 +498,7 @@ def _walk_files(
     excluded_top_dirs: frozenset[str] = frozenset(),
     excluded_top_files: frozenset[str] = frozenset(),
     on_error=None,
+    link_dirs: list[Path] | None = None,
 ) -> list[tuple[Path, str, int]]:
     """Walk `base` and return sorted (abs_path, arcname, size) entries.
 
@@ -496,6 +523,28 @@ def _walk_files(
     root nobody asked to include: an unreadable corner of a skipped photo
     library makes one printed number low, which is no reason to refuse a
     records backup.
+
+    `link_dirs` collects any subfolder that is a SYMBOLIC LINK, and passing it
+    is the second half of the same promise.  `os.walk` defaults to
+    `followlinks=False`, which does not merely decline to follow the link - it
+    skips the subtree without a sound.  `onerror` never fires, because no
+    listing was ever attempted, so a linked `photos/2019` left the zip exactly
+    the way an unreadable folder used to: silently.
+
+    Recorded rather than followed, and the trade-off is real either way.
+    FOLLOWING (with a `(st_dev, st_ino)` loop guard, the way
+    `find_duplicate_media.py`'s `walk_covering` does) would put the files in
+    the zip - but it packs content from OUTSIDE the root under a name inside
+    it, and on restore the link comes back as a real folder full of copies.
+    A tool whose whole promise is "restore = unzip" must not hand back a tree
+    shaped differently from the one it was given, and it must not decide on
+    its own to pack whatever is on the far end of a link.  RECORDING keeps the
+    refusal honest and loud: the folder is named, `--allow-incomplete` still
+    writes the rest, and the notice inside the zip tells a restore what it
+    still has to fetch.  It is also the direction the archive's own rules
+    already point (AGENTS.md "No symlinks" for the archive tree) - though the
+    reason it is recorded for EXTERNAL asset roots too, where that rule does
+    not reach, is the restore shape, not the archive convention.
     """
     entries: list[tuple[Path, str, int]] = []
     if not base.is_dir():
@@ -508,6 +557,14 @@ def _walk_files(
             if at_top and name in excluded_top_dirs:
                 continue
             if excluded_dir_ids and _file_id(d / name) in excluded_dir_ids:
+                continue
+            # After the exclusions, never before: a mapped asset root reached
+            # through a link is EXCLUDED from this walk on purpose, and calling
+            # a deliberate exclusion an unread folder would refuse every
+            # records-only backup of an archive whose `photos` entry is a link.
+            if link_dirs is not None and (d / name).is_symlink():
+                if (d / name) not in link_dirs:
+                    link_dirs.append(d / name)
                 continue
             keep.append(name)
         dirnames[:] = keep
@@ -538,9 +595,18 @@ def _plan_backup(
       excluded       [(name, reason), …] - only exclusions that exist on disk
       skipped_roots  [(alias, str(path), est_bytes), …] - asset roots left out
       included_roots [(alias, str(path), external?), …] - asset roots zipped in
-      unreadable_dirs [Path, …] - folders that would not list, so whatever is
-                     filed in them is missing from `entries` and nothing else
-                     here can tell (run_backup refuses on a non-empty list)
+      unreadable_dirs [Path, …] - folders this walk did not read, so whatever
+                     is filed in them is missing from `entries` and nothing
+                     else here can tell (run_backup refuses on a non-empty
+                     list).  Three kinds, all with the same consequence:
+                     one that would not list, one that is a symbolic link,
+                     and a requested asset root that is not there at all
+      link_dirs      [Path, …] - the symbolic-link subset of the above
+      missing_roots  [(alias, str(path)), …] - the requested-asset-root subset
+      empty_roots    [(alias, str(path)), …] - included asset roots that DID
+                     open and held no files (a warning, never a refusal - an
+                     unmounted mount point and an empty folder are the same
+                     thing from here)
 
     Sizes are computed here, at plan time, so the dry-run and the assets note
     both print real numbers.  Asset roots are walked in sorted-alias order and
@@ -552,23 +618,36 @@ def _plan_backup(
     filed and expects back.
     """
     asset_roots = _asset_roots(archive_root, fha_config)
-    internal_asset_ids = frozenset(
-        _file_id(p) for p in asset_roots.values() if _inside(p, archive_root)
-    )
+    # EVERY asset root, not just the internal ones.  An external root cannot be
+    # reached by walking the archive tree - except through a symbolic link, and
+    # that is exactly the case where the records walk must recognise it as the
+    # asset root it deliberately leaves out rather than as an unread folder.
+    # `_file_id` stats through the link, so the two spellings answer as one.
+    asset_root_ids = frozenset(_file_id(p) for p in asset_roots.values())
 
     # One recorder for every walk that feeds the zip, so the refusal names all
     # of them at once whichever tree they were in.
     unreadable_dirs: list[Path] = []
     on_error = unreadable_dir_recorder(unreadable_dirs)
+    link_dirs: list[Path] = []
+    missing_roots: list[tuple[str, str]] = []
+    empty_roots: list[tuple[str, str]] = []
 
     entries = _walk_files(
         archive_root,
         arc_prefix='',
-        excluded_dir_ids=internal_asset_ids,
+        excluded_dir_ids=asset_root_ids,
         excluded_top_dirs=frozenset(_EXCLUDED_DIRS),
         excluded_top_files=frozenset(_EXCLUDED_FILES),
         on_error=on_error,
+        link_dirs=link_dirs,
     )
+
+    # An alias the human WROTE in fha.yaml `roots:` is a folder he told the
+    # archive about; `photos`/`documents` also exist as spec defaults for every
+    # archive, whether or not there is anything there.  The difference decides
+    # whether a root that is not on disk is a failure or a non-event.
+    configured_aliases = set(get_roots(fha_config))
 
     skipped_roots: list[tuple[str, str, int]] = []
     included_roots: list[tuple[str, str, bool]] = []
@@ -577,6 +656,14 @@ def _plan_backup(
         for alias, root in asset_roots.items():
             if not root.is_dir():
                 skipped_roots.append((alias, str(root), 0))
+                if alias in configured_aliases:
+                    # The human asked to pack this root and it is not there -
+                    # the unplugged-drive case the whole refusal exists for.
+                    # An unreadable SUBFOLDER of it already refuses; the root
+                    # itself vanishing used to exit 0 with `complete: True`.
+                    missing_roots.append((alias, str(root)))
+                    if root not in unreadable_dirs:
+                        unreadable_dirs.append(root)
                 continue
             internal = _inside(root, archive_root)
             # An internal mapped root keeps its REAL relative path in the zip
@@ -588,13 +675,22 @@ def _plan_backup(
             # name and the restore note explains the wrinkle.
             prefix = root.relative_to(archive_root).as_posix() if internal else alias
             included_roots.append((alias, str(root), not internal))
+            found_here = 0
             for p, arc, size in _walk_files(root, arc_prefix=prefix,
-                                            on_error=on_error):
+                                            on_error=on_error,
+                                            link_dirs=link_dirs):
+                found_here += 1
                 key = _norm(p)
                 if key in seen:
                     continue
                 seen.add(key)
                 entries.append((p, arc, size))
+            if not found_here:
+                # It opened and held nothing.  That is either a library with
+                # no files in it yet or a mount point whose drive is away, and
+                # from here the two are the same folder.  Say so; do not
+                # refuse (see the module docstring).
+                empty_roots.append((alias, str(root)))
     else:
         for alias, root in asset_roots.items():
             if not root.is_dir():
@@ -608,6 +704,15 @@ def _plan_backup(
         bucket = folders.setdefault(top, {'files': 0, 'bytes': 0})
         bucket['files'] += 1
         bucket['bytes'] += size
+
+    # The link subtrees join the same list the refusal reads.  `link_dirs` is
+    # kept alongside only so the message can name the right cause and the right
+    # fix; every consumer downstream - the refusal, the zip's name, the notice
+    # member, `complete`, the doctor stamp - asks one question, "what did this
+    # walk not read", and gets one answer.
+    for p in link_dirs:
+        if p not in unreadable_dirs:
+            unreadable_dirs.append(p)
 
     excluded: list[tuple[str, str]] = []
     for name, reason in _EXCLUDED_DIRS.items():
@@ -624,6 +729,9 @@ def _plan_backup(
         'skipped_roots': skipped_roots,
         'included_roots': included_roots,
         'unreadable_dirs': unreadable_dirs,
+        'link_dirs': link_dirs,
+        'missing_roots': missing_roots,
+        'empty_roots': empty_roots,
     }
 
 
@@ -648,7 +756,7 @@ def _arcname_collisions(
     return {arc: paths for arc, paths in by_arc.items() if len(paths) > 1}
 
 
-# ── A folder that would not open ──────────────────────────────────────────────
+# ── A folder that was not read ────────────────────────────────────────────────
 
 def _display_dir(path: Path, archive_root: Path) -> str:
     """Name a folder the way the human filed it - 'people/003 Hartley'.
@@ -661,6 +769,54 @@ def _display_dir(path: Path, archive_root: Path) -> str:
         return Path(path).relative_to(archive_root).as_posix()
     except ValueError:
         return str(path).replace('\\', '/')
+
+
+def _unread_causes(plan: dict, archive_root: Path) -> list[str]:
+    """One cause-and-fix sentence for each KIND of folder the walk did not read.
+
+    Three routes land in `unreadable_dirs` and they do not share a fix.  A
+    message that offers "reconnect the drive" for a symbolic link, or "check
+    the folder's permissions" for a root that was never on this machine, names
+    the wrong cause - and a message that blames the wrong cause is a defect in
+    its own right (AGENTS.md, the next-step rule).  So the refusal keeps one
+    headline and appends only the sentences that apply to this run.
+    """
+    links = plan.get('link_dirs') or []
+    missing = plan.get('missing_roots') or []
+    link_ids = {_file_id(p) for p in links}
+    missing_ids = {_file_id(Path(path)) for _alias, path in missing}
+    plain = [p for p in plan.get('unreadable_dirs') or []
+             if _file_id(p) not in link_ids and _file_id(p) not in missing_ids]
+
+    causes: list[str] = []
+    if plain:
+        causes.append(
+            'A folder that will not open is usually one whose permissions '
+            'changed, or a drive or network share that is not connected: '
+            'reconnect it (or restore your access), then run `fha backup` '
+            'again.'
+        )
+    for alias, path in missing:
+        causes.append(
+            f'Your {alias} folder is not there at all: fha.yaml says your '
+            f'{alias} live in {path} (the `roots: {alias}:` line), and nothing '
+            f'is at that path right now - so not one {alias} file could be '
+            f'packed. Plug that drive in, or point that line at where the '
+            f'folder really is, then run `fha backup --include-assets` again.'
+        )
+    if links:
+        named = ', '.join(_display_dir(p, archive_root) for p in links[:5])
+        if len(links) > 5:
+            named += f' and {len(links) - 5} more'
+        causes.append(
+            f'{len(links)} of these are shortcuts (symbolic links) pointing at '
+            f'a folder somewhere else: {named}. A backup does not follow a '
+            f'shortcut - unzipping would hand you a real folder full of copies '
+            f'where your shortcut used to be, which is not the archive you had. '
+            f'Move the real folder here, or leave the shortcut and back up what '
+            f'it points at separately.'
+        )
+    return causes
 
 
 def _incomplete_notice(shown: list[str], archive_root: Path) -> str:
@@ -787,12 +943,16 @@ def run_backup(
 
     Failure posture: a duplicate in-zip name is refused BEFORE anything is
     written (exit 3, data.status='name-collision') - extraction would
-    silently keep one copy, so the plan itself is the failure.  A folder that
-    would not open is refused the same way (exit 3,
-    data.status='unreadable-folders'): the plan is short of the archive, and
-    only the plan knows it.  The cost is asymmetric and not close - a refused
-    backup costs one re-run, a backup that quietly lacks a branch of the
-    family costs the archive, and it costs it on the day the disk dies.
+    silently keep one copy, so the plan itself is the failure.  A folder the
+    walk did not read is refused the same way (exit 3,
+    data.status='unreadable-folders') - one that would not list, one that is a
+    symbolic link, and a `roots:`-mapped asset root that is not on disk on an
+    --include-assets run all count, because all three end with files missing
+    from the zip and nothing else able to tell.  The plan is short of the
+    archive, and only the plan knows it.  The cost is asymmetric and not
+    close - a refused backup costs one re-run, a backup that quietly lacks a
+    branch of the family costs the archive, and it costs it on the day the
+    disk dies.
     `allow_incomplete=True` (the human's explicit `--allow-incomplete`) writes
     it anyway, marked in the zip's name and in a `BACKUP_INCOMPLETE.txt`
     member, for the case where the folder is never coming back and a partial
@@ -883,11 +1043,13 @@ def run_backup(
             f'fha.yaml somewhere else, then re-run `fha backup`.'
         ))
 
-    # A folder that would not list. Refused before anything is written - and
-    # in --dry-run too, which must preview the run it would really be. The
-    # message leads with what it means rather than with the fault, because the
-    # human's question is never "what is errno 13", it is "do I have a
-    # backup".
+    # A folder the walk did not read - it would not list, it is a shortcut, or
+    # it is a whole asset root that is not there. Refused before anything is
+    # written, and in --dry-run too, which must preview the run it would really
+    # be. The message leads with what it means rather than with the fault,
+    # because the human's question is never "what is errno 13", it is "do I
+    # have a backup".
+    causes = _unread_causes(plan, archive_root)
     if shown_unreadable and not allow_incomplete:
         listed = ', '.join(shown_unreadable[:5])
         if len(shown_unreadable) > 5:
@@ -902,13 +1064,12 @@ def run_backup(
                   'unreadable_dirs': shown_unreadable, 'complete': False},
         ).add('error', (
             f'ERROR: no backup was written. {len(shown_unreadable)} folder(s) '
-            f'could not be opened, so anything filed in them would have been '
+            f'were not read, so anything filed in them would have been '
             f'missing from the zip without a word: {listed}. A backup you '
             f'cannot trust is worse than none - the day you need it is the day '
-            f'you find out. This is usually a folder whose permissions '
-            f'changed, or a drive or network share that is not connected: '
-            f'reconnect it (or restore your access), then run `fha backup` '
-            f'again. If that folder is gone for good and you want the rest '
+            f'you find out. '
+            + ' '.join(causes) +
+            f' If that folder is gone for good and you want the rest '
             f'backed up anyway, run `fha backup --allow-incomplete` - it '
             f'writes a zip named ...-INCOMPLETE.zip that says inside it what '
             f'is missing.'
@@ -936,11 +1097,12 @@ def run_backup(
             listed += f' and {len(shown_unreadable) - 5} more'
         result.add('warning', (
             f'INCOMPLETE BACKUP (you asked for one with --allow-incomplete): '
-            f'{len(shown_unreadable)} folder(s) could not be opened, so '
+            f'{len(shown_unreadable)} folder(s) were not read, so '
             f'nothing filed in them is in this zip: {listed}. The zip is named '
             f'...-INCOMPLETE.zip and carries a {_NOTICE_NAME} note listing '
-            f'those folders, so whoever unpacks it knows. When they can be '
-            f'read again, run `fha backup` for a complete one.'
+            f'those folders, so whoever unpacks it knows. '
+            + ' '.join(causes) +
+            f' When they can be read again, run `fha backup` for a complete one.'
         ))
 
     if dry_run:
@@ -976,12 +1138,30 @@ def run_backup(
             f'lists every path a full backup must cover.'
         ))
     if include_assets and plan['skipped_roots']:
+        missing_aliases = {alias for alias, _p in plan.get('missing_roots') or []}
         for alias, path, _est in plan['skipped_roots']:
+            if alias in missing_aliases:
+                continue   # already refused, or named in the incomplete warning
             result.add('info', (
                 f'NOTE: the {alias} root ({path}) is not reachable right now, so no '
                 f'{alias} files were added. Run `fha doctor` to check your roots, '
                 f'then re-run `fha backup --include-assets`.'
             ))
+    # An asset root that DID open and held nothing.  No seam fired and none
+    # could: an unmounted mount point still looks like an empty folder from
+    # here.  So this is said plainly and the backup still counts as complete -
+    # refusing every archive that has not filed its first photo would train the
+    # human to reach for --allow-incomplete, which is the reflex this whole
+    # feature is trying not to create.
+    for alias, path in plan.get('empty_roots') or []:
+        result.add('warning', (
+            f'NOTE: your {alias} folder ({path}) opened but has no files in it '
+            f'at all, so nothing from it is in this zip. An empty folder and a '
+            f'drive that is not plugged in look exactly the same from here. If '
+            f'your {alias} really do live somewhere else, connect that drive (or '
+            f'fix the `roots: {alias}:` line in fha.yaml), then run '
+            f'`fha backup --include-assets` again.'
+        ))
     external_included = [(a, p) for a, p, ext in plan.get('included_roots', []) if ext]
     if external_included:
         names = ' and '.join(alias for alias, _p in external_included)
@@ -1102,10 +1282,12 @@ Copy your whole archive into one dated zip file, kept OUTSIDE the archive.
   fha backup --to D:/Backups      choose where the zip goes
   fha backup --dry-run            show the plan; write nothing
 
-If any folder cannot be opened, no zip is written at all - a backup missing
-part of your archive would look exactly like a good one. Reconnect the drive
-or fix the folder and run it again; --allow-incomplete writes it anyway,
-clearly marked, for a folder that is gone for good.
+If any folder cannot be read - it will not open, it is a shortcut to somewhere
+else, or (with --include-assets) your whole photos or documents folder is not
+there - no zip is written at all: a backup missing part of your archive would
+look exactly like a good one. Reconnect the drive or fix the folder and run it
+again; --allow-incomplete writes it anyway, clearly marked, for a folder that
+is gone for good.
 
 Photos and documents are NOT included unless you pass --include-assets (they
 are often huge and often live on another drive - the output names them every

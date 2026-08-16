@@ -669,6 +669,168 @@ class UnreadableFolderTests(unittest.TestCase):
         self.assertEqual(result.data['unreadable_dirs'], ['photos/1920'])
 
 
+class MissingAssetRootTests(unittest.TestCase):
+    """The whole photos root gone is not milder than one folder inside it.
+
+    An unreadable SUBFOLDER of the photos root already refused; the root
+    itself vanishing - the unplugged external drive the refusal was written
+    for - exited 0, reported `complete: True`, wrote an unmarked zip with no
+    photos in it, and stamped `assets_included: true` for `fha doctor` to read
+    back as reassurance. That severity inversion is the defect."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        # An external photos root, mapped in fha.yaml and then taken away -
+        # exactly what an unmounted drive leaves behind.
+        self.ext = self.parent / 'PhotoDrive'
+        self.root = _make_archive(self.parent, photos_root=str(self.ext))
+        self.gone = self.ext
+        import shutil
+        shutil.rmtree(self.gone)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_requested_root_that_is_not_there_refuses(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'unreadable-folders')
+        self.assertFalse(result.data['complete'])
+        self.assertIn(str(self.gone).replace('\\', '/'),
+                      result.data['unreadable_dirs'])
+        text = _message_text(result)
+        self.assertIn('no backup was written', text)
+        # Names the cause the human can act on, not "permissions".
+        self.assertIn('roots: photos:', text)
+        self.assertIn('--allow-incomplete', text)
+        self.assertFalse((self.parent / 'my-archive-backups').exists())
+        self.assertFalse((self.root / '.cache' / 'last_backup.json').is_file())
+
+    def test_allow_incomplete_marks_the_zip_and_the_stamp(self) -> None:
+        result = _run(self.root, include_assets=True, allow_incomplete=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertFalse(result.data['complete'])
+        zip_path = Path(result.data['zip_path'])
+        self.assertIn('-INCOMPLETE', zip_path.name)
+        with zipfile.ZipFile(zip_path) as zf:
+            self.assertIn('BACKUP_INCOMPLETE.txt', zf.namelist())
+        stamp = json.loads(
+            (self.root / '.cache' / 'last_backup.json').read_text(encoding='utf-8'))
+        self.assertIs(stamp['complete'], False)
+
+    def test_a_records_only_run_is_untouched_by_the_missing_root(self) -> None:
+        # Nobody asked for the photos; their root being away is not this
+        # backup's business.
+        result = _run(self.root)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+
+    def test_an_unconfigured_default_root_that_is_absent_does_not_refuse(self) -> None:
+        # `documents` and `photos` exist as spec defaults for every archive.
+        # An archive that simply never made a documents/ folder has not lost
+        # anything, and refusing would be the tool inventing a problem.
+        root = self.parent / 'plain'
+        _write(root / 'fha.yaml', 'title: Plain\n')
+        _write(root / 'sources' / 'other' / 'letter_S-2222222222.md',
+               _SOURCE.format(sid='S-2222222222', title='A letter'))
+        _write(root / 'photos' / '1899' / 'pic.jpg', 'jpegbytes')
+        result = _run(root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+        self.assertEqual(result.data['unreadable_dirs'], [])
+
+    def test_an_included_root_that_opens_empty_is_warned_about_not_refused(self) -> None:
+        # A mount point whose drive is away still exists as an empty folder,
+        # and nothing here can tell that from a library with no files yet. So:
+        # said plainly, exit 0, still complete.
+        self.gone.mkdir(parents=True)
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+        text = _message_text(result)
+        self.assertIn('no files in it at all', text)
+        self.assertIn('not plugged in', text)
+
+
+class SymlinkedFolderTests(unittest.TestCase):
+    """A subfolder that is a shortcut is a folder this walk did not read.
+
+    `os.walk` defaults to `followlinks=False` and drops the subtree without
+    calling `onerror` - no listing is attempted, so there is no error to
+    report. The files simply were not there, and `complete` said True."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.parent = Path(self._tmp.name)
+        self.ext = self.parent / 'PhotoDrive'
+        self.root = _make_archive(self.parent, photos_root=str(self.ext))
+        self.elsewhere = self.parent / 'old-photos' / '2019'
+        _write(self.elsewhere / 'reunion.jpg', 'jpegbytes')
+        self.link = self.ext / '2019'
+        try:
+            self.link.symlink_to(self.elsewhere, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_linked_subfolder_refuses_and_is_named(self) -> None:
+        result = _run(self.root, include_assets=True)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'unreadable-folders')
+        self.assertFalse(result.data['complete'])
+        self.assertIn(str(self.link).replace('\\', '/'),
+                      result.data['unreadable_dirs'])
+        text = _message_text(result)
+        self.assertIn('shortcuts (symbolic links)', text)
+
+    def test_allow_incomplete_says_the_linked_folder_is_missing(self) -> None:
+        result = _run(self.root, include_assets=True, allow_incomplete=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertFalse(result.data['complete'])
+        zip_path = Path(result.data['zip_path'])
+        self.assertIn('-INCOMPLETE', zip_path.name)
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            notice = zf.read('BACKUP_INCOMPLETE.txt').decode('utf-8')
+        # The zip really is short the linked folder - the notice is not decor.
+        self.assertFalse([n for n in names if n.endswith('reunion.jpg')], names)
+        self.assertIn('2019', notice)
+
+    def test_a_link_in_the_archive_tree_is_recorded_too(self) -> None:
+        link = self.root / 'notes' / 'shared'
+        target = self.parent / 'shared-notes'
+        _write(target / 'memo.md', '# memo\n')
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+        result = _run(self.root)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['unreadable_dirs'], ['notes/shared'])
+
+    def test_a_link_that_IS_a_mapped_asset_root_is_an_exclusion_not_a_miss(self) -> None:
+        # `photos -> /Volumes/Photos` inside the archive folder with
+        # `roots: photos: /Volumes/Photos` is an ordinary way to keep a big
+        # library elsewhere. A records-only backup leaves the photos out by
+        # design; calling that deliberate exclusion an unread folder would
+        # refuse every backup this archive ever tries to make.
+        link = self.root / 'photos'
+        try:
+            link.symlink_to(self.ext, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('this platform cannot create symlinks')
+        self.link.unlink()          # no linked subfolder for this case
+        result = _run(self.root)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertTrue(result.data['complete'])
+        with zipfile.ZipFile(result.data['zip_path']) as zf:
+            names = zf.namelist()
+        self.assertFalse([n for n in names if n.startswith('photos/')], names)
+
+
 class PathIdentityTests(unittest.TestCase):
     """Which of two names is one folder is a question for the filesystem.
 
@@ -749,9 +911,14 @@ class PathIdentityTests(unittest.TestCase):
             backup._file_id(self.root / 'documents'))
 
     def test_an_internal_mapped_root_is_pruned_from_the_records_walk(self) -> None:
-        # The pruning that _file_id now decides: a records-only backup carries
-        # no photo files, and a photos root mapped inside the archive must not
-        # sneak in through the records walk.
+        # Guard, not proof: the pre-fix string comparison already pruned this
+        # one, so it passes against the unfixed walk. It is here because the
+        # move to _file_id changed HOW the exclusion is decided, and an
+        # identity test can lose a case that prefix matching happened to get
+        # right. The cases _file_id is actually needed for - a root reached
+        # through a link, a root outside the archive - are its neighbours.
+        # A records-only backup carries no photo files, and a photos root
+        # mapped inside the archive must not sneak in through the records walk.
         root = _make_archive(self.parent, name='mapped', photos_root='media/photos')
         result = _run(root)
         with zipfile.ZipFile(result.data['zip_path']) as zf:

@@ -36,9 +36,18 @@ Two build modes, one generator:
 This file ships the whole Layer 8 publication suite: M8.1 (foundations: query
 layer, Jinja2, source page), M8.2 (curated person page), M8.3 (place +
 discoveries pages), M8.4 (home page: surname A-Z + discoveries teaser, and the
-standalone redaction audit enforced by the page-set design below), and M8.5
+standalone link/page symmetry enforced by the page-set design below), and M8.5
 (interactive trees - a vendored, dependency-free renderer fed the neutral tree
 JSON through a single adapter seam).
+
+Note what the page-set design is and is not. It guarantees that this site
+never LINKS to a page it did not build; it does not check whether a page
+SHOULD have been built, and there is no separate audit pass that does. So
+every input to the page-set decision has to be right on its own, and the ones
+read from disk (`_load_restriction_markers`) fail closed: a person or source
+record this build could not read is treated as restricted and withheld, with a
+warning naming the file. A missing privacy marker is indistinguishable from no
+privacy marker, and only one of those two readings is safe to publish.
 
 WHY A LIBRARY FUNCTION (`run_site`): mirrors packet/report - a testable
 `run_site(archive_root, out_dir, ...) -> dict` core, with a thin CLI handler
@@ -84,6 +93,8 @@ CODE MAP
     _live_alias                - the real path under a reconcile 'MISSING:' key
     _is_missing_key            - is this catalog key a photo that is not on disk?
     _under_ignored_path        - does a photos-root path fall under photos_ignore:?
+    _under_ignored_dir         - the same, for an absolute folder (sifts the
+                                 unreadable list before it can spoil a count)
 
   Paths / hrefs
     _rel_href                  - relative href from a page dir to a target file
@@ -228,6 +239,27 @@ def _under_ignored_path(rel: str, is_ignored) -> bool:
     """
     parts = rel.split('/')
     return any(is_ignored('/'.join(parts[:i])) for i in range(1, len(parts) + 1))
+
+
+def _under_ignored_dir(directory: Path, photos_root: Path, is_ignored) -> bool:
+    """The same question as `_under_ignored_path`, asked of an absolute folder.
+
+    Used to sift the folders a photos-root walk could not open before they are
+    allowed to spoil a uniqueness count. A folder the setting excludes holds
+    nothing this build would have used, so it can hide nothing from the count
+    either, and refusing over it would be a refusal the guard has not earned.
+
+    A path that is not under the photos root at all (or is the root itself) is
+    reported as NOT ignored: the honest answer for a folder the patterns say
+    nothing about is that it still counts.
+    """
+    try:
+        rel = Path(directory).resolve().relative_to(Path(photos_root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return False
+    if rel in ('', '.'):
+        return False
+    return _under_ignored_path(rel, is_ignored)
 
 
 # The largest edge (px) a standalone derivative is resized to (TOOLING §12).
@@ -1190,14 +1222,82 @@ class _SiteBuilder:
         person-level marker, the per-claim marker, the per-name-variant marker,
         and a free-text source type (`restricted: by-request`) are all invisible
         to it. This one pass over the person and source records fills the four
-        sets the redaction predicates consult. A record that cannot be read is
-        skipped (its page still builds; the standalone audit catches any leak)."""
+        sets the redaction predicates consult.
+
+        A RECORD THAT CANNOT BE READ IS TREATED AS RESTRICTED. This is an
+        exclusion set built by reading files, which means the failure mode of a
+        read is not "less content" but "no marker" - and no marker reads
+        exactly like a person who never asked to be left out. "Cannot be read"
+        covers both ways it happens, because both end in the same empty
+        frontmatter: an exception, and the `parse_errors` list `read_record`
+        returns INSTEAD of raising for the ordinary cases (a file that is gone,
+        a permission error, malformed YAML - `_lib.read_record` hands those
+        back as an E010 entry with `meta` empty, so an `except` arm alone would
+        have caught almost none of them). It used to skip:
+        a person carrying `living: false` and `restricted: by-request` whose
+        file would not open got a page on the PUBLIC snapshot, with their name
+        on it, while the only sign was a warning about missing prose. That is
+        fail-open on the one axis this codebase cannot afford it.
+
+        The docstring here used to answer that with "the standalone audit
+        catches any leak". There is no such audit: what it named is the
+        page-set design (module docstring, REDACTION IS COMPUTED ONCE), which
+        guarantees that the site never LINKS to a page it did not build - it
+        has nothing to say about whether a page should have been built. The
+        missing marker corrupts the page set itself, so the thing offered as
+        the backstop is the very thing that was wrong. A mitigation that does
+        not hold is worse than none: it stops the next reader looking.
+
+        Withholding, not failing the build: the page set stays internally
+        consistent (the pid never enters `person_pages`, so every link site -
+        `render_token`, the charts, the trees, the home index - renders the
+        redaction label instead, exactly as for any restricted person), so
+        there is no symmetry to break. Publishing less is always safe;
+        publishing a name is not undoable. The warning names the file so the
+        human can fix it and rebuild.
+
+        An unreadable SOURCE record is handled the same way and covers its
+        claims with it: the per-claim `restricted:` markers live in that file
+        too, so there is no way to know which claims were withheld. Marking
+        the whole source restricted (`restricted_sources`) makes it
+        hard-restricted, which drops its claims from every person, place, and
+        timeline view - the same reach `restricted_claims` would have had, and
+        the only honest one when the claim list itself is unreadable.
+
+        Know what an unreadable PERSON record costs, because it is more than
+        one page: `prepare()` also withholds every source that names a
+        restricted person (`restricted_person_sources`), so one file that will
+        not open can take a visible slice of the site with it. That is the
+        existing rule for `restricted: by-request`, applied consistently - and
+        it is the right size of consequence for "I could not read this
+        person's file", which is why the warning names the file rather than
+        just counting.
+
+        One leak this cannot close: a RESTRICTED name variant (a deadname) of
+        an unreadable person. Those values live in the same file, and the
+        index stores them mangled on purpose, so a `[[deadname]]` written in
+        someone else's prose resolves to nothing and renders as the literal
+        text. Withholding the person does not help - the name never reaches
+        `restricted_names` to be recognised. Only repairing the file does, and
+        the warning says so."""
         for pid, row in self.person_meta.items():
             if not row['path']:
                 continue
             try:
                 rec = read_record(self.archive_root / row['path'])
-            except Exception:
+                trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+            except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+                rec, trouble = None, str(e)
+            if trouble is not None:
+                self.restricted_persons.add(pid)
+                self.messages.append(
+                    f'WARNING: could not read {row["path"]} ({trouble}), so there '
+                    f'is no way to tell whether that person asked to be left out '
+                    f'of public output. They have been withheld from this site '
+                    f'- no page, and their name shown as "{_LIVING_LABEL}" '
+                    f'everywhere it would have appeared. Fix or restore that '
+                    f'file and run `fha site` again.'
+                )
                 continue
             meta = rec['meta']
             if _is_restricted_value(meta.get('restricted')):
@@ -1212,7 +1312,18 @@ class _SiteBuilder:
                 continue   # index-restricted sources are already handled
             try:
                 rec = read_record(self.archive_root / row['path'])
-            except Exception:
+                trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
+            except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+                rec, trouble = None, str(e)
+            if trouble is not None:
+                self.restricted_sources.add(sid)
+                self.messages.append(
+                    f'WARNING: could not read {row["path"]} ({trouble}), so there '
+                    f'is no way to tell whether that source - or any fact in it - '
+                    f'was marked private. It has been withheld from this site, '
+                    f'and so has everything it is the evidence for. Fix or '
+                    f'restore that file and run `fha site` again.'
+                )
                 continue
             if _is_restricted_value(rec['meta'].get('restricted')):
                 self.restricted_sources.add(sid)
@@ -2763,6 +2874,19 @@ class _SiteBuilder:
                             matches.append(m)
                             if len(matches) > 1:
                                 break
+                # Only a folder this guess would have ANSWERED from can spoil
+                # the count. `unreadable` is collected over the whole photos
+                # root, but the loop above refuses every match under
+                # `photos_ignore:` anyway, so a shut folder inside a
+                # `Flickr Export` subtree cannot hide a second candidate: there
+                # are no candidates in there to hide. Dropping the hero photo
+                # over it is a refusal the guard has not earned - and
+                # `photos_ignore:` exists precisely to name bulk exports, which
+                # are exactly the things that sit on drives that come and go.
+                unreadable = [
+                    d for d in unreadable
+                    if not _under_ignored_dir(d, pr, is_ignored)
+                ]
                 if unreadable and len(matches) < 2:
                     self.messages.append(
                         f'WARNING: photo reference {ref!r} was not used: '

@@ -511,6 +511,139 @@ class FamilyStripTests(_Base):
         self.assertIn('Living Child', linked)
 
 
+class UnreadableRecordPrivacyTests(_Base):
+    """A record this build could not read is treated as restricted.
+
+    The `restricted:` marker lives ONLY in the record file - the index carries
+    `restricted` for sources and nothing at all for persons - so the exclusion
+    set is built by reading files. That makes a failed read fail OPEN: no
+    marker read exactly like no marker written, and a person carrying
+    `restricted: by-request` whose file would not open got a page on the
+    PUBLIC snapshot, with their name on it. The only sign was a warning about
+    missing prose, which reads as less content, not as a privacy marker lost.
+
+    The docstring's stated mitigation - "the standalone audit catches any
+    leak" - could not: what it named is the page-set design, which promises
+    only that no link points at a page that was not built. The missing marker
+    corrupts the page set itself.
+    """
+
+    def _all_output_text(self) -> str:
+        return '\n'.join(
+            p.read_text(encoding='utf-8', errors='replace')
+            for p in sorted(self.out_dir.rglob('*'))
+            if p.is_file() and p.suffix in ('.html', '.json')
+        )
+
+    def _seed_trio(self):
+        # One restricted person whose file reads (the control - already
+        # withheld today), one restricted person whose file will not, and one
+        # ordinary person whose biography links to both.
+        self._seed_person(
+            'p-aaaaaaaaaa', 'Public Pat', surname='Pat',
+            body='# Public Pat\n\n## Biography\n\n'
+                 'Worked with [[p-bbbbbbbbbb]] and [[p-cccccccccc]].\n')
+        self._seed_person('p-bbbbbbbbbb', 'Quiet Quinn', surname='Quinn',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-cccccccccc', 'Hidden Hollis', surname='Hollis',
+                          frontmatter_extra='restricted: by-request')
+
+    def test_a_person_record_that_is_gone_is_withheld_not_published(self):
+        self._seed_trio()
+        gone = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+        gone.unlink()
+        res = self._run(linked=False)
+
+        # The control: restricted and readable, correctly no page.
+        self.assertFalse((self.out_dir / 'persons' / 'p-bbbbbbbbbb.html').exists())
+        # The fix: restricted and unreadable, also no page.
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertTrue((self.out_dir / 'persons' / 'p-aaaaaaaaaa.html').exists())
+
+        text = self._all_output_text()
+        self.assertNotIn('Hidden Hollis', text)
+        self.assertNotIn('Hollis', text)
+        self.assertNotIn('Quiet Quinn', text)
+        self.assertIn('Living Person', self._read('persons/p-aaaaaaaaaa.html'))
+
+        # And the message says what actually happened, naming the file.
+        self.assertTrue(
+            any('hollis__test_p-cccccccccc.md' in m and 'withheld' in m
+                for m in res['messages']), res['messages'])
+        self.assertTrue(
+            any('left out of public output' in m for m in res['messages']),
+            res['messages'])
+
+    def test_a_person_record_whose_read_raises_is_withheld_too(self):
+        # `read_record` normally reports a bad file through `parse_errors`
+        # rather than raising, so both routes have to land in the same place.
+        self._seed_trio()
+        real = site.read_record
+        target = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+
+        def boom(path, *a, **kw):
+            if Path(path) == target:
+                raise RuntimeError('injected read failure')
+            return real(path, *a, **kw)
+
+        with unittest.mock.patch.object(site, 'read_record', new=boom):
+            res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertNotIn('Hidden Hollis', self._all_output_text())
+        self.assertTrue(
+            any('injected read failure' in m for m in res['messages']),
+            res['messages'])
+
+    def test_malformed_person_frontmatter_is_withheld(self):
+        # A hand-edit that breaks the YAML empties `meta` without raising,
+        # which loses the marker just as completely as a deleted file.
+        self._seed_trio()
+        broken = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+        broken.write_text(
+            '---\nid: p-cccccccccc\nname: "unterminated\n  : : :\n---\n# H\n',
+            encoding='utf-8')
+        self._run(linked=False)
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertNotIn('Hidden Hollis', self._all_output_text())
+
+    def test_linked_mode_is_unchanged(self):
+        # The developer preview applies no redaction at all and never reads
+        # these markers; withholding there would be a behaviour change for a
+        # mode that has no privacy contract to keep.
+        self._seed_trio()
+        (self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md').unlink()
+        self._run(linked=True)
+        self.assertTrue((self.out_dir / 'persons' / 'p-bbbbbbbbbb.html').exists())
+        self.assertTrue((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+
+    def test_an_unreadable_source_withholds_its_page_and_its_facts(self):
+        # The per-claim `restricted:` markers live in the source file too, so
+        # an unreadable source record means an unknown number of withheld
+        # facts. The whole source is withheld, and its claims with it.
+        self._seed_person('p-aaaaaaaaaa', 'Public Pat', surname='Pat')
+        self._seed_source('s-1111111111', 'Sealed Adoption File',
+                          people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth',
+                         'A private detail', status='accepted', date_edtf='1901',
+                         persons=('p-aaaaaaaaaa',))
+        (self.archive_root / 'sources' / 'census' / 'src_s-1111111111.md').unlink()
+        res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        text = self._all_output_text()
+        self.assertNotIn('A private detail', text)
+        self.assertNotIn('Sealed Adoption File', text)
+        self.assertTrue(
+            any('src_s-1111111111.md' in m and 'withheld' in m
+                for m in res['messages']), res['messages'])
+
+    def test_a_readable_person_record_still_publishes(self):
+        # The guard on the guard: fail-closed must not become closed-always.
+        self._seed_person('p-aaaaaaaaaa', 'Public Pat', surname='Pat')
+        self._run(linked=False)
+        self.assertTrue((self.out_dir / 'persons' / 'p-aaaaaaaaaa.html').exists())
+        self.assertIn('Public Pat', self._read('persons/p-aaaaaaaaaa.html'))
+
+
 class ResilienceTests(_Base):
     def test_malformed_source_yaml_warns_and_continues(self):
         # Broken frontmatter YAML in one source; another source is fine.
@@ -718,6 +851,52 @@ class AssetTests(_Base):
                 for m in res['messages']), res['messages'])
         self.assertTrue(
             any('<year>/mystery.jpg' in m for m in res['messages']),
+            res['messages'])
+
+    def test_a_shut_folder_inside_an_ignored_subtree_does_not_stop_the_guess(self):
+        # The guard is "publish a bare filename only when exactly ONE file in
+        # the library answers to it". A folder under `photos_ignore:` holds no
+        # candidate the guess would ever have accepted, so it can hide no
+        # second match and the count is not in doubt. Refusing over it is a
+        # refusal the guard has not earned - and photos_ignore: is there to
+        # name bulk exports, which are exactly the folders that live on drives
+        # that come and go.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\nphotos_ignore:\n  - "Flickr Export"\n',
+            encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        real = self.archive_root / 'photos' / '1890' / 'mystery.jpg'
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_bytes(b'not-a-real-image-but-exists')
+        shut = self.archive_root / 'photos' / 'Flickr Export' / '2019'
+        shut.mkdir(parents=True, exist_ok=True)
+        (shut / 'filler.jpg').write_bytes(b'x')
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(shut)):
+            res = self._run(linked=True)
+        self.assertIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertFalse(
+            [m for m in res['messages'] if 'could not be opened' in m],
+            res['messages'])
+
+    def test_a_shut_folder_outside_the_ignored_subtree_still_stops_the_guess(self):
+        # The other half of the same rule: a folder the setting says nothing
+        # about can still be hiding the second copy, so the refusal stands.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\nphotos_ignore:\n  - "Flickr Export"\n',
+            encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        for rel in ('1890/mystery.jpg', '1975/summer/mystery.jpg'):
+            stray = self.archive_root / 'photos' / rel
+            stray.parent.mkdir(parents=True, exist_ok=True)
+            stray.write_bytes(b'not-a-real-image-but-exists')
+        shut = self.archive_root / 'photos' / '1975'
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(shut)):
+            res = self._run(linked=True)
+        self.assertNotIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertTrue(
+            any('could not be opened' in m for m in res['messages']),
             res['messages'])
 
     def test_photos_ignore_excludes_bare_filename_guess(self):
