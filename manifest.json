@@ -150,7 +150,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "84c6e269998c63a397c3b94e8f65baf36f77b666617ed84bd4d28f6cc629e4c2",
+      "sha256": "bc3173c7671c15f615be73e52640bf6d17e8a09a2db8db674e4fe05c0f7738af",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -206,21 +206,21 @@
     {
       "path": ".fha/browser-companion/src/lib/bundle.js",
       "category": "operating",
-      "sha256": "96222612001a1a62d6fd1f3a61cac996f7827001a2009c4458e837a874ee93c1",
+      "sha256": "2525011957e93000b2d39d196f529bfafb7e711f42e354a4527232e8768a8d43",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/bundle.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
-      "sha256": "48552c68f2f6796fa7d8bf892a871d2d808ef75e26fba8b977d074fe46888ebb",
+      "sha256": "c6d98888ae507cab03cbb5519b52271b14d89bc1b5772565068bb49d85608413",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "8bc2375239ea77e79de0c3ff997231426f4555a9bd7aabceaf7040909cbbb870",
+      "sha256": "75d221c8ba789f9c71460cd5cd47253b83b2694e3337d85e4deeb87daca9a129",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -269,14 +269,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "12a235d8ac29f98a8ccd613d9e5370e814ee0114b61046542c280df0a967f410",
+      "sha256": "bc23f48ec2c173832440067415558450fed3f42ca4f93355b4ad17b612d2050a",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "75e3876521f5279f265d2c6cbc8f654dc941b969d07ce0b3c49e1399a1b49bc2",
+      "sha256": "fc207a883b5556bc19f89230ca3f9ea638915eb5d57f756a2b50d7caddc9d413",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },
@@ -395,14 +395,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "8c65f4058052cf7fcf7372cf731cf2a2cc47a2713957b9d83c0580564b0c8700",
+      "sha256": "34acb59a4b950f6ac2f1034466ec545db3f83e355fcbf994895046164e931f40",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "2ccd2094fb5df0f5a4d9711583256055c1f9c906dd07cb9039afc4bfc769ff97",
+      "sha256": "cf6837c265b752ba2441342dd35df15f9cc573e12718eef4dd50176528b32f31",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -542,7 +542,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "fa6b32a4ec72611c8418a9baa137d8681c889b33a1589c493c0032955456e5f9",
+      "sha256": "bdf7f7fb0b30f6e753b9861f70ec04a275dffa0b0332fa001b3bb64eca61dcb2",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -570,7 +570,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "1cc0f695e6c08d65e230ddb4ef897868caf7bcd9f35fcae35e70caf4a8b260ae",
+      "sha256": "f36bb5452747c814c0e52583f4d74979d4569d0bfb163c4fd9113d4a6adabf16",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -605,7 +605,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "24b5307e0bbd400756c47f73f382dc22f57d88d77fe9bc4f1565df269afcaf58",
+      "sha256": "0663dda69c99042b7be4f5600ebd45fce68fc41216501ce5410b4d77cd20bae9",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
