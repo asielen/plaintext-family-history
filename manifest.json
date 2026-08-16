@@ -395,14 +395,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "34acb59a4b950f6ac2f1034466ec545db3f83e355fcbf994895046164e931f40",
+      "sha256": "ae1fe2081acd7cad6c413b079930c79152e6d786984625dc422bc4b1e826bda6",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "cf6837c265b752ba2441342dd35df15f9cc573e12718eef4dd50176528b32f31",
+      "sha256": "87e71a719de9c48a2fd8a185f82703182d758bfccdc20968913ebf33befece2a",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -472,14 +472,14 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "5706f7aa8ec66e982b5f3237d25084daeaaffd5b1cb763fe02b499f7e2a87f87",
+      "sha256": "b50b51b7c6986e48a74d1684f3ef7c5ee950d87808b4167db42d79246a91152f",
       "spec_version": "1.2",
       "src": "tools/confirm.py"
     },
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "6f09709d70198d2d723dbe4ff9ef7dce6f78abd06293ccac4935ec3bd647937f",
+      "sha256": "76a9135f83b965f0c75fdb41d3bdefbd8597135d2d2606185d806cdc88c4e86d",
       "spec_version": "1.2",
       "src": "tools/convert_mining.py"
     },
@@ -542,21 +542,21 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "bdf7f7fb0b30f6e753b9861f70ec04a275dffa0b0332fa001b3bb64eca61dcb2",
+      "sha256": "94356f52bb65347ede3d193c93821bcb02508dbce7b63952d5cad80e2d425745",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
-      "sha256": "6f4682851b57d3892aa6491334ca5d836b7acb85cac7058bee24ebe5c0f2a211",
+      "sha256": "227a319682f7469663447a0f9f25c50e587594d1da5bb81fbb0adaf544146a28",
       "spec_version": "1.2",
       "src": "tools/normalize_links.py"
     },
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "3cd4a0266b3aee5607a6acdf6f3efe0480b691e00db0dc9121d9c64d349c6e0e",
+      "sha256": "faac8a70ebb3913f69af2c4c28089bd8a10f69ef5e4336e8752e17ff0e6e29b2",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
@@ -577,14 +577,14 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "fef70ca151f39216d668e4fa34981c648eca8348c224a56d3934f48499652f85",
+      "sha256": "9fc71e91d44ce1188eaeccf265fd86551643c0260273b6ac0140d22949aaf17e",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "6803b15cc83ce946a94fa28057b921c3dc8f75a16cb59c4e69f0e3940f60de4b",
+      "sha256": "dbc10cbef6540f38e798544f2c34ca1ab7f330c2863eaf16146f4568328286d8",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
@@ -626,7 +626,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "321afd5f4d419a6331a2b4a65f996e5bc674e64074bbeff0df29299ad445a88b",
+      "sha256": "93526b7067aa63b6b9d85ab5a8a66ce7e0a2a0b5fcba1514e707c5cbafba62bf",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -640,14 +640,14 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "8894f2197391cc310494dcc6ce1d390bf5a3f5b807b4c17b659b566902806c7c",
+      "sha256": "c283b8257d09ac63769849c6832c022f321d3b5efab73dfda740943426677578",
       "spec_version": "1.2",
       "src": "tools/source.py"
     },
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "9f9290e65e5b0a464e23bdf32c5f45c5ce9bff82062e916e9f8d589f149d5a11",
+      "sha256": "b7586a9b8facdf5ad3cb7aa5b0487c36e4a418157b3be253de6a5b8ea38e0730",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -852,7 +852,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "eb576538d368433ce07500b7ae7dc178fa96936b0468d7c1e9d086250b91e3d8",
+      "sha256": "e583bfb1b8655cccf0aebf6dc5eb0e99e1d134cc8b15c07b42495d2b0847c0ac",
       "spec_version": "1.2"
     },
     {
