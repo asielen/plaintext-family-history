@@ -102,19 +102,49 @@ directory — pass `--root <archive>` on every call rather than guessing.
    ```
 
    It reads sizes from the directory entries of the archive's configured media roots, opens nothing
-   unless a size collides, then SHA-256s both sides. Every folder inside those roots is walked,
-   including hidden ones like `documents/.private/` — a folder the human made for the material he is
-   most careful about is the last place this check may skip. Read-only on both sides — it renames,
-   moves and imports nothing. Exit **0** means no incoming file has a byte twin; exit **2** means at
-   least one does, and it prints which archived file (and its S-id, when the filename carries one).
-   Confirm the twin's record with `fha find <S-id>` before you say anything to the human.
+   unless a size collides, then SHA-256s both sides. Read-only on both sides — it renames, moves and
+   imports nothing. Exit **0** means no incoming file has a byte twin; exit **2** means at least one
+   does, and it prints which archived file (and its S-id, when the filename carries one). Confirm
+   the twin's record with `fha find <S-id>` before you say anything to the human.
 
-   Exit **1** is usage or configuration: a path that is not there, or PyYAML not installed. The
-   script needs PyYAML to read which folders hold the recordings (those folders are allowed to sit on
-   another drive) and refuses rather than guessing — a guess searches the wrong folder and calls an
-   already-filed recording new. It is the same PyYAML every `fha` command needs, so the fix is
-   `python -m pip install pyyaml`; the message says so. Do not work around it by pointing
-   `--media-root` at a folder you picked yourself.
+   **What a `new` verdict promises, and why that is the whole contract.** This gate authorises
+   imports, so `new` is not "I found no twin" — it is *"I examined everything I claim to have
+   examined, and none of it was this recording."* Five review rounds each found a different way for
+   the old script to examine less than that and still answer confidently, so the promise is now
+   written as five parts, and the script fails closed on any of them:
+
+   - **Roots** — every media root `fha.yaml` names was resolved and is readable. A configured root
+     that is not there right now (external drive unplugged, folder renamed) refuses the run; it is
+     not an empty root, its recordings are simply unread.
+   - **Enumeration** — every folder under those roots was listed, hidden ones like
+     `documents/.private/` and folders reached through a directory symlink included. A folder the
+     human made for the material he is most careful about, or a library kept where it already lives,
+     is the last place this check may skip.
+   - **Domain** — the same audio/video rule applies to both sides, and every path you name on the
+     command line is either checked or printed as `SKIPPED` with the reason. "Archived" means
+     **filed**: the inbox is staging even when it sits inside the photo library, so a recording
+     waiting there is never reported as already filed.
+   - **Candidates** — every archived recording of exactly the same byte size was opened and hashed.
+   - **Batch** — the incoming files were compared against each other too. One afternoon exported
+     twice under two names is two honest `new` verdicts that are together wrong; the script clears
+     the first and marks the rest `DUPLICATE … in the same batch`. Import the one it names.
+
+   Two more things follow from that. A file you hand over that already lives in a media root is the
+   archive's own copy: it comes back `DUPLICATE … already filed in the archive`, never `new`, so
+   selecting a filed recording (or handing over `documents/interviews/`) cannot authorise a second
+   import of it. And if you ever find yourself narrowing the check to make it answer — pointing
+   `--media-root` at a subfolder, skipping a root that will not mount — stop: that is examining less
+   and reporting the same confidence, which is precisely the failure this contract exists to close.
+
+   Exit **1** is usage or configuration: a path that is not there, PyYAML not installed, or a media
+   root `fha.yaml` names that is not there on this machine. The script needs PyYAML to read which
+   folders hold the recordings (those folders are allowed to sit on another drive) and refuses rather
+   than guessing — a guess searches the wrong folder and calls an already-filed recording new. It is
+   the same PyYAML every `fha` command needs, so the fix is `python -m pip install pyyaml`; the
+   message says so. A named-but-absent root is the same kind of refusal for the same reason: the
+   message tells the human to reconnect the drive, create the folder, or fix the path, and any of the
+   three is a one-step fix. Do not work around either by pointing `--media-root` at a folder you
+   picked yourself.
 
    `--json <path>` saves the same findings as a file, and that path is the one thing in this step
    that writes: give it a name of its own in the scratchpad, never a recording's name and never a
@@ -144,7 +174,10 @@ directory — pass `--root <archive>` on every call rather than guessing.
    On a match: **report and stop for that item** — *"this is the same file as the recording already
    filed at `documents/interviews/…` — skipping it, nothing imported."* Do not re-process it:
    `fha process` refuses a file already carrying an S-id, and forcing a second pass would mint a
-   duplicate S-id for one recording.
+   duplicate S-id for one recording. Where the match is another file in the same batch, say so in
+   those words — *"these two files are the same recording under two names; I'll import the one and
+   leave the other"* — and import exactly the file the script names, because one sitting is one
+   source record.
 
    If the duplicate's bundle carries a **transcript the archive lacks** — the phone's *timestamped*
    export where the archive only has the bracket form, say — that is an ordinary attach onto the
@@ -523,6 +556,12 @@ proposal-and-confirm is unchanged.
   saying so. Nothing is deleted without explicit instruction.
 - **Never re-process a file carrying an S-id**, and never mint a second S-id for a recording already
   in the archive. A duplicate is reported, not imported.
+- **Never narrow the duplicate check to get a clean answer.** `new` means the gate examined
+  everything it claims to have examined — every configured root, every folder inside it, every
+  same-size candidate, and the batch against itself. Pointing `--media-root` at the part that
+  happens to be readable, or carrying on past an `UNCHECKED` line, keeps the confidence while
+  removing what earned it. A gate that answers a smaller question in the same words is worse than no
+  gate at all.
 - Nothing mines silently. Intake is not extraction — in interactive mode this skill drafts zero
   claims and hands off.
 - Only `fha` and this skill's own `scripts/` are shelled from here. The two interim enactments
@@ -545,7 +584,11 @@ proposal-and-confirm is unchanged.
   is refused before anything is hashed, and every one of those files is byte-identical afterwards.
 - A byte-identical repeat of an already-archived recording is detected by hash, **skipped**, and
   reported with the path of the file it duplicates — no second S-id, no second folder, and the
-  bundle left intact on disk.
+  bundle left intact on disk. The same holds for a repeat *within one batch* (one afternoon under
+  two filenames): one is imported, the other reported and skipped.
+- A recording the archive already holds, handed back as the incoming argument — a filed file picked
+  from the documents root, or the whole `documents/interviews/` folder — is reported as already
+  filed, never cleared for import.
 - An export with no speaker labels, or a transcript/audio pair that fails the 50% match gate,
   degrades gracefully: no speaker labels are written, the reason is said in one plain sentence, and
   the recording still lands with its two transcripts.

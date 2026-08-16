@@ -19,9 +19,10 @@ splitting its claims.
 comparison against archived media (read straight off the directory entry, so nothing is opened),
 then SHA-256 only on a size collision. Media roots resolve through `fha.yaml`'s `roots:` mapping, so
 an external documents root is found rather than silently missed. Read-only; touches nothing. Exit 0
-= every incoming file was checked against every same-size candidate and none matched, 2 = at least
-one duplicate found, 3 = the check could not be completed (something could not be read, so nothing
-is cleared for import), 1 = usage or configuration error.
+= every incoming file was checked against everything the check claims to cover (see the coverage
+invariant below) and none matched, 2 = at least one duplicate found - of a filed recording or of
+another file in the same batch, 3 = the check could not be completed (something could not be read,
+so nothing is cleared for import), 1 = usage or configuration error.
 
 Whenever `fha media dedupe` does ship, it inherits both of those last two rules: a dedupe answer is
 an authorisation to import, so an unreadable candidate has to come back as an open question rather
@@ -32,21 +33,47 @@ refused before the check runs if it resolves onto an incoming recording, an arch
 `fha.yaml`. A read-only step that can overwrite a recording it has just cleared as safe to import
 is not read-only, and the report lands last, so the damage arrives with a clean exit code.
 
-Two more rules, each learned from a fail-open path found in the interim script's own gate:
+### The coverage invariant (the rule the other rules are instances of)
 
-- **Read the config with the config parser, or refuse.** Where the recordings live comes out of
-  `fha.yaml`'s `roots:`, and that file is YAML, so it is read with PyYAML (already the tooling's core
-  dependency) or not at all. A hand-rolled line reader understands a subset of the format and
-  therefore cannot distinguish "no roots configured" from "roots I failed to parse"; it returns
-  empty for both, the check scans the archive's empty internal skeleton instead of the external
-  library, and every incoming recording clears as new on exit 0. Three review rounds each found a
-  different spelling (`roots: {documents: /external/media}` among them) that slipped through one.
-  The general form: a mandatory gate never applies a default to input it did not fully parse.
-- **Walk every folder in the root, hidden ones included.** Pruning dot-prefixed directories drops
-  `documents/.private/interview.m4a` out of the comparison *without* marking anything unchecked, so
-  its byte-identical twin comes back `new`. The archive's own dot-folders (`.fha/`, `.cache/`,
-  `.git/`) hold no media file, so walking them costs a directory listing and nothing else; a
-  human's do. A subtree the gate skips has only one honest verdict, and it is not "new".
+Five review rounds each found a different fail-open path in the interim script's gate: an
+unhashable same-size candidate discarded; a hand-rolled YAML reader that could not see
+`roots: {documents: /external/media}`; dot-directories pruned from the walk; a subtree behind a
+directory symlink; a configured root that was not there. Patched one at a time they look like five
+unrelated bugs. They are one bug: **the gate was answering "did I find a twin?" when the question it
+must answer is "did I examine everything I claim to have examined?"** It had no notion of coverage,
+so every path that quietly examined less than the whole archive came out as a confident `new`.
+
+So the verb's contract is a coverage statement, not a search result. `new` means *all five* of
+these, and anything short of any one of them is `indeterminate` and nonzero, never `new`:
+
+1. **Roots resolved and readable.** Every media root `fha.yaml` names is a folder that can be
+   walked right now. A root the config *names* and the disk lacks is a coverage gap (the drive is
+   unplugged, the folder was renamed), not an empty root — distinguish it from a default alias the
+   config never mentions, which really is an ordinary young archive. Config that will not parse is
+   refused rather than defaulted: a mandatory gate never applies a default to input it did not
+   fully parse, which is why the mapping is read with PyYAML (already the tooling's core
+   dependency) or not at all.
+2. **Every file under every root enumerated.** Hidden folders included (`documents/.private/` is
+   where a human puts what he is most careful about) and folders behind directory symlinks
+   included (a library kept where it already lives). Following links needs a loop guard, and the
+   guard the coverage rule already implies is the right one: enumerate each folder once. Anything
+   that could not be entered is named, not skipped.
+3. **One domain rule, applied to both sides, with the leftovers said out loud.** The archive index
+   and the incoming list are filtered by the same audio/video rule, so "every candidate" means
+   something; a path the human names that falls outside it is reported as not checked rather than
+   given a verdict. And **archived means filed**: the inbox is staging, SPEC 12.4 lets it live
+   inside the photo library, and a recording waiting there is the opposite of one already imported.
+4. **Every same-size candidate hashed.** One that could not be read leaves the question open.
+5. **The batch compared against itself.** One sitting exported twice under two names yields two
+   `new` verdicts that are each true and together wrong. `new` means "import this one", so exactly
+   one member of a byte-identical group can carry it.
+
+Two consequences worth writing into the verb's own tests. A file handed to the verb that already
+lives in a media root is the archive's own copy - it is reported as already filed, never cleared,
+because the self-exclusion every such check needs ("a file is not its own duplicate") otherwise
+turns an archived original into a file with no twin. And the verb must never be able to answer a
+smaller question in the same words: narrowing the search to the roots that happen to be readable
+produces the same clean exit as a complete check, which is the whole failure mode restated.
 
 Not a substitute for it: `fha search "<phrase>"` (which does exist). It searches transcript and
 record text, so it finds a recording that *reads* alike — a useful lead when the bytes differ

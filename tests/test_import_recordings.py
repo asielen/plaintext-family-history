@@ -697,6 +697,10 @@ class FindDuplicateMediaTest(unittest.TestCase):
         self.archive = self.tmp / 'archive'
         self.filed = self.archive / 'documents' / 'interviews' / 'hartley-1998-06-14'
         self.filed.mkdir(parents=True)
+        # Both roots exist because fha.yaml names both, and archive-template
+        # ships both folders. A root the config names but the disk lacks is a
+        # coverage gap, not an ordinary archive - DedupeCoverageTest covers it.
+        (self.archive / 'photos').mkdir()
         (self.archive / 'fha.yaml').write_text(
             'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
         self.original = self.filed / 'hartley-1998-06-14_S-wb91h3hjrr.m4a'
@@ -877,8 +881,8 @@ class DedupeFailsClosedTest(unittest.TestCase):
         (self.incoming / 'something-else.m4a').write_bytes(b'entirely other bytes')
         real = find_duplicate_media.index_sizes_by_root
 
-        def partial(named_roots):
-            by_size, _unreadable = real(named_roots)
+        def partial(named_roots, staging=None):
+            by_size, _unreadable = real(named_roots, staging)
             return by_size, [str(self.filed / 'unreadable.m4a')]
 
         find_duplicate_media.index_sizes_by_root = partial
@@ -990,6 +994,360 @@ class DedupeFailsClosedTest(unittest.TestCase):
         self.assertEqual(code, 2, out)
         self.assertIn('checked 2 recording(s)', out)
         self.assertIn('DUPLICATE', out)
+
+
+class DedupeCoverageTest(unittest.TestCase):
+    """The question the gate must answer is a coverage question.
+
+    Five review rounds each found a different route to a false `new`, and every
+    one of them was the same shape: a path where the script examined less than
+    the whole archive and still reported a positive result. "Did I find a twin?"
+    is not the question - `new` is a claim about everything that was looked at,
+    so the question is "did I examine everything I said I examined?".
+
+    The dimensions of that claim, each with its own test below:
+
+      1. ROOTS      every configured media root resolved and readable
+      2. ENUMERATION every file under every root actually listed
+      3. DOMAIN     the same media rule applied to both sides, and every named
+                    input either checked or named as not checked
+      4. IDENTITY   an input already living in a media root is already archived,
+                    not a file with no twin
+      5. CANDIDATES every same-size candidate hashed
+
+    The last test in the class asserts the invariant itself over several
+    sabotages at once: while any dimension is short, nothing is cleared.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-coverage-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.archive = self.tmp / 'archive'
+        self.documents = self.archive / 'documents'
+        self.photos = self.archive / 'photos'
+        (self.documents / 'interviews').mkdir(parents=True)
+        self.photos.mkdir(parents=True)
+        self.payload = b'the same bytes as the phone still holds'
+        self.original = (self.documents / 'interviews'
+                         / 'hartley-1998-06-14_S-wb91h3hjrr.m4a')
+        self.original.write_bytes(self.payload)
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n  photos: photos\n', encoding='utf-8')
+        self.incoming = self.tmp / 'incoming'
+        self.incoming.mkdir()
+        self.twin = self.incoming / 'Thursday at 3-11 PM.m4a'
+        self.twin.write_bytes(self.payload)
+
+    def _run(self, *extra):
+        return run_script(find_duplicate_media,
+                          [str(self.incoming), '--root', str(self.archive)]
+                          + list(extra))
+
+    def _link_dir(self, target, link):
+        try:
+            os.symlink(str(target), str(link), target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('this platform will not create a directory symlink')
+
+    # -- 1. roots ----------------------------------------------------------
+    def test_a_configured_internal_root_that_is_missing_refuses_the_run(self):
+        """fha.yaml names `documents`; the folder was renamed; photos/ remains.
+
+        An absent root that fha.yaml never mentions is an ordinary young
+        archive - there is nothing filed there to hide. A root the archive
+        explicitly configures is a statement that recordings live there, so its
+        absence is a folder that moved, and the recordings in it are exactly
+        what a `new` verdict claims to have ruled out.
+        """
+        shutil.move(str(self.documents), str(self.archive / 'documents-moved'))
+        code, out, err = self._run()
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn('new  ', out)
+        self.assertIn('documents', err)
+        self.assertIn('run the command again', err)
+
+    def test_an_unconfigured_absent_root_is_still_ordinary(self):
+        """The other half: the refusal must not fire on a young archive."""
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        shutil.rmtree(str(self.photos))
+        code, out, _err = self._run()
+        self.assertEqual(code, 2, out)
+        self.assertIn('DUPLICATE', out)
+
+    # -- 2. enumeration ----------------------------------------------------
+    def test_an_archived_recording_below_a_directory_symlink_is_still_found(self):
+        """os.walk does not follow directory links, and said nothing about it.
+
+        The subtree is not listed and does not land in the unreadable list
+        either, so the twin below it is invisible and its incoming copy comes
+        back `new` on exit 0 - a skipped subtree wearing a clean verdict.
+        """
+        real = self.archive / 'real-media'
+        real.mkdir()
+        shutil.move(str(self.original), str(real / self.original.name))
+        self._link_dir(real, self.documents / 'linked')
+        code, out, _err = self._run()
+        self.assertEqual(code, 2, out)
+        self.assertIn('DUPLICATE', out)
+
+    def test_a_symlink_loop_is_walked_once_and_still_finds_the_twin(self):
+        """Following links has its own failure mode; it must not be the cure."""
+        real = self.archive / 'real-media'
+        real.mkdir()
+        shutil.move(str(self.original), str(real / self.original.name))
+        self._link_dir(real, self.documents / 'linked')
+        self._link_dir(self.documents, self.documents / 'loop')
+        code, out, _err = self._run()
+        self.assertEqual(code, 2, out)
+        self.assertIn('DUPLICATE', out)
+
+    def test_an_incoming_recording_below_a_directory_symlink_is_still_checked(self):
+        """The symmetric half: the bundle walk decides what gets a verdict."""
+        self.twin.unlink()
+        (self.incoming / 'plainly-new.m4a').write_bytes(b'entirely other bytes')
+        elsewhere = self.tmp / 'phone-export'
+        elsewhere.mkdir()
+        (elsewhere / 'Thursday at 3-11 PM.m4a').write_bytes(self.payload)
+        self._link_dir(elsewhere, self.incoming / 'linked')
+        code, out, _err = self._run()
+        self.assertIn('checked 2 recording(s)', out)
+        self.assertEqual(code, 2, out)
+
+    def test_the_size_index_holds_every_media_file_the_root_can_reach(self):
+        """The invariant itself: what the index holds equals what is on disk.
+
+        Asserted as a set comparison rather than through a verdict, because a
+        verdict test only catches the one file it happens to plant. Every
+        awkward shape the walk has ever dropped is present here at once:
+        a plain file, a dot-directory, a directory symlink, a symlink loop,
+        and a non-media file that must NOT be indexed.
+        """
+        plain = self.original
+        hidden = self.documents / '.private' / 'kept-back.m4a'
+        hidden.parent.mkdir()
+        hidden.write_bytes(b'a recording the human is careful about')
+        real = self.archive / 'real-media'
+        real.mkdir()
+        linked = real / 'below-a-link.m4a'
+        linked.write_bytes(b'a recording under a directory symlink')
+        self._link_dir(real, self.documents / 'linked')
+        self._link_dir(self.documents, self.documents / 'loop')
+        (self.documents / 'interviews' / 'notes.txt').write_bytes(b'not a recording')
+
+        by_size, unreadable = find_duplicate_media.index_sizes_by_root(
+            [('documents', str(self.documents))])
+        found = {find_duplicate_media.canonical_path(p)
+                 for paths in by_size.values() for p in paths}
+        expected = {find_duplicate_media.canonical_path(str(p))
+                    for p in (plain, hidden, linked)}
+        self.assertEqual(found, expected)
+        self.assertEqual(unreadable, [])
+
+    # -- 3. domain ---------------------------------------------------------
+    def test_an_explicitly_named_non_media_file_gets_no_verdict(self):
+        """A folder walk filters by extension; a named file did not.
+
+        `notes.txt` was therefore counted as a checked recording and cleared as
+        `new` - the gate answering for a file it has no index to answer from,
+        since the archive side never lists a non-media file either.
+        """
+        self.twin.unlink()
+        rec = self.incoming / 'plainly-new.m4a'
+        rec.write_bytes(b'entirely other bytes')
+        notes = self.incoming / 'notes.txt'
+        notes.write_bytes(b'words about the sitting, not the sitting')
+        code, out, _err = run_script(
+            find_duplicate_media,
+            [str(rec), str(notes), '--root', str(self.archive)])
+        self.assertEqual(code, 0, out)
+        self.assertIn('checked 1 recording(s)', out)
+        self.assertNotIn('new        incoming/notes.txt', out)
+        self.assertIn('notes.txt', out)
+
+    def test_every_named_input_is_either_checked_or_named_as_not_checked(self):
+        """The invariant: nothing the human handed over goes unmentioned."""
+        self.twin.unlink()
+        rec = self.incoming / 'plainly-new.m4a'
+        rec.write_bytes(b'entirely other bytes')
+        notes = self.incoming / 'transcript.txt'
+        notes.write_bytes(b'words, not audio')
+        report = self.tmp / 'dedupe.json'
+        run_script(find_duplicate_media,
+                   [str(rec), str(notes), '--root', str(self.archive),
+                    '--json', str(report), '--quiet'])
+        text = report.read_text(encoding='utf-8')
+        self.assertNotIn(str(self.tmp), text, 'a machine path reached the report')
+        payload = json.loads(text)
+        mentioned = ' '.join([r['path'] for r in payload['results']]
+                             + [str(x) for x in payload.get('not_checked', [])])
+        for named in (rec, notes):
+            self.assertIn(named.name, mentioned,
+                          '%s was named on the command line and the report says '
+                          'nothing about it' % named.name)
+        # The other half of the same invariant: a verdict is only ever given to
+        # a file the gate has an index to answer from, which is a media file.
+        for result in payload['results']:
+            self.assertTrue(find_duplicate_media.is_media(result['path']),
+                            '%s was given a verdict, but the archive side never '
+                            'lists a file like it, so there was nothing to '
+                            'compare it against' % result['path'])
+
+    # -- 4. identity -------------------------------------------------------
+    def test_a_recording_already_filed_is_not_cleared_when_it_is_handed_back(self):
+        """The self-exclusion filter could not tell two cases apart.
+
+        A file is not its own duplicate - true - but an incoming argument that
+        names a file already living in a media root is not an unmatched file
+        either: it is the archived original. Excluding it left no candidates,
+        and no candidates read as `new` on exit 0, authorising a second import
+        of a recording that is already filed.
+        """
+        code, out, _err = run_script(
+            find_duplicate_media,
+            [str(self.original), '--root', str(self.archive)])
+        self.assertEqual(code, 2, out)
+        self.assertNotIn('new  ', out)
+        self.assertIn('DUPLICATE', out)
+        self.assertIn('already filed', out)
+        self.assertIn('S-wb91h3hjrr', out)
+        # Printed where it really sits. An `incoming` label for a folder that is
+        # itself a media root would rename the archive's own folder on the very
+        # line saying the file is already filed in it.
+        self.assertIn('documents/interviews/hartley-1998-06-14_S-wb91h3hjrr.m4a',
+                      out)
+        self.assertNotIn('incoming/', out)
+
+    def test_a_media_root_folder_handed_back_as_incoming_is_not_cleared(self):
+        """The same mistake made with a folder instead of a file."""
+        code, out, _err = run_script(
+            find_duplicate_media,
+            [str(self.documents), '--root', str(self.archive)])
+        self.assertEqual(code, 2, out)
+        self.assertNotIn('new  ', out)
+
+    def test_a_link_into_the_archive_is_the_archives_own_copy(self):
+        """Pointed at by another name, it is still the file that is filed."""
+        link = self.tmp / 'shortcut.m4a'
+        try:
+            os.symlink(str(self.original), str(link))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('this platform will not create a symlink')
+        code, out, _err = run_script(
+            find_duplicate_media, [str(link), '--root', str(self.archive)])
+        self.assertEqual(code, 2, out)
+        self.assertNotIn('new  ', out)
+
+    def test_the_inbox_inside_a_media_root_is_not_the_archive(self):
+        """Staged is not filed, even when staging sits inside the library.
+
+        SPEC 12.4 allows `inbox: C:/Photos/_inbox`, and the capture flow hands
+        this check the inbox itself. Reading "inside a media root" as "already
+        filed" would answer the whole intake with "already filed, nothing to
+        import" and stop the import that would file it.
+        """
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n  photos: photos\n'
+            '  inbox: photos/_inbox\n', encoding='utf-8')
+        inbox = self.photos / '_inbox'
+        inbox.mkdir()
+        (inbox / 'new-sitting.m4a').write_bytes(b'an afternoon nobody has filed')
+        code, out, _err = run_script(
+            find_duplicate_media, [str(inbox), '--root', str(self.archive)])
+        self.assertEqual(code, 0, out)
+        self.assertIn('new', out)
+        self.assertNotIn('already filed', out)
+
+    def test_a_recording_only_staged_in_the_inbox_is_not_a_filed_twin(self):
+        """The same rule on the index side: a staged file has no S-id."""
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n  photos: photos\n'
+            '  inbox: photos/_inbox\n', encoding='utf-8')
+        inbox = self.photos / '_inbox'
+        inbox.mkdir()
+        staged = b'an afternoon nobody has filed'
+        (inbox / 'new-sitting.m4a').write_bytes(staged)
+        self.twin.write_bytes(staged)
+        code, out, _err = self._run()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('DUPLICATE', out)
+
+    def test_one_recording_handed_over_twice_in_one_batch_is_imported_once(self):
+        """The bundle can repeat itself, and that is the same harm.
+
+        The origin story of this script is a phone export that named one
+        afternoon three relative-weekday names. Checked only against the
+        archive, all three are honestly `new` - and importing all three gives
+        one recording three source records with its claims split between them.
+        """
+        self.twin.unlink()
+        payload = b'one afternoon, exported under two names'
+        (self.incoming / 'Recording 4.m4a').write_bytes(payload)
+        (self.incoming / 'Thursday at 3-11 PM.m4a').write_bytes(payload)
+        code, out, _err = self._run()
+        self.assertEqual(code, 2, out)
+        self.assertEqual(out.count('new        '), 1, out)
+        self.assertIn('in the same batch', out)
+        self.assertIn('incoming/Recording 4.m4a', out)
+
+    def test_two_different_recordings_of_one_size_are_not_repeats(self):
+        """Equal size proves nothing here either - only the hash decides."""
+        self.twin.unlink()
+        (self.incoming / 'one.m4a').write_bytes(b'first afternoon.....')
+        (self.incoming / 'two.m4a').write_bytes(b'second afternoon....')
+        code, out, _err = self._run()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count('new        '), 2, out)
+
+    # -- 5. the invariant, over every dimension at once ---------------------
+    def test_nothing_is_cleared_while_any_part_went_unexamined(self):
+        """One assertion, every coverage dimension: short means not cleared.
+
+        Each sabotage below removes a different part of what `new` claims to
+        have covered. None of them may produce exit 0, and none of them may
+        print a `new` verdict, no matter which dimension went short.
+        """
+        real_index = find_duplicate_media.index_sizes_by_root
+        real_hash = find_duplicate_media.sha256_file
+
+        def unreadable_entry():
+            def partial(named_roots, staging=None):
+                by_size, _ = real_index(named_roots, staging)
+                return by_size, [str(self.documents / 'unreadable.m4a')]
+            find_duplicate_media.index_sizes_by_root = partial
+            self.addCleanup(setattr, find_duplicate_media,
+                            'index_sizes_by_root', real_index)
+
+        def unhashable_candidate():
+            def offline(path, cache):
+                if 'documents' in str(path):
+                    raise OSError(5, 'Input/output error')
+                return real_hash(path, cache)
+            find_duplicate_media.sha256_file = offline
+            self.addCleanup(setattr, find_duplicate_media,
+                            'sha256_file', real_hash)
+
+        def configured_root_gone():
+            shutil.move(str(self.documents), str(self.archive / 'documents-moved'))
+
+        for name, sabotage in (('an archived file nobody could read',
+                                unreadable_entry),
+                               ('a same-size candidate nobody could hash',
+                                unhashable_candidate),
+                               ('a configured root that is not there',
+                                configured_root_gone)):
+            with self.subTest(gap=name):
+                sabotage()
+                try:
+                    code, out, _err = self._run()
+                    self.assertNotEqual(code, 0, out)
+                    self.assertNotIn('new  ', out)
+                finally:
+                    find_duplicate_media.index_sizes_by_root = real_index
+                    find_duplicate_media.sha256_file = real_hash
+                    moved = self.archive / 'documents-moved'
+                    if moved.is_dir():
+                        shutil.move(str(moved), str(self.documents))
 
 
 class DedupePathReportingTest(unittest.TestCase):
