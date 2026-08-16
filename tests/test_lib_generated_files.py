@@ -91,7 +91,9 @@ class RenderTemplateErrorTranslationTests(unittest.TestCase):
             render_template('gallery.html')
         message = str(ctx.exception)
         self.assertIn('gallery.html', message)
-        self.assertIn('tools/templates', message)
+        # The message names the real on-disk path, which carries the
+        # platform's separator - compare in posix form so Windows passes too.
+        self.assertIn('tools/templates', message.replace('\\', '/'))
 
     def test_render_time_error_becomes_plain_runtime_error(self) -> None:
         import jinja2
