@@ -453,6 +453,100 @@ def _keyword_to_edtf(pattern: str) -> str | None:
     return edtf if is_valid_edtf(edtf) else None
 
 
+# exiftool emits EXIF timestamps as 'YYYY:MM:DD HH:MM:SS' (colon-separated
+# date, optional time/zone tail) - NOT ISO-8601, which is why a naive ISO
+# parse left photos.edtf empty for every row that had only an EXIF date (#40).
+_EXIF_DATE_RE = re.compile(r'^(\d{4}):(\d{2}):(\d{2})(?!\d)')
+
+
+def _exif_to_edtf(exif_date: object) -> str | None:
+    """
+    Resolve an EXIF DateTimeOriginal value to an EDTF date, or None.
+
+    Precision degrades component by component the way EXIF's own zero-filled
+    convention does: '2015:00:00 00:00:00' means "2015, month unknown" and
+    resolves to '2015'; an all-zero or unparseable value resolves to nothing.
+    The time-of-day is always dropped - the archive dates photos, not moments.
+    """
+    if exif_date is None:
+        return None
+    m = _EXIF_DATE_RE.match(str(exif_date).strip())
+    if not m:
+        return None
+    year, month, day = m.groups()
+    if year == '0000':
+        return None
+    edtf = year
+    if 1 <= int(month) <= 12:
+        edtf += f'-{month}'
+        if 1 <= int(day) <= 31:
+            edtf += f'-{day}'
+    return edtf if is_valid_edtf(edtf) else None
+
+
+def _resolve_photo_edtf(date_pattern: str | None, exif_date: object) -> str | None:
+    """
+    One photo's resolved EDTF date: the DATE: keyword first, EXIF as fallback.
+
+    The precedence is a statement about evidence, not recency: a DATE:
+    keyword is curated (human transcription or the confidence-coded pipeline,
+    SPEC §20), while DateTimeOriginal is machine metadata - for a scanned
+    ancestor photo it is typically the *scanner's* clock, which dates the
+    file, not the photograph. It fills in only where no curated date exists.
+    """
+    if date_pattern:
+        from_pattern = _keyword_to_edtf(date_pattern)
+        if from_pattern:
+            return from_pattern
+    return _exif_to_edtf(exif_date)
+
+
+def _is_pattern_derived(date_pattern: str | None, edtf: str | None) -> bool:
+    """
+    Whether a stored edtf value came from the row's DATE: keyword.
+
+    Provenance is re-derived rather than stored so the catalog schema stays
+    unchanged (a new column would invalidate every existing cache and force a
+    full re-scrape). Exact by construction: _resolve_photo_edtf prefers the
+    pattern, so a stored edtf equal to the pattern's derivation IS the
+    pattern's (a coincidental EXIF match carries the same value, making the
+    distinction moot for ranking).
+    """
+    return bool(edtf) and bool(date_pattern) and _keyword_to_edtf(date_pattern) == edtf
+
+
+def _best_group_date(dated: list[tuple[str, bool]]) -> tuple[str | None, int | None]:
+    """
+    Resolve a group's (edtf_resolved, date_conflict) from its dated variants.
+
+    `dated` is [(edtf, pattern_derived)] in the caller's deterministic
+    tie-break order (max() keeps the first of equals). Curated DATE:-keyword
+    dates outrank EXIF-derived ones outright - however precise, a scanner
+    timestamp must never displace a researched '1912~' - and conflicts are
+    likewise judged only among the best provenance class present: a curated
+    1912 "conflicting" with a 2009 scan date is digitisation noise, not the
+    front-vs-back evidence the conflict report exists to surface. Among
+    EXIF-only groups the EXIF dates are compared with each other as before.
+
+    date_conflict is three-state (#40): None when the compared class has
+    fewer than two dates ("nothing to compare" - previously reported as 0,
+    which read as "no conflict" and was indistinguishable from it), else 0/1.
+    """
+    if not dated:
+        return None, None
+    best = max(dated, key=lambda t: (t[1], *_edtf_confidence(t[0])))[0]
+    compare = [e for e, is_pattern in dated if is_pattern] or [e for e, _ in dated]
+    if len(compare) < 2:
+        return best, None
+    conflict = 0
+    bounds = [edtf_bounds(e) for e in compare]
+    for i in range(len(bounds)):
+        for j in range(i + 1, len(bounds)):
+            if bounds[i][1] < bounds[j][0] or bounds[j][1] < bounds[i][0]:
+                conflict = 1
+    return best, conflict
+
+
 def _extract_face_regions(row: dict) -> list[tuple[str, str, str | None]]:
     """
     Return [(name, type, area_json), ...] from XMP-mwg-rs:RegionInfo.
@@ -492,12 +586,10 @@ def _row_to_photo(row: dict, mtime: float, size: int) -> dict:
             break
 
     date_pattern = None
-    edtf = None
     for kw in keywords:
         m = _DATE_KEYWORD_RE.match(kw.strip())
         if m:
             date_pattern = m.group(1).strip()
-            edtf = _keyword_to_edtf(date_pattern)
             break
 
     lat = row.get('GPSLatitude')
@@ -511,7 +603,7 @@ def _row_to_photo(row: dict, mtime: float, size: int) -> dict:
         'user_comment': row.get('UserComment'),
         'exif_date': row.get('DateTimeOriginal'),
         'date_pattern': date_pattern,
-        'edtf': edtf,
+        'edtf': _resolve_photo_edtf(date_pattern, row.get('DateTimeOriginal')),
         'sublocation': row.get('Location'),
         'city': row.get('City'),
         'state': row.get('State'),
@@ -878,17 +970,19 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     is cheap pure-SQL/Python and a partial re-group after an incremental scan
     would silently miss a newly-added sibling joining an existing group.
     """
-    rows = conn.execute('SELECT path, source_id, edtf FROM photos').fetchall()
+    rows = conn.execute('SELECT path, source_id, edtf, date_pattern FROM photos').fetchall()
     parsed_by_path: dict[str, ParsedName] = {}
     edtf_by_path: dict[str, str | None] = {}
+    pattern_by_path: dict[str, str | None] = {}
     stem_key_by_path: dict[str, str] = {}
     source_id_by_path: dict[str, str | None] = {}
 
-    for path, source_id, edtf in rows:
+    for path, source_id, edtf, date_pattern in rows:
         p = Path(path)
         parsed = parse_media_filename(p.stem)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
+        pattern_by_path[path] = date_pattern
         source_id_by_path[path] = source_id
         stem_key_by_path[path] = f'{p.parent.as_posix()}:{_grouping_stem(parsed)}'
 
@@ -926,15 +1020,9 @@ def _group_photos(conn: sqlite3.Connection) -> None:
             ((edtf_by_path[p], p) for p in paths if edtf_by_path[p]),
             key=lambda pair: (pair[1] != primary, pair[1]),
         )
-        edtfs = [e for e, _path in dated]
-        best_edtf = max(dated, key=lambda pair: _edtf_confidence(pair[0]))[0] if dated else None
-
-        date_conflict = 0
-        bounds = [edtf_bounds(e) for e in edtfs]
-        for i in range(len(bounds)):
-            for j in range(i + 1, len(bounds)):
-                if bounds[i][1] < bounds[j][0] or bounds[j][1] < bounds[i][0]:
-                    date_conflict = 1
+        best_edtf, date_conflict = _best_group_date([
+            (e, _is_pattern_derived(pattern_by_path[p], e)) for e, p in dated
+        ])
 
         conn.execute(
             'INSERT INTO photo_groups(group_id, primary_path, edtf_resolved, '
@@ -2320,22 +2408,18 @@ def _recompute_group_dates(conn: sqlite3.Connection, group_ids: set[str]) -> Non
     """
     for group_id in group_ids:
         rows = conn.execute(
-            'SELECT path, edtf FROM photos WHERE group_id = ?', (group_id,)
+            'SELECT path, edtf, date_pattern FROM photos WHERE group_id = ?', (group_id,)
         ).fetchall()
         live = sorted(
             (
-                (edtf, path) for path, edtf in rows
+                (edtf, path, date_pattern) for path, edtf, date_pattern in rows
                 if edtf and not path.startswith(_MISSING_PREFIX)
             ),
-            key=lambda pair: pair[1],
+            key=lambda item: item[1],
         )
-        best_edtf = max(live, key=lambda pair: _edtf_confidence(pair[0]))[0] if live else None
-        bounds = [edtf_bounds(e) for e, _ in live]
-        date_conflict = 0
-        for i in range(len(bounds)):
-            for j in range(i + 1, len(bounds)):
-                if bounds[i][1] < bounds[j][0] or bounds[j][1] < bounds[i][0]:
-                    date_conflict = 1
+        best_edtf, date_conflict = _best_group_date([
+            (e, _is_pattern_derived(pattern, e)) for e, _path, pattern in live
+        ])
         conn.execute(
             'UPDATE photo_groups SET edtf_resolved=?, date_conflict=? WHERE group_id=?',
             (best_edtf, date_conflict, group_id),
@@ -3349,7 +3433,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
             'unreadable': 0, 'unreadable_sample': [],
-            'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         })
 
     photos_root = resolve_path('photos', fha_config, archive_root)
@@ -3359,7 +3443,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             'photos_root': str(photos_root), 'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
             'unreadable': 0, 'unreadable_sample': [],
-            'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
         })
 
     on_disk: dict[Path, tuple[float, int]] = {}
@@ -3469,6 +3553,20 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key)
                 removed += 1
 
+        # Re-resolve every row's edtf from its stored columns, not just the
+        # re-scraped ones. edtf derives entirely from (date_pattern,
+        # exif_date), both already cached, so this is cheap pure-Python with
+        # no exiftool involved - and it is what heals a catalog scanned
+        # before EXIF dates resolved at all (#40): those rows are unchanged
+        # on disk, so the incremental scrape above never revisits them.
+        for path_key, exif_date, date_pattern, edtf in conn.execute(
+            'SELECT path, exif_date, date_pattern, edtf FROM photos'
+        ).fetchall():
+            resolved = _resolve_photo_edtf(date_pattern, exif_date)
+            if resolved != edtf:
+                conn.execute(
+                    'UPDATE photos SET edtf=? WHERE path=?', (resolved, path_key))
+
         _group_photos(conn)
         _rebuild_photo_people(conn, archive_root)
 
@@ -3487,6 +3585,9 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             'SELECT COUNT(*) FROM photo_groups WHERE date_conflict=1'
         ).fetchone()[0]
         groups = conn.execute('SELECT COUNT(*) FROM photo_groups').fetchone()[0]
+        dated_groups = conn.execute(
+            'SELECT COUNT(*) FROM photo_groups WHERE edtf_resolved IS NOT NULL'
+        ).fetchone()[0]
 
         conn.commit()
     finally:
@@ -3498,7 +3599,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         'unchanged': len(on_disk) - scraped - len(unreadable), 'removed': removed,
         'unreadable': len(unreadable),
         'unreadable_sample': [str(p) for p in unreadable[:5]],
-        'groups': groups, 'conflicts': conflicts,
+        'groups': groups, 'dated_groups': dated_groups, 'conflicts': conflicts,
         'rebuilt_reason': rebuilt_reason,
     })
 
@@ -3752,7 +3853,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         f"Scanned {summary['total']} files under {summary['photos_root']} "
         f"({summary['scraped']} scraped, {summary['unchanged']} unchanged, "
         f"{summary['removed']} removed from cache).\n"
-        f"Groups: {summary['groups']} ({summary['conflicts']} with date conflicts)."
+        f"Groups: {summary['groups']} ({summary['dated_groups']} dated, "
+        f"{summary['conflicts']} with date conflicts)."
     )
     if summary.get('unreadable'):
         sample = ', '.join(summary.get('unreadable_sample', []))

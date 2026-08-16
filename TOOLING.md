@@ -561,7 +561,7 @@ Candidates evaluated in the owner's private tool log.)
 | `Title` | Usually null; set only when the photo's identity is unmistakable |
 | `Caption` (Description) | **What is written in or on the photo** - direct transcription of contents |
 | `UserComment` | **Contextual info** that may not be on the photo, incl. the pipeline's AI summary - the richest text field |
-| `DateTimeOriginal` | Actual/estimated original-creation date (paired with the `DATE:` confidence pattern → EDTF) |
+| `DateTimeOriginal` | Actual/estimated original-creation date. Resolves to `edtf` (exiftool's `YYYY:MM:DD HH:MM:SS` → EDTF, precision degrading with EXIF's zero-filled components) only where no `DATE:` pattern resolves - the curated pattern always outranks the machine timestamp, which for a scanned photo typically dates the *scan* |
 | `Sub-location` ("location") | Neighborhood / specific area within a city |
 | `City` / `State` / `Country` | Place hierarchy as tagged |
 | `GPS` lat/lon | **Authoritative when present** - logger-recorded or manually verified; never second-guessed, and a backfill source for `places.yaml` coords |
@@ -573,7 +573,7 @@ Candidates evaluated in the owner's private tool log.)
 ```sql
 CREATE TABLE photos(path TEXT PRIMARY KEY, mtime REAL, size INTEGER,
   title TEXT, caption TEXT, user_comment TEXT,        -- §field table above
-  exif_date TEXT, date_pattern TEXT, edtf TEXT,       -- pattern→EDTF via SPEC §20 table
+  exif_date TEXT, date_pattern TEXT, edtf TEXT,       -- pattern→EDTF via SPEC §20 table, exif_date as fallback
   sublocation TEXT, city TEXT, state TEXT, country TEXT,
   gps_lat REAL, gps_lon REAL,                         -- authoritative when present
   source_id TEXT,                                     -- from SOURCE: keyword
@@ -602,8 +602,8 @@ The **primary** variant is, in order: a file with no variant/role/crop suffix at
 Negative grouping rule: negatives are stored at the stem level regardless of any variant letter in their filename - a negative is source material for the root image, not an A/B variant of the print. For page sets, `all_fronts` is the sorted page list and `all_backs` is all-None; `photo_groups` in the schema caches this structure for "show me all variants" queries. The `photos.variant_role` column holds the compound role value (`front`, `back`, `front-crop`, `back-crop`, `negative`, `negative-crop`, `page-1`, …).
 
 **Group date resolution.** Each variant may carry its own `DATE:` pattern and EXIF date (different backs say different things - that is evidence, not noise).
-The group's `edtf_resolved` is the **best-confidence variant's** EDTF: score by number of `!` components (D > M > Y), then `~` over `?`; deterministic tie-break by path.
-If any two variants' EDTF bounds (per §1 `edtf_bounds`) fail to overlap, set `date_conflict = 1` - and `fha photoindex report` lists all conflicted groups, because a date disagreement between the front and the back of the same photo is a research finding worth a question, not a value to silently average.
+The group's `edtf_resolved` is the **best-confidence variant's** EDTF: a `DATE:`-pattern-derived date outranks an EXIF-derived one outright (a scanner timestamp, however precise, never displaces a researched `1912~`); within a provenance class, score by number of `!` components (D > M > Y), then `~` over `?`; deterministic tie-break by path.
+Conflicts are judged only among the best provenance class present - a curated `1912` against a back-scan's `2009` EXIF date is digitisation noise, not front-vs-back evidence. If any two compared variants' EDTF bounds (per §1 `edtf_bounds`) fail to overlap, set `date_conflict = 1` - and `fha photoindex report` lists all conflicted groups, because a date disagreement between the front and the back of the same photo is a research finding worth a question, not a value to silently average. `date_conflict` is three-state: `NULL` when the compared class holds fewer than two dates ("nothing to compare"), so an undated library can never read as "no conflicts"; the scan summary reports the dated-group count alongside the conflict count for the same reason.
 Person/keyword attributes aggregate as the union across variants.
 
 `photo_face_regions` caches XMP region names, region types, and the provider-specific area object as compact JSON. This table is scraped metadata, not a derived query table: it lets `photo_people` be rebuilt when the person index changes without re-reading unchanged image files through exiftool. Existing otherwise-compatible caches that predate this table are not considered fresh; the next `fha photoindex` run backfills face regions. Older incompatible or corrupt `photos.sqlite` files are disposable and may be recreated from the photo files.

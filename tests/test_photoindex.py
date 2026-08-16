@@ -76,6 +76,120 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(photoindex._keyword_to_edtf('1960~'), '1960~')
         self.assertEqual(photoindex._keyword_to_edtf('1960!-05!-12~'), '1960-05-~12')
 
+    def test_exif_to_edtf_resolves_exiftool_timestamps(self) -> None:
+        # exiftool emits 'YYYY:MM:DD HH:MM:SS' - not ISO-8601 (#40). Precision
+        # degrades with EXIF's zero-filled convention; time-of-day is dropped.
+        self.assertEqual(photoindex._exif_to_edtf('2009:04:20 10:58:33'), '2009-04-20')
+        self.assertEqual(photoindex._exif_to_edtf('2009:04:20'), '2009-04-20')
+        self.assertEqual(photoindex._exif_to_edtf('2009:04:20 10:58:33-05:00'), '2009-04-20')
+        self.assertEqual(photoindex._exif_to_edtf('2015:00:00 00:00:00'), '2015')
+        self.assertEqual(photoindex._exif_to_edtf('2015:06:00 00:00:00'), '2015-06')
+        self.assertEqual(photoindex._exif_to_edtf('2009:13:40 00:00:00'), '2009')
+        self.assertIsNone(photoindex._exif_to_edtf('0000:00:00 00:00:00'))
+        self.assertIsNone(photoindex._exif_to_edtf('not a date'))
+        self.assertIsNone(photoindex._exif_to_edtf(''))
+        self.assertIsNone(photoindex._exif_to_edtf(None))
+
+    def test_exif_date_resolves_to_edtf_and_date_keyword_outranks_it(self) -> None:
+        # The catalog's date features all read `edtf`; an EXIF-only photo must
+        # populate it (#40), and a curated DATE: keyword must win over the
+        # machine timestamp when both are present - for a scanned ancestor
+        # photo DateTimeOriginal is typically the scanner's clock.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    # EXIF only -> edtf from EXIF, day precision.
+                    'family_reunion.jpg': {'DateTimeOriginal': '2009:04:20 10:58:33'},
+                    # Both -> the curated keyword wins.
+                    'wedding_1902.jpg': {
+                        'Keywords': ['DATE: 1902!'],
+                        'DateTimeOriginal': '2011:01:02 03:04:05',
+                    },
+                    # Front carries a curated date, back only a scan date: the
+                    # group resolves to the curated one, and the 2010-vs-1880
+                    # gap is digitisation noise, not a date conflict - but
+                    # with only one curated date there is also nothing to
+                    # compare, so the conflict state is unknown (NULL), not 0.
+                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880~']},
+                    'portrait_1880-back.jpg': {'DateTimeOriginal': '2010:05:06 07:08:09'},
+                }
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            self.assertEqual(summary['dated_groups'], 3)
+            self.assertEqual(summary['conflicts'], 0)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                edtf_by_name = {
+                    Path(path).name: edtf
+                    for path, edtf in conn.execute('SELECT path, edtf FROM photos')
+                }
+                self.assertEqual(edtf_by_name['family_reunion.jpg'], '2009-04-20')
+                self.assertEqual(edtf_by_name['wedding_1902.jpg'], '1902')
+                self.assertEqual(edtf_by_name['portrait_1880.jpg'], '1880~')
+                self.assertEqual(edtf_by_name['portrait_1880-back.jpg'], '2010-05-06')
+
+                resolved, conflict = conn.execute(
+                    "SELECT edtf_resolved, date_conflict FROM photo_groups "
+                    "WHERE group_id LIKE 'STEM:%portrait_1880%'"
+                ).fetchone()
+                self.assertEqual(resolved, '1880~')
+                self.assertIsNone(conflict)
+            finally:
+                conn.close()
+
+            # find --edtf now matches an EXIF-dated photo - the headline
+            # symptom of #40 was that it could never match anything.
+            res = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, edtf='2009')
+            self.assertTrue(
+                any('family_reunion' in r['path'] for r in res['rows']), res.data)
+
+    def test_scan_backfills_edtf_for_rows_scraped_before_the_fix(self) -> None:
+        # A catalog scanned before #40 holds exif_date but edtf NULL on every
+        # row, and an incremental scan never revisits unchanged files - the
+        # backfill must heal them from the stored columns, no exiftool needed.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {'SourceFile': str(p), 'DateTimeOriginal': '1998:07:15 12:00:00'}
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            db = archive / '.cache' / 'photos.sqlite'
+            conn = sqlite3.connect(db)
+            conn.execute('UPDATE photos SET edtf=NULL')
+            conn.execute('UPDATE photo_groups SET edtf_resolved=NULL')
+            conn.commit()
+            conn.close()
+
+            # Nothing on disk changed, so nothing is re-scraped - the heal
+            # must come from the backfill, not from exiftool.
+            def no_exiftool(paths: list[Path]) -> list[dict]:
+                raise AssertionError('unchanged files must not be re-scraped')
+
+            photoindex._run_exiftool = no_exiftool
+            summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            self.assertEqual(summary['scraped'], 0)
+            self.assertEqual(summary['dated_groups'], summary['groups'])
+
+            conn = sqlite3.connect(db)
+            try:
+                undated = conn.execute(
+                    'SELECT COUNT(*) FROM photos WHERE edtf IS NULL').fetchone()[0]
+                self.assertEqual(undated, 0)
+            finally:
+                conn.close()
+
     def test_scan_groups_variants_flags_date_conflict_and_indexes_pid_keyword(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -2122,7 +2236,10 @@ class PhotoindexTests(unittest.TestCase):
                     "WHERE group_id LIKE 'STEM:%portrait_1880%'"
                 ).fetchone()
                 self.assertEqual(row[0], '1850')
-                self.assertEqual(row[1], 0)
+                # One dated variant left = nothing to compare: the three-state
+                # date_conflict (#40) records that as NULL/unknown, not as the
+                # affirmative "compared and they agree" that 0 now means.
+                self.assertIsNone(row[1])
             finally:
                 conn.close()
 
