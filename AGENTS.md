@@ -115,7 +115,7 @@ the owner-facing docs whenever a change affects how a human reads the archive (t
 
 ### Session end (all modes)
 
-Summarize what changed and where; list any proposed-but-unapproved decisions; name any tool defects you logged in `TOOL_ISSUES.md` this session (and whether any wants filing upstream - a proposal, not an action); name any research questions you opened in `notes/questions.md` (and any you raised and did *not* log - saying so here is the last chance to catch the omission); supply a one-line commit message (git is the change log - commit only when asked).
+Summarize what changed and where; list any proposed-but-unapproved decisions; name any tool defects you logged in `TOOL_ISSUES.md` this session (and whether any wants filing upstream - a proposal, not an action); name any research questions you opened in `notes/questions.md` (and any you raised and did *not* log - saying so here is the last chance to catch the omission); name any **negative** finding you acted on (something you concluded was absent, and the edit it licensed) - those are the edits most likely to need reverting, and the ones whose evidence is hardest to reconstruct later; supply a one-line commit message (git is the change log - commit only when asked).
 
 ## The map
 
@@ -413,6 +413,32 @@ pursuing)`); never writing it down is not. Note what this is *not*: `fha lint --
 opens these blocks for exactly one machine-detectable case (E009, a `contradicts:` with no open
 question). Everything a human or an agent notices is yours to write, and nothing will warn you
 that you didn't.
+
+### You cannot conclude absence from a search
+
+A search tells you what is in **what you searched**. Before writing that something "appears in no
+source", "is unsourced", or "was invented", state what your search actually covered and confirm
+the rest of the corpus was reachable by it. It usually is not: an image-only source with no
+transcript is invisible to text search, and a `people:` list holds only what some earlier pass
+wrote down. The gap between *"X is not in the text I searched"* and *"X is in no source"* is
+exactly the size of the corpus you could not read - which you have not measured unless you went
+and measured it. If you cannot establish coverage, the honest finding is **"not present in
+\<what you searched\>"**, and it belongs in `notes/questions.md` as an open question, not in a
+claim correction.
+
+**Absence is never grounds for a destructive edit on its own.** This is the asymmetry that makes
+the rule matter here rather than being ordinary epistemic hygiene: a positive finding *adds* a
+claim, while a negative one takes a name off a person. Striking a value, renaming a person,
+renaming a couple folder, retracting another record's note - each needs positive evidence that the
+thing is **wrong**, not merely that you failed to find it right. Care is not a substitute: this
+fails most often on work that was done attentively, because the flaw sits in the shape of the
+inference rather than in the effort. When you do act on a negative finding, record what you
+searched and how you established coverage, so the next reader can see the shape of the hole rather
+than inheriting your conclusion.
+
+The same reasoning covers every "does this exist" question, not just full-text search - "no claim
+exists for this", "this person has no death record", "nothing links these two". Each is a
+statement about coverage, and coverage is never total.
 
 ## Don'ts
 
