@@ -99,6 +99,14 @@ that whole span is treated as BLIND and casts no vote at all - otherwise a
 single dropped middle turn would silently stretch the previous speaker's
 interval across segments that belong to somebody else.
 
+A count of timed turns cannot see WHERE the timing stops, so it is not the only
+gate. An app transcript that ends at 51 seconds of a 100-second recording has
+100% timed turns and covers half the audio. Two rules answer that: the last
+timed turn's interval is capped at its own estimated length instead of running
+on to the end of the audio, and the timestamp path is switched off entirely
+unless the last span naming a speaker reaches TIME_MIN_TAIL_COVERAGE of the way
+through. An uncovered tail casts no timestamp votes and goes out unlabelled.
+
 CONFIDENCE
 ==========
 Per Whisper segment, every token that carries evidence votes for one speaker.
@@ -124,10 +132,17 @@ SAFETY RULES (all mandatory, none tunable away)
 * Hard mispair gate. If the global token match rate falls below --min-match-rate
   (default 0.50) the tool refuses to label anything and exits 2. A transcript
   paired with the wrong audio still matches ~6% of tokens and will happily label
-  most segments with confident nonsense; correct pairs match 70–85%. The
+  most segments with confident nonsense; correct pairs match 70-85%. The
   separation is enormous, so the gate is cheap and the failure it prevents is not.
   `--force` overrides it for a deliberate experiment; the override is recorded in
   the run's warnings and in the JSON report, never silent.
+* Refused means nothing is written. A refusal writes neither --out nor --report:
+  the earlier version of a run that refused still published an unlabelled copy of
+  the whisper input, so naming the wrong app transcript by mistake destroyed a
+  perfectly good attributed transcript while the tool said it had refused. The
+  same holds for a run that could attribute nothing at all (no speaker labels in
+  the app export, no segments in the whisper file): if either destination already
+  holds a file, it is left alone and the run exits 1 saying why.
 * Gap interpolation only between anchors that agree on the speaker, and only
   across ≤25 tokens. Never interpolate across a speaker change.
 * A tie is contested, and contested is unlabeled. There is no "same as previous
@@ -173,6 +188,7 @@ CODE MAP
                      align_tokens              the recursive driver + stats
   Evidence           collect_align_votes       votes from token pairs, gap-filled
                      timestamp_coverage_ok     the 80% timed-turn gate
+                     turn_span_estimate        how long one turn plausibly lasts
                      speaker_intervals         turn spans, blind where unknowable
                      collect_time_votes        votes from the interval lookup
   Decision           enclosing_agree           do the anchors around a segment agree
@@ -214,11 +230,29 @@ FUZZY_MIN_LEN = 4
 FUZZY_WINDOW = 12
 TIME_MIN_TURN_COVERAGE = 0.8  # fraction of app turns that must carry a timestamp
 TIME_MIN_TIMED_TURNS = 3      # and never fewer than this many, whatever the fraction
+TIME_MIN_TAIL_COVERAGE = 0.9  # and the timed turns must reach this far into the
+                              # audio; a count of timed turns says nothing about
+                              # WHERE the timing stops (see collect_time_votes)
+SPEECH_SECONDS_PER_TOKEN = 0.35   # rough speaking rate, used to guess where a
+                                  # final segment or turn stops. One constant so
+                                  # both sides of that comparison are measured
+                                  # the same way.
 MIN_TOTAL_VOTE_WEIGHT = 2.0   # below this a segment rests on one or two stray tokens
 
 # Fractions are compared with a hair of slack so that a ratio which is exactly
 # the gate (8 of 10 turns) is not pushed under it by binary floating point.
 FRACTION_EPSILON = 1e-9
+
+# Every internal status has a sentence a genealogist can act on. The status
+# string itself is for the JSON report; this is what he reads when a run stops.
+STATUS_IN_PLAIN_WORDS = {
+    "mispair_suspected": "the two files do not look like the same recording",
+    "no_whisper_segments": "the whisper transcript has no '**[HH:MM:SS]**' lines "
+                           "to put labels on",
+    "no_speaker_labels": "the app transcript carries no speaker labels at all "
+                         "(it is a paragraph-only export)",
+    "empty_transcript": "one of the two transcripts contains no words",
+}
 
 # ---------------------------------------------------------------------------
 # Normalisation
@@ -724,6 +758,18 @@ def timestamp_coverage_ok(turns):
     return (timed / float(len(turns))) >= (TIME_MIN_TURN_COVERAGE - FRACTION_EPSILON)
 
 
+def turn_span_estimate(turn):
+    """How long a turn plausibly lasts, guessed from its own word count.
+
+    The app export gives a turn's start and nothing else, so the only honest end
+    for the LAST timed turn is an estimate from the words inside it. The rate is
+    the same one used to guess where the final whisper segment stops, so the two
+    ends being compared are measured the same way rather than one of them being
+    a real timestamp and the other a whole recording's length.
+    """
+    return max(1.0, SPEECH_SECONDS_PER_TOKEN * len(turn.tokens))
+
+
 def speaker_intervals(turns, audio_end):
     """Turn timestamps as (start, end, speaker-or-None) spans, in order.
 
@@ -738,6 +784,15 @@ def speaker_intervals(turns, audio_end):
     the absorption bug: one missing middle turn hands the previous speaker
     full-strength votes over segments that are somebody else's words, and
     nothing downstream can tell that happened.
+
+    The last timed turn is the same bug wearing a different hat, and it is the
+    one with no next turn to blank it: an app transcript that stops at 51s of a
+    100-second recording used to have its final interval stretched all the way
+    to `audio_end`, so every segment in the 49 uncovered seconds collected a
+    full-duration vote for whoever happened to speak last. The final interval is
+    therefore capped at that turn's own estimated length. Past the app's real
+    coverage there is no interval at all, so the tail casts no timestamp votes
+    and stays unlabelled, which is the honest answer.
     """
     n = len(turns)
     next_timed_start = [None] * n
@@ -753,7 +808,9 @@ def speaker_intervals(turns, audio_end):
             continue
         end = next_timed_start[i]
         if end is None:
-            end = max(audio_end, turn.start + 1.0)
+            end = turn.start + turn_span_estimate(turn)
+            if audio_end > turn.start:
+                end = min(end, audio_end)
         if end <= turn.start:
             continue                       # zero-length: two turns share a stamp
         blind = (i + 1 < n and turns[i + 1].start is None)
@@ -762,7 +819,17 @@ def speaker_intervals(turns, audio_end):
 
 
 def collect_time_votes(segments, turns, n_segments, warnings):
-    """Interval lookup when the app export carries timestamps. Opportunistic."""
+    """Interval lookup when the app export carries timestamps. Opportunistic.
+
+    Two coverage gates, because a count and a position are different questions.
+    `timestamp_coverage_ok` asks HOW MANY turns carry a timestamp; it cannot see
+    that all of them sit in the first half of the recording. So the second gate
+    asks WHERE the timing actually reaches: the last span that names a speaker
+    must land within TIME_MIN_TAIL_COVERAGE of the end of the audio, or the
+    timestamp path is switched off for the whole file. An app transcript that
+    stops halfway is not partial evidence about the second half, it is no
+    evidence at all, and the text alignment alone is the correct answer there.
+    """
     if not timestamp_coverage_ok(turns):
         return None
     starts = [t.start for t in turns if t.start is not None]
@@ -777,15 +844,22 @@ def collect_time_votes(segments, turns, n_segments, warnings):
     if any(seg_times[k] < seg_times[k - 1] for k in range(1, len(seg_times))):
         warnings.append("whisper timestamps are not monotone; timestamp path disabled")
         return None
-    audio_end = seg_times[-1] + max(1.0, 0.35 * max(1, len(segments[-1].tokens)))
-    if starts[-1] < 0.5 * seg_times[-1]:
-        warnings.append(
-            "app transcript timestamps stop at %.0fs but audio runs to ~%.0fs; "
-            "timestamp path disabled (partial coverage)" % (starts[-1], seg_times[-1]))
-        return None
+    audio_end = seg_times[-1] + max(
+        1.0, SPEECH_SECONDS_PER_TOKEN * max(1, len(segments[-1].tokens)))
 
     intervals = speaker_intervals(turns, audio_end)
     if not intervals:
+        return None
+    named_ends = [end for (_start, end, spk) in intervals if spk is not None]
+    if not named_ends:
+        return None
+    covered_end = max(named_ends)
+    if covered_end < TIME_MIN_TAIL_COVERAGE * audio_end:
+        warnings.append(
+            "the app transcript's timed turns stop at about %.0fs but the "
+            "recording runs to about %.0fs; timestamp evidence is switched off "
+            "for the whole file rather than guess who is speaking in the last "
+            "%.0fs" % (covered_end, audio_end, audio_end - covered_end))
         return None
 
     votes = [Counter() for _ in range(n_segments)]
@@ -795,7 +869,7 @@ def collect_time_votes(segments, turns, n_segments, warnings):
         s0 = seg_times[idx]
         s1 = seg_times[idx + 1] if idx + 1 < len(segments) else audio_end
         if s1 <= s0:
-            s1 = s0 + max(0.5, 0.35 * max(1, len(seg.tokens)))
+            s1 = s0 + max(0.5, SPEECH_SECONDS_PER_TOKEN * max(1, len(seg.tokens)))
         ntok = len(seg.tokens)
         if ntok == 0:
             continue
@@ -826,10 +900,23 @@ def collect_time_votes(segments, turns, n_segments, warnings):
 # ---------------------------------------------------------------------------
 # Decision
 # ---------------------------------------------------------------------------
-def enclosing_agree(pair_js, pair_speakers, t0, t1, speaker):
+def enclosing_agree(pair_js, pair_speakers, t0, t1, speaker, window=GAP_CAP):
+    """Do the matched tokens either side of this segment both name `speaker`?
+
+    The only use for this is rescuing a segment whose own evidence is thin, so
+    "either side" has to mean NEARBY. Without the window it asked a question
+    about distance-blind neighbours: in a transcript with one long unmatched
+    stretch, the nearest matched token before a segment can be thousands of
+    tokens back, and two such strangers agreeing says nothing at all about who
+    is speaking here. That is the same mistake as measuring coverage without
+    asking where the coverage sits. The bound is GAP_CAP, the same locality this
+    file already trusts when it interpolates between two agreeing anchors.
+    """
     before = bisect.bisect_left(pair_js, t0) - 1
     after = bisect.bisect_left(pair_js, t1)
     if before < 0 or after >= len(pair_js):
+        return False
+    if (t0 - pair_js[before]) > window or (pair_js[after] - t1) > window:
         return False
     return pair_speakers[before] == speaker and pair_speakers[after] == speaker
 
@@ -1118,6 +1205,35 @@ def main(argv=None):
                     votes[k].update(time_votes[k])
             counts = decide(segments, votes, time_used, pairs, app_owner,
                             args.min_confidence)
+
+    # A run that refused publishes nothing, and a run that could attribute
+    # nothing does not replace an earlier result with an unlabelled copy. Both
+    # outputs are held back together: a JSON report describing a transcript that
+    # was never written is its own small lie. A no-op with nothing to overwrite
+    # still writes the pass-through copy, which is the documented honest no-op.
+    held = [os.path.basename(p) for p in (args.out, args.report)
+            if p and os.path.exists(p)]
+    if status != "ok" and (status == "mispair_suspected" or held):
+        plain = STATUS_IN_PLAIN_WORDS.get(status, status)
+        for w in warnings:
+            sys.stderr.write("%s: warning: %s\n" % (TOOL_NAME, w))
+        if status == "mispair_suspected":
+            sys.stderr.write(
+                "%s: error: refused to label because %s, so nothing was "
+                "written - anything already saved as %s is untouched. Check that "
+                "the app transcript really belongs to this recording and run the "
+                "command again; --force labels anyway, which is a decision you "
+                "own and must say out loud.\n"
+                % (TOOL_NAME, plain, os.path.basename(args.out)))
+            return exit_code
+        if held:
+            return fail(
+                "nothing could be attributed because %s, and %s already holds "
+                "a file from an earlier run. Replacing it with an unlabelled "
+                "copy would throw that work away, so nothing was written. Fix "
+                "the input named in the warning above, or give --out and "
+                "--report new filenames, then run the command again."
+                % (plain, " and ".join(held)))
 
     labelled = counts.get("labelled", 0)
     note = ("<!-- speaker labels transferred by %s v%s from '%s'. "

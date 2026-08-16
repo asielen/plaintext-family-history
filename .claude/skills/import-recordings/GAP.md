@@ -19,7 +19,14 @@ splitting its claims.
 comparison against archived media (read straight off the directory entry, so nothing is opened),
 then SHA-256 only on a size collision. Media roots resolve through `fha.yaml`'s `roots:` mapping, so
 an external documents root is found rather than silently missed. Read-only; touches nothing. Exit 0
-= no byte twin, 2 = at least one duplicate found, 1 = usage or IO error.
+= every incoming file was checked against every same-size candidate and none matched, 2 = at least
+one duplicate found, 3 = the check could not be completed (something could not be read, so nothing
+is cleared for import), 1 = usage or configuration error.
+
+Whenever `fha media dedupe` does ship, it inherits both of those last two rules: a dedupe answer is
+an authorisation to import, so an unreadable candidate has to come back as an open question rather
+than as "no twin found", and every path it reports belongs in alias form (`documents/…`) rather than
+as this machine's absolute path or as a bare filename that cannot say which file matched.
 
 Not a substitute for it: `fha search "<phrase>"` (which does exist). It searches transcript and
 record text, so it finds a recording that *reads* alike — a useful lead when the bytes differ

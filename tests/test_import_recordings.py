@@ -17,14 +17,22 @@ What is covered here:
      SKILL.md code fence exists. A workflow that stops at a parser error is a
      broken workflow.
   3. THE GATES THEMSELVES - the 80% timestamp gate is a true fraction (4 of 6
-     turns must fail it), and an untimed turn between two timed ones blanks its
-     span instead of being absorbed into the previous speaker's interval.
+     turns must fail it); an untimed turn between two timed ones blanks its span
+     instead of being absorbed into the previous speaker's interval; and a
+     transcript that stops halfway through the recording cannot label the half
+     it never reached. Coverage is about WHERE, not only how much: the same
+     question is asked of the anchors that rescue a thin segment.
   4. OUTPUT SAFETY - no destination may collide with an input or with the other
-     destination; a run that refuses leaves every file untouched; nothing written
-     to disk carries an absolute machine path (AGENTS_TOOLING.md §11).
+     destination; a run that refuses or attributes nothing writes neither output
+     and leaves an earlier result byte for byte; nothing written to disk carries
+     an absolute machine path (AGENTS_TOOLING.md §11).
   5. THE DEDUPE SCRIPT - size-then-SHA-256 finds a byte-identical twin under a
      configured (including external) documents root, clears a file that only
-     shares a size, and never modifies the archive.
+     shares a size, and never modifies the archive. It is a safety gate, so it
+     fails closed: anything it could not read comes back `indeterminate` and
+     nonzero rather than "new", and every path it reports is written under the
+     name of the root holding it - never an absolute path, never a `../..` climb,
+     never a bare filename that cannot say which file matched.
 
 Run: python -m unittest tests.test_import_recordings -v   (from the repo root)
 """
@@ -287,7 +295,10 @@ class BlindSpanTest(unittest.TestCase):
             [(0.0, 10.0, 'Speaker 1'),
              (10.0, 30.0, None),          # blind: the boundary is somewhere in here
              (30.0, 40.0, 'Speaker 2'),
-             (40.0, 50.0, 'Speaker 1')])
+             # The last turn ends when its own words run out (these test turns
+             # carry no tokens, so the 1.0s floor), NOT at audio_end - see
+             # UncoveredTailTest for what extending it to 50.0 used to do.
+             (40.0, 41.0, 'Speaker 1')])
 
     def test_a_fully_timed_export_has_no_blind_spans(self):
         turns = [Turn('Speaker 1', 0.0), Turn('Speaker 2', 10.0), Turn('Speaker 1', 20.0)]
@@ -341,6 +352,102 @@ class BlindSpanTest(unittest.TestCase):
                  Turn('Speaker 1', 40.0), Turn('Speaker 2', 50.0)]
         self.assertIsNone(attribute_speakers.collect_time_votes(
             segments, turns, len(segments), []))
+
+
+class UncoveredTailTest(unittest.TestCase):
+    """An app transcript that stops early must not own the rest of the audio.
+
+    Same class of bug as the blind span above, at the end of the file where
+    there is no next turn to blank it: a count of timed turns cannot see WHERE
+    the timing stops, and a transcript timed to 51s of a 100s recording passes
+    every count-based gate there is.
+    """
+
+    def test_the_last_interval_stops_with_the_turn_not_with_the_audio(self):
+        turns = [Turn('Speaker 1', 0.0), Turn('Speaker 2', 10.0),
+                 Turn('Speaker 1', 51.0)]
+        turns[2].tokens = ['just', 'a', 'few', 'closing', 'words']
+        intervals = attribute_speakers.speaker_intervals(turns, audio_end=103.0)
+        last_start, last_end, last_speaker = intervals[-1]
+        self.assertEqual(last_speaker, 'Speaker 1')
+        self.assertEqual(last_start, 51.0)
+        self.assertLess(last_end, 60.0,
+                        'the final interval was stretched to the end of the audio')
+
+    def test_a_half_timed_export_switches_the_timestamp_path_off(self):
+        """51s of a 100s recording: 100% of turns timed, half the audio covered."""
+        rows = [('00:00:00', 'we lived on the farm out past the creek for years'),
+                ('00:00:12', 'and how long were you there grandpa exactly'),
+                ('00:00:25', 'nineteen years give or take a hard winter'),
+                ('00:00:38', 'did you ever think about leaving the place'),
+                ('00:00:51', 'never once not for a single day of it')]
+        tail = [('00:01:%02d' % (k * 10), 'a later passage nobody timed at all '
+                                          'number %d' % k) for k in range(1, 6)]
+        segments, _stream, _owner = attribute_speakers.parse_whisper(
+            whisper_text(rows + tail).splitlines())
+        turns = []
+        for speaker, (clock, text) in zip((2, 1, 2, 1, 2), rows):
+            t = Turn('Speaker %d' % speaker,
+                     attribute_speakers.parse_clock(clock[3:]))
+            t.tokens = attribute_speakers.tokenize(text)
+            turns.append(t)
+        warnings = []
+        self.assertIsNone(
+            attribute_speakers.collect_time_votes(
+                segments, turns, len(segments), warnings),
+            'timestamp evidence was trusted for audio the app never reached')
+        self.assertTrue(any('timed turns stop' in w for w in warnings), warnings)
+
+    def test_the_uncovered_tail_goes_out_unlabelled(self):
+        """End to end: the tail keeps the plain form, whatever the first half does."""
+        tmp = Path(tempfile.mkdtemp(prefix='import-recordings-tail-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        rows = [('00:00:00', 'we lived on the farm out past the creek for years'),
+                ('00:00:12', 'and how long were you there grandpa exactly'),
+                ('00:00:25', 'nineteen years give or take a hard winter'),
+                ('00:00:38', 'did you ever think about leaving the place'),
+                ('00:00:51', 'never once not for a single day of it')]
+        tail = [('00:01:00', 'the mill burned down the summer after the war ended'),
+                ('00:01:20', 'and your mother kept the ledgers for the whole county'),
+                ('00:01:40', 'nobody else could read her handwriting afterwards')]
+        whisper = tmp / 'w.md'
+        app = tmp / 'a.txt'
+        out = tmp / 'o.md'
+        whisper.write_text(whisper_text(rows + tail), encoding='utf-8')
+        app.write_text(app_numbered([
+            (2, '00:00', rows[0][1]), (1, '00:12', rows[1][1]),
+            (2, '00:25', rows[2][1]), (1, '00:38', rows[3][1]),
+            (2, '00:51', rows[4][1]),
+        ]), encoding='utf-8')
+        code, _stdout, _err = run_script(attribute_speakers, [
+            '--whisper', str(whisper), '--app-transcript', str(app),
+            '--out', str(out), '--quiet'])
+        self.assertEqual(code, 0)
+        written = out.read_text(encoding='utf-8').splitlines()
+        for line in written:
+            if line.startswith('**[00:01:'):
+                self.assertNotIn('Speaker', line,
+                                 'a segment the app transcript never reached was '
+                                 'labelled anyway')
+
+
+class EnclosingAgreeWindowTest(unittest.TestCase):
+    """A thin segment is only rescued by anchors that are actually near it."""
+
+    def test_distant_anchors_do_not_rescue_a_thin_segment(self):
+        pair_js = [0, 5000]
+        pair_speakers = ['Speaker 1', 'Speaker 1']
+        self.assertFalse(
+            attribute_speakers.enclosing_agree(pair_js, pair_speakers,
+                                               2000, 2010, 'Speaker 1'),
+            'two matched tokens thousands of tokens away were read as agreement')
+
+    def test_near_anchors_still_rescue_it(self):
+        pair_js = [1995, 2015]
+        pair_speakers = ['Speaker 1', 'Speaker 1']
+        self.assertTrue(
+            attribute_speakers.enclosing_agree(pair_js, pair_speakers,
+                                               2000, 2010, 'Speaker 1'))
 
 
 class ConfidenceBucketTest(unittest.TestCase):
@@ -476,15 +583,50 @@ class AttributeSpeakersOutputSafetyTest(unittest.TestCase):
         self.assertIn('run the command again', err)
         self.assertFalse(self.out.exists())
 
-    def test_a_mispaired_transcript_refuses_to_label_and_exits_two(self):
+    def _mispair(self):
         self.app.write_text(app_bracket([
             (1, 'entirely unrelated material about shipping schedules in rotterdam'),
             (2, 'nothing whatever to do with any farm or creek or winter'),
         ]), encoding='utf-8')
+
+    def test_a_mispaired_transcript_refuses_to_label_and_exits_two(self):
+        self._mispair()
         code, _out, err = self._run()
         self.assertEqual(code, 2)
         self.assertIn('refusing to label', err)
-        self.assertNotIn('Speaker', self.out.read_text(encoding='utf-8'))
+        self.assertFalse(self.out.exists(),
+                         'a refused run publishes nothing at all')
+        self.assertFalse(self.report.exists())
+
+    def test_a_refused_run_leaves_an_earlier_result_byte_identical(self):
+        """The finding: the mispair gate set exit 2, then published anyway.
+
+        The user picks the wrong app transcript by mistake, is told the run was
+        refused, and finds his attributed transcript replaced by an unlabelled
+        copy of the whisper input.
+        """
+        self.out.write_text('**[00:00:00] Speaker 2:** a good earlier result\n',
+                            encoding='utf-8')
+        self.report.write_text('{"status": "ok"}\n', encoding='utf-8')
+        before = (self.out.read_bytes(), self.report.read_bytes())
+        self._mispair()
+        code, _out, err = self._run()
+        self.assertEqual(code, 2)
+        self.assertIn('nothing was written', err)
+        self.assertEqual((self.out.read_bytes(), self.report.read_bytes()), before)
+
+    def test_a_run_that_attributes_nothing_does_not_replace_a_good_result(self):
+        """Same class: a paragraph-only app export used to overwrite at exit 0."""
+        self.out.write_text('**[00:00:00] Speaker 2:** a good earlier result\n',
+                            encoding='utf-8')
+        before = self.out.read_bytes()
+        self.app.write_text('just paragraphs of text with nobody named at all\n',
+                            encoding='utf-8')
+        code, _out, err = self._run()
+        self.assertEqual(code, 1)
+        self.assertIn('no speaker labels', err)
+        self.assertIn('run the command again', err)
+        self.assertEqual(self.out.read_bytes(), before)
 
     def test_a_timestamped_export_uses_the_interval_path_as_documented(self):
         """SKILL.md step 7: "one question saves the whole gamble"."""
@@ -671,6 +813,190 @@ class FindDuplicateMediaTest(unittest.TestCase):
         self.assertEqual(
             find_duplicate_media.sha256_file(str(a), {}),
             hashlib.sha256(a.read_bytes()).hexdigest())
+
+
+class DedupeFailsClosedTest(unittest.TestCase):
+    """The gate authorises imports, so anything it could not read is not "new"."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-closed-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.archive = self.tmp / 'archive'
+        self.filed = self.archive / 'documents' / 'interviews'
+        self.filed.mkdir(parents=True)
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        self.original = self.filed / 'hartley-1998-06-14_S-wb91h3hjrr.m4a'
+        self.original.write_bytes(b'the same bytes as the phone still holds')
+        self.incoming = self.tmp / 'incoming'
+        self.incoming.mkdir()
+        self.twin = self.incoming / 'Thursday at 3-11 PM.m4a'
+        self.twin.write_bytes(self.original.read_bytes())
+
+    def _run(self, *extra):
+        return run_script(find_duplicate_media,
+                          [str(self.incoming), '--root', str(self.archive)]
+                          + list(extra))
+
+    def test_a_candidate_that_cannot_be_opened_is_not_a_cleared_file(self):
+        """Unit: a same-size archived file that vanished mid-run is an open question."""
+        entry = find_duplicate_media.check_one(
+            str(self.twin),
+            {self.twin.stat().st_size: [str(self.filed / 'gone-away.m4a')]},
+            {})
+        self.assertEqual(entry['verdict'], 'indeterminate')
+        self.assertEqual(len(entry['unchecked']), 1)
+
+    def test_an_unreadable_candidate_exits_nonzero_and_clears_nothing(self):
+        """The finding: the drive holding the twin is offline, so import it twice."""
+        real = find_duplicate_media.sha256_file
+
+        def offline(path, cache):
+            if 'documents' in str(path):
+                raise OSError(5, 'Input/output error')
+            return real(path, cache)
+
+        find_duplicate_media.sha256_file = offline
+        self.addCleanup(setattr, find_duplicate_media, 'sha256_file', real)
+        code, out, _err = self._run()
+        self.assertEqual(code, 3, out)
+        self.assertIn('UNCHECKED', out)
+        self.assertNotIn('new  ', out)
+        self.assertIn('cleared for import', out)
+
+    def test_an_unreadable_archived_file_stops_every_clearance(self):
+        """A file nobody could size might be the twin of any of them, so none clear."""
+        (self.incoming / 'something-else.m4a').write_bytes(b'entirely other bytes')
+        real = find_duplicate_media.index_sizes_by_root
+
+        def partial(named_roots):
+            by_size, _unreadable = real(named_roots)
+            return by_size, [str(self.filed / 'unreadable.m4a')]
+
+        find_duplicate_media.index_sizes_by_root = partial
+        self.addCleanup(setattr, find_duplicate_media,
+                        'index_sizes_by_root', real)
+        code, out, err = self._run()
+        self.assertEqual(code, 3, out)
+        self.assertIn('could not be read', err)
+        self.assertIn('documents/interviews/unreadable.m4a', err)
+
+    def test_a_media_root_that_is_not_mounted_refuses_the_run(self):
+        """An external documents root that is offline is not an empty archive."""
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: %s\n'
+            % (self.tmp / 'not-plugged-in' / 'documents').as_posix(),
+            encoding='utf-8')
+        code, _out, err = self._run()
+        self.assertEqual(code, 1)
+        self.assertIn('not there right now', err)
+        self.assertIn('run the command again', err)
+
+    def test_an_unparseable_fha_yaml_refuses_rather_than_guessing(self):
+        """Falling back to <archive>/documents searches the wrong folder.
+
+        The archive here keeps its recordings on an external drive named in
+        fha.yaml, and the file will not parse. Guessing the built-in default
+        walks an empty `<archive>/documents`, finds no twin, and reports a
+        byte-identical recording as new - a clean exit 0 saying "safe to import".
+        """
+        external = self.tmp / 'elsewhere' / 'FamilyDocuments'
+        external.mkdir(parents=True)
+        shutil.move(str(self.original), str(external / self.original.name))
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: "%s\n   nonsense: [\n' % external.as_posix(),
+            encoding='utf-8')
+        code, out, err = self._run()
+        self.assertEqual(code, 1, out)
+        self.assertIn('fha doctor', err)
+        self.assertNotIn('new  ', out)
+
+
+class DedupePathReportingTest(unittest.TestCase):
+    """One representation everywhere: named root plus the path under it."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-paths-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.payload = b'the same bytes as the phone still holds'
+        self.incoming = self.tmp / 'incoming'
+        (self.incoming / 'monday').mkdir(parents=True)
+        (self.incoming / 'tuesday').mkdir(parents=True)
+
+    def _json(self, argv):
+        report = self.tmp / 'dedupe.json'
+        code, out, err = run_script(find_duplicate_media,
+                                    argv + ['--json', str(report), '--quiet'])
+        text = report.read_text(encoding='utf-8')
+        self.assertNotIn(str(self.tmp), text, 'a machine path reached the report')
+        self.assertNotIn('..', text, 'a ../.. climb reached the report')
+        return code, json.loads(text), out, err
+
+    def test_an_external_documents_root_keeps_its_alias_not_a_dotdot_climb(self):
+        """os.path.relpath succeeds for an external root - with `../../home/...`."""
+        archive = self.tmp / 'archive'
+        (archive / 'people').mkdir(parents=True)
+        external = self.tmp / 'elsewhere' / 'FamilyDocuments'
+        filed = external / 'interviews' / 'hartley-1998-06-14'
+        filed.mkdir(parents=True)
+        (filed / 'hartley-1998-06-14_S-wb91h3hjrr.m4a').write_bytes(self.payload)
+        (archive / 'fha.yaml').write_text(
+            'roots:\n  documents: %s\n' % external.as_posix(), encoding='utf-8')
+        (self.incoming / 'monday' / 'rec.m4a').write_bytes(self.payload)
+        code, payload, _out, _err = self._json(
+            [str(self.incoming), '--root', str(archive)])
+        self.assertEqual(code, 2)
+        self.assertEqual(payload['media_roots'], ['documents'])
+        self.assertEqual(
+            payload['results'][0]['duplicates'][0]['archived_path'],
+            'documents/interviews/hartley-1998-06-14/'
+            'hartley-1998-06-14_S-wb91h3hjrr.m4a')
+
+    def test_media_root_mode_keeps_the_folder_the_twin_was_found_in(self):
+        """The other finding: basenames alone cannot say which file matched."""
+        library = self.tmp / 'FamilyMedia'
+        (library / '2019' / 'june').mkdir(parents=True)
+        (library / '2021').mkdir(parents=True)
+        (library / '2019' / 'june' / 'recording.m4a').write_bytes(self.payload)
+        (library / '2021' / 'recording.m4a').write_bytes(b'a different afternoon')
+        (self.incoming / 'monday' / 'recording.m4a').write_bytes(self.payload)
+        code, payload, _out, _err = self._json(
+            [str(self.incoming), '--media-root', str(library)])
+        self.assertEqual(code, 2)
+        self.assertEqual(payload['media_roots'], ['FamilyMedia'])
+        self.assertEqual(
+            payload['results'][0]['duplicates'][0]['archived_path'],
+            'FamilyMedia/2019/june/recording.m4a')
+
+    def test_two_incoming_files_with_one_name_stay_distinguishable(self):
+        library = self.tmp / 'FamilyMedia'
+        library.mkdir()
+        (library / 'filed.m4a').write_bytes(self.payload)
+        (self.incoming / 'monday' / 'New Recording 4.m4a').write_bytes(self.payload)
+        (self.incoming / 'tuesday' / 'New Recording 4.m4a').write_bytes(b'other')
+        code, payload, _out, _err = self._json(
+            [str(self.incoming), '--media-root', str(library)])
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            sorted(r['path'] for r in payload['results']),
+            ['incoming/monday/New Recording 4.m4a',
+             'incoming/tuesday/New Recording 4.m4a'])
+
+    def test_the_console_names_paths_the_same_way_the_report_does(self):
+        """One representation everywhere, not one for the file and one for print."""
+        library = self.tmp / 'FamilyMedia'
+        (library / '2019').mkdir(parents=True)
+        (library / '2019' / 'filed.m4a').write_bytes(self.payload)
+        (self.incoming / 'monday' / 'rec.m4a').write_bytes(self.payload)
+        (self.incoming / 'tuesday' / 'other.m4a').write_bytes(b'not a twin at all')
+        code, out, _err = run_script(
+            find_duplicate_media,
+            [str(self.incoming), '--media-root', str(library)])
+        self.assertEqual(code, 2)
+        self.assertNotIn(str(self.tmp), out)
+        self.assertIn('incoming/monday/rec.m4a', out)
+        self.assertIn('FamilyMedia/2019/filed.m4a', out)
+        self.assertIn('new        incoming/tuesday/other.m4a', out)
 
 
 # ---------------------------------------------------------------------------

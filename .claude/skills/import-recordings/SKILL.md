@@ -107,6 +107,18 @@ directory — pass `--root <archive>` on every call rather than guessing.
    does, and it prints which archived file (and its S-id, when the filename carries one). Confirm the
    twin's record with `fha find <S-id>` before you say anything to the human.
 
+   Exit **3** is the third answer: **the check could not finish**. Nothing it printed as `UNCHECKED`
+   is cleared, and the move is to fix what it names and re-run the whole bundle, not to import the
+   part that happened to pass. It fires when something could not be read — the drive holding the
+   archive's `documents` root is not plugged in, a folder cannot be listed, `fha.yaml` will not
+   parse, an archived recording of exactly the same size could not be opened. Those files are printed
+   as `UNCHECKED`, and an unchecked file is not a new file: the twin, if there is one, is precisely
+   the recording nobody could read. Tell the human in his own terms — *"I can't tell yet whether
+   these are already filed: the folder holding your interviews isn't readable right now"* — name the
+   thing to fix, and re-run the same command afterwards. Never fall back to filenames, never fall
+   back to `fha search`, and never narrow `--media-root` onto the part that happens to be readable
+   just to get a clean exit; that is the gate answering a question you did not ask.
+
    `fha search "<distinctive phrase from the transcript's first minute>"` is a *different* question
    and a weaker answer: it finds a transcript that reads alike, which is a lead, not proof of an
    identical recording. Use it only to explain a near-miss (same sitting re-exported, trimmed, or
@@ -242,7 +254,11 @@ directory — pass `--root <archive>` on every call rather than guessing.
    - **Hard abort below a 50% global token match rate.** Correctly paired files measure 70–83%; a
      deliberately mispaired transcript measured 5.9% — and, ungated, still confidently labeled 80% of
      segments. This guard is what stands between the archive and fluent nonsense. (`--min-match-rate`,
-     default 0.50; below it the script refuses to label anything and exits 2.)
+     default 0.50; below it the script refuses to label anything and exits 2.) **A refusal writes
+     nothing** — not the transcript, not the report — so an attributed transcript from an earlier run
+     survives a mistyped `--app-transcript` byte for byte. The same holds for a run that can attribute
+     nothing at all (a paragraph-only app export): if `--out` or `--report` already holds a file, it
+     is left alone and the script exits 1 rather than replace good work with an unlabeled copy.
    - **Label a whisper segment only at a confidence of 0.90 or better, and never when contested.**
      The score is `coverage × (2 × agreement − 1)` — the winner's votes minus everybody else's, over
      the segment's token count — so 0.90 demands a segment be nearly fully covered *and* nearly
@@ -252,10 +268,16 @@ directory — pass `--root <archive>` on every call rather than guessing.
      out loud; below 0.9 the measured agreement falls toward a coin flip, and nothing downstream may
      treat a lowered run as if it met this contract.)
    - **Never interpolate across a speaker change**, and never across a gap wider than ~25 tokens.
-   - **Timestamp evidence needs real coverage.** The interval path only switches on when at least
-     80% of the app's turns actually carry a timestamp, and a turn with no timestamp sitting between
-     two timed ones blanks that whole span rather than letting the earlier speaker's interval run
-     over it. A gappy export gets the text alignment alone, not a confident wrong answer.
+   - **Timestamp evidence needs real coverage, and coverage means *where*, not just *how many*.**
+     The interval path only switches on when at least 80% of the app's turns actually carry a
+     timestamp, and a turn with no timestamp sitting between two timed ones blanks that whole span
+     rather than letting the earlier speaker's interval run over it. Counting timed turns cannot see
+     where the timing *stops*, so two more rules cover the end of the file: the last turn's interval
+     ends with that turn's own words rather than running on to the end of the audio, and if the timed
+     turns stop short of the recording's end (an app export that gives up at 51 seconds of a
+     100-second interview) the timestamp path is switched off for the whole file. A gappy or
+     truncated export gets the text alignment alone, not a confident wrong answer, and the uncovered
+     tail goes out unlabeled.
    - A tie is contested; contested is unlabeled. Never break it with "same as the previous speaker" —
      that manufactures false continuity.
 

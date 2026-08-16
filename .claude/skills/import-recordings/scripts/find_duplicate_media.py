@@ -33,6 +33,21 @@ Equal size is common and proves nothing; equal SHA-256 over the whole file is
 what "byte-identical" means here, and it is the only thing this script will call
 a duplicate.
 
+THREE VERDICTS, BECAUSE THE GATE MUST FAIL CLOSED
+=================================================
+This script is a safety gate: the skill imports what it clears. So "new" is not
+the absence of a duplicate, it is a positive statement that every archived file
+which could possibly have been a twin was read and was not one. Anything that
+stops the script making that statement - an archived candidate on a drive that
+just went away, a folder the account cannot list, an `fha.yaml` that will not
+parse, a configured documents root that is not mounted - is reported as
+`indeterminate` and exits nonzero. It is never rounded down to "new".
+
+That direction matters more than it looks. The cost of a wrong `indeterminate`
+is that a human plugs a drive back in and runs one command again. The cost of a
+wrong `new` is a second source record for one recording, with that afternoon's
+claims split between two S-ids and nothing in either record saying so.
+
 WHAT IT NEVER DOES
 ==================
 Read-only, both sides. It opens files to hash them and nothing else: no rename,
@@ -49,12 +64,46 @@ the archive entirely - hardcoding `<archive>/documents` silently finds nothing o
 those archives. `--media-root` overrides the lot when you want to check against
 one folder.
 
+HOW PATHS ARE REPORTED
+======================
+Every path this script prints or writes is rendered against a NAMED root:
+
+    documents/interviews/hartley-1998-06-14/hartley-1998-06-14_S-wb91h3hjrr.m4a
+    FamilyMedia/2019/voice-memo-004.m4a       (a --media-root named FamilyMedia)
+    incoming/Thursday at 3-11 PM.m4a          (a file the human handed over)
+
+Two requirements pull against each other here, and only this form satisfies both.
+A machine-specific path must never reach a file that gets archived or shared -
+neither `/home/alice/FamilyMedia/x.m4a` nor the `../../home/alice/FamilyMedia/
+x.m4a` that a plain relative path produces for an external root (AGENTS_TOOLING
+§11 privacy, SPEC §12.4 alias-form paths). But a bare filename throws away the
+one thing the report is for - WHICH archived file matched, when three folders
+each hold a `recording.m4a` and two bundles each hold a `New Recording 4.m4a`.
+A path relative to a root the human already has a name for keeps every directory
+component that is the archive's own layout (identical on every machine) and drops
+every component above the root (this one computer's business). The alias name is
+the archive's own `documents:`/`photos:` alias where there is one, the folder's
+own basename for an explicit `--media-root`, and `incoming` for the bundle the
+human passed in.
+
 Exit codes
 ==========
-  0  no incoming file matched anything already archived - safe to import
+  0  every incoming file was checked against every candidate and none matched -
+     safe to import
   2  at least one incoming file is byte-identical to a filed recording; the
      skill's rule is to report that item and skip it, never to import it twice
-  1  usage or IO error (bad path, unreadable archive root)
+  3  the check could not be completed for at least one file (something could not
+     be read). Nothing in the run is cleared for import; fix what is named and
+     run the same command again
+  1  usage or configuration error (bad path, unreadable archive root)
+
+CODE MAP
+========
+  Config      find_archive_root / _roots_from_config / resolve_media_roots
+  Naming      media_root_label / build_named_roots / portable_path
+  Index       is_media / index_sizes_by_root / sha256_file / source_id_in
+  Check       expand_inputs / check_one
+  CLI         build_parser / fail / main
 """
 
 from __future__ import annotations
@@ -66,7 +115,7 @@ import os
 import sys
 
 TOOL_NAME = "find_duplicate_media.py"
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
 
 # Audio and video are the same job here: a video is a recording like any other.
 MEDIA_EXTENSIONS = {
@@ -84,11 +133,32 @@ MEDIA_ROOT_ALIASES = ("documents", "photos")
 HASH_CHUNK = 1 << 20      # 1 MiB reads; large enough to be fast, small enough
                           # that hashing a 4 GB video does not sit in memory
 
+EXIT_CLEAR = 0
+EXIT_USAGE = 1
+EXIT_DUPLICATE = 2
+EXIT_INDETERMINATE = 3
+
+
+class ConfigProblem(Exception):
+    """fha.yaml exists but cannot be trusted to say where the media lives.
+
+    Raised rather than returned so that no caller can accidentally carry on with
+    an empty roots mapping. Falling back to the built-in `<archive>/documents`
+    default when the real root is external is not a safe default: it searches a
+    folder that holds nothing, finds no twin, and reports every recording as new.
+    """
+
 
 def fail(msg):
     """One-line plain error on stderr, always naming what to do next."""
     sys.stderr.write("%s: error: %s\n" % (TOOL_NAME, msg))
-    return 1
+    return EXIT_USAGE
+
+
+def _reason(exc):
+    """An OSError as one short clause, for a message a genealogist reads."""
+    text = getattr(exc, "strerror", None) or str(exc)
+    return " ".join(str(text).split())
 
 
 # ---------------------------------------------------------------------------
@@ -111,35 +181,13 @@ def find_archive_root(start):
         cur = parent
 
 
-def _roots_from_config(archive_root):
-    """The `roots:` mapping out of fha.yaml, or {} when it cannot be read.
+def _roots_from_text(text):
+    """The two-space `alias: value` entries under `roots:`, read line by line.
 
-    PyYAML is the archive tooling's own dependency, so it is normally present.
-    When it is not, a deliberately small line reader picks the two-space
-    `alias: value` entries under `roots:` out of the file. That fallback only
-    has to survive the shape the template writes; anything more exotic falls
-    through to the built-in defaults, which is the safe direction to fail.
+    Only used when PyYAML is missing. It has to survive the shape the archive
+    template writes and nothing more exotic; anything it cannot read is caught
+    by the caller, which refuses the run rather than guessing.
     """
-    path = os.path.join(archive_root, "fha.yaml")
-    if not os.path.isfile(path):
-        return {}
-    try:
-        text = open(path, "r", encoding="utf-8", errors="replace").read()
-    except OSError:
-        return {}
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
-    if yaml is not None:
-        try:
-            data = yaml.safe_load(text) or {}
-        except Exception:
-            data = {}
-        roots = data.get("roots") if isinstance(data, dict) else None
-        if isinstance(roots, dict):
-            return {str(k): str(v) for k, v in roots.items() if v}
-        return {}
     roots = {}
     in_roots = False
     for line in text.splitlines():
@@ -156,24 +204,194 @@ def _roots_from_config(archive_root):
     return roots
 
 
+def _roots_from_config(archive_root):
+    """The `roots:` mapping out of fha.yaml, or {} when the file names none.
+
+    Every failure to READ that mapping raises instead of returning {}. An
+    archive whose documents root lives on an external drive is entirely normal,
+    and for such an archive a silent fallback to the built-in default searches
+    an empty folder and clears every incoming recording as new - the exact
+    failure this script exists to prevent, arriving as a clean exit 0.
+    """
+    path = os.path.join(archive_root, "fha.yaml")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as e:
+        raise ConfigProblem(
+            "the archive's fha.yaml could not be read (%s). It is the file that "
+            "says which folders hold your recordings, so the duplicate check "
+            "cannot run without it. Fix the file's permissions and run the "
+            "command again, or check against one folder with "
+            "--media-root <folder>." % _reason(e))
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(text) or {}
+        except Exception as e:
+            raise ConfigProblem(
+                "the archive's fha.yaml is not valid YAML (%s), so the folders "
+                "holding your recordings cannot be read from it. Run "
+                "`fha doctor` to see what is wrong with the file, then run this "
+                "command again." % _reason(e))
+        if not isinstance(data, dict):
+            raise ConfigProblem(
+                "the archive's fha.yaml does not read as a list of settings, so "
+                "the folders holding your recordings cannot be read from it. "
+                "Run `fha doctor`, then run this command again.")
+        roots = data.get("roots")
+        if roots is None:
+            return {}
+        if not isinstance(roots, dict):
+            raise ConfigProblem(
+                "the archive's fha.yaml has a `roots:` setting that is not a "
+                "list of `name: folder` lines (for example `documents: "
+                "documents`). Run `fha doctor`, then run this command again.")
+        return {str(k): str(v) for k, v in roots.items() if v}
+
+    roots = _roots_from_text(text)
+    names_roots = any(line.split("#", 1)[0].strip() == "roots:"
+                      for line in text.splitlines() if not line[:1].isspace())
+    if names_roots and not roots:
+        raise ConfigProblem(
+            "the archive's fha.yaml names a `roots:` setting this script could "
+            "not read (PyYAML is not installed here, so only the simple "
+            "`  documents: documents` form is understood). Install PyYAML with "
+            "`python -m pip install pyyaml`, or check against one folder with "
+            "--media-root <folder>.")
+    return roots
+
+
 def resolve_media_roots(archive_root):
-    """Absolute paths of every root that could already hold this recording.
+    """Named media roots to search, plus any configured root that is not there.
+
+    Returns `(named_roots, missing)`. `named_roots` is a list of
+    `(alias, absolute path)` - the alias is the archive's own name for the root
+    (`documents`, `photos`), which is what every reported path is rendered
+    against.
 
     Resolved through `roots:` rather than joined onto the archive root, because
     an external documents root is normal (AGENTS.md: "asset roots may live
     OUTSIDE this folder"). A hardcoded `<archive>/documents` on such an archive
-    finds zero files and reports every incoming recording as new - the exact
-    failure this script exists to prevent.
+    finds zero files and reports every incoming recording as new.
+
+    A root that points OUTSIDE the archive and is not there right now - the
+    external drive nobody plugged in, the path that moved - goes into `missing`
+    instead of being quietly skipped. Its recordings still exist somewhere; they
+    just cannot be read this run, so nothing can be cleared against them and the
+    caller refuses rather than reporting every incoming file as new.
+
+    A missing folder INSIDE the archive is a different thing and is ordinary: a
+    young archive with no `photos/` yet has no photos anywhere, so there is
+    nothing that could have been hidden by not looking. It appears in neither
+    list. A configured root that exists but is not a folder is a mistake in
+    fha.yaml either way, and goes into `missing` so somebody fixes it.
     """
     roots = _roots_from_config(archive_root)
-    out = []
+    named = []
+    missing = []
     for alias in MEDIA_ROOT_ALIASES:
         value = roots.get(alias, alias)
         base = value if os.path.isabs(value) else os.path.join(archive_root, value)
         base = os.path.abspath(base)
-        if os.path.isdir(base) and base not in out:
-            out.append(base)
-    return out
+        if os.path.isdir(base):
+            if all(base != existing for _label, existing in named):
+                named.append((alias, base))
+        elif os.path.exists(base) or not _is_inside(base, archive_root):
+            missing.append((alias, value))
+    return named, missing
+
+
+def _is_inside(path, root):
+    """Is `path` at or below `root`? Used to tell a young archive from a lost drive."""
+    path_key = os.path.normcase(os.path.abspath(path))
+    root_key = os.path.normcase(os.path.abspath(root))
+    if path_key == root_key:
+        return True
+    if not root_key.endswith(os.sep):
+        root_key += os.sep
+    return path_key.startswith(root_key)
+
+
+# ---------------------------------------------------------------------------
+# Naming roots, so no reported path is either absolute or nameless
+# ---------------------------------------------------------------------------
+def media_root_label(path, taken):
+    """A short name for an explicit --media-root folder.
+
+    Its own basename, because that is the word the human used for it and it
+    carries no directory structure: `/home/alice/FamilyMedia` reports as
+    `FamilyMedia/...`, which says where the twin was found without saying
+    anything about this computer. Duplicated basenames get a numeric suffix so
+    two roots never render onto each other.
+    """
+    base = os.path.basename(os.path.normpath(path)) or "media-root"
+    label = base
+    n = 1
+    while label in taken:
+        n += 1
+        label = "%s-%d" % (base, n)
+    return label
+
+
+def build_named_roots(media_roots, archive_root, incoming_args):
+    """The label -> folder table every reported path is rendered against.
+
+    One table for the whole run, so the JSON report, the console lines and any
+    future output all spell a path the same way. Longest root first: a media
+    root nested inside the archive must win over the archive root itself, or a
+    filed recording would render as a bare archive-relative path instead of the
+    alias form the rest of the archive uses.
+
+    The archive root carries the empty label, meaning "relative to the archive"
+    with no prefix - that is already the archive's own way of writing a path
+    (SPEC 12.4), so `inbox/x.m4a` needs no decoration.
+    """
+    named = list(media_roots)
+    if archive_root:
+        named.append(("", os.path.abspath(archive_root)))
+    seen = set()
+    count = 0
+    for arg in incoming_args:
+        arg_abs = os.path.abspath(arg)
+        base = arg_abs if os.path.isdir(arg_abs) else os.path.dirname(arg_abs)
+        key = os.path.normcase(base)
+        if key in seen:
+            continue
+        seen.add(key)
+        count += 1
+        named.append(("incoming" if count == 1 else "incoming-%d" % count, base))
+    named.sort(key=lambda pair: len(pair[1]), reverse=True)
+    return named
+
+
+def portable_path(path, named_roots):
+    """Render `path` under the name of the root that holds it.
+
+    Never absolute, never a `../..` climb out of the archive, and never reduced
+    to a bare filename while a named root still contains it - see "HOW PATHS ARE
+    REPORTED" in the module docstring for why both halves of that matter. The
+    last-resort basename is for a path under no known root at all, which the
+    callers here do not produce.
+    """
+    target = os.path.abspath(path)
+    key = os.path.normcase(target)
+    for label, root in named_roots:
+        root_abs = os.path.abspath(root)
+        prefix = os.path.normcase(root_abs)
+        if key == prefix:
+            return label or "."
+        if not prefix.endswith(os.sep):
+            prefix += os.sep
+        if key.startswith(prefix):
+            rel = target[len(root_abs):].lstrip("\\/").replace("\\", "/")
+            return "%s/%s" % (label, rel) if label else rel
+    return os.path.basename(target)
 
 
 # ---------------------------------------------------------------------------
@@ -183,16 +401,27 @@ def is_media(path):
     return os.path.splitext(path)[1].lower() in MEDIA_EXTENSIONS
 
 
-def index_sizes_by_root(media_roots):
-    """Map byte size -> [archived media paths of that size].
+def index_sizes_by_root(named_roots):
+    """Map byte size -> [archived media paths of that size], plus what failed.
 
     Sizes come from `os.scandir`'s stat, which the directory walk already has,
     so building this index opens no files at all. It is the cheap half of the
     check; hashing only happens for the sizes that actually collide.
+
+    Returns `(by_size, unreadable)`. An archived file or folder that cannot be
+    read is NOT the same thing as one that is not a twin: it is a file this run
+    never saw. Every such path is returned so the caller can refuse to clear
+    anything, because a recording sitting in an unlistable folder is exactly
+    where a byte-identical twin would hide.
     """
     by_size = {}
-    for root in media_roots:
-        for dirpath, dirnames, filenames in os.walk(root):
+    unreadable = []
+
+    def on_walk_error(err):
+        unreadable.append(getattr(err, "filename", None) or "a folder")
+
+    for _label, root in named_roots:
+        for dirpath, dirnames, filenames in os.walk(root, onerror=on_walk_error):
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
             for name in filenames:
                 if not is_media(name):
@@ -201,9 +430,10 @@ def index_sizes_by_root(media_roots):
                 try:
                     size = os.path.getsize(full)
                 except OSError:
-                    continue          # vanished or unreadable: not a twin we can prove
+                    unreadable.append(full)
+                    continue
                 by_size.setdefault(size, []).append(full)
-    return by_size
+    return by_size, unreadable
 
 
 def sha256_file(path, cache):
@@ -249,11 +479,22 @@ def source_id_in(name):
 # The check
 # ---------------------------------------------------------------------------
 def expand_inputs(paths):
-    """Flatten files and folders into the media files to check, sorted."""
+    """Flatten files and folders into the media files to check, sorted.
+
+    Returns `(files, unreadable)`. A subfolder of the incoming bundle that
+    cannot be listed is reported rather than skipped: the recordings inside it
+    were never checked, and a bundle that is imported wholesale would carry them
+    past the gate unexamined.
+    """
     out = []
+    unreadable = []
+
+    def on_walk_error(err):
+        unreadable.append(getattr(err, "filename", None) or "a folder")
+
     for p in paths:
         if os.path.isdir(p):
-            for dirpath, dirnames, filenames in os.walk(p):
+            for dirpath, dirnames, filenames in os.walk(p, onerror=on_walk_error):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
                 for name in sorted(filenames):
                     if is_media(name):
@@ -267,17 +508,30 @@ def expand_inputs(paths):
         if key not in seen:
             seen.add(key)
             unique.append(p)
-    return unique
+    return unique, unreadable
 
 
 def check_one(path, by_size, cache):
-    """Result dict for one incoming file: duplicate, new, or unreadable."""
-    entry = {"file": os.path.basename(path), "verdict": "new", "duplicates": []}
+    """Result dict for one incoming file: duplicate, new, or indeterminate.
+
+    Three verdicts, not two, and the distinction is the whole safety story.
+    "new" authorises an import, so it is only ever returned when every same-size
+    archived candidate was actually opened and hashed and none of them matched.
+    A candidate that could not be read leaves the question open, and an open
+    question is `indeterminate`: the unreadable candidates are listed on the
+    entry, and the caller exits nonzero rather than clearing the file.
+
+    Rounding an unreadable candidate down to "not a twin" is how a byte-
+    identical recording gets imported a second time - one afternoon under two
+    S-ids, its claims split between them, and nothing in either record saying so.
+    """
+    entry = {"file": os.path.basename(path), "verdict": "new",
+             "duplicates": [], "unchecked": []}
     try:
         size = os.path.getsize(path)
     except OSError as e:
-        entry["verdict"] = "unreadable"
-        entry["detail"] = str(e)
+        entry["verdict"] = "indeterminate"
+        entry["detail"] = "this file could not be read (%s)" % _reason(e)
         return entry
     entry["bytes"] = size
     candidates = [c for c in by_size.get(size, [])
@@ -289,15 +543,18 @@ def check_one(path, by_size, cache):
     try:
         digest = sha256_file(path, cache)
     except OSError as e:
-        entry["verdict"] = "unreadable"
-        entry["detail"] = str(e)
+        entry["verdict"] = "indeterminate"
+        entry["detail"] = "this file could not be read (%s)" % _reason(e)
         return entry
     entry["sha256"] = digest
     for cand in candidates:
         try:
-            if sha256_file(cand, cache) != digest:
-                continue
-        except OSError:
+            cand_digest = sha256_file(cand, cache)
+        except OSError as e:
+            entry["unchecked"].append({"archived_path": cand,
+                                       "detail": _reason(e)})
+            continue
+        if cand_digest != digest:
             continue
         entry["duplicates"].append({
             "archived_path": cand,
@@ -305,6 +562,12 @@ def check_one(path, by_size, cache):
         })
     if entry["duplicates"]:
         entry["verdict"] = "duplicate"
+    elif entry["unchecked"]:
+        entry["verdict"] = "indeterminate"
+        entry["detail"] = (
+            "%d archived recording(s) of exactly this size could not be read, "
+            "so a byte-identical twin cannot be ruled out"
+            % len(entry["unchecked"]))
     return entry
 
 
@@ -338,11 +601,17 @@ def main(argv=None):
 
     if args.media_roots:
         media_roots = []
+        taken = set()
         for d in args.media_roots:
             if not os.path.isdir(d):
                 return fail("--media-root is not a folder: %s - point it at the "
                             "folder holding the archived recordings" % d)
-            media_roots.append(os.path.abspath(d))
+            base = os.path.abspath(d)
+            if any(base == existing for _label, existing in media_roots):
+                continue
+            label = media_root_label(base, taken)
+            taken.add(label)
+            media_roots.append((label, base))
         archive_root = None
     else:
         archive_root = find_archive_root(args.root or os.getcwd())
@@ -352,52 +621,98 @@ def main(argv=None):
                 "inside the archive, or pass --root <archive folder>, or check "
                 "against one folder with --media-root <folder>."
                 % os.path.abspath(args.root or os.getcwd()))
-        media_roots = resolve_media_roots(archive_root)
+        try:
+            media_roots, missing_roots = resolve_media_roots(archive_root)
+        except ConfigProblem as e:
+            return fail(str(e))
+        if missing_roots:
+            # A configured root that is not mounted is not an empty root. Its
+            # recordings are unreadable, so nothing can be cleared against it.
+            return fail(
+                "the archive's %s folder is not there right now (%s). Recordings "
+                "filed in it cannot be read, so this check cannot tell you "
+                "whether your new recordings are already in the archive. "
+                "Reconnect it (or fix the path in fha.yaml) and run the command "
+                "again."
+                % (", ".join(label for label, _v in missing_roots),
+                   ", ".join(value for _l, value in missing_roots)))
         if not media_roots:
             return fail(
                 "the archive at %s has no documents or photos folder to check "
                 "against yet. Nothing is filed, so nothing can be a duplicate - "
                 "import normally with `fha process`." % archive_root)
 
-    incoming = expand_inputs(args.incoming)
-    if not incoming:
+    incoming, incoming_unreadable = expand_inputs(args.incoming)
+    if not incoming and not incoming_unreadable:
         return fail("none of those paths hold an audio or video file. Supported "
                     "extensions: %s" % ", ".join(sorted(MEDIA_EXTENSIONS)))
 
-    by_size = index_sizes_by_root(media_roots)
+    named_roots = build_named_roots(media_roots, archive_root, args.incoming)
+
+    def portable(path):
+        return portable_path(path, named_roots)
+
+    by_size, archive_unreadable = index_sizes_by_root(media_roots)
     cache = {}
     results = [check_one(p, by_size, cache) for p in incoming]
+    # Where each incoming file came from, in the same named-root form as every
+    # archived path. The console needs it as much as the JSON does: two bundles
+    # in one run can both hold a "New Recording 4.m4a".
+    for entry, src in zip(results, incoming):
+        entry["path"] = portable(src)
+
+    # An archived recording nobody could read might be the twin of ANY incoming
+    # file, not just of one - so it cannot be attached to a single result. It
+    # turns every would-be "new" into an open question instead.
+    if archive_unreadable:
+        for r in results:
+            if r["verdict"] == "new":
+                r["verdict"] = "indeterminate"
+                r["detail"] = (
+                    "%d archived recording(s) could not be read at all, so no "
+                    "recording can be cleared as new this run"
+                    % len(archive_unreadable))
 
     duplicates = [r for r in results if r["verdict"] == "duplicate"]
-    unreadable = [r for r in results if r["verdict"] == "unreadable"]
+    indeterminate = [r for r in results if r["verdict"] == "indeterminate"]
 
-    # Archived paths are reported so the human can open the twin, but they are
-    # this machine's absolute paths. Anything written to disk gets them relative
-    # to the archive root instead (AGENTS_TOOLING.md §11: a local absolute path
-    # must not end up in a committed or archived file).
-    def portable(path):
-        if archive_root:
-            try:
-                return os.path.relpath(path, archive_root).replace("\\", "/")
-            except ValueError:
-                pass
-        return os.path.basename(path)
+    # Plain sentences about what stopped the check finishing. Named roots only,
+    # never a machine path, because this list is written into the JSON report.
+    incomplete = []
+    for path in archive_unreadable:
+        incomplete.append("an archived file or folder could not be read: %s"
+                          % portable(path))
+    for path in incoming_unreadable:
+        incomplete.append("an incoming folder could not be listed, so the "
+                          "recordings in it were never checked: %s"
+                          % portable(path))
 
     if args.json:
         payload = {
             "tool": TOOL_NAME,
             "version": TOOL_VERSION,
-            "media_roots": [portable(r) for r in media_roots],
+            "media_roots": [label for label, _root in media_roots],
             "checked": len(results),
             "duplicates": len(duplicates),
+            "indeterminate": len(indeterminate),
+            "complete": not indeterminate and not incomplete,
             "results": [
-                dict(r, duplicates=[{"archived_path": portable(d["archived_path"]),
-                                     "source_id": d["source_id"]}
-                                    for d in r["duplicates"]])
+                dict(r,
+                     duplicates=[{"archived_path": portable(d["archived_path"]),
+                                  "source_id": d["source_id"]}
+                                 for d in r["duplicates"]],
+                     unchecked=[{"archived_path": portable(u["archived_path"]),
+                                 "detail": u["detail"]}
+                                for u in r["unchecked"]])
                 for r in results
             ],
-            "paths_note": "paths are relative to the archive root; absolute "
-                          "machine paths are deliberately not recorded",
+            "could_not_be_read": incomplete,
+            "paths_note": "every path is written under the name of the folder it "
+                          "sits in - the archive's own documents/photos alias, an "
+                          "explicit media root's name, or `incoming` for the "
+                          "bundle being checked. Absolute machine paths are "
+                          "deliberately not recorded, and no path is shortened to "
+                          "a bare filename",
         }
         try:
             parent = os.path.dirname(os.path.abspath(args.json))
@@ -419,13 +734,19 @@ def main(argv=None):
                 for d in r["duplicates"]:
                     sid = d["source_id"]
                     print("DUPLICATE  %s is byte-identical to %s%s"
-                          % (r["file"], portable(d["archived_path"]),
+                          % (r["path"], portable(d["archived_path"]),
                              " (%s)" % sid if sid else ""))
-            elif r["verdict"] == "unreadable":
-                print("SKIPPED    %s could not be read: %s"
-                      % (r["file"], r.get("detail", "unknown reason")))
+            elif r["verdict"] == "indeterminate":
+                print("UNCHECKED  %s - %s"
+                      % (r["path"], r.get("detail", "the check could not finish")))
             else:
-                print("new        %s" % r["file"])
+                print("new        %s" % r["path"])
+            # Shown for a duplicate too. Its verdict does not change - it is
+            # already being skipped - but the human should still see that one
+            # of the files this run compared it against could not be read.
+            for u in r["unchecked"]:
+                print("           could not read %s (%s)"
+                      % (portable(u["archived_path"]), u["detail"]))
         if duplicates:
             print("")
             print("Do not import the duplicates: report each one with the path of "
@@ -434,10 +755,24 @@ def main(argv=None):
                   "transcript the archive lacks, that is an attach onto the existing "
                   "source with `fha process <filed-primary> --more <file> <role>`, "
                   "not a second import.")
-    if unreadable:
-        sys.stderr.write("%s: warning: %d file(s) could not be read and were "
-                         "neither cleared nor flagged\n" % (TOOL_NAME, len(unreadable)))
-    return 2 if duplicates else 0
+        if indeterminate or incomplete:
+            print("")
+            print("The duplicate check did not finish. Nothing marked UNCHECKED "
+                  "is cleared for import: until every archived recording of the "
+                  "same size has been read, one of them may be the same file. "
+                  "Reconnect the drive holding the archive's recordings, or fix "
+                  "what the lines above name, then run the same command again - "
+                  "on the whole bundle, not on the part that happened to work.")
+
+    for note in incomplete:
+        sys.stderr.write("%s: warning: %s\n" % (TOOL_NAME, note))
+
+    if indeterminate or incomplete:
+        # Ranked above the duplicate code on purpose: exit 2 tells the skill to
+        # skip the named items and carry on with the rest, which is precisely
+        # what it must not do when some of the rest was never checked.
+        return EXIT_INDETERMINATE
+    return EXIT_DUPLICATE if duplicates else EXIT_CLEAR
 
 
 if __name__ == "__main__":
