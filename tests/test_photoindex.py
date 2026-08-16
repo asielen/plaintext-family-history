@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -4228,6 +4229,82 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(summary['unreadable'], 0)
             self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
 
+    def test_a_failed_stale_hold_is_reported_not_swallowed(self) -> None:
+        # Sweep, round 5 (false success): the pullback that keeps the catalog
+        # marked out of date is itself a filesystem write, and it can fail (a
+        # read-only .cache, a mount that refuses utime). The failure was caught
+        # and dropped, so photos.sqlite kept the commit's own "now" timestamp -
+        # `photoindex_status` then reports 'fresh' and `fha find --text`
+        # answers from a catalog that never saw the new photo, with nothing on
+        # screen and a clean exit code to say so.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, cfg)
+
+            shutil.copy(archive / 'photos' / 'portrait_1880.jpg',
+                        archive / 'photos' / 'brand_new.jpg')
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths if p.name != 'brand_new.jpg']
+            with mock.patch.object(photoindex.os, 'utime',
+                                   side_effect=OSError(1, 'Operation not permitted')):
+                summary = photoindex.run_scan(archive, cfg)
+
+            self.assertEqual(summary['unreadable_unindexed'], 1)
+            self.assertTrue(summary['stale_hold_failed'])
+            # The danger the flag stands for is real: the catalog now reads
+            # fresh even though the new photo never reached it.
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
+
+    def test_cmd_scan_names_a_failed_stale_hold_and_the_next_step(self) -> None:
+        # The interface half: a swallowed pullback must not exit clean, and the
+        # human must be told which command puts the catalog right.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, cfg)
+
+            shutil.copy(archive / 'photos' / 'portrait_1880.jpg',
+                        archive / 'photos' / 'brand_new.jpg')
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths if p.name != 'brand_new.jpg']
+            args = type('Args', (), {'root': str(archive), 'full': False})()
+            stderr = io.StringIO()
+            with mock.patch.object(photoindex.os, 'utime',
+                                   side_effect=OSError(1, 'Operation not permitted')):
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(stderr):
+                    code = photoindex._cmd_scan(args)
+            self.assertEqual(code, EXIT_WARNINGS)
+            text = stderr.getvalue()
+            self.assertIn('fha photoindex --full', text)
+            self.assertNotIn('Traceback', text)
+
+    def test_reconcile_reports_a_failed_stale_hold(self) -> None:
+        # The same pullback, the same swallow, in reconcile's half of the pair:
+        # files it rematched or left untracked are not reflected in the cache,
+        # so the cache must not be allowed to look current in silence.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, cfg)
+            shutil.copy(archive / 'photos' / 'portrait_1880.jpg',
+                        archive / 'photos' / 'brand_new.jpg')
+
+            with mock.patch.object(photoindex.os, 'utime',
+                                   side_effect=OSError(1, 'Operation not permitted')):
+                result = photoindex.run_reconcile(archive, cfg)
+
+            self.assertEqual(result['new_count'], 1)
+            self.assertTrue(result['stale_hold_failed'])
+            self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
     def test_unreadable_but_unchanged_file_does_not_hold_the_catalog_stale(self) -> None:
         # The other side of the same rule: under --full an unreadable photo is
         # re-sent to exiftool even though its cached row already matches the
@@ -5028,6 +5105,89 @@ class GalleryTests(unittest.TestCase):
             self.assertEqual(uncertain.name, 'gallery_edtf-1912-uncertain.html')
             self.assertEqual(interval.name, 'gallery_edtf-1912-to-1915.html')
             self.assertEqual(before.name, 'gallery_edtf-before-1900.html')
+
+    def test_gallery_subtree_filters_that_slug_alike_stay_distinct(self) -> None:
+        # Round 5: two real subtrees can differ only by punctuation _slugify
+        # collapses - 'A/B' and 'A-B' both slug to 'a-b'. The first gallery
+        # carries the generated marker, so the second run is allowed to
+        # overwrite it and the human silently loses a page (#35 promised the
+        # subtree participates in the landing name). Distinct --under values
+        # must land on distinct files.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            photos = archive / 'photos'
+            (photos / 'A' / 'B').mkdir(parents=True)
+            (photos / 'A-B').mkdir(parents=True)
+            (photos / 'A' / 'B' / 'nested.jpg').write_bytes(b'\xff\xd8\xff\xd9')
+            (photos / 'A-B' / 'flat.jpg').write_bytes(b'\xff\xd8\xff\xd9')
+            self._stage(archive, {
+                'nested.jpg': {'Keywords': ['farm']},
+                'flat.jpg': {'Keywords': ['farm']},
+            }, cfg)
+
+            nested = photoindex.run_gallery(archive, cfg, under='A/B')
+            flat = photoindex.run_gallery(archive, cfg, under='A-B')
+
+            self.assertNotEqual(nested['written'], flat['written'])
+            # Both pages survive - the second run did not clobber the first.
+            self.assertTrue(Path(nested['written']).is_file())
+            self.assertTrue(Path(flat['written']).is_file())
+            # Each page still shows only its own subtree's photo.
+            self.assertIn('nested.jpg', self._read(nested['written']))
+            self.assertNotIn('flat.jpg', self._read(nested['written']))
+            # The readable stem survives: a human scanning the folder can still
+            # tell which filter each file came from.
+            self.assertIn('under-a-b', Path(nested['written']).name)
+            self.assertIn('under-a-b', Path(flat['written']).name)
+
+    def test_gallery_keyword_and_text_filters_that_slug_alike_stay_distinct(self) -> None:
+        # The same lossy-slug collision, on the other filter values: a keyword
+        # with a space and a keyword with a hyphen are different queries with
+        # different results, so they cannot share one landing spot either.
+        with tempfile.TemporaryDirectory() as d:
+            archive = Path(d)
+            spaced = photoindex._gallery_out_path(
+                archive, None, None, 'farm work', None, None, None)
+            hyphened = photoindex._gallery_out_path(
+                archive, None, None, 'farm-work', None, None, None)
+            self.assertNotEqual(spaced.name, hyphened.name)
+
+            spaced_text = photoindex._gallery_out_path(
+                archive, None, None, None, None, 'ferry road', None)
+            hyphened_text = photoindex._gallery_out_path(
+                archive, None, None, None, None, 'ferry-road', None)
+            self.assertNotEqual(spaced_text.name, hyphened_text.name)
+
+    def test_gallery_filter_filenames_are_stable_and_case_insensitive(self) -> None:
+        # The disambiguating suffix must be stable across runs (a gallery is
+        # regenerated in place, not accumulated), and must NOT split filters
+        # that select exactly the same photos: --keyword and --under both match
+        # case-insensitively, so 'Farm Work' and 'farm work' are one query.
+        with tempfile.TemporaryDirectory() as d:
+            archive = Path(d)
+            first = photoindex._gallery_out_path(
+                archive, None, None, 'farm work', None, None, None)
+            second = photoindex._gallery_out_path(
+                archive, None, None, 'farm work', None, None, None)
+            upper = photoindex._gallery_out_path(
+                archive, None, None, 'Farm Work', None, None, None)
+            self.assertEqual(first.name, second.name)
+            self.assertEqual(first.name, upper.name)
+
+    def test_gallery_edtf_interval_with_a_bracket_half_stays_distinct(self) -> None:
+        # '[..1900]/1910' and '1900/1910' are both valid EDTF and mean
+        # different things, but the open-start bracket was only recognised on a
+        # whole value - inside an interval it was dropped, landing both on
+        # gallery_edtf-1900-to-1910.html.
+        with tempfile.TemporaryDirectory() as d:
+            archive = Path(d)
+            names = {
+                photoindex._gallery_out_path(
+                    archive, None, None, None, e, None, None).name
+                for e in ('[..1900]/1910', '1900/1910', '1900/[..1910]')
+            }
+            self.assertEqual(len(names), 3)
 
     def test_gallery_count_strip_excludes_verify_tail(self) -> None:
         # F5: the headline counts only the confirmed main-flow photos; the weak

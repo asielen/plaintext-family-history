@@ -158,6 +158,8 @@ def _views_result(
 #    (database / root resolution now live in _lib.py: open_index_db, resolve_root_arg)
 #    _rel_display                 - archive-relative path for user-facing lines
 #    _sync_index_rows             - keep notes_fts/person_files in step with view writes
+#    _sync_written_views          - the above for a write path, plus the right advice line
+#    _batch_view_result / _single_view_result - the two halves' shared exit-code rule
 #    _profile_path_for            - locate a person's .md profile file
 #    _out_path_for                - build companion file path from profile path
 #    _format_sid, _place_label    - formatting helpers
@@ -358,7 +360,8 @@ def _generate_or_warn(context: str, fn, *args, **kwargs):
 
 
 def _batch_view_result(
-    count: int, skipped: int, changed: list[str], what: str
+    count: int, skipped: int, changed: list[str], what: str,
+    index_sync: str = 'indexed',
 ) -> Result:
     """The Result a bulk view run returns, warning when anything was skipped.
 
@@ -367,15 +370,41 @@ def _batch_view_result(
     missing is the exit code: a batch that wrote nine of ten files exited 0, so
     a harness - or a human reading only the last line - could not tell the run
     was incomplete, while the SAME condition on a single-person run exits 1.
+
+    `index_sync` is the outcome of the companions' index-row update, and
+    'index_error' warns for the same reason a skip does: the files landed, but
+    the archive is not in the state the command promised. Generated companions
+    are outside the freshness watermark (#37), so a failed row update is
+    invisible afterwards - index.sqlite keeps looking current while `notes_fts`
+    serves the previous view's words. It is reported as `index_stale`, the key
+    `brackets` already uses when a cache step fails after the disk work landed.
     """
+    data: dict = {'count': count}
     if skipped:
         print(
             f'{skipped} {what} file(s) skipped - see the warnings above; '
             'fix what each one names and re-run for those people.'
         )
-        return _views_result(EXIT_WARNINGS, changed=changed,
-                             data={'count': count, 'skipped': skipped})
-    return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
+        data['skipped'] = skipped
+    if index_sync == 'index_error':
+        data['index_stale'] = True
+    if skipped or index_sync == 'index_error':
+        return _views_result(EXIT_WARNINGS, changed=changed, data=data)
+    return _views_result(EXIT_CLEAN, changed=changed, data=data)
+
+
+def _single_view_result(index_sync: str, changed: list[str]) -> Result:
+    """The Result one person's view write returns; the twin of `_batch_view_result`.
+
+    Split out so the two halves cannot drift on the exit code for the same
+    condition: a companion that landed while its index row did not is an
+    incomplete run whether one person or forty were generated.
+    """
+    data: dict = {'count': 1}
+    if index_sync == 'index_error':
+        data['index_stale'] = True
+        return _views_result(EXIT_WARNINGS, changed=changed, data=data)
+    return _views_result(EXIT_CLEAN, changed=changed, data=data)
 
 
 def _rebase(p: Path, old: Path, new: Path) -> Path:
@@ -415,8 +444,11 @@ def _sync_index_rows(
 
     The read handle is closed first: the sync writes to the same SQLite file,
     and a lingering reader can block that write on some platforms. Returns the
-    shared status ('indexed' / 'index_absent' / 'index_error') so the caller can
-    decide whether the `fha index` advice still needs printing.
+    shared status ('indexed' / 'index_absent' / 'index_error') - and every
+    caller must turn 'index_error' into a WARNING exit, not just print advice.
+    A run that says "clean" leaves nothing else to notice the problem: the
+    watermark never counts a generated companion, so index.sqlite stays
+    "fresh" over rows that no longer match the files on disk.
     """
     if conn is not None:
         conn.close()
@@ -427,6 +459,32 @@ def _sync_index_rows(
             'not be updated to match them. Run `fha index` so searches stop '
             'returning the old text.',
             file=sys.stderr,
+        )
+    return status
+
+
+def _sync_written_views(
+    archive_root: Path,
+    conn: sqlite3.Connection | None,
+    written: list[Path],
+    noun: str,
+) -> str:
+    """Update the index rows for companions just written, and say the right thing.
+
+    All four write paths (the three content views and `refresh`) owe the human
+    two different sentences, so the choice lives here once. 'index_absent'
+    means there is no index to keep in step - not this run's doing, and the
+    ordinary "run `fha index` when convenient" reminder covers it. 'index_error'
+    means an index IS there and now disagrees with the files; `_sync_index_rows`
+    has already said so on stderr with the fix, and repeating "when convenient"
+    would understate a rebuild the next search depends on. `noun` carries the
+    caller's own singular/plural wording so the reminder reads naturally.
+    """
+    status = _sync_index_rows(archive_root, conn=conn, written=written)
+    if status == 'index_absent':
+        print(
+            'Run `fha index` when convenient to update the search index '
+            f'with the new view {noun}.'
         )
     return status
 
@@ -3257,16 +3315,16 @@ def run_timeline(
                 else:
                     skipped += 1
             print(f'Generated {count} timeline file(s).')
+            sync = 'indexed'
             if count and fmt == 'md':
                 # A companion write does NOT stale the index (#37: generated
                 # views are excluded from the freshness watermark - they are
                 # written FROM it), so the index's own rows for these files are
                 # brought up to date here instead. Only when that cannot happen
                 # is a rebuild worth advising.
-                if _sync_index_rows(archive_root, conn=conn,
-                                    written=[Path(c) for c in changed]) != 'indexed':
-                    print('Run `fha index` when convenient to update the search index with the new view file(s).')
-            return _batch_view_result(count, skipped, changed, 'timeline')
+                sync = _sync_written_views(
+                    archive_root, conn, [Path(c) for c in changed], 'file(s)')
+            return _batch_view_result(count, skipped, changed, 'timeline', sync)
 
         if not person_id:
             print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
@@ -3278,11 +3336,10 @@ def run_timeline(
         out = _generate_timeline(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
-            if fmt == 'md' and _sync_index_rows(
-                    archive_root, conn=conn, written=[out]) != 'indexed':
-                print('Run `fha index` when convenient to update the search index with the new view file.')
+            sync = ('indexed' if fmt != 'md' else
+                    _sync_written_views(archive_root, conn, [out], 'file'))
             changed.append(str(out))
-            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
+            return _single_view_result(sync, changed)
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except GeneratedFileRefused as e:
@@ -3373,11 +3430,12 @@ def run_sources_index(
                 # written FROM it), so the index's own rows for these files are
                 # brought up to date here instead. Only when that cannot happen
                 # is a rebuild worth advising.
-                if fmt == 'md' and _sync_index_rows(
-                        archive_root, conn=conn,
-                        written=[Path(c) for c in changed]) != 'indexed':
-                    print('Run `fha index` when convenient to update the search index with the new view file(s).')
-                return _batch_view_result(count, skipped, changed, 'sources-index')
+                sync = 'indexed'
+                if fmt == 'md':
+                    sync = _sync_written_views(
+                        archive_root, conn, [Path(c) for c in changed], 'file(s)')
+                return _batch_view_result(
+                    count, skipped, changed, 'sources-index', sync)
             if all_curated and not changed and not skipped:
                 # Nothing generated because every curated record is parked in
                 # people/stubs/ (couple_folders_only with 0 folders stays
@@ -3397,11 +3455,10 @@ def run_sources_index(
         out = _generate_sources_index_person(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
-            if fmt == 'md' and _sync_index_rows(
-                    archive_root, conn=conn, written=[out]) != 'indexed':
-                print('Run `fha index` when convenient to update the search index with the new view file.')
+            sync = ('indexed' if fmt != 'md' else
+                    _sync_written_views(archive_root, conn, [out], 'file'))
             changed.append(str(out))
-            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
+            return _single_view_result(sync, changed)
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except GeneratedFileRefused as e:
@@ -3471,16 +3528,16 @@ def run_draft_queue(
                 else:
                     skipped += 1
             print(f'Generated {count} draft-queue file(s).')
+            sync = 'indexed'
             if count and fmt == 'md':
                 # A companion write does NOT stale the index (#37: generated
                 # views are excluded from the freshness watermark - they are
                 # written FROM it), so the index's own rows for these files are
                 # brought up to date here instead. Only when that cannot happen
                 # is a rebuild worth advising.
-                if _sync_index_rows(archive_root, conn=conn,
-                                    written=[Path(c) for c in changed]) != 'indexed':
-                    print('Run `fha index` when convenient to update the search index with the new view file(s).')
-            return _batch_view_result(count, skipped, changed, 'draft-queue')
+                sync = _sync_written_views(
+                    archive_root, conn, [Path(c) for c in changed], 'file(s)')
+            return _batch_view_result(count, skipped, changed, 'draft-queue', sync)
 
         if not person_id:
             print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
@@ -3492,11 +3549,10 @@ def run_draft_queue(
         out = _generate_draft_queue(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
-            if fmt == 'md' and _sync_index_rows(
-                    archive_root, conn=conn, written=[out]) != 'indexed':
-                print('Run `fha index` when convenient to update the search index with the new view file.')
+            sync = ('indexed' if fmt != 'md' else
+                    _sync_written_views(archive_root, conn, [out], 'file'))
             changed.append(str(out))
-            return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
+            return _single_view_result(sync, changed)
         return _views_result(EXIT_WARNINGS, data={'count': 0})
 
     except GeneratedFileRefused as e:
@@ -3524,6 +3580,17 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
     ).exit_code
 
 
+def _unreadable_summary(count: int) -> str:
+    """The one closing line for files `clean` could not classify.
+
+    A tally beside the "Removed N" line, because the per-file ERRORs go to
+    stderr and a human reading only stdout would otherwise see a sweep that
+    looks complete.
+    """
+    return (f'{count} file(s) could not be read, so they were left alone - '
+            'see above.')
+
+
 def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     """Delete GENERATED view files; return a Result (prints progress inline).
 
@@ -3539,9 +3606,10 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     (person_files, and its body in notes_fts), and those are deleted in the
     same pass - the freshness watermark never sees a generated companion (#37),
     so leaving them would keep `fha find --text` serving text whose file is
-    gone. Only when that row cleanup fails, or when a file could not be deleted
-    at all (locked, read-only), does the run exit 1 saying which. A file that
-    will not delete is named and skipped, never allowed to abort the sweep.
+    gone. Only when that row cleanup fails, or when a file could not be read
+    or deleted at all (locked, read-only), does the run exit 1 saying which.
+    A file that will not read or delete is named and skipped, never allowed to
+    abort the sweep.
     generated/views/ files are never indexed and need no cleanup at all.
     """
     dry_run = bool(dry_run)
@@ -3551,18 +3619,31 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
         print('ERROR: people/ directory not found.', file=sys.stderr)
         return _views_result(EXIT_FAILURE)
 
-    found: list[Path] = []
-    for p in sorted(people_dir.rglob('*.md')):
+    # Files whose first line could not be read at all. Ownership is decided by
+    # that line, so an unreadable file is not "not ours" - it is unknown, and
+    # dropping it silently made a partial sweep report as a complete one. Named
+    # and counted instead, exactly like a file that will not delete.
+    unreadable: list[Path] = []
+
+    def _owned_by_views(p: Path) -> bool:
+        """True when p carries the views GENERATED marker on its first non-blank
+        line - marker-per-file, so a hand-written file that merely mentions the
+        marker later is never deleted, and another tool's GENERATED file is not
+        ours to remove either. An unreadable file is recorded and excluded."""
         try:
             text = p.read_text(encoding='utf-8', errors='ignore')
-        except OSError:
-            continue
-        # Owned by views only when the marker is the FIRST non-blank line - a
-        # hand-written file that merely mentions the marker later is never
-        # deleted. Shared _lib predicate; the views-specific prefix keeps
-        # other tools' GENERATED files out of this clean.
-        if is_generated_text(text, prefix=_GEN_MARKER):
-            found.append(p)
+        except OSError as e:
+            print(
+                f'  ERROR could not read {_rel_display(p, archive_root)} '
+                f'({e.strerror or e}) - it may be open in another program. '
+                'Close it and re-run; it was left alone.',
+                file=sys.stderr,
+            )
+            unreadable.append(p)
+            return False
+        return is_generated_text(text, prefix=_GEN_MARKER)
+
+    found = [p for p in sorted(people_dir.rglob('*.md')) if _owned_by_views(p)]
 
     # Second sweep: standalone HTML views under generated/views/ (D11). Same
     # marker-per-file ownership - the folder is visible and a human may park
@@ -3570,17 +3651,18 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     gen_found: list[Path] = []
     gen_dir = archive_root / 'generated' / 'views'
     if gen_dir.is_dir():
-        for p in sorted(list(gen_dir.glob('*.html')) + list(gen_dir.glob('*.md'))):
-            try:
-                text = p.read_text(encoding='utf-8', errors='ignore')
-            except OSError:
-                continue
-            if is_generated_text(text, prefix=_GEN_MARKER):
-                gen_found.append(p)
+        gen_found = [
+            p for p in sorted(list(gen_dir.glob('*.html')) + list(gen_dir.glob('*.md')))
+            if _owned_by_views(p)
+        ]
 
     all_found = found + gen_found
     if not all_found:
         print('No GENERATED view files found.')
+        if unreadable:
+            print(_unreadable_summary(len(unreadable)))
+            return _views_result(EXIT_WARNINGS,
+                                 data={'removed': 0, 'unreadable': len(unreadable)})
         return _views_result(EXIT_CLEAN)
 
     changed: list[str] = []
@@ -3611,10 +3693,16 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
 
     verb = 'Would remove' if dry_run else 'Removed'
     print(f'{verb} {len(all_found) if dry_run else len(removed_paths)} generated file(s).')
+    if unreadable:
+        # Printed for the dry run too: a preview that hides a file it could not
+        # even classify is not the preview of the run it claims to be.
+        print(_unreadable_summary(len(unreadable)))
     if not dry_run:
         data = {'removed': len(removed_paths)}
         if failures:
             data['failures'] = failures
+        if unreadable:
+            data['unreadable'] = len(unreadable)
         people_companions = set(found)
         people_removed = [p for p in removed_paths if p in people_companions]
         if people_removed:
@@ -3624,11 +3712,19 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
             # unrelated edit forced a rebuild. Drop them here instead.
             if _sync_index_rows(archive_root, removed=people_removed) == 'index_error':
                 print('Note: deleted files still appear in .cache/index.sqlite - run `fha index` to update the cache.')
+                data['index_stale'] = True
                 return _views_result(EXIT_WARNINGS, changed=changed, data=data)
         if failures:
             print(f'{failures} file(s) could not be removed - see above.')
             return _views_result(EXIT_WARNINGS, changed=changed, data=data)
+        if unreadable:
+            return _views_result(EXIT_WARNINGS, changed=changed, data=data)
         return _views_result(EXIT_CLEAN, changed=changed, data=data)
+    if unreadable:
+        return _views_result(
+            EXIT_WARNINGS,
+            data={'removed': 0, 'would_remove': len(all_found),
+                  'unreadable': len(unreadable)})
     return _views_result(EXIT_CLEAN, data={'removed': 0, 'would_remove': len(all_found)})
 
 
@@ -3704,6 +3800,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                     skipped += 1
 
         print(f'Generated {count} view file(s).')
+        sync = 'indexed'
         if count and 'md' in fmt_passes:
             # Refresh writes new/updated companion files. That does NOT stale
             # the index (#37: generated views are excluded from the freshness
@@ -3711,10 +3808,9 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
             # notes_fts and the person_files entry - are rewritten here rather
             # than waiting for a rebuild nothing would prompt. The advice is
             # printed only when that could not happen.
-            if _sync_index_rows(archive_root, conn=conn,
-                                written=[Path(c) for c in changed]) != 'indexed':
-                print('Run `fha index` when convenient to update the search index with the new view files.')
-        return _batch_view_result(count, skipped, changed, 'view')
+            sync = _sync_written_views(
+                archive_root, conn, [Path(c) for c in changed], 'files')
+        return _batch_view_result(count, skipped, changed, 'view', sync)
 
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))

@@ -28,10 +28,12 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib
 import index as index_mod
 import views
 from _lib import (
     EXIT_CLEAN,
+    EXIT_WARNINGS,
     load_fha_yaml,
     newest_record_mtime,
     open_index_db,
@@ -263,12 +265,137 @@ class CleanRemovesRowsTests(_SyncBase):
         # The file that survived keeps its row - the index still matches disk.
         self.assertEqual(self._rows_for('notes_fts', stuck), 1)
 
+    def test_a_file_that_cannot_be_read_is_named_not_skipped_in_silence(self) -> None:
+        # Sweep, round 5 (false success): clean decides ownership by reading
+        # each file's first line. A file it cannot read was dropped from the
+        # sweep without a word, so a companion that is locked or unreadable
+        # stayed on disk with its rows in the index while the run reported a
+        # complete sweep and exited 0. The delete half of the same pass
+        # already names its failures; the read half must too.
+        self._quiet(views.run_refresh, self.root)
+        real_read_text = Path.read_text
+
+        def fake_read_text(self, *args, **kwargs):
+            if self.name.endswith(f'timeline_{PID}.md'):
+                raise PermissionError(13, 'Permission denied')
+            return real_read_text(self, *args, **kwargs)
+
+        with mock.patch.object(Path, 'read_text', fake_read_text):
+            res, _out, err = self._quiet(views.run_clean, self.root)
+
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('could not read', err)
+        self.assertNotIn('Traceback', err)
+        self.assertEqual(res.data.get('unreadable'), 1)
+        # The file is still there, and so are its rows - the report matches
+        # what is actually on disk.
+        self.assertTrue((self.root / self._timeline_rel()).is_file())
+        self.assertEqual(self._rows_for('notes_fts', self._timeline_rel()), 1)
+
     def test_clean_dry_run_touches_no_rows(self) -> None:
         self._quiet(views.run_refresh, self.root)
         res, _out, _err = self._quiet(views.run_clean, self.root, dry_run=True)
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertEqual(self._rows_for('notes_fts', self._timeline_rel()), 1)
         self.assertEqual(self._rows_for('person_files', self._timeline_rel()), 1)
+
+
+class _LockedOnWrite:
+    """A `sqlite3.connect` stand-in: reads pass, the next write is refused.
+
+    `sync_generated_view_rows` opens index.sqlite twice - once through
+    `sqlite_cache_schema_status`, which decides whether the cache is usable at
+    all, and once to rewrite the rows. Only the second one is what SQLite
+    refuses while another process holds the database, and only the second one
+    reaches the `except sqlite3.Error -> 'index_error'` branch under test:
+    failing the first instead returns 'index_absent', which is the no-index
+    case, a different (and harmless) story.
+    """
+
+    def __init__(self) -> None:
+        self._real = sqlite3.connect
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return self._real(*args, **kwargs)
+        raise sqlite3.OperationalError('database is locked')
+
+
+class SyncFailureIsAWarningTests(_SyncBase):
+    """A row sync that FAILS must not be reported as a clean run.
+
+    The files are written either way, so the exit code is the only signal the
+    human or a harness gets. And #37 deliberately keeps generated companions
+    out of the freshness watermark, so nothing downstream ever notices on its
+    own: index.sqlite goes on looking fresh while `notes_fts` serves the
+    previous view's text. That silence is exactly what the exclusion assumed
+    the row maintenance would prevent, which is why its failure has to be
+    louder than a printed hint.
+    """
+
+    def _with_locked_sync(self, fn, *args, **kwargs):
+        """Run `fn` with the row sync's write connection locked.
+
+        The real `sync_generated_view_rows` runs - only its second SQLite
+        connection is refused - so this exercises the tool's own error branch
+        rather than asserting against a stubbed return value.
+        """
+        real_sync = views.sync_generated_view_rows
+
+        def sync_against_a_locked_db(*a, **kw):
+            with mock.patch.object(_lib.sqlite3, 'connect', _LockedOnWrite()):
+                return real_sync(*a, **kw)
+
+        with mock.patch.object(views, 'sync_generated_view_rows',
+                               sync_against_a_locked_db):
+            return self._quiet(fn, *args, **kwargs)
+
+    def test_refresh_reports_a_failed_row_sync_as_a_warning(self) -> None:
+        res, _out, err = self._with_locked_sync(views.run_refresh, self.root)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertTrue(res.data.get('index_stale'))
+        # The view files really were written - this is a warning about the
+        # index, not a failed generation.
+        self.assertTrue(res.ok)
+        self.assertTrue(res.changed)
+        self.assertTrue((self.root / self._timeline_rel()).is_file())
+        self.assertIn('fha index', err)
+        self.assertNotIn('Traceback', err)
+
+    def test_batch_and_single_person_agree_on_the_exit_code(self) -> None:
+        # The same condition on one person and on a batch must read the same:
+        # a batch that quietly exits 0 where the single-person run exits 1 is
+        # the gap `_batch_view_result` was added to close.
+        for runner in (views.run_timeline, views.run_sources_index,
+                       views.run_draft_queue):
+            single, _out, _err = self._with_locked_sync(
+                runner, self.root, person_id=PID)
+            batch, _out2, _err2 = self._with_locked_sync(
+                runner, self.root, all_curated=True)
+            self.assertEqual(single.exit_code, EXIT_WARNINGS, runner.__name__)
+            self.assertEqual(batch.exit_code, EXIT_WARNINGS, runner.__name__)
+            self.assertTrue(single.data.get('index_stale'), runner.__name__)
+            self.assertTrue(batch.data.get('index_stale'), runner.__name__)
+
+    def test_clean_reports_a_failed_row_sync_as_a_warning(self) -> None:
+        self._quiet(views.run_refresh, self.root)
+        res, out, _err = self._with_locked_sync(views.run_clean, self.root)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertTrue(res.data.get('index_stale'))
+        self.assertIn('fha index', out)
+
+    def test_no_index_at_all_still_exits_clean(self) -> None:
+        # The other status must NOT become a warning: 'index_absent' means
+        # there is nothing to keep in step, which is not this run's fault. It
+        # keeps the ordinary reminder and the clean exit.
+        with mock.patch.object(views, 'sync_generated_view_rows',
+                               lambda *a, **kw: 'index_absent'):
+            res, out, _err = self._quiet(views.run_refresh, self.root)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertNotIn('index_stale', res.data)
+        self.assertIn('when convenient', out)
 
 
 class SyncHelperTests(_SyncBase):

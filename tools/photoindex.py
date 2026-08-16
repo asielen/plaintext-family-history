@@ -97,7 +97,9 @@ CODE MAP
     _file_uri                 - alias path -> absolute file:// URI (through roots)
     _humanize_edtf / _decade_of - EDTF -> reading date / decade (from the EDTF literal) for sections
     _chip_label               - variant_role/variant_copy -> a variant chip label
+    _disambiguated_slug       - a filter value's filename token, collision-free
     _edtf_slug / _filter_slug_parts - qualifier-preserving EDTF slug + filter filename tokens
+    _subtree_token_value      - --under/--not-under in the catalog's own alias form
     _gallery_out_path         - default landing spot or --out override
     _filter_phrase            - "matching keyword ... and text ..." for the filter-only count strip
     _gallery_group_dict       - pre-fetched rows -> one rendered row's data (no SQL)
@@ -120,6 +122,8 @@ CODE MAP
     run_report                - list photo_groups with date_conflict=1, all variants' dates/captions
 
   Reconcile (fha photoindex reconcile - M3.4)
+    _hold_cache_stale         - backdate photos.sqlite so it keeps reading 'stale'
+                                 (shared with run_scan; False when the hold failed)
     _on_disk_aliases          - alias path -> absolute Path for every file under the photos root
     _scrape_source_ids        - exiftool SOURCE: keyword read over untracked candidate files
     run_reconcile             - re-match moved files by source_id, flag the rest as MISSING
@@ -169,6 +173,7 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -1664,6 +1669,58 @@ def _chip_label(variant_role: str | None, variant_copy: str | None) -> str:
 # view.css stays a lean views subset.
 
 
+# The shape a disambiguated slug ends in: '-h' plus six hex characters. A
+# filter value that is ALREADY its own slug is used as-is, so the two branches
+# of `_disambiguated_slug` would overlap if a real value happened to end this
+# way; treating that shape as lossy too keeps them disjoint, at the cost of a
+# suffix on the rare folder actually named like 'scans-h1a2b3c'.
+_SLUG_DIGEST_RE = re.compile(r'-h[0-9a-f]{6}$')
+
+
+def _disambiguated_slug(value: str) -> str:
+    """A filename token for `value` that no OTHER value can also produce.
+
+    `_slugify` is lossy on purpose - it folds every run of punctuation and
+    whitespace into one hyphen - which is right for readability and wrong for a
+    landing spot. Two real subtrees, 'A/B' and 'A-B', both slug to 'a-b', so
+    the second gallery overwrote the first without a word (the page it landed
+    on carried the generated marker, which makes overwriting legal). The same
+    goes for '--keyword "farm work"' against '--keyword farm-work': different
+    queries, different photos, one file.
+
+    So: when the slug is not simply the value itself, append a short stable
+    digest of the value. The readable stem survives - a human scanning
+    generated/gallery/ still recognises 'under-a-b-h3f9c02' - which is why this
+    was chosen over encoding the value losslessly (percent-escaping, base32):
+    those give names nobody can read, and a browsable folder of galleries is
+    the whole point of the default landing spot.
+
+    Case and surrounding space are folded before comparing and before hashing,
+    because every filter this serves matches case-insensitively (`_under_subtree`
+    casefolds, keyword is a LOWER() match, FTS is case-insensitive): 'Woodbury'
+    and 'woodbury' select the same photos and must share one page.
+    """
+    slug = _slugify(value)
+    canonical = (value or '').strip().lower()
+    if slug == canonical and not _SLUG_DIGEST_RE.search(slug):
+        return slug
+    digest = hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:6]
+    return f'{slug}-h{digest}'
+
+
+def _edtf_half_slug(s: str) -> str:
+    """Slug one EDTF value that is not itself an interval - see `_edtf_slug`."""
+    before = re.match(r'^\[\.\.(.+)\]$', s)
+    after = re.match(r'^\[(.+)\.\.\]$', s)
+    if before:
+        s = f'before {before.group(1)}'
+    elif after:
+        s = f'{after.group(1)} onward'
+    return (s.replace('~', ' approx')
+             .replace('?', ' uncertain')
+             .replace(',', ' or '))
+
+
 def _edtf_slug(edtf: str) -> str:
     """Slug-encode an EDTF value so distinct EDTF forms stay distinct filenames.
 
@@ -1679,19 +1736,47 @@ def _edtf_slug(edtf: str) -> str:
       ,        -> ' or '         (set/choice) 1912,1913  -> edtf-1912-or-1913
     A plain year keeps its digits ('1912' -> edtf-1912), so an exact date and its
     approximate/uncertain twin never share a landing spot.
+
+    An interval is split on '/' and each half mapped on its own, because the
+    bracket forms are anchored patterns: matching them against the whole value
+    let '[..1900]/1910' drop its bracket and land on 'edtf-1900-to-1910', the
+    same file as the plain '1900/1910' - two different, both-valid filters
+    (`is_valid_edtf` validates each half of an interval separately) overwriting
+    one page. No hash suffix is needed here: the mapping is injective over the
+    grammar `is_valid_edtf` accepts, and `--edtf` is rejected before a filename
+    is ever built (`_paths_by_edtf`).
     """
     s = (edtf or '').strip()
-    before = re.match(r'^\[\.\.(.+)\]$', s)
-    after = re.match(r'^\[(.+)\.\.\]$', s)
-    if before:
-        s = f'before {before.group(1)}'
-    elif after:
-        s = f'{after.group(1)} onward'
-    s = (s.replace('~', ' approx')
-          .replace('?', ' uncertain')
-          .replace('/', ' to ')
-          .replace(',', ' or '))
-    return _slugify(s)
+    if '/' in s:
+        return _slugify(' to '.join(_edtf_half_slug(half) for half in s.split('/')))
+    return _slugify(_edtf_half_slug(s))
+
+
+def _subtree_token_value(
+    value: str | None, fha_config: dict | None, archive_root: Path,
+) -> str | None:
+    """The subtree string a filename token is built from: the catalog's alias form.
+
+    '--under Woodbury', '--under photos/Woodbury' and an absolute path into
+    that same folder all select the same photos, so they belong on the same
+    gallery page; `_normalize_subtree_arg` is the one function that knows that
+    mapping, and it is re-run here (the filename is computed after the match,
+    and a second pass over one short string costs nothing). The constant
+    'photos/' prefix is dropped again afterwards so the common case keeps its
+    short, readable token.
+
+    A value `_normalize_subtree_arg` refuses cannot reach this point - the
+    match step already raised on it - but if one ever did, falling back to the
+    raw text keeps the gallery landing on some stable name rather than failing
+    over a filename.
+    """
+    if not value:
+        return value
+    try:
+        alias = _normalize_subtree_arg(value, fha_config, archive_root)
+    except ValueError:
+        return value
+    return alias[len('photos/'):] if alias.startswith('photos/') else alias
 
 
 def _filter_slug_parts(
@@ -1704,19 +1789,20 @@ def _filter_slug_parts(
     suffix stay identical (F4). EDTF goes through `_edtf_slug` so its qualifiers
     survive as distinct tokens (F6). The subtree filters participate too, so
     `--under Woodbury` and `--under Church` galleries never overwrite each
-    other (#35).
+    other (#35). Every free-text value goes through `_disambiguated_slug`, so
+    two values `_slugify` would flatten together keep separate pages.
     """
     parts: list[str] = []
     if keyword:
-        parts.append(f'keyword-{_slugify(keyword)}')
+        parts.append(f'keyword-{_disambiguated_slug(keyword)}')
     if edtf:
         parts.append(f'edtf-{_edtf_slug(edtf)}')
     if text:
-        parts.append(f'text-{_slugify(text)}')
+        parts.append(f'text-{_disambiguated_slug(text)}')
     if under:
-        parts.append(f'under-{_slugify(under)}')
+        parts.append(f'under-{_disambiguated_slug(under)}')
     if not_under:
-        parts.append(f'not-under-{_slugify(not_under)}')
+        parts.append(f'not-under-{_disambiguated_slug(not_under)}')
     return parts
 
 
@@ -1730,6 +1816,7 @@ def _gallery_out_path(
     out: str | None,
     under: str | None = None,
     not_under: str | None = None,
+    fha_config: dict | None = None,
 ) -> Path:
     """Compute the gallery's output path (default landing or --out override).
 
@@ -1745,6 +1832,12 @@ def _gallery_out_path(
     A relative --out is taken relative to the archive root (matching the doc
     example `--out generated/gallery/farm.html`); an absolute --out is honored
     as-is so the page can land anywhere the human names.
+
+    The person half needs no disambiguation: the P-id rides along, so two
+    people whose names slug alike still get two files. The filter half does,
+    and gets it in `_filter_slug_parts`. `fha_config` lets the subtree filters
+    resolve to the catalog's alias form first, so the several ways of naming
+    one folder share one page; without it the raw argument is used.
     """
     if out:
         out_path = Path(out)
@@ -1753,7 +1846,11 @@ def _gallery_out_path(
         return out_path
 
     gallery_dir = archive_root / 'generated' / 'gallery'
-    parts = _filter_slug_parts(keyword, edtf, text, under, not_under)
+    parts = _filter_slug_parts(
+        keyword, edtf, text,
+        _subtree_token_value(under, fha_config, archive_root),
+        _subtree_token_value(not_under, fha_config, archive_root),
+    )
     if person:
         pid_display = fmt_id_display(person)
         stem = f'{_slugify(person_name)}_{pid_display}' if person_name else pid_display
@@ -2167,7 +2264,7 @@ def run_gallery(
 
         out_path = _gallery_out_path(
             archive_root, person_id, person_name, keyword, edtf, text, out,
-            under, not_under,
+            under, not_under, fha_config,
         )
         try:
             # The default landing folder (generated/gallery/) is disposable
@@ -2513,6 +2610,38 @@ def run_report(archive_root: Path, fha_config: dict) -> Result:
 
 # ── Reconcile (fha photoindex reconcile - BUILD.md M3.4) ─────────────────
 
+def _hold_cache_stale(db_path: Path, behind_mtimes: list[float]) -> bool:
+    """Pull photos.sqlite's mtime back behind those file times; True if it took.
+
+    Both the scan and reconcile can finish holding files whose real content the
+    catalog does not have - a photo exiftool could not read, a file on disk
+    nobody has scraped yet. Committing stamps photos.sqlite with "now", which
+    is newer than those files, so `photoindex_status()` would call the catalog
+    fresh and nothing would ever ask for another pass. Backdating the cache
+    behind the oldest of them IS the signal: it is what keeps the status
+    reading 'stale' until a later run reads them.
+
+    Which means a FAILED backdate is not a cosmetic miss. The catalog then
+    looks current while `fha find --text`, `fha packet` and `fha site` read
+    rows that do not match the photos, and nothing downstream can tell - so
+    this returns False rather than swallowing the error, and the caller
+    reports it and exits non-zero. The failure itself is ordinary enough (a
+    read-only .cache, a mount that refuses utime, a photo root on removable
+    storage unplugged since the commit) that it must never be a traceback.
+
+    An empty list is the same missed signal, not a no-op: it means the caller
+    could not read a single one of those files' times, so there is no mtime to
+    sit behind. Callers with nothing to hold back simply do not call.
+    """
+    if not behind_mtimes:
+        return False
+    try:
+        os.utime(db_path, (time.time(), min(behind_mtimes) - 1))
+        return True
+    except OSError:
+        return False
+
+
 _RECONCILE_TABLES = (
     'photos', 'photo_keywords', 'photo_face_regions', 'photo_people', 'photo_fts',
 )
@@ -2680,7 +2809,10 @@ def run_reconcile(
     files' own mtimes, and `photoindex_status()` (which watermarks freshness
     by mtime) would then misreport the catalog as 'fresh' to find/doctor while
     it still omits them. The cache's mtime is pulled back behind the oldest
-    untracked file's mtime so the next status check still sees 'stale'.
+    untracked file's mtime so the next status check still sees 'stale'. When
+    that pullback itself fails, `stale_hold_failed` is set and the run exits
+    with warnings: the catalog now reads current while it is not, and no later
+    command can tell.
 
     A temporarily missing or unmounted photos root (an external drive that
     isn't plugged in, a bad roots.photos mapping) must not be treated as
@@ -2691,11 +2823,12 @@ def run_reconcile(
 
     Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...],
     'missing': [path, ...], 'new_count': int,
-    'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...]}.
+    'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...],
+    'stale_hold_failed': bool}.
     """
     empty = {
         'rematched': [], 'missing': [], 'new_count': 0,
-        'new_sourced': {}, 'new_unsourced': [],
+        'new_sourced': {}, 'new_unsourced': [], 'stale_hold_failed': False,
     }
     if is_working_copy(archive_root):
         return Result(exit_code=EXIT_CLEAN, data={
@@ -2820,6 +2953,7 @@ def run_reconcile(
     finally:
         conn.close()
 
+    stale_hold_failed = False
     if not dry_run and (untracked or rematched_paths):
         # Cover both still-untracked files (never scraped) and files just
         # rematched by SOURCE: keyword (path renamed in cache, but mtime/size
@@ -2827,19 +2961,24 @@ def run_reconcile(
         # whose on-disk content the cache doesn't actually reflect yet, which
         # would make photoindex_status() report 'fresh' regardless. A photo
         # root on removable/network storage can also vanish mid-stat once the
-        # cache write has already committed, so a stat failure here is a
-        # missed staleness pullback, not a reason to crash after the fact.
+        # cache write has already committed; that leaves no time to sit behind,
+        # which `_hold_cache_stale` reads as the failure it is.
         try:
-            oldest = min(
-                p.stat().st_mtime for p in (*untracked.values(), *rematched_paths)
-            )
-            os.utime(db_path, (time.time(), oldest - 1))
+            behind = [p.stat().st_mtime
+                      for p in (*untracked.values(), *rematched_paths)]
         except OSError:
-            pass
+            behind = []
+        stale_hold_failed = not _hold_cache_stale(db_path, behind)
+    result['stale_hold_failed'] = stale_hold_failed
     # photos.sqlite is a disposable cache (AGENTS.md), so reconcile's row moves
     # are not archive-content changes; `changed` stays empty. Unresolved missing
-    # files are a warning (mirrors _cmd_reconcile).
-    return Result(exit_code=(EXIT_WARNINGS if result['missing'] else EXIT_CLEAN), data=result)
+    # files are a warning (mirrors _cmd_reconcile) - and so is a catalog left
+    # looking current when it is not, because every later reader trusts it.
+    return Result(
+        exit_code=(EXIT_WARNINGS if (result['missing'] or stale_hold_failed)
+                   else EXIT_CLEAN),
+        data=result,
+    )
 
 
 # ── Tag-person (fha photoindex tag-person - BUILD.md M3.4) ───────────────
@@ -3598,6 +3737,7 @@ _EMPTY_SCAN_SUMMARY = {
     'root_found': False,
     'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
     'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
+    'stale_hold_failed': False,
     'ignore_patterns': [],
     'groups': 0, 'dated_groups': 0, 'nonspec_date_keywords': 0,
     'conflicts': 0, 'rebuilt_reason': None,
@@ -3842,17 +3982,11 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         p for p in unreadable
         if existing.get(alias_by_path[p]) != on_disk[p]
     ]
-    if unindexed:
-        try:
-            oldest = min(on_disk[p][0] for p in unindexed)
-            os.utime(db_path, (time.time(), oldest - 1))
-        except OSError:
-            # A photo root on removable or network storage can vanish between
-            # the commit and this touch; a missed staleness pullback is not a
-            # reason to fail a scan that otherwise succeeded.
-            pass
+    stale_hold_failed = bool(unindexed) and not _hold_cache_stale(
+        db_path, [on_disk[p][0] for p in unindexed])
 
     return Result(data={
+        'stale_hold_failed': stale_hold_failed,
         'photos_root': str(photos_root), 'root_found': True,
         'total': len(on_disk), 'scraped': scraped,
         'unchanged': len(on_disk) - scraped - len(unreadable), 'removed': removed,
@@ -4173,7 +4307,22 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             f'skipped (any prior catalog entry was kept): {sample}{more}',
             file=sys.stderr,
         )
-        if summary.get('unreadable_unindexed'):
+        # Only a file that is new or changed AND unreadable holds the catalog
+        # back, so `stale_hold_failed` can only arise inside this branch.
+        if summary.get('stale_hold_failed'):
+            # The catalog is missing those files' metadata AND now looks
+            # current, so nothing later will prompt a rescan. Say what is
+            # wrong and name the one command that rebuilds regardless of what
+            # the cache claims about itself.
+            print(
+                'WARNING: the photo catalog could not be marked out of date '
+                'afterwards (the .cache folder may be read-only), so searches '
+                'and exports will treat it as up to date even though those '
+                'files are missing from it. Run `fha photoindex --full` once '
+                'they are readable to rebuild it from scratch.',
+                file=sys.stderr,
+            )
+        elif summary.get('unreadable_unindexed'):
             # Those files are new or changed and never made it into the
             # catalog, so the catalog is deliberately left marked out of date
             # (see run_scan). Say so, or the next `fha find` warning about a
@@ -4428,6 +4577,20 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             f"{result['new_count']} new file(s) on disk not yet in the catalog; "
             'run fha photoindex to add them.'
         )
+
+    if result.get('stale_hold_failed'):
+        # Reconcile leaves files the catalog has not scraped, and the marker
+        # that says so could not be written. Nothing later will notice, so
+        # name the rebuild that does not depend on the marker.
+        print(
+            'WARNING: the catalog still does not hold those files, and it '
+            'could not be marked out of date afterwards (the .cache folder '
+            'may be read-only). Searches and exports will treat it as up to '
+            'date even though it is not. Run `fha photoindex --full` to '
+            'rebuild it from scratch.',
+            file=sys.stderr,
+        )
+        return EXIT_WARNINGS
 
     if not result['rematched'] and not result['missing'] and not result['new_count']:
         print('reconcile: no drift between the catalog and disk.')
