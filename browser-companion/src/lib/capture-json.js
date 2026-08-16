@@ -179,6 +179,57 @@
   // command that runs somewhere else.
   const UNQUOTABLE = /["`$\r\n]/;
 
+  // `fha` is a launcher FILE at the archive root, never a program on PATH
+  // (AGENTS.md "Execution rules"), so a bare `fha …` is a command-not-found in
+  // every shell the archive documents except the Windows Command Prompt. The
+  // project spells it per shell and has done since the first owner doc -
+  // `./fha <command>` on macOS/Linux, `.\fha <command>` in Windows PowerShell,
+  // a bare `fha <command>` in cmd.exe (CHEATSHEET.md "Running fha";
+  // GETTING_STARTED.md; docs/SETUP_FROM_ZIP.md). The card renders one of those
+  // two prefixed forms rather than inventing a third spelling.
+  //
+  // ONE string, not the docs' three-line block, because this string is what the
+  // Copy button puts on the clipboard: a block would paste into a terminal as
+  // three commands, two of which are wrong for the shell that ran them. So the
+  // command is rendered for the platform and the shell nuance stays out of it.
+  //
+  // Windows gets the PowerShell form because it is the one that works in BOTH
+  // Windows shells: cmd.exe resolves a path-qualified `.\fha` through PATHEXT
+  // to `fha.cmd` exactly as it resolves the bare name, while PowerShell
+  // deliberately refuses the bare name. Rendering `.\fha` therefore strands
+  // nobody; rendering the bare form would strand every PowerShell user.
+  const LAUNCHER_POSIX = './fha';
+  const LAUNCHER_WINDOWS = '.\\fha';
+
+  // Which launcher spelling this machine needs.
+  //
+  // The extension cannot know the human's shell and has no business guessing
+  // it, but it CAN know the operating system, which is what decides the path
+  // separator. `userAgentData.platform` is the sanctioned low-entropy hint and
+  // survives UA reduction; `navigator.platform` and the UA string are the
+  // fallbacks for an embedder carrying neither. Pure in its argument so a test
+  // hands it a fake instead of needing a browser.
+  //
+  // Unknown falls to the POSIX form deliberately: `./fha` is correct on
+  // macOS/Linux AND accepted by PowerShell (which takes forward slashes as
+  // separators), so the unknown case leaves only cmd.exe short - whereas
+  // defaulting the other way would break every Mac and Linux user.
+  function launcher(nav) {
+    const n = nav || (typeof navigator !== 'undefined' ? navigator : null);
+    if (!n) return LAUNCHER_POSIX;
+    const hinted = n.userAgentData && n.userAgentData.platform;
+    if (hinted) {
+      return /^windows$/i.test(String(hinted).trim())
+        ? LAUNCHER_WINDOWS : LAUNCHER_POSIX;
+    }
+    // `Win32`/`Win64` - anchored so macOS's `Darwin` cannot match on "win".
+    if (n.platform) {
+      return /^win/i.test(String(n.platform)) ? LAUNCHER_WINDOWS : LAUNCHER_POSIX;
+    }
+    return /windows/i.test(String(n.userAgent || ''))
+      ? LAUNCHER_WINDOWS : LAUNCHER_POSIX;
+  }
+
   // The exact command the handoff card offers for sweeping staged bundles in.
   //
   // It names a location ONLY when the browser has reported one. The download
@@ -190,11 +241,14 @@
   // ingest on a capture that had just succeeded. With no reported path the
   // bare command stands,
   // and the Python side resolves `capture_staging:` from fha.yaml (else its
-  // own default) and says which folder it looked in.
-  function ingestCommand(stagingDir) {
+  // own default) and says which folder it looked in. "Bare" is about the
+  // DIRECTORY argument only - the launcher prefix is always there, because a
+  // prefix-less `fha` is not a command anyone can run (see launcher above).
+  function ingestCommand(stagingDir, nav) {
     const dir = String(stagingDir || '').trim();
-    if (!dir || UNQUOTABLE.test(dir)) return 'fha capture --ingest';
-    return 'fha capture --ingest "' + dir + '"';
+    const cmd = launcher(nav) + ' capture --ingest';
+    if (!dir || UNQUOTABLE.test(dir)) return cmd;
+    return cmd + ' "' + dir + '"';
   }
 
   // The plain-language line under that command, for the two cases where the
@@ -284,6 +338,7 @@
     build,
     sanitizeFolder,
     stagedPaths,
+    launcher,
     ingestCommand,
     ingestHint,
   };

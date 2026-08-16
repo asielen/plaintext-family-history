@@ -150,7 +150,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "bc3173c7671c15f615be73e52640bf6d17e8a09a2db8db674e4fe05c0f7738af",
+      "sha256": "d94412bd9f8e98b8d2fb7392411bbee266bed305b3da10cd0df6a9387c97dff8",
       "spec_version": "1.2",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -213,14 +213,14 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
-      "sha256": "731052a5f66ad2c855a57f9edeb2fbfef1d31d905cf400977d8145a6f2611fc5",
+      "sha256": "70ee32b819d18ae07b59ae8f39c1af67afc505268af2a3edbf9726da80af12f2",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "9d2a05f789339bdae775979eab1be44dfb165990397292150c5bcf1137a6e2a8",
+      "sha256": "845f7eace0c81d1a7b9ee4dafba55aa82261810a54396d0c8fcc941e489065bf",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -269,14 +269,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "bc23f48ec2c173832440067415558450fed3f42ca4f93355b4ad17b612d2050a",
+      "sha256": "a626da944a3f84640c57325e747f6adc0f714a469c819fc9f8ed1317fb1433d4",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "fc207a883b5556bc19f89230ca3f9ea638915eb5d57f756a2b50d7caddc9d413",
+      "sha256": "0dc70caf4892455988fa219077870ee55677e5725c705deabfb06b71405bc94b",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },

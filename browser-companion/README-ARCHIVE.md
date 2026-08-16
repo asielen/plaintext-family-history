@@ -67,12 +67,15 @@ folders. When you are back at your archive, run one command from the archive's
 own folder:
 
 ```sh
-fha capture --ingest
+./fha capture --ingest      # macOS / Linux
+.\fha capture --ingest      # Windows PowerShell
+fha capture --ingest        # Windows Command Prompt
 ```
 
-On Windows that is `fha capture --ingest` in a Command Prompt window, or
-`.\fha capture --ingest` in PowerShell; on a Mac or Linux,
-`./fha capture --ingest`.
+`fha` is the small launcher file sitting in your archive folder, not a program
+your computer knows by name - so type the one line your own terminal wants, and
+type it from inside the archive folder. (The
+[everyday commands sheet](../../CHEATSHEET.md) has the same table.)
 
 That sweeps everything waiting in the capture folder into your archive's
 `inbox/` folder. Copy the command from the panel rather than typing it: if your

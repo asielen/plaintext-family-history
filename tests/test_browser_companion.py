@@ -536,7 +536,7 @@ class HandoffLocationTestCase(unittest.TestCase):
         # Both the pure twin and the browser file take the reported directory.
         for name, text in (('capture-json-pure.js', self.pure),
                            ('capture-json.js', self.browser)):
-            self.assertIn('function ingestCommand(stagingDir)', text, name)
+            self.assertIn('function ingestCommand(stagingDir, nav)', text, name)
             self.assertIn('function stagedPaths(filePath)', text, name)
 
     def test_an_unknown_location_gets_a_hint_naming_the_places_to_look(self) -> None:
@@ -549,6 +549,138 @@ class HandoffLocationTestCase(unittest.TestCase):
         for name, text in (('capture-json-pure.js', self.pure),
                            ('capture-json.js', self.browser)):
             self.assertIn('capture_staging', text, name)
+
+
+def _strip_js_comments(text: str) -> str:
+    """Drop `//` and `/* */` comments so a sweep reads only what SHIPS.
+
+    The companion's source is heavily commented, and nearly every comment
+    discusses `fha capture --ingest` by name. Those are prose about the command
+    and are correct as they stand (the repo writes commands bare in prose); what
+    must carry a launcher prefix is the text the panel puts on screen. Stripping
+    comments is what separates the two.
+
+    Deliberately naive - no string-literal awareness - which is safe in one
+    direction only: a `//` inside a string (a URL) truncates that line, so the
+    sweep can lose a line but never invent a violation. The one such case here
+    is disarmed by the caller's own regex, which needs `fha ` + a verb.
+    """
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return '\n'.join(re.sub(r'//.*$', '', line) for line in text.splitlines())
+
+
+# An `fha` invocation offered to a human: the bare name, followed by a verb,
+# with no `./` or `.\` in front of it. The lookbehind is what lets `fhaCmd(`,
+# `fha.yaml`, `window.FHA` and an already-prefixed `./fha` all pass.
+_BARE_FHA = re.compile(
+    r'(?<![\w./\\])fha\s+(?:capture|lint|index|process|doctor|report|find|views)\b')
+
+
+class LauncherPrefixTestCase(unittest.TestCase):
+    """A command the panel offers must be one the human's shell can run.
+
+    `fha` is a launcher FILE at the archive root - `fha` (sh) and `fha.cmd`
+    (Windows), both shipped by `tools/scaffold.py` - and it is never put on
+    PATH. AGENTS.md's execution rules spell the consequence out: `./fha` on
+    macOS/Linux, `.\\fha` in Windows PowerShell, a bare `fha` only in the
+    Windows Command Prompt, which is the one shell that searches the current
+    directory. The handoff card used to offer the bare form to everyone, so a
+    capture that had just succeeded handed most users a command-not-found.
+
+    These are structural pins for the same reason the sibling
+    HandoffLocationTestCase is: CI installs no node, so
+    `browser-companion/tests/test-capture-json.js` - which owns the behavioural
+    coverage - never runs here. This class is what actually guards the fix.
+    """
+
+    def setUp(self) -> None:
+        self.pure = (COMPANION / 'src' / 'lib' / 'capture-json-pure.js').read_text(
+            encoding='utf-8')
+        self.browser = (COMPANION / 'src' / 'lib' / 'capture-json.js').read_text(
+            encoding='utf-8')
+        self.panel_js = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+        self.panel_html = (COMPANION / 'src' / 'panel.html').read_text(encoding='utf-8')
+
+    def test_the_copied_command_is_built_from_a_launcher_not_a_bare_name(self) -> None:
+        # The literal the card used to emit. Its absence is the fix.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertNotIn("'fha capture --ingest'", text, name)
+            self.assertIn('launcher(nav)', text, name)
+            # Both project spellings, and only those two - not a third.
+            self.assertIn("'./fha'", text, name)
+            self.assertIn("'.\\\\fha'", text, name)
+
+    def test_the_two_spellings_are_the_ones_the_owner_docs_teach(self) -> None:
+        # A third spelling would be worse than the bug, so the forms are pinned
+        # against the docs an archive owner actually reads.
+        cheatsheet = (ROOT / 'CHEATSHEET.md').read_text(encoding='utf-8')
+        self.assertIn('`./fha <command>`', cheatsheet)
+        self.assertIn('`.\\fha <command>`', cheatsheet)
+
+    def test_windows_gets_the_form_that_runs_in_both_windows_shells(self) -> None:
+        # PowerShell refuses a bare current-directory command; cmd.exe resolves
+        # a path-qualified `.\fha` through PATHEXT to fha.cmd just as it
+        # resolves the bare name. So `.\fha` strands nobody on Windows and the
+        # bare form strands every PowerShell user - hence which one is emitted.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn("LAUNCHER_WINDOWS = '.\\\\fha'", text, name)
+            self.assertIn("LAUNCHER_POSIX = './fha'", text, name)
+            # Unknown platform falls to the POSIX form, which PowerShell also
+            # accepts - the failure mode that leaves fewest people stranded.
+            self.assertIn('if (!n) return LAUNCHER_POSIX;', text, name)
+
+    def test_the_platform_is_read_never_guessed(self) -> None:
+        # The extension cannot know the shell and does not pretend to; it reads
+        # the OS, which is what decides the separator.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn('userAgentData', text, name)
+            self.assertIn('n.platform', text, name)
+            self.assertIn('n.userAgent', text, name)
+
+    def test_no_shipped_string_hands_the_human_a_bare_fha_command(self) -> None:
+        """The sweep: every command the panel RENDERS carries its prefix."""
+        offenders = []
+        for name, text in (('panel.js', _strip_js_comments(self.panel_js)),
+                           ('capture-json.js', _strip_js_comments(self.browser)),
+                           ('capture-json-pure.js', _strip_js_comments(self.pure))):
+            for hit in _BARE_FHA.finditer(text):
+                offenders.append(f'{name}: {hit.group(0)!r}')
+        # panel.html, minus its HTML comments.
+        html = re.sub(r'<!--.*?-->', '', self.panel_html, flags=re.S)
+        for hit in _BARE_FHA.finditer(html):
+            offenders.append(f'panel.html: {hit.group(0)!r}')
+        self.assertEqual(
+            [], offenders,
+            'these render a bare `fha …` to the human, which only a Windows '
+            'Command Prompt can run: ' + '; '.join(offenders))
+
+    def test_the_panel_builds_every_command_through_one_helper(self) -> None:
+        # One place to be right, so the next command added inherits the prefix.
+        self.assertIn('function fhaCmd(rest)', self.panel_js)
+        self.assertIn("captureJson.launcher() + ' ' + rest", self.panel_js)
+        # The settings drawer's two static samples are filled at init.
+        self.assertIn('cmd-install-host', self.panel_html)
+        self.assertIn('cmd-ingest-plain', self.panel_html)
+        self.assertIn('fillStaticCmds()', self.panel_js)
+
+    def test_the_installed_readme_shows_every_shell_not_just_one(self) -> None:
+        """README-ARCHIVE.md ships into archives, so it must not teach the bug.
+
+        The doc used to open its ingest step with a fenced `fha capture
+        --ingest` - the bare form - and correct itself in prose underneath. The
+        block is what gets copied, so the block carries all three forms, the way
+        GETTING_STARTED.md and docs/SETUP_FROM_ZIP.md write theirs.
+        """
+        text = (COMPANION / 'README-ARCHIVE.md').read_text(encoding='utf-8')
+        blocks = [b for b in re.findall(r'```[a-z]*\n(.*?)```', text, flags=re.S)
+                  if 'capture --ingest' in b]
+        self.assertTrue(blocks, 'no fenced ingest command block in README-ARCHIVE.md')
+        for block in blocks:
+            self.assertIn('./fha capture --ingest', block)
+            self.assertIn('.\\fha capture --ingest', block)
 
 
 class BundleIdentityTestCase(unittest.TestCase):

@@ -158,11 +158,13 @@ Nothing sweeps automatically (the archive has no daemons or watchers). When you'
 back at your archive, run **one** command:
 
 ```sh
-fha capture --ingest        # sweeps the default staging folder into the archive inbox/
+./fha capture --ingest      # macOS / Linux - sweeps the default staging folder into inbox/
+.\fha capture --ingest      # Windows PowerShell
+fha capture --ingest        # Windows Command Prompt
 ```
 
 The handoff card shows the command with the staging folder the browser actually
-used (`fha capture --ingest "<that folder>"`) as soon as a capture completes -
+used (`./fha capture --ingest "<that folder>"`) as soon as a capture completes -
 the download directory is a browser setting, so the panel reads it from the
 completed download rather than assuming a home-relative `Downloads`.
 
@@ -276,10 +278,24 @@ recorded here (not silently) as proposed spec clarifications:
   (`chrome.downloads.search` → `DownloadItem.filename`), drops the file and
   bundle segments to get the folder that holds the bundles, and puts THAT in
   the command. With no reported path (before the first capture of a sitting, or
-  a path that cannot be quoted into a shell command) the bare
-  `fha capture --ingest` stands and a hint line points at the browser's own
+  a path that cannot be quoted into a shell command) the directory-less
+  `./fha capture --ingest` stands and a hint line points at the browser's own
   download setting and at `fha.yaml`'s `capture_staging:` - never at an
   invented path.
+- **The copied command carries the launcher prefix the machine needs.** `fha`
+  is a launcher FILE at the archive root, never a program on PATH (AGENTS.md
+  "Execution rules"), so the bare `fha …` the card used to offer was a
+  command-not-found for everyone except a Windows Command Prompt user - the one
+  shell that searches the current directory. `capture-json.js` `launcher()`
+  reads the OS off `navigator.userAgentData.platform` (falling back to
+  `navigator.platform`, then the UA string) and renders `./fha` or `.\fha`;
+  unknown falls to `./fha`, which PowerShell also accepts. The card holds ONE
+  string rather than the docs' three-shell block because that string is what
+  the Copy button puts on the clipboard, and Windows gets the PowerShell
+  spelling because `.\fha` resolves through PATHEXT in cmd.exe too - so it
+  strands nobody, while the bare form strands every PowerShell user. Every
+  other command the panel prints (the native-host hints, the fallback warning)
+  goes through the same prefix.
 - **Single-file snapshot is minimal but scrape-able.** It inlines images and
   stylesheet text (the §9 must-haves), drops **executable** scripts but **keeps
   `<script type="application/ld+json">` and other non-executable metadata** so the

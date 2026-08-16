@@ -649,9 +649,9 @@
           viaHost = false;
           hostWarning =
             "Your archive connection didn't answer (" + shortHostReason(e) +
-            ') - this capture was saved to Downloads instead. Run' +
-            ' `fha capture --ingest` to sweep it in, and `fha capture --install-host`' +
-            ' if this keeps happening.';
+            ') - this capture was saved to Downloads instead. Run `' +
+            fhaCmd('capture --ingest') + '` to sweep it in, and `' +
+            fhaCmd('capture --install-host') + '` if this keeps happening.';
         }
       }
       if (!viaHost) {
@@ -842,6 +842,25 @@
     if (hint) hint.textContent = captureJson.ingestHint(state.folder, state.stagedDir);
   }
 
+  // Every `fha` command this panel shows carries the launcher prefix the
+  // human's machine needs. `fha` is a launcher file at the archive root, not a
+  // program on PATH, so a bare `fha capture --ingest` is a command-not-found
+  // for everyone outside the Windows Command Prompt - see capture-json.js
+  // `launcher`. This is the one place the panel builds such a string.
+  function fhaCmd(rest) {
+    return captureJson.launcher() + ' ' + rest;
+  }
+
+  // Fill the settings drawer's two static command samples. They are markup
+  // rather than generated text, so they need one pass at init; the hint that
+  // later replaces `seamless-hint` wholesale builds its own via fhaCmd.
+  function fillStaticCmds() {
+    const host = $('cmd-install-host');
+    if (host) host.textContent = fhaCmd('capture --install-host');
+    const ingest = $('cmd-ingest-plain');
+    if (ingest) ingest.textContent = fhaCmd('capture --ingest');
+  }
+
   function wireSettings() {
     $('f-folder').addEventListener('change', () => {
       state.folder = captureJson.sanitizeFolder($('f-folder').value);
@@ -863,7 +882,8 @@
       seamless.addEventListener('change', async () => {
         if (!seamless.checked) {
           await nativeHost.removePermission();
-          setSeamlessHint('Off - captures stage to Downloads for `fha capture --ingest`.');
+          setSeamlessHint('Off - captures stage to Downloads for `'
+            + fhaCmd('capture --ingest') + '`.');
           return;
         }
         const granted = await nativeHost.requestPermission();
@@ -875,8 +895,9 @@
         const ready = await nativeHost.isAvailable();
         setSeamlessHint(ready
           ? 'On - captures file straight into your archive inbox.'
-          : "Permission granted, but no capture host answered. Run "
-            + '`fha capture --install-host` in your archive, then reopen this panel.');
+          : 'Permission granted, but no capture host answered. Run `'
+            + fhaCmd('capture --install-host')
+            + '` in your archive, then reopen this panel.');
       });
     }
   }
@@ -935,6 +956,7 @@
 
   async function init() {
     populateTypeSelect();
+    fillStaticCmds();
     wireEvents();
     wireSettings();
     const cfg = await loadSettings();

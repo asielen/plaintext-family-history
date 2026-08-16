@@ -15,6 +15,7 @@ const {
   randomToken,
   build,
   sanitizeFolder,
+  launcher,
   ingestCommand,
   ingestHint,
   stagedPaths,
@@ -22,6 +23,14 @@ const {
 
 // A fixed local time so timestamp assertions are deterministic.
 const WHEN = new Date(2026, 6, 27, 10, 15, 0, 7); // 2026-07-27 10:15:00.007
+
+// Stand-in `navigator`s. The launcher spelling is decided by the OS, which the
+// extension can honestly read; the SHELL it cannot, so these are the whole
+// input. Passed explicitly everywhere because node supplies a real global
+// `navigator` describing the machine running the suite.
+const WIN = { userAgentData: { platform: 'Windows' } };
+const MAC = { userAgentData: { platform: 'macOS' } };
+const LINUX = { userAgentData: { platform: 'Linux' } };
 
 test('timestamp carries milliseconds so same-second captures cannot share a folder', () => {
   assert.strictEqual(timestamp(WHEN), '20260727-101500-007');
@@ -157,22 +166,57 @@ test('ingestCommand asserts a location only when the browser reported one', () =
   // it must never do is synthesize `~/Downloads/<folder>` - the download
   // directory is a browser setting, and a guess that reads as fact sends the
   // sweep to a folder the bundle was never written to.
-  assert.strictEqual(ingestCommand(''), 'fha capture --ingest');
-  assert.strictEqual(ingestCommand(null), 'fha capture --ingest');
-  assert.strictEqual(ingestCommand(undefined), 'fha capture --ingest');
+  assert.strictEqual(ingestCommand('', MAC), './fha capture --ingest');
+  assert.strictEqual(ingestCommand(null, MAC), './fha capture --ingest');
+  assert.strictEqual(ingestCommand(undefined, MAC), './fha capture --ingest');
   assert.strictEqual(
-    ingestCommand('/Users/me/Downloads/fha-inbox'),
-    'fha capture --ingest "/Users/me/Downloads/fha-inbox"'
+    ingestCommand('/Users/me/Downloads/fha-inbox', MAC),
+    './fha capture --ingest "/Users/me/Downloads/fha-inbox"'
   );
   assert.strictEqual(
-    ingestCommand('D:/Family/captures'),
-    'fha capture --ingest "D:/Family/captures"'
+    ingestCommand('D:/Family/captures', WIN),
+    '.\\fha capture --ingest "D:/Family/captures"'
   );
   // A path that cannot survive being pasted between double quotes is not
   // pasted between double quotes; the hint carries it as plain text instead.
   for (const hostile of ['/home/me/my "downloads"', '/home/me/$HOME dl', '/home/me/`x`']) {
-    assert.strictEqual(ingestCommand(hostile), 'fha capture --ingest', hostile);
+    assert.strictEqual(ingestCommand(hostile, MAC), './fha capture --ingest', hostile);
   }
+});
+
+test('the copied command carries the launcher prefix the shell needs', () => {
+  // `fha` is a launcher FILE at the archive root, not a program on PATH
+  // (AGENTS.md "Execution rules"), so the bare form the card used to offer ran
+  // only in a Windows Command Prompt - the one shell that searches the current
+  // directory. Every other supported shell answered command-not-found on a
+  // capture that had just succeeded. The two spellings here are the project's
+  // own, from CHEATSHEET.md "Running fha" and GETTING_STARTED.md - not a third.
+  assert.ok(ingestCommand('', MAC).startsWith('./fha '), ingestCommand('', MAC));
+  assert.ok(ingestCommand('', WIN).startsWith('.\\fha '), ingestCommand('', WIN));
+  for (const nav of [MAC, LINUX, WIN, {}]) {
+    assert.ok(!/^fha /.test(ingestCommand('', nav)), JSON.stringify(nav));
+  }
+});
+
+test('launcher reads the OS, and an unknown one fails to the safer side', () => {
+  // userAgentData is the sanctioned hint; platform and the UA string are the
+  // fallbacks for an embedder carrying neither.
+  assert.strictEqual(launcher(WIN), '.\\fha');
+  assert.strictEqual(launcher(MAC), './fha');
+  assert.strictEqual(launcher(LINUX), './fha');
+  assert.strictEqual(launcher({ platform: 'Win32' }), '.\\fha');
+  assert.strictEqual(launcher({ platform: 'MacIntel' }), './fha');
+  assert.strictEqual(launcher({ userAgent: 'Mozilla/5.0 (Windows NT 10.0)' }), '.\\fha');
+  assert.strictEqual(launcher({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' }), './fha');
+  // "Darwin" contains "win": an unanchored match would hand macOS the Windows
+  // form, which is why the platform test is anchored.
+  assert.strictEqual(launcher({ platform: 'Darwin' }), './fha');
+  // Nothing to read at all: `./fha` is right on macOS/Linux and is also
+  // accepted by PowerShell, so it leaves only cmd.exe short - the other
+  // default would break every Mac and Linux user. (A bare `launcher()` reads
+  // the ambient `navigator`, which is what the panel wants and what node
+  // supplies from the HOST os - so it is deliberately not asserted here.)
+  assert.strictEqual(launcher({}), './fha');
 });
 
 test('ingestHint names a location the command could not carry', () => {

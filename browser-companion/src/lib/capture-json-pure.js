@@ -98,10 +98,32 @@ function stagedPaths(filePath) {
 
 const UNQUOTABLE = /["`$\r\n]/;
 
-function ingestCommand(stagingDir) {
+// `fha` is a launcher file at the archive root, not a program on PATH, so the
+// card renders the prefixed form the shell needs. Rationale, and why Windows
+// gets the PowerShell spelling, in capture-json.js.
+const LAUNCHER_POSIX = './fha';
+const LAUNCHER_WINDOWS = '.\\fha';
+
+function launcher(nav) {
+  const n = nav || (typeof navigator !== 'undefined' ? navigator : null);
+  if (!n) return LAUNCHER_POSIX;
+  const hinted = n.userAgentData && n.userAgentData.platform;
+  if (hinted) {
+    return /^windows$/i.test(String(hinted).trim())
+      ? LAUNCHER_WINDOWS : LAUNCHER_POSIX;
+  }
+  if (n.platform) {
+    return /^win/i.test(String(n.platform)) ? LAUNCHER_WINDOWS : LAUNCHER_POSIX;
+  }
+  return /windows/i.test(String(n.userAgent || ''))
+    ? LAUNCHER_WINDOWS : LAUNCHER_POSIX;
+}
+
+function ingestCommand(stagingDir, nav) {
   const dir = String(stagingDir || '').trim();
-  if (!dir || UNQUOTABLE.test(dir)) return 'fha capture --ingest';
-  return 'fha capture --ingest "' + dir + '"';
+  const cmd = launcher(nav) + ' capture --ingest';
+  if (!dir || UNQUOTABLE.test(dir)) return cmd;
+  return cmd + ' "' + dir + '"';
 }
 
 function ingestHint(folder, stagingDir) {
@@ -157,5 +179,5 @@ function build(fields) {
 module.exports = {
   CAPTURE_JSON_SCHEMA, DEFAULT_FOLDER,
   slugify, timestamp, randomToken, bundleName, accessedDate, build,
-  sanitizeFolder, stagedPaths, ingestCommand, ingestHint,
+  sanitizeFolder, stagedPaths, launcher, ingestCommand, ingestHint,
 };

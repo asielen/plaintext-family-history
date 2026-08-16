@@ -157,7 +157,11 @@
               browser's download folder. To integrate it into your research: open your archive
               and run the command below to file it into your inbox, then review and process it.</p>
             <div class="cmd-row">
-              <span id="cmd-text" class="cmd">fha capture --ingest</span>
+              <!-- Placeholder only: updateIngestCmd() overwrites this at init
+                   with the launcher form this machine needs. It carries the
+                   POSIX prefix rather than a bare `fha` so that even the
+                   never-reached fallback is a command someone could run. -->
+              <span id="cmd-text" class="cmd">./fha capture --ingest</span>
               <button id="btn-copy-cmd" type="button" class="copy-btn">Copy</button>
             </div>
             <p id="cmd-hint" class="reassure"></p>
@@ -178,11 +182,15 @@
           </select>
           <label class="check"><input type="checkbox" id="cb-seamless" />
             File straight into my archive (skip Downloads)</label>
+          <!-- The two <code> spans below are filled at init with the launcher
+               form this machine needs (`./fha` or `.\fha`); the text here is
+               the same POSIX fallback the placeholder command uses. -->
           <p class="hint" id="seamless-hint">Needs the capture host installed once:
-            run <code>fha capture --install-host</code> in your archive, then tick
-            this to grant the one-time permission. Off = stage to Downloads.</p>
+            run <code id="cmd-install-host">./fha capture --install-host</code> in your
+            archive, then tick this to grant the one-time permission.
+            Off = stage to Downloads.</p>
           <p class="hint">After capturing, file everything with
-            <code>fha capture --ingest</code> in your archive.</p>
+            <code id="cmd-ingest-plain">./fha capture --ingest</code> in your archive.</p>
         </details>
       </main>
     </div>
