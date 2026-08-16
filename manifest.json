@@ -407,7 +407,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "14c2b810be94cc08631243536519659ab59c7d9da8dce7ee07c65c9105914b5b",
+      "sha256": "d97b0e2737061adff745ee3cc7fb18f97a93a78f64b35ac1a8e62da14f28e171",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -864,7 +864,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "67823331c52a8096f8dfe2b94b26a925c9389a3ada776b2475bb69c8f9df0447",
+      "sha256": "34a94c9b61f81dfa65ed1ee4b867a7372a2ab83fcc635e8c5b74575fe9ecad81",
       "spec_version": "1.2"
     },
     {
