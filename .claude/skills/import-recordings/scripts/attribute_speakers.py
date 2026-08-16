@@ -129,13 +129,26 @@ defend; nothing downstream may treat a lowered run as if it met the contract.
 
 SAFETY RULES (all mandatory, none tunable away)
 ==============================================
-* Hard mispair gate. If the global token match rate falls below --min-match-rate
-  (default 0.50) the tool refuses to label anything and exits 2. A transcript
+* Hard mispair gate. The gate asks one question - ARE THESE TWO FILES THE SAME
+  RECORDING? - so it is measured against BOTH streams, not the friendlier one.
+  The match rate is the smaller of (matched / app tokens) and (matched / whisper
+  tokens), which is the same as dividing by the larger stream. Dividing by the
+  smaller stream answered a weaker question ("is the small file contained in the
+  big one"), and a tiny app export that shared one five-word phrase with one
+  whisper segment scored a perfect 1.00, sailed through the gate, and had that
+  segment published at confidence 1.00 with somebody else's name on it. A
+  minimum of MIN_MATCH_TOKENS matched words sits underneath the rate, because a
+  ratio computed over a handful of words is noise whichever way you divide it.
+  Below either bar the tool refuses to label anything and exits 2. A transcript
   paired with the wrong audio still matches ~6% of tokens and will happily label
   most segments with confident nonsense; correct pairs match 70-85%. The
   separation is enormous, so the gate is cheap and the failure it prevents is not.
-  `--force` overrides it for a deliberate experiment; the override is recorded in
-  the run's warnings and in the JSON report, never silent.
+  A genuinely partial app export - half the interview - now fails the gate too,
+  because from here it is indistinguishable from a mispair; the refusal prints
+  both coverage figures so a human can tell which he is looking at, and
+  `--force` labels the part that does line up. `--force` overrides this gate and
+  nothing else; the override is recorded in the run's warnings and in the JSON
+  report, never silent.
 * Refused means nothing is written. A refusal writes neither --out nor --report:
   the earlier version of a run that refused still published an unlabelled copy of
   the whisper input, so naming the wrong app transcript by mistake destroyed a
@@ -156,7 +169,18 @@ SAFETY RULES (all mandatory, none tunable away)
   reported on.
 * Both outputs are written through a temporary file and then moved into place,
   so an interrupted or failing run leaves the previous file intact rather than a
-  half-written one. An existing destination is replaced, with a warning saying so.
+  half-written one.
+* An existing --out or --report is REFUSED, not warned about. The skill's Stage B
+  command names its output deterministically (`<stem>.md`), so the second run of
+  a session lands on the first run's file - and by then a human may have gone
+  through it correcting speaker labels, which is the whole point of publishing a
+  proposal. This tool cannot tell its own earlier output from a corrected copy of
+  it: the AI marker it writes survives a human's edits, so the marker proves
+  nothing, and no cheap test distinguishes the two. Rather than guess, both cases
+  are refused the same way, and `--replace` is how the human says the file may go.
+  `--force` does NOT authorise this: forcing past a mispair suspicion is not
+  consent to destroy a corrected transcript, and one flag must not mean two
+  unrelated things.
 
 HONEST LIMITS
 =============
@@ -170,7 +194,9 @@ HONEST LIMITS
   human to confirm against the recording.
 
 Exit codes: 0 = ok (including honest no-ops), 2 = refused to label (mispair
-gate), 1 = usage/IO error.
+gate), 1 = usage/IO error - which includes a refusal to replace an existing
+--out or --report, because the fix is a different command line and not a
+different pairing of files.
 
 CODE MAP
 ========
@@ -186,6 +212,9 @@ CODE MAP
                      _fuzzy_pairs              character-similarity repair
                      _local_match              bounded difflib on a small range
                      align_tokens              the recursive driver + stats
+  Mispair gate       mispair_evidence          both streams' coverage, measured
+                     mispair_gate_ok           the same-recording question
+                     mispair_sentence          the numbers in plain words
   Evidence           collect_align_votes       votes from token pairs, gap-filled
                      timestamp_coverage_ok     the 80% timed-turn gate
                      turn_span_estimate        how long one turn plausibly lasts
@@ -220,6 +249,11 @@ TOOL_VERSION = "1.0.0"
 # ---------------------------------------------------------------------------
 DEFAULT_MIN_CONFIDENCE = 0.90   # the documented safety contract, not a knob
 DEFAULT_MIN_MATCH_RATE = 0.50
+MIN_MATCH_TOKENS = 20     # and the rate must rest on at least this many matched
+                          # words. A rate over five words is not a measurement:
+                          # two unrelated recordings share "yeah I don't know"
+                          # all day long. Below this the answer is "cannot
+                          # tell", and a gate that cannot tell refuses.
 GAP_CAP = 25              # max tokens interpolated between two agreeing anchors
 SMALL_BLOCK = 64          # ranges this small go straight to difflib
 MAX_LOCAL_CELLS = 4_000_000   # hard cap on any single difflib call (n*m)
@@ -246,7 +280,11 @@ FRACTION_EPSILON = 1e-9
 # Every internal status has a sentence a genealogist can act on. The status
 # string itself is for the JSON report; this is what he reads when a run stops.
 STATUS_IN_PLAIN_WORDS = {
-    "mispair_suspected": "the two files do not look like the same recording",
+    # Covers both halves of the gate. "They are not the same recording" would
+    # be the wrong cause for the other half, where the honest answer is that
+    # there was too little matching text to tell either way.
+    "mispair_suspected": "there is not enough matching text to believe the two "
+                         "files are the same recording",
     "no_whisper_segments": "the whisper transcript has no '**[HH:MM:SS]**' lines "
                            "to put labels on",
     "no_speaker_labels": "the app transcript carries no speaker labels at all "
@@ -713,6 +751,80 @@ def align_tokens(a, b):
 
 
 # ---------------------------------------------------------------------------
+# The mispair gate: are these two files the same recording?
+# ---------------------------------------------------------------------------
+def mispair_evidence(n_matched, n_app, n_wh):
+    """Both streams' coverage, and the one number the gate reads.
+
+    The gate's question is symmetric - same recording or not - so the measure
+    has to be symmetric too. `match_rate` is the SMALLER of the two coverages,
+    which is arithmetically the same as dividing the matched tokens by the
+    LARGER stream.
+
+    The earlier version divided by the smaller stream, and that quietly asked a
+    different, much easier question: "is the small file contained in the big
+    one?" A five-token app export sharing one phrase with one whisper segment
+    covered 100% of itself, scored a perfect 1.00, passed a gate meant to catch
+    exactly that file, and then handed that segment a confidence of 1.00 with
+    the wrong speaker's name on it. Every other whisper segment was unrelated
+    and the number could not see them, because they were not in the denominator.
+
+    Both raw coverages are returned as well as the gate number: the refusal
+    prints them, and 83% of the app against 41% of whisper reads very
+    differently from 6% against 5% - the first is half an interview, the second
+    is the wrong file.
+    """
+    app_rate = (n_matched / float(n_app)) if n_app else 0.0
+    wh_rate = (n_matched / float(n_wh)) if n_wh else 0.0
+    return {
+        "matched_tokens": n_matched,
+        "app_tokens": n_app,
+        "whisper_tokens": n_wh,
+        "app_coverage": app_rate,
+        "whisper_coverage": wh_rate,
+        "match_rate": min(app_rate, wh_rate),
+    }
+
+
+def mispair_gate_ok(ev, min_match_rate):
+    """True when the two files look like the same recording.
+
+    Two bars, because a rate and an amount of evidence are different questions
+    (the same distinction the timestamp path draws between how many turns carry
+    a stamp and where those stamps sit). The rate must clear --min-match-rate on
+    BOTH streams, and it must rest on at least MIN_MATCH_TOKENS matched words so
+    that a handful of common words cannot produce a confident ratio.
+    """
+    if ev["matched_tokens"] < MIN_MATCH_TOKENS:
+        return False
+    return ev["match_rate"] >= (min_match_rate - FRACTION_EPSILON)
+
+
+def mispair_sentence(ev, min_match_rate):
+    """The refusal, with the real numbers in it.
+
+    A human has to be able to tell a mispair from a genuinely partial export
+    without reading this file, and the only thing that tells them apart is the
+    two coverages side by side. So both are printed, in words, with the counts
+    they came from.
+    """
+    head = ("%d words line up between the two transcripts: %.1f%% of the app "
+            "transcript's %d words and %.1f%% of the whisper transcript's %d"
+            % (ev["matched_tokens"], 100.0 * ev["app_coverage"], ev["app_tokens"],
+               100.0 * ev["whisper_coverage"], ev["whisper_tokens"]))
+    if ev["matched_tokens"] < MIN_MATCH_TOKENS:
+        return (head + ". That is fewer than the %d matching words this check "
+                       "needs before a percentage means anything, so it cannot "
+                       "tell whether these two files describe the same "
+                       "recording; refusing to label"
+                % MIN_MATCH_TOKENS)
+    return (head + ". The gate needs %.1f%% of BOTH sides, so these two files "
+                   "probably do not describe the same recording - or the app "
+                   "export covers only part of it; refusing to label"
+            % (100.0 * min_match_rate))
+
+
+# ---------------------------------------------------------------------------
 # Evidence gathering
 # ---------------------------------------------------------------------------
 def collect_align_votes(pairs, app_owner, wh_owner, n_segments):
@@ -1097,10 +1209,17 @@ def build_parser():
                    help="per-segment gate, 0..1 (default %.2f)" % DEFAULT_MIN_CONFIDENCE)
     p.add_argument("--report", default=None, help="optional JSON report path")
     p.add_argument("--min-match-rate", type=float, default=DEFAULT_MIN_MATCH_RATE,
-                   help="mispair gate on global token match rate (default %.2f)"
-                        % DEFAULT_MIN_MATCH_RATE)
+                   help="mispair gate: the matched tokens must reach this share "
+                        "of BOTH transcripts, on at least %d matched words "
+                        "(default %.2f)" % (MIN_MATCH_TOKENS, DEFAULT_MIN_MATCH_RATE))
     p.add_argument("--force", action="store_true",
-                   help="label even if the mispair gate trips (not recommended)")
+                   help="label even if the mispair gate trips (not recommended). "
+                        "This flag means that and nothing else - it does not "
+                        "authorise replacing an existing --out or --report")
+    p.add_argument("--replace", action="store_true",
+                   help="allow an existing --out / --report file to be replaced "
+                        "(without this the run refuses rather than write over a "
+                        "transcript somebody may have corrected)")
     p.add_argument("--quiet", action="store_true", help="suppress the stdout summary")
     return p
 
@@ -1146,11 +1265,42 @@ def main(argv=None):
                        os.path.splitext(args.out)[0] + ".md",
                        os.path.splitext(args.out)[0] + ".speakers.json"))
 
+    # Refused, not warned about. The skill's Stage B command names its output
+    # deterministically, so the second run of a session aims straight at the
+    # first run's file - which by then may be the copy a human went through
+    # correcting speaker labels. This tool cannot tell that copy from its own
+    # earlier output (its AI marker survives a human's edits, so the marker
+    # proves nothing), so it refuses both cases identically and lets him say
+    # --replace. Checked before anything is read: the refusal costs nothing and
+    # should not arrive after a minute of alignment.
     warnings = []
-    for out_path, flag in ((args.out, "--out"), (args.report, "--report")):
-        if out_path and os.path.exists(out_path):
-            warnings.append("%s already exists and is being replaced: %s"
-                            % (flag, os.path.basename(out_path)))
+    existing = [(flag, out_path)
+                for out_path, flag in ((args.out, "--out"), (args.report, "--report"))
+                if out_path and os.path.exists(out_path)]
+    if existing and not args.replace:
+        named = " and ".join("%s (%s)" % (flag, os.path.basename(p))
+                             for flag, p in existing)
+        # The worked example names the flag that is actually in the way, and
+        # keeps its extension: "--out x-2.md" is no help to somebody whose
+        # --report is the file at risk.
+        first_flag, first_path = existing[0]
+        stem, ext = os.path.splitext(first_path)
+        many = len(existing) > 1
+        return fail(
+            "%s already %s from an earlier run, and this tool will not write "
+            "over %s. It cannot tell a transcript it wrote itself from one you "
+            "have since corrected by hand, and a corrected speaker label cannot "
+            "be got back. Either send this run somewhere else - for example %s "
+            "\"%s-2%s\" - or, if %s really can go, add --replace to the same "
+            "command and run it again."
+            % (named,
+               "hold files" if many else "holds a file",
+               "them" if many else "it",
+               first_flag, stem, ext or ".md",
+               "those files" if many else "that file"))
+    for flag, out_path in existing:
+        warnings.append("%s already existed and was replaced at your request "
+                        "(--replace): %s" % (flag, os.path.basename(out_path)))
 
     try:
         wh_lines, newline, trailing = read_text(args.whisper)
@@ -1167,6 +1317,7 @@ def main(argv=None):
     counts = Counter()
     pairs = []
     align_stats = Counter()
+    evidence = mispair_evidence(0, len(app_stream), len(wh_stream))
     time_used = None
     method = "align"
 
@@ -1182,19 +1333,16 @@ def main(argv=None):
         warnings.append("one of the transcripts contains no words")
     else:
         pairs, align_stats = align_tokens(app_stream, wh_stream)
-        denom = float(min(len(app_stream), len(wh_stream))) or 1.0
-        match_rate = len(pairs) / denom
-        if match_rate < args.min_match_rate and not args.force:
+        evidence = mispair_evidence(len(pairs), len(app_stream), len(wh_stream))
+        gate_ok = mispair_gate_ok(evidence, args.min_match_rate)
+        if not gate_ok and not args.force:
             status = "mispair_suspected"
             exit_code = 2
-            warnings.append(
-                "global token match rate %.1f%% is below the %.1f%% gate - these two "
-                "files probably do not describe the same recording; refusing to label"
-                % (match_rate * 100.0, args.min_match_rate * 100.0))
+            warnings.append(mispair_sentence(evidence, args.min_match_rate))
         else:
-            if match_rate < args.min_match_rate:
-                warnings.append("mispair gate overridden with --force at %.1f%% match"
-                                % (match_rate * 100.0))
+            if not gate_ok:
+                warnings.append("mispair gate overridden with --force: "
+                                + mispair_sentence(evidence, args.min_match_rate))
             votes, anchored, filled = collect_align_votes(
                 pairs, app_owner, wh_owner, len(segments))
             tv = collect_time_votes(segments, turns, len(segments), warnings)
@@ -1222,18 +1370,30 @@ def main(argv=None):
                 "%s: error: refused to label because %s, so nothing was "
                 "written - anything already saved as %s is untouched. Check that "
                 "the app transcript really belongs to this recording and run the "
-                "command again; --force labels anyway, which is a decision you "
-                "own and must say out loud.\n"
+                "command again. If you know it belongs but covers only part of "
+                "the sitting - half the interview exported, the phone stopped "
+                "early - the two percentages above are what that looks like, and "
+                "--force labels the part that does line up. Either way it is a "
+                "decision you own and must say out loud.\n"
                 % (TOOL_NAME, plain, os.path.basename(args.out)))
             return exit_code
         if held:
+            # --replace deliberately does not open this door. It says an
+            # existing file may go; it does not say an unlabelled pass-through
+            # copy is worth what is being thrown away, and nothing here produced
+            # a result worth publishing.
+            extra = ""
+            if args.replace:
+                extra = (" --replace does not cover this: it says that file may "
+                         "be replaced, not that an unlabelled copy is worth "
+                         "replacing it with.")
             return fail(
                 "nothing could be attributed because %s, and %s already holds "
                 "a file from an earlier run. Replacing it with an unlabelled "
-                "copy would throw that work away, so nothing was written. Fix "
+                "copy would throw that work away, so nothing was written.%s Fix "
                 "the input named in the warning above, or give --out and "
                 "--report new filenames, then run the command again."
-                % (plain, " and ".join(held)))
+                % (plain, " and ".join(held), extra))
 
     labelled = counts.get("labelled", 0)
     note = ("<!-- speaker labels transferred by %s v%s from '%s'. "
@@ -1271,8 +1431,10 @@ def main(argv=None):
         "settings": {
             "min_confidence": args.min_confidence,
             "min_match_rate": args.min_match_rate,
+            "min_matched_tokens": MIN_MATCH_TOKENS,
             "gap_cap_tokens": GAP_CAP,
             "forced": bool(args.force),
+            "replaced_existing": bool(args.replace and existing),
         },
         "app_transcript": {
             "variant": variant,
@@ -1288,8 +1450,13 @@ def main(argv=None):
         },
         "alignment": {
             "matched_tokens": len(pairs),
-            "match_rate_vs_app": round(len(pairs) / float(len(app_stream)), 4) if app_stream else 0.0,
-            "match_rate_vs_whisper": round(len(pairs) / float(n_wh), 4) if n_wh else 0.0,
+            "match_rate_vs_app": round(evidence["app_coverage"], 4),
+            "match_rate_vs_whisper": round(evidence["whisper_coverage"], 4),
+            # The gate reads the smaller of the two above (matched / the LARGER
+            # stream), so the number it judged on is in the report next to the
+            # two it came from - not left to be re-derived by whoever reads this.
+            "mispair_gate_rate": round(evidence["match_rate"], 4),
+            "mispair_gate_passed": mispair_gate_ok(evidence, args.min_match_rate),
             "anchor_stages": {k: v for k, v in sorted(align_stats.items())},
             "coverage_by_decile": decile_coverage(pairs, n_wh),
             "mean_index_skew_by_decile": decile_skew(pairs, n_wh),

@@ -98,10 +98,44 @@ The one path this script writes is `--json`, and that flag is the only way the
 read-only promise could ever be broken: a mistyped or tab-completed report path
 that lands on a recording would destroy the file it was reporting on, after
 having already hashed it and cleared it as safe to import. So the report path is
-canonicalised and compared against every incoming recording, every archived
-media file, the archive's own fha.yaml, and the media roots themselves BEFORE
-anything is hashed, and the run is refused outright on a collision. See
+compared against every incoming recording, every archived media file, the
+archive's own fha.yaml, and the media roots themselves BEFORE anything is
+hashed, and the run is refused outright on a collision. See
 `report_path_collision`.
+
+TWO NAMES, ONE FILE
+===================
+Every question above is really a question about path identity - is this
+incoming file the archived one, is this folder the inbox, would the report land
+on a recording - and a path is a bad way to ask it. One file has many names: a
+case variant on a case-insensitive volume (the default on macOS and Windows), an
+accent stored NFD by the filesystem and typed NFC by the human, a symlink, a
+hard link, a second mount of the same disk. Comparing the strings answers a
+different question than the one asked, and it answers it wrong in whichever
+direction the spelling happened to fall.
+
+There is no single right comparison, because the two mistakes cost different
+things in different places, so this file uses three and picks by consequence:
+
+  same_file            the filesystem's own answer, (device, inode). Exact, and
+                       the only one used where a wrong MATCH is the dangerous
+                       direction - deciding that a folder is one already walked,
+                       or that two configured roots are one root.
+  could_be_same_file   samefile when both paths exist, and a blunt case-folded,
+                       NFC-normalised comparison when one does not (a report
+                       that has not been written yet has no inode to compare).
+                       Used only for `--json`, where a wrong match costs one
+                       sentence and a missed match costs a recording.
+  canonical_path       string tidying only - absolute, symlinks resolved. Still
+                       the right tool where a wrong match would DROP something:
+                       an input the human named, or a same-size candidate. A
+                       hard link is a second name for a filed recording, and
+                       treating it as "the file itself" would clear it as new.
+
+`walk_covering` has always used the (device, inode) idiom for its loop guard.
+The bug worth remembering is that the knowledge stayed there: everything else
+compared strings through an `os.path.normcase` that folds case on Windows only,
+under a docstring promising it folded on macOS too.
 
 WHERE IT LOOKS
 ==============
@@ -167,13 +201,15 @@ Exit codes
 
 CODE MAP
 ========
+  Identity    canonical_path / _fold / _identity_key / fs_identity /
+              same_file / could_be_same_file / _is_inside / _relative_under
   Config      find_archive_root / _roots_from_config / resolve_media_roots
   Naming      media_root_label / build_named_roots / portable_path
   Index       is_media / walk_covering / index_sizes_by_root / sha256_file /
               source_id_in
   Check       expand_inputs / filed_inside_media_root / check_one /
               mark_bundle_repeats / apply_archive_coverage
-  Safety      canonical_path / report_path_collision
+  Safety      report_path_collision
   CLI         build_parser / fail / main
 """
 
@@ -184,9 +220,10 @@ import hashlib
 import json
 import os
 import sys
+import unicodedata
 
 TOOL_NAME = "find_duplicate_media.py"
-TOOL_VERSION = "1.4.0"
+TOOL_VERSION = "1.5.0"
 
 REPORT_EXAMPLE = "dedupe-report.json"
 
@@ -241,6 +278,205 @@ def _reason(exc):
     """An OSError as one short clause, for a message a genealogist reads."""
     text = getattr(exc, "strerror", None) or str(exc)
     return " ".join(str(text).split())
+
+
+# ---------------------------------------------------------------------------
+# Path identity: which of two names are one file
+# ---------------------------------------------------------------------------
+def canonical_path(path):
+    """One absolute, symlink-resolved spelling of a path. A string, no more.
+
+    `./report.json` and `report.json` are the same file, and a symlink is
+    whatever it points at. That is as far as tidying a STRING can get you. On a
+    case-insensitive volume `Report.json` and `report.json` are also one file,
+    and no amount of string work can tell you so, because the answer lives in
+    the filesystem and not in the name. `os.path.normcase` is kept here because
+    it is genuinely right on Windows, where the OS folds case itself; on macOS
+    and Linux it returns the path unchanged, which is why this function is a
+    normaliser and never an identity test. Identity goes through `same_file`
+    (exact) or `could_be_same_file` (blunt, for a path not yet written).
+
+    It is still the right comparison in the two places where a wrong match
+    would DROP something - `expand_inputs` and `check_one` - and each says so
+    where it uses it.
+
+    Restated rather than imported from the sibling attribute_speakers.py, for
+    the same reason `find_archive_root` is restated: each of this skill's
+    scripts has to run standalone from any directory, on nothing but the
+    standard library. The two are no longer the same function: that copy still
+    decides `--out`/`--report` collisions by this string alone, under the
+    docstring promise of macOS case equivalence that `normcase` never kept, so
+    it needs the same two-armed check this file grew. Do not re-sync them by
+    copying this one back - the collision sites there are what need changing.
+    """
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _fold(name):
+    """One filename with its case and its Unicode spelling flattened away.
+
+    Two things make one name look like two. A case-insensitive volume - the
+    default on macOS and on Windows - stores `Interview.m4a` and gives it back
+    to whoever asks for `interview.m4a`. And HFS+ stores its directory entries
+    decomposed (NFD), so a name typed or pasted as NFC comes back from the disk
+    as a different Python string with the same accents. NFC-normalising before
+    folding settles the second; `casefold` settles the first.
+
+    `str.casefold` is more eager than any filesystem's own folding table, and
+    that is on purpose: it is only ever used where matching too much costs a
+    sentence and matching too little costs a recording.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _identity_key(path):
+    """A deliberately blunt key: any two names for one file share it.
+
+    Folded on every platform rather than after probing the volume, because the
+    two mistakes are not the same size where this is used (`--json`): a wrong
+    match tells the human to pick another filename for his report, and a missed
+    match overwrites the recording the report had just cleared for import. A
+    probe is also weaker than it sounds - it has to be run on the volume
+    holding each candidate (documents and photos are allowed to sit on
+    different drives), it needs a write to be trustworthy, and a read-only
+    mount cannot answer it at all.
+    """
+    return _fold(canonical_path(path))
+
+
+def _identity_from_stat(st, path):
+    """(device, inode) for a stat already taken, or the canonical string.
+
+    Some network and Windows filesystems report an inode of 0 for everything,
+    and a key that collides for every file would be worse than no key at all -
+    it would prune an entire walk. There the canonical string is the best
+    available answer, and it is a string, so it can never collide with a real
+    (device, inode) pair held in the same set.
+    """
+    return (st.st_dev, st.st_ino) if st.st_ino else canonical_path(path)
+
+
+def fs_identity(path):
+    """The filesystem's own name for a file or folder, for use as a dict key.
+
+    The one identity that survives every way a path can be spelled. Callers
+    that have already stat'd the path use `_identity_from_stat` directly; this
+    is for callers that have not, and it answers with the canonical string when
+    the path cannot be stat'd at all, leaving the error to the caller's own
+    unreadable-path handling.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return canonical_path(path)
+    return _identity_from_stat(st, path)
+
+
+def same_file(a, b):
+    """Do these two names point at one file, as the filesystem sees it?
+
+    `os.path.samefile` compares (device, inode) - the filesystem's own answer,
+    and correct on a case-insensitive volume, through a symlink, through a hard
+    link, and across two mounts of one disk, none of which a string comparison
+    can see. It needs both paths to exist and raises OSError when one does not,
+    which is not a problem to work around: a file that is not there cannot be
+    the file in hand. The string comparison is kept as the fallback so that two
+    spellings of one absent path still compare equal.
+
+    Used where a wrong TRUE is the dangerous direction and both paths exist:
+    the folder-identity comparisons in `_is_inside`, and the de-duplication of
+    configured roots. `could_be_same_file` is for the other direction.
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return canonical_path(a) == canonical_path(b)
+
+
+def could_be_same_file(a, b):
+    """Could writing to one of these land on the other? Two arms, one plan.
+
+    A report path is usually a file that does not exist yet, and `samefile`
+    cannot speak about a file that is not there. So the check has two arms:
+
+      * both exist - ask the filesystem. Authoritative on every volume, and it
+        catches the aliases no string can: a hard link, a second mount of the
+        same disk, a case variant on a folding volume where only one of the two
+        names is the one on disk.
+      * one does not - compare the blunt key instead: the same parent folder
+        after symlinks are resolved, and the same name once case and Unicode
+        form are folded away (`_identity_key`).
+
+    Blunt on purpose, and only for `--json`. This is the answer to "is it safe
+    to write here", where the two mistakes cost a sentence and a recording.
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return _identity_key(a) == _identity_key(b)
+
+
+def _is_inside(path, root):
+    """Is `path` at or below `root`, as the filesystem sees it?
+
+    Containment decides real things here - whether a handed-over recording is
+    the archive's own copy, whether a folder is the inbox rather than the
+    library, whether a `--json` path would write inside the archive - so it is
+    answered by identity rather than by string prefix. Two spellings of one
+    folder are one folder, and a prefix test reads them as two: the answer
+    flips, and the verdict flips with it. A file that is inside the archive
+    gets reported as outside it, which is how a filed recording gets cleared
+    for a second import.
+
+    The walk is upwards. Resolve both sides, then compare `path` and each
+    folder above it against `root` until they meet or there are no parents
+    left. Walking up is also what answers for a path that does NOT exist yet -
+    a report about to be written - because the climb reaches the folder that
+    will hold it, and a file is inside `root` exactly when the nearest existing
+    folder above it is.
+
+    The string prefix test is kept as a fast first answer. Both sides are
+    resolved by then, so when it matches, the containment is real.
+    """
+    target = os.path.realpath(os.path.abspath(path))
+    base = os.path.realpath(os.path.abspath(root))
+    if target == base or target.startswith(base.rstrip(os.sep) + os.sep):
+        return True
+    cur = target
+    while True:
+        if same_file(cur, base):
+            return True
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+
+
+def _path_parts(path):
+    """An absolute path split into its components, separators normalised."""
+    return [part for part in
+            os.path.abspath(path).replace("\\", "/").split("/") if part]
+
+
+def _relative_under(target, root, fold=False):
+    """`target` written relative to `root`, or None when it is not below it.
+
+    Compared component by component rather than by string prefix, because a
+    folded comparison is per NAME: folding can change a string's length ('ss'
+    for 'ß'), so the number of characters `root` occupies inside `target` is
+    not the number of characters `root` has, and slicing by the wrong length
+    would cut a reported path in the middle of a folder name. Comparing the
+    names and then joining the ORIGINAL remainder keeps the reported path
+    spelled the way the file on disk is spelled.
+    """
+    parts = _path_parts(target)
+    base = _path_parts(root)
+    if len(parts) < len(base):
+        return None
+    for part, base_part in zip(parts, base):
+        if part != base_part and not (fold and _fold(part) == _fold(base_part)):
+            return None
+    return "/".join(parts[len(base):])
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +633,11 @@ def resolve_media_roots(archive_root):
         base = value if os.path.isabs(value) else os.path.join(archive_root, value)
         base = os.path.abspath(base)
         if os.path.isdir(base):
-            if all(base != existing for _label, existing in named):
+            # Both folders exist by here, so `same_file` is exact: one folder
+            # configured twice under two aliases (or two spellings of one
+            # folder) is one root, and listing it twice would render the same
+            # filed recording under whichever alias sorted first.
+            if not any(same_file(base, existing) for _label, existing in named):
                 named.append((alias, base))
         elif configured or os.path.exists(base) or not _is_inside(base, archive_root):
             missing.append((alias, value))
@@ -405,17 +645,6 @@ def resolve_media_roots(archive_root):
     staging = (staging_value if os.path.isabs(staging_value)
                else os.path.join(archive_root, staging_value))
     return named, missing, os.path.abspath(staging)
-
-
-def _is_inside(path, root):
-    """Is `path` at or below `root`? Used to tell a young archive from a lost drive."""
-    path_key = os.path.normcase(os.path.abspath(path))
-    root_key = os.path.normcase(os.path.abspath(root))
-    if path_key == root_key:
-        return True
-    if not root_key.endswith(os.sep):
-        root_key += os.sep
-    return path_key.startswith(root_key)
 
 
 # ---------------------------------------------------------------------------
@@ -462,15 +691,18 @@ def build_named_roots(media_roots, archive_root, incoming_args):
     named = list(media_roots)
     if archive_root:
         named.append(("", os.path.abspath(archive_root)))
-    seen = set()
+    seen = []
     count = 0
     for arg in incoming_args:
         arg_abs = os.path.abspath(arg)
         base = arg_abs if os.path.isdir(arg_abs) else os.path.dirname(arg_abs)
-        key = os.path.normcase(base)
-        if key in seen:
+        # Every one of these folders exists - main() checked the argument before
+        # calling - so the folder identity is exact. Two spellings of one bundle
+        # folder would otherwise take two labels, and the file the human handed
+        # over would be rendered under whichever one happened to sort first.
+        if any(same_file(base, done) for done in seen):
             continue
-        seen.add(key)
+        seen.append(base)
         if any(_is_inside(base, root) for _label, root in media_roots):
             continue
         count += 1
@@ -487,18 +719,35 @@ def portable_path(path, named_roots):
     REPORTED" in the module docstring for why both halves of that matter. The
     last-resort basename is for a path under no known root at all, which the
     callers here do not produce.
+
+    Three passes over the roots, most trustworthy spelling first, because a
+    later pass must never take a path away from the root that really holds it -
+    on a case-sensitive volume `Documents/` and `documents/` are two folders,
+    and only one of them holds this file:
+
+      1. exact. Every archived path came off the walk of a root, so it is
+         already spelled the way that root is, and this is the only pass they
+         ever need.
+      2. folded. For the paths the human typed himself, which are the only ones
+         here the walk did not produce.
+      3. resolved. For a path that reaches a root through a directory link -
+         `~/phone-export -> documents/interviews` - where no spelling of the
+         name can show the relationship and only the filesystem knows.
+
+    Falling past all three means a bare filename, which is the one thing this
+    function must not do to a file that a named root does hold: `recording.m4a`
+    cannot tell the human WHICH of three folders holding that name matched.
     """
     target = os.path.abspath(path)
-    key = os.path.normcase(target)
-    for label, root in named_roots:
-        root_abs = os.path.abspath(root)
-        prefix = os.path.normcase(root_abs)
-        if key == prefix:
-            return label or "."
-        if not prefix.endswith(os.sep):
-            prefix += os.sep
-        if key.startswith(prefix):
-            rel = target[len(root_abs):].lstrip("\\/").replace("\\", "/")
+    target_real = os.path.realpath(target)
+    for resolved, fold in ((False, False), (False, True), (True, True)):
+        for label, root in named_roots:
+            base = os.path.realpath(root) if resolved else os.path.abspath(root)
+            rel = _relative_under(target_real if resolved else target, base, fold)
+            if rel is None:
+                continue
+            if not rel:
+                return label or "."
             return "%s/%s" % (label, rel) if label else rel
     return os.path.basename(target)
 
@@ -538,10 +787,9 @@ def walk_covering(root, unreadable, visited):
       (`documents/loop -> documents`) and diamonds (two links onto one folder).
       A folder already enumerated this run is pruned, which ends the loop without
       losing coverage: everything under it is already in hand. The identity is
-      the folder's own (device, inode) where the platform reports one, and its
-      resolved path where it does not - some network and Windows filesystems
-      report an inode of 0 for everything, and a key that collides for every
-      folder would prune the entire walk.
+      the folder's own (device, inode) - see `_identity_from_stat`, which is
+      where this file's one correct idea about path identity lived alone for
+      too long.
     * REPORTS WHAT IT COULD NOT ENTER. Both the directory-listing errors
       `os.walk` hands to `onerror` and a folder that cannot be stat'd land in
       `unreadable`, which is what turns a partial walk into `indeterminate`
@@ -562,7 +810,7 @@ def walk_covering(root, unreadable, visited):
             unreadable.append(dirpath)
             dirnames[:] = []
             continue
-        key = (st.st_dev, st.st_ino) if st.st_ino else canonical_path(dirpath)
+        key = _identity_from_stat(st, dirpath)
         if key in visited:
             dirnames[:] = []
             continue
@@ -621,13 +869,21 @@ def index_sizes_by_root(named_roots, staging=None):
     by_size = {}
     unreadable = []
     visited = set()
-    # Resolved, because the walk reaches folders through symlinks and the inbox
-    # has to be recognised however it was arrived at.
-    staging_real = os.path.realpath(os.path.abspath(staging)) if staging else None
+    if staging:
+        # The inbox is excluded at its own folder identity, which prunes
+        # everything below it in one step - and recognises it however the walk
+        # arrives, through a link or under a spelling that differs from the one
+        # fha.yaml uses. `walk_covering` prunes what is already in `visited`;
+        # putting the inbox there before the walk starts says "this subtree is
+        # not the archive" in the vocabulary the walk already speaks.
+        visited.add(fs_identity(staging))
 
     for _label, root in named_roots:
         for dirpath, filenames in walk_covering(root, unreadable, visited):
-            if staging_real and _is_inside(os.path.realpath(dirpath), staging_real):
+            # The identity prune above cannot see a link that lands BELOW the
+            # inbox's own folder (`documents/x -> inbox/monday`), which arrives
+            # without ever passing through the inbox itself.
+            if staging and _is_inside(dirpath, staging):
                 continue
             for name in filenames:
                 if not is_media(name):
@@ -649,8 +905,14 @@ def sha256_file(path, cache):
     from the same app share long identical headers, and a prefix hash would call
     them the same file. The cache matters because one incoming folder is often
     checked against the same size-colliding archived candidate many times over.
+
+    Keyed by filesystem identity, so a candidate reached through a second name -
+    a link, a hard link, a case variant of a name already read - is recognised
+    as the file whose digest is already in hand. This is the one place a blunter
+    key would be harmless anyway: every possible wrong hit returns the digest of
+    the very same bytes.
     """
-    key = os.path.abspath(path)
+    key = fs_identity(path)
     if key in cache:
         return cache[key]
     h = hashlib.sha256()
@@ -737,6 +999,19 @@ def expand_inputs(paths):
         # Canonical, not just absolute: following directory links means one file
         # can be reached by two names in one run, and checking it twice would
         # report "checked 3 recordings" for a bundle holding two.
+        #
+        # And canonical rather than the filesystem's (device, inode), which is
+        # the sharper identity everywhere else in this file. Here the sharper
+        # answer is the wrong one twice over. Two hard links in one bundle are
+        # two names the human is about to import, and dropping one of them
+        # would leave a file that gets filed with nothing said about it - while
+        # keeping both costs only a line saying they are the same recording
+        # (`mark_bundle_repeats`, which is exactly that job). A blunt folded key
+        # is wrong for the mirror reason: on a case-sensitive volume `A.m4a`
+        # and `a.m4a` really are two recordings, and folding them together
+        # would drop one from the run unexamined. The cost of over-listing here
+        # is a duplicated line; the cost of under-listing is a recording nobody
+        # checked, so this comparison stays the one that over-lists.
         key = canonical_path(p)
         if key not in seen:
             seen.add(key)
@@ -763,12 +1038,17 @@ def filed_inside_media_root(path, media_roots, staging=None):
     `new` - the gate authorising a second import of the very file it was
     pointed at.
 
-    Membership is decided on the resolved path, so a shortcut or a symlink into
-    the archive is recognised as the archive's own copy rather than as a
-    stranger that happens to hash the same.
+    Membership is decided by `_is_inside`, which asks the filesystem which
+    folder holds what: a shortcut or a symlink into the archive is recognised as
+    the archive's own copy rather than as a stranger that happens to hash the
+    same, and a path the human typed with different capitalisation than the
+    archive uses is still the archive's own folder. Getting that wrong in
+    either direction changes the answer the human is given - "already filed" for
+    a file waiting in the inbox, or a clean import for a recording the archive
+    already holds.
     """
     target = os.path.realpath(os.path.abspath(path))
-    if staging and _is_inside(target, os.path.realpath(os.path.abspath(staging))):
+    if staging and _is_inside(target, staging):
         return None
     for _label, base in media_roots:
         base_real = os.path.realpath(os.path.abspath(base))
@@ -815,10 +1095,17 @@ def check_one(path, by_size, cache, media_roots=(), staging=None):
         entry["detail"] = "this file could not be read (%s)" % _reason(e)
         return entry
     entry["bytes"] = size
-    # A file is not its own duplicate. Compared canonically, so the two notions
-    # of "the same file" used here agree; with the already-filed check above
-    # this only fires for an archived path reached by a second name, which is
-    # a repeat of one candidate rather than a missing one.
+    # A file is not its own duplicate. With the already-filed check above, this
+    # only fires for an archived path reached by a second name, which is a
+    # repeat of one candidate rather than a missing one.
+    #
+    # Compared canonically, and NOT by the filesystem's (device, inode), even
+    # though that is the exact identity used elsewhere. A hard link is one
+    # inode with two directory entries, and one of them can be the archive's
+    # filed copy: `samefile` would call the filed recording "the incoming file
+    # itself", drop it from the candidate list, and clear as `new` a recording
+    # the archive already holds. Excluding too little costs one wasted hash of
+    # a file against itself; excluding too much costs the whole verdict.
     candidates = [c for c in by_size.get(size, [])
                   if canonical_path(c) != canonical_path(path)]
     entry["same_size_candidates"] = len(candidates)
@@ -934,23 +1221,6 @@ def apply_archive_coverage(results, archive_unreadable):
 # ---------------------------------------------------------------------------
 # Refusing to write onto anything this run reads
 # ---------------------------------------------------------------------------
-def canonical_path(path):
-    """One spelling of a path, so two ways of naming one file compare equal.
-
-    `--json ./report.json` and `--json report.json` are the same file; on Windows
-    and macOS so are `Report.json` and `report.json`; and a symlink is whatever
-    it points at. A collision check that misses any of those spellings is not a
-    check, it is a coin flip - which is why every comparison here goes through
-    this function instead of through a bare string equality test.
-
-    Restated rather than imported from the sibling attribute_speakers.py, for the
-    same reason `find_archive_root` is restated: each of this skill's scripts has
-    to run standalone from any directory, on nothing but the standard library.
-    The two spellings must stay identical; if one changes, change both.
-    """
-    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
-
-
 def report_path_collision(report_path, incoming, archived, media_roots,
                           config_path, render):
     """The plain refusal for a --json path that lands on a file this run reads.
@@ -967,14 +1237,19 @@ def report_path_collision(report_path, incoming, archived, media_roots,
     turns an archived path into the named-root form used everywhere else, since
     no message from this script names a machine path.
 
+    Every comparison is `could_be_same_file`, never a string equality test. The
+    report is the one path here that usually does not exist yet, so half the
+    question is about a file that has no inode to compare, and the other half
+    is about recordings whose names the volume may fold. Both arms of that
+    check lean the same way on purpose: a name this refuses that was actually
+    free costs the human one more word on the command line.
+
     Returns the message to refuse with, or None when the path is safe to write.
     """
     if not report_path:
         return None
-    target = canonical_path(report_path)
-    target_real = os.path.realpath(os.path.abspath(report_path))
     for path in incoming:
-        if canonical_path(path) == target:
+        if could_be_same_file(path, report_path):
             return ("--json points at one of the recordings being checked (%s). "
                     "This check only ever reads recordings, and writing the "
                     "report there would destroy that one. Nothing was written. "
@@ -982,14 +1257,14 @@ def report_path_collision(report_path, incoming, archived, media_roots,
                     "--json %s - and run the command again."
                     % (render(path), REPORT_EXAMPLE))
     for path in archived:
-        if canonical_path(path) == target:
+        if could_be_same_file(path, report_path):
             return ("--json points at a recording already filed in the archive "
                     "(%s). This check never writes to the archive, and the "
                     "report would replace that recording. Nothing was written. "
                     "Give the report a filename of its own - for example "
                     "--json %s - and run the command again."
                     % (render(path), REPORT_EXAMPLE))
-    if config_path and canonical_path(config_path) == target:
+    if config_path and could_be_same_file(config_path, report_path):
         return ("--json points at the archive's fha.yaml, the file that says "
                 "which folders hold your recordings. The report would replace "
                 "it. Nothing was written. Give the report a filename of its own "
@@ -1001,7 +1276,7 @@ def report_path_collision(report_path, incoming, archived, media_roots,
     # so it is not in the size index and none of the checks above can see it.
     # Nothing this script produces belongs inside a media root anyway.
     for _label, base in media_roots:
-        if _is_inside(target_real, os.path.realpath(base)):
+        if _is_inside(report_path, base):
             return ("--json would write into the archive's %s folder, which "
                     "holds your filed recordings and their transcripts. This "
                     "check never writes to the archive. Nothing was written. "
@@ -1067,7 +1342,10 @@ def main(argv=None):
                 return fail("--media-root is not a folder: %s - point it at the "
                             "folder holding the archived recordings" % d)
             base = os.path.abspath(d)
-            if any(base == existing for _label, existing in media_roots):
+            # Same folder named twice (`--media-root x --media-root ./x`, or a
+            # link to it) is one root; both spellings exist here, so the
+            # filesystem can be asked outright.
+            if any(same_file(base, existing) for _label, existing in media_roots):
                 continue
             label = media_root_label(base, taken)
             taken.add(label)

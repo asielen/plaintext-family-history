@@ -36,19 +36,19 @@
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "250a6ce6b570d6a1882759ebfdec6a9d8dc111a3711fbc110315f481dc0952b9",
+      "sha256": "c9c83dca4ea90aa7b8e31935cf54b4c8a46f587c21d375c4b8ff36b4ebdfef13",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/import-recordings/scripts/attribute_speakers.py",
       "category": "operating",
-      "sha256": "77dabfc1aa2ce2dc990fbe06af87db3f278d7d6230186eda472e36449eacf24e",
+      "sha256": "59df4bc29649c8ce56f4aa5db98ce397f772d867dac0af94e09f0dbf2b3e63e1",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/import-recordings/scripts/find_duplicate_media.py",
       "category": "operating",
-      "sha256": "58017f3885a5087e392072c802d659db0fe53de0e5ef924cd1cd68aab6da8c05",
+      "sha256": "2444bcdd79928a849ea8b15d5e478a003ea19ce2030145e5eee097c360b2da59",
       "spec_version": "1.2"
     },
     {

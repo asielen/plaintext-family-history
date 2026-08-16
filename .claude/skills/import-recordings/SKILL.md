@@ -148,10 +148,17 @@ directory — pass `--root <archive>` on every call rather than guessing.
 
    `--json <path>` saves the same findings as a file, and that path is the one thing in this step
    that writes: give it a name of its own in the scratchpad, never a recording's name and never a
-   path inside a media root. The script canonicalises it and refuses the run - before it hashes
-   anything - if it lands on an incoming recording, on an archived one, on `fha.yaml`, or anywhere
-   inside a media root, because a report written over a recording would destroy it *after* clearing
-   it as safe to import. `./`, a different capitalisation and a symlink are all the same file to it.
+   path inside a media root. The script refuses the run - before it hashes anything - if that path
+   lands on an incoming recording, on an archived one, on `fha.yaml`, or anywhere inside a media
+   root, because a report written over a recording would destroy it *after* clearing it as safe to
+   import. It asks the filesystem rather than comparing the spelling, so `./`, a symlink, a hard
+   link and a second mount of the same disk are all one file to it; and where the report path does
+   not exist yet - the ordinary case - it falls back to comparing the folder plus the name with
+   capitalisation and accent spelling folded away. That fold is deliberately over-eager: `--json
+   Interview.m4a` is refused beside an incoming `interview.m4a` on every machine, not only on the
+   macOS and Windows volumes where the two names really are one file, because being told to pick
+   another filename costs one word and being wrong costs the recording. (A different name is still
+   a different file: `dedupe-report.json` beside `dedupe-report.m4a` writes normally.)
 
    Exit **3** is the third answer: **the check could not finish**. Nothing it printed as `UNCHECKED`
    is cleared, and the move is to fix what it names and re-run the whole bundle, not to import the
@@ -308,16 +315,23 @@ directory — pass `--root <archive>` on every call rather than guessing.
    ```
 
    `--outdir` is the **scratchpad**, always: never the incoming bundle, never a media root. The
-   three whisper outputs are `{name}.txt`, `{name}.srt` and `{name}.md`, and they replace whatever
-   already sits under those names - so a `--name` matching the app transcript's stem, in the folder
-   the app transcript lives in, overwrites an original. Pick the session-and-topic stem, write it
-   into scratch, and let `fha process --more` be the only thing that puts a file into the archive.
+   three whisper outputs are `{name}.txt`, `{name}.srt` and `{name}.md`. That script will not write
+   over files it cannot prove it wrote — a complete set of its own three is a no-op it reports, and
+   anything else already sitting under those names stops the run rather than being replaced (only
+   its own `--force` overrides that) — so a `--name` matching the app transcript's stem in the folder
+   the app transcript lives in now stops the run instead of destroying an original. Do not lean on
+   that: pick the session-and-topic stem, write it into scratch, and let `fha process --more` be the
+   only thing that puts a file into the archive.
 
    `medium` is the floor when the goal is recovering garbled proper names — and it usually is.
    Budget roughly half of realtime per file on CPU. Run recordings **one at a time**: faster-whisper
    already spreads across cores, so parallel jobs contend for the same cores, finish no sooner, and
    make the machine unusable meanwhile. Long queues belong in a background script that logs per file
-   and skips any output that already exists, so a reboot costs one file and not the batch.
+   and simply re-runs the command for every recording, so a reboot costs one file and not the batch:
+   the transcribe script already answers "is this one done?" itself — a complete set of its three
+   outputs is a no-op it reports, and a half-written or interrupted set is redone. Do not have the
+   wrapper skip a recording because *some* output file exists; that is the test that makes a
+   half-published transcript permanent.
 
    Video needs no special handling — whisper reads the audio track in place. If a container is
    unreadable, the fix is a **new derived audio extraction filed beside the video** with
@@ -343,17 +357,43 @@ directory — pass `--root <archive>` on every call rather than guessing.
    on `--out`), and both outputs are written through a temporary file, so an interrupted run never
    leaves a half-written transcript behind.
 
+   **A second run does not overwrite the first one.** `--out` names the same `<stem>.md` every time,
+   and by the second run that file may be the copy somebody went through fixing speaker labels by
+   hand — which is exactly what publishing a proposal is for. The script cannot tell its own earlier
+   output from a corrected copy of it (the AI marker it writes survives a human's edits, so the
+   marker proves nothing), so it refuses both cases the same way: if `--out` or `--report` already
+   exists the run stops with exit 1, names the file, and writes nothing. Send the new run somewhere
+   else (`--out "<stem>-2.md"`) and compare, or — only once you know that file can go — add
+   `--replace` to the same command. `--replace` is the *only* thing that authorises an overwrite:
+   `--force` overrides the mispair gate and nothing else, and a run forced past a mispair suspicion
+   still refuses to write over an existing transcript.
+
    These gates are not tuning knobs, and the script enforces them as its defaults — you do not pass
    `--min-confidence` or `--min-match-rate` on the standard run:
 
-   - **Hard abort below a 50% global token match rate.** Correctly paired files measure 70–83%; a
-     deliberately mispaired transcript measured 5.9% — and, ungated, still confidently labeled 80% of
-     segments. This guard is what stands between the archive and fluent nonsense. (`--min-match-rate`,
-     default 0.50; below it the script refuses to label anything and exits 2.) **A refusal writes
-     nothing** — not the transcript, not the report — so an attributed transcript from an earlier run
-     survives a mistyped `--app-transcript` byte for byte. The same holds for a run that can attribute
-     nothing at all (a paragraph-only app export): if `--out` or `--report` already holds a file, it
-     is left alone and the script exits 1 rather than replace good work with an unlabeled copy.
+   - **Hard abort below a 50% token match rate on *both* transcripts.** Correctly paired files
+     measure 70–83%; a deliberately mispaired transcript measured 5.9% — and, ungated, still
+     confidently labeled 80% of segments. This guard is what stands between the archive and fluent
+     nonsense. The question it asks is *are these two files the same recording?*, so the rate is
+     measured against both sides — the matched words over the **longer** stream, which is the same as
+     requiring 50% of the app transcript and 50% of the whisper transcript. Measuring against the
+     shorter one answers a weaker question ("is the small file inside the big one?"): a five-word app
+     export sharing one phrase with one whisper segment scored a perfect 100%, passed, and had that
+     segment published at full confidence with the wrong speaker on it. Underneath the rate sits a
+     floor of **20 matching words** — a percentage taken over a handful of common words is noise
+     whichever way you divide it, so below that the answer is "cannot tell", and a gate that cannot
+     tell refuses. (`--min-match-rate`, default 0.50; below either bar the script refuses to label
+     anything and exits 2.) The refusal prints both percentages with the word counts they came from,
+     because that pair is what distinguishes a mispair (6% against 5%) from a genuinely partial app
+     export (83% of the app against 41% of whisper — half the interview). **A partial export fails
+     this gate too**, deliberately: from here it is indistinguishable from a mispair. If you know the
+     app file covers only part of the sitting, `--force` labels the part that does line up and the
+     override is recorded in the report. **A refusal writes nothing** — not the transcript, not the
+     report — so an attributed transcript from an earlier run survives a mistyped `--app-transcript`
+     byte for byte. The same holds for a run that can attribute nothing at all (a paragraph-only app
+     export): if `--out` or `--report` already holds a file, it is left alone and the script exits 1
+     rather than replace good work with an unlabeled copy — and `--replace` does not buy past that
+     one either, because it says a file may go, not that an unlabeled copy is worth what it replaces.
    - **Label a whisper segment only at a confidence of 0.90 or better, and never when contested.**
      The score is `coverage × (2 × agreement − 1)` — the winner's votes minus everybody else's, over
      the segment's token count — so 0.90 demands a segment be nearly fully covered *and* nearly
@@ -581,7 +621,10 @@ proposal-and-confirm is unchanged.
   (`1998-06-14/1998-06-15`) and a sentence saying why - never a single exact day the evidence does
   not support, and never a stall.
 - A `--json` report path that resolves onto an incoming recording, an archived one, or `fha.yaml`
-  is refused before anything is hashed, and every one of those files is byte-identical afterwards.
+  is refused before anything is hashed, and every one of those files is byte-identical afterwards -
+  including when the collision is only in the spelling (`Interview.m4a` for `interview.m4a`, an
+  accent typed the other way, a hard link), which is a refusal on every platform and not only on the
+  volumes that fold names themselves.
 - A byte-identical repeat of an already-archived recording is detected by hash, **skipped**, and
   reported with the path of the file it duplicates — no second S-id, no second folder, and the
   bundle left intact on disk. The same holds for a repeat *within one batch* (one afternoon under

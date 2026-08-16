@@ -21,11 +21,21 @@ What is covered here:
      instead of being absorbed into the previous speaker's interval; and a
      transcript that stops halfway through the recording cannot label the half
      it never reached. Coverage is about WHERE, not only how much: the same
-     question is asked of the anchors that rescue a thin segment.
+     question is asked of the anchors that rescue a thin segment, and of the
+     mispair gate, which measures the match against BOTH transcripts (matched
+     words over the longer stream) and refuses a rate resting on fewer than
+     MIN_MATCH_TOKENS words. Dividing by the shorter stream asked "is the small
+     file contained in the big one" and let a 22-word app export take one
+     whisper segment at confidence 1.00.
   4. OUTPUT SAFETY - no destination may collide with an input or with the other
      destination; a run that refuses or attributes nothing writes neither output
-     and leaves an earlier result byte for byte; nothing written to disk carries
-     an absolute machine path (AGENTS_TOOLING.md §11).
+     and leaves an earlier result byte for byte; an existing --out or --report is
+     refused rather than replaced, because the deterministic `<stem>.md` output
+     name means a second run aims at a file a human may have corrected, and
+     nothing here can tell that copy from the tool's own earlier output; the two
+     overrides stay separate (--force is the mispair gate, --replace is the
+     overwrite, and neither buys the other); nothing written to disk carries an
+     absolute machine path (AGENTS_TOOLING.md §11).
   4b. THE READ-ONLY PROMISE - the dedupe check writes exactly one path,
      `--json`, and that path is refused before a single byte is hashed if it
      resolves onto an incoming recording, an archived one, or `fha.yaml`. Its
@@ -183,6 +193,38 @@ class DocumentedGatesTest(unittest.TestCase):
             self.assertNotIn('--min-confidence', line)
             self.assertNotIn('--min-match-rate', line)
             self.assertNotIn('--force', line)
+            # Same rule for the overwrite override: the standard command must
+            # not carry the flag that authorises replacing a corrected
+            # transcript, or every rerun quietly destroys the last one.
+            self.assertNotIn('--replace', line)
+
+    def test_minimum_matched_words_floor_is_the_documented_twenty(self):
+        self.assertEqual(attribute_speakers.MIN_MATCH_TOKENS, 20)
+
+    def test_skill_md_states_the_two_sided_mispair_gate(self):
+        self.assertIn('both', self.skill.lower())
+        self.assertIn('20 matching words', self.skill)
+        self.assertIn('--min-match-rate`, default 0.50', self.skill)
+
+    def test_skill_md_documents_the_replace_refusal(self):
+        """A flag the script needs and the prose never mentions is a trap."""
+        self.assertIn('--replace', self.skill)
+        self.assertIn('does not overwrite the first one', self.skill)
+
+    def test_tooling_interface_states_the_replace_flag_and_the_gate(self):
+        entry = [ln for ln in self.tooling.splitlines()
+                 if ln.startswith('- `import-recordings`')]
+        self.assertEqual(len(entry), 1, 'the import-recordings design entry moved')
+        self.assertIn('--replace', entry[0])
+        self.assertIn('20 matched words', entry[0])
+
+    def test_replace_and_force_are_separate_flags_in_the_parser(self):
+        """The decision itself: one flag must not mean two safety overrides."""
+        flags = set()
+        for action in attribute_speakers.build_parser()._actions:
+            flags.update(action.option_strings)
+        self.assertIn('--force', flags)
+        self.assertIn('--replace', flags)
 
     def test_decide_labels_at_the_gate_and_refuses_just_below_it(self):
         """The gate value is enforced where it is read, not just where it is set."""
@@ -439,6 +481,133 @@ class UncoveredTailTest(unittest.TestCase):
                                  'labelled anyway')
 
 
+class MispairGateCoverageTest(unittest.TestCase):
+    """The gate asks whether these are the same recording, of BOTH files.
+
+    Dividing the matched tokens by the SMALLER stream asked a weaker question -
+    "is the small file contained in the big one?" - and a tiny app export
+    sharing one phrase with one whisper segment answered it perfectly: match
+    rate 1.00, gate cleared, that segment published at confidence 1.00 with
+    somebody else's name on it. The rate is now measured against the longer
+    stream (equivalently: both coverages must clear the gate), and it must rest
+    on a minimum number of matched words, because a percentage over five common
+    words is not a measurement.
+    """
+
+    def test_a_short_subset_no_longer_scores_a_perfect_match(self):
+        ev = attribute_speakers.mispair_evidence(25, 25, 250)
+        self.assertAlmostEqual(ev['app_coverage'], 1.0)
+        self.assertAlmostEqual(ev['whisper_coverage'], 0.1)
+        self.assertAlmostEqual(ev['match_rate'], 0.1)
+        self.assertFalse(attribute_speakers.mispair_gate_ok(ev, 0.50))
+
+    def test_the_rate_is_the_matched_tokens_over_the_longer_stream(self):
+        for matched, n_app, n_wh in ((30, 40, 100), (30, 100, 40), (50, 50, 50)):
+            ev = attribute_speakers.mispair_evidence(matched, n_app, n_wh)
+            self.assertAlmostEqual(ev['match_rate'],
+                                   matched / float(max(n_app, n_wh)))
+
+    def test_a_genuine_pair_still_passes(self):
+        """70-83% on both sides is what a correct pairing measures."""
+        ev = attribute_speakers.mispair_evidence(800, 1000, 1050)
+        self.assertTrue(attribute_speakers.mispair_gate_ok(ev, 0.50))
+
+    def test_exactly_the_gate_passes(self):
+        ev = attribute_speakers.mispair_evidence(30, 30, 60)
+        self.assertAlmostEqual(ev['match_rate'], 0.50)
+        self.assertTrue(attribute_speakers.mispair_gate_ok(ev, 0.50))
+
+    def test_a_rate_resting_on_too_few_words_is_refused(self):
+        """Two identical five-word files are 100% matched and prove nothing."""
+        floor = attribute_speakers.MIN_MATCH_TOKENS
+        thin = attribute_speakers.mispair_evidence(floor - 1, floor - 1, floor - 1)
+        self.assertAlmostEqual(thin['match_rate'], 1.0)
+        self.assertFalse(attribute_speakers.mispair_gate_ok(thin, 0.50))
+        enough = attribute_speakers.mispair_evidence(floor, floor, floor)
+        self.assertTrue(attribute_speakers.mispair_gate_ok(enough, 0.50))
+
+    def test_the_refusal_reports_both_coverages_with_their_word_counts(self):
+        """The one thing that tells a mispair from half an interview."""
+        ev = attribute_speakers.mispair_evidence(25, 25, 250)
+        said = attribute_speakers.mispair_sentence(ev, 0.50)
+        self.assertIn('100.0%', said)
+        self.assertIn('10.0%', said)
+        self.assertIn('25', said)
+        self.assertIn('250', said)
+
+    def test_a_too_thin_refusal_says_it_cannot_tell_rather_than_quoting_a_rate(self):
+        ev = attribute_speakers.mispair_evidence(4, 4, 400)
+        said = attribute_speakers.mispair_sentence(ev, 0.50)
+        self.assertIn('cannot tell', said)
+        self.assertIn(str(attribute_speakers.MIN_MATCH_TOKENS), said)
+
+
+class MispairGateEndToEndTest(unittest.TestCase):
+    """The finding, played out: a short app export against a long recording."""
+
+    SHARED = ('we lived on the farm out past the creek for years and then the '
+              'winter came down hard on all of us')
+    FILLER = ('ledger harbour mineral thicket paddock quarry driftwood lantern '
+              'xylophone zenith marble trellis cobbler furnace wagon basket '
+              'copper ridge shutter crimson beacon fennel')
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-mispair-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        rows = [('00:00:00', self.SHARED)]
+        rows += [('00:00:%02d' % (10 * k), 'passage%d %s' % (k, self.FILLER))
+                 for k in range(1, 10)]
+        self.whisper = self.tmp / 'session-whisper.md'
+        self.app = self.tmp / 'session-app.txt'
+        self.out = self.tmp / 'session.md'
+        self.report = self.tmp / 'session.speakers.json'
+        self.whisper.write_text(whisper_text(rows), encoding='utf-8')
+        # The app export holds ONE turn: 22 words that really are in the
+        # recording. Every other word of the recording is unrelated to it.
+        self.app.write_text(app_bracket([(1, self.SHARED)]), encoding='utf-8')
+
+    def _run(self, extra=()):
+        return run_script(attribute_speakers, [
+            '--whisper', str(self.whisper), '--app-transcript', str(self.app),
+            '--out', str(self.out), '--report', str(self.report),
+            '--quiet'] + list(extra))
+
+    def test_a_contained_short_export_is_refused_and_publishes_nothing(self):
+        code, _out, err = self._run()
+        self.assertEqual(code, 2, err)
+        self.assertFalse(self.out.exists(),
+                         'the wrong speaker was published on a five-word coincidence')
+        self.assertFalse(self.report.exists())
+        self.assertIn('refused to label', err)
+
+    def test_the_refusal_names_the_partial_export_reading_and_the_override(self):
+        _code, _out, err = self._run()
+        self.assertIn('--force', err)
+        self.assertIn('part', err)
+
+    def test_force_still_labels_the_part_that_lines_up(self):
+        """A genuinely partial export must remain possible, loudly."""
+        code, _out, _err = self._run(['--force'])
+        self.assertEqual(code, 0)
+        written = self.out.read_text(encoding='utf-8')
+        self.assertIn('**[00:00:00] Speaker 1:**', written)
+        report = json.loads(self.report.read_text(encoding='utf-8'))
+        self.assertTrue(report['settings']['forced'])
+        self.assertFalse(report['alignment']['mispair_gate_passed'])
+        self.assertTrue(any('overridden with --force' in w
+                            for w in report['warnings']), report['warnings'])
+
+    def test_the_report_carries_the_number_the_gate_judged_on(self):
+        code, _out, _err = self._run(['--force'])
+        self.assertEqual(code, 0)
+        alignment = json.loads(
+            self.report.read_text(encoding='utf-8'))['alignment']
+        self.assertAlmostEqual(alignment['match_rate_vs_app'], 1.0, places=2)
+        self.assertLess(alignment['match_rate_vs_whisper'], 0.2)
+        self.assertAlmostEqual(alignment['mispair_gate_rate'],
+                               alignment['match_rate_vs_whisper'])
+
+
 class EnclosingAgreeWindowTest(unittest.TestCase):
     """A thin segment is only rescued by anchors that are actually near it."""
 
@@ -554,11 +723,61 @@ class AttributeSpeakersOutputSafetyTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self.out.read_bytes(), before)
 
-    def test_replacing_an_existing_output_says_so(self):
-        self.out.write_text('stale\n', encoding='utf-8')
+    def test_an_existing_output_is_refused_not_replaced(self):
+        """The finding: an existing --out was a warning, and then it was gone.
+
+        The Stage B command names its output `<stem>.md` every time, so the
+        second run of a session lands on the first run's file - which by then
+        may be the copy somebody corrected the speaker labels in. A warning
+        queued after the fact does not save it; only refusing does.
+        """
+        self.out.write_text('**[00:00:00] Thomas Hartley:** a corrected label\n',
+                            encoding='utf-8')
+        before = self.out.read_bytes()
+        code, out, err = self._run()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.out.read_bytes(), before)
+        self.assertFalse(self.report.exists(),
+                         'the report was written for a run that refused')
+        self.assertIn('session-attributed.md', err)   # names the file
+        self.assertIn('--replace', err)               # and the exact next step
+        self.assertNotIn('wrote', out)
+
+    def test_an_existing_report_is_refused_too(self):
+        """--report is the symmetric half: a JSON file is somebody's work too."""
+        self.report.write_text('{"status": "reviewed by hand"}\n', encoding='utf-8')
+        before = self.report.read_bytes()
         code, _out, err = self._run()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.report.read_bytes(), before)
+        self.assertFalse(self.out.exists())
+        self.assertIn('session.speakers.json', err)
+        self.assertIn('--replace', err)
+
+    def test_replace_authorises_the_overwrite_and_records_it(self):
+        self.out.write_text('an earlier attributed transcript\n', encoding='utf-8')
+        code, _out, err = self._run(['--replace'])
         self.assertEqual(code, 0)
-        self.assertIn('already exists and is being replaced', err)
+        self.assertNotEqual(self.out.read_text(encoding='utf-8'),
+                            'an earlier attributed transcript\n')
+        self.assertIn('--replace', err)
+        report = json.loads(self.report.read_text(encoding='utf-8'))
+        self.assertTrue(report['settings']['replaced_existing'])
+
+    def test_force_does_not_authorise_an_overwrite(self):
+        """Two safety questions, two flags.
+
+        `--force` says "I know the pairing looks wrong, label anyway". It has
+        never said "and throw away the transcript I corrected last week", and
+        one flag meaning both would make the first admission buy the second.
+        """
+        self.out.write_text('**[00:00:00] Thomas Hartley:** a corrected label\n',
+                            encoding='utf-8')
+        before = self.out.read_bytes()
+        code, _out, err = self._run(['--force'])
+        self.assertEqual(code, 1)
+        self.assertEqual(self.out.read_bytes(), before)
+        self.assertIn('--replace', err)
 
     def test_no_temporary_files_are_left_behind(self):
         self._run()
@@ -618,22 +837,33 @@ class AttributeSpeakersOutputSafetyTest(unittest.TestCase):
         self.report.write_text('{"status": "ok"}\n', encoding='utf-8')
         before = (self.out.read_bytes(), self.report.read_bytes())
         self._mispair()
-        code, _out, err = self._run()
+        # --replace is passed so the run gets past the "that file already
+        # exists" refusal and the MISPAIR gate is the thing under test. The two
+        # answer different questions: permission to overwrite is not evidence
+        # that these files belong together, so an authorised overwrite of a
+        # mispaired run still writes nothing.
+        code, _out, err = self._run(['--replace'])
         self.assertEqual(code, 2)
         self.assertIn('nothing was written', err)
         self.assertEqual((self.out.read_bytes(), self.report.read_bytes()), before)
 
     def test_a_run_that_attributes_nothing_does_not_replace_a_good_result(self):
-        """Same class: a paragraph-only app export used to overwrite at exit 0."""
+        """Same class: a paragraph-only app export used to overwrite at exit 0.
+
+        Run with --replace, so the answer cannot come from the new existence
+        refusal: even when the human has said that file may go, an unlabelled
+        pass-through copy is not what he agreed to put in its place.
+        """
         self.out.write_text('**[00:00:00] Speaker 2:** a good earlier result\n',
                             encoding='utf-8')
         before = self.out.read_bytes()
         self.app.write_text('just paragraphs of text with nobody named at all\n',
                             encoding='utf-8')
-        code, _out, err = self._run()
+        code, _out, err = self._run(['--replace'])
         self.assertEqual(code, 1)
         self.assertIn('no speaker labels', err)
         self.assertIn('run the command again', err)
+        self.assertIn('--replace does not cover this', err)
         self.assertEqual(self.out.read_bytes(), before)
 
     def test_a_timestamped_export_uses_the_interval_path_as_documented(self):
@@ -1272,6 +1502,29 @@ class DedupeCoverageTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn('DUPLICATE', out)
 
+    def test_the_inbox_is_still_the_inbox_when_the_walk_arrives_by_a_link(self):
+        """Staged is not filed however the walk got there.
+
+        The exclusion is by folder identity now rather than by path prefix, so
+        this pins the half that a prefix test would have missed: a link inside
+        the documents root that lands on the inbox, and a link that lands on a
+        folder inside it. Reading either as filed would answer the whole
+        capture workflow with "already filed, nothing to import".
+        """
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n  photos: photos\n'
+            '  inbox: photos/_inbox\n', encoding='utf-8')
+        inbox = self.photos / '_inbox'
+        (inbox / 'monday').mkdir(parents=True)
+        staged = b'an afternoon nobody has filed'
+        (inbox / 'monday' / 'new-sitting.m4a').write_bytes(staged)
+        self._link_dir(inbox, self.documents / 'staged')
+        self._link_dir(inbox / 'monday', self.documents / 'staged-monday')
+        self.twin.write_bytes(staged)
+        code, out, _err = self._run()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('DUPLICATE', out)
+
     def test_one_recording_handed_over_twice_in_one_batch_is_imported_once(self):
         """The bundle can repeat itself, and that is the same harm.
 
@@ -1440,10 +1693,15 @@ class DedupePathReportingTest(unittest.TestCase):
 def _filesystem_folds_case(directory):
     """Does this filesystem treat `A.json` and `a.json` as one file?
 
-    The collision check leans on os.path.normcase, which is a no-op on Linux and
-    a fold on Windows and macOS - so the end-to-end case test can only run where
-    the platform actually folds. Probed rather than guessed from sys.platform,
-    because a case-insensitive volume mounted on Linux is a real thing.
+    Probed rather than guessed from sys.platform, because a case-insensitive
+    volume mounted on Linux is a real thing and a case-sensitive one on macOS
+    is a supported option.
+
+    The collision check no longer needs this: it folds case on every platform
+    on purpose, so its own tests run everywhere. What still needs it is the
+    other direction - asserting that `same_file` tells two genuinely distinct
+    files apart requires a filesystem on which `A.m4a` and `a.m4a` can BE two
+    files.
     """
     probe = os.path.join(str(directory), 'CaseProbe.tmp')
     with open(probe, 'w', encoding='utf-8') as fh:
@@ -1547,24 +1805,111 @@ class DedupeReportPathSafetyTest(unittest.TestCase):
         self.assertIn('--json', err)
         self.assertEqual(self.twin.read_bytes(), before)
 
-    def test_a_case_variant_is_the_same_file_where_the_platform_folds(self):
-        if not _filesystem_folds_case(self.tmp):
-            self.skipTest('this filesystem is case-sensitive, so the two names '
-                          'really are two different files')
+    def test_a_case_variant_of_a_recording_is_refused_on_every_platform(self):
+        """The finding: `normcase` folds case on Windows and nowhere else.
+
+        The canonicaliser's docstring promised macOS case equivalence and used
+        an operation that does not provide it, so on a case-insensitive APFS or
+        HFS+ volume `--json Interview.m4a` beside an incoming `interview.m4a`
+        compared unequal, passed the collision check, and had the recording
+        destroyed by the final os.replace - after that recording had been
+        hashed and printed as safe to import.
+
+        There is no skip on this test. Where the volume folds, the two names
+        are one file and `samefile` says so; where it does not, the blunt key
+        says so anyway, because a name this refuses that was really free costs
+        one more word on the command line and a name it clears that was not
+        costs the recording.
+        """
         before = self.twin.read_bytes()
         shouty = str(self.twin).upper()
         code, out, err = self._run('--json', shouty, '--quiet')
         self.assertEqual(code, 1, out)
-        self.assertEqual(self.twin.read_bytes(), before)
+        self.assertIn('--json', err)
+        self.assertEqual(self.twin.read_bytes(), before,
+                         'the report was written over the recording it checked')
 
-    def test_canonical_path_folds_exactly_what_the_platform_folds(self):
-        """The unit under all of the above, checked on every platform."""
-        canonical = find_duplicate_media.canonical_path
-        plain = str(self.twin)
-        dotted = os.path.join(str(self.incoming), '.', self.twin.name)
-        self.assertEqual(canonical(plain), canonical(dotted))
-        self.assertEqual(canonical(plain) == canonical(plain.upper()),
-                         os.path.normcase('A') == 'a')
+    def test_a_case_variant_of_an_archived_recording_is_refused_by_name(self):
+        """The same fold on the archive side, where the file is an original.
+
+        An archived path was always caught by SOMETHING, because everything
+        filed is inside a media root and the last-resort net refuses the whole
+        root. What the fold buys here is the message: "this is the recording
+        you would destroy" instead of "not in that folder, please", which is
+        the difference between a human who understands what nearly happened
+        and one who picks a second name at random.
+        """
+        before = self.original.read_bytes()
+        shouty = str(self.original.parent / self.original.name.upper())
+        code, out, err = self._run('--json', shouty, '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('already filed in the archive', err)
+        self.assertIn('documents/interviews/hartley-1998-06-14_S-wb91h3hjrr.m4a',
+                      err)
+        self.assertEqual(self.original.read_bytes(), before)
+
+    def test_a_hard_link_to_a_recording_is_the_same_file(self):
+        """One inode, two directory entries, and no string can tell.
+
+        A symlink is resolved by `realpath`, so the old string comparison
+        happened to catch it. A hard link is the same file with no arrow to
+        follow: the two paths are unrelated as text, and only (device, inode)
+        - `os.path.samefile` - answers. This is the arm of the check that runs
+        on a case-sensitive filesystem too, so it is a real test here rather
+        than one that has to be taken on trust.
+        """
+        link = self.tmp / 'second-name.m4a'
+        try:
+            os.link(str(self.twin), str(link))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('this platform will not create a hard link')
+        before = self.twin.read_bytes()
+        code, out, err = self._run('--json', str(link), '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('--json', err)
+        self.assertEqual(link.read_bytes(), before,
+                         'the report was written over the recording under its '
+                         'other name')
+
+    def test_an_accent_spelled_the_other_way_is_the_same_file(self):
+        """macOS stores directory entries decomposed; humans type composed.
+
+        `Grand-mère.m4a` written NFC and read back NFD is one file and two
+        Python strings. It is the same defect as the case fold wearing a
+        different alphabet, and it is testable on any filesystem: where the
+        volume does not fold, the decomposed name simply does not exist, which
+        is precisely the prospective-path arm of the check.
+        """
+        # Written as escapes, not as accented source text: the whole point is
+        # that the two names differ in bytes while looking identical, and a
+        # future reader must be able to see which is which.
+        composed = 'Grand-m\u00e8re.m4a'        # NFC: one e-grave character
+        decomposed = 'Grand-me\u0300re.m4a'     # NFD: e + a combining grave
+        named = self.incoming / composed
+        named.write_bytes(b'an afternoon with a grandmother')
+        code, out, err = self._run(
+            '--json', str(self.incoming / decomposed), '--quiet')
+        self.assertEqual(code, 1, out)
+        self.assertIn('--json', err)
+        self.assertEqual(named.read_bytes(), b'an afternoon with a grandmother',
+                         'the report replaced the recording it was named after')
+        self.assertEqual(
+            sorted(p.name for p in self.incoming.iterdir()),
+            sorted([composed, self.twin.name]),
+            'the report landed beside the recording under its other spelling, '
+            'which on a volume that normalises names is the recording itself')
+
+    def test_a_report_named_after_a_recording_but_not_one_still_writes(self):
+        """The refusal folds case; it must not fold everything.
+
+        `hartley-1998-06-14_S-wb91h3hjrr.json` sits beside the recording of
+        that name and is a different file. A gate that refused it would be
+        refusing the obvious filename for the report.
+        """
+        report = self.tmp / (self.original.stem + '.json')
+        code, out, _err = self._run('--json', str(report), '--quiet')
+        self.assertEqual(code, 2, out)
+        self.assertTrue(report.exists())
 
     def test_json_anywhere_inside_a_media_root_is_refused(self):
         """A filed transcript is an original too, and carries no media extension.
@@ -1597,6 +1942,182 @@ class DedupeReportPathSafetyTest(unittest.TestCase):
         self.assertIn('could not write', err)
         leftovers = [p.name for p in self.tmp.iterdir() if '.tmp-' in p.name]
         self.assertEqual(leftovers, [])
+
+
+class PathIdentityTest(unittest.TestCase):
+    """One file has many names, and a string comparison believes every one.
+
+    The finding was in the `--json` collision check, but the defect was the
+    idea underneath it: identity was decided by tidying a path into a string
+    and comparing. `os.path.normcase` folds case on Windows and nowhere else,
+    so the canonicaliser's promise of macOS case equivalence was never kept,
+    and every containment test in the file inherited the same blind spot - a
+    file inside the archive reported as outside it, which is how a filed
+    recording gets cleared for a second import.
+
+    The primitives below are what replaced it, and each is tested in BOTH
+    directions, because the two mistakes cost different things in different
+    places: matching too much drops a recording from the run, matching too
+    little clears one that should have been stopped.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-identity-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.recording = self.tmp / 'interview.m4a'
+        self.recording.write_bytes(b'one afternoon in June')
+
+    def _link(self, target, link, directory=False):
+        try:
+            os.symlink(str(target), str(link), target_is_directory=directory)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('this platform will not create a symlink')
+
+    # -- same_file: exact, for where a wrong match drops something ----------
+    def test_same_file_sees_through_a_hard_link(self):
+        """Two directory entries, one inode, and nothing in the names to say so."""
+        other = self.tmp / 'second-name.m4a'
+        try:
+            os.link(str(self.recording), str(other))
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('this platform will not create a hard link')
+        self.assertTrue(find_duplicate_media.same_file(self.recording, other))
+
+    def test_same_file_sees_through_a_symlink_and_a_dot_slash(self):
+        link = self.tmp / 'shortcut.m4a'
+        self._link(self.recording, link)
+        dotted = os.path.join(str(self.tmp), '.', self.recording.name)
+        self.assertTrue(find_duplicate_media.same_file(self.recording, link))
+        self.assertTrue(find_duplicate_media.same_file(self.recording, dotted))
+
+    def test_same_file_keeps_two_genuinely_different_files_apart(self):
+        """The direction that matters: it must not fold what the volume does not.
+
+        Where `Interview.m4a` and `interview.m4a` can both exist they are two
+        recordings, and calling them one would drop a handed-over file from the
+        run without a word - which is why this comparison is the exact one and
+        not the blunt one.
+        """
+        if _filesystem_folds_case(self.tmp):
+            self.skipTest('this volume folds case, so the two names are one '
+                          'file and there is nothing here to keep apart')
+        shouty = self.tmp / 'Interview.m4a'
+        shouty.write_bytes(b'a different afternoon entirely')
+        self.assertFalse(find_duplicate_media.same_file(self.recording, shouty))
+
+    # -- could_be_same_file: blunt, for where a wrong match costs a word ----
+    def test_could_be_same_file_answers_for_a_path_not_yet_written(self):
+        """The whole difficulty: `samefile` needs a file, and a report has none.
+
+        `--json Interview.m4a` on a case-insensitive volume names the existing
+        recording; on a case-sensitive one it names nothing yet. The second is
+        the case no inode can answer, and the fold is the answer given instead.
+        """
+        prospective = self.tmp / 'Interview.m4a'
+        self.assertTrue(
+            find_duplicate_media.could_be_same_file(self.recording, prospective))
+
+    def test_could_be_same_file_leaves_a_different_name_alone(self):
+        """The refusal folds; it does not swallow every neighbouring name."""
+        report = self.tmp / 'interview.json'
+        sibling = self.tmp / 'interview-2.m4a'
+        elsewhere = self.tmp / 'sub' / 'interview.m4a'
+        elsewhere.parent.mkdir()
+        for other in (report, sibling, elsewhere):
+            self.assertFalse(
+                find_duplicate_media.could_be_same_file(self.recording, other),
+                '%s is a different file, and refusing it would refuse a report '
+                'the human is entitled to write' % other.name)
+
+    def test_canonical_path_is_a_normaliser_not_an_identity_test(self):
+        """It resolves spellings; it does not claim to answer identity.
+
+        Pinned because the docstring claiming otherwise is what carried the
+        bug. Two names for one file are `same_file`'s question now, and the two
+        places that still compare canonical strings do so precisely because a
+        wrong match there would drop an input rather than clear one.
+        """
+        canonical = find_duplicate_media.canonical_path
+        link = self.tmp / 'shortcut.m4a'
+        self._link(self.recording, link)
+        dotted = os.path.join(str(self.tmp), '.', self.recording.name)
+        self.assertEqual(canonical(self.recording), canonical(dotted))
+        self.assertEqual(canonical(self.recording), canonical(link))
+
+    # -- containment -------------------------------------------------------
+    def test_is_inside_resolves_a_root_reached_through_a_link(self):
+        """A media root can perfectly well be named through a shortcut.
+
+        The old prefix test compared the link's own path against the folder's,
+        found nothing in common, and reported a file sitting in the archive as
+        a file from outside it. Every consequence of that is a verdict: an
+        `incoming` label on a filed recording, a report allowed into the
+        documents root, an inbox that stops counting as the inbox.
+        """
+        real = self.tmp / 'library'
+        (real / 'interviews').mkdir(parents=True)
+        filed = real / 'interviews' / 'filed.m4a'
+        filed.write_bytes(b'already in the archive')
+        link = self.tmp / 'documents-link'
+        self._link(real, link, directory=True)
+        self.assertTrue(find_duplicate_media._is_inside(filed, link))
+        self.assertTrue(find_duplicate_media._is_inside(
+            link / 'interviews' / 'filed.m4a', real))
+
+    def test_is_inside_answers_for_a_file_that_does_not_exist_yet(self):
+        """A report is a plan, and the plan is inside or outside the archive.
+
+        Answered by climbing to the folder that WILL hold it, which is the same
+        question one level up - and the reason the check has two arms at all.
+        """
+        inside = find_duplicate_media._is_inside
+        root = self.tmp / 'library'
+        (root / 'interviews').mkdir(parents=True)
+        outside = self.tmp / 'reports'
+        outside.mkdir()
+        self.assertTrue(inside(root / 'interviews' / 'not-written-yet.json', root))
+        self.assertTrue(inside(root / 'no-such-folder' / 'report.json', root))
+        self.assertFalse(inside(outside / 'report.json', root))
+        self.assertFalse(inside(self.tmp / 'library-elsewhere' / 'report.json', root))
+
+
+class ArchiveOwnCopyThroughALinkTest(unittest.TestCase):
+    """A filed recording handed back through a shortcut is still filed.
+
+    The end-to-end half of the containment fix. The verdict was already right
+    (`filed_inside_media_root` resolved both sides), but the naming was not:
+    the folder the human typed was not recognised as the archive's own, so it
+    took an `incoming` label and the report announced that
+    `incoming/hartley-...m4a` was already filed - renaming the archive's own
+    folder on the very line that says the file lives in it.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='import-recordings-linked-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.archive = self.tmp / 'archive'
+        self.interviews = self.archive / 'documents' / 'interviews'
+        self.interviews.mkdir(parents=True)
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        self.filed = self.interviews / 'hartley-1998-06-14_S-wb91h3hjrr.m4a'
+        self.filed.write_bytes(b'the same bytes as the phone still holds')
+
+    def test_a_filed_recording_reached_through_a_link_is_named_where_it_sits(self):
+        handed = self.tmp / 'handed-back'
+        try:
+            os.symlink(str(self.interviews), str(handed), target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            self.skipTest('this platform will not create a directory symlink')
+        code, out, _err = run_script(
+            find_duplicate_media,
+            [str(handed / self.filed.name), '--root', str(self.archive)])
+        self.assertEqual(code, 2, out)
+        self.assertIn('already filed', out)
+        self.assertIn('documents/interviews/hartley-1998-06-14_S-wb91h3hjrr.m4a',
+                      out)
+        self.assertNotIn('incoming/', out)
+        self.assertNotIn(str(self.tmp), out)
 
 
 class RecordingDateOrderingTest(unittest.TestCase):
