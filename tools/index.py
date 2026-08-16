@@ -54,6 +54,7 @@ from _lib import (
     FhaConfigError,
     Message,
     Result,
+    carries_person_record_fields,
     edtf_bounds,
     extract_wikilinks,
     id_type_of,
@@ -65,6 +66,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     parse_filename,
+    person_file_kind,
     read_record,
     resolve_path,
     resolve_ref,
@@ -92,7 +94,6 @@ import yaml
 #    _coerce_coord           - one coords entry → float | None
 #    _parse_place_coords     - hand-edited coords: → (lat, lon, warning)
 #    _index_places           - places.yaml → places, place_names, place_history
-#    _carries_person_record_fields - frontmatter says "I am a person record"
 #    _index_person           - one person .md → persons + person_files
 #                              + hypotheses + search_log (research files)
 #    _index_source           - one source .md → sources + claims + claim_persons
@@ -774,45 +775,6 @@ def _index_research_log_block(
         )
 
 
-# SPEC §9's required person-record fields are `id`, `name` and `living`.  Only
-# the last two are usable as a "this file is a person record" signal: the
-# research companion (SPEC §16, `_lib.RESEARCH_TEMPLATE_FALLBACK`) carries an
-# `id:` of its own, so testing `id` would promote every research file to a
-# profile.  `name` and `living` appear on person records and on nothing else
-# the person walker meets.
-PERSON_RECORD_FIELDS = ('name', 'living')
-
-
-def _carries_person_record_fields(meta: dict) -> bool:
-    """True when a file's own frontmatter asserts it IS a person record (SPEC §9).
-
-    Why content and not the filename: SPEC §13's person grammar is
-    `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` and underscores
-    inside given names are legal, so the optional kind slot and the last
-    given-name segment are the SAME slot.  The grammar is ambiguous by
-    construction - `hartley__marie_timeline_P-…` is either a generated timeline
-    or the profile of Marie Timeline Hartley, and no reading of the name will
-    ever tell them apart.  Reading it the wrong way is the expensive direction:
-    `_index_person` writes the `persons` row only for a profile, so a
-    misclassified profile gets no row at all and the person vanishes from
-    `fha find`, every view, every count, the tree, the site, GEDCOM, WikiTree
-    and every packet - while the file sits there untouched, so nothing looks
-    broken.  A file that says what it is outranks a file that is merely named
-    something; the filename stays a hint, content overrides it.  The same test
-    catches the inverse error, a generated companion someone hand-edited into a
-    real record.
-
-    Key presence, not truthiness: `living: false` is the commonest value the
-    field takes and is falsy in Python, so a plain `meta.get('living')` would
-    read a long-dead ancestor's record as carrying nothing.
-    """
-    for field in PERSON_RECORD_FIELDS:
-        value = meta.get(field)
-        if field in meta and value is not None and str(value).strip():
-            return True
-    return False
-
-
 def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> None:
     """
     Index one person .md file into persons and person_files.
@@ -823,7 +785,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     person_id and kind.
 
     Which of the two a file is comes from its CONTENT first and its filename
-    only as a fallback - see `_carries_person_record_fields` for why the
+    only as a fallback - see `_lib.carries_person_record_fields` for why the
     filename alone cannot answer the question.
 
     Surname is parsed from the filename's double-underscore convention
@@ -867,21 +829,22 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
 
     name = str(meta.get('name', '')) or 'unknown'
     stem = path.stem
-    # Content decides, the filename hints.  SPEC §13 puts the companion kind
+    # Content decides, the filename hints.  The rule itself lives in
+    # `_lib.person_file_kind` - index and lint reading it differently is what
+    # lost a person - and the reasoning is written out in
+    # `_lib.carries_person_record_fields`: SPEC §13 puts the companion kind
     # immediately before the P-id (`hartley__thomas_timeline_P-…`), but
     # underscores are legal inside given names, so that slot is shared with the
     # last given name and the grammar cannot separate them.  A file whose
     # frontmatter carries the SPEC §9 person-record fields is a profile whatever
     # its stem says; a kind-suffixed stem with no such frontmatter is the
-    # generated companion it looks like.  Reading the stem alone lost real
-    # people (see `_carries_person_record_fields`).
+    # generated companion it looks like.
     #
     # Note the asymmetry: content can only promote a file TO a profile, never
     # demote one.  A profile-named file with sparse frontmatter (a stub carrying
     # just `id:`) stays a profile, which is what it is.
-    is_person_record = _carries_person_record_fields(meta)
-    filename_kind = (parsed_name or {}).get('kind') or 'profile'
-    kind = 'profile' if is_person_record else filename_kind
+    is_person_record = carries_person_record_fields(meta)
+    kind = person_file_kind(path, meta)
 
     is_companion = kind != 'profile'
 

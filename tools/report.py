@@ -205,7 +205,7 @@ def _parse_questions(archive_root: Path) -> dict[str, dict]:
     `_has_question_for` checks both `registry.questions_content`
     (notes/questions.md) and `registry.research_content` (every person
     research file collected in `_walk_archive` via
-    `is_person_file_kind(path, 'research')`, under `people/`). The report's
+    `is_person_file_kind(path, 'research', meta)`, under `people/`). The report's
     answerable-questions/discoveries sections must see the same question set
     lint does, or a question logged only in a person's research file would
     never get a closure proposal here - and one this side read as research
@@ -240,12 +240,27 @@ def _parse_questions(archive_root: Path) -> dict[str, dict]:
     people_root = archive_root / 'people'
     if people_root.exists():
         for rpath in sorted(people_root.rglob('*.md')):
-            if is_person_file_kind(rpath, 'research'):
-                try:
-                    text = rpath.read_text(encoding='utf-8')
-                except OSError:
-                    continue
-                _merge(rpath, text)
+            # Two passes on purpose. The filename can only ever NARROW this set
+            # (nothing outside SPEC §13's kind slot is a research file), so the
+            # record is read only for the handful of files that could be one -
+            # and then content settles it, exactly as lint does. That second
+            # half matters: the kind slot is also a legal last given name, so
+            # `smith__anne_research_P-….md` may be Anne Research Smith's own
+            # record, and a profile's `## Open Questions` block belongs to no
+            # question scope (SPEC §16 homes it in the research companion).
+            if not is_person_file_kind(rpath, 'research'):
+                continue
+            try:
+                meta = read_record(rpath)['meta']
+            except Exception:
+                meta = {}
+            if not is_person_file_kind(rpath, 'research', meta):
+                continue
+            try:
+                text = rpath.read_text(encoding='utf-8')
+            except OSError:
+                continue
+            _merge(rpath, text)
 
     return out
 

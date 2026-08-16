@@ -641,6 +641,21 @@ class QuestionNamespacingTests(unittest.TestCase):
             ['people/smith__anne_research_P-bbbbbbbbbb.md'],
         )
 
+    def test_a_person_record_named_like_a_research_file_is_not_one(self) -> None:
+        # The other half of the same ambiguity: SPEC §13's kind slot is also
+        # the last given-name slot, so a file may be NAMED like a research
+        # companion and BE Anne Research Smith's own record. Content settles
+        # it, here and in lint's E009 scope alike - the two are documented to
+        # see the same question set, and a profile's ## Open Questions block
+        # is in neither.
+        (self.archive_root / 'people' / 'smith__anne_research_P-cccccccccc.md').write_text(
+            '---\nid: P-cccccccccc\nname: Anne Research Smith\nliving: false\n---\n\n'
+            + _RESEARCH_SAME_HEADING_MD,
+            encoding='utf-8',
+        )
+        questions = report._parse_questions(self.archive_root)
+        self.assertEqual(questions, {})
+
     def test_discoveries_show_plain_heading_and_accept_old_snapshot_keys(self) -> None:
         heading = 'When was Test Person born?'
         key = f'notes/questions.md :: {heading}'

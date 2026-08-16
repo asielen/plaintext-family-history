@@ -93,6 +93,7 @@ from _lib import (
     link_field_refs,
     resolve_ref,
     strip_link_wrapper,
+    carries_person_record_fields,
     fmt_id_display,
     format_edtf_error,
     format_exiftool_error,
@@ -147,10 +148,12 @@ import yaml
 #    _research_hypothesis_ids    - H-ids defined in a research file's ## Hypotheses
 #    _question_blocks            - split a questions.md into per-heading blocks
 #    _metadata_values            - normalise scalar/list exiftool field values
+#    _w122_message               - W122: filename says generated page, content says person
 #
 #  Pass 1 - walk and collect
 #    _walk_archive               - top-level coordinator; calls the _process_* functions
 #    _process_person_file        - index one person file + file-level checks
+#                                   (returns the record it read; content decides the kind)
 #    _process_source_file        - index one source file + file-level checks + claims
 #
 #  Bracket / Ahnentafel checks (W103, W110, W119, W120)
@@ -701,6 +704,55 @@ def _research_hypothesis_ids(body: str) -> set[str]:
     return ids
 
 
+def _w122_message(path: Path, parsed: dict, meta: dict) -> str:
+    """W122: the file's name says generated page, the file itself says person.
+
+    Written for a genealogist with a paper-filing mental model (AGENTS.md,
+    "Who you serve"), so it says four things and no more: what the tools
+    thought, that reading it as this person's own record is the right answer,
+    the one rename that ends the confusion, and that keeping the name is a
+    perfectly good choice. No jargon - the words "frontmatter", "companion" and
+    "kind slot" are the machinery, and the machinery is ours to operate.
+
+    The suggested name simply drops the last word of the name part. A person
+    filename never has to carry every given name (SPEC §13's slug is a sort
+    aid, not the name itself); the full name lives on the `name:` line and
+    nothing else about the record changes. When dropping that word would leave
+    no name at all (`hartley__timeline_P-…`, someone whose one given name IS
+    the word), no filename is proposed - the message asks for one instead of
+    offering `hartley___P-…`.
+    """
+    kind = parsed['kind']
+    who = str(meta.get('name') or '').strip()
+    # Trim by length, not by matching text: the filename's id may be written in
+    # any case (`_P-…` / `_p-…`) while parse_filename lowercases it.
+    id_display = fmt_id_display(parsed['id_str'])
+    before_id = path.stem[:-(len(parsed['id_str']) + 1)]   # …__marie_timeline
+    shortened = before_id[:-(len(kind) + 1)]               # …__marie
+    if shortened and not shortened.endswith('_'):
+        rename = (f'rename this file to {shortened}_{id_display}{path.suffix} - '
+                  f'the file name does not have to carry every given name, and '
+                  f'the full name stays on the name: line inside')
+    else:
+        rename = (f'give the file a name that does not end in "{kind}" just '
+                  f'before the code - the file name does not have to carry '
+                  f'every given name, and the full name stays on the name: '
+                  f'line inside')
+    subject = f'{who}\'s' if who else 'this person\'s'
+    word = kind.replace('-', ' ')
+    return (
+        f'The name of {path.name} ends in "{kind}", which is how this archive '
+        f'names the {word} page it builds for a person - but the file holds a '
+        f'person\'s own details, so the tools read it as {subject} record. That '
+        f'is the right reading and nothing is missing; the only oddity is that '
+        f'a {word} page built for this person comes out named '
+        f'{before_id}_{kind}_{id_display}{path.suffix}, with the word twice. '
+        f'To clear it up, {rename}. If "{kind}" really is part of this '
+        f'person\'s name, leave the file exactly as it is: the record is read '
+        f'correctly either way, and this note will simply keep appearing.'
+    )
+
+
 def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding]) -> None:
     """
     Pass 1: walk the archive tree and populate the registry.
@@ -740,9 +792,15 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     people_root = archive_root / 'people'
     if people_root.exists():
         for path in sorted(people_root.rglob('*.md')):
-            _process_person_file(path, registry, findings)
-            # Collect research file content for E009
-            if is_person_file_kind(path, 'research'):
+            rec = _process_person_file(path, registry, findings)
+            # Collect research file content for E009. The record it just read
+            # comes back so the kind is decided by CONTENT here too: a file
+            # named `…_research_P-….md` that carries a person record is that
+            # person's profile (SPEC §13's kind slot is also a legal last given
+            # name), and SPEC §16 homes neither ## Hypotheses nor ## Open
+            # Questions in a profile. Reading it as research pulled her whole
+            # file into the E009 scope.
+            if rec is not None and is_person_file_kind(path, 'research', rec['meta']):
                 try:
                     registry.research_content[path] = path.read_text(encoding='utf-8')
                 except OSError:
@@ -769,10 +827,18 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
                 pass
 
 
-def _process_person_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
-    """Process one person file into the registry, with file-level checks."""
+def _process_person_file(path: Path, registry: Registry,
+                         findings: list[Finding]) -> dict | None:
+    """Process one person file into the registry, with file-level checks.
+
+    Returns the record it read (frontmatter + body), or None for a file that
+    is not a record at all (a `_TEMPLATE.*` copy). The caller needs the same
+    frontmatter to decide whether this is a research companion, and reading
+    the file twice to answer the same question is how the two readings drifted
+    apart in the first place.
+    """
     if is_template_file(path):
-        return   # `_TEMPLATE.*` is a teaching template, not a record
+        return None   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path)
     meta = rec['meta']
 
@@ -790,19 +856,40 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
     if pid_raw and not id_placeholder and not is_valid_id(pid_raw):
         findings.append(Finding('E', 'E002', path, f'Malformed ID: {pid_raw!r}'))
 
-    # Determine kind from filename
+    # What this file IS: its own content first, the filename as a hint.
+    #
+    # SPEC §13 puts the companion kind immediately before the P-id
+    # (`hartley__thomas_timeline_P-…`), but underscores are legal inside given
+    # names, so that slot is shared with the last given name and the grammar
+    # cannot separate them. Reading the stem alone filed Marie Timeline
+    # Hartley's record under the companion paths, where none of the §9 profile
+    # checks run - and lint reported the archive clean while she had no index
+    # row anywhere (`_lib.carries_person_record_fields`). Content can only
+    # promote a file to a profile, never demote one, so a sparse stub named as
+    # a profile stays a profile.
     stem = path.stem
     parsed = parse_filename(path)
-    is_companion = parsed and parsed.get('is_companion', False)
+    is_person_record = carries_person_record_fields(meta)
+    is_companion = bool(
+        parsed and parsed.get('is_companion', False) and not is_person_record)
+
+    # W122: the filename and the content disagree, and the tools resolved it
+    # in the content's favour. Reported rather than settled in silence - the
+    # human is the only one who knows whether "Timeline" is this person's name.
+    if parsed and parsed.get('kind_ambiguous') and is_person_record:
+        findings.append(Finding('W', 'W122', path,
+                                _w122_message(path, parsed, meta)))
 
     # H-ids defined in this file's ## Hypotheses section (SPEC §16 homes them in
-    # `…_research_P-….md`). The kind comes from the shared filename grammar, not
-    # a substring search of the stem: `research` anywhere but the slot before the
-    # P-id is part of the given names, and reading a profile as a research file
-    # turned one person's working notes into archive-wide hypothesis records.
+    # `…_research_P-….md`). The kind comes from the shared filename grammar plus
+    # this file's own frontmatter, not a substring search of the stem:
+    # `research` anywhere but the slot before the P-id is part of the given
+    # names, and a file in that slot that carries a person record is that
+    # person's profile - reading either one as a research file turned one
+    # person's working notes into archive-wide hypothesis records.
     # Applied before any id checks so a mid-graduation (id-less) research file's
     # hypotheses still count as existing records for E004.
-    if is_person_file_kind(path, 'research'):
+    if is_person_file_kind(path, 'research', meta):
         registry.hypothesis_ids.update(_research_hypothesis_ids(rec['body']))
 
     if id_placeholder:
@@ -870,7 +957,10 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
             # sources-index.md) and README.md files are id-less BY DESIGN, never
             # mintable - see _never_mintable.
             registry.idless_records.append((path, 'P'))
-        return   # can't do further cross-reference checks without record metadata
+        # Can't do further cross-reference checks without an id, but the record
+        # still goes back to the caller: its content is what decides whether
+        # this is a research companion, id or no id.
+        return rec
 
     # Register in registry
     if is_companion:
@@ -899,6 +989,8 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
     merged_into = normalize_id(str(meta.get('merged_into', '')))
     if merged_into:
         registry.all_record_ids.setdefault(merged_into, path)
+
+    return rec
 
 
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:

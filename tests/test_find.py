@@ -1532,5 +1532,54 @@ class SearchJsonPhotoSourceKindTests(unittest.TestCase):
             [])
 
 
+class _ClosedPipe(io.StringIO):
+    """A stdout whose reader has gone away, exactly as `| head` leaves it."""
+
+    def write(self, s):    # noqa: D102 - stands in for a real pipe
+        raise BrokenPipeError(32, 'Broken pipe')
+
+
+class BrokenPipeTests(unittest.TestCase):
+    """`fha find P-… | head` is ordinary use, not an archive problem.
+
+    `head` closes the pipe as soon as it has its lines, so the next print
+    raises BrokenPipeError. It used to travel to fha.py's catch-all and print
+    `ERROR: something went wrong: [Errno 32] Broken pipe` with a `fha doctor`
+    next step - blaming the archive for the shell doing its job.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _args(self, argv: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers()
+        find.register(subs)
+        args = parser.parse_args(argv)
+        args.root = str(self.archive_root)
+        return args
+
+    def test_find_exits_quietly_when_the_reader_closes_the_pipe(self) -> None:
+        args = self._args(['find', 'p-aaaaaaaaaa'])
+        with redirect_stdout(_ClosedPipe()):
+            rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_CLEAN)
+
+    def test_search_exits_quietly_too(self) -> None:
+        args = self._args(['search', 'alice'])
+        with redirect_stdout(_ClosedPipe()):
+            rc = find._run_search(args)
+        self.assertEqual(rc, EXIT_CLEAN)
+
+
 if __name__ == '__main__':
     unittest.main()

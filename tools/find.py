@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -145,7 +146,9 @@ configure_utf8_stdout()
 #
 #  CLI
 #    register                  - attach 'find' to the main fha parser
-#    _run_find                 - argparse → run_find bridge (returns the int exit code)
+#    _reader_went_away         - a closed pipe (`| head`) is normal use, not an error
+#    _run_find / _find_command - argparse → run_find bridge (returns the int exit code)
+#    _run_search / _search_command - the same bridge for `fha search <words>`
 #    _standalone_main          - for `python tools/find.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2625,6 +2628,29 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     s.set_defaults(func=_run_search)
 
 
+def _reader_went_away() -> int:
+    """Exit quietly after a BrokenPipeError: `fha find … | head` is normal use.
+
+    `head` closes the pipe the moment it has its lines, so the next print
+    raises. That is the shell doing its job, not the archive being broken -
+    but the exception used to travel up to fha.py's catch-all and print
+    `ERROR: something went wrong: [Errno 32] Broken pipe` with a `fha doctor`
+    next step, blaming the archive and sending the human off to fix nothing.
+
+    Pointing stdout at the null device before returning is the standard
+    recipe: without it the interpreter tries to flush the dead pipe on the way
+    out and prints its own `Exception ignored in: <_io.TextIOWrapper …>`
+    afterwards - the traceback we just avoided, arriving late. Under a
+    redirected stdout (tests, the workbench) there is no real file descriptor
+    to swap, which is fine: there is no doomed flush either.
+    """
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):
+        pass
+    return EXIT_CLEAN
+
+
 def _run_find(args: argparse.Namespace) -> int:
     """argparse → run_find bridge; returns the plain int exit code.
 
@@ -2633,7 +2659,19 @@ def _run_find(args: argparse.Namespace) -> int:
     false "not found in archive tree") lives in `_lib.resolve_root_arg`,
     the shared chokepoint. The `fha id check` alias resolves its root in
     fha.py through the same helper, not here.
+
+    A closed pipe is caught here, at find's CLI boundary, rather than in
+    fha.py's generic handler: this is where the reports long enough to be
+    piped through `head` are printed.
     """
+    try:
+        return _find_command(args)
+    except BrokenPipeError:
+        return _reader_went_away()
+
+
+def _find_command(args: argparse.Namespace) -> int:
+    """The dispatch itself - see `_run_find`, which wraps it."""
     archive_root = resolve_root_arg(args, command='fha find')
     if archive_root is None:
         return EXIT_FAILURE
@@ -2729,8 +2767,18 @@ def _run_search(args: argparse.Namespace) -> int:
     The positional phrase arrives as a list of words (nargs='+'); joining with
     spaces lets `fha search rose hartley` work unquoted while `fha search "1880
     census"` still passes a single token. Root resolution goes through the same
-    shared chokepoint as `fha find`.
+    shared chokepoint as `fha find`, and a closed pipe ends the same way (a
+    text search is the longest report this file prints, so `| head` is if
+    anything more likely here).
     """
+    try:
+        return _search_command(args)
+    except BrokenPipeError:
+        return _reader_went_away()
+
+
+def _search_command(args: argparse.Namespace) -> int:
+    """The search dispatch itself - see `_run_search`, which wraps it."""
     archive_root = resolve_root_arg(args, command='fha search')
     if archive_root is None:
         return EXIT_FAILURE

@@ -648,9 +648,23 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
         hartley__thomas_edward_timeline_P-de957bcda1.md ← this function's output
 
     The transformation: strip the trailing _{P-id}, append _{kind}_{P-id}.
-    We strip first rather than just inserting before the suffix because the
-    profile stem may already contain a prior-generation kind token that would
-    produce a double-kind name on regeneration.
+    Nothing else is stripped - and deliberately so.
+
+    A profile stem CAN already end in a kind word, because SPEC §13's kind slot
+    and the last given-name segment are the same slot: Marie Timeline Hartley's
+    record is `hartley__marie_timeline_P-…`, and her timeline comes out
+    `hartley__marie_timeline_timeline_P-…`. The doubled word looks like a bug
+    and is not one. Removing it would be: the only way to tell a "prior-
+    generation kind token" from a given name is to read the profile's own
+    frontmatter, and the file this function is handed IS the profile (its path
+    comes from the `kind = 'profile'` row), so stripping the word would aim the
+    generated timeline straight at her record's own filename and overwrite a
+    person's record with machine output. A harmless odd name beats that trade
+    every time.
+
+    So the doubled name is left alone here, and the ambiguity that produced it
+    is reported where a human can settle it: `fha lint`'s W122 names this exact
+    filename when it offers the rename that ends the confusion.
     """
     stem = profile_path.stem   # e.g. hartley__thomas_edward_P-de957bcda1
     # Strip trailing _{P-id} suffix (Crockford Base32 alphabet, case-insensitive)

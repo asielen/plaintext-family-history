@@ -132,9 +132,15 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    split_log_entries         - an append-log section's entries (paragraph runs)
 #    replace_paragraph_in_section - swap ONE entry of an append-log section (the
 #                                 workbench's per-entry edit; matched by exact text)
-#    parse_filename            - decompose filename into {id_str, kind, is_companion}
+#    parse_filename            - decompose filename into {id_str, kind, is_companion,
+#                                 kind_ambiguous} (the §13 kind slot is shared with the
+#                                 last given name, so the kind can only ever be a guess)
+#    PERSON_RECORD_FIELDS      - the SPEC §9 fields that mark a file as a person record
+#    carries_person_record_fields - does this frontmatter say "I am a person record"?
+#    person_file_kind          - what a people/ file IS: content first, filename as hint
 #    is_person_file_kind       - is this person file the `research`/`timeline`/… companion?
-#                                 (the §13 kind SLOT, never a substring of the stem)
+#                                 (the §13 kind SLOT, never a substring of the stem;
+#                                  pass `meta` and the file's own content decides)
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
 #
@@ -2472,8 +2478,22 @@ def parse_filename(path: str | Path) -> dict | None:
     Source records: {slug}_{S-id}.md
     Source files:  {slug}[-{copy}][-{role}]_{S-id}.{ext}
 
-    Returns dict with keys: id_str, id_type, kind (for persons), is_companion
-    Returns None if filename doesn't match any expected pattern.
+    Returns dict with keys: id_str, id_type, kind (for persons), is_companion,
+    kind_ambiguous.  Returns None if filename doesn't match any expected pattern.
+
+    What this parser CANNOT do, and why `kind_ambiguous` exists: SPEC §13 allows
+    underscores inside given names, so the optional companion-kind slot and the
+    last given-name segment are the SAME slot.  `hartley__marie_timeline_P-…` is
+    either a generated timeline or the profile of Marie Timeline Hartley, and no
+    reading of the name will ever separate them.  Whenever the kind was matched
+    by suffix - and so could equally be part of the name - `kind_ambiguous` is
+    True and `kind`/`is_companion` are a GUESS.
+
+    A caller that can see the file's frontmatter must let the content decide
+    (`person_file_kind`): a file that says it is a person record outranks a file
+    that is merely named like a companion.  A caller that cannot see the
+    frontmatter - a rename planner, a path-shaped lookup - has to treat
+    `is_companion` as the hint it is.
     """
     name = Path(path).stem          # filename without extension
     ext = Path(path).suffix.lower()
@@ -2492,6 +2512,7 @@ def parse_filename(path: str | Path) -> dict | None:
         'id_type': id_type,
         'kind': None,
         'is_companion': False,
+        'kind_ambiguous': False,
     }
 
     if id_type == 'P' and ext == '.md':
@@ -2503,6 +2524,10 @@ def parse_filename(path: str | Path) -> dict | None:
             if before_id.endswith(suffix):
                 result['kind'] = kind
                 result['is_companion'] = True
+                # Matched by suffix, so it may equally be the last given name
+                # (Marie Timeline Hartley).  Say so rather than let the guess
+                # travel as a fact.
+                result['kind_ambiguous'] = True
                 break
         if result['kind'] is None:
             result['kind'] = 'profile'
@@ -2514,10 +2539,76 @@ def parse_filename(path: str | Path) -> dict | None:
     return result
 
 
-def is_person_file_kind(path: str | Path, kind: str) -> bool:
-    """True when a person file carries `kind` in SPEC §13's companion slot.
+# SPEC §9's required person-record fields are `id`, `name` and `living`.  Only
+# the last two are usable as a "this file is a person record" signal: the
+# research companion (SPEC §16, `RESEARCH_TEMPLATE_FALLBACK`) carries an `id:`
+# of its own, so testing `id` would promote every research file in every
+# archive to a profile.  `name` and `living` appear on person records and on
+# nothing else the person walker meets.
+PERSON_RECORD_FIELDS = ('name', 'living')
 
-    The slot is one place - immediately before the P-id
+
+def carries_person_record_fields(meta: dict) -> bool:
+    """True when a file's own frontmatter asserts it IS a person record (SPEC §9).
+
+    Why content and not the filename: SPEC §13's person grammar is
+    `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` and underscores
+    inside given names are legal, so the optional kind slot and the last
+    given-name segment are the SAME slot.  The grammar is ambiguous by
+    construction - `hartley__marie_timeline_P-…` is either a generated timeline
+    or the profile of Marie Timeline Hartley, and no reading of the name will
+    ever tell them apart.  Reading it the wrong way is the expensive direction:
+    `index._index_person` writes the `persons` row only for a profile, so a
+    misclassified profile gets no row at all and the person vanishes from
+    `fha find`, every view, every count, the tree, the site, GEDCOM, WikiTree
+    and every packet - while the file sits there untouched, so nothing looks
+    broken.  A file that says what it is outranks a file that is merely named
+    something; the filename stays a hint, content overrides it.  The same test
+    catches the inverse error, a generated companion someone hand-edited into a
+    real record.
+
+    Key presence, not truthiness: `living: false` is the commonest value the
+    field takes and is falsy in Python, so a plain `meta.get('living')` would
+    read a long-dead ancestor's record as carrying nothing.
+
+    This lives in `_lib` and nowhere else because index and lint drifting on
+    exactly this question is what lost the person in the first place: the
+    indexer read her file one way and the linter the other, so the archive had
+    no row for her and `fha lint` reported it clean.
+    """
+    for field in PERSON_RECORD_FIELDS:
+        value = meta.get(field)
+        if field in meta and value is not None and str(value).strip():
+            return True
+    return False
+
+
+def person_file_kind(path: str | Path, meta: dict) -> str:
+    """What a file under people/ IS: 'profile' or a SPEC §13 companion kind.
+
+    Content decides, the filename hints.  A file whose frontmatter carries the
+    SPEC §9 person-record fields is a profile whatever its stem says; a
+    kind-suffixed stem with no such frontmatter is the generated companion it
+    looks like (see `carries_person_record_fields` for why the stem alone
+    cannot answer).
+
+    Note the asymmetry: content can only promote a file TO a profile, never
+    demote one.  A profile-named file with sparse frontmatter (a stub carrying
+    just `id:`) stays a profile, which is what it is.
+
+    Callers guard their own non-record files first: the kind slot is read for
+    `.md` only, so a stray `.txt` under people/ answers 'profile' here.
+    """
+    if carries_person_record_fields(meta):
+        return 'profile'
+    parsed = parse_filename(path)
+    return (parsed or {}).get('kind') or 'profile'
+
+
+def is_person_file_kind(path: str | Path, kind: str, meta: dict | None = None) -> bool:
+    """True when a person file is of `kind` - SPEC §13's slot, content first.
+
+    The kind slot is one place - immediately before the P-id
     (`hartley__thomas_research_P-…`) - so the same word anywhere else in the
     name is part of the given names. The substring test this replaces
     (`'_research_' in stem`) read `smith__research_anne_P-…`, the profile of a
@@ -2526,12 +2617,23 @@ def is_person_file_kind(path: str | Path, kind: str) -> bool:
     `## Open Questions` block joined the question scope, neither of which SPEC
     §16 homes in a profile.
 
+    `meta` closes the other half of the same hole. The slot before the P-id is
+    ALSO a legal last given name, so `smith__anne_research_P-…` may be Anne
+    Research Smith's own record - and read as a research file, her whole file
+    went into lint's E009 research scope and the report's question scope just
+    the same. A caller holding the record passes its frontmatter and gets the
+    content-first answer (`person_file_kind`); one that only has a path keeps
+    the filename-only reading, which is a guess (`parse_filename`'s
+    `kind_ambiguous`) and is documented as one.
+
     A file with no id at all is the one case the grammar cannot parse. That is
     a real state, not an error - a mid-graduation companion is named before the
     id is minted (`smith__anne_research.md`) - and with the id absent the kind
     slot sits at the end of the stem, so the suffix test is exact there rather
     than a guess. `smith__research_anne.md` still reads as a profile.
     """
+    if meta is not None and carries_person_record_fields(meta):
+        return kind == 'profile'
     parsed = parse_filename(path)
     if parsed is not None:
         return parsed.get('id_type') == 'P' and parsed.get('kind') == kind
@@ -4289,6 +4391,17 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
     timeline/sources-index/draft-queue) share the P-id but are generated views,
     never the record itself, so they are excluded.
 
+    "Companion" is read the way the rest of the tools read it: SPEC §13's kind
+    slot is shared with the last given name, so a name ending in `_timeline` is
+    only a hint (`parse_filename`'s `kind_ambiguous`). When the id matches and
+    the name says companion, the file's own frontmatter is consulted - a file
+    carrying the SPEC §9 person fields IS the record (`person_file_kind`).
+    Without that, Marie Timeline Hartley's record answered "no record found" to
+    every verb that locates by scanning, while her file sat in plain sight. A
+    plainly-named profile always wins; the content fallback only fills a lookup
+    that would otherwise come back empty, and never redirects one that already
+    worked.
+
     Shared here because several tools need the same lookup (`fha confirm draft`,
     `fha person set-living`, `fha confirm merge`) - the same
     shared-infrastructure rationale as `mint_ids`.
@@ -4297,13 +4410,23 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
     people_dir = Path(archive_root) / 'people'
     if not people_dir.is_dir():
         return None
+    named_like_a_companion: Path | None = None
     for path in sorted(people_dir.rglob('*.md')):
         parsed = parse_filename(path)
         if not parsed or parsed.get('id_str') != target:
             continue
-        if parsed.get('id_type') == 'P' and not parsed.get('is_companion'):
+        if parsed.get('id_type') != 'P':
+            continue
+        if not parsed.get('is_companion'):
             return path
-    return None
+        if named_like_a_companion is None and parsed.get('kind_ambiguous'):
+            try:
+                meta = read_record(path)['meta']
+            except Exception:
+                continue
+            if carries_person_record_fields(meta):
+                named_like_a_companion = path
+    return named_like_a_companion
 
 
 def find_source_record_path(archive_root: str | Path, source_id: str) -> Path | None:
@@ -5227,7 +5350,11 @@ def sync_generated_view_rows(
         return 'index_absent'
 
     def _companion_row(path: Path) -> tuple[str, str, str] | None:
-        """(relative path, person_id, kind) for an indexed companion, else None."""
+        """(relative path, person_id, kind) for a companion-NAMED file, else None.
+
+        Filename-only: enough for a removed file, whose content is already
+        gone, and the first half of the test for a written one.
+        """
         path = Path(path)
         if path.suffix.lower() != '.md':
             return None
@@ -5244,7 +5371,55 @@ def sync_generated_view_rows(
             return None
         return rel, parsed['id_str'], parsed['kind']
 
-    targets_written = [r for r in (_companion_row(p) for p in written) if r]
+    def _written_row(path: Path) -> dict | None:
+        """What to write for one just-generated file, or None if it carries no rows.
+
+        The record is READ BEFORE the file is classified, because the filename
+        cannot settle what the file is: SPEC §13's kind slot is shared with the
+        last given name, so `hartley__marie_timeline_P-…` may be Marie Timeline
+        Hartley's own record. Classifying by name alone made this the one path
+        that could put a companion row back over a person record and re-lose
+        her until the next full rebuild - the exact failure the content-first
+        rule exists to prevent (`carries_person_record_fields`).
+
+        So a file that carries person-record fields keeps whatever
+        `person_files` row it has and gets no companion row written over it;
+        its search text is refreshed either way, which is the whole reason this
+        sync runs (#37 keeps these paths out of the freshness watermark, so
+        nothing downstream would notice the file changed).
+
+        `person_id` and `generated` are derived exactly as
+        `index._index_person` derives them - a frontmatter id wins over the
+        filename's, and a file carrying one, or carrying a person record, is
+        never machine output. Deriving them differently would make these
+        incremental rows disagree with a rebuild.
+        """
+        row = _companion_row(path)
+        if row is None:
+            return None
+        rel, filename_pid, kind = row
+        try:
+            rec = read_record(archive_root / rel)
+        except Exception:
+            # Unreadable or unparseable (it was written moments ago, so this is
+            # a filesystem oddity, not a normal state): index it as empty
+            # rather than let a read error surface as a traceback over a view
+            # write that already succeeded. Same posture as
+            # relocate_person_in_index's research-companion read.
+            rec = {'meta': {}, 'body': ''}
+        meta = rec.get('meta') or {}
+        is_person_record = carries_person_record_fields(meta)
+        meta_pid = normalize_id(str(meta.get('id') or ''))
+        return {
+            'rel': rel,
+            'person_id': meta_pid or filename_pid,
+            'kind': kind,
+            'body': rec.get('body') or '',
+            'is_person_record': is_person_record,
+            'generated': 0 if (meta.get('id') or is_person_record) else 1,
+        }
+
+    targets_written = [r for r in (_written_row(p) for p in written) if r]
     targets_removed = [r for r in (_companion_row(p) for p in removed) if r]
     if not targets_written and not targets_removed:
         return 'indexed'
@@ -5256,36 +5431,27 @@ def sync_generated_view_rows(
                 for rel, _pid, _kind in targets_removed:
                     conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
                     conn.execute('DELETE FROM person_files WHERE path=?', (rel,))
-                for rel, pid, kind in targets_written:
+                for row in targets_written:
+                    rel = row['rel']
                     # Delete before rewrite: notes_fts is an FTS5 table with no
                     # unique key, so a plain insert would stack a second body
                     # row for the same path on every regeneration.
                     conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
-                    try:
-                        rec = read_record(archive_root / rel)
-                    except Exception:
-                        # Unreadable or unparseable (it was written moments
-                        # ago, so this is a filesystem oddity, not a normal
-                        # state): index it as empty rather than let a read
-                        # error surface as a traceback over a view write that
-                        # already succeeded. Same posture as
-                        # relocate_person_in_index's research-companion read.
-                        rec = {'meta': {}, 'body': ''}
-                    body = rec.get('body') or ''
-                    if body.strip():
+                    if row['body'].strip():
                         conn.execute(
                             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
-                            (rel, body))
-                    # Mirror `index._index_person` exactly: a frontmatter id
-                    # wins over the filename's, and `generated` records whether
-                    # the file carried one at all. Deriving these differently
-                    # would make the incremental rows disagree with a rebuild.
-                    meta = rec.get('meta') or {}
-                    meta_pid = normalize_id(str(meta.get('id') or ''))
+                            (rel, row['body']))
+                    if row['is_person_record']:
+                        # Her `person_files` row says 'profile' and must keep
+                        # saying it: person_files is keyed by (person_id, kind,
+                        # path), so a companion row here would not replace the
+                        # profile row but sit BESIDE it, and the incremental
+                        # index would stop matching a rebuild.
+                        continue
                     conn.execute(
                         'INSERT OR REPLACE INTO person_files'
                         '(person_id, kind, path, generated) VALUES (?,?,?,?)',
-                        (meta_pid or pid, kind, rel, 0 if meta.get('id') else 1))
+                        (row['person_id'], row['kind'], rel, row['generated']))
         finally:
             conn.close()
     except sqlite3.Error:
