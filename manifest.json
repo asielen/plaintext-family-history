@@ -30,13 +30,13 @@
     {
       "path": ".claude/skills/import-recordings/GAP.md",
       "category": "operating",
-      "sha256": "8099865da2e06b9a9407ca9d8a8a61bb16a0432805bfa9909385b181d174dd11",
+      "sha256": "1947c4c9ed86921d552b5b4816aa3034f3e4a5eb8b99987d1c4503f4c87531d2",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "ad5ca4e53c4876ecdb0f4ff534cf8fe294c76f90fcfbf13a99a81f99df321804",
+      "sha256": "250a6ce6b570d6a1882759ebfdec6a9d8dc111a3711fbc110315f481dc0952b9",
       "spec_version": "1.2"
     },
     {
@@ -48,7 +48,7 @@
     {
       "path": ".claude/skills/import-recordings/scripts/find_duplicate_media.py",
       "category": "operating",
-      "sha256": "12f0c5d7c39ad2147468cbffd8cf6210d98d0e734bab0eef7e6d8dc76a010bee",
+      "sha256": "58017f3885a5087e392072c802d659db0fe53de0e5ef924cd1cd68aab6da8c05",
       "spec_version": "1.2"
     },
     {
@@ -395,7 +395,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "1ea5901e2e44cbb921935db3658d4cf9d0d3b6e236480435ca1153801a817c45",
+      "sha256": "db5dacc82123c762e3b089ca1464f77c06f4ab7940c6c768e7b24b8c30774b9c",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -570,7 +570,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "58a678736402898ca9fdf0f25d58da0eaf028e4d547552c2ee971864691b5734",
+      "sha256": "afc91178ee559c1936a5cb8cd972a4abeb62fdddd7fc6f5d4055eeb3b18cc420",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -852,7 +852,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "87f30168766f0d84821f97cb2a698a74bf25fe6cbef9b6042d3c12362580a8a1",
+      "sha256": "080c4bb1ec5b1203022440ba20b01cdbdd22ce949316ddbca476f158d9eb0aaa",
       "spec_version": "1.2"
     },
     {
