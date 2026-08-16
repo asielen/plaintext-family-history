@@ -66,7 +66,8 @@ class FakePhotoStore:
         return list(self.keywords.get(str(file_path), []))
 
     def embed(
-        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
+        *, backup=None,
     ) -> str | None:
         key = str(file_path)
         if key in self.fail_paths:
@@ -78,7 +79,8 @@ class FakePhotoStore:
         return None
 
     def remove(
-        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None
+        self, file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
+        *, backup=None,
     ) -> str | None:
         key = str(file_path)
         to_remove = {f'SOURCE: {s_id}'} | set(extra_keywords or [])

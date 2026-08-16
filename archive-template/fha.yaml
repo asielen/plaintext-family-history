@@ -48,6 +48,29 @@
 #   - Phone Backups/*
 #   - '*.tif'
 #
+# ── A safety copy of every photo fha writes into (optional, recommended) ──
+#   To keep your photo tool (Lightroom and the like) from losing track of a
+#   photo, fha writes its keywords and captions INTO the original file rather
+#   than making a new one. That is the right trade, but it means the only copy
+#   of an irreplaceable family photograph is the one being written to.
+#
+#   Name a folder here and fha will tuck away one untouched copy of each photo
+#   BEFORE it writes to it for the first time - the photo exactly as your camera
+#   or scanner left it. A photo that already has a copy there is left alone, so
+#   the space this needs is one copy of the photos you actually work on, not a
+#   second copy of your whole library.
+#
+#   The folder must be OUTSIDE this archive and outside your photos and
+#   documents folders - ideally on a different disk. A copy kept inside the
+#   photo library would be catalogued as another photo; a copy kept inside the
+#   archive shares its fate. If the copy cannot be made, fha refuses to write to
+#   the photo and says why: a safety copy you are relying on must never quietly
+#   not happen. Leave the line out and nothing changes, except that fha says
+#   once per run that no copies are being kept.
+#
+# originals_backup: D:/PhotoOriginals        # Windows
+# originals_backup: /Volumes/Archive/PhotoOriginals   # Mac
+
 # ── Biography voice (optional) ──
 #   How the assistant's drafted biographies read. The facts and citations are
 #   identical either way - this only sets the voice. You can always override

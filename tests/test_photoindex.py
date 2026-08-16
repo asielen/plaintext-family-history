@@ -1094,7 +1094,7 @@ class PhotoindexTests(unittest.TestCase):
             # already-screened weak match for Grandma - tag-person bulk work
             # is incremental, and most of the archive starts out resolved only
             # via these weaker tiers.
-            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            photoindex._run_exiftool_write = lambda paths, kw, *, backup=None: {p: None for p in paths}
             result = photoindex.apply_tag_person(
                 archive, {'roots': {'photos': 'photos'}}, 'p-bbbbbbbbbb',
                 ['photos/portrait_1880.jpg'],
@@ -3375,7 +3375,7 @@ class PhotoindexTests(unittest.TestCase):
 
             calls: list[tuple[list[Path], str]] = []
 
-            def _fake_write(paths: list[Path], kw: str) -> dict:
+            def _fake_write(paths: list[Path], kw: str, *, backup=None) -> dict:
                 calls.append((paths, kw))
                 return {p: None for p in paths}
 
@@ -3415,7 +3415,7 @@ class PhotoindexTests(unittest.TestCase):
             self._scan_with_face_tag_fixture(archive)
 
             orig_write = photoindex._run_exiftool_write
-            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            photoindex._run_exiftool_write = lambda paths, kw, *, backup=None: {p: None for p in paths}
             try:
                 photoindex.apply_tag_person(
                     archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
@@ -3441,7 +3441,7 @@ class PhotoindexTests(unittest.TestCase):
             archive = _copy_fixture(Path(d))
             self._scan_with_face_tag_fixture(archive)
 
-            def _fake_write(paths: list[Path], kw: str) -> dict:
+            def _fake_write(paths: list[Path], kw: str, *, backup=None) -> dict:
                 return {
                     p: ('locked file' if p.name == 'wedding_1902.jpg' else None)
                     for p in paths
@@ -3484,7 +3484,7 @@ class PhotoindexTests(unittest.TestCase):
             self._scan_with_face_tag_fixture(archive)
 
             orig_write = photoindex._run_exiftool_write
-            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            photoindex._run_exiftool_write = lambda paths, kw, *, backup=None: {p: None for p in paths}
             orig_rebuild = photoindex._rebuild_photo_people
             photoindex._rebuild_photo_people = lambda conn, root: (
                 _ for _ in ()).throw(sqlite3.OperationalError('database is locked'))
@@ -3510,7 +3510,7 @@ class PhotoindexTests(unittest.TestCase):
             self._scan_with_face_tag_fixture(archive)
 
             orig_write = photoindex._run_exiftool_write
-            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            photoindex._run_exiftool_write = lambda paths, kw, *, backup=None: {p: None for p in paths}
 
             orig_connect = sqlite3.connect
 
@@ -3602,7 +3602,7 @@ class PhotoindexTests(unittest.TestCase):
             })()
 
             orig_write = photoindex._run_exiftool_write
-            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            photoindex._run_exiftool_write = lambda paths, kw, *, backup=None: {p: None for p in paths}
             orig_input = builtins.input
             builtins.input = lambda prompt='': 'y'
             try:
@@ -6102,7 +6102,7 @@ class SetSummaryTests(unittest.TestCase):
 
             written_files: list[Path] = []
 
-            def fake_write(items: list) -> dict:
+            def fake_write(items: list, *, backup=None) -> dict:
                 written_files.extend(p for p, _text in items)
                 return {p: None for p, _text in items}
 
@@ -6201,7 +6201,7 @@ class SetSummaryTests(unittest.TestCase):
             cfg = {'roots': {'photos': 'photos'}}
             photoindex._run_exiftool_read_comments = self._fake_reads({})
             photoindex._run_exiftool_write_comment = (
-                lambda items: {p: None for p, _t in items}
+                lambda items, *, backup=None: {p: None for p, _t in items}
             )
 
             result = photoindex.run_set_summary(
@@ -6264,7 +6264,7 @@ class SetSummaryTests(unittest.TestCase):
 
             photoindex._run_exiftool_read_comments = self._fake_reads(
                 {'wedding_1902.jpg': 'AI: old summary'})
-            photoindex._run_exiftool_write_comment = lambda items: (
+            photoindex._run_exiftool_write_comment = lambda items, *, backup=None: (
                 _ for _ in ()).throw(AssertionError('dry-run must not write'))
 
             args = type('Args', (), {
@@ -6284,7 +6284,7 @@ class SetSummaryTests(unittest.TestCase):
             photoindex._run_exiftool_read_comments = self._fake_reads(
                 {'portrait_1880-back.jpg': 'AI: back caption'})
 
-            def fake_write(items: list) -> dict:
+            def fake_write(items: list, *, backup=None) -> dict:
                 return {
                     p: ('locked file' if p.name == 'portrait_1880-back.jpg' else None)
                     for p, _t in items
@@ -6327,7 +6327,7 @@ class SetSummaryTests(unittest.TestCase):
 
             written_args: list[str] = []
 
-            def fake_write(items: list) -> dict:
+            def fake_write(items: list, *, backup=None) -> dict:
                 written_args.extend(t for _p, t in items)
                 return {p: None for p, _t in items}
 
@@ -6363,7 +6363,7 @@ class SetSummaryTests(unittest.TestCase):
 
             written_args: list[str] = []
 
-            def fake_write(items: list) -> dict:
+            def fake_write(items: list, *, backup=None) -> dict:
                 written_args.extend(t for _p, t in items)
                 return {p: None for p, _t in items}
 
@@ -6463,7 +6463,7 @@ class SetSummaryTests(unittest.TestCase):
                 before = db_path.read_bytes()
 
                 photoindex._run_exiftool_read_comments = self._fake_reads({})
-                photoindex._run_exiftool_write_comment = lambda items: (
+                photoindex._run_exiftool_write_comment = lambda items, *, backup=None: (
                     _ for _ in ()).throw(AssertionError('declined prompt must not write'))
 
                 if answer is EOFError:
@@ -6496,7 +6496,7 @@ class SetSummaryTests(unittest.TestCase):
             photoindex._run_exiftool_read_comments = self._fake_reads(
                 {'wedding_1902.jpg': 'Grandma wrote: June wedding.'})
             photoindex._run_exiftool_write_comment = (
-                lambda items: {p: None for p, _t in items}
+                lambda items, *, backup=None: {p: None for p, _t in items}
             )
 
             args = type('Args', (), {

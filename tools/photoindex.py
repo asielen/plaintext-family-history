@@ -144,6 +144,9 @@ CODE MAP
 
   Tag-person (fha photoindex tag-person - M3.4)
     run_tag_person_plan       - resolve candidate paths (read-only; CLI previews this before writing)
+    BACKUP_MESSAGE_CODE       - the Message code carrying safety-copy notices (§13f)
+    _add_backup_messages      - fold the run's safety-copy notices into a Result
+    _print_backup_messages    - render them (warnings to stderr, the size line to stdout)
     _run_exiftool_write       - per-file `exiftool -keywords+=` write (the one path here that
                                  mutates an original photo file, not the cache); reports per-path
                                  success/failure rather than batching all candidates into one call
@@ -212,6 +215,8 @@ from _lib import (
     PHOTOINDEX_CONFIG_KEY,
     PHOTOINDEX_SCHEMA_VERSION,
     PHOTO_EXTENSIONS,
+    BackupRefused,
+    OriginalBackup,
     ParsedName,
     Result,
     archive_title,
@@ -3341,7 +3346,40 @@ def _resolve_catalog_path(
     return row['path']
 
 
-def _run_exiftool_write(paths: list[Path], keyword: str) -> dict[Path, str | None]:
+BACKUP_MESSAGE_CODE = 'originals-backup'
+
+
+def _add_backup_messages(result: Result, backup: OriginalBackup) -> Result:
+    """Fold the run's safety-copy notices into the Result, and return it.
+
+    The engine reports through `Result.messages` like everything else so a
+    headless caller (`fha serve`, a skill) sees the same warning and the same
+    "N originals copied, SIZE" line the terminal does; `_print_backup_messages`
+    is the only thing that renders them.
+    """
+    for level, text in backup.drain_messages():
+        result.add(level, text, code=BACKUP_MESSAGE_CODE)
+    return result
+
+
+def _print_backup_messages(source) -> None:
+    """Render safety-copy notices from a Result or an OriginalBackup.
+
+    Warnings go to stderr (they are about protection the human does not have),
+    the size report to stdout with the rest of the command's success output.
+    """
+    if isinstance(source, Result):
+        pairs = [(m.level, m.text) for m in source.messages
+                 if m.code == BACKUP_MESSAGE_CODE]
+    else:
+        pairs = source.drain_messages()
+    for level, text in pairs:
+        print(text, file=(sys.stderr if level == 'warning' else sys.stdout))
+
+
+def _run_exiftool_write(
+    paths: list[Path], keyword: str, *, backup: OriginalBackup,
+) -> dict[Path, str | None]:
     """
     Add `keyword` to each file's embedded Keywords (exiftool's `+=` list-
     append syntax - existing keywords, including SOURCE:/DATE:, are never
@@ -3362,12 +3400,23 @@ def _run_exiftool_write(paths: list[Path], keyword: str) -> dict[Path, str | Non
     Callers must preview and obtain human confirmation before calling this -
     see `_cmd_tag_person`.
 
+    `backup` is the run's `_lib.OriginalBackup` (TOOLING §13f): every file gets
+    its pristine copy made BEFORE exiftool is invoked on it, and a file whose
+    copy could not be made is refused rather than written - the refusal joins
+    the same per-file error map as an exiftool failure, so partial success is
+    reported exactly as it already was.
+
     Returns `{path: None}` for each successful write, `{path: stderr text}`
     for each failed one. Raises RuntimeError only when exiftool itself is
     missing - that is an environment problem, not a per-file outcome.
     """
     results: dict[Path, str | None] = {}
     for p in paths:
+        try:
+            backup.ensure(p)
+        except BackupRefused as e:
+            results[p] = str(e)
+            continue
         cmd = ['exiftool', f'-keywords+={keyword}', '-overwrite_original_in_place', str(p)]
         try:
             proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
@@ -3394,7 +3443,10 @@ def _refresh_photo_fts_keywords(conn: sqlite3.Connection, paths: list[str]) -> N
         conn.execute('UPDATE photo_fts SET keywords=? WHERE path=?', (keywords, path))
 
 
-def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candidates: list[str]) -> Result:
+def apply_tag_person(
+    archive_root: Path, fha_config: dict, person_id: str, candidates: list[str],
+    backup: OriginalBackup | None = None,
+) -> Result:
     """
     Write the bare P-id keyword into each candidate photo's embedded metadata,
     then update the cache so `photo_people` and `photo_fts` reflect the new
@@ -3421,6 +3473,11 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     file's own exiftool write succeeds, before its cache insert is attempted -
     otherwise a cache failure on the very candidate whose file write just
     succeeded would drop it from the recovery list this error reports.
+
+    `backup` is the run's safety-copy policy (TOOLING §13f). The command layer
+    builds it before its confirm prompt so the "no safety copies" warning
+    arrives while the human can still act on it; a headless caller that passes
+    nothing gets one built here, so no path can write without the guard.
     """
     if is_working_copy(archive_root):
         # Warning-level refusal, not a failure: ok stays True, exit stays clean,
@@ -3438,8 +3495,11 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     if not candidates:
         return Result(data={'tagged': [], 'failed': []})
     keyword = 'P-' + person_id.split('-', 1)[1]
+    if backup is None:
+        backup = OriginalBackup(archive_root, fha_config)
+        backup.announce()
     abs_paths = [resolve_path(p, fha_config, archive_root) for p in candidates]
-    write_results = _run_exiftool_write(abs_paths, keyword)
+    write_results = _run_exiftool_write(abs_paths, keyword, backup=backup)
 
     tagged: list[str] = []
     failed: list[tuple[str, str]] = []
@@ -3472,12 +3532,13 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
             ) from e
     finally:
         conn.close()
-    return Result(
+    result = Result(
         ok=(not failed),
         exit_code=(EXIT_FAILURE if failed else EXIT_CLEAN),
         data={'tagged': tagged, 'failed': failed},
         changed=list(tagged),
     )
+    return _add_backup_messages(result, backup)
 
 
 # ── Set-summary (fha photoindex set-summary - BUILD.md M3.5) ─────────────
@@ -3600,7 +3661,9 @@ def _run_exiftool_read_comments(paths: list[Path]) -> dict[Path, tuple[str | Non
     return results
 
 
-def _run_exiftool_write_comment(items: list[tuple[Path, str]]) -> dict[Path, str | None]:
+def _run_exiftool_write_comment(
+    items: list[tuple[Path, str]], *, backup: OriginalBackup,
+) -> dict[Path, str | None]:
     """
     Write each (path, composed_comment) pair's text into the file's embedded
     `UserComment`, overwriting the original in place.
@@ -3619,11 +3682,20 @@ def _run_exiftool_write_comment(items: list[tuple[Path, str]]) -> dict[Path, str
     sanctioned exception); callers must preview and get human confirmation
     first - see `_cmd_set_summary`.
 
+    `backup` is the run's `_lib.OriginalBackup` (TOOLING §13f), applied exactly
+    as in `_run_exiftool_write`: the pristine copy is made before exiftool
+    touches the file, and a file whose copy failed is refused, not written.
+
     Returns `{path: None}` per successful write, `{path: stderr}` per
     failure. Raises RuntimeError only when exiftool itself is missing.
     """
     results: dict[Path, str | None] = {}
     for p, comment in items:
+        try:
+            backup.ensure(p)
+        except BackupRefused as e:
+            results[p] = str(e)
+            continue
         cmd = ['exiftool', f'-UserComment={comment}', '-overwrite_original_in_place', str(p)]
         try:
             proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding='utf-8')
@@ -3775,6 +3847,7 @@ def run_set_summary(
     text: str,
     candidates: list[str],
     append: bool = False,
+    backup: OriginalBackup | None = None,
 ) -> Result:
     """
     Write the AI summary into each candidate photo's embedded `UserComment`,
@@ -3808,6 +3881,10 @@ def run_set_summary(
     paths now carry the new comment even though the cache did not keep up.
     Each path is recorded in `written` before its own cache update is
     attempted, for the same recovery-list reason as apply_tag_person.
+
+    `backup` is the run's safety-copy policy (TOOLING §13f) - built by the
+    command layer ahead of its confirm prompt, or built here for a headless
+    caller so no path can write without the guard.
     """
     if is_working_copy(archive_root):
         # Warning-level refusal, not a failure: ok stays True, exit stays clean,
@@ -3837,6 +3914,9 @@ def run_set_summary(
     if not candidates:
         return Result(data={'written': [], 'failed': [], 'preserved_human': []})
 
+    if backup is None:
+        backup = OriginalBackup(archive_root, fha_config)
+        backup.announce()
     abs_by_candidate = {c: resolve_path(c, fha_config, archive_root) for c in candidates}
     reads = _run_exiftool_read_comments(list(abs_by_candidate.values()))
 
@@ -3851,7 +3931,8 @@ def run_set_summary(
         composed, preserved = _compose_user_comment(comment, text, append)
         to_write.append((candidate, abs_path, composed, preserved))
 
-    write_results = _run_exiftool_write_comment([(a, c) for _, a, c, _ in to_write])
+    write_results = _run_exiftool_write_comment(
+        [(a, c) for _, a, c, _ in to_write], backup=backup)
 
     written: list[str] = []
     preserved_human: list[str] = []
@@ -3880,12 +3961,13 @@ def run_set_summary(
             ) from e
     finally:
         conn.close()
-    return Result(
+    result = Result(
         ok=(not failed),
         exit_code=(EXIT_FAILURE if failed else EXIT_CLEAN),
         data={'written': written, 'failed': failed, 'preserved_human': preserved_human},
         changed=list(written),
     )
+    return _add_backup_messages(result, backup)
 
 
 # ── Scan orchestration ───────────────────────────────────────────────────
@@ -5034,6 +5116,12 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
     for path in candidates:
         print(f'  {path}')
 
+    # Built and announced BEFORE the prompt: "no safety copies are being kept"
+    # is only actionable while the photos are still unwritten.
+    backup = OriginalBackup(archive_root, fha_config)
+    backup.announce()
+    _print_backup_messages(backup)
+
     if getattr(args, 'dry_run', False):
         print('\n(dry-run: no changes written)')
         return EXIT_CLEAN
@@ -5047,11 +5135,13 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
         return EXIT_CLEAN
 
     try:
-        result = apply_tag_person(archive_root, fha_config, plan['person_id'], candidates)
+        result = apply_tag_person(
+            archive_root, fha_config, plan['person_id'], candidates, backup=backup)
     except RuntimeError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _print_backup_messages(result)
     if result['failed']:
         print(
             f"Tagged {len(result['tagged'])} photo(s); {len(result['failed'])} failed:",
@@ -5141,6 +5231,11 @@ def _cmd_set_summary(args: argparse.Namespace, confirm=None) -> int:
         if row['preserved_human']:
             print('    (the existing human-written text is kept; the AI summary is added below it)')
 
+    # Announced before the prompt, for the reason given in _cmd_tag_person.
+    backup = OriginalBackup(archive_root, fha_config)
+    backup.announce()
+    _print_backup_messages(backup)
+
     if getattr(args, 'dry_run', False):
         print('\n(dry-run: no changes written)')
         return EXIT_FAILURE if plan['failed'] else EXIT_CLEAN
@@ -5152,12 +5247,13 @@ def _cmd_set_summary(args: argparse.Namespace, confirm=None) -> int:
     try:
         result = run_set_summary(
             archive_root, fha_config, plan['text'],
-            [row['path'] for row in rows], append=plan['append'],
+            [row['path'] for row in rows], append=plan['append'], backup=backup,
         )
     except RuntimeError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    _print_backup_messages(result)
     if result['preserved_human']:
         print(
             'Kept the human-written text on: ' + ', '.join(result['preserved_human'])

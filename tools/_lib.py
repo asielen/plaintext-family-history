@@ -58,6 +58,7 @@ import shlex
 import sys
 import tempfile
 import time
+import unicodedata
 from collections import deque
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
@@ -111,6 +112,15 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
 #    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
+#
+#  Safety copies of originals (`originals_backup:`, TOOLING §13f)
+#    BackupRefused             - "no safety copy, so do not write" (carries the sentence)
+#    originals_backup_dir      - fha.yaml originals_backup: -> resolved folder, or None
+#    _fold_path_text           - case/Unicode-flattened path spelling
+#    _path_contains            - exact / name-fold / no containment, by parent climb
+#    format_size               - bytes -> B/KB/MB/GB a human reads
+#    OriginalBackup            - one run's policy: copy once per file, warn once,
+#                                 fail closed; the ONE rule all four writers use
 #
 #  Record parsing
 #    read_text_exact            - newline-exact record read (no CRLF/LF translation)
@@ -1628,6 +1638,407 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     if max_mtime == 0.0 or mtime >= max_mtime:
         return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
     return ('stale', max_mtime - mtime)
+
+
+# ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────
+#
+# Four places in the tools write embedded metadata into an original photo:
+# `fha process` (the SOURCE: keyword and its rollback) and `fha photoindex`
+# (tag-person's P-id keyword, set-summary's UserComment).  All four use
+# exiftool's `-overwrite_original_in_place`, which is deliberate - it edits the
+# file rather than replacing it, so an external photo library (Lightroom) does
+# not lose track of it - but it also means the only copy of a family photograph
+# is being rewritten with no copy anywhere.
+#
+# `originals_backup:` in fha.yaml names a folder outside the archive where ONE
+# pristine copy of each such file is kept before it is first written to.  The
+# rule lives here, not in the two tools, because a data-safety guard duplicated
+# four ways is a guard that drifts.
+
+class BackupRefused(Exception):
+    """The safety copy could not be made, so the write must not go ahead.
+
+    Carries the finished, human-facing sentence (file, cause, next step) that
+    the caller puts straight into its existing per-file failure channel - the
+    writers already report one error string per path, and a refused backup is
+    just another reason a particular file was not written.
+    """
+
+
+def originals_backup_dir(fha_config: dict, archive_root: str | Path) -> Path | None:
+    """The resolved `originals_backup:` folder from fha.yaml, or None if unset.
+
+    Shape and tolerance follow the settings either side of it: one plain path
+    like `roots:`/`backup: path:` (absolute used as-is, relative joined to the
+    archive root - SPEC §12.4), read the way `photos_ignore_patterns` reads its
+    own key, and a value whose shape is not understood raises a plain
+    RuntimeError carrying a copy-pasteable example rather than guessing.
+
+    Degrading differs from `photos_ignore:` in one direction on purpose.  A
+    malformed ignore list, read as "ignore nothing", catalogs too much; a
+    malformed backup setting read as "no backup configured" would silently
+    drop protection the human asked for, at the one moment it matters.  So an
+    unreadable value - including an empty string, which is a half-finished
+    edit, not an "off" switch - is an error the caller must surface, never an
+    absent setting.
+    """
+    raw = fha_config.get('originals_backup')
+    if raw is None:
+        return None
+    text = str(raw).strip() if isinstance(raw, (str, os.PathLike)) else ''
+    if not text:
+        raise RuntimeError(
+            'originals_backup in fha.yaml must be one folder path, outside your '
+            'archive, where a safety copy of each photo is kept before fha '
+            'writes into it (e.g.\n'
+            '  originals_backup: D:/PhotoOriginals)\n'
+            'Remove the line to turn safety copies off.'
+        )
+    p = Path(text)
+    return (p if p.is_absolute() else Path(archive_root) / p).resolve()
+
+
+def _fold_path_text(name: str) -> str:
+    """One path spelling with case and Unicode composition flattened away.
+
+    macOS and Windows both hand back a name whose capitals - and, on HFS+,
+    whose accent composition - differ from the one that was asked for, so two
+    strings can name one folder.  Used only by the containment guard below,
+    where matching too much costs the human one sentence and matching too
+    little costs him a photograph.  (`fha backup`'s destination guard reaches
+    the same conclusion for its zips; the rule is stated twice because tools
+    never import tools and backup.py owns its own copy.)
+    """
+    return unicodedata.normalize('NFC', name).casefold()
+
+
+def _path_contains(parent: str | Path, child: str | Path) -> str | None:
+    """How `parent` contains `child`: 'exact', 'name-fold', or None.
+
+    Answered by climbing `child`'s resolved parents rather than by a string
+    prefix, so a destination that does not exist yet still gets a true answer
+    (the climb reaches the folder that will hold it), and so two spellings of
+    one folder are one folder.  A match found only after folding is reported
+    separately: on a case-sensitive disk those really are two folders, and a
+    refusal that insisted otherwise would be a dead end.
+    """
+    target = Path(child).resolve()
+    base = Path(parent).resolve()
+    cur = target
+    while True:
+        if cur == base:
+            return 'exact'
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    folded = _fold_path_text(str(base))
+    cur = target
+    while True:
+        if _fold_path_text(str(cur)) == folded:
+            return 'name-fold'
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def format_size(n: int) -> str:
+    """Bytes as a size a human reads (B/KB/MB/GB/TB, one decimal place)."""
+    size = float(n)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if size < 1024 or unit == 'TB':
+            return f'{int(size)} {unit}' if unit == 'B' else f'{size:.1f} {unit}'
+        size /= 1024
+    return f'{int(n)} B'
+
+
+class OriginalBackup:
+    """One run's safety-copy policy for originals fha writes metadata into.
+
+    Built once per command and handed to every writer in that run, which is
+    what makes "warn once, not once per photo" true on an 88,000-file library
+    and what lets one line report the run's whole disk cost.
+
+    Three behaviours, decided by `originals_backup:`:
+
+      * configured    - `ensure()` copies the file to a path-mirrored place
+                        under the destination before the first write to it,
+                        and raises `BackupRefused` if that copy fails.  A file
+                        that already has a copy there is left alone: the
+                        valuable artifact is the photo as it was before fha
+                        ever touched it, so the SECOND keyword write must not
+                        overwrite it with an already-modified version.  That
+                        also bounds the cost at one copy of each photo written.
+      * not configured - `ensure()` warns once for the whole run, naming the
+                        setting and what it protects, and proceeds.  Safety
+                        copies are opt-in; refusing here would break every
+                        existing archive on upgrade.
+      * misconfigured  - a value that cannot be read, or a destination inside
+                        the archive or an asset root, refuses every write with
+                        the cause and the fix.  Fail closed: a backup that
+                        silently did not happen is worse than none, because it
+                        is relied on.
+
+    **Identity.** The copy is filed under the file's alias path
+    (`photos/1912/margaret.jpg` -> `<dest>/photos/1912/margaret.jpg`) - the same
+    identity the source record's `files:` entry carries, and the one a human can
+    read.  SPEC §12.1 is right that a photo's filename is not its identity (the
+    embedded `SOURCE:` keyword is, with the path as a hint), and the honest
+    consequence is stated here rather than papered over: if another system later
+    renames or moves the photo, this copy stays where it was made, under the old
+    path.  Nothing is lost - the pristine copy is still on disk with its
+    contents intact - but the next write to the photo at its new path takes a
+    fresh copy there, and that one is of a file fha has already written to.  The
+    durable identity cannot fill the gap: the first write of all is `fha
+    process` MINTING the `SOURCE:` keyword, so at the moment the pristine copy
+    matters most there is no keyword to key it by.
+    """
+
+    def __init__(self, archive_root: str | Path, fha_config: dict) -> None:
+        self.archive_root = Path(archive_root)
+        self.fha_config = fha_config or {}
+        self.copied = 0          # pristine copies made this run
+        self.already = 0         # files that already had one
+        self.bytes = 0           # bytes written this run
+        self.dest: Path | None = None
+        self.refusal: str | None = None   # why no write may proceed, if so
+        self._pending: list[tuple[str, str]] = []
+        self._announced = False
+        self._reported = (0, 0, 0)
+        try:
+            self.dest = originals_backup_dir(self.fha_config, self.archive_root)
+        except RuntimeError as e:
+            self.refusal = str(e)
+            return
+        if self.dest is not None:
+            self.refusal = self._destination_conflict(self.dest)
+
+    # -- configuration ----------------------------------------------------
+
+    def _protected_folders(self) -> list[tuple[str, Path]]:
+        """The folders a safety copy must never land inside, labelled.
+
+        Every mapped asset root (plus the spec defaults, which exist whether or
+        not `roots:` names them) and the archive root itself.  A copy inside an
+        asset root would be scanned, keyworded and counted as a second photo of
+        the same picture - it would defeat the thing it is for.  A copy
+        elsewhere inside the archive is refused for the reason `fha backup`
+        refuses it for zips (§13e): a copy that lives inside the thing it
+        protects shares its disk, its sync folder and its accidents.
+        """
+        out: list[tuple[str, Path]] = []
+        for alias in sorted(set(get_roots(self.fha_config)) | {'photos', 'documents'}):
+            out.append((f'your {alias} root',
+                        resolve_path(alias, self.fha_config, self.archive_root)))
+        out.append(('your archive', self.archive_root))
+        return out
+
+    def _destination_conflict(self, dest: Path) -> str | None:
+        """Plain refusal text if `dest` is not a safe place to keep copies.
+
+        Checked in both directions.  A destination inside a protected folder is
+        the obvious mistake; a destination that CONTAINS one (`originals_backup:
+        D:/Family` with `roots: photos: D:/Family/Photos`) puts the live library
+        inside the safety copies and ends in the same place.
+        """
+        for label, folder in self._protected_folders():
+            inward = _path_contains(folder, dest)
+            outward = _path_contains(dest, folder)
+            if inward is None and outward is None:
+                continue
+            # The archive root is checked last, so an asset root inside the
+            # archive is reported as the asset root - the more specific and
+            # more alarming of the two reasons.
+            if label == 'your archive':
+                harm = ('Copies kept there share the archive\'s disk, its sync '
+                        'folder and its accidents, which is most of what they '
+                        'are meant to survive.')
+            else:
+                harm = ('Copies kept there would be scanned, keyworded and '
+                        'counted as extra photos of the same picture, and a '
+                        'lost disk would take the copies with the originals.')
+            if inward == 'name-fold' or outward == 'name-fold':
+                return (
+                    f'the safety-copy folder {dest} is spelled the same as '
+                    f'{label} ({folder}) apart from capital letters or accents. '
+                    f'On most Macs and on every Windows PC those are ONE folder, '
+                    f'so the copies would land inside the very thing they are '
+                    f'protecting. {harm} Point `originals_backup:` in fha.yaml at a '
+                    f'clearly different folder outside your archive '
+                    f'(e.g. originals_backup: D:/PhotoOriginals), then re-run.'
+                )
+            where = 'inside' if inward else 'the folder holding'
+            return (
+                f'the safety-copy folder {dest} is {where} {label} ({folder}). '
+                f'{harm} Point `originals_backup:` in fha.yaml at a folder '
+                f'outside your archive (e.g. originals_backup: D:/PhotoOriginals), '
+                f'then re-run.'
+            )
+        return None
+
+    # -- the guard --------------------------------------------------------
+
+    def _alias_path(self, path: Path) -> str | None:
+        """`path` as the archive files it (`photos/1912/x.jpg`), or None.
+
+        The most specific root wins, so a documents root nested inside a photos
+        root does not answer for its own files.  One function for both readers -
+        the copy's filename and the refusal's wording - so the file a message
+        names is always the file the copy was filed under.
+        """
+        resolved = Path(path).resolve()
+        best: tuple[int, str] | None = None
+        for alias in sorted(set(get_roots(self.fha_config)) | {'photos', 'documents'}):
+            root = resolve_path(alias, self.fha_config, self.archive_root).resolve()
+            try:
+                rel = resolved.relative_to(root)
+            except ValueError:
+                continue
+            depth = len(root.parts)
+            if best is None or depth > best[0]:
+                best = (depth, f'{alias}/{rel.as_posix()}')
+        return best[1] if best else None
+
+    def _copy_target(self, path: Path) -> Path:
+        """Where `path`'s pristine copy is filed under the destination.
+
+        The alias path when the file is under a mapped root, the
+        archive-relative path when it is inside the archive but under no root,
+        and `_elsewhere/…` for a file outside both - a case `fha process` can
+        still be pointed at.
+        """
+        alias_path = self._alias_path(path)
+        if alias_path is not None:
+            return self.dest / alias_path
+        resolved = Path(path).resolve()
+        try:
+            return self.dest / resolved.relative_to(self.archive_root.resolve())
+        except ValueError:
+            pass
+        stripped = str(resolved)[len(resolved.anchor):].replace('\\', '/').strip('/')
+        return self.dest / '_elsewhere' / stripped
+
+    def ensure(self, path: str | Path) -> None:
+        """Make sure a pristine copy of `path` exists before it is written to.
+
+        Returns quietly when the copy is in place (or was already), warns once
+        per run when the setting is absent, and raises `BackupRefused` when the
+        setting is on and the copy did not happen - the caller must then not
+        write.  The copy lands via a `.part` temporary and `os.replace`, so an
+        interrupted run leaves either a complete copy or none; a half-written
+        one would be indistinguishable from a pristine copy on the next run,
+        which is the one wrong answer this whole feature exists to prevent.
+        """
+        src = Path(path)
+        if self.refusal is not None:
+            raise BackupRefused(
+                f'refused to write to {self._label(src)}: {self.refusal} '
+                f'Nothing was written to the file.'
+            )
+        if self.dest is None:
+            self._warn_unconfigured()
+            return
+        target = self._copy_target(src)
+        if target.exists():
+            self.already += 1
+            return
+        tmp = target.with_name(target.name + '.part')
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, tmp)
+            os.replace(tmp, target)
+        except OSError as e:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise BackupRefused(
+                f'refused to write to {self._label(src)}: its safety copy could '
+                f'not be made at {target} ({e}). Nothing was written to the file. '
+                f'Check that the folder in `originals_backup:` exists and has room, '
+                f'then re-run - or remove `originals_backup:` from fha.yaml to write '
+                f'without safety copies.'
+            ) from e
+        self.copied += 1
+        try:
+            self.bytes += target.stat().st_size
+        except OSError:
+            pass
+
+    def _label(self, path: Path) -> str:
+        """The file named the way the human filed it (alias form when possible)."""
+        return self._alias_path(path) or Path(path).name
+
+    # -- what the human is told -------------------------------------------
+
+    def _warn_unconfigured(self) -> None:
+        if self._announced:
+            return
+        self._announced = True
+        self._pending.append((
+            'warning',
+            'No safety copies are being kept. fha is about to write keywords or '
+            'captions into your original photo files, and there is no copy to '
+            'fall back on if a write is interrupted. Add one line to fha.yaml to '
+            'keep one pristine copy of each photo before it is first written to:\n'
+            '  originals_backup: D:/PhotoOriginals\n'
+            '(any folder outside your archive; copies are made once per photo, '
+            'so the space it needs is one copy of the photos you work on).',
+        ))
+
+    def announce(self) -> None:
+        """Say up front what will happen, before the human confirms a write.
+
+        Called by the command layer ahead of its yes/no prompt so the
+        no-safety-copies warning arrives while it can still be acted on -
+        after 500 photos are written it is only news.
+        """
+        if self.refusal is not None:
+            if not self._announced:
+                self._announced = True
+                self._pending.append((
+                    'warning',
+                    f'Safety copies are configured but unusable: {self.refusal} '
+                    f'Until that is fixed, these writes will be refused.',
+                ))
+            return
+        if self.dest is None:
+            self._warn_unconfigured()
+            return
+        if not self._announced:
+            self._announced = True
+            self._pending.append((
+                'info',
+                f'Safety copies: a pristine copy of each photo is kept in '
+                f'{self.dest} before it is written to.',
+            ))
+
+    def drain_messages(self) -> list[tuple[str, str]]:
+        """Take the messages not yet reported: (level, text) pairs.
+
+        Draining rather than reading keeps "warn once per run" true no matter
+        how many times a caller asks, and lets a batch command (`fha process`
+        over a folder) report each group's copies as they happen without
+        restating the ones it already reported.
+        """
+        out = list(self._pending)
+        self._pending.clear()
+        counts = (self.copied, self.already, self.bytes)
+        if counts != self._reported:
+            copied = self.copied - self._reported[0]
+            already = self.already - self._reported[1]
+            written = self.bytes - self._reported[2]
+            self._reported = counts
+            parts = []
+            if copied:
+                # The size is the point of this line: it is what a human weighs
+                # when deciding whether to keep the setting on.
+                parts.append(f'{copied} original(s) copied to {self.dest} '
+                             f'({format_size(written)})')
+            if already:
+                parts.append(f'{already} already had a copy from an earlier run')
+            if parts:
+                out.append(('info', 'Safety copies: ' + '; '.join(parts) + '.'))
+        return out
 
 
 # ── Record parsing ────────────────────────────────────────────────────────────
