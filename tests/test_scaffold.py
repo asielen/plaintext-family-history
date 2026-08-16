@@ -20,6 +20,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -39,6 +40,50 @@ from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding='utf-8')
+
+
+_MD_LINK = re.compile(r'\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)')
+
+
+def _dead_relative_links(archive_path: str, text: str,
+                         shipped: set[str]) -> list[str]:
+    """Relative markdown links in `text` that no installed archive can follow.
+
+    `archive_path` is where the document LANDS in an archive, which is what the
+    links resolve against - not where its source sits in this repo. A shipped
+    document may legitimately point at a folder (`../design/`), so a target is
+    also accepted when it is an ancestor of some shipped file. Absolute URLs,
+    bare fragments and protocol-relative links are somebody else's problem.
+    """
+    directories = set()
+    for path in shipped:
+        parts = path.split('/')
+        for depth in range(1, len(parts)):
+            directories.add('/'.join(parts[:depth]))
+
+    dead: list[str] = []
+    for target in _MD_LINK.findall(text):
+        if target.startswith(('#', '//')) or re.match(r'^[a-z][a-z0-9+.-]*:', target):
+            continue
+        bare = target.split('#')[0]
+        if not bare:
+            continue
+        # Resolve textually. PurePosixPath keeps '..' segments, and the real
+        # question is where a reader's file browser ends up, not what exists on
+        # the machine running the tests.
+        segments: list[str] = []
+        for part in f'{pathlib.PurePosixPath(archive_path).parent}/{bare}'.split('/'):
+            if part == '..':
+                if segments:
+                    segments.pop()
+                else:
+                    segments.append('..')
+            elif part not in ('.', ''):
+                segments.append(part)
+        resolved = '/'.join(segments)
+        if resolved not in shipped and resolved not in directories:
+            dead.append(f'{target} -> {resolved}')
+    return dead
 
 
 def _make_fake_repo(repo: Path) -> Path:
@@ -134,9 +179,15 @@ class ManifestSyncTest(unittest.TestCase):
                         '.fha/browser-companion/README.md'):
             self.assertIn(shipped, entries, shipped)
             self.assertEqual(entries[shipped]['category'], 'operating')
-            # The src/path seam records the repo-flat source for vendored files.
-            self.assertEqual(entries[shipped]['src'],
-                             shipped.removeprefix('.fha/'))
+        # The src/path seam records the repo-flat source for vendored files -
+        # except the README, which is deliberately a DIFFERENT document in an
+        # archive than in the project (see the next test).
+        for shipped, src in entries.items():
+            if not shipped.startswith('.fha/browser-companion/'):
+                continue
+            if shipped == '.fha/browser-companion/README.md':
+                continue
+            self.assertEqual(src['src'], shipped.removeprefix('.fha/'), shipped)
         # Dev furniture never enters an archive: the node test-suite, its
         # capture-bundle fixtures, the npm manifest, the hand-test walkthrough.
         paths = set(entries)
@@ -144,6 +195,44 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertFalse(any('browser-companion/test-bundle/' in p for p in paths))
         self.assertNotIn('.fha/browser-companion/package.json', paths)
         self.assertNotIn('.fha/browser-companion/ANCESTRY-AUTOFETCH-TEST.md', paths)
+
+    def test_the_installed_capture_readme_is_the_owner_one(self):
+        # The extension's project README is written for whoever WORKS ON the
+        # extension: it points at ../TOOLING_INGESTION.md, the node test-suite,
+        # test-bundle/ and the hand-test walkthrough, none of which an installed
+        # archive carries. Shipping it handed the owner a guide of dead links and
+        # a test command that cannot run, so the archive gets its own README.
+        entries = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
+        installed = entries['.fha/browser-companion/README.md']
+        self.assertEqual(installed['src'], 'browser-companion/README-ARCHIVE.md')
+        # The project README stays home - and would still be a dead-link guide.
+        self.assertNotIn('browser-companion/README.md',
+                         {e.get('src', e['path'])
+                          for e in scaffold.generate_manifest(ROOT)['files']})
+        text = (ROOT / 'browser-companion' / 'README-ARCHIVE.md').read_text(
+            encoding='utf-8')
+        # It has to answer the four questions an owner actually has.
+        self.assertIn('Load unpacked', text)
+        self.assertIn('fha capture --ingest', text)
+        self.assertIn('.fha', text)
+        # And none of the workshop-only references that made the old one useless.
+        for absent in ('TOOLING_INGESTION', 'ANCESTRY-AUTOFETCH-TEST',
+                       'test-bundle', 'test_browser_companion', 'package.json'):
+            self.assertNotIn(absent, text, absent)
+
+    def test_the_installed_capture_readme_links_only_to_shipped_files(self):
+        # The rule the old README broke, enforced: every relative link in the
+        # document an archive receives has to land on something the installer
+        # actually put there. An owner following a dead link has no way to tell
+        # whether the file is missing or they are.
+        manifest = scaffold.generate_manifest(ROOT)['files']
+        shipped = {e['path'] for e in manifest}
+        dead = _dead_relative_links(
+            '.fha/browser-companion/README.md',
+            (ROOT / 'browser-companion' / 'README-ARCHIVE.md').read_text(
+                encoding='utf-8'),
+            shipped)
+        self.assertEqual(dead, [], f'links to files no archive has: {dead}')
 
     def test_manifest_includes_launchers(self):
         # plan 17 + archive-layout: the double-clickable workbench launcher AND
@@ -280,15 +369,22 @@ class ManifestSyncTest(unittest.TestCase):
         # PR stopped vendoring. In an installed archive a relative link there is a
         # dead end, so the mandated checklist cannot be followed. Every reference
         # from a SHIPPED file to an UNSHIPPED doc must be an absolute URL.
-        shipped = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
+        manifest = scaffold.generate_manifest(ROOT)['files']
+        shipped = {e['path'] for e in manifest}
         unshipped = ('AGENTS_TOOLING.md', 'BUILD.md', 'BUILD_INGESTION.md',
                      'BUILD_INTERFACE.md', 'TOOLING_INGESTION.md',
                      'TOOLING_INTERFACE.md')
         for doc in unshipped:
             self.assertNotIn(doc, shipped, f'{doc} is workshop-only')
         offenders = []
-        for rel in sorted(shipped):
-            src = ROOT / rel
+        # Read each doc through its manifest `src`, not its archive path: a
+        # vendored file's archive path (.fha/browser-companion/README.md) does
+        # not exist in this repo, so resolving by path skipped every vendored
+        # document silently - which is how the capture extension's README kept
+        # its ../TOOLING_INGESTION.md link through this very check.
+        for entry in sorted(manifest, key=lambda e: e['path']):
+            rel = entry['path']
+            src = ROOT / entry.get('src', rel)
             if src.suffix != '.md' or not src.is_file():
                 continue
             text = src.read_text(encoding='utf-8', errors='replace')

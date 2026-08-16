@@ -22,6 +22,7 @@ const pure = require('../src/lib/capture-json-pure.js');
 const iiif = require('../src/lib/iiif.js');
 const harvest = require('../src/lib/people-harvest.js');
 const readiness = require('../src/lib/capture-readiness.js');
+const srcset = require('../src/lib/srcset.js');
 
 // ── capture-json.js ↔ capture-json-pure.js (functional equivalence) ──────────
 // The browser file is an IIFE that attaches to window.FHA; run it against a
@@ -116,6 +117,47 @@ test('content.js IIIF_IMAGE_RE matches lib/iiif.js', () => {
   const copy = new Function('return new RegExp(' + inner + ')')();
   assert.strictEqual(copy.source, iiif.IIIF_IMAGE_RE.source);
   assert.strictEqual(copy.flags, iiif.IIIF_IMAGE_RE.flags);
+});
+
+test('content.js srcset parser matches lib/srcset.js', () => {
+  // Not a literal comparison but a behavioural one: the copy is a block of
+  // function declarations between explicit sync markers, so it can be evaluated
+  // on its own and driven through the same battery as the canonical module. A
+  // drift in either direction fails here rather than in a saved snapshot months
+  // later, which is the only place it would otherwise show up.
+  const block = extractBlock(/\/\/ FHA-SYNC-BEGIN srcset\n/, '// FHA-SYNC-END srcset');
+  const copy = new Function(
+    block + '\nreturn { parseSrcset, serializeSrcset, rewriteSrcset, srcsetUrls };'
+  )();
+
+  const battery = [
+    'small.png 1x, large.png 2x',
+    'photo.jpg',
+    'data:image/svg+xml;utf8,%3Csvg%20viewBox%3D%220,0,10,10%22%3E 1x, real.png 2x',
+    'data:image/gif;base64,R0lGODlhAQABAAAAACw= 1x',
+    'https://cdn.example.org/c_fill,w_600/scan.jpg 600w, https://cdn.example.org/c_fill,w_1200/scan.jpg 1200w',
+    'a.png,b.png 2x',
+    'a.png, b.png 2x',
+    'a.png 100w (min-width:10px,max-width:20px), b.png',
+    '\n  a.png   1x ,\t\n b.png\t2x\n',
+    '',
+    ' , , ',
+    null,
+  ];
+  for (const value of battery) {
+    assert.deepStrictEqual(copy.parseSrcset(value), srcset.parseSrcset(value),
+      'parseSrcset(' + JSON.stringify(value) + ')');
+    assert.deepStrictEqual(copy.srcsetUrls(value), srcset.srcsetUrls(value),
+      'srcsetUrls(' + JSON.stringify(value) + ')');
+    const abs = (u) => (u.startsWith('data:') ? null : 'https://site.test/' + u);
+    assert.strictEqual(copy.rewriteSrcset(value, abs),
+      srcset.rewriteSrcset(value, abs),
+      'rewriteSrcset(' + JSON.stringify(value) + ')');
+  }
+  assert.strictEqual(
+    copy.serializeSrcset([{ url: 'a.png', descriptor: '1x' }, { url: '', descriptor: '' }]),
+    srcset.serializeSrcset([{ url: 'a.png', descriptor: '1x' }, { url: '', descriptor: '' }])
+  );
 });
 
 test('content.js rewrites to the same IIIF full-image candidates as the lib', () => {

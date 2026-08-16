@@ -265,12 +265,32 @@ _VENDORED_SUBTREES = ('tools', 'design', 'browser-companion')
 # manifest, and the hand-test walkthrough. What ships is exactly what the
 # browser loads unpacked - manifest.json, src/, icons/ - plus the README that
 # says how to load it. (Repo-relative src paths / path prefixes.)
+#
+# browser-companion/README.md is on this list because it is the PROJECT readme:
+# it is addressed to whoever works on the extension, and it links to
+# ../TOOLING_INGESTION.md, ../tests/test_browser_companion.py, test-bundle/ and
+# ANCESTRY-AUTOFETCH-TEST.md - every one of which the installer deliberately
+# leaves behind. Shipping it gave an archive owner a guide full of dead links
+# and a test command that cannot run. The owner's copy is README-ARCHIVE.md,
+# remapped onto README.md by _VENDOR_RENAMES below.
 _VENDOR_EXCLUDE_PREFIXES = ('browser-companion/tests/',
                             'browser-companion/test-bundle/')
 _VENDOR_EXCLUDE_FILES = frozenset({
     'browser-companion/package.json',
     'browser-companion/ANCESTRY-AUTOFETCH-TEST.md',
+    'browser-companion/README.md',
 })
+
+# Files that ship under a DIFFERENT name than they carry in the repo, because
+# the archive wants a different document at that spot than the project does.
+# (repo src -> archive path.) The one case is the capture extension's README:
+# an owner opening `.fha/browser-companion/README.md` gets plain instructions
+# for loading the add-on and filing what it captures, with no link that leads
+# outside an installed archive. The project README stays home (excluded above).
+_VENDOR_RENAMES: dict[str, str] = {
+    'browser-companion/README-ARCHIVE.md':
+        f'{VENDOR_DIR}/browser-companion/README.md',
+}
 
 # Individual docs that are PROJECT documentation rather than owner documentation,
 # and so belong with the machinery rather than in the archive's readable `docs/`.
@@ -399,8 +419,12 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
             # archive root stays uncluttered; owner-facing docs/ and
             # .claude/skills stay at the root (readable documentation /
             # agent-discovered skills). Individual project docs are vendored too.
-            archive_path = (f'{_VENDOR_DIR}/{rel}'
-                            if moved or rel in _VENDORED_DOCS else rel)
+            # A handful of files ship under a different name than they carry
+            # here (_VENDOR_RENAMES) because the archive wants a different
+            # document at that spot than the project does.
+            archive_path = _VENDOR_RENAMES.get(rel) or (
+                f'{_VENDOR_DIR}/{rel}'
+                if moved or rel in _VENDORED_DOCS else rel)
             out.append((archive_path, p))
 
     return out

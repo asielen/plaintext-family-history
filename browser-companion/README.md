@@ -17,9 +17,9 @@ always saved and the Python recipe corrects it at filing.
 
 This folder lives **outside** the Python tool suite - it runs in the *browser*,
 never inside the archive - but it **ships with every archive**: `fha install` /
-`fha update-tools` vendor the loadable files (`manifest.json`, `src/`, `icons/`,
-this README) into `.fha/browser-companion/`, so from any installed archive you
-can load it with no clone of this repo:
+`fha update-tools` vendor the loadable files (`manifest.json`, `src/`, `icons/`)
+into `.fha/browser-companion/`, so from any installed archive you can load it
+with no clone of this repo:
 
 1. Open `chrome://extensions` (or `edge://extensions`), turn on Developer mode.
 2. Click **Load unpacked** and pick your archive's `.fha/browser-companion/`
@@ -28,10 +28,18 @@ can load it with no clone of this repo:
    `D:\Family Archive\.fha\browser-companion`) and press Enter, or turn on
    "Show hidden items" in Explorer's View menu first.
 
-The dev furniture here (`tests/`, `test-bundle/`, `package.json`) stays in the
-repo - what ships is exactly what the browser loads. Developing the extension
-remains a workshop-repo activity like any other tool-building; archives receive
-the result through `fha update-tools`.
+The dev furniture here (`tests/`, `test-bundle/`, `package.json`,
+`ANCESTRY-AUTOFETCH-TEST.md`) stays in the repo - what ships is exactly what the
+browser loads. **This README stays too**: it is written for whoever works on the
+extension and links to documents an installed archive does not carry. The
+document an archive receives at `.fha/browser-companion/README.md` is
+[`README-ARCHIVE.md`](README-ARCHIVE.md) - the same folder, an owner's
+instructions, and no link that leads outside an archive. Edit that one whenever
+the loading steps or the ingest command change; `tests/test_scaffold.py` fails if
+it ever grows a link the installer does not ship.
+
+Developing the extension remains a workshop-repo activity like any other
+tool-building; archives receive the result through `fha update-tools`.
 
 ---
 
@@ -180,6 +188,7 @@ no-op, the bundles land in `inbox/` directly.
 
 ```
 manifest.json          MV3 manifest (least privilege)
+README-ARCHIVE.md      the owner's README, installed as .fha/browser-companion/README.md
 src/
   background.js        service worker, opens the side panel
   content.js           injected on invoke, DOM read, generic pre-fill,
@@ -189,8 +198,17 @@ src/
     capture-json.js    builds capture.json (schema 2, the assets[] list) + name
     bundle.js          writes the bundle via chrome.downloads (the §5.1 path)
     native-host.js     optional seamless path (§5.7), shipped, opt-in (off by default)
+    srcset.js          HTML-spec srcset parsing (canonical; content.js keeps a copy)
+    iiif.js            IIIF Image-API URL rewriting (canonical; ditto)
+    people-harvest.js  JSON-LD person harvest (canonical; ditto)
+    capture-readiness.js  the "record detail looks empty" phrases (canonical; ditto)
 test-bundle/           an example "both" bundle in the exact output shape (round-trip test)
 ```
+
+content.js is an injected classic script, so it cannot `import`: the four
+canonical modules above have hand-kept copies inside it, and
+`tests/test-sync.js` re-runs both sides through the same battery so a drift is a
+failing build rather than a hope.
 
 The **recipes stay in Python.** The browser does only a light, generic pre-fill
 (`<title>`/`og:title`, canonical URL, `article:published_time`, JSON-LD Person
@@ -242,6 +260,22 @@ recorded here (not silently) as proposed spec clarifications:
   snapshot stays parseable; it does **not** inline fonts or nested CSS `url()`
   resources, and it is bounded (≤120 resources, ≤5 MB each). `page.html` is still
   saved alongside as the clean scrape source, so scraping never depends on it.
+- **Every URL the snapshot keeps is anchored to the live page.** Relative
+  references are rewritten to their absolute form rather than by injecting a
+  `<base>` (a base of ours would send fragment-only links such as `#facts` to the
+  live site and blank out SVG `<use href="#icon">` sprites). A page that declares
+  its **own** `<base>` keeps it - that is the author's baseline, and it already
+  governs the live page - but its `href` is absolutized too, or a relative base
+  like `/records/` would resolve against the local filesystem once the copy is
+  opened from `file://`. The sweep covers `href`/`src`/`poster`/`data`,
+  `srcset` and `imagesrcset`, `form action` and `formaction`, SVG `href` and
+  `xlink:href`, meta refresh, inline `style` attributes, `<style>` blocks, and the
+  `url()`/`@import` references inside an inlined stylesheet (anchored to the
+  **stylesheet's** address, not the document's). `srcset` is parsed by the HTML
+  Standard's algorithm, never split on commas - a candidate URL may legally
+  contain one. Nothing that resolves to a `file:` URL is ever written into a
+  snapshot: capturing a page opened from disk must not bake local folder names
+  into a file that lands in the archive.
 - **Print-to-PDF mode removed.** The old radio offering *Save as PDF* via
   drag-drop is gone: the single-file HTML snapshot supersedes it (§9's case-(b)
   default), and a real PDF still files fine through the "Yes, save the actual
@@ -256,13 +290,24 @@ recorded here (not silently) as proposed spec clarifications:
 
 ## Testing
 
-There is no browser-driven test harness wired into this repo (the tooling tests
-are stdlib Python). The contract that *can* be checked without a browser, that
-the extension's output bundle ingests cleanly, is covered by
-[`../tests/test_browser_companion.py`](../tests/test_browser_companion.py): it
-validates the MV3 manifest, asserts every file the manifest references exists, and
-runs the example `test-bundle/` (which mirrors the exact shape `panel.js`/`bundle.js`
-write) through `fha capture --ingest` end-to-end. Run it from the repo root:
+There is no browser-driven test harness wired into this repo (a DOM would have to
+come with it). Two suites cover everything that *can* be checked without one.
+
+**The pure JS helpers** - srcset parsing, the snapshot's URL anchoring, the
+JSON-LD person harvest, IIIF rewriting, `capture.json` building, and the
+content.js ↔ `src/lib/` sync guards - run under `node --test` (Node ≥18, no
+dependencies):
+
+```sh
+npm --prefix browser-companion test
+```
+
+**The end-to-end contract** - that the extension's output bundle ingests cleanly -
+is covered by [`../tests/test_browser_companion.py`](../tests/test_browser_companion.py):
+it validates the MV3 manifest, asserts every file the manifest references exists,
+pins the snapshot's URL-rewriting invariants, and runs the example `test-bundle/`
+(which mirrors the exact shape `panel.js`/`bundle.js` write) through
+`fha capture --ingest` end-to-end. Run it from the repo root:
 
 ```sh
 python -m unittest tests.test_browser_companion -v

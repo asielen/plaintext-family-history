@@ -413,5 +413,76 @@ class PointerOnlyCaptureTestCase(unittest.TestCase):
                 [stubs[0].name])
 
 
+class SnapshotUrlRewriteTestCase(unittest.TestCase):
+    """The saved snapshot must anchor every URL it keeps.
+
+    The JS-level behaviour is tested by the node suite
+    (`npm --prefix browser-companion test`, tests/test-srcset.js and
+    tests/test-snapshot-urls.js). These are the structural guards that also fire
+    for anyone running only the Python tests: the two shapes that made the
+    preserved copy quietly useless, pinned so they cannot come back.
+    """
+
+    def setUp(self) -> None:
+        self.content = (COMPANION / 'src' / 'content.js').read_text(encoding='utf-8')
+
+    def test_a_page_that_declares_a_base_is_still_rewritten(self) -> None:
+        # The snapshot used to skip ALL URL rewriting whenever the page carried a
+        # <base>. A relative one (`<base href="/records/">`) resolves against the
+        # live site in the browser and against the local filesystem once the copy
+        # is opened from file://, so every non-inlined link and image in the
+        # saved page broke. Now the base itself is absolutized and the rewrite
+        # runs regardless.
+        self.assertNotIn("if (!clone.querySelector('head base'))", self.content)
+        self.assertIn("clone.querySelector('base[href]')", self.content)
+
+    def test_srcset_is_parsed_never_split_on_commas(self) -> None:
+        # A comma is legal inside a candidate URL (`data:` URLs always carry one),
+        # so splitting on commas cut one URL into fragments and rewrote each as a
+        # path of its own.
+        self.assertNotIn(".split(',')", self.content)
+        self.assertIn('function parseSrcset(', self.content)
+        self.assertIn('rewriteSrcset(', self.content)
+
+    def test_the_url_sweep_covers_the_easily_missed_attributes(self) -> None:
+        # Attributes a snapshot forgets one at a time: each one left relative is
+        # a dead reference in the preserved page.
+        for attr in ("['form', 'action']", "['button', 'formaction']",
+                     "['object', 'data']", "['video', 'poster']"):
+            self.assertIn(attr, self.content, attr)
+        for marker in ('imagesrcset', "'xlink:href'", 'http-equiv', 'absolutizeCss'):
+            self.assertIn(marker, self.content, marker)
+
+    def test_no_local_disk_path_can_enter_a_snapshot(self) -> None:
+        # AGENTS.md privacy rule: a local absolute path must never reach a file
+        # that lands in the archive. Capturing a page opened from disk would
+        # otherwise write this machine's folder names into the saved copy.
+        self.assertIn("resolved.protocol === 'file:'", self.content)
+
+    def test_the_srcset_parser_has_a_canonical_home_and_a_sync_guard(self) -> None:
+        # content.js is injected and cannot import, so it carries a copy. The
+        # copy sits between sync markers the node guard extracts and re-runs.
+        self.assertTrue((COMPANION / 'src' / 'lib' / 'srcset.js').is_file())
+        self.assertIn('// FHA-SYNC-BEGIN srcset', self.content)
+        self.assertIn('// FHA-SYNC-END srcset', self.content)
+        sync = (COMPANION / 'tests' / 'test-sync.js').read_text(encoding='utf-8')
+        self.assertIn('FHA-SYNC-BEGIN srcset', sync)
+
+
+class ArchiveReadmeTestCase(unittest.TestCase):
+    """The README an archive receives is the owner's, not the project's."""
+
+    def test_the_owner_readme_exists_and_avoids_workshop_references(self) -> None:
+        owner = COMPANION / 'README-ARCHIVE.md'
+        self.assertTrue(owner.is_file(),
+                        'the installed capture README must exist')
+        text = owner.read_text(encoding='utf-8')
+        for absent in ('TOOLING_INGESTION', 'ANCESTRY-AUTOFETCH-TEST',
+                       'test-bundle', 'test_browser_companion'):
+            self.assertNotIn(absent, text, absent)
+        self.assertIn('Load unpacked', text)
+        self.assertIn('fha capture --ingest', text)
+
+
 if __name__ == '__main__':
     unittest.main()

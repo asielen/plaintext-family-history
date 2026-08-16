@@ -43,6 +43,123 @@
     }
   }
 
+  // ── srcset parsing ──────────────────────────────────────────────────────────
+  // Canonical reference + tests in src/lib/srcset.js; keep in sync (the sync
+  // guard in tests/test-sync.js runs both copies through the same battery).
+  //
+  // A `srcset` attribute LOOKS like a comma-separated list, but a comma is a
+  // legal character inside a candidate URL - `data:image/svg+xml,…` carries one
+  // by construction and parameterized CDN URLs (`…/resize,w_600/photo.jpg`)
+  // carry them routinely. Splitting on commas therefore cuts one URL into
+  // several fragments and rewrites each as a path of its own, quietly breaking
+  // every image the snapshot did not manage to inline. The HTML Standard's
+  // "parse a srcset attribute" algorithm is what avoids that: a URL run ends at
+  // WHITESPACE, and a comma separates candidates only when it trails that run
+  // or terminates the descriptors after it.
+  // FHA-SYNC-BEGIN srcset
+  const SRCSET_WHITESPACE = '\t\n\f\r ';
+
+  function isSrcsetWhitespace(ch) {
+    return SRCSET_WHITESPACE.indexOf(ch) !== -1;
+  }
+
+  function parseSrcset(value) {
+    const input = String(value == null ? '' : value);
+    const length = input.length;
+    const candidates = [];
+    let pos = 0;
+
+    while (pos < length) {
+      while (pos < length && (isSrcsetWhitespace(input[pos]) || input[pos] === ',')) {
+        pos += 1;
+      }
+      if (pos >= length) break;
+
+      const urlStart = pos;
+      while (pos < length && !isSrcsetWhitespace(input[pos])) pos += 1;
+      let url = input.slice(urlStart, pos);
+
+      const descriptors = [];
+      let hadTrailingComma = false;
+      while (url.length && url[url.length - 1] === ',') {
+        url = url.slice(0, -1);
+        hadTrailingComma = true;
+      }
+
+      if (!hadTrailingComma) {
+        let state = 'descriptor';
+        let current = '';
+        while (true) {
+          const ch = pos < length ? input[pos] : null;
+          if (state === 'descriptor') {
+            if (ch === null) {
+              if (current) descriptors.push(current);
+              break;
+            }
+            if (isSrcsetWhitespace(ch)) {
+              if (current) descriptors.push(current);
+              current = '';
+              state = 'after-descriptor';
+            } else if (ch === ',') {
+              pos += 1;
+              if (current) descriptors.push(current);
+              break;
+            } else if (ch === '(') {
+              current += ch;
+              state = 'parens';
+            } else {
+              current += ch;
+            }
+          } else if (state === 'parens') {
+            if (ch === null) {
+              if (current) descriptors.push(current);
+              break;
+            }
+            if (ch === ')') {
+              current += ch;
+              state = 'descriptor';
+            } else {
+              current += ch;
+            }
+          } else {
+            // after-descriptor: whitespace runs are collapsed; anything else
+            // starts the next descriptor and must be re-read, not consumed.
+            if (ch === null) break;
+            if (!isSrcsetWhitespace(ch)) {
+              state = 'descriptor';
+              continue;
+            }
+          }
+          pos += 1;
+        }
+      }
+
+      if (url) candidates.push({ url: url, descriptor: descriptors.join(' ') });
+    }
+
+    return candidates;
+  }
+
+  function serializeSrcset(candidates) {
+    return (candidates || [])
+      .filter(function (c) { return c && c.url; })
+      .map(function (c) { return c.descriptor ? c.url + ' ' + c.descriptor : c.url; })
+      .join(', ');
+  }
+
+  function rewriteSrcset(value, rewrite) {
+    const candidates = parseSrcset(value).map(function (c) {
+      const replaced = rewrite(c.url);
+      return replaced ? { url: replaced, descriptor: c.descriptor } : c;
+    });
+    return serializeSrcset(candidates);
+  }
+
+  function srcsetUrls(value) {
+    return parseSrcset(value).map(function (c) { return c.url; });
+  }
+  // FHA-SYNC-END srcset
+
   function metaContent(...selectors) {
     for (const sel of selectors) {
       const el = document.querySelector(sel);
@@ -424,12 +541,16 @@
       const v = el.getAttribute('src') || el.getAttribute('href');
       if (v) urls.push(absUrl(v));
     });
-    document.querySelectorAll('img[srcset], source[srcset]').forEach((el) => {
-      (el.getAttribute('srcset') || '').split(',').forEach((part) => {
-        const u = part.trim().split(/\s+/)[0];
-        if (u) urls.push(absUrl(u));
+    // srcset/imagesrcset are parsed, never split on commas: a candidate URL may
+    // legally contain one, and a fragment of a URL never matches the IIIF shape.
+    document
+      .querySelectorAll('img[srcset], source[srcset], link[imagesrcset]')
+      .forEach((el) => {
+        const raw = el.getAttribute('srcset') || el.getAttribute('imagesrcset');
+        srcsetUrls(raw).forEach((u) => {
+          if (u) urls.push(absUrl(u));
+        });
       });
-    });
     for (const u of urls) {
       if (IIIF_IMAGE_RE.test(u)) return u;
     }
@@ -607,6 +728,60 @@
 
   // ── single-file snapshot, case (b) ───────────────────────────────────────────
 
+  // URL forms the snapshot must NEVER rewrite. `#facts` has to keep scrolling
+  // within the saved page (and an SVG `<use href="#icon">` has to keep finding
+  // its sprite); the rest already carry their own payload or protocol and have
+  // nothing to resolve.
+  // FHA-SYNC-BEGIN snapshot-urls
+  const SNAPSHOT_SKIP_URL = /^(#|data:|blob:|javascript:|mailto:|tel:|about:)/i;
+
+  /**
+   * Absolute form of `value` against `base`, or null to leave it alone.
+   *
+   * Returns null for the skip forms above, for anything unparseable, and - the
+   * privacy rule - for anything that resolves to a `file:` URL. A page opened
+   * from disk would otherwise have this machine's folder names written into the
+   * saved snapshot, which then travels into the archive; an unresolved relative
+   * reference is a broken image, a leaked path is someone's home directory.
+   */
+  function absolutizeUrl(value, base) {
+    const v = String(value == null ? '' : value).trim();
+    if (!v || SNAPSHOT_SKIP_URL.test(v)) return null;
+    let resolved;
+    try {
+      resolved = new URL(v, base);
+    } catch (_e) {
+      return null;
+    }
+    if (resolved.protocol === 'file:') return null;
+    return resolved.href;
+  }
+
+  /**
+   * Absolutize the `url()` and `@import` references inside a CSS text.
+   *
+   * `base` is the URL the CSS itself came from, not the document's: a fetched
+   * stylesheet resolves its own relative paths against its own address, so
+   * inlining `/theme/site.css` into a `<style>` block without this rewrite
+   * silently re-points every `url(../img/x.png)` at the document instead - and
+   * at the local folder once the snapshot is opened from file://.
+   *
+   * Conservative on purpose: a reference it cannot parse is left exactly as it
+   * was. Garbling a stylesheet is worse than leaving one rule unresolved.
+   */
+  function absolutizeCss(css, base) {
+    return String(css == null ? '' : css)
+      .replace(/url\(\s*(["']?)([^"')]*)\1\s*\)/gi, (whole, quote, target) => {
+        const abs = absolutizeUrl(target, base);
+        return abs ? 'url(' + quote + abs + quote + ')' : whole;
+      })
+      .replace(/@import\s+(["'])([^"']*)\1/gi, (whole, quote, target) => {
+        const abs = absolutizeUrl(target, base);
+        return abs ? '@import ' + quote + abs + quote : whole;
+      });
+  }
+  // FHA-SYNC-END snapshot-urls
+
   async function fetchAsDataUri(url) {
     const abs = absUrl(url);
     if (!abs) return null;
@@ -646,50 +821,100 @@
     // Anchor the snapshot's remaining RELATIVE references (links, images the
     // bounded inliner below skips, stylesheets) back to the live page: opened
     // from file:// every relative URL would otherwise resolve into the local
-    // folder and break. Done by rewriting each attribute to its absolute
-    // form rather than injecting a <base>: a <base> re-targets fragment-only
-    // links too, so a table-of-contents `#facts` would navigate to the LIVE
-    // site (network, login wall) instead of scrolling the snapshot, SVG
+    // folder and break. Done by rewriting each attribute to its absolute form
+    // rather than by INJECTING a <base>: a base of our own would re-target
+    // fragment-only links too, so a table-of-contents `#facts` would navigate to
+    // the LIVE site (network, login wall) instead of scrolling the snapshot, SVG
     // `<use href="#icon">` sprites would render blank, and a 1-2 KB base URL
-    // pushes the page's <meta charset> past the 1024-byte prescan window. A
-    // page that declares its own <base> is left alone - its author's
-    // baseline already governs resolution.
-    if (!clone.querySelector('head base')) {
-      const skip = /^(#|data:|blob:|javascript:|mailto:|tel:|about:)/i;
-      const absolutize = (value) => {
-        const v = (value || '').trim();
-        if (!v || skip.test(v)) return null;
-        try {
-          return new URL(v, document.baseURI).href;
-        } catch (_e) {
-          return null;
-        }
-      };
-      const URL_ATTRS = [
-        ['a', 'href'], ['area', 'href'], ['link', 'href'],
-        ['img', 'src'], ['source', 'src'], ['video', 'src'], ['audio', 'src'],
-        ['video', 'poster'], ['iframe', 'src'], ['embed', 'src'],
-        ['object', 'data'], ['track', 'src'], ['input', 'src'],
-      ];
-      for (const [tag, attr] of URL_ATTRS) {
-        for (const el of Array.from(clone.querySelectorAll(tag + '[' + attr + ']'))) {
-          const abs = absolutize(el.getAttribute(attr));
-          if (abs) el.setAttribute(attr, abs);
-        }
+    // pushes the page's <meta charset> past the 1024-byte prescan window.
+    //
+    // A page that declares its OWN <base> keeps it - that is the author's
+    // baseline, and fragment links already resolve against it on the live page,
+    // so preserving it is the faithful thing - but its href is absolutized like
+    // every other URL here. A relative base such as `<base href="/records/">`
+    // resolves against the live site in the browser and against the local
+    // filesystem once the snapshot is opened from file://, which would break
+    // every reference the bounded inliner below did not swallow. Skipping the
+    // whole rewrite because a base is present (as an earlier version did) leaves
+    // exactly those pages broken.
+    //
+    // document.baseURI is already the RESOLVED base - the live page's own answer
+    // to "what do relative URLs mean here?", <base> included - so it is both the
+    // right value to write into the cloned base and the right thing to resolve
+    // every other attribute against.
+    const pageBase = document.baseURI;
+    const absolutize = (value) => absolutizeUrl(value, pageBase);
+
+    const baseEl = clone.querySelector('base[href]');
+    if (baseEl) {
+      const absBase = absolutize(baseEl.getAttribute('href'));
+      if (absBase) baseEl.setAttribute('href', absBase);
+    }
+
+    const URL_ATTRS = [
+      ['a', 'href'], ['area', 'href'], ['link', 'href'],
+      ['img', 'src'], ['source', 'src'], ['video', 'src'], ['audio', 'src'],
+      ['video', 'poster'], ['iframe', 'src'], ['embed', 'src'],
+      ['object', 'data'], ['track', 'src'], ['input', 'src'],
+      // A saved form that still posts somewhere sends it to the live site, as
+      // it did before; a relative action would post to the local folder.
+      ['form', 'action'], ['button', 'formaction'], ['input', 'formaction'],
+    ];
+    for (const [tag, attr] of URL_ATTRS) {
+      for (const el of Array.from(clone.querySelectorAll(tag + '[' + attr + ']'))) {
+        const abs = absolutize(el.getAttribute(attr));
+        if (abs) el.setAttribute(attr, abs);
       }
-      // srcset carries a comma-separated list of "url descriptor" pairs.
-      for (const el of Array.from(clone.querySelectorAll('[srcset]'))) {
-        const rewritten = (el.getAttribute('srcset') || '')
-          .split(',')
-          .map((cand) => {
-            const parts = cand.trim().split(/\s+/);
-            const abs = absolutize(parts[0]);
-            if (abs) parts[0] = abs;
-            return parts.join(' ');
-          })
-          .join(', ');
-        el.setAttribute('srcset', rewritten);
+    }
+
+    // SVG references. `<use>` and `<image>` take a plain `href` in SVG 2 and the
+    // legacy `xlink:href` everywhere else, and both are commonly a bare `#icon`
+    // pointing at a sprite in the same document - which absolutizeUrl leaves
+    // alone, so the sprite keeps resolving inside the snapshot. Only an external
+    // sprite file (`sprite.svg#icon`) is rewritten. The attribute is read with
+    // getAttribute rather than matched by selector because `xlink:href` needs
+    // namespace-aware escaping that querySelectorAll does not do portably.
+    for (const el of Array.from(clone.querySelectorAll('use, image'))) {
+      for (const attr of ['href', 'xlink:href']) {
+        if (!el.hasAttribute(attr)) continue;
+        const abs = absolutize(el.getAttribute(attr));
+        if (abs) el.setAttribute(attr, abs);
       }
+    }
+
+    // srcset (and <link rel=preload imagesrcset>) is a list of "url descriptor"
+    // candidates - parsed, never split on commas (see the srcset section above).
+    for (const el of Array.from(clone.querySelectorAll('[srcset], [imagesrcset]'))) {
+      for (const attr of ['srcset', 'imagesrcset']) {
+        if (!el.hasAttribute(attr)) continue;
+        el.setAttribute(attr, rewriteSrcset(el.getAttribute(attr), absolutize));
+      }
+    }
+
+    // A meta refresh keeps pointing at the live page it pointed at; a relative
+    // one would send the reader into the local folder.
+    for (const meta of Array.from(clone.querySelectorAll('meta[http-equiv]'))) {
+      if ((meta.getAttribute('http-equiv') || '').trim().toLowerCase() !== 'refresh') {
+        continue;
+      }
+      const content = meta.getAttribute('content') || '';
+      const m = content.match(/^(\s*[\d.]*\s*;\s*url\s*=\s*)(["']?)(.*?)\2\s*$/i);
+      if (!m) continue;
+      const abs = absolutize(m[3]);
+      if (abs) meta.setAttribute('content', m[1] + m[2] + abs + m[2]);
+    }
+
+    // CSS carries URLs too, and it is the half a snapshot most often forgets:
+    // a `style="background:url(hero.jpg)"` or a `<style>` block full of relative
+    // url()s resolves against the document, so both need the same anchoring the
+    // attributes above got.
+    for (const el of Array.from(clone.querySelectorAll('[style]'))) {
+      const style = el.getAttribute('style') || '';
+      if (style.indexOf('url(') === -1) continue;
+      el.setAttribute('style', absolutizeCss(style, pageBase));
+    }
+    for (const styleEl of Array.from(clone.querySelectorAll('style'))) {
+      styleEl.textContent = absolutizeCss(styleEl.textContent, pageBase);
     }
 
     let budget = SINGLEFILE_MAX_RESOURCES;
@@ -703,6 +928,16 @@
       if (dataUri) {
         img.setAttribute('src', dataUri);
         img.removeAttribute('srcset');
+        // Inside a <picture>, a surviving <source srcset> outranks the <img>
+        // we just inlined, so the snapshot would go back to the network for an
+        // image it already holds - and break when that URL rots. The whole
+        // point of inlining is that it does not. (Only <picture> sources: a
+        // <video>/<audio> <source> is a different element with a src, not a
+        // fallback for this image.)
+        const picture = img.parentElement;
+        if (picture && picture.tagName && picture.tagName.toLowerCase() === 'picture') {
+          Array.from(picture.querySelectorAll('source')).forEach((s) => s.remove());
+        }
         budget--;
       }
     }
@@ -710,18 +945,22 @@
     // Inline stylesheets as <style> blocks so layout survives offline. We inline
     // the CSS text only (not its nested url() resources) to stay minimal and
     // bounded; the result is honest - a readable copy, not a pixel-perfect mirror.
+    // The url()s inside it ARE re-anchored to the stylesheet's own address,
+    // because moving the text into the document silently re-bases them otherwise.
     for (const link of Array.from(
       clone.querySelectorAll('link[rel~="stylesheet"]')
     )) {
       if (budget <= 0) break;
       const href = link.getAttribute('href');
       if (!href) continue;
+      const sheetUrl = absUrl(href);
+      if (!sheetUrl) continue;
       try {
-        const resp = await fetch(absUrl(href), { credentials: 'include' });
+        const resp = await fetch(sheetUrl, { credentials: 'include' });
         if (!resp.ok) continue;
         const css = await resp.text();
         const style = document.createElement('style');
-        style.textContent = css;
+        style.textContent = absolutizeCss(css, resp.url || sheetUrl);
         link.replaceWith(style);
         budget--;
       } catch (e) {
