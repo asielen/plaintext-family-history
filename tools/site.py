@@ -162,7 +162,9 @@ from _lib import (
     Result,
     split_log_entries,
     strip_link_wrapper,
-    strip_unaccepted_drafts,)
+    strip_unaccepted_drafts,
+    unreadable_dir_recorder,
+    walk_files,)
 
 configure_utf8_stdout()
 
@@ -2729,13 +2731,31 @@ class _SiteBuilder:
                 # plain words; the site just declines to guess rather than
                 # failing a whole build over a setting it only reads.
                 return None
+            #
+            # Walked with an error seam, not `rglob`. The guard this loop
+            # exists to enforce is "only publish a bare filename when exactly
+            # ONE file answers to it", and a folder that will not list makes
+            # two matches look like one - so the site would publish, on the
+            # front page, a photo chosen by which folder happened to open.
+            # That is the guard failing OPEN, and a published photo cannot be
+            # unpublished. When the walk is incomplete the answer is
+            # 'I don't know', which here means no hero image and a line saying
+            # why.
+            unreadable: list[Path] = []
             try:
                 matches: list[Path] = []
                 if pr.is_dir():
-                    for m in pr.rglob(ref):
+                    for m in walk_files(
+                            pr, on_error=unreadable_dir_recorder(unreadable)):
+                        # `PurePath.match` on a bare name is exactly what
+                        # `rglob(ref)` matched (same fnmatch rules, same
+                        # platform case-sensitivity), so a ref that happens to
+                        # carry a `*` or `?` still behaves as it always did.
+                        if not m.match(ref):
+                            continue
                         try:
                             rel = m.relative_to(pr).as_posix()
-                        except ValueError:  # pragma: no cover - rglob result is under pr
+                        except ValueError:  # pragma: no cover - walk result is under pr
                             continue
                         if _under_ignored_path(rel, is_ignored):
                             continue
@@ -2743,6 +2763,15 @@ class _SiteBuilder:
                             matches.append(m)
                             if len(matches) > 1:
                                 break
+                if unreadable and len(matches) < 2:
+                    self.messages.append(
+                        f'WARNING: photo reference {ref!r} was not used: '
+                        f'{len(unreadable)} folder(s) in your photos folder '
+                        f'could not be opened, so there is no way to tell '
+                        f'whether more than one photo has that name. Reconnect '
+                        f'the drive (or fix the folder), or write the '
+                        f'reference as `<year>/{ref}` to name the exact file.')
+                    return None
                 if len(matches) == 1:
                     return matches[0]
                 if len(matches) > 1:

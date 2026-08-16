@@ -32,6 +32,13 @@ repo, e.g. `archive-template/fha.yaml`) because their archive `path` strips the
 `archive-template/` prefix - the template folder seeds the skeleton but is never
 itself copied into an archive. Operating entries omit `src` (source == dest).
 
+A folder in the clone that will not list REFUSES the regeneration
+(`generate_manifest` raises ScaffoldError). `rglob` reports an unlistable
+folder as an empty one, and a short packing list is not a smaller download:
+`update-tools` reads a file the list does not name as retired upstream and
+moves the installed copy aside in every archive that updates. One re-run of
+`write-manifest` is the cheap side of that trade.
+
 The manifest is committed data, regenerated from the repo by `_write_manifest`
 (`python tools/scaffold.py write-manifest --repo .`). A regression test
 (`tests/test_scaffold.py`) recomputes it and asserts it still matches what is
@@ -69,6 +76,8 @@ CODE MAP
     _sha256_bytes/_sha256_file - content checksums (binary, exact)
 
   Manifest definition + IO
+    _repo_relative             - a clone folder's name without the local path
+    _walk_repo_files           - the repo walk WITH an unreadable-folder seam
     _operating_files           - the operating-layer file list (repo walk)
     _skeleton_files            - the skeleton file list (archive-template remap)
     generate_manifest          - build the manifest dict from a repo clone
@@ -120,6 +129,8 @@ from _lib import (
     find_archive_root,
     load_fha_yaml,
     roots_change_orphans,
+    unreadable_dir_recorder,
+    walk_files,
 )
 
 configure_utf8_stdout()
@@ -298,6 +309,10 @@ _VENDORED_SUBTREES = ('tools', 'design', 'browser-companion')
 # leaves behind. Shipping it gave an archive owner a guide full of dead links
 # and a test command that cannot run. The owner's copy is README-ARCHIVE.md,
 # remapped onto README.md by _VENDOR_RENAMES below.
+# Tool-generated caches that appear inside an operating subtree after an
+# ordinary dev session. Never package content, wherever they turn up.
+_DEV_CACHE_DIRS = frozenset({'__pycache__', '.pytest_cache'})
+
 _VENDOR_EXCLUDE_PREFIXES = ('browser-companion/tests/',
                             'browser-companion/test-bundle/')
 _VENDOR_EXCLUDE_FILES = frozenset({
@@ -388,7 +403,38 @@ def _sha256_file(path: Path) -> str:
 
 # ── Manifest definition + IO ────────────────────────────────────────────────────
 
-def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
+def _repo_relative(path: Path, repo_root: Path) -> str:
+    """A folder's name as it reads in the clone - 'tools', not /Users/….
+
+    Keeps the refusal message portable between the maintainer's machine and a
+    bug report; a folder somehow outside the clone keeps its own spelling,
+    because naming it wrongly is worse than naming it long.
+    """
+    try:
+        return Path(path).relative_to(repo_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
+
+
+def _walk_repo_files(base: Path, unreadable: list[Path]):
+    """Every file under `base`, sorted, recording folders that would not list.
+
+    The manifest is the package's packing list, and `update-tools` treats a
+    file the list does not name as RETIRED UPSTREAM - it moves that file aside
+    in every archive that updates. So a folder this walk cannot open does not
+    merely make a short manifest: it eventually takes those tools out of
+    working archives, from a `write-manifest` run that reported success.
+    `rglob` cannot tell an unreadable folder from an empty one, so the walk
+    goes through `walk_files` with a recorder and `generate_manifest` refuses
+    on a non-empty list.
+    """
+    return sorted(
+        p for p in walk_files(base, on_error=unreadable_dir_recorder(unreadable))
+        if p.is_file()
+    )
+
+
+def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str, Path]]:
     """Yield (archive_path, source_path) for every operating-layer file.
 
     The operating layer is the generic, regenerable glue a genealogist needs to
@@ -429,10 +475,13 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
         if not base.is_dir():
             continue
         moved = sub in _VENDORED_SUBTREES
-        for p in sorted(base.rglob('*')):
-            if not p.is_file():
-                continue
-            if '__pycache__' in p.parts or p.suffix in ('.pyc', '.pyo'):
+        for p in _walk_repo_files(base, unreadable):
+            # Dev debris, not package content. `.pytest_cache/` is gitignored
+            # but a walk still finds it, so on any machine that had run the
+            # test suite `write-manifest` quietly added four cache files to
+            # the packing list - a manifest that differs by who generated it,
+            # and a pytest cache vendored into every archive.
+            if _DEV_CACHE_DIRS.intersection(p.parts) or p.suffix in ('.pyc', '.pyo'):
                 continue
             rel = p.relative_to(repo_root).as_posix()
             # Skip skeleton-override files - they live under an operating
@@ -459,7 +508,7 @@ def _operating_files(repo_root: Path) -> list[tuple[str, Path]]:
     return out
 
 
-def _skeleton_files(repo_root: Path) -> list[tuple[str, Path]]:
+def _skeleton_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str, Path]]:
     """Yield (archive_path, source_path) for every skeleton seed file.
 
     The skeleton is the empty starting structure an archive grows from. Its
@@ -472,9 +521,7 @@ def _skeleton_files(repo_root: Path) -> list[tuple[str, Path]]:
     base = repo_root / _SKELETON_SRC_DIR
     if not base.is_dir():
         return out
-    for p in sorted(base.rglob('*')):
-        if not p.is_file():
-            continue
+    for p in _walk_repo_files(base, unreadable):
         rel_in_template = p.relative_to(base)
         if rel_in_template.as_posix() in _SKELETON_EXCLUDE:
             continue
@@ -497,16 +544,37 @@ def generate_manifest(repo_root: Path, spec_version: str | None = None) -> dict:
     returns the JSON-serializable manifest. Entries are sorted by archive path so
     the committed manifest.json has a stable, diff-friendly order. `spec_version`
     defaults to the value parsed from SPEC.md's "**Version X.Y …**" line.
+
+    Refuses (ScaffoldError) when any folder in the clone would not list. A
+    packing list is a claim that this is everything; a walk that skipped a
+    subtree cannot make it, and the consequence is not a smaller download -
+    `update-tools` reads an absent entry as "retired upstream" and moves the
+    installed copy aside in every archive. Better a maintainer re-runs one
+    command.
     """
     repo_root = Path(repo_root).resolve()
     if spec_version is None:
         spec_version = _read_spec_version(repo_root)
 
+    unreadable: list[Path] = []
+    file_sets = (
+        ('operating', _operating_files(repo_root, unreadable)),
+        ('skeleton', _skeleton_files(repo_root, unreadable)),
+    )
+    if unreadable:
+        shown = ', '.join(sorted(
+            _repo_relative(p, repo_root) for p in unreadable)[:5])
+        raise ScaffoldError(
+            f'The packing list was NOT written: {len(unreadable)} folder(s) in '
+            f'{repo_root} could not be opened, so the files in them would have '
+            f'been left off it: {shown}. An archive updating from a list that '
+            f'is missing them would set those files aside as retired. Fix the '
+            f'folder (permissions, or a drive that is not connected), then run '
+            f'`python tools/scaffold.py write-manifest --repo .` again.'
+        )
+
     entries: list[dict] = []
-    for category, pairs in (
-        ('operating', _operating_files(repo_root)),
-        ('skeleton', _skeleton_files(repo_root)),
-    ):
+    for category, pairs in file_sets:
         for archive_path, src in pairs:
             entry = {
                 'path': archive_path,
@@ -1944,6 +2012,12 @@ def _cmd_write_manifest(args: argparse.Namespace) -> int:
     repo_root = _resolve_repo_root(getattr(args, 'repo', None))
     try:
         path = _write_manifest(repo_root)
+    except ScaffoldError as exc:
+        # A folder that would not list (generate_manifest's refusal). Plain
+        # message, no traceback - the maintainer reads the same voice the
+        # archive owner does.
+        print(f'ERROR: {exc}', file=sys.stderr)
+        return EXIT_FAILURE
     except OSError as exc:
         print(f'ERROR: could not write manifest: {exc}', file=sys.stderr)
         return EXIT_FAILURE

@@ -60,6 +60,14 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     themselves `living`/`unknown` gets a README caution (their prose/facts
     are still included - packets are private, not for redistribution).
 
+ALL THERE OR NOT AT ALL: the finished folder is walked with an error seam
+before it is zipped (`_zip_directory`). `os.walk` and `rglob` both read a
+folder they cannot list as an empty one, so a zip could go out missing the
+very source a claim rests on while the run said "packet written" - and the
+packet is handed to a relative who has no way to check it against the
+archive. A folder that will not open therefore fails the build onto the
+write-failed arm, which clears the half-built folder and names the cause.
+
 PHOTO GATHERING (TOOLING §8's "all photos of grandma" union):
   (a) photos carrying the bare P-id keyword           - photo_people via='pid-keyword'
   (b) photos whose face-region tags matched exactly    - photo_people via='face-tag'
@@ -182,6 +190,8 @@ from _lib import (
     resolve_root_arg,
     strip_link_wrapper,
     strip_unaccepted_drafts,
+    unreadable_dir_recorder,
+    walk_files,
     write_text_exact_atomic,
 )
 
@@ -1312,11 +1322,34 @@ def _write_readme(
 
 def _zip_directory(src_dir: Path, zip_path: Path) -> None:
     """Zip src_dir's contents into zip_path with paths relative to src_dir's parent
-    (so the zip extracts back into a single top-level packet folder)."""
+    (so the zip extracts back into a single top-level packet folder).
+
+    Walked with `walk_files` and an error seam rather than `rglob`: this
+    command just wrote every one of these files, so a subfolder that will not
+    list means the zip would go out short of the sources a claim rests on
+    while the run reported a packet built. A packet is handed to a relative
+    who cannot check it against the archive - it has to be all there or not go
+    at all - so the OSError raised here lands on `_packet_payload`'s
+    write-failed arm, which removes the half-built folder and the partial zip
+    and names the cause.
+    """
+    unreadable: list[Path] = []
+    files = sorted(
+        p for p in walk_files(src_dir, on_error=unreadable_dir_recorder(unreadable))
+        if p.is_file()
+    )
+    if unreadable:
+        shown = ', '.join(
+            sorted(p.name for p in unreadable)[:5]) or str(src_dir)
+        raise OSError(
+            f'a folder inside the packet could not be read ({shown}), so the '
+            f'zip would have been missing files without saying so - nothing '
+            f'was kept. Check that folder (a drive or share that went away '
+            f'mid-run is the usual cause), then run `fha packet` again'
+        )
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for p in sorted(src_dir.rglob('*')):
-            if p.is_file():
-                zf.write(p, p.relative_to(src_dir.parent))
+        for p in files:
+            zf.write(p, p.relative_to(src_dir.parent))
 
 
 def _display_path(path: Path, archive_root: Path) -> str:

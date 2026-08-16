@@ -117,6 +117,8 @@ CODE MAP
     _relink_claims_in_source      - claim persons:/roles: relink (guarded)
     _relink_people_frontmatter    - source frontmatter people: relink
     _relink_relationship_targets  - profile relationships: to: relink
+    _unreadable_merge_refusal     - refuse a merge planned from a partial walk
+    _display_dir                  - a folder's name as the human filed it
 
   Verbs (each returns a Result)
     run_confirm_xref, run_confirm_cooccur, run_dismiss,
@@ -176,6 +178,8 @@ from _lib import (
     result_fail,
     resolve_typed_ref,
     strip_link_wrapper,
+    unreadable_dir_recorder,
+    walk_files,
     write_text_exact_atomic,
     scan_ids_in_tree,
     scan_person_record_ids,
@@ -2389,7 +2393,7 @@ def _strip_external_id_keys(text: str, keys: set[str]) -> str:
     return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
 
 
-def _scan_person_profiles(archive_root: Path) -> dict[str, tuple[Path, dict]]:
+def _scan_person_profiles(archive_root: Path, on_error=None) -> dict[str, tuple[Path, dict]]:
     """Map every P-id under `people/` to its profile (path, frontmatter meta).
 
     One scan feeds everything the merge needs - locating both records, the
@@ -2397,12 +2401,18 @@ def _scan_person_profiles(archive_root: Path) -> dict[str, tuple[Path, dict]]:
     with a stale or absent index (the §14a3 contract) and never scans twice.
     Companion views are excluded; a record that will not parse is skipped
     (it cannot be merged or resolve names, and lint owns reporting it).
+
+    `on_error` is the merge's shared unreadable-folder recorder. It matters
+    most here, where a folder that will not list makes a person who is filed
+    in it look like a person who does not exist: the merge would refuse with
+    "check the ID" while the record sits in plain sight, and the alias map
+    every relink resolves through would be missing that whole branch.
     """
     people_dir = archive_root / 'people'
     out: dict[str, tuple[Path, dict]] = {}
     if not people_dir.is_dir():
         return out
-    for path in sorted(people_dir.rglob('*.md')):
+    for path in sorted(walk_files(people_dir, suffix='.md', on_error=on_error)):
         parsed = parse_filename(path)
         if not parsed or parsed.get('id_type') != 'P' or parsed.get('is_companion'):
             continue
@@ -2431,7 +2441,7 @@ _GENERATED_VIEW_KINDS = frozenset({'timeline', 'sources-index', 'draft-queue'})
 
 
 def _merged_companion_views(
-    archive_root: Path, person_id: str,
+    archive_root: Path, person_id: str, on_error=None,
 ) -> tuple[list[Path], list[Path]]:
     """The merged person's companion VIEW files: (generated, lookalikes).
 
@@ -2448,7 +2458,7 @@ def _merged_companion_views(
     lookalike: list[Path] = []
     if not people_dir.is_dir():
         return generated, lookalike
-    for path in sorted(people_dir.rglob('*.md')):
+    for path in sorted(walk_files(people_dir, suffix='.md', on_error=on_error)):
         parsed = parse_filename(path)
         if not parsed or parsed.get('id_type') != 'P' or not parsed.get('is_companion'):
             continue
@@ -2497,6 +2507,41 @@ def _relationship_edge_key(entry: dict, alias_map: dict[str, str] | None) -> tup
     type_key = str(entry.get('type') or '').strip().lower()
     subtype_key = str(entry.get('subtype') or 'biological').strip().lower()
     return to_key, type_key, subtype_key
+
+
+def _unreadable_merge_refusal(
+    result: Result, unreadable: list[Path], archive_root: Path,
+) -> Result:
+    """Refuse a merge drawn from an archive this run could not fully read.
+
+    A merge is the widest write in the tool: it rewrites claims in every
+    source that names the merged person, rewrites other people's profiles,
+    deletes generated views and renames the record. Every one of those
+    decisions is made from a walk of the tree, so a folder that will not list
+    means claims left pointing at a tombstone, prose left uncounted, and a
+    merge reported as finished that is not. Nothing is written and nothing is
+    half-done - the merge can simply be re-run once the folder opens, which is
+    the cheap half of a very lopsided trade.
+    """
+    shown = ', '.join(sorted(_display_dir(d, archive_root) for d in unreadable)[:5])
+    return _fail(result, 'unreadable-folders',
+                 f'The merge was NOT made. {len(unreadable)} folder(s) could '
+                 f'not be opened, so this run cannot see the whole archive: '
+                 f'{shown}. A merge rewrites every record that mentions the '
+                 f'person, and doing that from a partial picture would leave '
+                 f'some of them pointing at the merged person forever, with '
+                 f'nothing to show which. Usually a folder whose permissions '
+                 f'changed, or a drive or network share that is not connected: '
+                 f'reconnect it (or restore your access), then run the same '
+                 f'`fha confirm merge` command again. Nothing was changed.')
+
+
+def _display_dir(path: Path, archive_root: Path) -> str:
+    """A folder's name as the human filed it - 'people/003 Hartley'."""
+    try:
+        return Path(path).relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
 
 
 def run_confirm_merge(
@@ -2550,7 +2595,20 @@ def run_confirm_merge(
                      'is never lost.')
     reason = reason.strip()
 
-    profiles = _scan_person_profiles(archive_root)
+    # One recorder for every walk this merge makes (people, sources, and the
+    # prose sweep). A merge rewrites claims and profiles across the whole
+    # archive and then renames the merged record, so it must see the whole
+    # archive: a folder that will not list leaves claims still pointing at the
+    # tombstone while the run reports how many it relinked. Checked twice
+    # against the same list - once here, so a person hidden by a shut folder
+    # is not reported as a bad ID, and once when the plan is complete, before
+    # the first write.
+    unreadable: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable)
+
+    profiles = _scan_person_profiles(archive_root, on_error)
+    if unreadable:
+        return _unreadable_merge_refusal(result, unreadable, archive_root)
     for label, pid in (('person to merge', pm), ('--into survivor', ps)):
         if pid not in profiles:
             # A not-found here is exit 3 (via _fail), NOT the exit-1 posture the
@@ -2600,7 +2658,7 @@ def run_confirm_merge(
     # only regenerates for curated persons, and the tombstone's tier is
     # stripped below). A companion-NAMED file without the GENERATED header is
     # human-owned: it is left in place and named as a loose end.
-    view_files, view_lookalikes = _merged_companion_views(archive_root, pm)
+    view_files, view_lookalikes = _merged_companion_views(archive_root, pm, on_error)
     result.data['deleted_views'] = [str(p) for p in view_files]
     if view_lookalikes:
         names = ', '.join(p.name for p in view_lookalikes)
@@ -2847,7 +2905,7 @@ def run_confirm_merge(
     edited_claim_meta: list[dict] = []
     sources_dir = archive_root / 'sources'
     if sources_dir.is_dir():
-        for path in sorted(sources_dir.rglob('*.md')):
+        for path in sorted(walk_files(sources_dir, suffix='.md', on_error=on_error)):
             try:
                 before = read_text_exact(path)
             except OSError as e:
@@ -2950,7 +3008,7 @@ def run_confirm_merge(
         tree_dir = archive_root / tree
         if not tree_dir.is_dir():
             continue
-        for path in sorted(tree_dir.rglob('*')):
+        for path in sorted(walk_files(tree_dir, on_error=on_error)):
             if not path.is_file() or path.suffix.lower() not in ('.md', '.yaml', '.yml'):
                 continue
             if path == merged_path:
@@ -2965,6 +3023,12 @@ def run_confirm_merge(
                 continue
             prose_refs += len(token_re.findall(text))
     result.data['prose_refs_remaining'] = prose_refs
+
+    # The plan is complete; nothing has been written yet. This is the last
+    # honest moment to refuse, and the reason to refuse is that the plan was
+    # drawn from an archive this run could not fully read.
+    if unreadable:
+        return _unreadable_merge_refusal(result, unreadable, archive_root)
 
     has_warnings = any(m.level == 'warning' for m in result.messages)
 

@@ -1568,5 +1568,83 @@ def _make_launcher_repo(root: Path) -> Path:
     return root
 
 
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    Injected one level below `os.walk`, which is also where pathlib's `rglob`
+    reaches the disk - so the same fault reproduces the pre-fix behaviour (the
+    folder simply looks empty) and exercises the post-fix `onerror` seam.
+    chmod is no use: CI runs as root, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class ManifestCoverageTest(unittest.TestCase):
+    """A packing list drawn from a walk that skipped a folder is worse than none.
+
+    `update-tools` reads a file the manifest does not name as retired
+    upstream and moves the installed copy aside, so a short manifest does not
+    merely ship a smaller download - it eventually takes those tools out of
+    every archive that updates, from a run that reported success."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / 'repo'
+        _make_fake_repo(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_generate_manifest_refuses_and_names_the_folder(self) -> None:
+        with mock.patch('os.scandir', new=_scandir_denying(self.repo / 'tools')):
+            with self.assertRaises(scaffold.ScaffoldError) as caught:
+                scaffold.generate_manifest(self.repo)
+        message = str(caught.exception)
+        self.assertIn('tools', message)
+        self.assertIn('was NOT written', message)
+        self.assertIn('write-manifest', message)
+
+    def test_the_manifest_file_is_left_as_it_was(self) -> None:
+        before = (self.repo / 'manifest.json').read_text(encoding='utf-8')
+        with mock.patch('os.scandir', new=_scandir_denying(self.repo / 'tools')):
+            with self.assertRaises(scaffold.ScaffoldError):
+                scaffold._write_manifest(self.repo)
+        self.assertEqual(
+            (self.repo / 'manifest.json').read_text(encoding='utf-8'), before)
+
+    def test_a_pytest_cache_left_by_a_dev_session_is_not_packaged(self) -> None:
+        # `.pytest_cache/` is gitignored, so it never reached the committed
+        # manifest - but the walk found it, and `write-manifest` run on a
+        # machine that had run the suite added those files to the packing
+        # list. A packing list must not depend on who generated it.
+        _write(self.repo / 'tools' / '.pytest_cache' / 'CACHEDIR.TAG', 'junk\n')
+        paths = {e['path'] for e in scaffold.generate_manifest(self.repo)['files']}
+        self.assertFalse([q for q in paths if '.pytest_cache' in q], sorted(paths))
+
+    def test_the_cli_prints_a_plain_message_and_exits_3(self) -> None:
+        args = argparse.Namespace(repo=str(self.repo))
+        err = io.StringIO()
+        with mock.patch('os.scandir', new=_scandir_denying(self.repo / 'tools')):
+            with contextlib.redirect_stderr(err):
+                code = scaffold._cmd_write_manifest(args)
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn('ERROR:', err.getvalue())
+        self.assertNotIn('Traceback', err.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()

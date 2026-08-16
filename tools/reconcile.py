@@ -36,6 +36,15 @@ every file type - the §9 contract. Importing photoindex here follows
 report.py's orchestrator precedent (a tool whose whole job is running other
 tools' engines does import them; ordinary tools still never do).
 
+A folder inside the documents root that will not open stops the documents
+pass entirely (warning, exit 1, the folder named - the photo pass still runs).
+`os.walk` and `rglob` both report an unlistable folder as an empty one, and
+every conclusion this tool draws comes from one file map: with a hole in it, a
+second copy of a name goes unseen and an ambiguous match becomes a confident
+rewrite onto the wrong original, while documents that are merely out of sight
+are reported gone. Healing nothing is recoverable; re-tying a record to the
+wrong file is not obvious to anyone, ever.
+
 Record writes are line-surgical: only the one `file:` line whose value is the
 stale path changes, and the rewritten text must still carry the same number of
 `file:` lines or the write is refused (file untouched, cause named) - the same
@@ -46,6 +55,7 @@ nothing here to reconcile against.
 CODE MAP
 --------
   _iter_source_records   - yield (path, meta) for every parseable sources/ record
+  _display_dir           - a folder's name as the human filed it
   _disk_index            - basename -> [paths] map of every documents-root file
   _plan                  - compute healed/ambiguous/missing/unlisted, no writes
   _split_file_value      - split a file: line into (unquoted path, comment)
@@ -81,6 +91,8 @@ from _lib import (
     reapply_newline,
     resolve_path,
     resolve_root_arg,
+    unreadable_dir_recorder,
+    walk_files,
     write_text_exact_atomic,
     yaml_inline,
 )
@@ -155,14 +167,37 @@ def _iter_source_records(archive_root: Path, result: Result,
         yield rec_path, rec.get('meta') or {}
 
 
-def _disk_index(documents_root: Path) -> dict[str, list[Path]]:
+def _display_dir(path: Path, documents_root: Path) -> str:
+    """Name a folder the way the human sees it in his file browser.
+
+    Relative to the documents root when it is under it (`letters/1890s`), its
+    own spelling otherwise - a message naming the wrong folder is worse than a
+    long one.
+    """
+    try:
+        return Path(path).relative_to(documents_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
+
+
+def _disk_index(documents_root: Path, unreadable: list[Path]) -> dict[str, list[Path]]:
     """Map basename -> every file with that name under the documents root.
 
     One walk, reused for both the heal match (find a moved file by its name)
     and the reverse unlisted pass - the tree is walked exactly once per run.
+
+    Walked with an error seam (`unreadable` collects the folders that would
+    not list) because this map decides where a record's `files:` entry gets
+    REWRITTEN. A folder that cannot be listed looks empty to `rglob`, and an
+    empty-looking folder does three wrong things at once: the moved document
+    inside it is reported gone; a second copy of a name hidden there turns an
+    ambiguous match into a confident one, so the record is re-tied to the
+    wrong file and the run reports a successful heal; and its filed documents
+    come back as unlisted "attach me" orphans. `_plan` refuses on a non-empty
+    list rather than heal from a partial picture.
     """
     by_name: dict[str, list[Path]] = {}
-    for p in documents_root.rglob('*'):
+    for p in walk_files(documents_root, on_error=unreadable_dir_recorder(unreadable)):
         if p.is_file():
             by_name.setdefault(p.name, []).append(p)
     return by_name
@@ -174,12 +209,25 @@ def _plan(
     """Compute the reconcile plan without writing anything.
 
     Returns {'heals': {record_path: [(old_alias, new_alias), ...]},
-    'ambiguous': [...], 'missing': [...], 'unlisted': {sid: [alias, ...]}}.
+    'ambiguous': [...], 'missing': [...], 'unlisted': {sid: [alias, ...]},
+    'unreadable_dirs': [Path, ...]}.
     Only documents-alias entries are considered (the photos side has its own
     identity carrier and machinery); an entry whose `status:` is
     missing-fixture is a deliberate fixture state, never healed or flagged.
+
+    A documents folder that would not list ends the documents pass right here
+    with an empty plan and the folder named: every conclusion below - healed,
+    ambiguous, missing, unlisted - is drawn from the file map, and drawing
+    them from a map with a hole in it re-ties records to the wrong originals
+    and tells the human that documents he still has are gone. The caller
+    treats it exactly as it treats an unreachable documents root: warn, heal
+    nothing, and carry on to the photo pass.
     """
-    by_name = _disk_index(documents_root)
+    unreadable: list[Path] = []
+    by_name = _disk_index(documents_root, unreadable)
+    if unreadable:
+        return {'heals': {}, 'ambiguous': [], 'missing': [], 'unlisted': {},
+                'unreadable_dirs': unreadable}
     by_sid: dict[str, list[Path]] = {}
     for paths in by_name.values():
         for p in paths:
@@ -320,7 +368,7 @@ def _plan(
                 unlisted.setdefault(sid, []).append(alias)
 
     return {'heals': heals, 'ambiguous': ambiguous, 'missing': missing,
-            'unlisted': unlisted}
+            'unlisted': unlisted, 'unreadable_dirs': []}
 
 
 def _split_file_value(raw: str) -> tuple[str, str]:
@@ -566,40 +614,58 @@ def run_reconcile(
                    '(The photo pass below still ran.)')
     else:
         plan = _plan(archive_root, fha_config, documents_root, result)
-        heals, ambiguous = plan['heals'], plan['ambiguous']
-        missing, unlisted = plan['missing'], plan['unlisted']
-        heal_count = sum(len(v) for v in heals.values())
-        result.data.update({'healed': heal_count, 'ambiguous': len(ambiguous),
-                            'missing': len(missing), 'unlisted': len(unlisted)})
-
-        if dry_run:
-            for rec_path, pairs in sorted(heals.items()):
-                for old_alias, new_alias in pairs:
-                    result.add('info',
-                               f'[dry-run] Would re-tie {old_alias} -> {new_alias} '
-                               f'({rec_path.name})')
-        else:
-            # Report what actually landed, not what was planned - a refused
-            # rewrite must not inflate the healed count.
-            result.data['healed'] = _apply(archive_root, heals, result)
-
-        for line in ambiguous:
-            result.add('warning', line)
-        for line in missing:
-            result.add('warning', line)
-        for sid, aliases in sorted(unlisted.items()):
-            shown = ', '.join(sorted(aliases))
+        if plan['unreadable_dirs']:
+            # Same posture as the unreachable-documents-root arm above: say so,
+            # heal nothing, and let the photo pass run. Healing from a file map
+            # with a hole in it would re-tie a record to the wrong original and
+            # call documents "gone" that are sitting in the folder that would
+            # not open - both reported as a successful run.
+            shown_dirs = ', '.join(sorted(
+                _display_dir(d, documents_root) for d in plan['unreadable_dirs'])[:5])
             result.add('warning',
-                       f'{shown} carries {sid.upper()} but that record does not list it - '
-                       'attach it with `fha process <primary-file> --more FILE role`, '
-                       'or add a files: entry to the record.')
+                       f'{len(plan["unreadable_dirs"])} folder(s) inside the '
+                       f'documents folder could not be opened, so no document '
+                       f'was re-tied and nothing here was reported missing: '
+                       f'{shown_dirs}. Anything filed in them is invisible to this '
+                       f'check, and re-tying records without seeing it could '
+                       f'point a record at the wrong file. Reconnect the drive '
+                       f'(or restore your access to the folder), then run '
+                       f'`fha reconcile` again. (The photo pass below still ran.)')
+        else:
+            heals, ambiguous = plan['heals'], plan['ambiguous']
+            missing, unlisted = plan['missing'], plan['unlisted']
+            heal_count = sum(len(v) for v in heals.values())
+            result.data.update({'healed': heal_count, 'ambiguous': len(ambiguous),
+                                'missing': len(missing), 'unlisted': len(unlisted)})
 
-        if heal_count and not dry_run:
-            result.add('info',
-                       'Run `fha index` so searches see the new locations, and '
-                       '`fha lint` to confirm everything is tied down.')
-        elif not (heal_count or ambiguous or missing or unlisted):
-            result.add('info', 'Documents all tied to their records - nothing to heal.')
+            if dry_run:
+                for rec_path, pairs in sorted(heals.items()):
+                    for old_alias, new_alias in pairs:
+                        result.add('info',
+                                   f'[dry-run] Would re-tie {old_alias} -> {new_alias} '
+                                   f'({rec_path.name})')
+            else:
+                # Report what actually landed, not what was planned - a refused
+                # rewrite must not inflate the healed count.
+                result.data['healed'] = _apply(archive_root, heals, result)
+
+            for line in ambiguous:
+                result.add('warning', line)
+            for line in missing:
+                result.add('warning', line)
+            for sid, aliases in sorted(unlisted.items()):
+                shown = ', '.join(sorted(aliases))
+                result.add('warning',
+                           f'{shown} carries {sid.upper()} but that record does not list it - '
+                           'attach it with `fha process <primary-file> --more FILE role`, '
+                           'or add a files: entry to the record.')
+
+            if heal_count and not dry_run:
+                result.add('info',
+                           'Run `fha index` so searches see the new locations, and '
+                           '`fha lint` to confirm everything is tied down.')
+            elif not (heal_count or ambiguous or missing or unlisted):
+                result.add('info', 'Documents all tied to their records - nothing to heal.')
 
     # Photos side (TOOLING §9: one command reconciles every file type). Only
     # when a catalog exists - an archive that never built one should not fail.

@@ -125,6 +125,8 @@ from _lib import (
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
     spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
+    unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
+    walk_files,           # rglob replacement that HAS that error seam,
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
 )
 
@@ -3281,6 +3283,50 @@ def _cmd_tree(args: argparse.Namespace) -> int:
 
 # ── CLI command handlers ──────────────────────────────────────────────────────
 
+def _open_index_or_explain(archive_root: Path):
+    """`open_index_db(strict=True)`, plus the cause it cannot know about.
+
+    Views need a fresh index and refuse without one - correctly. But since a
+    record folder that will not list holds the index at 'stale' by design
+    (`_lib.newest_record_mtime` reports 'now' rather than a watermark it
+    cannot stand behind), the shared refusal - "index is stale; run `fha
+    index`" - becomes an instruction to loop: he runs it, `fha index` says the
+    same thing, and the view never comes.
+
+    `open_index_db` lives in `_lib` and speaks for every tool, so the extra
+    sentence is added here, on the caller's side, where the folders can be
+    named. Printed only when there really is an unreadable record folder, so
+    the ordinary stale case reads exactly as it always did.
+    """
+    conn = open_index_db(archive_root, ('persons',), strict=True)
+    if conn is not None:
+        return conn
+    unreadable: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable)
+    for name in ('sources', 'people', 'notes'):
+        for _ in walk_files(archive_root / name, suffix='.md', on_error=on_error):
+            pass
+    if unreadable:
+        shown = []
+        for path in unreadable:
+            try:
+                shown.append(path.relative_to(archive_root).as_posix())
+            except ValueError:
+                shown.append(str(path).replace('\\', '/'))
+        listed = ', '.join(sorted(shown)[:5])
+        print(
+            f'  Running `fha index` will not clear that on its own: '
+            f'{len(unreadable)} folder(s) could not be opened, so the index '
+            f'cannot be brought up to date over them ({listed}). This is '
+            f'usually a folder whose permissions changed, or a drive or '
+            f'network share that is not connected - reconnect it (or restore '
+            f'your access to the folder), then run `fha index` and this '
+            f'command again.',
+            file=sys.stderr,
+        )
+    return None
+
+
 def run_timeline(
     archive_root: Path,
     person_id: str | None = None,
@@ -3306,7 +3352,7 @@ def run_timeline(
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
         return precheck
-    conn = open_index_db(archive_root, ('persons',), strict=True)
+    conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
 
@@ -3401,7 +3447,7 @@ def run_sources_index(
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
         return precheck
-    conn = open_index_db(archive_root, ('persons',), strict=True)
+    conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
 
@@ -3519,7 +3565,7 @@ def run_draft_queue(
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
         return precheck
-    conn = open_index_db(archive_root, ('persons',), strict=True)
+    conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
 
@@ -3594,15 +3640,21 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
     ).exit_code
 
 
-def _unreadable_summary(count: int) -> str:
-    """The one closing line for files `clean` could not classify.
+def _unreadable_summary(count: int, dirs: int = 0) -> str:
+    """The one closing line for files (and folders) `clean` could not read.
 
     A tally beside the "Removed N" line, because the per-file ERRORs go to
     stderr and a human reading only stdout would otherwise see a sweep that
-    looks complete.
+    looks complete. A folder that would not open is counted separately: it
+    hides an unknown number of files rather than one known file, so the two
+    cannot honestly be added together.
     """
-    return (f'{count} file(s) could not be read, so they were left alone - '
+    text = (f'{count} file(s) could not be read, so they were left alone - '
             'see above.')
+    if dirs:
+        text += (f' {dirs} folder(s) could not be opened either, so anything '
+                 'generated inside them was left as well.')
+    return text
 
 
 def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
@@ -3657,7 +3709,23 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
             return False
         return is_generated_text(text, prefix=_GEN_MARKER)
 
-    found = [p for p in sorted(people_dir.rglob('*.md')) if _owned_by_views(p)]
+    # Walked with an error seam, not rglob: `clean`'s closing line is a count
+    # of what it swept, and a folder that will not list makes a sweep that
+    # missed a whole subtree read exactly like a complete one - the same
+    # reasoning that already names files it could not read, one level up.
+    unreadable_dirs: list[Path] = []
+    found = [p for p in sorted(walk_files(
+                 people_dir, suffix='.md',
+                 on_error=unreadable_dir_recorder(unreadable_dirs)))
+             if _owned_by_views(p)]
+    for d in unreadable_dirs:
+        print(
+            f'  ERROR could not open {_rel_display(d, archive_root)} - any '
+            f'generated view files inside it were left alone. Reconnect the '
+            f'drive (or restore your access to the folder), then re-run '
+            f'`fha views clean`.',
+            file=sys.stderr,
+        )
 
     # Second sweep: standalone HTML views under generated/views/ (D11). Same
     # marker-per-file ownership - the folder is visible and a human may park
@@ -3671,12 +3739,17 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
         ]
 
     all_found = found + gen_found
+    # A file it could not classify and a folder it could not open both mean
+    # the same thing about the closing count: this sweep is not the complete
+    # one it would otherwise claim to be.
+    incomplete = bool(unreadable or unreadable_dirs)
     if not all_found:
         print('No GENERATED view files found.')
-        if unreadable:
-            print(_unreadable_summary(len(unreadable)))
+        if incomplete:
+            print(_unreadable_summary(len(unreadable), len(unreadable_dirs)))
             return _views_result(EXIT_WARNINGS,
-                                 data={'removed': 0, 'unreadable': len(unreadable)})
+                                 data={'removed': 0, 'unreadable': len(unreadable),
+                                       'unreadable_dirs': len(unreadable_dirs)})
         return _views_result(EXIT_CLEAN)
 
     changed: list[str] = []
@@ -3707,16 +3780,18 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
 
     verb = 'Would remove' if dry_run else 'Removed'
     print(f'{verb} {len(all_found) if dry_run else len(removed_paths)} generated file(s).')
-    if unreadable:
+    if incomplete:
         # Printed for the dry run too: a preview that hides a file it could not
         # even classify is not the preview of the run it claims to be.
-        print(_unreadable_summary(len(unreadable)))
+        print(_unreadable_summary(len(unreadable), len(unreadable_dirs)))
     if not dry_run:
         data = {'removed': len(removed_paths)}
         if failures:
             data['failures'] = failures
         if unreadable:
             data['unreadable'] = len(unreadable)
+        if unreadable_dirs:
+            data['unreadable_dirs'] = len(unreadable_dirs)
         people_companions = set(found)
         people_removed = [p for p in removed_paths if p in people_companions]
         if people_removed:
@@ -3731,14 +3806,15 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
         if failures:
             print(f'{failures} file(s) could not be removed - see above.')
             return _views_result(EXIT_WARNINGS, changed=changed, data=data)
-        if unreadable:
+        if incomplete:
             return _views_result(EXIT_WARNINGS, changed=changed, data=data)
         return _views_result(EXIT_CLEAN, changed=changed, data=data)
-    if unreadable:
+    if incomplete:
         return _views_result(
             EXIT_WARNINGS,
             data={'removed': 0, 'would_remove': len(all_found),
-                  'unreadable': len(unreadable)})
+                  'unreadable': len(unreadable),
+                  'unreadable_dirs': len(unreadable_dirs)})
     return _views_result(EXIT_CLEAN, data={'removed': 0, 'would_remove': len(all_found)})
 
 
@@ -3770,7 +3846,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
     if precheck is not None:
         return precheck
     fmt_passes: tuple[str, ...] = ('md', 'html') if fmt == 'both' else (fmt,)
-    conn = open_index_db(archive_root, ('persons',), strict=True)
+    conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
 

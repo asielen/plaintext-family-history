@@ -18,9 +18,11 @@ Fixtures only.
 
 import contextlib
 import io
+import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -60,6 +62,31 @@ def _source(sid: str, title: str, value: str, cid: str) -> str:
         f'  reviewed: 2026-01-01\n  confidence: high\n'
         f'  information: primary\n  evidence: direct\n  notes: x.\n```\n'
     )
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    One level below `os.walk` - and below pathlib's `rglob`, which reaches the
+    disk the same way - so the one injection reproduces the pre-fix behaviour
+    (the folder reads as empty) and exercises the post-fix `onerror` seam.
+    chmod cannot do it: CI runs as root and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
 
 
 class _SyncBase(unittest.TestCase):
@@ -497,3 +524,55 @@ class SyncHelperTests(_SyncBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UnreadableFolderTests(_SyncBase):
+    """Two ends of the same rule, both in views.
+
+    A record folder that will not list holds the index at stale by design, so
+    "index is stale; run `fha index`" - which is all `_lib.open_index_db` can
+    say - becomes an instruction to loop. And `clean`'s closing count reads as
+    a complete sweep over a subtree it never opened."""
+
+    def _age_the_tree(self) -> None:
+        # Records older than the index, so this archive reads FRESH while
+        # everything opens - the refusal below cannot be an accident of mtime.
+        now = time.time()
+        for q in self.root.rglob('*'):
+            if q.is_file() and '.cache' not in q.parts:
+                os.utime(q, (now - 600, now - 600))
+        os.utime(self.root / '.cache' / 'index.sqlite', (now - 300, now - 300))
+
+    def test_the_stale_refusal_names_the_folder_holding_it_stale(self) -> None:
+        self._age_the_tree()
+        ok, _out, _err = self._quiet(views.run_timeline, self.root, PID)
+        self.assertEqual(ok.exit_code, EXIT_CLEAN)     # opens fine as it is
+
+        with mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            res, _out, err = self._quiet(views.run_timeline, self.root, PID)
+        self.assertEqual(res.exit_code, 3)
+        self.assertIn('index is stale', err)           # the shared refusal
+        self.assertIn('will not clear that', err)      # ... and the real cause
+        self.assertIn(FOLDER, err)
+        self.assertNotIn('Traceback', err)
+
+    def test_an_ordinary_stale_index_is_worded_exactly_as_before(self) -> None:
+        # The extra sentence must not appear when there is nothing to explain.
+        (self.folder / f'hartley__cur_{PID}.md').write_text(
+            _person(PID, 'Cur Hartley') + '\nedited\n', encoding='utf-8')
+        res, _out, err = self._quiet(views.run_timeline, self.root, PID)
+        self.assertEqual(res.exit_code, 3)
+        self.assertIn('index is stale', err)
+        self.assertNotIn('will not clear that', err)
+
+    def test_clean_does_not_call_a_partial_sweep_complete(self) -> None:
+        self._quiet(views.run_refresh, self.root)
+        with mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            res, out, err = self._quiet(views.run_clean, self.root)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data.get('unreadable_dirs'), 1)
+        self.assertIn('could not open', err)
+        self.assertIn(FOLDER, err)
+        self.assertIn('folder(s) could not be opened', out)
+        # The companions are still on disk - the sweep really did miss them.
+        self.assertTrue((self.root / self._timeline_rel()).is_file())

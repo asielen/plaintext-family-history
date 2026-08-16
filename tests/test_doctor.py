@@ -25,9 +25,12 @@ Synthetic tmp archives only - the real archive is never a test bed.
 import datetime
 import io
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -85,6 +88,92 @@ def _make_archive(root: Path) -> None:
                           line='restricted: true\n'))
     _write(root / 'sources' / 'other' / 'census_S-3333333333.md',
            _SOURCE.format(sid='S-3333333333', title='Census page', line=''))
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    One level below `os.walk`, which is also where pathlib's `rglob` reaches
+    the disk, so the same injection reproduces the pre-fix behaviour and
+    exercises the post-fix `onerror` seam. chmod is no use - CI runs as root,
+    and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class StaleIndexCauseTests(unittest.TestCase):
+    """"Stale, run fha index" is a dead end when fha index cannot fix it.
+
+    A record folder that will not list holds the index at stale by design
+    (the watermark reports 'now' rather than a number it cannot stand behind),
+    so the human runs `fha index`, it stays stale, and doctor - the tool whose
+    whole job is explaining the archive to him - has nothing more to say.
+    `fha index` and `fha lint` (W123) both name the folder; doctor must too."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _make_archive(self.root)
+        index.build_index(self.root, {})
+        # Age the records and the index into the past, index last: without the
+        # shut folder this archive reads 'fresh', so the test cannot pass by
+        # accident. (Pushing the index into the FUTURE instead would mask the
+        # fix - the honest 'now' watermark an unreadable folder produces would
+        # still be older than the db.)
+        now = time.time()
+        for q in self.root.rglob('*'):
+            if q.is_file() and '.cache' not in q.parts:
+                os.utime(q, (now - 600, now - 600))
+        os.utime(self.root / '.cache' / 'index.sqlite', (now - 300, now - 300))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _report(self, denied: Path):
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(denied)):
+            result = doctor.run_doctor(self.root, {})
+        return result, '\n'.join(result.data['lines'])
+
+    def test_without_a_shut_folder_the_index_reads_fresh(self) -> None:
+        result = doctor.run_doctor(self.root, {})
+        check = next(c for c in result.data['checks'] if c['id'] == 'index')
+        self.assertEqual(check['status'], 'ok')
+
+    def test_the_stale_line_names_the_folder_and_the_real_fix(self) -> None:
+        result, report = self._report(self.root / 'sources' / 'other')
+        self.assertIn('index: ', report)
+        self.assertIn('stale', report)
+        self.assertIn('sources/other', report)
+        self.assertIn('could not be opened', report)
+        self.assertIn('reconnect it', report)
+        check = next(c for c in result.data['checks'] if c['id'] == 'index')
+        self.assertEqual(check['unreadable_dirs'], ['sources/other'])
+
+    def test_the_scanned_counts_say_they_are_a_floor(self) -> None:
+        # These count privacy-bearing records, and they are counted by
+        # walking the same folders that would not open.
+        _result, report = self._report(self.root / 'people')
+        self.assertIn('counts (scanned', report)
+        self.assertIn('counted low', report)
+
+    def test_a_readable_archive_says_none_of_this(self) -> None:
+        report = '\n'.join(doctor.run_doctor(self.root, {}).data['lines'])
+        self.assertNotIn('could not be opened', report)
+        self.assertNotIn('counted low', report)
 
 
 class CountsParityTests(unittest.TestCase):
@@ -217,6 +306,49 @@ class BackupStampTests(unittest.TestCase):
         # Exit contribution stays CLEAN: only the usual fresh-archive
         # warnings (absent caches) set the code, never the backup check.
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_an_incomplete_backup_says_so_where_he_reads_it(self) -> None:
+        """The stamp is where a human checks whether he is covered.
+
+        `fha backup` refuses to write a zip it could not fill, so only his own
+        --allow-incomplete run can produce this stamp - and "last backup: 1
+        day ago" over a zip missing half his photos is the same false comfort
+        one layer further out."""
+        stamp = {
+            'date': (datetime.datetime.now() - datetime.timedelta(days=1)
+                     ).isoformat(timespec='seconds'),
+            'zip': str(self.root.parent / 'arch-backup_x-INCOMPLETE.zip'),
+            'files': 3, 'bytes': 99, 'assets_included': True,
+            'complete': False, 'unreadable_dirs': ['photos/1975'],
+        }
+        cache = self.root / '.cache'
+        cache.mkdir(exist_ok=True)
+        (cache / 'last_backup.json').write_text(json.dumps(stamp), encoding='utf-8')
+
+        result = doctor.run_doctor(self.root, {})
+        report = '\n'.join(result.data['lines'])
+        self.assertIn('INCOMPLETE', report)
+        self.assertIn('photos/1975', report)
+        self.assertIn('fha backup', report)
+        check = self._backup_check(result)
+        self.assertIn('incomplete', check['detail'])
+        # Still info-level: he chose this backup, and the check's documented
+        # contract is that it never moves the exit code.
+        self.assertEqual(check['status'], 'info')
+
+    def test_a_stamp_without_the_complete_key_is_read_as_complete(self) -> None:
+        # Written before the key existed; it was a complete backup and must
+        # not start reporting itself as short.
+        stamp = {
+            'date': datetime.datetime.now().isoformat(timespec='seconds'),
+            'zip': 'old.zip', 'files': 1, 'bytes': 1, 'assets_included': False,
+        }
+        cache = self.root / '.cache'
+        cache.mkdir(exist_ok=True)
+        (cache / 'last_backup.json').write_text(json.dumps(stamp), encoding='utf-8')
+        result = doctor.run_doctor(self.root, {})
+        self.assertNotIn('INCOMPLETE', '\n'.join(result.data['lines']))
+        self.assertEqual(self._backup_check(result)['status'], 'ok')
 
     def test_stamp_absent_names_the_command_and_stays_clean(self) -> None:
         result = doctor.run_doctor(self.root, {})

@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,31 @@ _spec = importlib.util.spec_from_file_location('fha_site', ROOT / 'tools' / 'sit
 site = importlib.util.module_from_spec(_spec)
 sys.modules['fha_site'] = site
 _spec.loader.exec_module(site)
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    One level below `os.walk` - which is also where pathlib's `rglob` reaches
+    the disk - so the same injection reproduces the pre-fix behaviour (the
+    folder reads as empty) and exercises the post-fix `onerror` seam. chmod
+    cannot do it: CI runs as root and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
 
 
 class _Base(unittest.TestCase):
@@ -654,6 +680,36 @@ class AssetTests(_Base):
         self._run(linked=False)
         html = self._read('sources/s-1111111111.html')
         self.assertIn('image omitted - tagged to a living person', html)
+
+    def test_a_photo_folder_that_will_not_open_stops_the_bare_name_guess(self):
+        # The bare-filename guess is allowed to publish a photo ONLY when
+        # exactly one file in the library answers to that name - one match is
+        # the whole guard. A folder that will not list hides the second match,
+        # so the site would publish, on a page it may hand to the family, a
+        # photo picked by which folder happened to open. Under-seeing here
+        # fails the guard OPEN, and a published photo cannot be unpublished.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n', encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        # The second copy sits one level below the folder that will not
+        # open. (`rglob('mystery.jpg')` stats a literal name rather than
+        # listing the folder holding it, so a file directly inside the shut
+        # folder is still found - it is the subtree below it that vanishes.)
+        for rel in ('1890/mystery.jpg', '1975/summer/mystery.jpg'):
+            stray = self.archive_root / 'photos' / rel
+            stray.parent.mkdir(parents=True, exist_ok=True)
+            stray.write_bytes(b'not-a-real-image-but-exists')
+        shut = self.archive_root / 'photos' / '1975'
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(shut)):
+            res = self._run(linked=True)
+        self.assertNotIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertTrue(
+            any('could not be opened' in m and 'mystery.jpg' in m
+                for m in res['messages']), res['messages'])
+        self.assertTrue(
+            any('<year>/mystery.jpg' in m for m in res['messages']),
+            res['messages'])
 
     def test_photos_ignore_excludes_bare_filename_guess(self):
         # A bare `profile_photo: mystery.jpg` is answered by scanning the

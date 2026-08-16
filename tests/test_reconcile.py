@@ -9,9 +9,11 @@ missing, unlisted). The photos side is photoindex's own machinery, gated on a
 photos.sqlite that these fixtures deliberately do not create.
 """
 
+import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +34,31 @@ from _lib import (
 
 SID = 'S-1a2b3c4d5e'
 DOC = f'letter_{SID.lower()}.pdf'
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    One level below `os.walk`, which is also where pathlib's `rglob` reaches
+    the disk: the same injection reproduces the pre-fix behaviour (the folder
+    looks empty) and exercises the post-fix `onerror` seam. chmod is no use -
+    CI runs as root, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
 
 
 class ReconcileTests(unittest.TestCase):
@@ -57,6 +84,38 @@ class ReconcileTests(unittest.TestCase):
 
     def _run(self, **kw):
         return reconcile.run_reconcile(self.root, self.config, **kw)
+
+    def test_a_documents_folder_that_will_not_open_heals_nothing(self) -> None:
+        """Under-seeing here re-ties a record to the WRONG original.
+
+        The heal picks a file by basename and only when exactly one unclaimed
+        copy exists; a folder that will not list hides the other copy, so a
+        genuinely ambiguous name becomes a confident rewrite of the record -
+        reported as a successful heal - and documents that are merely out of
+        sight are reported gone. Same posture as an unreachable documents
+        root: name it, heal nothing, still run the photo pass.
+        """
+        self._write_record(f'documents/{DOC}')          # stale: file has moved
+        seen = self.root / 'documents' / 'letters' / DOC
+        seen.parent.mkdir(parents=True)
+        seen.write_text('the wrong one', encoding='utf-8')
+        hidden = self.root / 'documents' / 'archive-box' / 'scans' / DOC
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text('the right one', encoding='utf-8')
+        before = self.record.read_text(encoding='utf-8')
+
+        shut = self.root / 'documents' / 'archive-box'
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(shut)):
+            result = self._run()
+
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result.data['healed'], 0)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('could not be opened', text)
+        self.assertIn('archive-box', text)
+        self.assertIn('fha reconcile', text)
+        self.assertNotIn('Re-tied', text)
 
     def test_clean_archive_reports_nothing_to_heal(self) -> None:
         (self.root / 'documents' / DOC).write_text('x', encoding='utf-8')

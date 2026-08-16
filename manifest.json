@@ -409,7 +409,7 @@
     {
       "path": ".fha/tools/backup.py",
       "category": "operating",
-      "sha256": "65202bcf39f20e6cf00d8c36e859288c7fd3bc0097e783d4aa1d17baef26c172",
+      "sha256": "9ac0436e02c26d3c358022f6f2f749e2360beb925948cae0b9abbad999e4eeb8",
       "spec_version": "1.2",
       "src": "tools/backup.py"
     },
@@ -472,7 +472,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "b50b51b7c6986e48a74d1684f3ef7c5ee950d87808b4167db42d79246a91152f",
+      "sha256": "c606eef4df56544dc24650e151e5cc01b97fa706f554cf20bcc27d4126c11ad3",
       "spec_version": "1.2",
       "src": "tools/confirm.py"
     },
@@ -493,7 +493,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "2ead865fe4ed7cf546f7bafef6596d1af8159ebab8867a161c685ebe22f8bed7",
+      "sha256": "39f06d6529fef384abb246c8a73265c69e17fb130650bc2a26e634504fab71d1",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -507,7 +507,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "4d02e8ee5b83bc8002e01c54feadd97898018c1a8eb5153bcbfa26eaecc1bdb2",
+      "sha256": "87f644ce761f4d1db1e92761e807834b3f9284be9b5b2026bfa5844c9fb51636",
       "spec_version": "1.2",
       "src": "tools/find.py"
     },
@@ -556,7 +556,7 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "faac8a70ebb3913f69af2c4c28089bd8a10f69ef5e4336e8752e17ff0e6e29b2",
+      "sha256": "9245bff219455c05ba773af1c1f379119aa3d2482e164921b11f75f37737fbbf",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
@@ -591,7 +591,7 @@
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "3fbf2dd995523da2804a03c2b528c801a81f7c8983a169344ce2a438b29ffd02",
+      "sha256": "aab72effd44db0dfc89c552cddf02dc83c76844a781f5c3958626e0d3181d1d0",
       "spec_version": "1.2",
       "src": "tools/reconcile.py"
     },
@@ -619,7 +619,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "96dbab2b2e3263c0e008a5118ef7adf5b48d58dbbd0cca17c6e4bacf629164de",
+      "sha256": "563ab763dda8dfc251429b94a9b0df260047ab41d5968ca804fbf3e622121092",
       "spec_version": "1.2",
       "src": "tools/scaffold.py"
     },
@@ -633,7 +633,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "454b18b0ce57e4efb6f6fe52db73e16668e9b72a4dda9453cd48a8e0acb52090",
+      "sha256": "c204a0cefc4cc0f31eaad4077f3d6502a39284ff4438f1f8321dc063abc680c2",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -773,7 +773,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "c2f9a24bab8e3cb71a3422edae1bf4f03981e716388db5d15b5628e8bb957866",
+      "sha256": "23a823060545dbf0c8837721ba0ad917b001225ae3d0d629b2b35df8c579bbcc",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },

@@ -83,7 +83,9 @@ from _lib import (
     Result,
     roots_change_orphans,
     sqlite_cache_schema_status,
-    VENDOR_DIR,)
+    unreadable_dir_recorder,
+    VENDOR_DIR,
+    walk_files,)
 
 configure_utf8_stdout()
 
@@ -91,6 +93,7 @@ configure_utf8_stdout()
 #
 #  Freshness helpers (newest_record_mtime imported from _lib)
 #    _fmt_delta                - format a timedelta as a readable lag string
+#    _unreadable_record_dirs   - WHICH record folder is holding the index stale
 #    _index_freshness          - .cache/index.sqlite age vs newest record
 #    _photoindex_freshness     - .cache/photos.sqlite age vs photos root
 #
@@ -125,6 +128,36 @@ def _fmt_delta(seconds: float) -> str:
     if minutes:
         return f'{minutes}m{secs:02d}s'
     return f'{secs}s'
+
+
+def _unreadable_record_dirs(archive_root: Path) -> list[str]:
+    """Record folders this machine cannot list, named as the human filed them.
+
+    `newest_record_mtime` holds the index behind a folder it could not open -
+    correctly, since records nobody read may have changed - but it reports one
+    number and cannot say which folder. That leaves `fha doctor` printing
+    "index is stale, run fha index" for a staleness `fha index` cannot clear:
+    the human runs it, it stays stale, and the tool that exists to explain the
+    archive to him has nothing more to say. So doctor asks the same question
+    itself and names the folders.
+
+    Deliberately walked only when something already looks wrong (see
+    `run_doctor`) - this is a diagnosis, not a routine cost - and it reads
+    exactly the three record trees the watermark reads, so the two agree about
+    what "a record folder" means.
+    """
+    unreadable: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable)
+    for name in ('sources', 'people', 'notes'):
+        for _ in walk_files(archive_root / name, suffix='.md', on_error=on_error):
+            pass
+    shown = []
+    for path in unreadable:
+        try:
+            shown.append(path.relative_to(archive_root).as_posix())
+        except ValueError:
+            shown.append(str(path).replace('\\', '/'))
+    return sorted(shown)
 
 
 def _index_freshness(archive_root: Path) -> tuple[str, str]:
@@ -364,6 +397,11 @@ def _check_backup_stamp(archive_root: Path, lines: list[str], checks: list[dict]
       - stamp unreadable → treated as absent (the cache is disposable; the next
         backup rewrites it) with the cause shown; any parse or date-arithmetic
         failure lands here, never as an uncaught exception
+      - stamp says `complete: false` → the date, plus the plain fact that the
+        zip is missing folders `fha backup` could not read at the time (only
+        an --allow-incomplete run can write such a stamp). Still info-level:
+        the human asked for that zip, and telling him what he has is the job -
+        an older stamp without the key was complete and is read that way.
     A restored archive has no `.cache/`, so it lands on "no backup recorded"
     and prompts a fresh one - correct for a copy that just survived a disaster.
     """
@@ -408,6 +446,27 @@ def _check_backup_stamp(archive_root: Path, lines: list[str], checks: list[dict]
              else 'records only - photos and documents not included')
     zip_name = stamp.get('zip', '?')
     detail = f'{when.date().isoformat()} ({age}) -> {zip_name} ({scope})'
+    # `fha backup` refuses to write a zip it could not fill, so the only way
+    # `complete: false` reaches this stamp is the human's own
+    # --allow-incomplete. He is owed the reminder anyway: this is the line he
+    # reads to decide whether he is covered, and "last backup: 3 days ago" over
+    # a zip missing half the photos is the same false comfort one layer out.
+    # An older stamp (written before the key existed) has no opinion and is
+    # treated as complete, which is what it was.
+    if stamp.get('complete') is False:
+        missing = stamp.get('unreadable_dirs') or []
+        named = f' ({", ".join(str(m) for m in missing[:3])})' if missing else ''
+        lines.append(
+            f'last backup: {detail}  INCOMPLETE - folder(s) could not be read '
+            f'when it was made{named}, so they are not in that zip  next: run '
+            f'`{backup_cmd}` once they can be read again for a complete one')
+        # Info-level like the other three states (this check never moves the
+        # exit code - see the docstring): the human chose this backup
+        # knowingly, and the line says so in words where he will read it.
+        checks.append({'id': 'backup', 'status': 'info',
+                       'detail': f'{detail} - incomplete',
+                       'next_step': backup_cmd})
+        return
     lines.append(f'last backup: {detail}  next: run `{backup_cmd}` any time for a fresh one')
     checks.append({'id': 'backup', 'status': 'ok', 'detail': detail,
                    'next_step': backup_cmd})
@@ -814,12 +873,42 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
 
     idx_status, idx_delta = _index_freshness(archive_root)
     idx_path = archive_root / '.cache' / 'index.sqlite'
+    # A record folder that will not list holds the index at 'stale' forever
+    # (`_lib.newest_record_mtime` reports 'now' rather than a watermark it
+    # cannot stand behind), so "run fha index" alone would be an instruction
+    # to loop. Asked only on the failure path: when the index reads fresh,
+    # that same rule guarantees every record folder opened.
+    unreadable_dirs = (
+        [] if idx_status == 'fresh' else _unreadable_record_dirs(archive_root))
+    unreadable_cause = ''
+    if unreadable_dirs:
+        listed = ', '.join(unreadable_dirs[:5])
+        if len(unreadable_dirs) > 5:
+            listed += f' and {len(unreadable_dirs) - 5} more'
+        unreadable_cause = (
+            f' - and it will stay that way: {len(unreadable_dirs)} folder(s) '
+            f'could not be opened ({listed}), so nothing filed in them can be '
+            f'indexed, searched, or exported. This is usually a folder whose '
+            f'permissions changed, or a drive or network share that is not '
+            f'connected'
+        )
     if idx_status == 'fresh':
         lines.append(f'index: {_OK} fresh at {idx_path}  next: no action needed')
         checks.append({'id': 'index', 'status': 'ok', 'detail': 'fresh', 'next_step': None})
     elif idx_status == 'stale':
-        lines.append(f'index: {_WARN} stale by {idx_delta} at {idx_path}  next: run `{index_cmd}`')
-        checks.append({'id': 'index', 'status': 'warn', 'detail': f'stale by {idx_delta}', 'next_step': index_cmd})
+        if unreadable_dirs:
+            lines.append(
+                f'index: {_WARN} stale by {idx_delta} at {idx_path}'
+                f'{unreadable_cause}  next: reconnect it (or restore your '
+                f'access to the folder), then run `{index_cmd}`')
+            checks.append({'id': 'index', 'status': 'warn',
+                           'detail': f'stale by {idx_delta}; '
+                                     f'{len(unreadable_dirs)} unreadable folder(s)',
+                           'unreadable_dirs': unreadable_dirs,
+                           'next_step': index_cmd})
+        else:
+            lines.append(f'index: {_WARN} stale by {idx_delta} at {idx_path}  next: run `{index_cmd}`')
+            checks.append({'id': 'index', 'status': 'warn', 'detail': f'stale by {idx_delta}', 'next_step': index_cmd})
         worst = max(worst, EXIT_WARNINGS)
     elif idx_status in {'unreadable', 'old-schema'}:
         detail = f' ({idx_delta})' if idx_delta else ''
@@ -984,6 +1073,14 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     lines.append(f'  sources restricted:  {counts["restricted"]}')
     lines.append(f'  persons living:      {counts["living"]}')
     lines.append(f'  persons unknown:     {counts["unknown"]}')
+    if counts is not None and label.startswith('counts (scanned') and unreadable_dirs:
+        # These are counts of PRIVACY-bearing records, read by a human
+        # deciding what is safe to share. Counted by walking the same folders
+        # that would not open, so they are floors, not totals - saying so is
+        # the difference between a low number and a wrong one.
+        lines.append(
+            f'  (counted low: {len(unreadable_dirs)} folder(s) above could not '
+            f'be opened, so anything filed in them is not in these numbers)')
     lines.append(f'  next: run `{index_cmd}` if these counts look wrong')
     lines.append('')
     checks.append({'id': 'counts', 'status': 'info', 'detail': counts, 'next_step': None})

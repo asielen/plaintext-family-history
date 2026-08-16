@@ -15,6 +15,15 @@ Uses the SQLite index when present.  If the index is stale, it prints a
 warning and still gives the structured report; if the index is absent or
 unreadable, it degrades to a tree scan.
 
+Both tree-scan passes (the id scan and --text's regex pass) walk with an
+error seam.  A folder that will not list looks exactly like an empty one to
+`os.walk` and `rglob`, so a search over one quietly answers for less than the
+whole archive - and "not found in archive tree" is the one answer a human has
+no way to check.  Nothing here deletes or certifies anything, so an
+unreadable folder is not a refusal; the caveat is printed with the result,
+naming the folders, and the scan exits 1 (warnings) rather than 0 so a script
+does not read a partial answer as a complete one.
+
 fha id check <ID> is wired as an alias in fha.py.  The canonical
 implementation of "where does this ID live?" now lives here.  TOOLING §4a.
 
@@ -44,7 +53,6 @@ Design decisions in TOOLING §4a:
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import os
 import re
@@ -79,6 +87,8 @@ from _lib import (
     read_record,
     resolve_path,
     resolve_root_arg,
+    unreadable_dir_recorder,
+    walk_files,
 )
 
 configure_utf8_stdout()
@@ -636,12 +646,21 @@ def _find_by_scan(id_str: str, archive_root: Path) -> int:
     Grep all text files for id_str when the index is absent or stale.
     Reports one hit per file (enough to locate the record); prints a
     WARNING header so the caller knows this is a degraded fallback.
+
+    Walked with an error seam rather than `rglob`, because the one answer this
+    function gives that a human cannot check is "not found in archive tree" -
+    and a folder that will not list produces exactly that answer for a record
+    sitting inside it. Nothing here is deleted or certified, so an unreadable
+    folder is not a reason to refuse; it is a reason to say so, in the same
+    breath as the result, with the folder named.
     """
     id_norm = id_str.lower()
     hits: list[tuple[str, int]] = []
 
+    unreadable: list[Path] = []
     candidates = [
-        p for p in archive_root.rglob('*')
+        p for p in walk_files(
+            archive_root, on_error=unreadable_dir_recorder(unreadable))
         if p.is_file()
         and p.suffix.lower() in ('.md', '.yaml', '.yml', '.txt')
         and '.cache' not in p.parts
@@ -660,12 +679,52 @@ def _find_by_scan(id_str: str, archive_root: Path) -> int:
 
     if not hits:
         print(f'{id_str}: not found in archive tree.')
+        _print_unseen_folders(unreadable, archive_root, found_something=False)
         return EXIT_WARNINGS
 
     print(f'{id_str}: found in {len(hits)} file(s):')
     for rel, lineno in hits:
         print(f'  {rel}:{lineno}')
-    return EXIT_CLEAN
+    _print_unseen_folders(unreadable, archive_root, found_something=True)
+    return EXIT_WARNINGS if unreadable else EXIT_CLEAN
+
+
+def _print_unseen_folders(
+    unreadable: list[Path], archive_root: Path, *, found_something: bool,
+) -> None:
+    """Say which folders a search could not look in, and what that means.
+
+    A search that quietly looked in less than the whole archive gives a wrong
+    answer in the one direction the human cannot detect: he sees a result, or
+    a clean "not found", and has no way to know a folder was skipped. So the
+    caveat is printed with the result rather than instead of it - the answer
+    is still useful, it is just not the whole archive - and the wording
+    changes with the answer, because "nothing found" over an unread folder
+    means something quite different from "here are three hits, and there may
+    be more".
+    """
+    if not unreadable:
+        return
+    shown = []
+    for path in unreadable:
+        try:
+            shown.append(path.relative_to(archive_root).as_posix())
+        except ValueError:
+            shown.append(str(path).replace('\\', '/'))
+    listed = ', '.join(sorted(shown)[:5])
+    if len(shown) > 5:
+        listed += f' and {len(shown) - 5} more'
+    lead = ('This search could not look everywhere, so "not found" here does '
+            'not mean it is not in your archive'
+            if not found_something else
+            'This search could not look everywhere, so there may be more')
+    print(
+        f'WARNING: {lead}: {len(shown)} folder(s) could not be opened '
+        f'({listed}). This is usually a folder whose permissions changed, or '
+        f'a drive or network share that is not connected - reconnect it (or '
+        f'restore your access to the folder), then search again.',
+        file=sys.stderr,
+    )
 
 
 # ── Text search ───────────────────────────────────────────────────────────────
@@ -742,10 +801,19 @@ def _find_text(
         (archive_root / 'notes',   ('*.md',)),
         (docs_root,                ('*.md', '*.txt')),
     ]
+    # Same error seam as the id scan: this pass IS the answer when the index is
+    # absent, and a folder that will not list turns "no results" into a wrong
+    # answer the human has no way to question.
+    text_unreadable: list[Path] = []
+    text_on_error = unreadable_dir_recorder(text_unreadable)
     for scan_dir, globs in scan_dirs:
         if not scan_dir.is_dir():
             continue
-        for p in sorted(itertools.chain.from_iterable(scan_dir.rglob(g) for g in globs)):
+        suffixes = tuple(g.lstrip('*').lower() for g in globs)
+        for p in sorted(
+            f for f in walk_files(scan_dir, on_error=text_on_error)
+            if f.name.lower().endswith(suffixes)
+        ):
             try:
                 rel = str(p.relative_to(archive_root))
             except ValueError:
@@ -831,7 +899,8 @@ def _find_text(
         print(f'No results for: {query!r}')
         if photo_note:
             print(photo_note)
-        return EXIT_CLEAN
+        _print_unseen_folders(text_unreadable, archive_root, found_something=False)
+        return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN
 
     print(f'Found {len(hits)} result(s) for: {query!r}')
     for rel_path, context in hits:
@@ -840,8 +909,9 @@ def _find_text(
             print(f'    … {context} …')
     if photo_note:
         print(f'\n{photo_note}')
+    _print_unseen_folders(text_unreadable, archive_root, found_something=True)
 
-    return EXIT_CLEAN
+    return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN
 
 
 # ── --related (M4.3): neighborhood queries over the relational index ────────

@@ -999,6 +999,50 @@ class PacketTests(unittest.TestCase):
         self.assertIn('living or restricted', readme)
         self.assertNotIn('unreviewed draft text', readme)  # no draft marker present
 
+    def test_a_packet_folder_it_cannot_read_fails_instead_of_shipping_short(self):
+        """A packet zip that could not read part of itself is not handed over.
+
+        The bundle goes to a relative who cannot check it against the archive,
+        so a zip silently missing the source a claim rests on is a false
+        success that travels. The walk fails closed onto the existing
+        write-failed arm, which also clears the half-built folder.
+        """
+        self._seed_person()
+        self._seed_source('s-1111111111', 'A letter',
+                          asset_rel='documents/letters/letter.pdf')
+        self._commit_fresh()
+        with unittest.mock.patch('os.scandir', new=_scandir_denying('/files')):
+            result = packet.run_packet(
+                self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'write-failed')
+        text = '\n'.join(result['messages'])
+        self.assertIn('could not be read', text)
+        self.assertIn('fha packet', text)
+        # Nothing half-built is left behind to block or mislead a retry.
+        self.assertFalse(any(self.out_dir.glob('*.zip')))
+        self.assertFalse(any(q.is_dir() for q in self.out_dir.glob('*')))
+
+
+def _scandir_denying(match: str):
+    """An os.scandir stand-in that refuses to list any path ending in `match`.
+
+    The fault goes in at `os.scandir` because `os.walk` and pathlib's `rglob`
+    both reach the disk through it: the same injection reproduces the pre-fix
+    rglob behaviour (folder looks empty) and exercises the post-fix
+    `os.walk(onerror=...)` seam. chmod cannot be used - CI runs as root, and
+    Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+
+    def scandir(path='.'):
+        if str(path).endswith(match):
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
 
 if __name__ == '__main__':
     unittest.main()

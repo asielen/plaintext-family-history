@@ -42,6 +42,7 @@ lint/index integration - the real archive is never a test bed.
 """
 
 import hashlib
+import os
 import shutil
 import sys
 import tempfile
@@ -317,6 +318,89 @@ def run_merge(root: Path, merged: str = MERGED, into: str = SURVIVOR,
               dry_run: bool = False):
     return confirm.run_confirm_merge(
         root, person_merged=merged, into=into, reason=reason, dry_run=dry_run)
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    Injected one level below `os.walk` - which is also where pathlib's
+    `rglob` reaches the disk - so the same fault reproduces the pre-fix
+    behaviour (the folder looks empty) and exercises the post-fix `onerror`
+    seam. chmod is no use: CI runs as root, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class MergeUnreadableFolderTests(unittest.TestCase):
+    """A merge planned from a partial walk is refused, not half-applied.
+
+    The merge rewrites claims in every source that names the person, rewrites
+    other profiles, deletes generated views and renames the record. All of it
+    is decided by walking the tree, so a folder that will not list leaves
+    claims pointing at a tombstone forever while the run reports how many it
+    relinked - and the human has nothing telling him which."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = build_archive(Path(self._tmp.name))
+        self.merged_path = (self.root / 'people' / 'stubs'
+                            / 'hartley__thos_P-bbbbbbbbbb.md')
+        self.source_path = (self.root / 'sources' / 'other'
+                            / 'test-notes_S-eeeeeeeeee.md')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _snapshot(self) -> dict:
+        return {str(q.relative_to(self.root)):
+                hashlib.sha256(q.read_bytes()).hexdigest()
+                for q in sorted(self.root.rglob('*')) if q.is_file()}
+
+    def test_an_unreadable_source_folder_refuses_the_merge_untouched(self) -> None:
+        before = self._snapshot()
+        with mock.patch('os.scandir',
+                        new=_scandir_denying(self.root / 'sources' / 'other')):
+            result = run_merge(self.root)
+        self.assertEqual(result['status'], 'unreadable-folders')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('was NOT made', text)
+        self.assertIn('sources/other', text)
+        self.assertIn('Nothing was changed', text)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_a_person_hidden_by_a_shut_folder_is_not_reported_as_a_bad_id(self) -> None:
+        # The worst wording failure this prevents: "No person record for
+        # P-bbbbbbbbbb - check the ID" while the record sits in plain sight
+        # inside the folder that would not open.
+        with mock.patch('os.scandir',
+                        new=_scandir_denying(self.merged_path.parent)):
+            result = run_merge(self.root)
+        self.assertEqual(result['status'], 'unreadable-folders')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('Check the ID', text)
+        self.assertIn('people/stubs', text)
+
+    def test_the_dry_run_refuses_identically(self) -> None:
+        with mock.patch('os.scandir',
+                        new=_scandir_denying(self.root / 'sources' / 'other')):
+            result = run_merge(self.root, dry_run=True)
+        self.assertEqual(result['status'], 'unreadable-folders')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
 
 
 # ── Pure-text helpers ────────────────────────────────────────────────────────────

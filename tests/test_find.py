@@ -1581,5 +1581,86 @@ class BrokenPipeTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
 
 
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    One level below `os.walk` - and below pathlib's `rglob`, which reaches the
+    disk the same way - so the same injection reproduces the pre-fix
+    behaviour (the folder reads as empty) and exercises the post-fix `onerror`
+    seam. chmod is no use: CI runs as root, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class ScanFallbackCoverageTests(unittest.TestCase):
+    """A search that looked in less than the whole archive must say so.
+
+    Nothing here is deleted or certified, so an unreadable folder is no reason
+    to refuse - but "not found in archive tree" over a folder nobody could
+    open is a wrong answer in the one direction the human cannot check, and
+    the fallback said nothing at all."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        (self.archive_root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        self.shut = self.archive_root / 'people' / 'stubs'
+        self.shut.mkdir(parents=True)
+        (self.shut / 'webb__nancy_P-cccccccccc.md').write_text(
+            '---\nid: P-cccccccccc\nname: Nancy Webb\n---\n\n# Nancy Webb\n',
+            encoding='utf-8')
+        (self.archive_root / 'notes').mkdir()
+        (self.archive_root / 'notes' / 'log.md').write_text(
+            '# Log\n\nNothing about her here.\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _scan(self, fn, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = fn(*args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_not_found_over_a_shut_folder_is_qualified(self) -> None:
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.shut)):
+            code, out, err = self._scan(
+                find._find_by_scan, 'P-cccccccccc', self.archive_root)
+        self.assertEqual(code, EXIT_WARNINGS)
+        self.assertIn('not found in archive tree', out)
+        self.assertIn('does not mean it is not in your archive', err)
+        self.assertIn('people/stubs', err)
+
+    def test_a_clean_scan_says_nothing_extra(self) -> None:
+        code, out, err = self._scan(
+            find._find_by_scan, 'P-cccccccccc', self.archive_root)
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('found in 1 file', out)
+        self.assertNotIn('could not be opened', err)
+
+    def test_text_search_says_there_may_be_more(self) -> None:
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.shut)):
+            code, out, err = self._scan(
+                find._find_text, 'Nancy', self.archive_root, {}, None)
+        self.assertEqual(code, EXIT_WARNINGS)
+        self.assertIn('No results', out)
+        self.assertIn('could not be opened', err)
+        self.assertIn('people/stubs', err)
+
+
 if __name__ == '__main__':
     unittest.main()

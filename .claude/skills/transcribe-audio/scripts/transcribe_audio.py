@@ -294,6 +294,73 @@ def _discard(path):
         pass
 
 
+def _sync_directory(path):
+    """Force a FOLDER's own list of names onto stable storage. True if that held.
+
+    `os.fsync` on a file promises the file's BYTES survive a power cut. It
+    promises nothing about the file's NAME, which lives in the parent folder -
+    so a marker that was written and fsynced can still be absent after the
+    reboot while renames issued after it are present, which is precisely the
+    mixed-and-unmarked set the marker exists to rule out. Flushing the folder
+    is what closes that window, and POSIX offers no way to do it other than
+    opening the folder and fsyncing the handle.
+
+    Returns False instead of raising, because the barrier is not available
+    everywhere: Windows refuses `os.open` on a directory, and a few filesystems
+    refuse the fsync. A barrier we cannot take is a weaker promise, not a failed
+    run - the transcript itself is unaffected, only the story after a power cut
+    changes - so the caller carries on. `_promote_all` says what each platform
+    is left with.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except (OSError, ValueError):
+        # Windows lands here (a directory cannot be opened for reading), as does
+        # any platform that will not hand out a directory descriptor.
+        return False
+    try:
+        os.fsync(fd)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def _write_marker(marker, finals):
+    """Write the "promotion in flight" marker so a power cut cannot lose it.
+
+    Ordinary `write_text` hands the bytes to the operating system and returns;
+    they can sit in the page cache for seconds. If the machine dies in those
+    seconds the renames that followed may be on disk while the marker is not,
+    and `publication_state` then reads three files with nothing to contradict
+    them, calls the recording complete, and skips it forever. That is the one
+    outcome this whole protocol exists to prevent, so the marker is pushed all
+    the way down - the bytes with `fsync`, then the folder entry that carries
+    its NAME - before the first rename is issued.
+    """
+    text = _MARKER_TEXT + ''.join(f"  {f.name}\n" for f in finals)
+    with open(marker, 'w', encoding='utf-8', newline='\n') as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    _sync_directory(marker.parent)
+
+
+def _release_marker(marker):
+    """Drop the marker, but only once what it was covering is itself durable.
+
+    The mirror image of `_write_marker`, and the same window seen from the other
+    end: removing the marker while the renames it covers are still only in the
+    page cache would let a power cut land the removal and lose the renames. So
+    the folder is flushed once - after every rename, before the marker goes -
+    rather than after each rename, which would cost a disk barrier per file and
+    close nothing the single one does not.
+    """
+    _sync_directory(marker.parent)
+    _discard(marker)
+
+
 def _destination_problem(final):
     """Why this transcript could not be moved onto its final name, or None.
 
@@ -383,11 +450,12 @@ def _promote_all(temps, finals, marker):
     This function owns the whole commit, because a commit split across callers
     is how mixed states are born. In order:
 
-      1. Write `marker` - from here until the last rename, anyone looking at
-         this folder is told the set may be mid-change.
+      1. Write `marker` and push it to stable storage - from here until the last
+         rename, anyone looking at this folder is told the set may be mid-change.
       2. For each pair: move the existing file aside (recoverable), then rename
          the temp onto the name.
-      3. Remove the set-aside files, then the marker. Only now is the run done.
+      3. Make those renames durable, then remove the set-aside files and the
+         marker. Only now is the run done.
 
     Any failure - an OSError from a rename, or a Ctrl-C between two of them -
     rolls every step back and re-raises the original. If the rollback itself
@@ -400,10 +468,21 @@ def _promote_all(temps, finals, marker):
     renames - no user-space code can. That case is exactly why the marker is
     written to disk first rather than tracked in memory: the marker survives the
     kill, and `publication_state` reads it.
+
+    For a SIGKILL or a crash of this program, reaching the operating system is
+    enough and every platform keeps that promise. For a POWER CUT it is not:
+    bytes and names both sit in the page cache until something flushes them, so
+    the two barriers below (`_write_marker`, `_release_marker`) push the marker
+    down before the first rename and the renames down before the marker is
+    removed. On Linux, macOS and any other POSIX system that is a real
+    guarantee. On WINDOWS it is not available - a folder cannot be opened and
+    flushed - so what is left there is the order the operations were issued in,
+    which NTFS's metadata journal usually preserves but this script cannot
+    promise. Windows therefore keeps the full guarantee against a killed
+    process, and a good-in-practice one against a power cut.
     """
     try:
-        marker.write_text(_MARKER_TEXT + ''.join(f"  {f.name}\n" for f in finals),
-                          encoding='utf-8')
+        _write_marker(marker, finals)
     except OSError as e:
         # Nothing has moved yet, so this is a clean refusal - but it has to be a
         # spoken one, not a raw OSError wearing main's decode-failure message.
