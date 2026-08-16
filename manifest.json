@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-08-16",
+  "generated": "2026-08-15",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -12,7 +12,7 @@
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "fa228e6fec4cd14e12f0b7046559e51788cf7431aeae4a4d0338ac938d05cb9b",
+      "sha256": "36f25840ed90b06fb2cb9b7f52a24c720b63a23b45acfcf62e1148f07dac5db9",
       "spec_version": "1.2"
     },
     {
@@ -816,7 +816,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "98d91f77da30c49dd634fe6022799c89baf276f498a8e03634e0948b74a8a5dd",
+      "sha256": "cccd21a4c816b057b350c8261f3977e075cf0d53d419c96b7eec3a7255502420",
       "spec_version": "1.2"
     },
     {

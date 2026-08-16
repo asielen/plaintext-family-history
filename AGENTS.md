@@ -319,7 +319,12 @@ against the local entry, and the local entry in the issue, so the two stay conne
 **If the human asks for a local patch anyway** (a blocking bug they cannot wait on), mark every
 patched line in-source with a searchable token - `LOCAL PATCH` plus the register ID - and put a
 "re-apply or drop after `fha update-tools`" note at the top of `TOOL_ISSUES.md`, so
-`grep -rn "LOCAL PATCH" .fha/tools/` finds everything the next update is about to revert.
+`grep -rn "LOCAL PATCH" .fha/tools/` finds everything the next update is about to revert. Quote
+in the register entry the SPEC/TOOLING sentence the fix must satisfy, and say which cases you
+verified: upstream will re-derive its tests from the spec, not from your patch, and a "verified
+here" note is evidence about those cases only. The same goes for a skill or script authored in
+the archive that is meant to travel upstream - it will be re-read against the contract and every
+command in it re-run, so document what you actually ran.
 
 ### Playbooks (workflow skills)
 
