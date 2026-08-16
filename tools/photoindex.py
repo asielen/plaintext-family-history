@@ -56,6 +56,8 @@ CODE MAP
     _MISSING_PREFIX           - reconcile's synthetic key for a vanished photo
     _live_alias               - the real alias under a MISSING: key (where the photo WAS)
     _is_missing_key           - is this key a vanished photo? (can the file be opened?)
+    _alias_is_ignored         - does a cached alias sit under photos_ignore:? (the
+                                 stored-path half of the scan walk's pruning)
 
   exiftool integration
     PHOTO_EXTENSIONS          - recognised photo/scan file extensions (imported from _lib)
@@ -397,6 +399,30 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None):
             if not p.is_file():
                 continue
             yield p
+
+
+def _alias_is_ignored(alias: str, is_ignored) -> bool:
+    """True when a catalogued alias path falls under `photos_ignore:` - itself,
+    or any folder above it.
+
+    The walk above prunes a matching directory before descending, so a pattern
+    naming a folder ('Bulk Export') never has to match the files inside it. A
+    cached row is read the other way round: the stored path is all there is,
+    with no walk to prune, so every ancestor is tested here. Without that a
+    folder pattern would sweep nothing, since no stored key ever equals the
+    folder name on its own.
+
+    Takes the alias form the catalog stores ('photos/Bulk Export/a.jpg'), not a
+    root-relative path, because that is what the sweep holds. A key that is not
+    under the photos alias at all (path_to_alias's absolute-path fallback for a
+    file outside the configured root) has no root-relative path for the
+    patterns to match, so it is never ignored - the safe answer, since the
+    ignore list is written in terms of that root.
+    """
+    if not alias.startswith('photos/'):
+        return False
+    parts = alias[len('photos/'):].split('/')
+    return any(is_ignored('/'.join(parts[:i])) for i in range(1, len(parts) + 1))
 
 
 def _run_exiftool(paths: list[Path]) -> list[dict]:
@@ -2375,7 +2401,13 @@ def _score_group(
         score += 1
         signals.append('date:Y!+')
 
-    has_back = any(m['variant_role'] and m['variant_role'].startswith('back') for m in members)
+    # The two spellings of "this group has a back scan" in the TOOLING §6
+    # compound role: the part-kind alone, and the part-kind of a crop taken
+    # from it. A prefix test read a freeform role verbatim from the filename
+    # ('portrait-backdrop' -> 'backdrop') as writing on the reverse, which is
+    # what `fha process` folder triage - scoring this same signal off the
+    # parsed part_kind - has never done.
+    has_back = any(m['variant_role'] in ('back', 'back-crop') for m in members)
     if has_back:
         score += 1
         signals.append('back-variant')
@@ -2554,6 +2586,9 @@ def _on_disk_aliases(photos_root: Path, fha_config: dict, archive_root: Path) ->
 
     Respects photos_ignore (#35): reconcile must not offer an ignored file as
     a rematch candidate or count it as 'new' when the scan never catalogs it.
+    The cached side of run_reconcile applies the same rule to the rows it
+    reads (`_alias_is_ignored`), or every row for a just-excluded subtree
+    would read as a photo that vanished off the disk.
     """
     out: dict[str, Path] = {}
     for p in _iter_photo_files(photos_root, _photos_ignore_patterns(fha_config)):
@@ -2616,12 +2651,13 @@ def run_reconcile(
         keyword history stays queryable) but its path is prefixed
         'MISSING:' so it can never be mistaken for a still-valid path. A row
         already carrying that prefix is left as-is (not double-prefixed) when
-        it fails to rematch again. An ordinary `fha photoindex` scan never
-        touches a 'MISSING:' key (it never matches a real on-disk alias, so a
-        naive cache-removal pass would erase it instead of resolving it) -
-        only reconcile itself ever removes or transforms one, so the row's
-        source_id/path history survives until a later --with-exif retry
-        heals it. Either mutation also recomputes that row's group's
+        it fails to rematch again. An ordinary `fha photoindex` scan leaves a
+        'MISSING:' key alone (it never matches a real on-disk alias, so a
+        naive cache-removal pass would erase it instead of resolving it), so
+        the row's source_id/path history survives until a later --with-exif
+        retry heals it - the two exceptions being a file back at the alias its
+        row remembers, and an alias now excluded by `photos_ignore:`, which no
+        retry could ever heal. Either mutation also recomputes that row's group's
         edtf_resolved/date_conflict from its still-live members
         (_recompute_group_dates), so a group's resolved date or conflict
         badge can never keep reflecting a variant that just vanished.
@@ -2692,7 +2728,17 @@ def run_reconcile(
                 row['path']: row['source_id']
                 for row in conn.execute('SELECT path, source_id FROM photos')
             }
-            missing = {path: sid for path, sid in cached.items() if path not in on_disk}
+            # A row under photos_ignore is not a photo that went missing: the
+            # walk above prunes those files by the same rule, so every row for
+            # a just-excluded subtree would otherwise be flagged MISSING: and
+            # reported as a lost photo, when nothing was lost. Their removal is
+            # the scan's business (it owns which files the catalog holds);
+            # reconcile only has to stop calling them missing.
+            is_ignored = photos_ignore_matcher(_photos_ignore_patterns(fha_config))
+            missing = {
+                path: sid for path, sid in cached.items()
+                if path not in on_disk and not _alias_is_ignored(_live_alias(path), is_ignored)
+            }
             untracked = {alias: p for alias, p in on_disk.items() if alias not in cached}
 
             candidate_source_ids: dict[Path, str] = {}
@@ -3677,6 +3723,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
 
         removed = 0
         alias_on_disk = set(alias_by_path.values())
+        is_ignored = photos_ignore_matcher(ignore)
         for path_key in list(existing):
             # A 'MISSING:'-prefixed key is reconcile's own bookkeeping, not a
             # stale cache entry: it never matches a real on-disk alias (the
@@ -3684,13 +3731,24 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             # scan run between a no-exif reconcile and a later --with-exif
             # retry would erase the row's source_id/path history that the
             # retry needs to heal it. Only reconcile (rematch or re-flag)
-            # ever removes or transforms a MISSING: row -- except here, where
-            # the file has reappeared at the exact alias the row remembers:
-            # the scrape loop above already inserted a fresh row for that
-            # alias, so the synthetic row is a stale duplicate, not bookkeeping
-            # an --with-exif retry still needs.
+            # ever removes or transforms a MISSING: row -- except in the two
+            # cases below, where keeping it is no longer bookkeeping:
+            #
+            #   - the file has reappeared at the exact alias the row
+            #     remembers. The scrape loop above already inserted a fresh row
+            #     for that alias, so the synthetic row is a stale duplicate,
+            #     not history an --with-exif retry still needs.
+            #   - the alias it remembers now sits under photos_ignore. Nothing
+            #     can ever heal that row: the ignore-aware walk guarantees the
+            #     file is never seen again, so 'wait for a retry' becomes
+            #     'keep this caption, these keywords and these person matches
+            #     searchable forever', out of the one subtree the human asked
+            #     the archive to stop looking at. Ignoring a subtree sweeps its
+            #     catalogued rows (the promise the live branch below keeps),
+            #     and a missing row is a catalogued row.
             if _is_missing_key(path_key):
-                if _live_alias(path_key) in alias_on_disk:
+                live = _live_alias(path_key)
+                if live in alias_on_disk or _alias_is_ignored(live, is_ignored):
                     conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
                     _delete_path_rows(
                         conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key

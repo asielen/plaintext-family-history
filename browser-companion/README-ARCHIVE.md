@@ -51,8 +51,9 @@ normal and expected: it is your own copy, not one from a store.
    this page matters, and choose whether there is a specific file (an image or a
    PDF) that is the real record. Every one of these is optional - you can click
    straight through.
-4. Click **Capture**. The page is saved into your Downloads folder, in a folder
-   called `fha-inbox`.
+4. Click **Capture**. The page is saved into your browser's download folder, in
+   a folder called `fha-inbox`. The panel then shows you the exact folder it
+   used, and the exact command to run next.
 
 You can keep going: capture as many pages as you like in one sitting. They queue
 up in that folder and wait for you.
@@ -73,8 +74,10 @@ On Windows that is `fha capture --ingest` in a Command Prompt window, or
 `.\fha capture --ingest` in PowerShell; on a Mac or Linux,
 `./fha capture --ingest`.
 
-That sweeps everything waiting in `Downloads/fha-inbox/` into your archive's
-`inbox/` folder. Nothing is thrown away: the swept-up copies are parked in a
+That sweeps everything waiting in the capture folder into your archive's
+`inbox/` folder. Copy the command from the panel rather than typing it: if your
+browser saves downloads somewhere other than the usual place, the panel's
+version carries that folder, and the plain one would look in the wrong place. Nothing is thrown away: the swept-up copies are parked in a
 folder named `.ingested/` in case you ever want them back.
 
 If you forget, `fha doctor` reminds you - it counts the captures still waiting
@@ -115,8 +118,11 @@ to turn if a step does not behave.
   site's own download button, then drop the file into the panel's box and
   capture again.
 - **A capture never showed up in the archive.** Check that you ran
-  `fha capture --ingest` from inside your archive folder, and look in `Downloads/fha-inbox/`
-  to confirm the capture is there waiting.
+  `fha capture --ingest` from inside your archive folder, and look in the folder
+  the panel named after the capture to confirm it is there waiting. If your
+  browser saves downloads to an unusual place (OneDrive, another drive), copy
+  the command from the panel - it carries that folder - or put the folder in
+  your `fha.yaml` as `capture_staging:`.
 
 More help: [when something looks wrong](../../docs/TROUBLESHOOTING.md), and the
 [plain-word glossary](../../docs/GLOSSARY.md) for any term here that is new.

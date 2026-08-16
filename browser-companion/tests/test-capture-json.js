@@ -15,6 +15,8 @@ const {
   build,
   sanitizeFolder,
   ingestCommand,
+  ingestHint,
+  stagedPaths,
 } = require('../src/lib/capture-json-pure.js');
 
 // A fixed local time so timestamp assertions are deterministic.
@@ -82,26 +84,78 @@ test('sanitizeFolder confines the setting to a Downloads-relative subpath', () =
   assert.strictEqual(sanitizeFolder(null), DEFAULT_FOLDER);
 });
 
-test('ingestCommand names the custom staging folder, and only then', () => {
-  // The bare command sweeps the default folder - correct only when the
-  // setting still points there.
-  assert.strictEqual(ingestCommand(DEFAULT_FOLDER), 'fha capture --ingest');
+test('stagedPaths reads the real location out of the download path', () => {
+  // The browser reports the absolute path it wrote. The bundle folder is its
+  // parent; the folder --ingest must sweep is the one above that, whatever the
+  // download directory turned out to be and however many segments the staging
+  // folder setting has.
+  assert.deepStrictEqual(
+    stagedPaths('/Users/me/Downloads/fha-inbox/census-20260727-101500-007/page.html'),
+    {
+      bundle: '/Users/me/Downloads/fha-inbox/census-20260727-101500-007',
+      staging: '/Users/me/Downloads/fha-inbox',
+    }
+  );
+  // Moved to OneDrive - the case a synthesized ~/Downloads path got wrong.
+  assert.deepStrictEqual(
+    stagedPaths('C:\\Users\\me\\OneDrive\\Downloads\\fha-inbox\\c-1\\page.html'),
+    {
+      bundle: 'C:/Users/me/OneDrive/Downloads/fha-inbox/c-1',
+      staging: 'C:/Users/me/OneDrive/Downloads/fha-inbox',
+    }
+  );
+  // A nested staging folder still yields the folder that HOLDS the bundles.
+  assert.strictEqual(
+    stagedPaths('/vol/dl/genealogy/staging/c-1/page.html').staging,
+    '/vol/dl/genealogy/staging'
+  );
+  // Nothing to go on - never a guess.
+  for (const unknown of ['', null, undefined, 'page.html', 'C:/page.html']) {
+    assert.deepStrictEqual(stagedPaths(unknown), { bundle: '', staging: '' },
+      'stagedPaths(' + unknown + ')');
+  }
+});
+
+test('ingestCommand asserts a location only when the browser reported one', () => {
+  // With no reported path (the card is pre-filled before the first capture)
+  // the bare command stands: the Python side resolves `capture_staging:` from
+  // fha.yaml, else its own default, and says which folder it looked in. What
+  // it must never do is synthesize `~/Downloads/<folder>` - the download
+  // directory is a browser setting, and a guess that reads as fact sends the
+  // sweep to a folder the bundle was never written to.
   assert.strictEqual(ingestCommand(''), 'fha capture --ingest');
-  // A renamed folder MUST surface as the DIR argument (the Python side
-  // `~`-expands it on every OS), or the copied command finds nothing.
+  assert.strictEqual(ingestCommand(null), 'fha capture --ingest');
+  assert.strictEqual(ingestCommand(undefined), 'fha capture --ingest');
   assert.strictEqual(
-    ingestCommand('my-captures'),
-    'fha capture --ingest "~/Downloads/my-captures"'
+    ingestCommand('/Users/me/Downloads/fha-inbox'),
+    'fha capture --ingest "/Users/me/Downloads/fha-inbox"'
   );
   assert.strictEqual(
-    ingestCommand('genealogy/staging'),
-    'fha capture --ingest "~/Downloads/genealogy/staging"'
+    ingestCommand('D:/Family/captures'),
+    'fha capture --ingest "D:/Family/captures"'
   );
-  // Escape attempts collapse to the sanitized folder first.
-  assert.strictEqual(
-    ingestCommand('../x'),
-    'fha capture --ingest "~/Downloads/x"'
-  );
+  // A path that cannot survive being pasted between double quotes is not
+  // pasted between double quotes; the hint carries it as plain text instead.
+  for (const hostile of ['/home/me/my "downloads"', '/home/me/$HOME dl', '/home/me/`x`']) {
+    assert.strictEqual(ingestCommand(hostile), 'fha capture --ingest', hostile);
+  }
+});
+
+test('ingestHint names a location the command could not carry', () => {
+  // Silent when the command already tells the whole truth.
+  assert.strictEqual(ingestHint(DEFAULT_FOLDER, '/Users/me/Downloads/fha-inbox'), '');
+  assert.strictEqual(ingestHint(DEFAULT_FOLDER, ''), '');
+  // A renamed folder with no reported path: name the folder, and point at the
+  // browser's own download setting and fha.yaml's capture_staging: - never at
+  // an invented home-directory path.
+  const renamed = ingestHint('my-captures', '');
+  assert.ok(renamed.includes('my-captures'), renamed);
+  assert.ok(renamed.includes('capture_staging'), renamed);
+  assert.ok(!renamed.includes('~/Downloads'), renamed);
+  // An unquotable real path is still reported, as text rather than as command.
+  const hostile = ingestHint(DEFAULT_FOLDER, '/home/me/my "downloads"/fha-inbox');
+  assert.ok(hostile.includes('/home/me/my "downloads"/fha-inbox'), hostile);
+  assert.ok(hostile.includes('capture_staging'), hostile);
 });
 
 test('slugify stays in step with capture.py _slugify', () => {

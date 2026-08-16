@@ -90,6 +90,33 @@
     });
   }
 
+  // The absolute path the browser actually wrote a completed download to, or
+  // '' when it will not say.
+  //
+  // DownloadItem.filename is the browser's OWN answer to "where did this go",
+  // and it is the only honest one available here: the download directory is a
+  // browser setting (moved to OneDrive, to another volume, or carrying a
+  // localized name on plenty of machines), so a home-relative Downloads path
+  // is a guess, and the handoff command must not be built out of one. An
+  // empty string means
+  // "unknown" - never a fallback path - and the panel degrades to the bare
+  // ingest command plus a plain hint rather than sending the sweep somewhere
+  // the bundle is not.
+  function downloadedFilePath(downloadId) {
+    return new Promise((resolve) => {
+      try {
+        chrome.downloads.search({ id: downloadId }, (items) => {
+          const item = items && items[0];
+          resolve((item && item.filename) || '');
+        });
+      } catch (e) {
+        // A staged bundle is on disk either way; not knowing its absolute path
+        // is a smaller thing than failing the capture over it.
+        resolve('');
+      }
+    });
+  }
+
   // Write the files of one bundle: page.html (always) + zero-or-more asset files
   // + capture.json.
   //
@@ -110,11 +137,15 @@
     const dir = spec.folder.replace(/\/+$/, '') + '/' + spec.bundleName;
     const written = [];
 
-    await downloadBlob(
+    const pageId = await downloadBlob(
       new Blob([spec.pageHtml], { type: 'text/html' }),
       dir + '/page.html'
     );
     written.push('page.html');
+    // Read the real location off the first completed file. Every file of this
+    // bundle goes to the same folder, so one lookup answers for all of them,
+    // and page.html is the one file always written.
+    const filePath = await downloadedFilePath(pageId);
 
     for (const asset of spec.assets || []) {
       if (!asset || !asset.blob || !asset.filename) continue;
@@ -129,7 +160,10 @@
     );
     written.push('capture.json');
 
-    return { dir, files: written };
+    // `dir` is the Downloads-RELATIVE path we asked for; `filePath` is where
+    // the browser put it. The panel needs the second to tell the human
+    // anything true about the location.
+    return { dir, files: written, filePath };
   }
 
   FHA.bundle = { base64ToBlob, writeBundle };

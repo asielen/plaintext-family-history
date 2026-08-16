@@ -110,6 +110,7 @@ from _lib import (
     FhaConfigError,
     Result,
     fmt_id_display,
+    is_person_file_kind,
     load_fha_yaml,
     normalize_id,
     open_index_db,
@@ -203,11 +204,13 @@ def _parse_questions(archive_root: Path) -> dict[str, dict]:
     Mirrors `fha lint`'s E009 question-scanning scope exactly: lint.py's
     `_has_question_for` checks both `registry.questions_content`
     (notes/questions.md) and `registry.research_content` (every person
-    research file collected in `_walk_archive` via `'_research_' in
-    path.stem or path.stem.endswith('_research')`, under `people/`). The
-    report's answerable-questions/discoveries sections must see the same
-    question set lint does, or a question logged only in a person's research
-    file would never get a closure proposal here.
+    research file collected in `_walk_archive` via
+    `is_person_file_kind(path, 'research')`, under `people/`). The report's
+    answerable-questions/discoveries sections must see the same question set
+    lint does, or a question logged only in a person's research file would
+    never get a closure proposal here - and one this side read as research
+    would get a closure proposal lint never saw. Both halves are why the two
+    call the same helper rather than restating the rule.
 
     Keys are namespaced by file because the same heading text easily recurs
     across files once questions number in the hundreds ("When was he born?"
@@ -237,7 +240,7 @@ def _parse_questions(archive_root: Path) -> dict[str, dict]:
     people_root = archive_root / 'people'
     if people_root.exists():
         for rpath in sorted(people_root.rglob('*.md')):
-            if '_research_' in rpath.stem or rpath.stem.endswith('_research'):
+            if is_person_file_kind(rpath, 'research'):
                 try:
                     text = rpath.read_text(encoding='utf-8')
                 except OSError:

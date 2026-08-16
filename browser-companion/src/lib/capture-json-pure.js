@@ -56,10 +56,38 @@ function sanitizeFolder(folder) {
   return segs.length ? segs.join('/') : DEFAULT_FOLDER;
 }
 
-function ingestCommand(folder) {
+function stagedPaths(filePath) {
+  const raw = String(filePath || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = raw ? raw.split('/') : [];
+  if (parts.length < 3) return { bundle: '', staging: '' };
+  const bundle = parts.slice(0, -1).join('/');
+  const staging = parts.slice(0, -2).join('/');
+  if (!staging || /^[A-Za-z]:$/.test(staging)) return { bundle: '', staging: '' };
+  return { bundle: bundle, staging: staging };
+}
+
+const UNQUOTABLE = /["`$\r\n]/;
+
+function ingestCommand(stagingDir) {
+  const dir = String(stagingDir || '').trim();
+  if (!dir || UNQUOTABLE.test(dir)) return 'fha capture --ingest';
+  return 'fha capture --ingest "' + dir + '"';
+}
+
+function ingestHint(folder, stagingDir) {
+  const dir = String(stagingDir || '').trim();
+  if (dir) {
+    if (!UNQUOTABLE.test(dir)) return '';
+    return 'Your captures are staged in ' + dir + '. That path cannot be '
+      + 'pasted into a command as it stands, so point --ingest at it '
+      + "yourself, or set capture_staging: to it in your archive's fha.yaml.";
+  }
   const f = sanitizeFolder(folder);
-  if (f === DEFAULT_FOLDER) return 'fha capture --ingest';
-  return 'fha capture --ingest "~/Downloads/' + f + '"';
+  if (f === DEFAULT_FOLDER) return '';
+  return 'Captures stage to a folder named "' + f + '" inside your '
+    + "browser's download folder (Chrome: Settings > Downloads). If the "
+    + "command finds nothing, add that folder's full path after --ingest, "
+    + "or set capture_staging: to it in your archive's fha.yaml.";
 }
 
 function accessedDate(d) {
@@ -99,5 +127,5 @@ function build(fields) {
 module.exports = {
   CAPTURE_JSON_SCHEMA, DEFAULT_FOLDER,
   slugify, timestamp, bundleName, accessedDate, build,
-  sanitizeFolder, ingestCommand,
+  sanitizeFolder, stagedPaths, ingestCommand, ingestHint,
 };

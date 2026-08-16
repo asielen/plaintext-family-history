@@ -90,6 +90,11 @@
     // state (not the service worker's), so it exists exactly as long as the
     // form it protects; if the panel closes mid-capture, both die together.
     pendingNav: false,
+    // The folder the browser really staged the last bundle into, absolute, as
+    // the downloads API reported it - '' until a capture in this sitting says
+    // so. The handoff command names a location only from this: the download
+    // directory is a browser setting, so it cannot be derived from `folder`.
+    stagedDir: '',
   };
 
   const $ = (id) => document.getElementById(id);
@@ -651,7 +656,16 @@
       }
       if (!viaHost) {
         const result = await bundle.writeBundle(spec);
-        reportStaged(result.dir, false, evidenceWarning, hostWarning);
+        // Where it really went, from the browser itself. Both the "staged to"
+        // line and the ingest command are built from this, never from a
+        // home-directory path we assumed.
+        const paths = captureJson.stagedPaths(result.filePath);
+        state.stagedDir = paths.staging;
+        updateIngestCmd();
+        reportStaged(
+          paths.bundle || result.dir + " (inside your browser's download folder)",
+          false, evidenceWarning, hostWarning
+        );
       }
 
       resetForNext();
@@ -710,8 +724,10 @@
     }
     // Be exact about where it went, and reveal the handoff card with the
     // copyable ingest command (§5.1): the panel never pretends Downloads is the
-    // archive.
-    setStageResult('Staged to Downloads/' + where + suffix, cls);
+    // archive. `where` is the browser's own absolute path when it reported one,
+    // and the Downloads-relative folder named as such when it did not - the
+    // panel does not fill the gap with a guessed home directory.
+    setStageResult('Staged to ' + where + suffix, cls);
     $('handoff').classList.add('show');
   }
 
@@ -815,11 +831,15 @@
   }
 
   // Keep the handoff card's copyable command pointing where captures actually
-  // stage: the bare `fha capture --ingest` only sweeps the default folder, so
-  // a renamed staging folder must surface as the command's DIR argument or
-  // the copied command finds nothing (the Python side `~`-expands it).
+  // stage. The DIR argument is filled in only once a capture has told us the
+  // real folder (the download directory is the browser's own setting, which no
+  // home-relative path can stand in for); until then the bare command stands
+  // and the hint line says what the human can check. Called on settings load,
+  // on a folder change, and after every staged bundle.
   function updateIngestCmd() {
-    $('cmd-text').textContent = captureJson.ingestCommand(state.folder);
+    $('cmd-text').textContent = captureJson.ingestCommand(state.stagedDir);
+    const hint = $('cmd-hint');
+    if (hint) hint.textContent = captureJson.ingestHint(state.folder, state.stagedDir);
   }
 
   function wireSettings() {
@@ -827,6 +847,9 @@
       state.folder = captureJson.sanitizeFolder($('f-folder').value);
       $('f-folder').value = state.folder; // reflect the sanitized form back
       chrome.storage.local.set({ captureFolder: state.folder });
+      // A path learned from an earlier capture describes the OLD folder, so it
+      // stops being the truth the moment the setting changes.
+      state.stagedDir = '';
       updateIngestCmd();
     });
     $('f-default-evidence').addEventListener('change', () => {

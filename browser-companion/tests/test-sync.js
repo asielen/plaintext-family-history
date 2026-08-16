@@ -48,11 +48,24 @@ test('capture-json.js behaves identically to its pure twin', () => {
     assert.strictEqual(b.bundleName(s, when), pure.bundleName(s, when));
   }
 
+  const dirs = [
+    '', null, '/Users/me/Downloads/fha-inbox',
+    'C:\\Users\\me\\OneDrive\\Downloads\\fha-inbox', '/home/me/my "downloads"',
+  ];
   for (const f of ['fha-inbox', 'my captures', '../x', 'a\\b', '/abs/', '', null]) {
     assert.strictEqual(b.sanitizeFolder(f), pure.sanitizeFolder(f),
       'sanitizeFolder(' + f + ')');
-    assert.strictEqual(b.ingestCommand(f), pure.ingestCommand(f),
-      'ingestCommand(' + f + ')');
+    for (const d of dirs) {
+      assert.strictEqual(b.ingestCommand(d), pure.ingestCommand(d),
+        'ingestCommand(' + d + ')');
+      assert.strictEqual(b.ingestHint(f, d), pure.ingestHint(f, d),
+        'ingestHint(' + f + ', ' + d + ')');
+    }
+  }
+  for (const p of ['/Users/me/Downloads/fha-inbox/c-1/page.html',
+                   'C:\\dl\\fha-inbox\\c-1\\page.html', 'page.html', '', null]) {
+    assert.deepStrictEqual(b.stagedPaths(p), pure.stagedPaths(p),
+      'stagedPaths(' + p + ')');
   }
 
   const fields = {

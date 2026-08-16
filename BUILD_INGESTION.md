@@ -178,6 +178,19 @@ every "keep in sync" comment pair (content.js copies ↔ lib canonical modules,
 capture-json.js ↔ its pure twin) into failing builds instead of hopes - and a
 pointer-only ingest round-trip in `tests/test_browser_companion.py`.)*
 
+*(Review wave 2026-08-16, PR #42 round 4: that handoff command's
+`~/Downloads/<folder>` was itself a guess - the download directory is a browser
+setting, so a bundle staged into a relocated Downloads (OneDrive, a second
+volume) was advertised at a path it had never been written to, and the sweep
+reported nothing waiting. The command is now built from the completed
+download's own absolute path (`chrome.downloads.search` →
+`DownloadItem.filename`), and from nothing when the browser reports nothing:
+the bare command stands and a hint names the browser's download setting and
+`fha.yaml`'s `capture_staging:`. New coverage: `stagedPaths` / `ingestCommand`
+/ `ingestHint` in `tests/test-capture-json.js`, extended parity in
+`tests/test-sync.js`, and - because CI installs no node - structural pins in
+`tests/test_browser_companion.py`.)*
+
 Scope is the **core** extension only:
 - The four-phase side panel (§5.3): Invoke → Confirm (generic pre-fill, editable) → Capture
   the evidence (the five asset modes: fetch / single-file / pdf-via-handoff / manual / none)

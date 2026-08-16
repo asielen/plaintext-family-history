@@ -95,15 +95,76 @@
     return segs.length ? segs.join('/') : DEFAULT_FOLDER;
   }
 
+  // Where a staged bundle actually landed, read out of the absolute path the
+  // downloads API reports for a file inside it (DownloadItem.filename).
+  // Returns { bundle, staging }: the bundle's own folder, and the folder above
+  // it that HOLDS the bundles - the one `fha capture --ingest` sweeps. Both are
+  // '' when the browser gave us nothing to read, which is the only honest
+  // answer; a guess is what this replaced.
+  //
+  // Windows separators are folded to '/' (Python's Path and the shells both
+  // take that form, and it keeps the copied command free of backslash
+  // escaping). The last two segments are dropped rather than the folder
+  // setting being matched off the end, so a nested setting
+  // ('genealogy/staging') needs no special case.
+  function stagedPaths(filePath) {
+    const raw = String(filePath || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    const parts = raw ? raw.split('/') : [];
+    if (parts.length < 3) return { bundle: '', staging: '' };
+    const bundle = parts.slice(0, -1).join('/');
+    const staging = parts.slice(0, -2).join('/');
+    // Nothing but a filesystem root or a bare drive letter left: not a folder
+    // anyone can be sent to.
+    if (!staging || /^[A-Za-z]:$/.test(staging)) return { bundle: '', staging: '' };
+    return { bundle: bundle, staging: staging };
+  }
+
+  // A path safe to paste between double quotes in the shells this command is
+  // copied into. `"` ends the quoting; `$` and a backtick still expand inside
+  // double quotes in bash/zsh; a newline would split the command. Such a path
+  // is reported by ingestHint as plain text instead of being mangled into a
+  // command that runs somewhere else.
+  const UNQUOTABLE = /["`$\r\n]/;
+
   // The exact command the handoff card offers for sweeping staged bundles in.
-  // A renamed staging folder MUST surface here: the bare `fha capture --ingest`
-  // only sweeps `capture_staging:`/`~/Downloads/fha-inbox`, so copying it after
-  // staging into a custom folder finds nothing - the DIR argument (which the
-  // Python side `~`-expands on every OS) points the sweep at the right place.
-  function ingestCommand(folder) {
+  //
+  // It names a location ONLY when the browser has reported one. The download
+  // directory is a browser setting, not a fixed folder under the home
+  // directory - it is routinely moved to OneDrive, to another volume, or
+  // carries a localized name - so the home-relative path this used to
+  // synthesize was a guess presented as fact: the sweep it advertised searched
+  // a folder the bundle had never been written to, and reported nothing to
+  // ingest on a capture that had just succeeded. With no reported path the
+  // bare command stands,
+  // and the Python side resolves `capture_staging:` from fha.yaml (else its
+  // own default) and says which folder it looked in.
+  function ingestCommand(stagingDir) {
+    const dir = String(stagingDir || '').trim();
+    if (!dir || UNQUOTABLE.test(dir)) return 'fha capture --ingest';
+    return 'fha capture --ingest "' + dir + '"';
+  }
+
+  // The plain-language line under that command, for the two cases where the
+  // command alone would leave the human hunting: a staging folder renamed but
+  // not yet used (no capture, so no reported path), and a real path that
+  // cannot be pasted into a shell as it stands. Both name a location he can
+  // act on - his browser's own download setting, or fha.yaml's
+  // `capture_staging:` - and neither invents one. Empty string when the
+  // command already tells the whole truth.
+  function ingestHint(folder, stagingDir) {
+    const dir = String(stagingDir || '').trim();
+    if (dir) {
+      if (!UNQUOTABLE.test(dir)) return '';
+      return 'Your captures are staged in ' + dir + '. That path cannot be '
+        + 'pasted into a command as it stands, so point --ingest at it '
+        + "yourself, or set capture_staging: to it in your archive's fha.yaml.";
+    }
     const f = sanitizeFolder(folder);
-    if (f === DEFAULT_FOLDER) return 'fha capture --ingest';
-    return 'fha capture --ingest "~/Downloads/' + f + '"';
+    if (f === DEFAULT_FOLDER) return '';
+    return 'Captures stage to a folder named "' + f + '" inside your '
+      + "browser's download folder (Chrome: Settings > Downloads). If the "
+      + "command finds nothing, add that folder's full path after --ingest, "
+      + "or set capture_staging: to it in your archive's fha.yaml.";
   }
 
   // ISO `YYYY-MM-DD` for the `accessed` field - the date the human actually
@@ -168,6 +229,8 @@
     accessedDate,
     build,
     sanitizeFolder,
+    stagedPaths,
     ingestCommand,
+    ingestHint,
   };
 })();

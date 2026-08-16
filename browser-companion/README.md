@@ -151,8 +151,13 @@ Nothing sweeps automatically (the archive has no daemons or watchers). When you'
 back at your archive, run **one** command:
 
 ```sh
-fha capture --ingest        # sweeps Downloads/fha-inbox/ into the archive inbox/
+fha capture --ingest        # sweeps the default staging folder into the archive inbox/
 ```
+
+The handoff card shows the command with the staging folder the browser actually
+used (`fha capture --ingest "<that folder>"`) as soon as a capture completes -
+the download directory is a browser setting, so the panel reads it from the
+completed download rather than assuming a home-relative `Downloads`.
 
 `fha doctor` reminds you when bundles are waiting:
 `staged captures: N bundle(s) … waiting  next: run \`fha capture --ingest\``.
@@ -254,6 +259,20 @@ recorded here (not silently) as proposed spec clarifications:
   `[provisional image, …]` line to the human's `notes` body, so review sees it
   whether or not a tool honors the structured flag yet. The §5.6 notes-line
   convention is kept as the always-readable belt-and-braces.
+- **The handoff command names only a location the browser reported.** The
+  download directory is a browser setting - moved to OneDrive, to a second
+  volume, or carrying a localized name - so a home-relative `Downloads` path
+  synthesized from the staging-folder setting was a guess presented as fact: it
+  sent `--ingest` to a folder the bundle had never been written to, and the
+  sweep reported nothing waiting on a capture that had just succeeded. The
+  panel now reads the completed download's own absolute path
+  (`chrome.downloads.search` → `DownloadItem.filename`), drops the file and
+  bundle segments to get the folder that holds the bundles, and puts THAT in
+  the command. With no reported path (before the first capture of a sitting, or
+  a path that cannot be quoted into a shell command) the bare
+  `fha capture --ingest` stands and a hint line points at the browser's own
+  download setting and at `fha.yaml`'s `capture_staging:` - never at an
+  invented path.
 - **Single-file snapshot is minimal but scrape-able.** It inlines images and
   stylesheet text (the §9 must-haves), drops **executable** scripts but **keeps
   `<script type="application/ld+json">` and other non-executable metadata** so the

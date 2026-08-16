@@ -623,6 +623,24 @@ class QuestionNamespacingTests(unittest.TestCase):
             statuses['people/test__person_research_P-aaaaaaaaaa.md'].startswith('answered')
         )
 
+    def test_a_given_name_containing_the_kind_word_is_not_a_research_file(self) -> None:
+        # SPEC §13 puts the companion kind immediately before the P-id, so
+        # `smith__research_anne_P-…` is Research Anne Smith's own profile.
+        # Merging a profile's body into the research-notes scan would let the
+        # report propose closures for questions lint's E009 scope never saw -
+        # the two are documented to cover the same set.
+        (self.archive_root / 'people' / 'smith__research_anne_P-bbbbbbbbbb.md').write_text(
+            _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'people' / 'smith__anne_research_P-bbbbbbbbbb.md').write_text(
+            _RESEARCH_SAME_HEADING_MD, encoding='utf-8'
+        )
+        questions = report._parse_questions(self.archive_root)
+        self.assertEqual(
+            sorted({info['file'] for info in questions.values()}),
+            ['people/smith__anne_research_P-bbbbbbbbbb.md'],
+        )
+
     def test_discoveries_show_plain_heading_and_accept_old_snapshot_keys(self) -> None:
         heading = 'When was Test Person born?'
         key = f'notes/questions.md :: {heading}'

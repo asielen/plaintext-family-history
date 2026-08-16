@@ -487,6 +487,70 @@ class SnapshotUrlRewriteTestCase(unittest.TestCase):
         self.assertIn('FHA-SYNC-BEGIN srcset', sync)
 
 
+class HandoffLocationTestCase(unittest.TestCase):
+    """The handoff command names where the bundle IS, never where it might be.
+
+    Chrome's download directory is a browser setting: moved to OneDrive, to a
+    second volume, or carrying a localized folder name on plenty of machines.
+    The panel used to synthesize `~/Downloads/<folder>` into the copyable
+    command, so a capture that succeeded advertised a sweep of a folder it had
+    never been written to - `fha capture --ingest` then found nothing, with the
+    bundle sitting safely somewhere else and nothing on screen to say where.
+    The browser answers the question itself (`chrome.downloads.search` returns
+    the completed file's absolute path), so the command is built from that, and
+    from nothing when it is absent.
+
+    These are structural pins, kept alongside the node tests
+    (`npm --prefix browser-companion test`, tests/test-capture-json.js) because
+    CI installs no node: the behavioural coverage there never runs in CI, and
+    this is what stands between the guess coming back and nobody noticing.
+    """
+
+    def setUp(self) -> None:
+        self.pure = (COMPANION / 'src' / 'lib' / 'capture-json-pure.js').read_text(
+            encoding='utf-8')
+        self.browser = (COMPANION / 'src' / 'lib' / 'capture-json.js').read_text(
+            encoding='utf-8')
+        self.bundle = (COMPANION / 'src' / 'lib' / 'bundle.js').read_text(encoding='utf-8')
+        self.panel = (COMPANION / 'src' / 'panel.js').read_text(encoding='utf-8')
+
+    def test_no_home_directory_path_is_synthesized_into_a_command(self) -> None:
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser),
+                           ('panel.js', self.panel),
+                           ('bundle.js', self.bundle)):
+            self.assertNotIn('~/Downloads', text, name)
+
+    def test_the_real_download_path_is_read_from_the_browser(self) -> None:
+        # bundle.js asks the downloads API where the file actually went and
+        # hands that up; the panel turns it into the staging folder.
+        self.assertIn('chrome.downloads.search', self.bundle)
+        self.assertIn('filePath', self.bundle)
+        self.assertIn('stagedPaths(result.filePath)', self.panel)
+
+    def test_the_command_is_built_from_the_reported_path_not_the_setting(self) -> None:
+        # The folder setting cannot say where Downloads is, so it is not what
+        # the command is built from.
+        self.assertIn('ingestCommand(state.stagedDir)', self.panel)
+        self.assertNotIn('ingestCommand(state.folder)', self.panel)
+        # Both the pure twin and the browser file take the reported directory.
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn('function ingestCommand(stagingDir)', text, name)
+            self.assertIn('function stagedPaths(filePath)', text, name)
+
+    def test_an_unknown_location_gets_a_hint_naming_the_places_to_look(self) -> None:
+        # With no reported path the command asserts nothing, so the human is
+        # pointed at his browser's own download setting and at the archive's
+        # `capture_staging:` key - the two places that can actually answer.
+        self.assertIn('cmd-hint', (COMPANION / 'src' / 'panel.html').read_text(
+            encoding='utf-8'))
+        self.assertIn('ingestHint(state.folder, state.stagedDir)', self.panel)
+        for name, text in (('capture-json-pure.js', self.pure),
+                           ('capture-json.js', self.browser)):
+            self.assertIn('capture_staging', text, name)
+
+
 class ArchiveReadmeTestCase(unittest.TestCase):
     """The README an archive receives is the owner's, not the project's."""
 

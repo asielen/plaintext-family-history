@@ -101,6 +101,7 @@ from _lib import (
     format_w120_message,
     id_type_of,
     is_fixture_path,
+    is_person_file_kind,
     is_template_file,
     is_working_copy,
     is_valid_edtf,
@@ -736,7 +737,7 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
         for path in sorted(people_root.rglob('*.md')):
             _process_person_file(path, registry, findings)
             # Collect research file content for E009
-            if '_research_' in path.stem or path.stem.endswith('_research'):
+            if is_person_file_kind(path, 'research'):
                 try:
                     registry.research_content[path] = path.read_text(encoding='utf-8')
                 except OSError:
@@ -788,13 +789,15 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
     stem = path.stem
     parsed = parse_filename(path)
     is_companion = parsed and parsed.get('is_companion', False)
-    kind = (parsed or {}).get('kind', 'profile')
 
     # H-ids defined in this file's ## Hypotheses section (SPEC §16 homes them in
-    # `…_research_P-….md`). Same stem test index.py uses to pick research files,
-    # applied before any id checks so a mid-graduation (id-less) research file's
+    # `…_research_P-….md`). The kind comes from the shared filename grammar, not
+    # a substring search of the stem: `research` anywhere but the slot before the
+    # P-id is part of the given names, and reading a profile as a research file
+    # turned one person's working notes into archive-wide hypothesis records.
+    # Applied before any id checks so a mid-graduation (id-less) research file's
     # hypotheses still count as existing records for E004.
-    if '_research_' in stem or stem.endswith('_research'):
+    if is_person_file_kind(path, 'research'):
         registry.hypothesis_ids.update(_research_hypothesis_ids(rec['body']))
 
     if id_placeholder:

@@ -131,6 +131,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    replace_paragraph_in_section - swap ONE entry of an append-log section (the
 #                                 workbench's per-entry edit; matched by exact text)
 #    parse_filename            - decompose filename into {id_str, kind, is_companion}
+#    is_person_file_kind       - is this person file the `research`/`timeline`/… companion?
+#                                 (the §13 kind SLOT, never a substring of the stem)
 #    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
 #
@@ -2489,6 +2491,30 @@ def parse_filename(path: str | Path) -> dict | None:
             pass
 
     return result
+
+
+def is_person_file_kind(path: str | Path, kind: str) -> bool:
+    """True when a person file carries `kind` in SPEC §13's companion slot.
+
+    The slot is one place - immediately before the P-id
+    (`hartley__thomas_research_P-…`) - so the same word anywhere else in the
+    name is part of the given names. The substring test this replaces
+    (`'_research_' in stem`) read `smith__research_anne_P-…`, the profile of a
+    woman whose given names are Research Anne, as a research companion: her
+    `## Hypotheses` entries became archive-wide hypothesis records and her
+    `## Open Questions` block joined the question scope, neither of which SPEC
+    §16 homes in a profile.
+
+    A file with no id at all is the one case the grammar cannot parse. That is
+    a real state, not an error - a mid-graduation companion is named before the
+    id is minted (`smith__anne_research.md`) - and with the id absent the kind
+    slot sits at the end of the stem, so the suffix test is exact there rather
+    than a guess. `smith__research_anne.md` still reads as a profile.
+    """
+    parsed = parse_filename(path)
+    if parsed is not None:
+        return parsed.get('id_type') == 'P' and parsed.get('kind') == kind
+    return Path(path).stem.endswith(f'_{kind}')
 
 
 # ── Media filename grammar (TOOLING.md §6, §9) ───────────────────────────────

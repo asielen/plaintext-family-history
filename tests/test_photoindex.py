@@ -2175,6 +2175,35 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(by_path['photos/portrait_1880.jpg']['score'], 5)
             self.assertIn('back-variant', by_path['photos/portrait_1880.jpg']['signals'])
 
+    def test_triage_back_variant_signal_reads_the_role_not_its_first_letters(self) -> None:
+        # 'back-variant' means a back scan exists (there is writing on the
+        # reverse worth reading). The stored variant_role is the TOOLING §6
+        # compound: the part-kind, plus '-crop' when the scan is a crop of it -
+        # so 'back' and 'back-crop' are the whole vocabulary that means back. A
+        # freeform suffix becomes the role verbatim ('-backdrop' -> 'backdrop'),
+        # so a prefix test scored a backdrop shot as a back scan and ranked it
+        # above photos that really do carry writing on the reverse. `fha
+        # process` folder triage scores the same signal off the parsed
+        # part_kind, and the two must not disagree.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photos = archive / 'photos'
+            for name in ('church_1930.jpg', 'church_1930-backdrop.jpg',
+                         'school_1930.jpg', 'school_1930-back.jpg'):
+                shutil.copyfile(photos / 'portrait_1880.jpg', photos / name)
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths
+            ]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}})
+            by_path = {c['path']: c for c in result['candidates']}
+            self.assertNotIn(
+                'back-variant', by_path['photos/church_1930-backdrop.jpg']['signals'])
+            # A real back scan still counts, by the same rule.
+            self.assertIn(
+                'back-variant', by_path['photos/school_1930.jpg']['signals'])
+
     def test_triage_excludes_a_group_made_entirely_of_missing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -2731,6 +2760,110 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertIsNotNone(restored_row)
             finally:
                 conn.close()
+
+    def test_scan_sweeps_a_missing_row_whose_subtree_is_now_ignored(self) -> None:
+        # The other escape from the MISSING: preservation branch. A vanished
+        # photo keeps its row so a later `reconcile --with-exif` can heal it -
+        # but once its former subtree is in photos_ignore, nothing will ever
+        # heal it (the ignore-aware walk guarantees that alias never comes
+        # back), while its caption, keywords and person matches stay
+        # searchable. photos_ignore is a freshness dependency, so the edit
+        # marks the catalog stale and asks for a rescan; without this sweep
+        # that rescan cannot resolve the staleness for these rows.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            bulk = archive / 'photos' / 'Bulk Export'
+            bulk.mkdir()
+            (bulk / 'recent_0001.jpg').write_bytes(b'x')
+
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), 'Caption-Abstract': 'a bulk export scan'}
+                for p in paths
+            ]
+            plain = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, plain)
+
+            # The file goes away, so reconcile parks its row under the
+            # synthetic key rather than dropping the metadata.
+            (bulk / 'recent_0001.jpg').unlink()
+            result = photoindex.run_reconcile(archive, plain)
+            self.assertEqual(
+                result['missing'], ['MISSING:photos/Bulk Export/recent_0001.jpg'])
+
+            # A second MISSING: row OUTSIDE the ignored subtree - the control.
+            portrait = archive / 'photos' / 'portrait_1880.jpg'
+            saved = portrait.read_bytes()
+            portrait.unlink()
+            photoindex.run_reconcile(archive, plain)
+
+            ignored = {'roots': {'photos': 'photos'}, 'photos_ignore': ['Bulk Export']}
+            photoindex.run_scan(archive, ignored)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                self.assertIsNone(conn.execute(
+                    "SELECT 1 FROM photos WHERE path LIKE 'MISSING:%Bulk Export%'"
+                ).fetchone())
+                # Its text went with it: an ignored subtree must not keep
+                # answering `fha find --text`.
+                self.assertIsNone(conn.execute(
+                    "SELECT 1 FROM photo_fts WHERE path LIKE 'MISSING:%Bulk Export%'"
+                ).fetchone())
+                # The control row is untouched - only the ignored subtree is swept.
+                self.assertIsNotNone(conn.execute(
+                    "SELECT 1 FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone())
+            finally:
+                conn.close()
+
+            # The symmetric half: with the pattern gone the subtree is no
+            # longer ignored, so a MISSING: row inside it is bookkeeping again
+            # and a scan must preserve it exactly like any other.
+            (bulk / 'recent_0002.jpg').write_bytes(b'y')
+            photoindex.run_scan(archive, plain)
+            (bulk / 'recent_0002.jpg').unlink()
+            result = photoindex.run_reconcile(archive, plain)
+            self.assertIn('MISSING:photos/Bulk Export/recent_0002.jpg', result['missing'])
+            portrait.write_bytes(saved)
+            photoindex.run_scan(archive, plain)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                self.assertIsNotNone(conn.execute(
+                    "SELECT 1 FROM photos "
+                    "WHERE path='MISSING:photos/Bulk Export/recent_0002.jpg'"
+                ).fetchone())
+            finally:
+                conn.close()
+
+    def test_reconcile_does_not_report_an_ignored_subtree_as_lost_photos(self) -> None:
+        # The other walker the same knob has to reach. photos_ignore prunes
+        # reconcile's disk walk (an ignored file is never offered as a rematch
+        # candidate or counted as new), so without the same rule on the cached
+        # side every row for a just-excluded subtree looks like a photo that
+        # vanished: reconcile would flag them MISSING: and warn that the
+        # library has lost files, when nothing was lost and the human merely
+        # asked the archive to stop looking there. Membership is the scan's to
+        # settle; reconcile says nothing about it.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            bulk = archive / 'photos' / 'Bulk Export'
+            bulk.mkdir()
+            (bulk / 'recent_0001.jpg').write_bytes(b'x')
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p)} for p in paths
+            ]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            ignored = {'roots': {'photos': 'photos'}, 'photos_ignore': ['Bulk Export']}
+            result = photoindex.run_reconcile(archive, ignored)
+            self.assertEqual(result['missing'], [])
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+            # A photo that really did vanish is still reported, ignore list or not.
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            result = photoindex.run_reconcile(archive, ignored)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
 
     def test_reconcile_with_exif_can_later_rematch_an_already_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as d:

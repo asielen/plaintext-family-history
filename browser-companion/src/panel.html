@@ -154,14 +154,15 @@
           <div id="handoff" class="handoff">
             <p class="h-title">✓ Saved. Nothing is lost.</p>
             <p id="handoff-body" class="h-body">This creates a source package in your
-              Downloads folder. To integrate it into your research: open your archive and run
-              the command below to file it into your inbox, then review and process it.</p>
+              browser's download folder. To integrate it into your research: open your archive
+              and run the command below to file it into your inbox, then review and process it.</p>
             <div class="cmd-row">
               <span id="cmd-text" class="cmd">fha capture --ingest</span>
               <button id="btn-copy-cmd" type="button" class="copy-btn">Copy</button>
             </div>
-            <p class="reassure">Until you run it the package sits safely in Downloads, so you
-              can't lose it.</p>
+            <p id="cmd-hint" class="reassure"></p>
+            <p class="reassure">Until you run it the package sits safely where it was saved,
+              so you can't lose it.</p>
           </div>
           <p id="stage-result" class="stage-result" role="status"></p>
         </section>

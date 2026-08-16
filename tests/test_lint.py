@@ -636,6 +636,74 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
                          if f.code == 'E004' and 'h-7777777777' in f.message])
 
 
+class ResearchCompanionIdentityTests(unittest.TestCase):
+    """`research` is a filename SLOT, not a word found anywhere in the stem.
+
+    SPEC §13 puts the companion kind immediately before the P-id
+    (`hartley__thomas_research_P-…`), so anywhere else in the name it belongs
+    to the given names. A woman recorded as Research Anne Smith
+    (`smith__research_anne_P-…`) has an ordinary profile: its `## Hypotheses`
+    entries are not SPEC §16 hypothesis records, and its `## Open Questions`
+    block is not part of the E009 question scope.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+        (self.root / 'people').mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    _BODY = (
+        '## Open Questions\n\n'
+        '## Q: Which ship did she arrive on?\n'
+        '- origin: human\n'
+        '- status: open\n\n'
+        '## Hypotheses\n\n'
+        '- id: H-abcabcabca\n'
+        '  hypothesis: "arrived by ~1869"\n'
+        '  basis: "railroad boom"\n'
+        '  origin: agent\n'
+        '  status: open\n'
+    )
+
+    def _write(self, filename: str) -> Path:
+        path = self.root / 'people' / filename
+        path.write_text(
+            '---\nid: P-3333333333\nname: Research Anne Smith\nliving: false\n---\n\n'
+            + self._BODY, encoding='utf-8')
+        return path
+
+    def test_a_given_name_containing_the_kind_word_is_still_a_profile(self) -> None:
+        path = self._write('smith__research_anne_P-3333333333.md')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual(list(reg.research_content), [])
+        # The other half of the same reading: it registers as a profile, so the
+        # required-field checks that only profiles get still apply to it.
+        self.assertIn('p-3333333333', reg.person_profile_paths)
+        self.assertEqual(reg.person_companion_paths.get('p-3333333333', []), [])
+        self.assertEqual(reg.person_profile_paths['p-3333333333'], [path])
+
+    def test_the_real_research_companion_is_still_read(self) -> None:
+        path = self._write('smith__anne_research_P-3333333333.md')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual(list(reg.research_content), [path])
+
+    def test_an_id_less_research_companion_is_still_read(self) -> None:
+        # Mid-graduation: the file carries the kind but no id yet. The kind
+        # slot is the last thing in the stem when the id is absent, so the
+        # hypotheses it defines still count as existing records for E004.
+        path = self.root / 'people' / 'smith__anne_research.md'
+        path.write_text(self._BODY, encoding='utf-8')
+        _findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
+        self.assertEqual(list(reg.research_content), [path])
+
+
 _PLACEHOLDER_PERSON = '''---
 id: P-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING
 aliases:           # OPTIONAL - the code, repeated
