@@ -28,6 +28,17 @@ Two rules this file exists to keep:
     recording whose output already exists, and a truncated file that looks
     finished would be skipped forever.
 
+    Renaming three files is not one operation, though - `os.replace` is atomic
+    for one file and there is no atomic multi-file rename on any platform this
+    runs on. So the three renames are wrapped in a small commit protocol: every
+    destination is checked before the first rename, each previous file is moved
+    aside where it can be moved back, and a marker file says a promotion is in
+    flight. A failure rolls the folder back to how it was; a hard kill (power
+    loss, SIGKILL) that no rollback can catch leaves the marker behind, and the
+    next run reads it, refuses to call the recording done, and redoes it. The
+    one thing that must never happen - a mixed set of files that looks finished
+    and is therefore skipped forever - cannot survive a single retry.
+
   * NOTHING MACHINE-SPECIFIC IN THE OUTPUT. The .md is written to be attached
     to a source record and kept forever, so it names the recording by FILENAME
     only. An absolute path would leak the operator's home directory into the
@@ -54,7 +65,8 @@ Usage:
 
 Exit codes:  0 transcript written (or already present - nothing to do)
              1 ran, but the recording held no speech; nothing was written
-             2 could not run: bad input, missing dependency, decode failure
+             2 could not run: bad input, missing dependency, decode failure, or
+               the transcript could not be saved where it was asked for
 
 Model guide (CPU, rough): base ~ 2-4x realtime, rough quality; small ~ 1-2x,
 good default; medium ~ realtime, noticeably better with mumbled/overlapping
@@ -65,12 +77,19 @@ CODE MAP
 --------
   fmt_ts / srt_ts        - seconds -> display and SRT timestamps
   output_paths           - the three final files for one --outdir/--name
+  marker_path            - where the "promotion in flight" marker lives
+  publication_state      - what is on disk: complete / partial / interrupted / none
   default_output_name    - a sane --name from an already-archived filename
   name_problem           - plain-language validation of --name
   md_header              - the .md preamble (portable: filename, never a path)
-  publish_transcripts    - the all-or-nothing writer (temp siblings + rename)
+  PublishError           - "the transcript could not be saved", with the fix
+  _destination_problem   - why one final name cannot be replaced, in plain words
+  _preflight_destinations- refuse the run before the first rename, not after it
+  _set_aside/_restore_previous/_promote_all - the three-file commit protocol
+  publish_transcripts    - the all-or-nothing writer (temp siblings + promotion)
   prepare_audio          - ffmpeg extraction with a PyAV fallback
   build_parser           - the CLI surface (kept apart so a test can read it)
+  _leftover_note         - what a failed run actually left on disk
   main                   - CLI: check, transcribe, publish, say what is next
 """
 import argparse
@@ -120,6 +139,54 @@ def output_paths(outdir, name):
     """
     outdir = Path(outdir)
     return (outdir / f'{name}.txt', outdir / f'{name}.srt', outdir / f'{name}.md')
+
+
+# Written just before the three renames and removed once they are all done. Its
+# text is addressed to whoever finds it in the folder, because that is usually
+# a human wondering what the odd file is - not a program.
+_MARKER_TEXT = (
+    "A transcription run was moving its three transcript files into place here and did\n"
+    "not finish. While this file exists, the transcripts beside it may be a mix of two\n"
+    "different runs, so the next run redoes this recording instead of skipping it.\n"
+    "Files ending .part are unfinished; files ending .kept hold the previous version.\n"
+    "Once the transcript here looks right, this file and those leftovers can go.\n"
+    "Files this run was writing:\n"
+)
+
+
+def marker_path(outdir, name):
+    """Where one run's "promotion in flight" marker lives.
+
+    Hidden (leading dot) and named for the run, so two recordings transcribed
+    into one scratch folder never read each other's marker.
+    """
+    return Path(outdir) / f'.{name}.publishing'
+
+
+def publication_state(outdir, name):
+    """What this run's outputs look like on disk right now. The "is it done?" test.
+
+    One of four words:
+      'complete'    - all three files are there and no promotion was left open
+      'interrupted' - the marker is still there, so a promotion was cut short and
+                      the three files may be a mix of two runs
+      'partial'     - only some of the three are there
+      'none'        - none of them are there
+
+    Only 'complete' may be read as "already transcribed, skip it". That is the
+    whole point of this function: the skill tells the human to work a long queue
+    by skipping recordings whose outputs exist, so a test that any single file
+    satisfies makes a half-published set permanent. Both halves are needed - the
+    marker catches a set that is complete but mixed (a hard kill between two
+    renames), and the file count catches a set the marker never knew about
+    (a run killed before it wrote one, or a file deleted by hand afterwards).
+    """
+    if marker_path(outdir, name).exists():
+        return 'interrupted'
+    present = [p for p in output_paths(outdir, name) if p.exists()]
+    if len(present) == 3:
+        return 'complete'
+    return 'partial' if present else 'none'
 
 
 def default_output_name(stem):
@@ -183,6 +250,177 @@ def md_header(name, recording, model):
     )
 
 
+class PublishError(RuntimeError):
+    """The transcript could not be saved where it was asked for. Carries the fix.
+
+    Kept separate from whatever faster-whisper raises, because the two need
+    opposite advice: a decode failure sends the human back to the recording,
+    while this one sends him to the output folder. Telling him the wrong one
+    has him re-recording a perfectly good interview.
+    """
+
+
+def _discard(path):
+    """Delete a working file, quietly.
+
+    Every caller is tidying up after something else - either a success (the
+    temps did their job) or a failure (whose exception is the real news). A
+    complaint from the wastebasket must never replace either one.
+    """
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def _destination_problem(final):
+    """Why this transcript could not be moved onto its final name, or None.
+
+    Plain language and a way out, because the human reading it is a genealogist
+    with a folder open, not a programmer: name the file, say what is wrong with
+    it, and name the flag that avoids it.
+    """
+    if final.is_dir():
+        return (f"there is a FOLDER named {final.name} in {final.parent}, so the transcript "
+                f"cannot be saved under that name. Move or rename that folder, or run the "
+                f"command again with a different --name or --outdir")
+    if final.exists() and not os.access(final, os.W_OK):
+        return (f"{final.name} in {final.parent} is read-only, so it cannot be replaced. "
+                f"Make it writable or move it out of the way, or run the command again with "
+                f"a different --name or --outdir")
+    if not os.access(final.parent, os.W_OK | os.X_OK):
+        return (f"the output folder {final.parent} cannot be written to. Run the command "
+                f"again with --outdir pointing at a folder you can write to")
+    return None
+
+
+def _preflight_destinations(finals):
+    """Refuse the whole run if any one of the three names cannot be replaced.
+
+    `os.replace` is atomic for a single file, and there is no atomic multi-file
+    rename anywhere this script runs. Renaming them one after another therefore
+    has a real failure shape: the first lands, the second is refused, and the
+    folder is left holding half of one run and half of another - which the
+    skip-if-present rule then treats as a finished transcript forever. Asking
+    every destination first turns that into a refusal before anything moves.
+
+    Called twice: once on entry, so a doomed run costs a second instead of an
+    hour of decoding, and again immediately before the first rename, because a
+    folder is a live thing and an hour is long enough for someone to drop a
+    folder or a read-only file onto one of these names.
+    """
+    for final in finals:
+        problem = _destination_problem(final)
+        if problem is not None:
+            raise PublishError(problem)
+
+
+def _set_aside(final):
+    """Move an existing transcript out of the way, returning where it went.
+
+    A rename, not a copy: it is atomic, it costs nothing on a big file, and it
+    keeps the previous transcript byte-for-byte in case this run has to put it
+    back. The sibling lives in the same folder so the move cannot cross a
+    filesystem boundary and degrade into a copy that could half-finish.
+    """
+    fd, aside = tempfile.mkstemp(dir=str(final.parent), prefix=final.name + '.', suffix='.kept')
+    os.close(fd)
+    os.replace(final, aside)
+    return Path(aside)
+
+
+def _restore_previous(placed, kept):
+    """Put the folder back the way it was. True if that fully succeeded.
+
+    Undoing a half-finished promotion means two things: drop the files this run
+    already published, then move each previous file back onto its name. A file
+    that could not be dropped keeps its name occupied, so its predecessor is
+    left aside rather than stacking a second failure on the first - and the
+    caller is told the folder is NOT back to normal, which is what keeps the
+    marker in place for the next run to find.
+    """
+    healed = True
+    for final in placed:
+        try:
+            final.unlink()
+        except OSError:
+            healed = False
+    for final, aside in kept:
+        if final.exists():
+            healed = False
+            continue
+        try:
+            os.replace(aside, final)
+        except OSError:
+            healed = False
+    return healed
+
+
+def _promote_all(temps, finals, marker):
+    """Rename the finished temps onto the three real names: all of them, or none.
+
+    This function owns the whole commit, because a commit split across callers
+    is how mixed states are born. In order:
+
+      1. Write `marker` - from here until the last rename, anyone looking at
+         this folder is told the set may be mid-change.
+      2. For each pair: move the existing file aside (recoverable), then rename
+         the temp onto the name.
+      3. Remove the set-aside files, then the marker. Only now is the run done.
+
+    Any failure - an OSError from a rename, or a Ctrl-C between two of them -
+    rolls every step back and re-raises the original. If the rollback itself
+    fully succeeded the marker goes too, because the folder is genuinely back to
+    its previous state and the next run should be free to skip it. If it did
+    not, the marker STAYS: that is the durable signal that turns a mixed set
+    from a permanent lie into a job the next run redoes.
+
+    What this cannot cover is a hard kill (SIGKILL, power loss) between two
+    renames - no user-space code can. That case is exactly why the marker is
+    written to disk first rather than tracked in memory: the marker survives the
+    kill, and `publication_state` reads it.
+    """
+    try:
+        marker.write_text(_MARKER_TEXT + ''.join(f"  {f.name}\n" for f in finals),
+                          encoding='utf-8')
+    except OSError as e:
+        # Nothing has moved yet, so this is a clean refusal - but it has to be a
+        # spoken one, not a raw OSError wearing main's decode-failure message.
+        raise PublishError(
+            f"the transcripts could not be saved into {marker.parent} "
+            f"({e.strerror or e}). Check that the folder still exists and has room, then "
+            f"run the same command again") from e
+    kept = []
+    placed = []
+    failing = finals[0]
+    try:
+        for tmp, final in zip(temps, finals):
+            failing = final
+            if final.exists():
+                kept.append((final, _set_aside(final)))
+            os.replace(tmp, final)
+            placed.append(final)
+    except OSError as e:
+        if _restore_previous(placed, kept):
+            _discard(marker)
+        # Translated, not swallowed: a bare OSError here would reach the human
+        # through main's decode-failure message and send him off to check a
+        # recording that transcribed perfectly well.
+        raise PublishError(
+            f"{failing.name} could not be saved into {failing.parent} "
+            f"({e.strerror or e}). Check that the folder still exists and has room, and "
+            f"that nothing else has that file open, then run the same command again") from e
+    except BaseException:
+        # BaseException on purpose: a Ctrl-C landing between two renames leaves
+        # precisely the mixed set this function exists to prevent.
+        if _restore_previous(placed, kept):
+            _discard(marker)
+        raise
+    for _final, aside in kept:
+        _discard(aside)
+    _discard(marker)
+
+
 def publish_transcripts(outdir, name, segments, model, recording, progress=None):
     """Write the three transcripts all-or-nothing. Returns the segment count.
 
@@ -196,9 +434,14 @@ def publish_transcripts(outdir, name, segments, model, recording, progress=None)
     So: every byte goes to a `.part` sibling created in the SAME directory (same
     filesystem, which is what makes os.replace an atomic rename), and the final
     names appear only after the iterator has run dry. On any failure the temps
-    are removed and no output file exists at all. The three replaces happen back
-    to back at the very end; they are not one transaction, but the only window
-    left is microseconds wide and cannot be opened by the transcription itself.
+    are removed and no output file exists at all.
+
+    Putting three files in place is itself a multi-step change, so it is not
+    done bare: destinations are checked first (`_preflight_destinations`) and
+    the renames run under a commit protocol that can undo itself and leaves a
+    marker behind when it cannot (`_promote_all`). The outcome is one of three,
+    never a fourth: the new transcript, the previous state, or - only after a
+    hard kill - a marked folder the next run redoes instead of skipping.
 
     A run that finds NO speech publishes nothing, for the same reason: an empty
     transcript is indistinguishable from a finished one to the next batch pass.
@@ -208,7 +451,11 @@ def publish_transcripts(outdir, name, segments, model, recording, progress=None)
     console ticker stays out of the writing logic (and out of the tests).
     """
     outdir = Path(outdir)
+    if not outdir.is_dir():
+        raise PublishError(f"the output folder {outdir} is not there any more. Create it, or "
+                           f"run the command again with --outdir pointing somewhere else")
     finals = output_paths(outdir, name)
+    _preflight_destinations(finals)
     temps = []
     handles = []
     count = 0
@@ -234,8 +481,10 @@ def publish_transcripts(outdir, name, segments, model, recording, progress=None)
         handles = []
         if count == 0:
             return 0
-        for tmp, final in zip(temps, finals):
-            os.replace(tmp, final)
+        # Re-checked here, not just on entry: the transcription in between can
+        # have taken an hour, and this is the last moment a refusal is free.
+        _preflight_destinations(finals)
+        _promote_all(temps, finals, marker_path(outdir, name))
         temps = []
         return count
     finally:
@@ -248,10 +497,7 @@ def publish_transcripts(outdir, name, segments, model, recording, progress=None)
             except OSError:
                 pass
         for tmp in temps:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+            _discard(tmp)
 
 
 def prepare_audio(src, workdir):
@@ -262,16 +508,25 @@ def prepare_audio(src, workdir):
     faster-whisper's bundled PyAV reads the original file directly - slower and
     fussier with odd containers, but it keeps the skill usable with one pip
     install and no system packages.
+
+    A zero exit code is not proof of a usable wav, so the file is checked as
+    well: some builds of ffmpeg report success on a container whose audio track
+    they could not read, and handing whisper an empty wav produces a confident
+    transcript of nothing - a silent wrong answer, which is worse than the
+    slower fallback.
     """
     wav = Path(workdir) / 'audio.wav'
     try:
         print("extracting audio (ffmpeg)...")
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
                         "-vn", "-ac", "1", "-ar", "16000", str(wav)], check=True)
-        return wav
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         print(f"  ffmpeg unavailable ({e.__class__.__name__}); decoding with PyAV instead")
         return Path(src)
+    if wav.is_file() and wav.stat().st_size > 0:
+        return wav
+    print("  ffmpeg found no audio to extract; decoding the original with PyAV instead")
+    return Path(src)
 
 
 def build_parser():
@@ -297,6 +552,25 @@ def build_parser():
     ap.add_argument("--force", action="store_true",
                     help="re-transcribe even if this run's output files already exist")
     return ap
+
+
+def _leftover_note(outdir, name):
+    """One sentence about what a run that did not finish actually left on disk.
+
+    Read from the folder rather than remembered from the code path, because the
+    two can disagree: the rollback in `_promote_all` may itself have failed, and
+    a message that says "nothing was written" over a folder that was written to
+    sends the human off to check the wrong thing. Whatever is on disk is what he
+    is told.
+    """
+    state = publication_state(outdir, name)
+    if state == 'interrupted':
+        return (f"Careful: the transcript files in {outdir} can now be a mix of this run and "
+                f"the last one. Run the same command again - it will rewrite all three rather "
+                f"than skip them.")
+    if state in ('complete', 'partial'):
+        return f"The files already in {outdir} were left exactly as they were."
+    return "Nothing was written - no half-finished transcript was left behind."
 
 
 def main(argv=None):
@@ -325,18 +599,31 @@ def main(argv=None):
         return EXIT_FAILED
 
     finals = output_paths(outdir, name)
-    existing = [p for p in finals if p.exists()]
-    if existing and not a.force:
+    state = publication_state(outdir, name)
+    if state == 'complete' and not a.force:
         # Deliberately a success: this is what lets a long queue be re-run after
-        # a reboot without re-doing hours of finished work. Nothing published is
-        # ever partial (see publish_transcripts), so "it is there" means "it is
-        # done" - and the message still names the way to redo it on purpose.
+        # a reboot without re-doing hours of finished work. Only a COMPLETE set
+        # counts as done - a half-published one is redone below, because a
+        # skipped mixed set would never be repaired.
         print(f"already transcribed - these files are in {outdir}:")
-        for p in existing:
+        for p in finals:
             print(f"  {p.name}")
         print("Nothing was overwritten. Re-run with --force to replace them, "
               "or pass a different --name.")
         return EXIT_OK
+    if state == 'partial' and not a.force:
+        print(f"an earlier attempt left only part of this recording's transcript in {outdir}:")
+        for p in finals:
+            if p.exists():
+                print(f"  {p.name}")
+        print("A part of a transcript is not a transcript, so this recording is being redone "
+              "now and those files will be replaced.")
+    elif state == 'interrupted' and not a.force:
+        print(f"an earlier run was stopped while it was putting this recording's transcript "
+              f"files into {outdir}, so what is there can be a mix of two runs.")
+        print("Redoing the recording now and rewriting all three. Once the new transcript "
+              "looks right, the leftover files in that folder (the ones ending .part, .kept, "
+              "or .publishing) can be deleted.")
 
     # Checked before any decoding: a missing engine should cost a second, not
     # the ffmpeg pass over a two-hour recording.
@@ -349,9 +636,6 @@ def main(argv=None):
         return EXIT_FAILED
 
     with tempfile.TemporaryDirectory() as td:
-        audio = prepare_audio(src, td)
-
-        print(f"transcribing with faster-whisper '{a.model}' (this is the long part)...")
 
         def tick(start):
             sys.stdout.write(f"\r  {fmt_ts(start)} transcribed")
@@ -359,26 +643,45 @@ def main(argv=None):
 
         language = None if a.language.strip().lower() in ('', 'auto') else a.language
         try:
+            # The ffmpeg pass is inside the try as well: it is minutes long on a
+            # two-hour recording, which is plenty of time for a Ctrl-C, and a
+            # traceback is never an acceptable thing to show for one.
+            audio = prepare_audio(src, td)
+            print(f"transcribing with faster-whisper '{a.model}' (this is the long part)...")
             model = WhisperModel(a.model, compute_type="auto")
             segments, _info = model.transcribe(str(audio), language=language, vad_filter=True)
             count = publish_transcripts(outdir, name, segments, a.model, src.name,
                                         progress=tick)
         except KeyboardInterrupt:
-            print("\nstopped before the transcript was finished. Nothing was written, so "
-                  "re-running the same command starts this recording over cleanly.",
+            print(f"\nstopped before the transcript was finished. "
+                  f"{_leftover_note(outdir, name)}\n"
+                  "Run the same command again when you are ready to start this recording over.",
                   file=sys.stderr)
+            return EXIT_FAILED
+        except PublishError as e:
+            # Saving failed, not decoding. Different problem, different next
+            # step, so it gets its own message - and one that does not guess how
+            # far the run got, since this fires both before the first segment
+            # (the destination was already blocked) and after the last one.
+            print(f"\nthe transcript could not be saved: {e}.", file=sys.stderr)
+            print(_leftover_note(outdir, name), file=sys.stderr)
             return EXIT_FAILED
         except Exception as e:
             # No traceback for the human: name the cause and the next move.
             print(f"\ntranscription failed: {e}", file=sys.stderr)
-            print("Nothing was written - no half-finished transcript was left behind.\n"
-                  "Try: play the recording to confirm it is not corrupt, then run the same "
+            print(_leftover_note(outdir, name), file=sys.stderr)
+            print("Try: play the recording to confirm it is not corrupt, then run the same "
                   "command with --model small; if that works, the larger model ran out of "
                   "memory.", file=sys.stderr)
             return EXIT_FAILED
 
     if count == 0:
         print("\nno speech was found, so nothing was written.")
+        if publication_state(outdir, name) != 'none':
+            # A redo of an unfinished set promised to replace it. Silence means
+            # that did not happen, and the folder still holds the old files -
+            # say so, or he will take them for the new transcript.
+            print(_leftover_note(outdir, name))
         print("Play the recording to confirm it has real audio; if it does, run the same "
               "command again with --language auto (a non-English recording is the usual "
               "cause).")

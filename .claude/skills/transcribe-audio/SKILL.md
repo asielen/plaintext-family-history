@@ -64,10 +64,16 @@ draft rather than an archive record, so it lives in this skill's own
    Point `--outdir` at a scratch folder, **never at an asset root**: the run
    writes `<name>.txt`, `<name>.srt` and `<name>.md`, and `<name>.txt` is
    precisely the name an app transcript filed beside the recording would carry.
-   The script refuses to overwrite outputs it already wrote (it reports
-   "already transcribed" and exits 0 — which is what makes a long queue safe to
-   re-run after a reboot), and a run that is interrupted or fails publishes
-   nothing at all, so a file that is there is always a finished one.
+   The script skips a recording whose three output files are all there (it
+   reports "already transcribed" and exits 0 — which is what makes a long queue
+   safe to re-run after a reboot), and a run that is interrupted or fails
+   publishes nothing at all. An unfinished set is never mistaken for a finished
+   one: if only some of the three files are there, or if a run was killed
+   outright while it was putting them in place (it leaves a `.publishing` marker
+   when that happens), the next run says so plainly and re-does the recording
+   instead of skipping it. Tell the human what it says; the leftover `.part`,
+   `.kept` and `.publishing` files in that folder can be deleted once the new
+   transcript looks right.
 3. **Review the output** (`<name>.md`, timestamped) against the passages that
    mattered — especially names the original transcript garbled.
 4. **Keep BOTH transcripts on the source — always.** This skill's end state
@@ -157,5 +163,9 @@ draft rather than an archive record, so it lives in this skill's own
   (`documents/interviews/…`, SPEC §12.4).
 - A run either writes all three files or none of them, so an interrupted pass
   never leaves a truncated transcript that a later batch would mistake for a
-  finished one. Re-running is always safe; `--force` is the only way to
-  replace an output that already exists.
+  finished one. That holds for putting the files in place as well: a
+  destination that cannot be replaced stops the run before anything moves, and
+  a failure part way through puts the previous transcript back. The one thing
+  no program can undo - a hard kill mid-rename - is marked on disk instead, and
+  the next run repairs it. Re-running is always safe; `--force` is the only way
+  to replace a *finished* transcript that already exists.

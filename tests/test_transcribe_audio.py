@@ -13,6 +13,16 @@ What can go wrong is everything around it, so that is what these tests pin:
      file - and must not mask the original error while cleaning up. The tests
      inject fake segments (and a fake iterator that raises partway) directly.
 
+  1b. ...AND THAT INCLUDES PUTTING THE FILES IN PLACE. Three renames are not
+     one operation. A destination that refuses the second rename, or a Ctrl-C
+     between two of them, would publish one file of the new run beside two of
+     the old one - a set that looks finished and is therefore skipped forever.
+     So: every destination is checked before the first rename, a failure part
+     way through restores the previous files, and a kill no rollback can catch
+     leaves a marker that stops the next run from calling the recording done.
+     These tests drive the failure by making one destination a folder and by
+     making `os.replace` refuse one specific name.
+
   2. PORTABILITY / PRIVACY OF THE OUTPUT. The .md is written to be attached to
      a source record and kept forever, so it must name the recording by
      filename and never by the absolute path the operator happened to type
@@ -29,6 +39,7 @@ Run: python -m unittest tests.test_transcribe_audio -v   (from the repo root)
 import importlib.util
 import io
 import contextlib
+import os
 import re
 import sys
 import tempfile
@@ -87,6 +98,76 @@ def _exploding_segments(good=2):
 
 def _leftovers(outdir):
     return sorted(p.name for p in Path(outdir).iterdir())
+
+
+PREVIOUS = 'previous good pass'
+
+
+def _plant_previous_transcript(outdir, name='stem'):
+    """Put a finished transcript from an earlier run in place, and return its paths."""
+    finals = ta.output_paths(outdir, name)
+    for final in finals:
+        final.write_text(PREVIOUS, encoding='utf-8')
+    return finals
+
+
+def _counted_segments(seen, count=3):
+    """A lazy iterator that records every segment pulled from it.
+
+    Lets a test prove a refusal happened BEFORE the hour of transcription
+    rather than after it - the difference between a wasted second and a wasted
+    afternoon.
+    """
+    def gen():
+        for seg in _segments(count):
+            seen.append(seg.start)
+            yield seg
+    return gen()
+
+
+class _RefusingReplace:
+    """os.replace, but it refuses one particular destination.
+
+    This is the failure the round-2 review is about: not a crash in the
+    transcription, but a rename that will not happen - a locked file, a full
+    disk, a permission change made while the recording was being decoded. There
+    is no portable way to provoke a real one on demand (running as root defeats
+    most of them), so the refusal is injected at the one call that matters.
+
+    `times=1` refuses the promotion but lets the move back through, which is the
+    ordinary failure. `times=None` refuses forever, so even the rollback cannot
+    put the file back - the shape a full disk leaves, and the one case where the
+    folder really is left mid-change.
+    """
+
+    def __init__(self, target, error, times=1):
+        self.target = Path(target)
+        self.error = error
+        self.times = times
+        self.refused = 0
+        self.real = os.replace
+
+    def __call__(self, src, dst, *args, **kwargs):
+        if Path(dst) == self.target and (self.times is None or self.refused < self.times):
+            self.refused += 1
+            raise self.error
+        return self.real(src, dst, *args, **kwargs)
+
+
+def _install_fake_whisper(testcase, segments):
+    """Stand a fake `faster_whisper` module up for one test, and take it down after."""
+
+    class FakeModel:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, *a, **k):
+            return segments, None
+
+    module = type(sys)('faster_whisper')
+    module.WhisperModel = FakeModel
+    sys.modules['faster_whisper'] = module
+    testcase.addCleanup(sys.modules.pop, 'faster_whisper', None)
 
 
 class PublishTestCase(unittest.TestCase):
@@ -158,6 +239,171 @@ class PublishTestCase(unittest.TestCase):
         ta.publish_transcripts(self.out, 'stem', _segments(2), 'medium', 'rec.m4a',
                                progress=seen.append)
         self.assertEqual(seen, [0, 10])
+
+
+class PromotionTestCase(unittest.TestCase):
+    """The three renames are all-or-nothing too, not just the writing.
+
+    Every test here starts from a FINISHED previous transcript, because that is
+    what makes a mixed set dangerous: one new file beside two old ones reads as
+    a complete pass to the next batch run.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.finals = _plant_previous_transcript(self.out)
+
+    def _refuse(self, target, error, times=1):
+        """Make os.replace refuse `target` (see _RefusingReplace) for this test."""
+        refusing = _RefusingReplace(target, error, times)
+        os.replace = refusing
+        self.addCleanup(setattr, os, 'replace', refusing.real)
+
+    def _contents(self):
+        return [p.read_text(encoding='utf-8') if p.is_file() else None for p in self.finals]
+
+    def test_a_folder_on_the_second_name_publishes_none_of_the_new_set(self):
+        """Preflight: one blocked destination stops the run before anything moves."""
+        self.finals[1].unlink()
+        self.finals[1].mkdir()
+        seen = []
+        with self.assertRaises(ta.PublishError) as ctx:
+            ta.publish_transcripts(self.out, 'stem', _counted_segments(seen), 'medium', 'rec.m4a')
+        self.assertIn('folder', str(ctx.exception).lower())
+        self.assertIn('--outdir', str(ctx.exception))
+        # The previous transcript is untouched, both files of it.
+        self.assertEqual(self.finals[0].read_text(encoding='utf-8'), PREVIOUS)
+        self.assertEqual(self.finals[2].read_text(encoding='utf-8'), PREVIOUS)
+        # And the refusal cost nothing: no segment was ever decoded.
+        self.assertEqual(seen, [])
+        self.assertEqual(_leftovers(self.out), ['stem.md', 'stem.srt', 'stem.txt'])
+
+    def test_a_refused_rename_restores_every_previous_file(self):
+        """The review's case: destination two rejects the rename after one has landed."""
+        self._refuse(self.finals[1], OSError(13, 'Permission denied'))
+        with self.assertRaises(ta.PublishError) as ctx:
+            ta.publish_transcripts(self.out, 'stem', _segments(3), 'medium', 'rec.m4a')
+        self.assertIn('stem.srt', str(ctx.exception))
+        self.assertEqual(self._contents(), [PREVIOUS, PREVIOUS, PREVIOUS])
+        self.assertEqual(_leftovers(self.out), ['stem.md', 'stem.srt', 'stem.txt'])
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'complete')
+
+    def test_a_ctrl_c_between_two_renames_restores_every_previous_file(self):
+        self._refuse(self.finals[1], KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            ta.publish_transcripts(self.out, 'stem', _segments(3), 'medium', 'rec.m4a')
+        self.assertEqual(self._contents(), [PREVIOUS, PREVIOUS, PREVIOUS])
+        self.assertEqual(_leftovers(self.out), ['stem.md', 'stem.srt', 'stem.txt'])
+
+    def test_a_rollback_that_cannot_finish_leaves_the_marker_behind(self):
+        """The one case nothing can undo must still be one the next run repairs.
+
+        Refusing every rename onto `stem.srt` breaks the promotion AND the move
+        back, which is the shape a hard kill leaves: files from two runs and no
+        way to tell by looking. The marker is what tells the next run.
+        """
+        self._refuse(self.finals[1], OSError(28, 'No space left on device'), times=None)
+        with self.assertRaises(ta.PublishError):
+            ta.publish_transcripts(self.out, 'stem', _segments(3), 'medium', 'rec.m4a')
+        self.assertTrue(ta.marker_path(self.out, 'stem').exists())
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'interrupted')
+        # The previous .srt could not be moved back, so it is still set aside.
+        self.assertFalse(self.finals[1].exists())
+        self.assertTrue(any(p.name.endswith('.kept') for p in self.out.iterdir()))
+
+    def test_a_successful_run_leaves_only_the_three_files(self):
+        """No marker, no `.kept` copy of the transcript it replaced, no `.part`."""
+        count = ta.publish_transcripts(self.out, 'stem', _segments(2), 'medium', 'rec.m4a')
+        self.assertEqual(count, 2)
+        self.assertEqual(_leftovers(self.out), ['stem.md', 'stem.srt', 'stem.txt'])
+        self.assertEqual(self.finals[0].read_text(encoding='utf-8'), 'line 0\nline 1\n')
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'complete')
+
+    def test_publish_refuses_a_missing_output_folder_in_plain_words(self):
+        with self.assertRaises(ta.PublishError) as ctx:
+            ta.publish_transcripts(self.out / 'gone', 'stem', _segments(1), 'medium', 'rec.m4a')
+        self.assertIn('--outdir', str(ctx.exception))
+
+
+class PublicationStateTestCase(unittest.TestCase):
+    """The "is this recording already done?" test - one a partial set must fail."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_nothing_on_disk(self):
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'none')
+
+    def test_all_three(self):
+        _plant_previous_transcript(self.out)
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'complete')
+
+    def test_two_of_three_is_not_complete(self):
+        finals = _plant_previous_transcript(self.out)
+        finals[2].unlink()
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'partial')
+
+    def test_a_marker_beats_a_full_set(self):
+        """All three present but a promotion was cut short: the files may be mixed."""
+        _plant_previous_transcript(self.out)
+        ta.marker_path(self.out, 'stem').write_text('x', encoding='utf-8')
+        self.assertEqual(ta.publication_state(self.out, 'stem'), 'interrupted')
+
+    def test_the_marker_is_named_for_its_run(self):
+        """Two recordings sharing one scratch folder must not read each other's marker."""
+        self.assertEqual(ta.marker_path(self.out, 'stem').name, '.stem.publishing')
+        self.assertNotEqual(ta.marker_path(self.out, 'stem'),
+                            ta.marker_path(self.out, 'other'))
+
+
+class PrepareAudioTestCase(unittest.TestCase):
+    """ffmpeg's exit code is a claim about the wav, not proof of one.
+
+    A container whose audio track ffmpeg cannot read has been seen to exit 0
+    and leave an empty wav; whisper then transcribes silence and the run
+    "succeeds" with an empty transcript. The check is cheap and the fallback
+    (PyAV on the original) is right there.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.src = self.tmp / 'rec.m4a'
+        self.src.write_bytes(b'stands in for real audio')
+        self.work = self.tmp / 'work'
+        self.work.mkdir()
+
+    def _fake_ffmpeg(self, wav_bytes):
+        """Stand in for a successful ffmpeg run that produced `wav_bytes`."""
+        def run(cmd, *a, **k):
+            if wav_bytes is not None:
+                (self.work / 'audio.wav').write_bytes(wav_bytes)
+            return None
+        real = ta.subprocess.run
+        ta.subprocess.run = run
+        self.addCleanup(setattr, ta.subprocess, 'run', real)
+
+    def test_an_empty_wav_falls_back_to_the_original_file(self):
+        self._fake_ffmpeg(b'')
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            got = ta.prepare_audio(self.src, self.work)
+        self.assertEqual(got, self.src)
+        self.assertIn('PyAV', buf.getvalue())
+
+    def test_a_wav_that_was_never_written_falls_back_too(self):
+        self._fake_ffmpeg(None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ta.prepare_audio(self.src, self.work), self.src)
+
+    def test_a_real_extraction_is_used(self):
+        self._fake_ffmpeg(b'RIFF....WAVE and some samples')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ta.prepare_audio(self.src, self.work), self.work / 'audio.wav')
 
 
 class PortablePathTestCase(unittest.TestCase):
@@ -286,6 +532,96 @@ class CliTestCase(unittest.TestCase):
             rc = ta.main([str(audio), '--outdir', str(self.tmp / 'w')])
         self.assertEqual(rc, ta.EXIT_FAILED)
         self.assertIn('pip install faster-whisper', buf.getvalue())
+
+
+class CliRecoveryTestCase(unittest.TestCase):
+    """What the CLI does about a set of files an earlier run did not finish.
+
+    The skip-if-present rule is what makes a long queue re-runnable, and it is
+    also what would make a half-published set permanent. These pin both halves:
+    a finished set is still skipped, an unfinished one is redone, and whatever
+    the run says about the folder is what is actually in it.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.audio = self.tmp / 'rec.m4a'
+        self.audio.write_bytes(b'stands in for real audio')
+        self.out = self.tmp / 'whisper'
+        self.out.mkdir()
+        self.finals = ta.output_paths(self.out, 'rec')
+
+    def _run(self, *extra):
+        """Run the CLI over the planted folder, returning (exit code, stdout, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = ta.main([str(self.audio), '--outdir', str(self.out), *extra])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_a_partial_set_is_redone_rather_than_skipped(self):
+        """Two files of three is not a transcript, whatever a batch pass assumes."""
+        _plant_previous_transcript(self.out, 'rec')
+        self.finals[2].unlink()
+        _install_fake_whisper(self, iter([]))
+        rc, out, _err = self._run()
+        # It transcribed (and found no speech); it did not report "already done".
+        self.assertEqual(rc, ta.EXIT_NO_SPEECH)
+        self.assertNotIn('already transcribed', out)
+        self.assertIn('only part', out)
+        # And having promised to replace them, it says it did not: the run found
+        # no speech, so the two old files are still the two old files.
+        self.assertIn('left exactly as they were', out)
+        self.assertEqual(self.finals[0].read_text(encoding='utf-8'), PREVIOUS)
+
+    def test_an_interrupted_promotion_is_redone_even_with_all_three_present(self):
+        """The hard-kill case: three plausible files, one marker saying otherwise."""
+        _plant_previous_transcript(self.out, 'rec')
+        (self.out / '.rec.publishing').write_text('interrupted', encoding='utf-8')
+        _install_fake_whisper(self, iter([]))
+        rc, out, _err = self._run()
+        self.assertEqual(rc, ta.EXIT_NO_SPEECH)
+        self.assertNotIn('already transcribed', out)
+        self.assertIn('mix of two runs', out)
+
+    def test_a_blocked_destination_does_not_claim_nothing_was_written(self):
+        """main's story and the folder have to agree, in this branch too."""
+        _plant_previous_transcript(self.out, 'rec')
+        self.finals[1].unlink()
+        self.finals[1].mkdir()
+        _install_fake_whisper(self, iter(_segments(3)))
+        rc, _out, err = self._run('--force')
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        self.assertIn('could not be saved', err)
+        self.assertIn('left exactly as they were', err)
+        self.assertNotIn('Nothing was written', err)
+        # And that claim is true: the previous transcript really is untouched.
+        self.assertEqual(self.finals[0].read_text(encoding='utf-8'), PREVIOUS)
+        self.assertEqual(self.finals[2].read_text(encoding='utf-8'), PREVIOUS)
+
+    def test_a_rollback_that_failed_is_reported_as_a_mixed_set(self):
+        """The worst case has to be the loudest, not the quietest."""
+        _plant_previous_transcript(self.out, 'rec')
+        refusing = _RefusingReplace(self.finals[1], OSError(28, 'No space left on device'),
+                                    times=None)
+        os.replace = refusing
+        self.addCleanup(setattr, os, 'replace', refusing.real)
+        _install_fake_whisper(self, iter(_segments(3)))
+        rc, _out, err = self._run('--force')
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        self.assertIn('mix of this run and the last one', err)
+        self.assertNotIn('Nothing was written', err)
+        self.assertTrue(ta.marker_path(self.out, 'rec').exists())
+
+    def test_a_decode_failure_still_reports_an_untouched_folder(self):
+        """The other direction: when nothing was written, say so."""
+        _install_fake_whisper(self, _exploding_segments())
+        rc, _out, err = self._run()
+        self.assertEqual(rc, ta.EXIT_FAILED)
+        self.assertIn('transcription failed', err)
+        self.assertIn('Nothing was written', err)
+        self.assertEqual(_leftovers(self.out), [])
 
 
 class SkillDocTestCase(unittest.TestCase):
