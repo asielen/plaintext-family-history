@@ -319,6 +319,81 @@ class W119SharedCoupleFolderTests(BracketsPromoteBase):
         self.assertNotIn('004 Gma Deep + Gpa Deep', out)
 
 
+class UnnamedPartnerFolderTests(BracketsPromoteBase):
+    """A couple folder invented for a batch promotion must never carry a
+    placeholder name.
+
+    `fha stubs` mints an unnamed reference as `name: unknown`. When the even
+    (father-slot) member is such a stub and the odd-slot partner has a real
+    name, naming the folder after the even slot produced `004 unknown + Gma
+    Deep` - and because that base already carries a `+`, W103's add-only spouse
+    rule would never revisit it once the unnamed person was finally named. The
+    known partner becomes the temporary base instead: out of the conventional
+    order, but a name W103 can finish later.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # GPA has no recorded name yet; GMA does. PA is their child, so GPA
+        # derives to position 4 (sex M) and GMA to 5.
+        (self.root / 'people' / 'stubs' / f'deep__gpa_{GPA}.md').write_text(
+            _ptext(GPA, 'unknown', 'M'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'deep__gma_{GMA}.md').write_text(
+            _ptext(GMA, 'Gma Deep', 'F'), encoding='utf-8')
+        claims = (_rel_claim('C-2aaaaaaaaa', KID, [PA, MA])
+                  + _rel_claim('C-2bbbbbbbbb', PA, [GPA, GMA]))
+        (self.root / 'sources' / 'notes' / f'rel_{SID.lower()}.md').write_text(
+            f'---\nid: {SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+
+    def _root_dirs(self) -> list[str]:
+        return sorted(p.name for p in (self.root / 'people').iterdir() if p.is_dir())
+
+    def test_the_known_partner_names_the_new_folder(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            res, out, _err = self._run(fix_promote=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        prefixed = [d for d in self._root_dirs() if d.startswith('004')]
+        self.assertEqual(prefixed, ['004 Gma Deep'], prefixed)
+        self.assertNotIn('004 unknown', out)
+        shared = self.root / 'people' / '004 Gma Deep'
+        self.assertTrue((shared / f'deep__gpa_{GPA}.md').exists())
+        self.assertTrue((shared / f'deep__gma_{GMA}.md').exists())
+
+    def test_w103_can_finish_the_name_once_the_partner_is_named(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            self._run(fix_promote=True)
+        rec = self.root / 'people' / '004 Gma Deep' / f'deep__gpa_{GPA}.md'
+        rec.write_text(rec.read_text(encoding='utf-8').replace(
+            'name: unknown', 'name: Gpa Deep'), encoding='utf-8')
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+        res, out, _err = self._run()
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertIn('names only one partner - add Gpa Deep', out)
+
+    def test_two_unnamed_partners_keep_the_placeholder(self) -> None:
+        # Nothing better exists: this is exactly what promoting one unnamed
+        # stub produces today, and the folder reads as unfinished, which it is.
+        (self.root / 'people' / 'stubs' / f'deep__gma_{GMA}.md').write_text(
+            _ptext(GMA, 'unknown', 'F'), encoding='utf-8')
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+        res, _out, _err = self._run(fix_promote=True, dry_run=True)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        conn = views.open_index_db(self.root, ('persons',))
+        try:
+            pid_to_pos = views._build_ahnentafel_map(conn, normalize_id(KID))
+            issues = views._check_w119_direct_line_stubs(conn, self.root, pid_to_pos)
+        finally:
+            conn.close()
+        dests = {i['dest_folder'].name for i in issues
+                 if normalize_id(i['pid']) in (normalize_id(GPA), normalize_id(GMA))}
+        self.assertEqual(dests, {'004 unknown'})
+
+
 class AmbiguousCoupleFolderTests(BracketsPromoteBase):
     """Two folders share one couple prefix - brackets must refuse, not guess."""
 
@@ -495,6 +570,165 @@ class RealignTests(BracketsPromoteBase):
         res, out, _err = self._run(realign=True)
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertIn('no issues found', out)
+
+
+class FileMoveConflictTests(BracketsPromoteBase):
+    """A W110 file move whose destination is already occupied must stop the
+    whole pass BEFORE the first rename.
+
+    The trap: the preflight used to check folder-rename destinations only. So
+    the folders were renamed, the blocked move was skipped as a failure, and -
+    because a failed rename/move makes --realign skip the promote half - every
+    promotion was skipped too. One command, presented as one whole-tree
+    realignment, left a half-applied tree.
+
+    Fixture: GPA is curated in a hand-misnamed `006 Gpa Deep` (his derived
+    prefix is 004) that also holds his timeline companion, and a stray copy of
+    that same companion sits in KID's couple folder. So the plan is a composed
+    folder rename (prefix 004 + the [Pa] bracket) plus a file move into the
+    folder that rename creates - a destination that does not exist on disk yet,
+    which is exactly why checking `dst.exists()` at apply time was not enough.
+    PA and MA stay stubs, so there are promotions to lose as well.
+    """
+
+    MISNAMED = '006 Gpa Deep'
+    COMPANION = f'deep__gpa_timeline_{GPA}.md'
+
+    def setUp(self) -> None:
+        super().setUp()
+        home = self.root / 'people' / self.MISNAMED
+        home.mkdir()
+        (self.root / 'people' / 'stubs' / f'deep__gpa_{GPA}.md').unlink()
+        (home / f'deep__gpa_{GPA}.md').write_text(
+            _ptext(GPA, 'Gpa Deep', 'M', 'curated'), encoding='utf-8')
+        self.stray = self.root / 'people' / FOLDER / self.COMPANION
+        self.stray.write_text('<!-- GENERATED -->\nstray\n', encoding='utf-8')
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+
+    def _settle_destination(self) -> Path:
+        """Put a file where the move wants to land (it travels with the rename)."""
+        settled = self.root / 'people' / self.MISNAMED / self.COMPANION
+        settled.write_text('<!-- GENERATED -->\nsettled\n', encoding='utf-8')
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+        return settled
+
+    def _people_dirs(self) -> list[str]:
+        return sorted(p.name for p in (self.root / 'people').iterdir() if p.is_dir())
+
+    def test_taken_destination_stops_the_whole_pass(self) -> None:
+        settled = self._settle_destination()
+        with mock.patch('builtins.input', return_value='y'):
+            res, out, err = self._run(realign=True)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('already', err)
+        self.assertIn(self.COMPANION, err)
+        self.assertNotIn('Traceback', err)
+        # Nothing was applied: no rename, no move, no promotion, no cache drop.
+        self.assertIn(self.MISNAMED, self._people_dirs())
+        self.assertNotIn('004 Gpa Deep [Pa]', self._people_dirs())
+        self.assertTrue(self.stray.exists())
+        self.assertEqual(settled.read_text(encoding='utf-8'),
+                         '<!-- GENERATED -->\nsettled\n')
+        self.assertIn(f'deep__pa_{PA}.md', self._stub_names())
+        self.assertIn(f'deep__ma_{MA}.md', self._stub_names())
+        self.assertTrue((self.root / '.cache' / 'index.sqlite').exists())
+
+    def test_plain_fix_refuses_the_same_plan(self) -> None:
+        self._settle_destination()
+        with mock.patch('builtins.input', return_value='y'):
+            res, _out, err = self._run(fix=True)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn(self.COMPANION, err)
+        self.assertIn(self.MISNAMED, self._people_dirs())
+        self.assertTrue(self.stray.exists())
+
+    def test_dry_run_reports_the_same_refusal(self) -> None:
+        # --dry-run must say what the apply would: same refusal, same exit
+        # code, never a preview promising a run that cannot work.
+        self._settle_destination()
+        res, out, err = self._run(fix=True, dry_run=True)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn(self.COMPANION, err)
+        self.assertNotIn('dry-run: no changes written', out)
+        self.assertIn(self.MISNAMED, self._people_dirs())
+
+    def test_a_free_destination_still_applies(self) -> None:
+        # The mirror: the same plan with nothing in the way must still run, so
+        # the preflight is not simply refusing every move.
+        with mock.patch('builtins.input', return_value='y'):
+            res, _out, _err = self._run(fix=True)
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        dirs = self._people_dirs()
+        self.assertIn('004 Gpa Deep [Pa]', dirs)
+        self.assertNotIn(self.MISNAMED, dirs)
+        self.assertFalse(self.stray.exists())
+        moved = self.root / 'people' / '004 Gpa Deep [Pa]' / self.COMPANION
+        self.assertTrue(moved.exists())
+
+
+class SplitCoupleRenameTests(BracketsPromoteBase):
+    """Two folders that would both end up carrying one couple number.
+
+    PA and MA are the same couple filed in two folders (`006 Pa Deep` and
+    `007 Ma Deep`), so each claims couple number 002 from its own occupant.
+    Applying both renames leaves two `002 …` folders - precisely the ambiguous
+    tree the next bracket run refuses outright (`couple_folder_for_prefix`), so
+    the run would fix the tree into a state it can no longer read. The
+    preflight names it while nothing has moved.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        people = self.root / 'people'
+        # KID moves to his own folder so nothing else holds prefix 002.
+        kid_home = people / '000 Kid Deep'
+        kid_home.mkdir()
+        (people / FOLDER / f'deep__kid_{KID}.md').rename(
+            kid_home / f'deep__kid_{KID}.md')
+        (people / FOLDER).rmdir()
+        for pid, name, sex, folder in ((PA, 'Pa Deep', 'M', '006 Pa Deep'),
+                                       (MA, 'Ma Deep', 'F', '007 Ma Deep')):
+            home = people / folder
+            home.mkdir()
+            (people / 'stubs' / f'deep__{name.split()[0].lower()}_{pid}.md').unlink()
+            (home / f'deep__{name.split()[0].lower()}_{pid}.md').write_text(
+                _ptext(pid, name, sex, 'curated'), encoding='utf-8')
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+
+    def _people_dirs(self) -> list[str]:
+        return sorted(p.name for p in (self.root / 'people').iterdir() if p.is_dir())
+
+    def test_a_pre_existing_duplicate_number_does_not_block_a_bracket_fix(self) -> None:
+        # The guard must fire only for a duplicate the PLAN creates. An archive
+        # that already has two folders on one number (and no root_person, so
+        # the Ahnentafel checks that would name it are off) must still be able
+        # to apply an ordinary W103 bracket refresh.
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'people' / '006 Pa Deep').rename(
+            self.root / 'people' / '007 Pa Deep')
+        shutil.rmtree(self.root / '.cache', ignore_errors=True)
+        self._reindex()
+        with mock.patch('builtins.input', return_value='y'):
+            res, out, err = self._run(fix=True)
+        self.assertNotEqual(res.exit_code, EXIT_FAILURE, err)
+        self.assertIn('007 Pa Deep [Kid]', self._people_dirs())
+
+    def test_two_folders_claiming_one_number_are_refused(self) -> None:
+        with mock.patch('builtins.input', return_value='y'):
+            res, _out, err = self._run(fix=True)
+        self.assertEqual(res.exit_code, EXIT_FAILURE)
+        self.assertIn('couple 002', err)
+        self.assertIn('006 Pa Deep', err)
+        self.assertIn('007 Ma Deep', err)
+        self.assertNotIn('Traceback', err)
+        dirs = self._people_dirs()
+        self.assertIn('006 Pa Deep', dirs)
+        self.assertIn('007 Ma Deep', dirs)
+        self.assertFalse([d for d in dirs if d.startswith('002')])
 
 
 if __name__ == '__main__':

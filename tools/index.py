@@ -937,7 +937,20 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         (pid, kind, str(path.relative_to(archive_root)), 1 if is_generated else 0),
     )
 
-    # FTS index the body
+    # FTS index the body.
+    #
+    # Generated companions are indexed here like any other person file, and
+    # that is deliberate: a companion says things no record does. It resolves
+    # `place_id: L-…` to the place's NAME and `[[S-…]]` to the source's title,
+    # and it attaches all of it to ONE person - so a text search for a town
+    # name lands on "Margaret's timeline" where the claim itself only carries
+    # an ID. Dropping these bodies would narrow what `fha find --text` can
+    # answer, which is why the rows are kept and maintained. The cost is that
+    # these rows go stale invisibly - a companion is outside the freshness
+    # watermark (#37), so nothing would prompt a rebuild after a regeneration.
+    # `fha views` therefore maintains its own rows between rebuilds through
+    # `_lib.sync_generated_view_rows`; this insert and that one must keep
+    # deriving person_id, kind and generated the same way.
     body = rec['body']
     if body.strip():
         conn.execute(

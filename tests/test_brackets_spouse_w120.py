@@ -171,6 +171,65 @@ class SpouseExtendedBaseUnitTests(unittest.TestCase):
             self.assertEqual(base, '004 Robert E. Church', repr(placeholder))
             self.assertIsNone(other, repr(placeholder))
 
+    def test_a_placeholder_base_is_never_extended(self) -> None:
+        # The other half of the same rule: a folder invented for a person with
+        # no recorded name ('004 unknown') must not gain `+ Jeanne Stemler`.
+        # This rule only ADDS and never touches a base that already carries a
+        # `+`, so the placeholder would sit in the folder name for good once
+        # the unnamed partner was finally named.
+        for placeholder in ('unknown', 'Unknown', 'None', 'null'):
+            names = {'p-1': placeholder, 'p-2': 'Jeanne Stemler'}
+            base, other = spouse_extended_base(
+                f'004 {placeholder}', ['p-1', 'p-2'], names)
+            self.assertEqual(base, f'004 {placeholder}', repr(placeholder))
+            self.assertIsNone(other, repr(placeholder))
+
+
+class NewCoupleFolderNameTests(unittest.TestCase):
+    """The name a batch promotion invents for a couple folder that does not
+    exist yet - the same rule for W119's preview and --realign's rebase."""
+
+    ROOT = Path('/archive')
+
+    def _name(self, members: list[dict]) -> str:
+        return views._new_couple_folder(self.ROOT, 4, members).name
+
+    def test_both_named_gives_the_couple_convention(self) -> None:
+        self.assertEqual(
+            self._name([{'pos': 4, 'name': 'Robert E. Church'},
+                        {'pos': 5, 'name': 'Jeanne Stemler'}]),
+            '004 Robert E. Church + Jeanne Stemler')
+
+    def test_a_placeholder_partner_is_left_off(self) -> None:
+        self.assertEqual(
+            self._name([{'pos': 4, 'name': 'Robert E. Church'},
+                        {'pos': 5, 'name': 'unknown'}]),
+            '004 Robert E. Church')
+
+    def test_a_placeholder_even_slot_yields_to_the_known_partner(self) -> None:
+        # The permanent-name trap: '004 unknown + Jeanne Stemler' already
+        # carries a `+`, so W103's add-only rule would never repair it once the
+        # even-slot person is named. Name the folder for the partner we know.
+        for placeholder in ('unknown', 'None', '', 'null'):
+            self.assertEqual(
+                self._name([{'pos': 4, 'name': placeholder},
+                            {'pos': 5, 'name': 'Jeanne Stemler'}]),
+                '004 Jeanne Stemler', repr(placeholder))
+
+    def test_two_placeholders_keep_the_even_slot_placeholder(self) -> None:
+        # Nothing better is available; this is what promoting one unnamed stub
+        # produces today, and the folder reads as unfinished, which it is.
+        self.assertEqual(
+            self._name([{'pos': 4, 'name': 'unknown'},
+                        {'pos': 5, 'name': 'unknown'}]),
+            '004 unknown')
+
+    def test_a_lone_member_names_itself(self) -> None:
+        self.assertEqual(self._name([{'pos': 4, 'name': 'Robert E. Church'}]),
+                         '004 Robert E. Church')
+        self.assertEqual(self._name([{'pos': 5, 'name': 'Jeanne Stemler'}]),
+                         '004 Jeanne Stemler')
+
 
 class SpouseFolderNameTests(unittest.TestCase):
     """The live-archive case: both partners curated in the couple folder, the
@@ -228,6 +287,23 @@ class SpouseFolderNameTests(unittest.TestCase):
     def test_lint_leaves_a_two_partner_name_alone(self) -> None:
         root = _build(self._files(
             'people/004 Robert E. Church + Jeanne Stemler [Lisa + Robert]'))
+        findings, _ = lint._run_lint_core(root, load_fha_yaml(root))
+        self.assertEqual([f for f in findings if f.code == 'W103'], [])
+
+    def test_both_backends_leave_a_placeholder_base_alone(self) -> None:
+        # The folder a promotion had to invent for a partner with no recorded
+        # name. Adding `+ Jeanne Stemler` here would fix the placeholder in
+        # place forever (the add-only rule never revisits a base with a `+`),
+        # so both backends stay silent until the human names the person.
+        files = self._files()
+        rob_key = next(k for k in files if 'church__robert_P-3c' in k)
+        files[rob_key] = _ptext(ROB, 'unknown', 'M', 'curated')
+        placeholder_folder = 'people/004 unknown [Lisa + Robert]'
+        moved = {}
+        for key, text in files.items():
+            moved[key.replace(self.FOLDER, placeholder_folder)] = text
+        root = _build(moved)
+        self.assertEqual(_views_w103(root), [])
         findings, _ = lint._run_lint_core(root, load_fha_yaml(root))
         self.assertEqual([f for f in findings if f.code == 'W103'], [])
 

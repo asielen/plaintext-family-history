@@ -391,6 +391,11 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
         self.assertTrue(Path(res.changed[0]).name.startswith('second__person_timeline'))
         self.assertIn('WARNING', err.getvalue())
         self.assertIn(PID, err.getvalue())
+        # ...and the batch says so in its exit code: nine of ten files written
+        # is not a clean run, the same way one skipped person is not on the
+        # single-person path.
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertEqual(res.data['skipped'], 1)
 
 
 class ExitCodeTests(_ViewsHtmlBase):
@@ -433,7 +438,9 @@ class CleanSweepTests(_ViewsHtmlBase):
         # Real run: marker-owned files gone from both places; the hand-written
         # file survives (marker-per-file, never folder ownership).
         res = views.run_clean(self.root)
-        self.assertEqual(res.exit_code, EXIT_WARNINGS)  # people/-tree md removed
+        # Clean now drops the deleted companions' index rows in the same pass,
+        # so nothing is left stale and the sweep exits clean.
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertEqual([p.name for p in self._gen_dir().iterdir()],
                          ['keep-me.html'])
         left = sorted(p.name for p in self.profile.parent.iterdir())

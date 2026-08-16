@@ -124,6 +124,7 @@ from _lib import (
     requirements_hint,
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
     spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
+    sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
 )
 
@@ -155,6 +156,8 @@ def _views_result(
 #  Helpers (shared utilities)
 #    _today, _gen_header          - GENERATED header text
 #    (database / root resolution now live in _lib.py: open_index_db, resolve_root_arg)
+#    _rel_display                 - archive-relative path for user-facing lines
+#    _sync_index_rows             - keep notes_fts/person_files in step with view writes
 #    _profile_path_for            - locate a person's .md profile file
 #    _out_path_for                - build companion file path from profile path
 #    _format_sid, _place_label    - formatting helpers
@@ -203,7 +206,12 @@ def _views_result(
 #    _realign_promotion_dests     - re-point W119 dests at the post-rename tree (--realign)
 #    _compose_folder_renames      - merge W103+W110 renames that share a source folder
 #    _print_bracket_preview       - format the preview diff before any writes
+#    _planned_folder_renames      - every folder rename the pass will perform
+#    _location_before_renames     - a post-rename path read back onto today's tree
+#    _bracket_fix_conflicts       - the ONE preflight: taken folder AND file destinations
 #    _apply_bracket_fixes         - perform renames/moves after confirmation
+#    _drop_index_cache            - the shared post-fix cache drop + its failure message
+#    _print_fix_conflicts         - refuse a blocked plan before the Apply? gate
 #    _cmd_brackets                - CLI handler: report, preview, fix, fix-promote, realign
 #
 #  Tree view  (_cmd_tree and helpers)
@@ -349,12 +357,78 @@ def _generate_or_warn(context: str, fn, *args, **kwargs):
     return None
 
 
+def _batch_view_result(
+    count: int, skipped: int, changed: list[str], what: str
+) -> Result:
+    """The Result a bulk view run returns, warning when anything was skipped.
+
+    Every skip already printed its own WARNING with the reason and the fix (a
+    hand-written file in the way, a folder the index no longer finds). What was
+    missing is the exit code: a batch that wrote nine of ten files exited 0, so
+    a harness - or a human reading only the last line - could not tell the run
+    was incomplete, while the SAME condition on a single-person run exits 1.
+    """
+    if skipped:
+        print(
+            f'{skipped} {what} file(s) skipped - see the warnings above; '
+            'fix what each one names and re-run for those people.'
+        )
+        return _views_result(EXIT_WARNINGS, changed=changed,
+                             data={'count': count, 'skipped': skipped})
+    return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
+
+
 def _rebase(p: Path, old: Path, new: Path) -> Path:
     """Return p relocated from old to new, or p unchanged if not under old."""
     try:
         return new / p.relative_to(old)
     except ValueError:
         return p
+
+
+def _rel_display(p: Path, archive_root: Path) -> str:
+    """The archive-relative form of a path for user-facing lines, or the
+    absolute path when it lives outside the archive (an external root)."""
+    try:
+        return str(p.relative_to(archive_root))
+    except ValueError:
+        return str(p)
+
+
+def _sync_index_rows(
+    archive_root: Path,
+    *,
+    conn: sqlite3.Connection | None = None,
+    written: list[Path] | tuple[Path, ...] = (),
+    removed: list[Path] | tuple[Path, ...] = (),
+) -> str:
+    """Bring the index's rows for the companions this run wrote/deleted up to date.
+
+    Generated companions are excluded from the freshness watermark (#37) - they
+    are written FROM the index, so counting them made every view write stale the
+    index it had just read. But index.py still puts each companion's body into
+    `notes_fts`, so with the watermark silent nothing else would ever notice
+    that text changed: `fha find --text` would keep serving the PREVIOUS
+    timeline's words, and a `views clean` would leave rows for files that are
+    gone. The row rewrite lives in `_lib.sync_generated_view_rows` because views
+    cannot import index (tools never import tools).
+
+    The read handle is closed first: the sync writes to the same SQLite file,
+    and a lingering reader can block that write on some platforms. Returns the
+    shared status ('indexed' / 'index_absent' / 'index_error') so the caller can
+    decide whether the `fha index` advice still needs printing.
+    """
+    if conn is not None:
+        conn.close()
+    status = sync_generated_view_rows(archive_root, written=written, removed=removed)
+    if status == 'index_error':
+        print(
+            'WARNING: the view files are written, but the search index could '
+            'not be updated to match them. Run `fha index` so searches stop '
+            'returning the old text.',
+            file=sys.stderr,
+        )
+    return status
 
 
 # ── HTML single-file rendering ────────────────────────────────────────────────
@@ -1669,18 +1743,25 @@ def _new_couple_folder(archive_root: Path, prefix: int, members: list[dict]) -> 
     single-person `fha person promote` does. When BOTH partners are in the
     batch, the folder names both from the start (`004 Robert + Jeanne`, the
     SPEC §12.2 convention) - otherwise the fresh folder announces one partner
-    and waits for the next W103 pass to add the other. A partner whose only
-    "name" is a placeholder (`unknown`, an unnamed stub) is left off: a folder
-    name is for humans, and W103's add-only rule would otherwise never
-    revisit `+ unknown` once the real name is recorded. ONE rule, shared by
+    and waits for the next W103 pass to add the other. ONE rule, shared by
     W119's preview and --realign's rebase, so the two can never invent
     different names for the same couple.
+
+    A partner whose only "name" is a placeholder (`unknown`, an unnamed stub)
+    is left off, and that applies to BOTH slots: a folder name is for humans,
+    and W103's add-only spouse rule never touches a base that already carries a
+    `+`, so `004 unknown + Jeanne` would keep the placeholder forever once the
+    even-slot person is finally named. When only the odd-slot partner has a real
+    name, that name becomes the temporary base (`004 Jeanne`) - out of the
+    conventional order, but a base W103 can repair into `004 Jeanne + Robert`
+    later. Only when neither slot has a name does the placeholder go in, which
+    is exactly what promoting a single unnamed stub produces today.
     """
     namer = min(members, key=lambda c: c['pos'])
     partner = next((c for c in members if c['pos'] == namer['pos'] + 1), None)
-    label = namer['name']
-    if partner is not None and not is_placeholder_name(partner['name']):
-        label = f'{namer["name"]} + {partner["name"]}'
+    named = [c['name'] for c in (namer, partner)
+             if c is not None and not is_placeholder_name(c['name'])]
+    label = ' + '.join(named) if named else namer['name']
     return archive_root / 'people' / f'{str(prefix).zfill(3)} {label}'
 
 
@@ -2058,15 +2139,130 @@ def _print_bracket_preview(
                 print(f'      -> {dst_rel}')
 
 
+def _planned_folder_renames(
+    w103: list[dict], w110: list[dict]
+) -> dict[Path, Path]:
+    """Every folder rename the fix pass will perform: source -> destination."""
+    renames = {item['folder']: item['folder'].parent / item['new_name']
+               for item in w103}
+    for item in w110:
+        if item['kind'] == 'folder_rename':
+            renames[item['old_folder']] = item['new_folder']
+    return renames
+
+
+def _location_before_renames(p: Path, renames: dict[Path, Path]) -> Path:
+    """Where a post-rename path sits on disk right NOW, before any rename runs.
+
+    File-move sources and destinations are expressed against the folder names
+    the fix pass will have created by the time the moves run. To ask "is
+    something already sitting there?" before the first mutation, the path has
+    to be read back through the pending renames: `040 Family [new]/kin.md` is
+    at this moment `040 Family [old]/kin.md`.
+    """
+    for old, new in renames.items():
+        try:
+            return old / p.relative_to(new)
+        except ValueError:
+            continue
+    return p
+
+
+def _bracket_fix_conflicts(
+    w103: list[dict], w110: list[dict], archive_root: Path
+) -> list[str]:
+    """Everything that would stop this plan applying as one piece, in plain words.
+
+    ONE preflight for the whole pass - folders AND files. Checking the folder
+    renames alone was not enough: the renames were applied, then a file whose
+    destination already held a duplicate companion was skipped, and in
+    --realign every promotion after it was skipped too. The command is
+    presented as one whole-tree realignment, so a taken destination must stop
+    it BEFORE the first rename, not halfway through.
+
+    A file-move destination is compared against the tree as it stands today
+    (`_location_before_renames`), because a folder rename earlier in the plan
+    carries whatever is inside it to the destination name. Two moves landing on
+    one path count as a conflict for the same reason: the second would be
+    skipped after the first had already been applied.
+
+    The last check is not a taken destination but the same partial state by
+    another route: renames that leave TWO couple folders carrying one number
+    (a couple filed in two separate folders, each claiming the number from its
+    own occupant). Applying those produces exactly the duplicate-prefix tree
+    the next bracket run refuses outright, so it is caught here, before
+    anything moves, and named as the human problem it is.
+    """
+    conflicts: list[str] = []
+    renames = _planned_folder_renames(w103, w110)
+
+    for old_folder, new_folder in renames.items():
+        if new_folder != old_folder and new_folder.exists():
+            conflicts.append(
+                'rename destination already exists: '
+                f'{_rel_display(new_folder, archive_root)}')
+
+    def _prefix_of(name: str) -> int | None:
+        m = re.match(r'^(\d+) ', name)   # canonical folders only ('004b …' is its own)
+        return int(m.group(1)) if m else None
+
+    before: dict[int, int] = {}
+    after: dict[int, list[str]] = {}
+    for folder in _couple_folder_dirs(archive_root):
+        post = renames.get(folder, folder)
+        pre_prefix = _prefix_of(folder.name)
+        if pre_prefix is not None:
+            before[pre_prefix] = before.get(pre_prefix, 0) + 1
+        post_prefix = _prefix_of(post.name)
+        if post_prefix is not None:
+            after.setdefault(post_prefix, []).append(
+                folder.name if post == folder
+                else f'{folder.name} -> {post.name}')
+    for prefix, labels in sorted(after.items()):
+        # Only a duplicate this plan would CREATE. A tree that already had two
+        # folders on one number keeps whatever it had: refusing there would
+        # block an unrelated bracket refresh over a pre-existing condition the
+        # Ahnentafel checks already report in their own words.
+        if len(labels) > 1 and before.get(prefix, 0) < 2:
+            conflicts.append(
+                f'{" and ".join(sorted(labels))} would both end up as couple '
+                f'{prefix:03d} - one couple, one folder. Merge those folders '
+                'by hand (or give the non-ancestral one a letter suffix, e.g. '
+                f'"{prefix:03d}b …"), then re-run')
+
+    claimed: dict[Path, Path] = {}
+    for item in w110:
+        if item['kind'] != 'file_move':
+            continue
+        src_now = _location_before_renames(item['src_path'], renames)
+        dst_now = _location_before_renames(item['dst_path'], renames)
+        if dst_now != src_now and dst_now.exists():
+            conflicts.append(
+                'a file is already at the destination '
+                f'{_rel_display(item["dst_path"], archive_root)} '
+                f'(moving {_rel_display(item["src_path"], archive_root)}) '
+                '- move or delete one of them, then re-run')
+        elif dst_now in claimed:
+            conflicts.append(
+                'two files would be moved to the same place, '
+                f'{_rel_display(item["dst_path"], archive_root)} '
+                f'({_rel_display(claimed[dst_now], archive_root)} and '
+                f'{_rel_display(item["src_path"], archive_root)})')
+        else:
+            claimed[dst_now] = item['src_path']
+    return conflicts
+
+
 def _apply_bracket_fixes(
     w103: list[dict], w110: list[dict], archive_root: Path
 ) -> tuple[int, bool]:
     """Apply renames and moves collected by the check functions.
 
-    A preflight first checks every folder-rename destination. If any already
-    exists (and is not its own source), NOTHING is mutated and the function
-    returns (conflict_count, aborted=True) so the caller can fail before any
-    partial change.
+    A preflight (`_bracket_fix_conflicts`) first checks every destination the
+    pass will write to - folder renames AND file moves - plus the couple
+    numbers the renames would leave doubled up. On any of those, NOTHING is
+    mutated and the function returns (problem_count, aborted=True) so the
+    caller can fail before any partial change.
 
     Otherwise it renames folders (os.rename) and moves person files
     (shutil.move), creating destination folders as needed. Folder-rename
@@ -2076,28 +2272,13 @@ def _apply_bracket_fixes(
     nonzero `failures` as EXIT_WARNINGS - a non-empty fix run must never report
     clean after a rename/move could not be applied.
     """
-    # ── Preflight: folder-rename destination conflicts ────────────────────────
-    conflicts: list[Path] = []
-    for item in w103:
-        dst = item['folder'].parent / item['new_name']
-        if dst != item['folder'] and dst.exists():
-            conflicts.append(dst)
-    for item in w110:
-        if item['kind'] != 'folder_rename':
-            continue
-        if item['new_folder'] != item['old_folder'] and item['new_folder'].exists():
-            conflicts.append(item['new_folder'])
+    # ── Preflight: every destination conflict, before the first mutation ──────
+    # The callers run this same check before the Apply? gate; repeating it here
+    # is the last-moment guard (the tree can change between preview and apply)
+    # and keeps the engine safe for any future caller that forgets.
+    conflicts = _bracket_fix_conflicts(w103, w110, archive_root)
     if conflicts:
-        for c in conflicts:
-            try:
-                rel = c.relative_to(archive_root)
-            except ValueError:
-                rel = c
-            print(
-                f'  ERROR: rename destination already exists: {rel} '
-                '- no changes applied.',
-                file=sys.stderr,
-            )
+        _print_fix_conflicts(conflicts)
         return len(conflicts), True
 
     failures = 0
@@ -2168,6 +2349,63 @@ def _apply_bracket_fixes(
     return failures, False
 
 
+def _drop_index_cache(
+    archive_root: Path,
+    conn: sqlite3.Connection | None,
+    applied_sentence: str,
+) -> tuple[list[str], str | None]:
+    """Drop .cache/index.sqlite after a fix pass moved records around.
+
+    Renames, moves and promotions all change a record's PATH without touching
+    its mtime, so `newest_record_mtime` cannot tell that the index now points at
+    the old locations: the cache has to go. All three fix paths (--fix,
+    --fix-promote, --realign) need exactly this, so the delete, the open handle
+    it must release first, and the could-not-delete message live here once.
+
+    `applied_sentence` names what already landed on disk - that work is done and
+    irreversible; only the cache drop failed - so the warning can open with it.
+    Returns (changed, warning): warning is None on success, otherwise the whole
+    plain-words message the caller prints to stderr before exiting with
+    warnings. No traceback ever reaches the human.
+    """
+    if conn is not None:
+        conn.close()
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    try:
+        db_path.unlink(missing_ok=True)
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        return [], (
+            f'\n{applied_sentence}, but the search index cache could not be '
+            f'cleared ({reason}): {db_path}. Those records moved without '
+            'changing their file times, so the leftover index still points at '
+            'the old locations and can look up to date - searches may quietly '
+            f'go stale until you rebuild it. Delete {db_path} (or just run '
+            '`fha index`) to rebuild the index and clear the stale entries.'
+        )
+    return [str(db_path)], None
+
+
+def _print_fix_conflicts(conflicts: list[str]) -> None:
+    """Report everything that blocks the fix pass from running as one piece.
+
+    Printed instead of the Apply? gate, and printed identically under
+    --dry-run: a plan that cannot run must never be offered for confirmation,
+    and the preview must say the same thing the apply would.
+    """
+    print(
+        f'\nERROR: this plan cannot be applied in one piece - '
+        f'{len(conflicts)} problem(s), so nothing was changed:',
+        file=sys.stderr,
+    )
+    for line in conflicts:
+        print(f'  - {line}', file=sys.stderr)
+    print(
+        'Fix what each line names, run `fha index`, then re-run this command.',
+        file=sys.stderr,
+    )
+
+
 def _confirm_apply(yes: bool) -> bool:
     """
     The Apply? [y/N] gate shared by --fix, --fix-promote and --realign.
@@ -2236,6 +2474,13 @@ def run_brackets(
     All three fix flags share one Apply? [y/N] gate (_confirm_apply); `yes`
     (--yes) skips the prompt for scripted/non-interactive runs, with the full
     preview still printed (#38).
+
+    Every rename/move path preflights ALL of its destinations first - folder
+    renames and file moves together (_bracket_fix_conflicts) - and refuses the
+    whole plan, before the gate, when any is already taken. --dry-run prints
+    the identical refusal. Checking only the folders would rename them, skip
+    the blocked file move, and (under --realign) skip every promotion after
+    it: a partial state from a command presented as one whole-tree pass.
 
     The findings, preview, prompt, and per-rename narration stay inline - the
     interactive Apply? gate is bound to that output and is out of scope to move
@@ -2418,6 +2663,15 @@ def run_brackets(
                         'the rename lands)'
                     )
 
+            # Preflight before the gate, not after it: --realign is presented
+            # as one whole-tree pass, so a destination that is already taken
+            # must stop it here rather than leave the renames applied and every
+            # promotion skipped.
+            conflicts = _bracket_fix_conflicts(w103, w110, archive_root)
+            if conflicts:
+                _print_fix_conflicts(conflicts)
+                return _views_result(EXIT_FAILURE, data=issue_data)
+
             if dry_run:
                 print('\n(dry-run: no changes written)')
                 return _views_result(EXIT_WARNINGS, data=issue_data)
@@ -2431,9 +2685,9 @@ def run_brackets(
                 failures, aborted = _apply_bracket_fixes(w103, w110, archive_root)
                 if aborted:
                     print(
-                        f'\nNo changes written - {failures} rename '
-                        'destination(s) already exist (see stderr). Resolve '
-                        'the conflicts, then re-run.',
+                        f'\nNo changes written - {failures} problem(s) '
+                        'blocked the plan (see stderr). Fix those, then '
+                        're-run.',
                         file=sys.stderr,
                     )
                     return _views_result(EXIT_FAILURE, data=issue_data)
@@ -2463,31 +2717,14 @@ def run_brackets(
                 promoted, pfail = _apply_promotions(w119, archive_root)
                 failures += pfail
 
-            # Renames, moves, and promotions all change paths without touching
-            # mtimes, so the index cannot see it is stale - drop the cache
-            # outright, same rationale as the --fix and --fix-promote paths.
-            conn.close()
-            db_path = archive_root / '.cache' / 'index.sqlite'
-            try:
-                db_path.unlink(missing_ok=True)
-            except OSError as exc:
-                reason = exc.strerror or str(exc)
-                print(
-                    f'\nThe realignment was applied, but the search index '
-                    f'cache could not be cleared ({reason}): {db_path}. The '
-                    'records moved without changing their file times, so the '
-                    'leftover index still points at the old locations and can '
-                    'look up to date - searches may quietly go stale until '
-                    f'you rebuild it. Delete {db_path} (or just run '
-                    '`fha index`) to rebuild the index and clear the stale '
-                    'entries.',
-                    file=sys.stderr,
-                )
+            changed, cache_warning = _drop_index_cache(
+                archive_root, conn, 'The realignment was applied')
+            if cache_warning is not None:
+                print(cache_warning, file=sys.stderr)
                 return _views_result(
                     EXIT_WARNINGS,
                     data={**issue_data, 'index_stale': True,
                           'promoted': promoted, 'failures': failures})
-            changed = [str(db_path)]
 
             done_parts = []
             if w103 or w110:
@@ -2526,40 +2763,17 @@ def run_brackets(
             changed: list[str] = []
             if applied:
                 # A promoted record moved out of stubs/ - a path change the
-                # mtime-based staleness check cannot see (same rationale as
-                # the W110 fix below). Drop the cache to force a rebuild.
-                conn.close()
-                db_path = archive_root / '.cache' / 'index.sqlite'
-                try:
-                    db_path.unlink(missing_ok=True)
-                except OSError as exc:
-                    # The records ALREADY moved on disk - that is done and
-                    # irreversible; only the cache drop failed (a locked or
-                    # read-only .cache/index.sqlite). A move preserves each
-                    # record's mtime, so the undeleted index still passes the
-                    # freshness check while pointing at the OLD stubs/ paths -
-                    # searches can quietly go stale. Report the promotions that
-                    # landed, then warn non-zero naming the stale cache and the
-                    # rebuild command; never let the unlink traceback reach the
-                    # user (AGENTS_TOOLING: no traceback ever reaches him).
-                    reason = exc.strerror or str(exc)
-                    print(
-                        f'\nPromoted {applied} of {len(w119)} - those records '
-                        'moved and are filed under their couple folders. But the '
-                        f'search index cache could not be cleared ({reason}): '
-                        f'{db_path}. The records moved, so the leftover index '
-                        'still points at their old locations and can look up to '
-                        'date, which means searches may quietly go stale until '
-                        f'you rebuild it. Delete {db_path} (or just run '
-                        '`fha index`) to rebuild the index and clear the stale '
-                        'entries.',
-                        file=sys.stderr,
-                    )
+                # mtime-based staleness check cannot see, so the cache goes.
+                changed, cache_warning = _drop_index_cache(
+                    archive_root, conn,
+                    f'Promoted {applied} of {len(w119)} - those records moved '
+                    'and are filed under their couple folders')
+                if cache_warning is not None:
+                    print(cache_warning, file=sys.stderr)
                     return _views_result(
                         EXIT_WARNINGS,
                         data={**issue_data, 'index_stale': True,
                               'promoted': applied, 'failures': failures})
-                changed = [str(db_path)]
                 print(
                     f'\nPromoted {applied} of {len(w119)}. Run `fha index` to '
                     'rebuild the index, then `fha views refresh` to generate '
@@ -2592,6 +2806,14 @@ def run_brackets(
         # ── Preview ───────────────────────────────────────────────────────
         _print_bracket_preview(w103, w110, archive_root)
 
+        # Same preflight as --realign, in the same place: the human is never
+        # asked to confirm a plan that cannot be applied, and --dry-run reports
+        # exactly what the apply would.
+        conflicts = _bracket_fix_conflicts(w103, w110, archive_root)
+        if conflicts:
+            _print_fix_conflicts(conflicts)
+            return _views_result(EXIT_FAILURE, data=issue_data)
+
         if dry_run:
             print('\n(dry-run: no changes written)')
             return _views_result(EXIT_WARNINGS, data=issue_data)
@@ -2604,42 +2826,20 @@ def run_brackets(
         failures, aborted = _apply_bracket_fixes(w103, w110, archive_root)
         if aborted:
             print(
-                f'\nNo changes written - {failures} rename destination(s) already '
-                'exist (see stderr). Resolve the conflicts, then re-run.',
+                f'\nNo changes written - {failures} problem(s) blocked the '
+                'plan (see stderr). Fix those, then re-run.',
                 file=sys.stderr,
             )
             return _views_result(EXIT_FAILURE, data=issue_data)
 
-        # Renames/moves change person_files.path without touching any file's
-        # mtime, so newest_record_mtime() can't detect the index is now stale.
-        # Remove the cache outright to force a rebuild before it's next read.
-        conn.close()
-        db_path = archive_root / '.cache' / 'index.sqlite'
-        try:
-            db_path.unlink(missing_ok=True)
-        except OSError as exc:
-            # The renames/moves ALREADY landed on disk and are irreversible;
-            # only the cache drop failed (a locked or read-only cache). Those
-            # moves keep each file's mtime, so the leftover index looks fresh
-            # while pointing at the OLD paths - searches can quietly go stale.
-            # Report the work that landed and warn non-zero naming the stale
-            # cache and the rebuild command; no traceback reaches the user.
-            reason = exc.strerror or str(exc)
-            print(
-                f'\nThe renames and moves were applied, but the search index '
-                f'cache could not be cleared ({reason}): {db_path}. Those moves '
-                'change record paths without changing their mtimes, so the '
-                'leftover index still points at the old locations and can look '
-                'up to date - searches may quietly go stale until you rebuild '
-                f'it. Delete {db_path} (or just run `fha index`) to rebuild the '
-                'index and clear the stale entries.',
-                file=sys.stderr,
-            )
+        changed, cache_warning = _drop_index_cache(
+            archive_root, conn, 'The renames and moves were applied')
+        if cache_warning is not None:
+            print(cache_warning, file=sys.stderr)
             data = {**issue_data, 'index_stale': True}
             if failures:
                 data['failures'] = failures
             return _views_result(EXIT_WARNINGS, data=data)
-        changed = [str(db_path)]
 
         if failures:
             print(
@@ -3025,6 +3225,11 @@ def run_timeline(
     generated/views/ - same query, same lines (D11).  An HTML write touches
     nothing the indexer scans, so it never stales the index: no reindex advice
     is printed and the run exits 0 clean.
+
+    A `--all-curated` batch that skipped anyone (each skip prints its own
+    WARNING and reason) exits 1 with `data['skipped']`, matching what the
+    single-person path returns for the same condition - a partly written batch
+    must never read as clean.
     """
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
@@ -3040,6 +3245,7 @@ def run_timeline(
             if not person_ids:
                 return _empty_curated_views_result(conn)
             count = 0
+            skipped = 0
             for pid in person_ids:
                 out = _generate_or_warn(
                     f'timeline for {pid}', _generate_timeline, conn, pid, archive_root, fmt=fmt,
@@ -3048,15 +3254,19 @@ def run_timeline(
                     print(f'  timeline ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
                     count += 1
+                else:
+                    skipped += 1
             print(f'Generated {count} timeline file(s).')
             if count and fmt == 'md':
                 # A companion write does NOT stale the index (#37: generated
                 # views are excluded from the freshness watermark - they are
-                # written FROM it). The only thing the index lacks is a
-                # person_files row for a brand-new view file, which the next
-                # ordinary rebuild adds; so this is advice, never an alarm.
-                print('Run `fha index` when convenient to update the search index with the new view file(s).')
-            return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
+                # written FROM it), so the index's own rows for these files are
+                # brought up to date here instead. Only when that cannot happen
+                # is a rebuild worth advising.
+                if _sync_index_rows(archive_root, conn=conn,
+                                    written=[Path(c) for c in changed]) != 'indexed':
+                    print('Run `fha index` when convenient to update the search index with the new view file(s).')
+            return _batch_view_result(count, skipped, changed, 'timeline')
 
         if not person_id:
             print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
@@ -3068,7 +3278,8 @@ def run_timeline(
         out = _generate_timeline(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
-            if fmt == 'md':
+            if fmt == 'md' and _sync_index_rows(
+                    archive_root, conn=conn, written=[out]) != 'indexed':
                 print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
@@ -3112,6 +3323,9 @@ def run_sources_index(
     `changed`.  `fmt='html'` writes standalone twins under generated/views/
     (couple folders as `{folder}_sources-index.html`); HTML writes never stale
     the index, so the reindex advice stays md-only.
+
+    A batch that skipped anything exits 1 with `data['skipped']` (see
+    `_batch_view_result`).
     """
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
@@ -3124,6 +3338,7 @@ def run_sources_index(
     try:
         if all_curated or couple_folders_only:
             count = 0
+            skipped = 0
             if all_curated:
                 # Per-person files for all curated persons
                 for pid in _view_eligible_curated_ids(conn, archive_root):
@@ -3135,6 +3350,8 @@ def run_sources_index(
                         print(f'  sources-index ->{out.relative_to(archive_root)}')
                         changed.append(str(out))
                         count += 1
+                    else:
+                        skipped += 1
 
             # Couple-folder sources-index.md files
             for folder_path, person_ids in _couple_folders(conn, archive_root):
@@ -3146,22 +3363,29 @@ def run_sources_index(
                     print(f'  sources-index ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
                     count += 1
+                else:
+                    skipped += 1
 
             print(f'Generated {count} sources-index file(s).')
             if count:
                 # A companion write does NOT stale the index (#37: generated
                 # views are excluded from the freshness watermark - they are
-                # written FROM it). The only thing the index lacks is a
-                # person_files row for a brand-new view file, which the next
-                # ordinary rebuild adds; so this is advice, never an alarm.
-                if fmt == 'md':
+                # written FROM it), so the index's own rows for these files are
+                # brought up to date here instead. Only when that cannot happen
+                # is a rebuild worth advising.
+                if fmt == 'md' and _sync_index_rows(
+                        archive_root, conn=conn,
+                        written=[Path(c) for c in changed]) != 'indexed':
                     print('Run `fha index` when convenient to update the search index with the new view file(s).')
-                return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
-            if all_curated and not changed:
+                return _batch_view_result(count, skipped, changed, 'sources-index')
+            if all_curated and not changed and not skipped:
                 # Nothing generated because every curated record is parked in
-                # people/stubs/ (couple_folders_only with 0 folders stays clean).
+                # people/stubs/ (couple_folders_only with 0 folders stays
+                # clean). Only when nothing was SKIPPED either: a run where
+                # every eligible person failed has its own reason, already
+                # printed, and must not be explained as a filing problem.
                 return _empty_curated_views_result(conn)
-            return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
+            return _batch_view_result(count, skipped, changed, 'sources-index')
 
         if not person_id:
             print('ERROR: provide a P-id, --all-curated, or --couple-folders.', file=sys.stderr)
@@ -3173,7 +3397,8 @@ def run_sources_index(
         out = _generate_sources_index_person(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
-            if fmt == 'md':
+            if fmt == 'md' and _sync_index_rows(
+                    archive_root, conn=conn, written=[out]) != 'indexed':
                 print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
@@ -3216,6 +3441,9 @@ def run_draft_queue(
     Written files are recorded in `changed`; progress lines stay byte-identical.
     `fmt='html'` writes the standalone twin under generated/views/; HTML writes
     never stale the index, so the reindex advice stays md-only.
+
+    A batch that skipped anything exits 1 with `data['skipped']` (see
+    `_batch_view_result`).
     """
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
@@ -3231,6 +3459,7 @@ def run_draft_queue(
             if not person_ids:
                 return _empty_curated_views_result(conn)
             count = 0
+            skipped = 0
             for pid in person_ids:
                 out = _generate_or_warn(
                     f'draft-queue for {pid}', _generate_draft_queue, conn, pid, archive_root, fmt=fmt,
@@ -3239,15 +3468,19 @@ def run_draft_queue(
                     print(f'  draft-queue ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
                     count += 1
+                else:
+                    skipped += 1
             print(f'Generated {count} draft-queue file(s).')
             if count and fmt == 'md':
                 # A companion write does NOT stale the index (#37: generated
                 # views are excluded from the freshness watermark - they are
-                # written FROM it). The only thing the index lacks is a
-                # person_files row for a brand-new view file, which the next
-                # ordinary rebuild adds; so this is advice, never an alarm.
-                print('Run `fha index` when convenient to update the search index with the new view file(s).')
-            return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
+                # written FROM it), so the index's own rows for these files are
+                # brought up to date here instead. Only when that cannot happen
+                # is a rebuild worth advising.
+                if _sync_index_rows(archive_root, conn=conn,
+                                    written=[Path(c) for c in changed]) != 'indexed':
+                    print('Run `fha index` when convenient to update the search index with the new view file(s).')
+            return _batch_view_result(count, skipped, changed, 'draft-queue')
 
         if not person_id:
             print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
@@ -3259,7 +3492,8 @@ def run_draft_queue(
         out = _generate_draft_queue(conn, pid, archive_root, fmt=fmt)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
-            if fmt == 'md':
+            if fmt == 'md' and _sync_index_rows(
+                    archive_root, conn=conn, written=[out]) != 'indexed':
                 print('Run `fha index` when convenient to update the search index with the new view file.')
             changed.append(str(out))
             return _views_result(EXIT_CLEAN, changed=changed, data={'count': 1})
@@ -3301,9 +3535,14 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     recorded in `changed`; under --dry-run nothing is deleted, both sweeps are
     listed, and `changed` stays empty.
 
-    Exit codes: removing a people/-tree companion leaves stale rows in the
-    index (exit 1 + the reindex note, as always); generated/views/ files are
-    never indexed, so a sweep that removed only those exits 0 clean.
+    Exit codes: 0 clean. A people/-tree companion carries index rows
+    (person_files, and its body in notes_fts), and those are deleted in the
+    same pass - the freshness watermark never sees a generated companion (#37),
+    so leaving them would keep `fha find --text` serving text whose file is
+    gone. Only when that row cleanup fails, or when a file could not be deleted
+    at all (locked, read-only), does the run exit 1 saying which. A file that
+    will not delete is named and skipped, never allowed to abort the sweep.
+    generated/views/ files are never indexed and need no cleanup at all.
     """
     dry_run = bool(dry_run)
 
@@ -3345,23 +3584,51 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
         return _views_result(EXIT_CLEAN)
 
     changed: list[str] = []
+    removed_paths: list[Path] = []
+    failures = 0
     for p in all_found:
         rel = p.relative_to(archive_root)
         if dry_run:
             print(f'  would remove {rel}')
-        else:
+            continue
+        try:
             p.unlink()
-            print(f'  removed {rel}')
-            changed.append(str(p))
+        except OSError as e:
+            # A locked or read-only file (open in another program is the usual
+            # cause on Windows). Name it and carry on with the rest of the
+            # sweep - one stuck file must not abort the others, and the raw
+            # OSError must never reach the human as a traceback.
+            print(
+                f'  ERROR could not remove {rel} ({e.strerror or e}) - it may '
+                'be open in another program. Close it and re-run.',
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+        print(f'  removed {rel}')
+        removed_paths.append(p)
+        changed.append(str(p))
 
     verb = 'Would remove' if dry_run else 'Removed'
-    print(f'{verb} {len(all_found)} generated file(s).')
+    print(f'{verb} {len(all_found) if dry_run else len(removed_paths)} generated file(s).')
     if not dry_run:
-        if found:
-            print('Note: deleted files still appear in .cache/index.sqlite - run `fha index` to update the cache.')
-            return _views_result(EXIT_WARNINGS, changed=changed, data={'removed': len(all_found)})
-        # Only generated/views/ files were removed - the index never saw them.
-        return _views_result(EXIT_CLEAN, changed=changed, data={'removed': len(all_found)})
+        data = {'removed': len(removed_paths)}
+        if failures:
+            data['failures'] = failures
+        people_companions = set(found)
+        people_removed = [p for p in removed_paths if p in people_companions]
+        if people_removed:
+            # A deleted companion is invisible to the freshness watermark (#37
+            # excludes generated views from it), so its rows would stay in
+            # notes_fts and person_files - authoritative and wrong - until some
+            # unrelated edit forced a rebuild. Drop them here instead.
+            if _sync_index_rows(archive_root, removed=people_removed) == 'index_error':
+                print('Note: deleted files still appear in .cache/index.sqlite - run `fha index` to update the cache.')
+                return _views_result(EXIT_WARNINGS, changed=changed, data=data)
+        if failures:
+            print(f'{failures} file(s) could not be removed - see above.')
+            return _views_result(EXIT_WARNINGS, changed=changed, data=data)
+        return _views_result(EXIT_CLEAN, changed=changed, data=data)
     return _views_result(EXIT_CLEAN, data={'removed': 0, 'would_remove': len(all_found)})
 
 
@@ -3382,7 +3649,12 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
     `fmt` selects the output set: 'md' (default) the companion files as
     always; 'html' the standalone generated/views/ set only; 'both' the two
     sets in one pass (owner decision 7-Q2).  The reindex advice prints only
-    when .md companions were written - HTML never stales the index.
+    when .md companions were written, and only when their index rows could not
+    be updated in place - HTML never stales the index either way.
+
+    A refresh that skipped anything exits 1 with `data['skipped']` (see
+    `_batch_view_result`): regenerating every view is the point of the verb, so
+    a partial pass must not report success.
     """
     precheck = _format_precheck(fmt, ('md', 'html', 'both'))
     if precheck is not None:
@@ -3404,6 +3676,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
             (_generate_sources_index_person, 'sources-index '),
         ]
         count = 0
+        skipped = 0
         for pid in person_ids:
             for fn, label in _per_person:
                 for fmt_pass in fmt_passes:
@@ -3414,6 +3687,8 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                         print(f'  {label}->{out.relative_to(archive_root)}')
                         changed.append(str(out))
                         count += 1
+                    else:
+                        skipped += 1
 
         for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
             for fmt_pass in fmt_passes:
@@ -3425,16 +3700,21 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                     print(f'  sources-index  ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
                     count += 1
+                else:
+                    skipped += 1
 
         print(f'Generated {count} view file(s).')
         if count and 'md' in fmt_passes:
             # Refresh writes new/updated companion files. That does NOT stale
             # the index (#37: generated views are excluded from the freshness
-            # watermark), but any brand-new view file lacks its person_files
-            # row until the next rebuild - so print the reindex as advice, and
-            # exit clean so a harness following the exit code isn't alarmed.
-            print('Run `fha index` when convenient to update the search index with the new view files.')
-        return _views_result(EXIT_CLEAN, changed=changed, data={'count': count})
+            # watermark), so their index rows - the searchable body in
+            # notes_fts and the person_files entry - are rewritten here rather
+            # than waiting for a rebuild nothing would prompt. The advice is
+            # printed only when that could not happen.
+            if _sync_index_rows(archive_root, conn=conn,
+                                written=[Path(c) for c in changed]) != 'indexed':
+                print('Run `fha index` when convenient to update the search index with the new view files.')
+        return _batch_view_result(count, skipped, changed, 'view')
 
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))

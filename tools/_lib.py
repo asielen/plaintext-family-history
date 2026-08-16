@@ -47,6 +47,7 @@ from __future__ import annotations
 import calendar
 import dataclasses
 import datetime
+import fnmatch
 import itertools
 import json
 import os
@@ -97,6 +98,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    probe_sqlite              - does this db open and run this one probe query?
 #    open_index_db             - open .cache/index.sqlite with the freshness check +
 #                                 required-table probe every index-reading tool needs
+#    photos_ignore_patterns    - fha.yaml photos_ignore: patterns, normalized
+#    photos_ignore_matcher     - is_ignored(rel) closure shared by scan + freshness
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
 #  Record parsing
@@ -163,6 +166,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    promote_person_record     - the ONE engine: tier flip + move + research scaffold,
 #                                 transactional, shared by person promote and
 #                                 views brackets --fix-promote
+#    relocate_person_in_index  - rewrite every path-keyed index row after a record move
+#    sync_generated_view_rows  - keep notes_fts/person_files in step with the
+#                                 companion views `fha views` writes and deletes
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
 #    extract_bare_ids          - all bare IDs from a text block
@@ -365,6 +371,12 @@ def spouse_extended_base(
         recorded name (case/whitespace-insensitive) - a base hand-crafted
         enough not to match is left alone rather than guessed at.
 
+    The placeholder guard runs on BOTH halves. A base that is itself a
+    placeholder (`004 unknown` - the folder a promotion had to invent for a
+    person with no recorded name) is left alone: appending a real partner would
+    bake the placeholder in for good, since this rule only ever adds and never
+    revisits a base that already carries a `+`.
+
     Returns (new_base, other_name): the possibly-extended base name, and the
     appended partner's name when it changed (None otherwise).
     """
@@ -373,6 +385,8 @@ def spouse_extended_base(
 
     m = re.match(r'^(\d+[a-z]?\s+)(.*)$', base_name)
     if not m or '+' in m.group(2):
+        return base_name, None
+    if is_placeholder_name(m.group(2)):
         return base_name, None
 
     def _norm(s: str) -> str:
@@ -1194,6 +1208,68 @@ def open_index_db(
         return None
 
 
+def photos_ignore_patterns(fha_config: dict) -> list[str]:
+    """
+    The `photos_ignore:` patterns from fha.yaml, normalized to posix form.
+
+    A photos root often holds material that is not the archive's subject - the
+    motivating case (#35) was a root of 88,131 files, 63,156 of them one bulk
+    photo-service export, drowning the few dozen scanned ancestor photos in
+    every triage ranking. Narrowing `roots: photos` instead is NOT safe (it
+    orphans already-filed `files:` entries, #36), so exclusion has to live at
+    scan level. Accepts a single string or a list; anything else is a clean
+    RuntimeError (the scan callers' existing error path).
+
+    Lives here rather than in photoindex.py because the scan is not the only
+    reader: `photoindex_status` has to prune the same subtrees when it decides
+    whether the catalog is current, or an ignored file would mark an
+    up-to-date catalog stale.
+    """
+    raw = fha_config.get('photos_ignore')
+    if raw is None:
+        return []
+    if isinstance(raw, (str, int, float)):
+        raw = [raw]
+    # Scalars are coerced: YAML reads an unquoted year folder (`- 2019`) as
+    # an int, and the intent is unambiguous. Anything structured is refused.
+    if not isinstance(raw, list) or not all(
+        isinstance(p, (str, int, float)) and not isinstance(p, bool) for p in raw
+    ):
+        raise RuntimeError(
+            'photos_ignore in fha.yaml must be a list of path patterns '
+            "(e.g.\n  photos_ignore:\n    - 'Flickr Export'\n    - '*.tif')"
+        )
+    out = []
+    for p in raw:
+        text = str(p).replace('\\', '/').strip().strip('/')
+        if text:
+            out.append(text)
+    return out
+
+
+def photos_ignore_matcher(patterns: list[str]):
+    """Build `is_ignored(rel_posix)` for a set of `photos_ignore:` patterns.
+
+    Matching is fnmatch-style against the posix path relative to the photos
+    root, case-insensitively - the photo library lives on a case-insensitive
+    filesystem on both Windows and macOS, and 'flickr export' silently failing
+    to prune 'Flickr Export' would read as the feature not working. The
+    patterns are folded once here rather than on every candidate: a walk that
+    tests 88,000 names should fold two patterns, not 176,000 strings.
+
+    Returned as a closure so the walkers (the scan's `_iter_photo_files` and
+    the freshness watermark below) apply one identical rule; a photo the scan
+    skips must not be a photo the freshness check trips over.
+    """
+    folded = [pat.casefold() for pat in patterns]
+
+    def is_ignored(rel: str) -> bool:
+        rel_cf = rel.casefold()
+        return any(fnmatch.fnmatchcase(rel_cf, pat) for pat in folded)
+
+    return is_ignored
+
+
 def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
     """Classify the photo index (.cache/photos.sqlite) for find/doctor.
 
@@ -1207,6 +1283,15 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     corrupt database is never reported fresh just because there are no photos to
     compare against.  Shared by `find --text` (caption search gating) and
     `doctor` (freshness report) so both agree on whether photos.sqlite is usable.
+
+    `photos_ignore:` prunes this walk exactly as it prunes the scan (#35).
+    Both halves of that matter: an ignored file is not in the catalog and can
+    never make it out of date, so letting one drive the watermark would mark a
+    current catalog stale - and `fha find --text` skips cataloged photo
+    captions whenever the catalog is stale, so a single touched file in a bulk
+    export would silently switch off caption search until a rescan that has
+    nothing to do. The pruning also keeps this check from walking the 60,000
+    files the setting exists to avoid walking.
     """
     archive_root = Path(archive_root)
     db_path = archive_root / '.cache' / 'photos.sqlite'
@@ -1249,24 +1334,43 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
 
     photos_root = resolve_path('photos', fha_config, archive_root)
     if photos_root.is_dir():
+        try:
+            patterns = photos_ignore_patterns(fha_config)
+        except RuntimeError:
+            # A malformed photos_ignore: is the scan's error to report, in its
+            # own plain words. Here it means "prune nothing": the watermark
+            # covers the whole root, the catalog reads stale, and the human is
+            # sent to `fha photoindex` - which is where the real explanation
+            # of the broken setting is waiting.
+            patterns = []
+        is_ignored = photos_ignore_matcher(patterns)
         # Directory mtimes are included (not just file mtimes) so that a deletion
         # or rename - which bumps the parent directory's mtime but touches no
         # remaining file - still makes the index look stale instead of silently
         # staying 'fresh' with photo_fts rows pointing at files that no longer exist.
-        for p in photos_root.rglob('*'):
-            if p.is_file() or p.is_dir():
+        # os.walk (not rglob) because an ignored folder must be pruned rather
+        # than walked and discarded - pruning is the whole point on a root
+        # holding a 60,000-file export. It also yields the root itself as the
+        # first dirpath, so the root's own mtime needs no separate stat.
+        for dirpath, dirnames, filenames in os.walk(photos_root):
+            rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
+            prefix = '' if rel_dir == '.' else f'{rel_dir}/'
+            if patterns:
+                dirnames[:] = [d for d in dirnames if not is_ignored(f'{prefix}{d}')]
+            candidates = [Path(dirpath)]
+            candidates += [
+                Path(dirpath) / name for name in filenames
+                if not (patterns and is_ignored(f'{prefix}{name}'))
+            ]
+            for p in candidates:
                 try:
                     m = p.stat().st_mtime
                     if m > max_mtime:
                         max_mtime = m
                 except OSError:
+                    # A dangling symlink or a file that vanished mid-walk is
+                    # not a freshness signal we can read; skip it.
                     pass
-        try:
-            root_mtime = photos_root.stat().st_mtime
-            if root_mtime > max_mtime:
-                max_mtime = root_mtime
-        except OSError:
-            pass
 
     if max_mtime == 0.0 or mtime >= max_mtime:
         return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
@@ -4605,6 +4709,111 @@ def relocate_person_in_index(
                         'INSERT INTO notes_fts(path, content) VALUES (?,?)', (rel, body))
     finally:
         conn.close()
+    return 'indexed'
+
+
+def sync_generated_view_rows(
+    archive_root: Path,
+    written: list[Path] | tuple[Path, ...] = (),
+    removed: list[Path] | tuple[Path, ...] = (),
+) -> str:
+    """
+    Keep the index's rows for generated companion views in step with the files
+    `fha views` just wrote or deleted - the row-side twin of the #37 watermark
+    exclusion, here in `_lib` because tools never import tools (TOOLING §1).
+
+    Generated companions (timeline, sources-index, draft-queue) are deliberately
+    left OUT of `newest_record_mtime` (#37): they are written FROM the index, so
+    counting them made every view write stale the index it had just read. But
+    `index._index_person` still puts each companion's body into `notes_fts` and
+    a row in `person_files`, so without this the two halves disagree: after a
+    `fha views refresh`, `fha find --text` would keep returning the PREVIOUS
+    timeline's text (or miss a newly generated one) for as long as the index
+    stayed "fresh", and `fha views clean` would leave rows for files that no
+    longer exist. Rewriting the handful of affected rows is exact and cheap -
+    the same trade `relocate_person_in_index` makes for a promote - and it keeps
+    a batch of view writes from forcing a full rebuild.
+
+    Only per-person `.md` companions under people/ carry rows: the couple-folder
+    `sources-index.md` has no P-id, so `_index_person` skips it, and the
+    standalone `--format html` twins live under generated/ which the indexer
+    never scans. Both are ignored here for the same reason.
+
+    Returns 'indexed' (rows updated), 'index_absent' (no usable index to
+    update - the caller just advises `fha index`), or 'index_error' (the index
+    is there but the write failed; the caller must say so, because the rows are
+    now the stale ones).
+    """
+    db_path = Path(archive_root) / '.cache' / 'index.sqlite'
+    status, _detail = sqlite_cache_schema_status(
+        db_path, INDEX_SCHEMA_VERSION, ('persons', 'sources', 'claims'))
+    if status != 'fresh':
+        return 'index_absent'
+
+    def _companion_row(path: Path) -> tuple[str, str, str] | None:
+        """(relative path, person_id, kind) for an indexed companion, else None."""
+        path = Path(path)
+        if path.suffix.lower() != '.md':
+            return None
+        try:
+            rel = str(path.relative_to(archive_root))
+        except ValueError:
+            return None
+        if rel.replace('\\', '/').split('/')[0] != 'people':
+            return None
+        parsed = parse_filename(path)
+        if not parsed or parsed['id_type'] != 'P':
+            return None
+        if parsed.get('kind') not in GENERATED_COMPANION_KINDS:
+            return None
+        return rel, parsed['id_str'], parsed['kind']
+
+    targets_written = [r for r in (_companion_row(p) for p in written) if r]
+    targets_removed = [r for r in (_companion_row(p) for p in removed) if r]
+    if not targets_written and not targets_removed:
+        return 'indexed'
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            with conn:
+                for rel, _pid, _kind in targets_removed:
+                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    conn.execute('DELETE FROM person_files WHERE path=?', (rel,))
+                for rel, pid, kind in targets_written:
+                    # Delete before rewrite: notes_fts is an FTS5 table with no
+                    # unique key, so a plain insert would stack a second body
+                    # row for the same path on every regeneration.
+                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    try:
+                        rec = read_record(archive_root / rel)
+                    except Exception:
+                        # Unreadable or unparseable (it was written moments
+                        # ago, so this is a filesystem oddity, not a normal
+                        # state): index it as empty rather than let a read
+                        # error surface as a traceback over a view write that
+                        # already succeeded. Same posture as
+                        # relocate_person_in_index's research-companion read.
+                        rec = {'meta': {}, 'body': ''}
+                    body = rec.get('body') or ''
+                    if body.strip():
+                        conn.execute(
+                            'INSERT INTO notes_fts(path, content) VALUES (?,?)',
+                            (rel, body))
+                    # Mirror `index._index_person` exactly: a frontmatter id
+                    # wins over the filename's, and `generated` records whether
+                    # the file carried one at all. Deriving these differently
+                    # would make the incremental rows disagree with a rebuild.
+                    meta = rec.get('meta') or {}
+                    meta_pid = normalize_id(str(meta.get('id') or ''))
+                    conn.execute(
+                        'INSERT OR REPLACE INTO person_files'
+                        '(person_id, kind, path, generated) VALUES (?,?,?,?)',
+                        (meta_pid or pid, kind, rel, 0 if meta.get('id') else 1))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 'index_error'
     return 'indexed'
 
 
