@@ -265,17 +265,37 @@ recorded here (not silently) as proposed spec clarifications:
   `<base>` (a base of ours would send fragment-only links such as `#facts` to the
   live site and blank out SVG `<use href="#icon">` sprites). A page that declares
   its **own** `<base>` keeps it - that is the author's baseline, and it already
-  governs the live page - but its `href` is absolutized too, or a relative base
-  like `/records/` would resolve against the local filesystem once the copy is
-  opened from `file://`. The sweep covers `href`/`src`/`poster`/`data`,
+  governs the live page - written in the form the browser itself resolved
+  (`document.baseURI`), never by resolving the raw `href` a second time: a
+  path-relative `<base href="records/">` is *already* folded into `baseURI`, and
+  re-resolving it would save `…/records/records/` and quietly re-point every
+  reference one directory too deep. The sweep covers `href`/`src`/`poster`/`data`,
   `srcset` and `imagesrcset`, `form action` and `formaction`, SVG `href` and
-  `xlink:href`, meta refresh, inline `style` attributes, `<style>` blocks, and the
+  `xlink:href`, inline `style` attributes, `<style>` blocks, and the
   `url()`/`@import` references inside an inlined stylesheet (anchored to the
   **stylesheet's** address, not the document's). `srcset` is parsed by the HTML
   Standard's algorithm, never split on commas - a candidate URL may legally
   contain one. Nothing that resolves to a `file:` URL is ever written into a
   snapshot: capturing a page opened from disk must not bake local folder names
   into a file that lands in the archive.
+- **What would navigate away is disarmed, not anchored.** Absolutizing is right
+  for a *resource* the saved page needs; it is exactly wrong for anything that
+  acts on the reader's behalf, because it turns a harmlessly broken directive
+  into a working one. A `<meta http-equiv="refresh" content="0;url=/login">`
+  anchored to the live site would bounce the reader out of the snapshot and onto
+  a login page the moment they opened it, and the preserved evidence could never
+  be read offline at all. So refreshes (including any hiding inside `<noscript>`),
+  captured `Content-Security-Policy` pragmas (which would forbid the very
+  `data:` images and `<style>` blocks the snapshot inlined), inline `on…`
+  handlers, `<a ping>` beacons, and speculative `<link rel="preload|prefetch|
+  prerender|preconnect|dns-prefetch">` fetches are all **disarmed**: the element
+  and its value stay, moved onto a `data-fha-disabled-…` attribute no browser
+  acts on, plus `data-fha-refresh-target` recording where a refresh pointed. An
+  `<iframe>` keeps its live `src` (a framed record viewer is often the evidence)
+  but gains a `sandbox` without `allow-top-navigation`, so a frame-busting script
+  cannot do one level down what the refresh would have done. Following a link or
+  submitting a form is still the reader's own click, so `<a href>` and
+  `<form action>` are left anchored.
 - **Print-to-PDF mode removed.** The old radio offering *Save as PDF* via
   drag-drop is gone: the single-file HTML snapshot supersedes it (§9's case-(b)
   default), and a real PDF still files fine through the "Yes, save the actual

@@ -727,6 +727,35 @@
   }
 
   // ── single-file snapshot, case (b) ───────────────────────────────────────────
+  //
+  // THE RULE for every rewrite below, stated once so nobody has to re-derive it.
+  // A preserved snapshot exists to be read offline, years later, by someone
+  // asking "what did this page say?". Two different things live in its markup and
+  // they get opposite treatment:
+  //
+  //   ABSOLUTIZE what the page needs in order to SHOW what it showed - an image,
+  //   a stylesheet, a poster frame, the href a reader may later choose to click.
+  //   Left relative, those resolve into whatever folder the file was opened from,
+  //   and the evidence renders as a wall of broken boxes.
+  //
+  //   NEUTRALIZE anything that acts on the reader's behalf - a navigation away
+  //   from the file, a fetch nobody asked for, a rule that would hide what we
+  //   just inlined. Absolutizing one of those does not preserve it, it ARMS it:
+  //   a `<meta http-equiv=refresh content="0;url=/login">` that was harmlessly
+  //   broken becomes a working one-way trip to the live login page, and the
+  //   evidence can then never be inspected offline at all.
+  //
+  // The test is "does it fire without the reader asking?", not "is it a link?".
+  // A click IS the reader asking, so an `<a href>`, a `<form action>`, even a
+  // `javascript:` href are left as they are - following one is a decision the
+  // reader made. A refresh, a preload, an onload handler and a frame that can
+  // retarget the top window do not wait to be asked, so they are disarmed.
+  //
+  // NEUTRALIZE MEANS DISARM, NOT DELETE. The page said what it said, refresh
+  // directives and all, and a snapshot that quietly drops half of that is
+  // evidence with edits. Everything disarmed here keeps its element and its
+  // original value, moved onto a `data-fha-disabled-*` attribute that no browser
+  // acts on and that any reader - or any grep - can still find.
 
   // URL forms the snapshot must NEVER rewrite. `#facts` has to keep scrolling
   // within the saved page (and an SVG `<use href="#icon">` has to keep finding
@@ -782,6 +811,183 @@
   }
   // FHA-SYNC-END snapshot-urls
 
+  // The per-element decisions, one function each, so the node suite can drive
+  // them without a DOM (tests/test-snapshot-urls.js hands them a stub element).
+  // Each takes an element from the CLONE - never the live page - and follows the
+  // absolutize/neutralize rule stated at the top of this section.
+  // FHA-SYNC-BEGIN snapshot-rewrites
+
+  /** Prefix every disarmed value is parked under (see the rule above). */
+  const DISABLED_ATTR = 'data-fha-disabled-';
+
+  /**
+   * Move one attribute onto its `data-fha-disabled-` twin.
+   *
+   * The single mechanic behind "disarm, not delete": the browser stops acting on
+   * the value because the attribute it reads is gone, and the reader keeps it
+   * because the value is still sitting right there in the markup.
+   */
+  function disarmAttribute(el, name) {
+    if (!el.hasAttribute(name)) return;
+    el.setAttribute(DISABLED_ATTR + name, el.getAttribute(name));
+    el.removeAttribute(name);
+  }
+
+  /**
+   * Point the cloned page's own <base> at the base the browser actually used.
+   *
+   * `pageBase` is document.baseURI, which has ALREADY folded this element's href
+   * into the page URL: a page at /collections/detail carrying `<base
+   * href="records/">` reports a baseURI of /collections/records/. Resolving the
+   * raw attribute against that again - which is what an earlier round did -
+   * applies the same relative path twice and writes /collections/records/records/,
+   * so every reference the inliner left relative silently re-points one directory
+   * too deep. The resolved value IS the answer; the raw attribute is never read.
+   *
+   * absolutizeUrl is still called (resolving an absolute URL against itself is
+   * the identity) for its two refusals: an unparseable base, and the privacy rule
+   * that no `file:` path may enter a snapshot. Either way the author's own href
+   * is left exactly as written - on a page captured from disk nothing else gets
+   * absolutized either, so the snapshot stays internally consistent instead of
+   * half-anchored to someone's home directory.
+   */
+  function anchorBaseElement(baseEl, pageBase) {
+    if (!baseEl) return;
+    const href = absolutizeUrl(pageBase, pageBase);
+    if (href) baseEl.setAttribute('href', href);
+  }
+
+  // The <meta http-equiv> pragmas a browser acts on that a snapshot must not let
+  // it act on. Everything else is left untouched - `content-type` above all,
+  // since it carries the charset the parser prescans for in the first 1024 bytes.
+  const DISARM_META_PRAGMA = new Set([
+    // Fires on open, with no reader input, and takes the browser AWAY from the
+    // saved file - typically to a login or expired-session page, after which the
+    // preserved evidence cannot be read at all.
+    'refresh',
+    // A captured policy was written for the LIVE page and knows nothing about the
+    // snapshot: `default-src 'self'` blocks precisely what preservation depends
+    // on - the data: images we inlined and the <style> blocks we swapped the
+    // stylesheets for - so honouring it renders the saved page blank. The
+    // report-only twin blocks nothing but phones the live collector on open.
+    'content-security-policy',
+    'content-security-policy-report-only',
+  ]);
+
+  /**
+   * Disarm one <meta http-equiv> if its pragma is one of the harmful few.
+   *
+   * `content` is kept verbatim: the directive is part of what the page said, and
+   * a reader should be able to see the page carried it. For a refresh the
+   * resolved destination is recorded next to it as well, so "where would this
+   * have sent me?" stays answerable offline without resolving a relative path by
+   * hand - recording a target is not the same as following one.
+   *
+   * A refresh with no `url=` (a plain self-reload) is disarmed too: it has no
+   * target to record, and left live it would sit there reloading the snapshot.
+   */
+  function disarmMetaPragma(meta, pageBase) {
+    const equiv = (meta.getAttribute('http-equiv') || '').trim().toLowerCase();
+    if (!DISARM_META_PRAGMA.has(equiv)) return;
+    disarmAttribute(meta, 'http-equiv');
+    if (equiv !== 'refresh') return;
+    const m = (meta.getAttribute('content') || '')
+      .match(/^\s*[\d.]*\s*;\s*url\s*=\s*(["']?)(.*?)\1\s*$/i);
+    const target = m ? absolutizeUrl(m[2], pageBase) : null;
+    if (target) meta.setAttribute('data-fha-refresh-target', target);
+  }
+
+  /**
+   * Strip the inline event handlers from one element.
+   *
+   * With every executable <script> already removed, an `on*` attribute is the
+   * only JavaScript a snapshot can still run - and the line most likely to be in
+   * it is `location = …`. A body `onload` that redirects to the live site, an
+   * `onerror` that swaps in a network URL: both fire on open and neither renders
+   * anything. This is also what closes the remaining routes the removed scripts
+   * used to own - a service-worker registration, a `history.pushState`, an
+   * auto-submitting form - since none of them can start without script.
+   */
+  function disarmInlineHandlers(el) {
+    for (const name of el.getAttributeNames()) {
+      // Three letters minimum after "on": the shortest real handler is `oncut`,
+      // and the bar keeps an ordinary attribute that happens to start with those
+      // two letters (`one`, `once`) out of the sweep.
+      if (/^on[a-z]{3,}$/i.test(name)) disarmAttribute(el, name);
+    }
+  }
+
+  // <link rel> values that fetch on their own initiative and contribute nothing
+  // to what the saved page shows. The resource each one warms up is requested by
+  // a real element elsewhere in the page, so dropping the hint costs a snapshot
+  // nothing; keeping it means opening an archived file quietly pings the live
+  // server (`prerender` fetches an entire page) years after the capture.
+  const DISARM_LINK_REL = /^(preload|modulepreload|prefetch|prerender|preconnect|dns-prefetch)$/i;
+
+  /**
+   * Disarm a <link> that exists only to reach out to the network.
+   *
+   * Only when EVERY rel token is one of those: a `rel="stylesheet preload"` still
+   * has a rendering job to do, and `rel="canonical"`, `rel="icon"` and the rest
+   * are left alone entirely - canonical records which live URL the page claimed
+   * to be, which is evidence, and no browser navigates to it.
+   */
+  function disarmSpeculativeLink(link) {
+    const rels = (link.getAttribute('rel') || '').trim().split(/\s+/).filter(Boolean);
+    if (!rels.length || !rels.every((rel) => DISARM_LINK_REL.test(rel))) return;
+    disarmAttribute(link, 'rel');
+  }
+
+  // What a framed page may still do inside a snapshot. Deliberately permissive
+  // except for the one power that matters here: no allow-top-navigation token,
+  // in any of its spellings.
+  const FRAME_SANDBOX_DEFAULT = 'allow-scripts allow-same-origin allow-forms allow-popups';
+  const TOP_NAVIGATION_TOKEN = /^allow-top-navigation/i;
+
+  /**
+   * Stop a framed live page from steering the whole snapshot.
+   *
+   * An `<iframe src>` is absolutized like any other resource on purpose: the
+   * framed thing is often the record viewer itself, and a live copy the reader
+   * can still open beats a permanently blank box. What it must not keep is the
+   * power to replace the top-level document - a frame-busting script inside the
+   * framed page (`top.location = …`) does exactly what the meta refresh did, one
+   * level down, and the reader loses the evidence the same way. A sandbox with no
+   * allow-top-navigation token forbids that and still lets the frame render.
+   *
+   * An author's own sandbox is kept and only pruned of that one token, so a page
+   * that had already locked its frames down stays locked down.
+   */
+  function limitFrameNavigation(frame) {
+    const declared = frame.getAttribute('sandbox');
+    const tokens = (declared === null ? FRAME_SANDBOX_DEFAULT : declared)
+      .trim().split(/\s+/).filter(Boolean);
+    frame.setAttribute(
+      'sandbox', tokens.filter((t) => !TOP_NAVIGATION_TOKEN.test(t)).join(' '));
+  }
+
+  /**
+   * Disarm meta refreshes hiding inside <noscript> markup.
+   *
+   * With scripting enabled - which it is in the tab being cloned - a <noscript>'s
+   * contents are never parsed into elements: they sit in the DOM as one raw text
+   * node, so every element-level pass here walks straight past them. That text
+   * becomes live markup again for exactly the reader most likely to open an
+   * archived file with JavaScript off, and the classic payload waiting there is
+   * `<meta http-equiv="refresh" content="0;url=/nojs">`, which bounces them off
+   * the evidence in the same way.
+   *
+   * A string rewrite, kept narrow on purpose: rename the pragma attribute and
+   * leave everything else - the target included - byte for byte, so markup this
+   * pattern does not recognise passes through unharmed rather than garbled.
+   */
+  function disarmNoscriptText(text) {
+    return String(text == null ? '' : text).replace(
+      /(<meta\b[^>]*?\s)http-equiv(\s*=\s*(["']?)refresh\3)/gi,
+      '$1' + DISABLED_ATTR + 'http-equiv$2');
+  }
+  // FHA-SYNC-END snapshot-rewrites
+
   async function fetchAsDataUri(url) {
     const abs = absUrl(url);
     if (!abs) return null;
@@ -812,6 +1018,11 @@
     // metadata at ingest, and a single-file snapshot that dropped it would lose
     // those hints. A script with no `type`, or `text/javascript`/`module`, is
     // executable and removed; a non-JS data type is preserved verbatim.
+    //
+    // This is also the widest neutralize in the file, and most of what the rule
+    // at the top of this section worries about dies here: a `location =` redirect,
+    // a service-worker registration, an analytics beacon, a form that submits
+    // itself. What survives it is inline `on*` handlers, disarmed below.
     const DATA_SCRIPT = /(^|\/)(ld\+json|json)\b/i;
     clone.querySelectorAll('script').forEach((s) => {
       const type = (s.getAttribute('type') || '').trim().toLowerCase();
@@ -830,34 +1041,69 @@
     //
     // A page that declares its OWN <base> keeps it - that is the author's
     // baseline, and fragment links already resolve against it on the live page,
-    // so preserving it is the faithful thing - but its href is absolutized like
-    // every other URL here. A relative base such as `<base href="/records/">`
-    // resolves against the live site in the browser and against the local
-    // filesystem once the snapshot is opened from file://, which would break
-    // every reference the bounded inliner below did not swallow. Skipping the
-    // whole rewrite because a base is present (as an earlier version did) leaves
-    // exactly those pages broken.
+    // so preserving it is the faithful thing - but its href is written in
+    // resolved form. A relative base such as `<base href="records/">` resolves
+    // against the live site in the browser and against the local filesystem once
+    // the snapshot is opened from file://, which would break every reference the
+    // bounded inliner below did not swallow. Skipping the whole rewrite because a
+    // base is present (as an earlier version did) leaves exactly those pages
+    // broken.
     //
     // document.baseURI is already the RESOLVED base - the live page's own answer
     // to "what do relative URLs mean here?", <base> included - so it is both the
-    // right value to write into the cloned base and the right thing to resolve
-    // every other attribute against.
+    // value to write into the cloned base (anchorBaseElement, which is why the
+    // raw href is never re-resolved) and the thing to resolve every other
+    // attribute against.
     const pageBase = document.baseURI;
     const absolutize = (value) => absolutizeUrl(value, pageBase);
 
-    const baseEl = clone.querySelector('base[href]');
-    if (baseEl) {
-      const absBase = absolutize(baseEl.getAttribute('href'));
-      if (absBase) baseEl.setAttribute('href', absBase);
+    anchorBaseElement(clone.querySelector('base[href]'), pageBase);
+
+    // Disarm first, so the anchoring sweep below cannot hand a working URL to
+    // something that would use it on its own initiative. An `on*` handler is the
+    // last JavaScript left once the executable scripts are gone; `ping` is a
+    // fire-and-forget beacon to the live server that renders nothing; a
+    // speculative <link> fetches on open for a page that no longer benefits; a
+    // frame must not be able to retarget the top window. Reasoning for each sits
+    // on its function, under the rule at the top of this section.
+    disarmInlineHandlers(clone);
+    for (const el of Array.from(clone.querySelectorAll('*'))) {
+      disarmInlineHandlers(el);
+    }
+    for (const el of Array.from(clone.querySelectorAll('[ping]'))) {
+      disarmAttribute(el, 'ping');
+    }
+    for (const link of Array.from(clone.querySelectorAll('link[rel]'))) {
+      disarmSpeculativeLink(link);
+    }
+    for (const frame of Array.from(clone.querySelectorAll('iframe'))) {
+      limitFrameNavigation(frame);
+    }
+    for (const noscript of Array.from(clone.querySelectorAll('noscript'))) {
+      noscript.textContent = disarmNoscriptText(noscript.textContent);
     }
 
+    // Absolutize territory, every one of them: a reference the saved page needs
+    // in order to show what it showed, or one the reader may choose to follow.
+    // The two judgement calls worth naming, so they are not re-litigated:
+    //   • `iframe`/`embed`/`object` DO fetch live content the moment the snapshot
+    //     opens. That is the honest outcome for something we cannot inline - a
+    //     framed record viewer the reader can still open beats a blank box - and
+    //     the one power that would cost the reader the evidence, retargeting the
+    //     top window, was removed by limitFrameNavigation above.
+    //   • an autoplaying `video`/`audio` also reaches the network unasked, but it
+    //     is a resource the page carried and it takes nobody off the page, so the
+    //     src stays and `autoplay` is left as the author wrote it.
+    // No pair appears twice in this list, so nothing is resolved twice.
     const URL_ATTRS = [
       ['a', 'href'], ['area', 'href'], ['link', 'href'],
       ['img', 'src'], ['source', 'src'], ['video', 'src'], ['audio', 'src'],
       ['video', 'poster'], ['iframe', 'src'], ['embed', 'src'],
       ['object', 'data'], ['track', 'src'], ['input', 'src'],
       // A saved form that still posts somewhere sends it to the live site, as
-      // it did before; a relative action would post to the local folder.
+      // it did before; a relative action would post to the local folder. Nothing
+      // can submit it on its own: the scripts are gone and the on* handlers with
+      // them, so a submission is always the reader's own click.
       ['form', 'action'], ['button', 'formaction'], ['input', 'formaction'],
     ];
     for (const [tag, attr] of URL_ATTRS) {
@@ -891,23 +1137,27 @@
       }
     }
 
-    // A meta refresh keeps pointing at the live page it pointed at; a relative
-    // one would send the reader into the local folder.
+    // A meta refresh is a navigation AWAY from the evidence, not a resource the
+    // page needs, so it is disarmed rather than absolutized - the one case where
+    // rewriting a URL to its working form makes the snapshot useless instead of
+    // usable. Its target is recorded beside it; see disarmMetaPragma.
     for (const meta of Array.from(clone.querySelectorAll('meta[http-equiv]'))) {
-      if ((meta.getAttribute('http-equiv') || '').trim().toLowerCase() !== 'refresh') {
-        continue;
-      }
-      const content = meta.getAttribute('content') || '';
-      const m = content.match(/^(\s*[\d.]*\s*;\s*url\s*=\s*)(["']?)(.*?)\2\s*$/i);
-      if (!m) continue;
-      const abs = absolutize(m[3]);
-      if (abs) meta.setAttribute('content', m[1] + m[2] + abs + m[2]);
+      disarmMetaPragma(meta, pageBase);
     }
 
     // CSS carries URLs too, and it is the half a snapshot most often forgets:
     // a `style="background:url(hero.jpg)"` or a `<style>` block full of relative
     // url()s resolves against the document, so both need the same anchoring the
-    // attributes above got.
+    // attributes above got. All of it is absolutize territory - CSS paints, it
+    // does not navigate, and a background image is a resource the page needs.
+    //
+    // ORDER MATTERS, and it is the other half of the base bug. These two passes
+    // run BEFORE the stylesheet inliner below, because that inliner anchors the
+    // sheet's text against the SHEET's own address; a document-based pass over
+    // the <style> blocks it produced would be resolving values against a base
+    // that is not theirs. (absolutizeCss is idempotent - a second pass over an
+    // already-absolute url() is a no-op - so the ordering protects correctness
+    // rather than papering over a doubling, but keep the passes in this order.)
     for (const el of Array.from(clone.querySelectorAll('[style]'))) {
       const style = el.getAttribute('style') || '';
       if (style.indexOf('url(') === -1) continue;
@@ -947,6 +1197,11 @@
     // bounded; the result is honest - a readable copy, not a pixel-perfect mirror.
     // The url()s inside it ARE re-anchored to the stylesheet's own address,
     // because moving the text into the document silently re-bases them otherwise.
+    //
+    // `href` here has already been absolutized by the sweep above, and absUrl of
+    // an absolute URL is that same URL - no second resolution, no doubled path.
+    // The base handed to absolutizeCss is the address the sheet was FETCHED from
+    // (resp.url, which follows redirects), never the document's.
     for (const link of Array.from(
       clone.querySelectorAll('link[rel~="stylesheet"]')
     )) {
