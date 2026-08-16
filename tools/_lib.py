@@ -879,7 +879,9 @@ def _iter_filed_asset_paths(archive_root: Path):
                 yield path, str(f['file']).replace('\\', '/').lstrip('./')
 
 
-def roots_change_orphans(archive_root: str | Path, fha_config: dict) -> list[dict]:
+def roots_change_orphans(
+    archive_root: str | Path, fha_config: dict, *, record: bool = True,
+) -> list[dict]:
     """
     Detect a `roots:` change that has orphaned already-filed assets (#36).
 
@@ -900,6 +902,12 @@ def roots_change_orphans(archive_root: str | Path, fha_config: dict) -> list[dic
     stamp left alone, so the warning stays until the human reverts the value
     or re-points the records. `roots:` shapes that are not a mapping are
     doctor's business (it already reports them) and are ignored here.
+
+    `record=False` makes the call read-only: it still compares and reports,
+    but never seeds or advances the stamp. `fha lint` uses that - a linter
+    must not create files under an archive it was pointed at (a fixture, a
+    read-only checkout); `fha index` and `fha doctor`, which already own
+    `.cache/`, do the recording.
     """
     archive_root = Path(archive_root)
     roots_now = get_roots(fha_config)
@@ -908,7 +916,8 @@ def roots_change_orphans(archive_root: str | Path, fha_config: dict) -> list[dic
     roots_now = {str(k): str(v) for k, v in roots_now.items() if v is not None}
     remembered = _read_roots_stamp(archive_root)
     if remembered is None:
-        _write_roots_stamp(archive_root, roots_now)
+        if record:
+            _write_roots_stamp(archive_root, roots_now)
         return []
     changed = {
         alias for alias in set(remembered) | set(roots_now)
@@ -939,7 +948,8 @@ def roots_change_orphans(archive_root: str | Path, fha_config: dict) -> list[dic
             info['sample'].append(entry)
 
     if not per_alias:
-        _write_roots_stamp(archive_root, roots_now)
+        if record:
+            _write_roots_stamp(archive_root, roots_now)
         return []
     return [per_alias[a] for a in sorted(per_alias)]
 

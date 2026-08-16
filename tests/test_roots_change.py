@@ -138,10 +138,22 @@ class RootsChangeSurfacesTests(unittest.TestCase):
         findings, _registry = lint._run_lint_core(root, cfg)
         return [f.code for f in findings]
 
+    def test_lint_is_read_only_about_the_stamp(self) -> None:
+        # A linter pointed at a fixture or a read-only checkout must not
+        # create files there: lint compares and reports, index/doctor record.
+        with tempfile.TemporaryDirectory() as d:
+            root = _make_archive(Path(d))
+            self.assertNotIn('W121', self._lint_codes(root, _cfg('photos')))
+            self.assertFalse((root / '.cache' / ROOTS_STAMP_NAME).exists())
+            # With no stamp there is nothing to compare, so no W121 either -
+            # even on a value that WOULD orphan. Recording is what arms it.
+            self.assertNotIn('W121', self._lint_codes(root, _cfg('photos/Woodbury')))
+
     def test_lint_emits_w121_on_fha_yaml_ahead_of_the_e011s(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             root = _make_archive(Path(d))
-            self.assertNotIn('W121', self._lint_codes(root, _cfg('photos')))   # seeds
+            _lib.roots_change_orphans(root, _cfg('photos'))   # what fha index / doctor do
+            self.assertNotIn('W121', self._lint_codes(root, _cfg('photos')))
 
             findings, _r = lint._run_lint_core(root, _cfg('photos/Woodbury'))
             codes = [f.code for f in findings]

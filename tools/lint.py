@@ -2489,7 +2489,10 @@ def _check_roots_change(archive_root: Path, fha_config: dict, findings: list[Fin
     of the per-record fallout. Sticky until reverted or re-pointed (see
     `_lib.roots_change_orphans` for the stamp semantics).
     """
-    for item in roots_change_orphans(archive_root, fha_config):
+    # record=False: lint reads and reports, it does not seed the stamp - a
+    # linter pointed at a fixture or a read-only checkout must not create
+    # files there. `fha index` / `fha doctor` own the recording.
+    for item in roots_change_orphans(archive_root, fha_config, record=False):
         findings.append(Finding('W', 'W121', archive_root / 'fha.yaml',
                                 format_roots_orphan_warning(item, archive_root)))
 
