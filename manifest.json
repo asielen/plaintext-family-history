@@ -193,7 +193,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "18bc9e431be5bdf2611cb0662f64dfb57698e5161ab6239b4cfb3ae463832a84",
+      "sha256": "65e92a26b0c5955b3111c67c953274498938fe49bfe12bdeb2de05a86fda0fbd",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
