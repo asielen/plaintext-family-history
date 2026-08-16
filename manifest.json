@@ -30,19 +30,25 @@
     {
       "path": ".claude/skills/import-recordings/GAP.md",
       "category": "operating",
-      "sha256": "c2017877db5ebae8d1e666a6b389e536e1af076135a4689519aa5d7c8d8e30c4",
+      "sha256": "f3b0754ed1648bdb2162390a61587ea115f8707c54429647a7af5b39284bd2bb",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "960a8314a24ba1e925ce9dddc6757ab0633fcbdc6ef1504c7d4c358a5d237393",
+      "sha256": "ff7a3359f4a4b1ec9a5bc0ee8b629da13c18abdecb486d2054dd934445177ec0",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/import-recordings/scripts/attribute_speakers.py",
       "category": "operating",
-      "sha256": "bb2f6074da16150012cea01c0b0efb1e212f3ad35d52c957c965a5b9c36434d2",
+      "sha256": "7f2df6bc647c007265381a9cffff2e4ea262e5688d061283a703ace10a3c6f69",
+      "spec_version": "1.2"
+    },
+    {
+      "path": ".claude/skills/import-recordings/scripts/find_duplicate_media.py",
+      "category": "operating",
+      "sha256": "20517a0e7555e6e759e4059a6a720096017ace99cc977a0ad98cb75d7594d12a",
       "spec_version": "1.2"
     },
     {
@@ -383,14 +389,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "6f6e4f17d6c1498df79f4476f7135aaac0f348057ac8c854a657e833f82a1321",
+      "sha256": "b2274ca31c0e43ca5cd20d607791bcf1cc81d72637cb8be6d5a3e0bd8b78ea71",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "037b464a7e421536924b87246f9833d1eb1c6b43cc09fdbc070d2897c71fd680",
+      "sha256": "218af52968abfb97d858dd9496ba60c79fd8d5e0d69f152308efd2c93c217514",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -523,14 +529,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "5c752062949c54eae489a9bc0f6508d0dc5be8d8b6f7349bd9ff08e23a518de2",
+      "sha256": "cdf4816534ce0806b1e9f21adf4405f895780bdb0b97d4664f697b92f035d0b6",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "eb61e85bd3b00ccf076b709edbcabd723fc2516d90fbdfa4e04fc863e5b47ca4",
+      "sha256": "fa6b32a4ec72611c8418a9baa137d8681c889b33a1589c493c0032955456e5f9",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -558,7 +564,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "652ff75f0bd9d308b6cac1403920c9a51fcfc1366b2ed617ce1097ac3ac819cc",
+      "sha256": "8b8819c9115ad80fe4d1d04b3881081fe2872669cec9bf401fe68f5a9a50b142",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -761,7 +767,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "0d8971c9a0f4880c8d7d7cf6bd0c2b08d41e8cf0bd4a70a98da190c92eb52ef5",
+      "sha256": "eef11a90909bc1a539a9d5e6e0df57976d6845f54577ee170e7688e0b95dd15e",
       "spec_version": "1.2",
       "src": "tools/views.py"
     },
@@ -834,7 +840,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "54ec776554f3ddb1871a43148b41041d2569fb35db8d51020b309a7c7d45309b",
+      "sha256": "057664300e94c6ed82972421391272fd56565843fc5fce405d0d5a48a3f5181b",
       "spec_version": "1.2"
     },
     {
