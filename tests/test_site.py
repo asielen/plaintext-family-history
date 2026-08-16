@@ -597,6 +597,86 @@ class AssetTests(_Base):
         self.assertIn('Jane in 1880', html)
         self.assertIn('jane.jpg', html)
 
+    def test_missing_photo_row_does_not_hide_its_live_variant(self):
+        # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
+        # leaves its is_primary flag alone, so the photo strip's
+        # one-entry-per-group pick would choose the row that cannot be
+        # rendered and drop the whole physical photo - back scan included -
+        # off the person page.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        back = self.archive_root / 'photos' / '1880' / 'jane-back.jpg'
+        back.parent.mkdir(parents=True, exist_ok=True)
+        back.write_bytes(b'not-a-real-image-but-exists')
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('MISSING:photos/1880/jane.jpg', 'g1', 1, 'Jane in 1880'))
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('photos/1880/jane-back.jpg', 'g1', 0, 'Reverse of the 1880 portrait'))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('MISSING:photos/1880/jane.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('photos/1880/jane-back.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=True)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('jane-back.jpg', html)
+        self.assertNotIn('MISSING:', html)
+
+    def test_living_tagged_gate_reads_missing_keyed_tags(self):
+        # The file came back (a reconnected drive) but the catalog has not
+        # been rescanned, so the living person's tag still sits on the
+        # 'MISSING:' key while source_files names the plain path. The gate
+        # must still fire - a stale catalog may not publish a living person.
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true')
+        self._seed_source('s-1111111111', 'Photo Source', source_type='photo')
+        img = self.archive_root / 'photos' / '1880' / 'pic.jpg'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b'not-a-real-image-but-exists')
+        self.conn.execute(
+            'INSERT INTO source_files(source_id, path, role) VALUES (?,?,?)',
+            ('s-1111111111', 'photos/1880/pic.jpg', 'front'))
+        pconn = self._make_photos_db()
+        pconn.execute(
+            'INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+            ('MISSING:photos/1880/pic.jpg', 'g1', 1, ''))
+        pconn.execute(
+            'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+            ('MISSING:photos/1880/pic.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=False)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('image omitted - tagged to a living person', html)
+
+    def test_photos_ignore_excludes_bare_filename_guess(self):
+        # A bare `profile_photo: mystery.jpg` is answered by scanning the
+        # photos root. photos_ignore: marks a subtree as not part of the
+        # family library, so the scan must not answer out of it (#35).
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\nphotos_ignore:\n  - "Flickr Export"\n',
+            encoding='utf-8')
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe',
+                          frontmatter_extra='profile_photo: mystery.jpg')
+        stray = self.archive_root / 'photos' / 'Flickr Export' / 'mystery.jpg'
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_bytes(b'not-a-real-image-but-exists')
+        res = self._run(linked=True)
+        self.assertTrue(any('matched no photo' in m for m in res['messages']))
+        self.assertNotIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+
+        # Same file, same reference, with the setting removed: it resolves.
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n', encoding='utf-8')
+        res = self._run(linked=True)
+        self.assertIn('mystery.jpg', self._read('persons/p-aaaaaaaaaa.html'))
+
     @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
     def test_standalone_image_derivative(self):
         from PIL import Image

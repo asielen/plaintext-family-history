@@ -485,6 +485,107 @@ class PacketTests(unittest.TestCase):
         self.assertIn('Missing files', readme)
         self.assertIn('ghost.jpg', readme)
 
+    def test_reconcile_missing_photo_is_skipped_and_explained(self):
+        # `fha photoindex reconcile` keeps a vanished photo as the synthetic
+        # key 'MISSING:photos/…' so its caption survives. A packet copies real
+        # bytes, so the live back scan ships, the vanished front does not, and
+        # the README says so under its real path (no MISSING: jargon, and no
+        # 'photos/1' style half-key).
+        self._seed_person()
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'portrait-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/portrait.jpg', 'g1')"
+        )
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/portrait-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/portrait.jpg', 'p-aaaaaaaaaa', 'pid-keyword')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+
+        photos_out = result['packet_dir'] / 'photos'
+        self.assertTrue((photos_out / 'portrait-back.jpg').exists())
+        self.assertFalse(any(p.name.startswith('MISSING') for p in photos_out.iterdir()))
+
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('photo not on disk, so not copied: photos/portrait.jpg', readme)
+        self.assertNotIn('MISSING:', readme)
+        self.assertTrue(any(
+            'fha photoindex reconcile' in m and 'photos/portrait.jpg' in m
+            for m in result['messages']
+        ))
+
+    def test_missing_photo_row_not_counted_as_unverified(self):
+        # The README's "matched by name only" count describes files the
+        # recipient can actually open in photos/, so a name-matched photo that
+        # is off disk must not inflate it.
+        self._seed_person()
+        self._commit_fresh()
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/guess.jpg', 'g1')"
+        )
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('MISSING:photos/guess.jpg', 'p-aaaaaaaaaa', 'name-match')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('matched by name only', readme)
+        self.assertIn('photo not on disk, so not copied: photos/guess.jpg', readme)
+
+    def test_living_person_tagged_only_on_missing_variant_still_cautioned(self):
+        # The vanished front scan keeps its tags through reconcile, and the
+        # live back scan of the same physical photo does ship - so the caution
+        # about a living person must not disappear with the file.
+        self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Living Cousin', living='unknown',
+                          surname='Cousin')
+        self._commit_fresh()
+
+        photos_dir = self.archive_root / 'photos'
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        (photos_dir / 'group-back.jpg').write_bytes(b'back')
+
+        pconn = _make_photos_db(self.archive_root)
+        pconn.execute(
+            "INSERT INTO photos(path, group_id) VALUES ('MISSING:photos/group.jpg', 'g1')"
+        )
+        pconn.execute("INSERT INTO photos(path, group_id) VALUES ('photos/group-back.jpg', 'g1')")
+        pconn.execute(
+            "INSERT INTO photo_people(path, person_ref, via) VALUES "
+            "('photos/group-back.jpg', 'p-aaaaaaaaaa', 'pid-keyword'), "
+            "('MISSING:photos/group.jpg', 'p-bbbbbbbbbb', 'pid-keyword')"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'photos.sqlite', (future, future))
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('CAUTION', readme)
+        self.assertIn('Living Cousin', readme)
+
     def test_missing_profile_file_is_structural_failure(self):
         profile_path = self._seed_person()
         profile_path.unlink()

@@ -12,6 +12,7 @@ import datetime
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import sqlite3
 from pathlib import Path
 
@@ -287,6 +288,59 @@ class ReportTests(unittest.TestCase):
     def test_photo_triage_section_reports_absent_index(self) -> None:
         result = report.run_report(self.archive_root, {}, full=True)
         self.assertIn('Photo index absent', result['markdown'])
+
+    def test_unreadable_photos_explain_why_the_catalog_stays_out_of_date(self) -> None:
+        # run_scan pulls the catalog's date back behind the oldest photo it
+        # could not read, so `fha find` will keep calling the photo index out
+        # of date. Unexplained, that looks like a second, permanent fault -
+        # the report has to say why, and how to clear it.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 2, 'unchanged': 0, 'removed': 0,
+            'unreadable': 1, 'unreadable_sample': ['photos/1950/locked.jpg'],
+            'unreadable_unindexed': 1, 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('could not be read by exiftool', md)
+        self.assertIn('stays marked out of date', md)
+        self.assertIn('`fha photoindex` again', md)
+
+    def test_unreadable_photos_that_are_already_cataloged_say_nothing_extra(self) -> None:
+        # A photo that is unreadable but whose catalog row still matches the
+        # file does NOT hold the catalog back (run_scan only counts the
+        # unindexed ones), so the report must not claim it does.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 2, 'unchanged': 0, 'removed': 0,
+            'unreadable': 1, 'unreadable_sample': ['photos/1950/odd.jpg'],
+            'unreadable_unindexed': 0, 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('could not be read by exiftool', md)
+        self.assertNotIn('stays marked out of date', md)
+
+    def test_triage_candidate_that_is_not_on_disk_names_the_real_fix(self) -> None:
+        # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
+        # leaves it as its group's primary, so triage can name one. Telling
+        # the human to run `fha process MISSING:photos/…` would be a dead end.
+        triage = report.Result(data={
+            'status': 'fresh',
+            'candidates': [
+                {'path': 'MISSING:photos/1950/reunion.jpg', 'score': 3,
+                 'signals': ['caption']},
+            ],
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_triage', return_value=triage):
+            result = report.run_report(self.archive_root, {}, full=True, section='photo-triage')
+        md = result['markdown']
+        self.assertIn('photos/1950/reunion.jpg', md)
+        self.assertNotIn('MISSING:', md)
+        self.assertNotIn('fha process', md)
+        self.assertIn('fha photoindex reconcile --with-exif', md)
 
     def test_answerable_questions_skips_marriage_for_no_known_marriages_person(self) -> None:
         # lint.py's W101 rule never requires a marriage claim for a person

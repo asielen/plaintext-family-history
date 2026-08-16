@@ -80,6 +80,11 @@ CODE MAP
     _render_pedigree_svg       - horizontal family chart: children - subject/spouse(s)
                                  - parents - grandparents, self-contained SVG
 
+  Photo-catalog keys
+    _live_alias                - the real path under a reconcile 'MISSING:' key
+    _is_missing_key            - is this catalog key a photo that is not on disk?
+    _under_ignored_path        - does a photos-root path fall under photos_ignore:?
+
   Paths / hrefs
     _rel_href                  - relative href from a page dir to a target file
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
@@ -147,6 +152,8 @@ from _lib import (
     normalize_id,
     open_index_db,
     photoindex_status,
+    photos_ignore_matcher,
+    photos_ignore_patterns,
     pip_command,
     PROVISIONAL_VITAL_FIELDS,
     read_record,
@@ -180,6 +187,46 @@ _REQUIRED_TABLES = (
 )
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.gif'}
+
+# `fha photoindex reconcile` keeps a vanished photo's catalog row under the
+# synthetic key 'MISSING:' + its last known path, so the caption, keywords and
+# person tags it carried outlive the file. photoindex.py owns the rule; it is
+# restated here because tools never import tools (TOOLING §15). The site is a
+# page of pictures: anything that ends in an <img> must ask _is_missing_key
+# first, while anything that asks WHERE a photo lived (or WHO is in it) reads
+# through _live_alias instead.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The alias a cached photo key names, with any 'MISSING:' prefix off."""
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached photo path is reconcile's synthetic missing-file key.
+
+    Such a row can never produce an image: there is no file to copy, resize, or
+    link to. Filtering on it early also keeps a vanished variant from being
+    chosen as its group's representative and taking a still-present sibling
+    down with it.
+    """
+    return path.startswith(_MISSING_PREFIX)
+
+
+def _under_ignored_path(rel: str, is_ignored) -> bool:
+    """True when `rel` (posix, relative to the photos root) is itself excluded
+    by `photos_ignore:`, or sits inside a folder that is.
+
+    The scan walks with `os.walk` and prunes a matching directory before
+    descending, so a pattern like 'Flickr Export' never has to match the files
+    beneath it. A `rglob` finds those files directly, so each ancestor folder
+    is tested here instead - otherwise the site would publish out of exactly
+    the subtree the setting exists to keep out of the library.
+    """
+    parts = rel.split('/')
+    return any(is_ignored('/'.join(parts[:i])) for i in range(1, len(parts) + 1))
+
 
 # The largest edge (px) a standalone derivative is resized to (TOOLING §12).
 _DERIVATIVE_MAX_PX = 1200
@@ -2309,13 +2356,19 @@ class _SiteBuilder:
 
         Source-page image derivatives must skip photos co-tagged to living persons
         even when the source itself is otherwise public - the same rule applied
-        to person photo strips applies here."""
+        to person photo strips applies here.
+
+        Both spellings of the path are checked. When reconcile has flagged a
+        photo missing, its tags move to the 'MISSING:' key while `source_files`
+        still names the plain path - so a photo that comes back (a reconnected
+        drive) before the next scan would otherwise look untagged and publish
+        the living person the gate exists to protect."""
         if self.photos_conn is None:
             return False
         try:
             rows = self.photos_conn.execute(
-                'SELECT person_ref FROM photo_people WHERE path = ?',
-                (alias_path,),
+                'SELECT person_ref FROM photo_people WHERE path = ? OR path = ?',
+                (alias_path, f'{_MISSING_PREFIX}{_live_alias(alias_path)}'),
             ).fetchall()
         except sqlite3.DatabaseError:
             return False
@@ -2521,15 +2574,21 @@ class _SiteBuilder:
         """Photo strip from `.cache/photos.sqlite` (`photo_people`), one entry
         per variation group. Omitted silently when the photo index is absent or
         stale (`self.photos_conn` None) - it is an optional enrichment, never a
-        build blocker. Uses the connection opened once in `prepare()`."""
+        build blocker. Uses the connection opened once in `prepare()`.
+
+        Rows reconcile has flagged 'MISSING:' are dropped at the query, not at
+        render time: the file is gone, so it could only ever produce a broken
+        picture - and, worse, a vanished row still carries `is_primary`, so
+        leaving it in would let it win the one-entry-per-group pick below and
+        take the still-present back scan off the page with it."""
         if self.photos_conn is None:
             return []
         try:
             rows = self.photos_conn.execute(
                 'SELECT DISTINCT ph.group_id, ph.path, ph.caption, ph.is_primary, ph.source_id '
                 'FROM photo_people pp JOIN photos ph ON pp.path = ph.path '
-                'WHERE pp.person_ref = ?',
-                (pid,),
+                'WHERE pp.person_ref = ? AND ph.path NOT LIKE ?',
+                (pid, f'{_MISSING_PREFIX}%'),
             ).fetchall()
         except sqlite3.DatabaseError:
             return []
@@ -2650,14 +2709,36 @@ class _SiteBuilder:
         # scan the photos root for a unique basename match so a hero /
         # profile_photo written as "foo.jpg" still resolves without a photo
         # catalog. Restricted to image suffixes to cap traversal cost.
+        #
+        # `photos_ignore:` (#35) prunes this guess exactly as it prunes the
+        # scan: a bulk photo-service export is not the family library, so a
+        # bare filename must not be answered from one - the file was never
+        # cataloged, nobody reviewed who is in it, and the ambiguity warning
+        # below would fire on names the human never meant to offer. An
+        # explicitly written path is a different matter and is honored above:
+        # ignoring a folder says "don't go looking in here", not "this file
+        # may never be published".
         if photos_root and '/' not in ref and Path(ref).suffix.lower() in _IMAGE_SUFFIXES:
             pr = Path(photos_root)
             if not pr.is_absolute():
                 pr = self.archive_root / pr
             try:
+                is_ignored = photos_ignore_matcher(photos_ignore_patterns(self.fha_config))
+            except RuntimeError:
+                # A malformed photos_ignore: is the scan's error to report in
+                # plain words; the site just declines to guess rather than
+                # failing a whole build over a setting it only reads.
+                return None
+            try:
                 matches: list[Path] = []
                 if pr.is_dir():
                     for m in pr.rglob(ref):
+                        try:
+                            rel = m.relative_to(pr).as_posix()
+                        except ValueError:  # pragma: no cover - rglob result is under pr
+                            continue
+                        if _under_ignored_path(rel, is_ignored):
+                            continue
                         if m.is_file():
                             matches.append(m)
                             if len(matches) > 1:
@@ -2754,7 +2835,12 @@ class _SiteBuilder:
     def _catalog_path_for_disk(self, disk: Path) -> str | None:
         """The catalog-stored path (if any) that names the file at `disk`. Tries
         the archive-relative path first, then a basename LIKE. Returns None when
-        the file has no catalog entry."""
+        the file has no catalog entry.
+
+        A row reconcile flagged 'MISSING:' is a valid answer here - this is the
+        "which catalog row describes this file" question, not "can it be
+        opened", and the file in hand may be the very one that came back - but
+        a still-current row is preferred when the basename matches both."""
         if self.photos_conn is None:
             return None
         try:
@@ -2768,8 +2854,9 @@ class _SiteBuilder:
                 if row:
                     return row['path']
             row = self.photos_conn.execute(
-                'SELECT path FROM photos WHERE path = ? OR path LIKE ?',
-                (disk.name, '%/' + disk.name)).fetchone()
+                'SELECT path FROM photos WHERE path = ? OR path LIKE ? '
+                'ORDER BY (path LIKE ?), path',
+                (disk.name, '%/' + disk.name, f'{_MISSING_PREFIX}%')).fetchone()
             if row:
                 return row['path']
         except sqlite3.DatabaseError:
@@ -2812,8 +2899,11 @@ class _SiteBuilder:
     def _resolve_photo_ref(self, ref: str) -> str | None:
         """Map a `profile_photo:` value to a stored photo path via the catalog.
         Tries, in order: an S-id (the source's primary photo), the exact stored
-        path, then a basename match (so a moved file still resolves). Prefers the
-        group's primary variant on ties."""
+        path, then a basename match (so a moved file still resolves). Prefers a
+        photo that is still on disk, then the group's primary variant: the
+        answer here is going to be opened, and a vanished variant's row keeps
+        its `is_primary` flag, so ranking on primary alone would hand back a
+        file that cannot be read while a good sibling sat behind it."""
         if self.photos_conn is None:
             return None
         r = ref.strip().replace('\\', '/')
@@ -2825,7 +2915,11 @@ class _SiteBuilder:
                 return None
             if not rows:
                 return None
-            rows = sorted(rows, key=lambda x: 0 if x['is_primary'] else 1)
+            rows = sorted(
+                rows,
+                key=lambda x: (1 if _is_missing_key(x['path']) else 0,
+                               0 if x['is_primary'] else 1),
+            )
             return rows[0]['path']
 
         if re.match(r'(?i)^s-[0-9a-z]+$', r):

@@ -72,6 +72,7 @@ CODE MAP
     _section_contradictions      - §4: E009 findings, formatted
     _section_search_log          - §5: search_log lookups for current leads
     _section_answerable_questions - §5b: open questions with a closeable gap
+    _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
     _section_photo_triage        - §6: photoindex.run_triage embed
     _section_place_candidates    - §6b: places.run_candidates() embed
     _section_hypotheses          - §7: open hypotheses + draft-queue backlog
@@ -835,6 +836,24 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
 
 # ── Section 6: Photo processing triage ────────────────────────────────────────
 
+# `fha photoindex reconcile` keeps a vanished photo's catalog row under the
+# synthetic key 'MISSING:' + its last known path, so the caption and dates it
+# carried outlive the file. photoindex.py owns the rule; restated here (report
+# only ever displays these paths, never opens them) so a suggestion the human
+# is meant to type is never built from a path that does not exist.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The path a cached photo key names, with any 'MISSING:' prefix off."""
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached photo path is reconcile's synthetic missing-file key."""
+    return path.startswith(_MISSING_PREFIX)
+
+
 def _section_photo_triage(
     archive_root: Path, fha_config: dict, scan_error: str | None = None,
     scan_note: str | None = None,
@@ -850,17 +869,35 @@ def _section_photo_triage(
             f'Photo scan failed this session ({scan_error}) - triage results below may be '
             'stale; run `fha photoindex` once the issue is fixed.'
         ]
+    # The scan's note is prepended before the index verdict, not after: when
+    # this session's scan could not read some files, that is very often WHY
+    # the catalog below is missing or out of date, and printing the verdict
+    # alone would send the human to re-run the command that just told him.
+    lines = [f'Note: {scan_note}'] if scan_note else []
     result = photoindex.run_triage(archive_root, fha_config, top=10)
     if result['status'] in ('absent', 'unreadable'):
-        return [f'Photo index {result["status"]} - run `fha photoindex` to enable triage.']
+        return lines + [
+            f'Photo index {result["status"]} - run `fha photoindex` to enable triage.'
+        ]
 
-    lines = [f'Note: {scan_note}'] if scan_note else []
     candidates = result['candidates']
     if not candidates:
         return lines + ['No unprocessed photo groups found.']
 
     for c in candidates:
         signals = ', '.join(c['signals']) if c['signals'] else 'no signals'
+        # A group is named by whichever file the last scan picked as its
+        # primary, and `fha photoindex reconcile` re-keys a vanished file
+        # 'MISSING:' + its old path without choosing a new primary. Sending
+        # the human to `fha process MISSING:photos/…` would be a dead end
+        # twice over: that is not a path, and the file it names is not there.
+        if _is_missing_key(c['path']):
+            lines.append(
+                f"- {_live_alias(c['path'])}  score={c['score']:+d}  [{signals}] - "
+                'this photo is in the catalog but not on disk. Put it back, then run '
+                '`fha photoindex reconcile --with-exif` before processing it.'
+            )
+            continue
         lines.append(
             f"- {c['path']}  score={c['score']:+d}  [{signals}] - suggested: fha process {c['path']}"
         )
@@ -1235,6 +1272,19 @@ def run_report(
                 f'{n_unreadable} photo file(s) could not be read by exiftool and were '
                 f'skipped (any prior catalog entry kept): {sample}'
             )
+            # Those files never reached the catalog, so run_scan deliberately
+            # holds the catalog's date back until they can be read - which is
+            # why `fha find` will keep calling the photo index out of date.
+            # Unexplained, that reads as a second, separate fault the human
+            # cannot clear, so the report says it here, where he is looking.
+            n_unindexed = int((scan.data or {}).get('unreadable_unindexed') or 0)
+            if n_unindexed:
+                photo_scan_note += (
+                    f'. The photo catalog stays marked out of date until those '
+                    f'{n_unindexed} file(s) can be read - close anything holding them '
+                    'open (or restore them from backup if they are damaged), then run '
+                    '`fha photoindex` again'
+                )
     except (RuntimeError, OSError) as e:
         # `fha report` is the session-start feed across many sections
         # (0-5b/7/8); a photo-scan failure (e.g. exiftool missing or

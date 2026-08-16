@@ -1,10 +1,13 @@
 import argparse
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -781,6 +784,107 @@ class RelatedPhotoDateTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertIn('photos/p1880.jpg', out)
         self.assertNotIn('photos/p1950.jpg', out)
+
+
+class RelatedPhotoMissingTests(unittest.TestCase):
+    """Covers reconcile's 'MISSING:' catalog keys in the person and place
+    neighborhoods: a group whose primary vanished must be listed by a member
+    that is still on disk, and a group with no live member at all must say so
+    in plain words instead of printing the internal key."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        self.conn.execute(
+            "INSERT INTO places(id, name, lat, lon) VALUES ('l-1111111111', 'Fairview', 39.0, -95.0)"
+        )
+        self.conn.commit()
+        self._make_photo_db()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _make_photo_db(self) -> None:
+        cache = self.archive_root / '.cache'
+        cache.mkdir(exist_ok=True)
+        pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
+        pconn.executescript(
+            '''
+            PRAGMA user_version=1;
+            CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+            CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
+                                gps_lat REAL, gps_lon REAL, edtf TEXT);
+            CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY,
+                                       primary_path TEXT, edtf_resolved TEXT);
+            CREATE TABLE photo_people(path TEXT, person_ref TEXT);
+            CREATE TABLE photo_face_regions(path TEXT);
+            CREATE TABLE photo_keywords(path TEXT);
+            CREATE VIRTUAL TABLE photo_fts USING fts5(path, name, caption);
+            -- Group 1: the front scan vanished, the back scan is still here.
+            INSERT INTO photo_groups VALUES (1, 'MISSING:photos/front.jpg', '1880');
+            INSERT INTO photos VALUES ('MISSING:photos/front.jpg', 1, 39.0, -95.0, '1880');
+            INSERT INTO photos VALUES ('photos/front-back.jpg', 1, 39.0, -95.0, '1880');
+            INSERT INTO photo_people VALUES ('MISSING:photos/front.jpg', 'p-aaaaaaaaaa');
+            -- Group 2: every member is gone.
+            INSERT INTO photo_groups VALUES (2, 'MISSING:photos/gone.jpg', '1890');
+            INSERT INTO photos VALUES ('MISSING:photos/gone.jpg', 2, 39.0, -95.0, '1890');
+            INSERT INTO photo_people VALUES ('MISSING:photos/gone.jpg', 'p-aaaaaaaaaa');
+            '''
+        )
+        pconn.commit()
+        pconn.close()
+
+    def test_person_photos_prefer_live_member_and_flag_vanished_group(self) -> None:
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('MISSING:', out)
+        self.assertIn('photos/front-back.jpg', out)
+        self.assertIn('photos/gone.jpg   (not on disk)', out)
+        self.assertIn('fha photoindex reconcile', out)
+
+    def test_place_photos_prefer_live_member_and_flag_vanished_group(self) -> None:
+        rc, out = _run(find.run_related, 'l-1111111111', None,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('MISSING:', out)
+        self.assertIn('photos/front-back.jpg', out)
+        self.assertIn('photos/gone.jpg   (not on disk)', out)
+        self.assertIn('fha photoindex reconcile', out)
+
+    def test_caption_search_shows_the_path_the_photo_had(self) -> None:
+        # A caption stays searchable after its file leaves the disk (that is
+        # what reconcile's kept row is for), so the hit is right - but the
+        # human is given the path the photo had, marked, not the internal key.
+        cache = self.archive_root / '.cache'
+        pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
+        pconn.executescript(
+            "INSERT INTO photo_fts(path, name, caption) VALUES "
+            "('MISSING:photos/gone.jpg', '', 'Alice at the county fair');"
+        )
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 600
+        os.utime(cache / 'photos.sqlite', (future, future))
+
+        with unittest.mock.patch.object(find, 'photoindex_status',
+                                        return_value=('fresh', 0.0)):
+            rc, out = _run(find._find_text, 'fair', self.archive_root, {}, None)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('[photo] photos/gone.jpg (not on disk)', out)
+        self.assertNotIn('MISSING:', out)
+
+    def test_person_photo_count_names_the_files_that_are_gone(self) -> None:
+        # `fha find P-id` prints one photo count; it must not promise two
+        # files the human then cannot find.
+        rc, out = _run(find._find_person, 'p-aaaaaaaaaa', self.conn,
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('photos: 2 (2 not on disk - run fha photoindex reconcile)', out)
 
 
 class RelatedSchemaFailureTests(unittest.TestCase):

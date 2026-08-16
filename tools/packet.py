@@ -71,6 +71,11 @@ PHOTO GATHERING (TOOLING §8's "all photos of grandma" union):
   matched path to its full variation group (front+back+crop, etc.) via
   `photo_groups`/`photos.group_id` so a person's photo entry never ships
   the front scan without its back.
+  A photo the catalog still knows but disk no longer has (reconcile's
+  'MISSING:' key) is never copied - a packet is a physical bundle - but it
+  IS named in the README's missing-files list and warned about with the
+  command that re-links it, and its own person tags still count toward the
+  living-person caution.
 
 WHY A LIBRARY FUNCTION (`run_packet`): mirrors the xref/cooccur/report
 convention of a testable `run_*(archive_root, ...) -> dict` core, separate
@@ -103,6 +108,8 @@ CODE MAP
     _source_copy_plan             - per-source copy mode (byte/redact/unsafe) + timeline excludes
 
   Photo gathering
+    _live_alias                   - the real path under a reconcile 'MISSING:' key
+    _is_missing_key               - is this catalog key a photo that is not on disk?
     _photo_people_paths           - photo_people rows for this pid (a/b/c union, already resolved)
     _expand_photo_groups          - path set → full variation-group path set
     _source_image_paths           - image-suffixed files among included sources' assets (d)
@@ -806,6 +813,36 @@ def _is_image_path(p: Path) -> bool:
 
 # ── Photo gathering ───────────────────────────────────────────────────────────
 
+# `fha photoindex reconcile` keeps a vanished photo's row in the catalog under
+# the synthetic key 'MISSING:' + its last known path, so the caption, keywords
+# and date history it carried survive the file itself. The two helpers below
+# are photoindex.py's own vocabulary, restated here because tools never import
+# tools (TOOLING §15): _live_alias answers "where was this photo" and
+# _is_missing_key answers "can this file be opened". A packet is a physical
+# bundle of files, so every copy path must ask the second question first.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The alias a cached photo key refers to, with any 'MISSING:' prefix off.
+
+    The prefix decorates the path a photo had; it is not a different path. Use
+    this whenever the answer is a place ("where did this photo live"), never to
+    build something to open.
+    """
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached photo path is reconcile's synthetic missing-file key.
+
+    A packet copies real bytes, so a true here means "do not copy, and say why"
+    rather than "resolve it and let the copy fail with a path the human has
+    never seen".
+    """
+    return path.startswith(_MISSING_PREFIX)
+
+
 def _photo_people_paths(photos_conn: sqlite3.Connection, pid: str) -> set[str]:
     """
     Raw photo_people paths for pid - already the union of pid-keyword,
@@ -827,6 +864,11 @@ def _expand_photo_groups(photos_conn: sqlite3.Connection, paths: set[str]) -> se
     and crop variants (TOOLING §9: a logical photo is the whole group, not
     one file). Paths with no group_id (shouldn't happen post-scan, but a
     stale/partial cache is possible) pass through unchanged.
+
+    A 'MISSING:' member is expanded like any other, and a 'MISSING:' input
+    still finds its group: a vanished front scan must still pull its back
+    scan into the packet. Deciding which of the expanded paths can actually
+    be copied happens at the copy site, not here.
     """
     if not paths:
         return set()
@@ -1582,11 +1624,16 @@ def _packet_payload(
                 pconn.row_factory = sqlite3.Row
                 try:
                     people_paths = _photo_people_paths(pconn, pid)
+                    # The README counts these as photos the recipient can look
+                    # at ("N photo(s) in photos/ are matched by name only"), so
+                    # a name-matched photo that is no longer on disk - and
+                    # therefore never lands in photos/ - must not be counted.
                     unverified_count = len({
                         r['path'] for r in pconn.execute(
                             "SELECT path FROM photo_people WHERE person_ref=? AND via='name-match'",
                             (pid,),
                         ).fetchall()
+                        if not _is_missing_key(r['path'])
                     })
 
                     # Source-linked images aren't under photos/ control by tag, but a
@@ -1609,6 +1656,15 @@ def _packet_payload(
                     def _is_photo_alias(a: str) -> bool:
                         return a == 'photos' or a.startswith('photos/')
 
+                    # A group can contain a photo reconcile has flagged as gone
+                    # from disk. Its row is real and worth keeping (the caption
+                    # and the tags on it are), but there are no bytes to put in
+                    # the bundle, so it is separated out here and reported by
+                    # name instead of being resolved into a path that could
+                    # never open.
+                    missing_aliases = {a for a in expanded_aliases if _is_missing_key(a)}
+                    live_aliases = expanded_aliases - missing_aliases
+
                     # photo_people/photos store alias-form paths ('photos/…') that need
                     # resolve_path; a source image outside the photos root falls back to
                     # its own absolute path above and is used as-is. Keep the alias form
@@ -1616,7 +1672,7 @@ def _packet_payload(
                     # it instead of a machine-specific absolute path when the photos
                     # root is mapped outside the archive.
                     photo_targets: dict[Path, str | None] = {}
-                    for alias_path in expanded_aliases:
+                    for alias_path in live_aliases:
                         if _is_photo_alias(alias_path):
                             try:
                                 resolved = resolve_path(alias_path, fha_config, archive_root)
@@ -1626,11 +1682,33 @@ def _packet_payload(
                         else:
                             photo_targets[source_alias_map.get(alias_path, Path(alias_path))] = None
 
+                    # Photos that are in the catalog but not on disk: named in
+                    # the README so the recipient knows the packet is short a
+                    # picture on purpose, and flagged to whoever ran the export
+                    # with the command that puts it back. Sorted so a packet
+                    # built twice reads the same way both times.
+                    for missing_key in sorted(missing_aliases):
+                        note = (
+                            'photo not on disk, so not copied: '
+                            f'{_live_alias(missing_key)}'
+                        )
+                        messages.append(
+                            f'WARNING: {note} - the photo catalog still remembers this '
+                            'photo, but the file has moved or been deleted. Put it back, '
+                            'then run fha photoindex reconcile --with-exif to re-link it.'
+                        )
+                        missing_assets.append(note)
+
                     # A photo-group sibling may be tagged with a different,
                     # still-living/unknown person who never appears in any claim or
                     # source - catch that here so the caution list covers photo-only
-                    # matches too.
-                    tagged_aliases = {a for a in expanded_aliases if _is_photo_alias(a)}
+                    # matches too. Missing-file rows count: their tags survive
+                    # reconcile by design, and a live variant of the same
+                    # physical photo IS in the packet, so a living person tagged
+                    # only on the vanished side still belongs in the caution.
+                    tagged_aliases = {
+                        a for a in expanded_aliases if _is_photo_alias(_live_alias(a))
+                    }
                     if tagged_aliases:
                         placeholders = ','.join('?' * len(tagged_aliases))
                         photo_person_ids = {

@@ -110,6 +110,8 @@ configure_utf8_stdout()
 #    _person_org_hubs          - recurring occupation/military/membership affiliations shared
 #                                 with others
 #    _person_source_count      - distinct source count for a person
+#    _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
+#    _photo_locator            - which path to show for a group (live member preferred)
 #    _print_person_photos      - photo_people lookup in .cache/photos.sqlite
 #    _related_place            - L-id world: claims, people, sources, micro-places, photos
 #    _print_place_photos       - GPS-proximity photo lookup for a place
@@ -300,12 +302,20 @@ def _find_person(
         try:
             pconn = sqlite3.connect(str(photos_db))
             pconn.row_factory = sqlite3.Row
-            count = pconn.execute(
-                "SELECT COUNT(DISTINCT path) FROM photo_people WHERE person_ref = ?",
-                (pid,)
-            ).fetchone()[0]
+            # A photo reconcile has flagged as gone from disk still counts as
+            # a photo of this person (its caption and tags are kept on
+            # purpose), but the human hunting for the file needs to know some
+            # of them will not be there - and this line is often the only
+            # place he looks.
+            count, gone = pconn.execute(
+                "SELECT COUNT(DISTINCT path), "
+                "COUNT(DISTINCT CASE WHEN path LIKE ? THEN path END) "
+                "FROM photo_people WHERE person_ref = ?",
+                (f'{_MISSING_PREFIX}%', pid),
+            ).fetchone()
             pconn.close()
-            print(f'  photos: {count}')
+            suffix = f' ({gone} not on disk - run fha photoindex reconcile)' if gone else ''
+            print(f'  photos: {count}{suffix}')
         except Exception:
             print('  photos: not indexed (run fha photoindex)')
     else:
@@ -789,7 +799,16 @@ def _find_text(
                     "FROM photo_fts WHERE photo_fts MATCH ?",
                     (query,),
                 ):
-                    rel = f'[photo] {row[0]}'
+                    # A caption is kept searchable after its photo leaves the
+                    # disk - that is the whole point of reconcile's MISSING:
+                    # row - so the hit is real and belongs in the results.
+                    # Show the path the photo had, marked, rather than the
+                    # internal key: 'MISSING:photos/…' is not a path anyone
+                    # can act on.
+                    if _is_missing_key(row[0]):
+                        rel = f'[photo] {_live_alias(row[0])} (not on disk)'
+                    else:
+                        rel = f'[photo] {row[0]}'
                     if rel not in seen_paths:
                         hits.append((rel, row[1]))
                         seen_paths.add(rel)
@@ -1067,6 +1086,59 @@ def _photo_edtf_overlaps(edtf_str: str | None, date_bounds: tuple[str, str]) -> 
     return pmax >= lo and pmin <= hi
 
 
+# `fha photoindex reconcile` keeps a vanished photo in the catalog under the
+# synthetic key 'MISSING:' + its last known path, so its caption, keywords and
+# dates outlive the file. photoindex.py owns the rule; it is restated here
+# because tools never import tools (TOOLING §15). `find` is a locator, so it
+# reads THROUGH the prefix (the path still says where the photo was) but must
+# never hand the human a path that cannot be opened without saying so.
+_MISSING_PREFIX = 'MISSING:'
+
+
+def _live_alias(path: str) -> str:
+    """The alias a cached photo key names, with any 'MISSING:' prefix off."""
+    return path[len(_MISSING_PREFIX):] if path.startswith(_MISSING_PREFIX) else path
+
+
+def _is_missing_key(path: str) -> bool:
+    """True when a cached photo path is reconcile's synthetic missing-file key."""
+    return path.startswith(_MISSING_PREFIX)
+
+
+# One line for the human when any listed photo is off disk. Named once so the
+# person and place neighborhoods say it identically.
+_MISSING_PHOTO_HINT = (
+    '    (not on disk = the catalog still has the photo, the file does not. '
+    'Put it back, then run fha photoindex reconcile --with-exif.)'
+)
+
+
+def _photo_locator(
+    pconn: sqlite3.Connection, group_id: str | None, primary_path: str,
+) -> tuple[str, bool]:
+    """Where to tell the human one photo group lives: (path to show, is-missing).
+
+    A group's `primary_path` is whatever file the last full scan picked, and
+    reconcile only renames it in place - so the primary of a photo whose front
+    scan vanished is a 'MISSING:' key even when the back scan is still sitting
+    on disk. Printing that key would be a lie about the group twice over: the
+    photo IS locatable, just under another name. So a live member is preferred,
+    exactly as the gallery does; only when every member is gone does the last
+    known path get printed, flagged, with the fix named alongside.
+    """
+    if not _is_missing_key(primary_path):
+        return (primary_path, False)
+    if group_id:
+        row = pconn.execute(
+            'SELECT path FROM photos WHERE group_id = ? AND path NOT LIKE ? '
+            'ORDER BY path LIMIT 1',
+            (group_id, f'{_MISSING_PREFIX}%'),
+        ).fetchone()
+        if row is not None:
+            return (row[0], False)
+    return (_live_alias(primary_path), True)
+
+
 def _print_person_photos(
     pid: str,
     archive_root: Path,
@@ -1077,7 +1149,9 @@ def _print_person_photos(
     Photos tagged to this person via any resolution confidence
     (pid-keyword/face-tag/name-match - photo_people already records the
     winning method per photo). Mirrors _find_person's photo-count lookup but
-    lists the group's primary_path so the photos are actually locatable.
+    lists the group's primary_path so the photos are actually locatable - via
+    `_photo_locator`, which prefers a member that is still on disk and flags a
+    group that has none.
 
     Gated on `photoindex_status()` so a stale photos.sqlite - e.g. after a
     name-variant change or photo rename/delete - is reported as stale rather
@@ -1105,7 +1179,7 @@ def _print_person_photos(
             pconn.row_factory = sqlite3.Row
             rows = pconn.execute(
                 '''
-                SELECT DISTINCT pg.primary_path, pg.edtf_resolved
+                SELECT DISTINCT pg.group_id, pg.primary_path, pg.edtf_resolved
                 FROM photo_people pp
                 JOIN photos p ON p.path = pp.path
                 JOIN photo_groups pg ON pg.group_id = p.group_id
@@ -1113,17 +1187,26 @@ def _print_person_photos(
                 ''',
                 (pid,),
             ).fetchall()
+            if date_bounds is not None:
+                rows = [
+                    r for r in rows
+                    if _photo_edtf_overlaps(r['edtf_resolved'], date_bounds)
+                ]
+            listed = [
+                _photo_locator(pconn, r['group_id'], r['primary_path'])
+                for r in rows
+            ]
         finally:
             pconn.close()
     except Exception:
         print('  photos: not indexed (run fha photoindex)')
         return
-    if date_bounds is not None:
-        rows = [r for r in rows if _photo_edtf_overlaps(r['edtf_resolved'], date_bounds)]
-    if rows:
-        print(f'  photos ({len(rows)}):')
-        for r in rows[:10]:
-            print(f"    {r['primary_path']}")
+    if listed:
+        print(f'  photos ({len(listed)}):')
+        for path_text, gone in listed[:10]:
+            print(f'    {path_text}' + ('   (not on disk)' if gone else ''))
+        if any(gone for _path, gone in listed[:10]):
+            print(_MISSING_PHOTO_HINT)
     else:
         print('  photos: none')
 
@@ -1234,6 +1317,10 @@ def _print_place_photos(
 
     Same `photoindex_status()` gating as `_print_person_photos` so stale GPS
     rows (after photos move or get re-geotagged) aren't surfaced silently.
+    A photo whose file has gone missing is still part of this place's story -
+    the archive knows a picture was taken here - so it is listed through
+    `_photo_locator` (live member preferred, "(not on disk)" when there is
+    none) rather than dropped.
 
     With `date_bounds`, each photo is filtered against its own `photos.edtf`
     via `_photo_edtf_overlaps`, so a 1950 photo near the place doesn't appear
@@ -1259,7 +1346,7 @@ def _print_place_photos(
             pconn.row_factory = sqlite3.Row
             rows = pconn.execute(
                 '''
-                SELECT DISTINCT pg.primary_path,
+                SELECT DISTINCT pg.group_id, pg.primary_path,
                        COALESCE(pg.edtf_resolved, p.edtf) AS edtf
                 FROM photos p JOIN photo_groups pg ON pg.group_id = p.group_id
                 WHERE p.gps_lat IS NOT NULL AND p.gps_lon IS NOT NULL
@@ -1267,17 +1354,23 @@ def _print_place_photos(
                 ''',
                 (place['lat'], place['lon']),
             ).fetchall()
+            if date_bounds is not None:
+                rows = [r for r in rows if _photo_edtf_overlaps(r['edtf'], date_bounds)]
+            listed = [
+                _photo_locator(pconn, r['group_id'], r['primary_path'])
+                for r in rows
+            ]
         finally:
             pconn.close()
     except Exception:
         print('  photos: not indexed (run fha photoindex)')
         return
-    if date_bounds is not None:
-        rows = [r for r in rows if _photo_edtf_overlaps(r['edtf'], date_bounds)]
-    if rows:
-        print(f'  photos near coords ({len(rows)}):')
-        for r in rows[:10]:
-            print(f"    {r['primary_path']}")
+    if listed:
+        print(f'  photos near coords ({len(listed)}):')
+        for path_text, gone in listed[:10]:
+            print(f'    {path_text}' + ('   (not on disk)' if gone else ''))
+        if any(gone for _path, gone in listed[:10]):
+            print(_MISSING_PHOTO_HINT)
     else:
         print('  photos near coords: none')
 
