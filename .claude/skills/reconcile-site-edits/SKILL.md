@@ -19,7 +19,7 @@ makes regeneration safe and idempotent, and exactly why a hand-edit of the outpu
 build. This skill does not change that. `fha site` stays deterministic; the fuzzy reconciliation lives
 **only here**. The skill reads the human's edited HTML, recovers what he meant, folds it into the right
 *source* layer, and lets the deterministic build carry it forward. See [`../_STANDARD.md`](../_STANDARD.md)
-and [`docs/CUSTOMIZING_SITE.md`](../../docs/CUSTOMIZING_SITE.md).
+and [`docs/CUSTOMIZING_SITE.md`](../../../docs/CUSTOMIZING_SITE.md).
 
 ## When this runs
 

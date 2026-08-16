@@ -20,34 +20,54 @@ draft rather than an archive record, so it lives in this skill's own
 2. **Run the script** (long-running — background it):
    ```
    python ".claude/skills/transcribe-audio/scripts/transcribe_audio.py" \
-       "<path-to-audio>" --model medium --outdir "<scratchpad>/whisper" --name <slug>
+       "<path-to-audio>" --model medium --outdir "<scratchpad>/whisper" --name <stem>
    ```
    Model choice: `small` for a quick pass; `medium`+ when the goal is
    recovering garbled proper names (it usually is, in a family archive).
+   Other flags: `--language en` (or `auto` to let whisper detect it) and
+   `--force`, which re-does a recording whose outputs are already there.
+   Exit codes: `0` written (or already present), `1` no speech found and
+   nothing written, `2` it could not run — the message names the next step.
 
    **`--name` decides where the file lands in a directory listing — get it
-   right the first time.** `fha process --more` renames what you attach to
-   `{stem}-{role}_{S-id}.{ext}`, so the stem you pass here *is* the sort key.
-   Every file belonging to one source must share one prefix, with only the
-   per-file role distinguishing it, so a reader sees each recording's audio,
-   app transcript and whisper pass sitting together:
+   right the first time, and pass the *shared* stem with no role of your
+   own.** `fha process --more` renames what you attach to
+   `{stem}-{role}_{S-id}.{ext}`, appending the role itself, so a `--name`
+   ending in `-whisper` files as `…-whisper-whisper-transcript_S-….md`. Every
+   file belonging to one source must share one prefix, with only the per-file
+   role distinguishing it, so a reader sees each recording's audio, app
+   transcript and whisper pass sitting together:
 
    ```
-   hartley-thomas-interview-1998-06-14-farm-audio_S-x9qcves0nm.m4a
-   hartley-thomas-interview-1998-06-14-farm-transcript_S-x9qcves0nm.txt
+   hartley-thomas-interview-1998-06-14-farm-audio_S-x9qcves0nm.m4a        # role: audio
+   hartley-thomas-interview-1998-06-14-farm-transcript_S-x9qcves0nm.txt   # role: transcript
    hartley-thomas-interview-1998-06-14-farm-whisper-transcript_S-x9qcves0nm.md
    ```
 
-   So `--name hartley-thomas-interview-1998-06-14-farm-whisper`, taking the
-   prefix from the file you are transcribing — **not** a fresh slug of your own
-   (`hartley-thomas-1998-06-14-farm-whisper` drops `interview-` and exiles
-   every whisper file to its own clump, because `2` sorts before `i`). If the
+   All three grow from the one stem `hartley-thomas-interview-1998-06-14-farm`,
+   so that is exactly what `--name` gets — take it from the file you are
+   transcribing, dropping its `-{role}` and its `_S-id` (the script's default
+   `--name` does that for you), and **not** a fresh slug of your own
+   (`hartley-thomas-1998-06-14-farm` drops `interview-` and exiles every
+   whisper file to its own clump, because `2` sorts before `i`). If the
    existing siblings disagree with each other, the source record's own filename
-   gives the canonical slug. Where a rename is needed to repair this, it is a
-   documents-root rename: change the file **and** the record's `files:` entry in
-   one operation, then `fha reconcile --dry-run` to confirm nothing came
-   untied. This mirrors the naming rule in `import-recordings` step 5; the two
-   must stay in agreement.
+   gives the canonical slug: match it, and **leave the odd file exactly as it
+   is.** A documents-root file is renamed once, by `fha process`, and no verb
+   renames it again — `fha reconcile` re-ties files that *moved* by matching
+   the unchanged filename, so a hand-rename breaks the tie instead of healing
+   it, and hand-editing a `files:` entry is off the table for the same reason.
+   Say plainly which file looks out of line and leave the reorganizing to the
+   human; when he has moved things, `fha reconcile --dry-run` (then
+   `fha reconcile`) re-ties the paths. This mirrors the naming rule in
+   `import-recordings` step 5; the two must stay in agreement.
+
+   Point `--outdir` at a scratch folder, **never at an asset root**: the run
+   writes `<name>.txt`, `<name>.srt` and `<name>.md`, and `<name>.txt` is
+   precisely the name an app transcript filed beside the recording would carry.
+   The script refuses to overwrite outputs it already wrote (it reports
+   "already transcribed" and exits 0 — which is what makes a long queue safe to
+   re-run after a reboot), and a run that is interrupted or fails publishes
+   nothing at all, so a file that is there is always a finished one.
 3. **Review the output** (`<name>.md`, timestamped) against the passages that
    mattered — especially names the original transcript garbled.
 4. **Keep BOTH transcripts on the source — always.** This skill's end state
@@ -56,10 +76,21 @@ draft rather than an archive record, so it lives in this skill's own
    - the original app/human transcript (role `transcript`) — if the recording
      arrived with one and it isn't archived yet, attach it too; if the audio
      itself isn't archived yet, run it through `process-source` first;
-   - the whisper pass (role `whisper-transcript`):
+   - the whisper pass (role `whisper-transcript`). `--more` attaches only files
+     that already sit under the documents root, so copy the reviewed `.md` out
+     of the scratch folder into the recording's own folder first — it is a new
+     working file, not an archived original — and then attach it, previewing
+     as always:
    ```
-   fha process "<archived-audio-file>" --more "<name>.md" whisper-transcript
+   fha process "<archived-audio-file>" --more "documents/interviews/<session-folder>/<name>.md" whisper-transcript --dry-run
+   fha process "<archived-audio-file>" --more "documents/interviews/<session-folder>/<name>.md" whisper-transcript
    ```
+   With `--name hartley-thomas-interview-1998-06-14-farm`, that files the
+   attachment as
+   `hartley-thomas-interview-1998-06-14-farm-whisper-transcript_S-x9qcves0nm.md`
+   and appends its `files:` entry (role `whisper-transcript`) to the record.
+   Check the exit code; never proceed past a 2 or a 3 silently.
+
    Never replace, detach, or "supersede" the original transcript, even when
    the whisper pass is clearly better — the two disagree in exactly the spots
    a reviewer needs to compare, and provenance beats tidiness.
@@ -91,9 +122,12 @@ draft rather than an archive record, so it lives in this skill's own
    - Apply a value fix with `fha claim <C-id> --value "…" --dry-run` then
      apply; it changes the field without touching `status:` or `reviewed:`,
      which is right — the human's original acceptance stands and only the
-     wording is being repaired. Notes are hand-edited in the source record.
-     Every correction carries its whisper timestamp and says what the app
-     transcript had instead, so the reasoning survives.
+     wording is being repaired. A claim's `notes:` has no flag of its own, so
+     that one is edited in the source record's `## Claims` block by hand (a
+     record, never an archived original or a `files:` entry) — say so when you
+     do it, and run `fha lint` afterwards. Every correction carries its whisper
+     timestamp and says what the app transcript had instead, so the reasoning
+     survives.
    - Where whisper recovers material the app transcript mangled beyond use,
      draft it as a **new `status: suggested` claim** and hand it to
      `review-claims` — never fold new facts into an accepted claim.
@@ -110,4 +144,18 @@ draft rather than an archive record, so it lives in this skill's own
   names. It resolves disputes only when the human agrees it does.
 - Speaker attribution is not provided (no diarization); never invent labels.
 - Writes only to the given `--outdir` and, on attach, through `fha process
-  --more`. Archived assets are never renamed, moved, or overwritten.
+  --more`. Archived assets are never renamed, moved, or overwritten — not by
+  the script, not by hand, not to fix a name that sorts badly. Neither is a
+  record's `files:` entry: `fha process --more` writes it, `fha reconcile`
+  heals it after the human moves things, and nothing else touches it.
+- **Nothing machine-specific goes into the transcript.** The `.md` names the
+  recording by *filename* only, never by the path you typed: an absolute path
+  would publish the operator's home directory into an archived file and would
+  point nowhere once the archive is copied elsewhere. The same rule binds what
+  you paste from the console into a note — the run prints the local `--outdir`
+  so you can find the files, and record paths are written in alias form
+  (`documents/interviews/…`, SPEC §12.4).
+- A run either writes all three files or none of them, so an interrupted pass
+  never leaves a truncated transcript that a later batch would mistake for a
+  finished one. Re-running is always safe; `--force` is the only way to
+  replace an output that already exists.

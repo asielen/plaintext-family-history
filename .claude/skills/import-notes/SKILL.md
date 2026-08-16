@@ -14,7 +14,7 @@ description: >
 # import-notes
 
 The on-ramp for legacy notes. The archive has a home for every kind of research paper — the "Where
-does a note go?" rule in [`docs/FILING_CABINET.md`](../../docs/FILING_CABINET.md) — but a
+does a note go?" rule in [`docs/FILING_CABINET.md`](../../../docs/FILING_CABINET.md) — but a
 decades-old pile arrives with the kinds all mixed together, and nobody wants to sort it alone. This
 skill reads the pile, proposes a routing per chunk, and — on the human's confirmation — writes each
 chunk to its destination in that home's own SPEC format. It drafts no claims and decides nothing
