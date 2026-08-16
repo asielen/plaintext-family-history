@@ -223,10 +223,6 @@ class PhotoindexTests(unittest.TestCase):
         self.assertIsNone(r('YMD', '1942:11:25 10:00:00'))
         self.assertIsNone(r('YM', '1942:11:25 10:00:00'))
         self.assertIsNone(r('Y', '1942:11:25 10:00:00'))
-        # The digit form is a human's own transcription, not a machine
-        # timestamp, so it keeps reading as confident.
-        self.assertEqual(photoindex._keyword_to_edtf('1880'), '1880')
-        self.assertEqual(photoindex._resolve_photo_edtf('1880', '2009:04:20 10:58:33'), '1880')
 
     def test_scan_leaves_an_unconfirmed_placeholder_photo_undated(self) -> None:
         # End to end: a photo whose DATE: keyword affirms nothing must land in
@@ -265,19 +261,130 @@ class PhotoindexTests(unittest.TestCase):
             res = photoindex.run_find(archive, cfg, edtf='1955')
             self.assertTrue(any('family_reunion' in r['path'] for r in res['rows']), res.data)
 
-    def test_resolve_photo_edtf_needs_a_keyword_and_keeps_digit_form(self) -> None:
-        # The keyword's presence marks a date as REVIEWED (archive-owner
-        # decision, 2026-08-15): EXIF alone never resolves - a scanner clock
-        # must not enter the same field as human-confirmed fact, and a 1925
-        # print dated 2021 is worse than undated. A keyword that embeds its
-        # own digits (hand-typed 'DATE: 1880') still resolves on its own.
+    def test_resolve_photo_edtf_needs_a_keyword_in_the_letter_form(self) -> None:
+        # Two archive-owner decisions, in one function.
+        #
+        # 2026-08-15: the keyword's presence marks a date as REVIEWED. EXIF
+        # alone never resolves - a scanner clock must not enter the same field
+        # as human-confirmed fact, and a 1925 print dated 2021 is worse than
+        # undated.
+        #
+        # 2026-08-16: the LETTER form is the only form read. SPEC §20 rule 1
+        # defines the grammar as per-component precision letters and nothing
+        # else, so a keyword carrying digits is not evidence of a date, however
+        # readable it looks to a human.
         r = photoindex._resolve_photo_edtf
         self.assertIsNone(r(None, '2009:04:20 10:58:33'))
         self.assertIsNone(r('', '2009:04:20 10:58:33'))
         self.assertEqual(r('Y!M!D!', '2009:04:20 10:58:33'), '2009-04-20')
-        self.assertEqual(r('1880!', '2009:04:20 10:58:33'), '1880')
-        self.assertEqual(r('1880', None), '1880')
         self.assertIsNone(r('Y!M!D!', None))
+        # Digit-bearing keywords: all outside the grammar, all undated.
+        self.assertIsNone(r('1880', '2009:04:20 10:58:33'))
+        self.assertIsNone(r('1880!', '2009:04:20 10:58:33'))
+        self.assertIsNone(r('1942!-11!-25!', '2009:04:20 10:58:33'))
+        self.assertIsNone(r('[..1900]', '2009:04:20 10:58:33'))
+        self.assertIsNone(r('1880', None))
+
+    def test_spec_20_keyword_table_resolves_row_by_row(self) -> None:
+        # SPEC §20 rule 1's table is the whole contract for what a DATE:
+        # keyword may say. Walk it row by row so a change to the resolver
+        # cannot quietly drift away from the spec it implements. The
+        # parenthesised dates in the table's left column are a gloss on the
+        # EXIF value each row is being resolved against, not a second syntax.
+        r = photoindex._resolve_photo_edtf
+        self.assertEqual(r('Y!M!D!', '1942:11:25 10:00:00'), '1942-11-25')
+        self.assertEqual(r('Y!M!', '1960:05:01 00:00:00'), '1960-05')
+        self.assertEqual(r('Y!M~', '1960:05:01 00:00:00'), '1960-~05')
+        self.assertEqual(r('Y!', '1960:05:01 00:00:00'), '1960')
+        # The table calls 'Y!' the same as 'Y!M?D?' - spelled out, same answer.
+        self.assertEqual(r('Y!M?D?', '1960:05:01 00:00:00'), '1960')
+        # 'Y~' has two readings in the table, circa and decade; the archive
+        # stores the circa one, which keeps the known year visible.
+        self.assertEqual(r('Y~', '1960:05:01 00:00:00'), '1960~')
+
+    def test_nonspec_date_keywords_are_counted_and_leave_photos_undated(self) -> None:
+        # End to end for the 2026-08-16 rule: three keywords a human might
+        # plausibly type (a bare year, the AI pipeline's digit-plus-marker
+        # form, a raw EDTF string) all leave their photo undated - and the
+        # scan says how many, so an owner who can read a date on the photo is
+        # not left wondering why the catalog never got one.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            rows = {
+                'portrait_1880.jpg': {
+                    'Keywords': ['DATE: 1880'],
+                    'DateTimeOriginal': '1880:01:01 00:00:00',
+                },
+                'portrait_1880-back.jpg': {
+                    'Keywords': ['DATE: 1942!-11!-25!'],
+                    'DateTimeOriginal': '1942:11:25 00:00:00',
+                },
+                'wedding_1902.jpg': {
+                    'Keywords': ['DATE: [..1900]'],
+                    'DateTimeOriginal': '1902:06:14 00:00:00',
+                },
+                # One spec-conformant photo, so the count is of the non-spec
+                # keywords and not simply of every keyworded photo.
+                'family_reunion.jpg': {
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1955:08:04 12:00:00',
+                },
+            }
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), **rows.get(p.name, {})} for p in paths
+            ]
+            cfg = {'roots': {'photos': 'photos'}}
+            summary = photoindex.run_scan(archive, cfg)
+
+            self.assertEqual(summary['nonspec_date_keywords'], 3)
+            self.assertEqual(summary['dated_groups'], 1)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                edtf_by_name = {
+                    Path(path).name: edtf
+                    for path, edtf in conn.execute('SELECT path, edtf FROM photos')
+                }
+            finally:
+                conn.close()
+            self.assertIsNone(edtf_by_name['portrait_1880.jpg'])
+            self.assertIsNone(edtf_by_name['portrait_1880-back.jpg'])
+            self.assertIsNone(edtf_by_name['wedding_1902.jpg'])
+            self.assertEqual(edtf_by_name['family_reunion.jpg'], '1955')
+
+            # And nothing answers a date query on the year those keywords name.
+            self.assertEqual(photoindex.run_find(archive, cfg, edtf='1880')['rows'], [])
+            self.assertEqual(photoindex.run_find(archive, cfg, edtf='1942')['rows'], [])
+
+    def test_cmd_scan_explains_nonspec_date_keywords_only_when_there_are_some(self) -> None:
+        # The count is only useful if the owner is told what it means and what
+        # to do about it, and only when it is non-zero - a note on every clean
+        # scan is noise that trains him to skip the notes that matter.
+        def scan_output(archive: Path) -> str:
+            args = type('Args', (), {'root': str(archive), 'full': False})()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                photoindex._cmd_scan(args)
+            return out.getvalue()
+
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), 'Keywords': ['DATE: 1880!']} for p in paths
+            ]
+            text = scan_output(archive)
+            self.assertIn('does not read a date from', text)
+            self.assertIn("'DATE: Y!M!D!'", text)      # the form he should use
+            self.assertIn('fha photoindex', text)      # and the next step
+
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), 'Keywords': ['DATE: Y!'],
+                 'DateTimeOriginal': '1880:01:01 00:00:00'} for p in paths
+            ]
+            text = scan_output(archive)
+            self.assertNotIn('does not read a date from', text)
 
     def test_scan_resolves_keyworded_dates_and_leaves_exif_only_undated(self) -> None:
         # The catalog's date features all read `edtf`. Keyworded photos must
@@ -391,16 +498,23 @@ class PhotoindexTests(unittest.TestCase):
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 rows = {
+                    # Front says 1880, back says 1881 - one physical photo
+                    # whose two scans disagree, which is what date_conflict is
+                    # for. The year is confident on both (SPEC §20 'Y!'); the
+                    # value comes from each scan's own EXIF date.
                     'portrait_1880.jpg': {
-                        'Keywords': ['DATE: 1880!'],
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1880:01:01 00:00:00',
                         'Title': 'Portrait front',
                     },
                     'portrait_1880-back.jpg': {
-                        'Keywords': ['DATE: 1881!'],
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1881:01:01 00:00:00',
                         'Title': 'Portrait back',
                     },
                     'wedding_1902.jpg': {
-                        'Keywords': ['SOURCE: S-123456789a', 'DATE: 1902!'],
+                        'Keywords': ['SOURCE: S-123456789a', 'DATE: Y!'],
+                        'DateTimeOriginal': '1902:01:01 00:00:00',
                         'Caption-Abstract': 'Wedding party',
                     },
                     'family_reunion.jpg': {
@@ -702,8 +816,14 @@ class PhotoindexTests(unittest.TestCase):
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 calls['count'] += len(paths)
                 rows = {
-                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
-                    'portrait_1880-back.jpg': {'Keywords': ['DATE: 1881!']},
+                    'portrait_1880.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1880:01:01 00:00:00',
+                    },
+                    'portrait_1880-back.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1881:01:01 00:00:00',
+                    },
                     'wedding_1902.jpg': {},
                     'family_reunion.jpg': {'Caption-Abstract': 'reunion photo'},
                 }
@@ -1540,13 +1660,18 @@ class PhotoindexTests(unittest.TestCase):
         def fake_exiftool(paths: list[Path]) -> list[dict]:
             rows = {
                 'portrait_1880.jpg': {
-                    'Keywords': ['DATE: 1880!'], 'Title': 'Portrait front',
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1880:01:01 00:00:00',
+                    'Title': 'Portrait front',
                 },
                 'portrait_1880-back.jpg': {
-                    'Keywords': ['DATE: 1880!'], 'Caption-Abstract': 'cemetery visit',
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1880:01:01 00:00:00',
+                    'Caption-Abstract': 'cemetery visit',
                 },
                 'wedding_1902.jpg': {
-                    'Keywords': ['SOURCE: S-123456789a', 'DATE: 1902!'],
+                    'Keywords': ['SOURCE: S-123456789a', 'DATE: Y!'],
+                    'DateTimeOriginal': '1902:01:01 00:00:00',
                     'Caption-Abstract': 'Wedding party',
                 },
                 'family_reunion.jpg': {
@@ -1756,9 +1881,15 @@ class PhotoindexTests(unittest.TestCase):
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 rows = {
-                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                    'portrait_1880.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1880:01:01 00:00:00',
+                    },
                     'portrait_1880-back.jpg': {'Caption-Abstract': 'cemetery visit'},
-                    'wedding_1902.jpg': {'Keywords': ['DATE: 1902!']},
+                    'wedding_1902.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1902:01:01 00:00:00',
+                    },
                     'family_reunion.jpg': {'Caption-Abstract': 'Family reunion'},
                 }
                 return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
@@ -1784,9 +1915,15 @@ class PhotoindexTests(unittest.TestCase):
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 rows = {
-                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                    'portrait_1880.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1880:01:01 00:00:00',
+                    },
                     'portrait_1880-back.jpg': {'Caption-Abstract': 'untagged back'},
-                    'wedding_1902.jpg': {'Keywords': ['DATE: 1902!']},
+                    'wedding_1902.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1902:01:01 00:00:00',
+                    },
                     'family_reunion.jpg': {'Caption-Abstract': 'Family reunion'},
                 }
                 return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
@@ -2153,12 +2290,18 @@ class PhotoindexTests(unittest.TestCase):
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 rows = {
-                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                    'portrait_1880.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1880:01:01 00:00:00',
+                    },
                     'portrait_1880-back.jpg': {
-                        'Keywords': ['DATE: 1881!'], 'Caption-Abstract': 'written 1881',
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1881:01:01 00:00:00',
+                        'Caption-Abstract': 'written 1881',
                     },
                     'wedding_1902.jpg': {
-                        'Keywords': ['SOURCE: S-123456789a', 'DATE: 1902!'],
+                        'Keywords': ['SOURCE: S-123456789a', 'DATE: Y!'],
+                        'DateTimeOriginal': '1902:01:01 00:00:00',
                     },
                     'family_reunion.jpg': {},
                 }
@@ -2197,8 +2340,14 @@ class PhotoindexTests(unittest.TestCase):
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 rows = {
-                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
-                    'portrait_1880-back.jpg': {'Keywords': ['DATE: 1881!']},
+                    'portrait_1880.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1880:01:01 00:00:00',
+                    },
+                    'portrait_1880-back.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1881:01:01 00:00:00',
+                    },
                     'wedding_1902.jpg': {},
                     'family_reunion.jpg': {},
                 }
@@ -2438,7 +2587,10 @@ class PhotoindexTests(unittest.TestCase):
             cfg = {'roots': {'photos': 'photos'}}
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
-                rows = {'portrait_1880.jpg': {'Keywords': ['DATE: 1955!']}}
+                rows = {'portrait_1880.jpg': {
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1955:01:01 00:00:00',
+                }}
                 return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
 
             photoindex._run_exiftool = fake_exiftool
@@ -2477,8 +2629,14 @@ class PhotoindexTests(unittest.TestCase):
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
                 rows = {
-                    'portrait_1880.jpg': {'Keywords': ['DATE: 1850!']},
-                    'portrait_1880-back.jpg': {'Keywords': ['DATE: 1950!']},
+                    'portrait_1880.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1850:01:01 00:00:00',
+                    },
+                    'portrait_1880-back.jpg': {
+                        'Keywords': ['DATE: Y!'],
+                        'DateTimeOriginal': '1950:01:01 00:00:00',
+                    },
                 }
                 return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
 
@@ -3668,7 +3826,10 @@ class PhotoindexTests(unittest.TestCase):
             cfg = {'roots': {'photos': 'photos'}}
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
-                rows = {'portrait_1880.jpg': {'Keywords': ['DATE: 1955!']}}
+                rows = {'portrait_1880.jpg': {
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1955:01:01 00:00:00',
+                }}
                 return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
 
             photoindex._run_exiftool = fake_exiftool
@@ -3920,7 +4081,8 @@ class GalleryTests(unittest.TestCase):
             cfg = {'roots': {'photos': 'photos'}}
             self._stage(
                 archive,
-                {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}},
+                {'portrait_1880.jpg': {'Keywords': ['DATE: Y!'],
+                                   'DateTimeOriginal': '1880:01:01 00:00:00'}},
                 cfg,
                 extra_files=('portrait_1880b.jpg',),
             )
@@ -3943,9 +4105,11 @@ class GalleryTests(unittest.TestCase):
             archive = _copy_fixture(Path(d))
             cfg = {'roots': {'photos': 'photos'}}
             self._stage(archive, {
-                'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                'portrait_1880.jpg': {'Keywords': ['DATE: Y!'],
+                                      'DateTimeOriginal': '1880:01:01 00:00:00'},
                 'portrait_1880-back.jpg': {'Caption-Abstract': 'cemetery visit'},
-                'wedding_1902.jpg': {'Keywords': ['DATE: 1902!'],
+                'wedding_1902.jpg': {'Keywords': ['DATE: Y!'],
+                                     'DateTimeOriginal': '1902:01:01 00:00:00',
                                      'Caption-Abstract': 'Wedding party'},
             }, cfg)
 
@@ -3973,7 +4137,9 @@ class GalleryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
             cfg = {'roots': {'photos': 'photos'}}
-            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+            self._stage(archive, {'portrait_1880.jpg': {
+                'Keywords': ['DATE: Y!'],
+                'DateTimeOriginal': '1880:01:01 00:00:00'}}, cfg)
 
             result = photoindex.run_gallery(archive, cfg, edtf='188X')
             html = self._read(result['written'])
@@ -3988,9 +4154,11 @@ class GalleryTests(unittest.TestCase):
             archive = _copy_fixture(Path(d))
             cfg = {'roots': {'photos': 'photos'}}
             self._stage(archive, {
-                'portrait_1880.jpg': {'Keywords': ['DATE: 1920!', 'gallery-test']},
+                'portrait_1880.jpg': {'Keywords': ['DATE: Y!', 'gallery-test'],
+                                      'DateTimeOriginal': '1920:01:01 00:00:00'},
                 'portrait_1880-back.jpg': {'Keywords': ['gallery-test']},
-                'wedding_1902.jpg': {'Keywords': ['DATE: 1955!', 'gallery-test']},
+                'wedding_1902.jpg': {'Keywords': ['DATE: Y!', 'gallery-test'],
+                                     'DateTimeOriginal': '1955:01:01 00:00:00'},
                 'family_reunion.jpg': {'Keywords': ['gallery-test']},
             }, cfg)
 
@@ -4141,7 +4309,9 @@ class GalleryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
             cfg = {'roots': {'photos': 'photos'}}
-            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+            self._stage(archive, {'portrait_1880.jpg': {
+                'Keywords': ['DATE: Y!'],
+                'DateTimeOriginal': '1880:01:01 00:00:00'}}, cfg)
 
             missing_dir = archive / 'reports' / 'nested'
             with self.assertRaises(RuntimeError) as ctx:
@@ -4168,7 +4338,9 @@ class GalleryTests(unittest.TestCase):
         # empties. Driven through _cmd_gallery so the exit codes are exercised.
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
-            self._stage(archive, {'family_reunion.jpg': {'Keywords': ['DATE: 1880!']}})
+            self._stage(archive, {'family_reunion.jpg': {
+                'Keywords': ['DATE: Y!'],
+                'DateTimeOriginal': '1880:01:01 00:00:00'}})
 
             self.assertEqual(
                 photoindex._cmd_gallery(self._args(archive)), EXIT_FAILURE)
@@ -4283,16 +4455,27 @@ class GalleryTests(unittest.TestCase):
         self.assertEqual(h('192X'), '1920s')
         self.assertEqual(h(None), 'Undated')
 
-    def test_gallery_decade_from_edtf_literal_and_open_range_undated(self) -> None:
+    def test_gallery_decade_from_edtf_literal_and_undated_photo_in_tail(self) -> None:
         # End to end: a month-approximate 1920 date lands in the 1920s section
-        # (never the 1910s the old midpoint gave); a "[..1900]" open range has no
-        # confident year and falls to the Undated tail.
+        # (never the 1910s the old midpoint gave), and a photo that resolves to
+        # no date at all falls to the Undated tail rather than being bucketed
+        # from anything it happens to carry.
+        #
+        # This used to feed the tail a "[..1900]" open range through a keyword.
+        # Since 2026-08-16 only SPEC §20's letter grammar resolves, and that
+        # grammar cannot express an open range, so no scan can produce one;
+        # `_decade_of`'s open-range handling is covered directly in
+        # test_decade_of_reads_edtf_literal_not_bounds_midpoint. Here the
+        # undated photo is a keyword that affirms no component ('DATE: Y'),
+        # which is what an unresolvable date looks like in practice.
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
             cfg = {'roots': {'photos': 'photos'}}
             self._stage(archive, {
-                'portrait_1880.jpg': {'Keywords': ['DATE: 1920-01~', 'dtest']},
-                'wedding_1902.jpg': {'Keywords': ['DATE: [..1900]', 'dtest']},
+                'portrait_1880.jpg': {'Keywords': ['DATE: Y!M~', 'dtest'],
+                                      'DateTimeOriginal': '1920:01:15 00:00:00'},
+                'wedding_1902.jpg': {'Keywords': ['DATE: Y', 'dtest'],
+                                     'DateTimeOriginal': '1902:06:14 00:00:00'},
             }, cfg)
 
             result = photoindex.run_gallery(archive, cfg, keyword='dtest')
@@ -4302,7 +4485,7 @@ class GalleryTests(unittest.TestCase):
             self.assertNotIn('<h2>1910s</h2>', html)
             self.assertIn('<h2>Undated</h2>', html)
             i_undated = html.index('<h2>Undated</h2>')
-            # The open-range photo is under Undated, not in any numeric decade.
+            # The undated photo is under Undated, not in any numeric decade.
             self.assertIn('wedding_1902.jpg', html[i_undated:])
             self.assertLess(html.index('<h2>1920s</h2>'), i_undated)
 
@@ -4315,7 +4498,8 @@ class GalleryTests(unittest.TestCase):
             cfg = {'roots': {'photos': 'photos'}}
             self._stage(
                 archive,
-                {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!', 'torn']}},
+                {'portrait_1880.jpg': {'Keywords': ['DATE: Y!', 'torn'],
+                                       'DateTimeOriginal': '1880:01:01 00:00:00'}},
                 cfg,
                 extra_files=('portrait_1880b.jpg',),
             )
@@ -4448,11 +4632,13 @@ class GalleryTests(unittest.TestCase):
             )
             self._stage(archive, {
                 'portrait_1880.jpg': {
-                    'Keywords': ['DATE: 1880!'],
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1880:01:01 00:00:00',
                     'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
                 },
                 'wedding_1902.jpg': {
-                    'Keywords': ['DATE: 1902!'],
+                    'Keywords': ['DATE: Y!'],
+                    'DateTimeOriginal': '1902:01:01 00:00:00',
                     'RegionInfo': {'RegionList': [{'Name': 'Maggie', 'Type': 'Face'}]},
                 },
             }, cfg)
@@ -4661,7 +4847,9 @@ class GalleryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
             cfg = {'roots': {'photos': 'photos'}}
-            self._stage(archive, {'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']}}, cfg)
+            self._stage(archive, {'portrait_1880.jpg': {
+                'Keywords': ['DATE: Y!'],
+                'DateTimeOriginal': '1880:01:01 00:00:00'}}, cfg)
 
             orig = photoindex.write_generated_file
 

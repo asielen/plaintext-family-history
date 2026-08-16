@@ -62,7 +62,10 @@ CODE MAP
     _run_exiftool             - batched `exiftool -j -struct` invocation (test seam)
     _SOURCE_KEYWORD_RE, _PID_KEYWORD_RE, _DATE_KEYWORD_RE - keyword patterns
     _extract_keywords         - flatten Keywords+Subject into one string list
-    _keyword_to_edtf          - confidence-coded DATE: keyword -> EDTF (SPEC §20)
+    _keyword_to_edtf          - INTERNAL: digits + confidence markers -> EDTF (SPEC §20)
+    _placeholder_to_edtf      - SPEC §20 letter grammar + EXIF DateTimeOriginal -> EDTF
+    _resolve_photo_edtf       - one photo's date: the letter form only, or nothing
+    _is_nonspec_date_keyword  - is this DATE: keyword outside SPEC §20's grammar?
     _extract_face_regions     - XMP-mwg-rs:RegionInfo -> list of (name, type, area)
     _row_to_photo             - one exiftool JSON row -> photos table column dict
 
@@ -485,21 +488,25 @@ def _extract_keywords(row: dict) -> list[str]:
 
 def _keyword_to_edtf(pattern: str) -> str | None:
     """
-    Map a confidence-coded DATE: keyword body to an EDTF string (SPEC §20 table).
+    Assemble an EDTF string from digits carrying per-component confidence
+    markers ('1942!-11!-25!', '1960~') - SPEC §20's table, one step down.
 
-    The pipeline writes per-component confidence markers (`!` confident,
-    `~` best guess, `?`/omitted unknown) directly on the digits, e.g.
-    '1942!-11!-25!' or '1960~'. We stop building the EDTF string at the
-    first component that is missing or marked '?' - SPEC §20 states 'Y!' is
-    deliberately equivalent to 'Y!M?D?', i.e. an unconfirmed component is
-    the same as an absent one, not a reason to guess. A bare digit string
-    with no markers at all (e.g. a hand-typed '1880') is treated as fully
-    confident, since most of the archive's DATE: keywords come from human
-    transcription rather than the AI pipeline's marker syntax.
+    This is an INTERNAL assembler, not a reader of archive keywords.
+    `_placeholder_to_edtf` builds this digit-plus-marker form by pairing the
+    spec's letter grammar with the EXIF value, then calls this to apply the
+    §20 rules in one place. Nothing reads a digit-bearing string straight off
+    a photo: that form is outside the spec (see `_resolve_photo_edtf`).
+
+    Building stops at the first component that is missing or marked '?' -
+    §20 states 'Y!' is deliberately equivalent to 'Y!M?D?', i.e. an
+    unconfirmed component is the same as an absent one, not a reason to guess.
     """
     m = re.match(r'^(\d{4})([!~?])?(?:-(\d{2})([!~?])?(?:-(\d{2})([!~?])?)?)?$', pattern.strip())
     if not m:
-        return pattern.strip() if is_valid_edtf(pattern.strip()) else None
+        # The one caller assembles this shape itself, so this cannot fire
+        # today; it stays so the function is total - a future caller gets
+        # "no date" rather than an AttributeError on a None match.
+        return None
 
     year, year_c, month, month_c, day, day_c = m.groups()
     if year_c == '?':
@@ -532,13 +539,15 @@ def _keyword_to_edtf(pattern: str) -> str | None:
 # EXIF DateTimeOriginal - photo metadata cannot hold a partial date, so the
 # pipeline writes a forced full YYYY-MM-DD there (rule 2: a technical
 # workaround, never truth on its own) and the keyword says which components
-# of it are to be believed. `_keyword_to_edtf` above expected the keyword body
-# to carry digits with markers ('1942!-11!-25!'), a form that never occurs in
-# practice; so `edtf` stayed NULL on every row of a real library and every
-# date feature was silently dead (#40). Trailing time components (H hour, M
-# minute, S second) are matched and discarded - the archive's EDTF is
-# date-only; note the second 'M' means minutes, so a real pattern can read
-# 'Y!M!D?H!M!'.
+# of it are to be believed. This letter grammar is the whole of what a photo's
+# DATE: keyword may say, and matching it here is what decides whether a photo
+# gets a date at all: the code once also read digits straight off a keyword
+# body ('1942!-11!-25!'), which matched nothing on a real library and left
+# `edtf` NULL on every row with every date feature silently dead (#40), and
+# which the archive owner then ruled out of the spec outright (2026-08-16 -
+# see `_resolve_photo_edtf`). Trailing time components (H hour, M minute, S
+# second) are matched and discarded - the archive's EDTF is date-only; note
+# the second 'M' means minutes, so a real pattern can read 'Y!M!D?H!M!'.
 _DATE_PLACEHOLDER_RE = re.compile(
     r'^Y([!~?])?(?:(M)([!~?])?(?:(D)([!~?])?((?:[HMS][!~?]?)*))?)?$', re.I
 )
@@ -566,9 +575,11 @@ def _placeholder_to_edtf(pattern: str, exif_date: object) -> str | None:
     own clock into an exact archive date. So a component the pipeline did
     not affirm is dropped, and a pattern with no affirmed component at all
     ('Y', 'YMD') resolves to nothing - the photo stays undated until someone
-    marks a component confident. This is deliberately NOT how the digit form
-    is read: a hand-typed 'DATE: 1880' carries a value a human wrote down,
-    not a machine timestamp, so `_keyword_to_edtf` still trusts it.
+    marks a component confident.
+
+    A keyword body that is not this letter grammar returns None here, and that
+    is the whole answer for the photo: `_resolve_photo_edtf` has no second
+    reader behind this one.
     """
     m = _DATE_PLACEHOLDER_RE.match(pattern.strip())
     if not m or exif_date is None:
@@ -599,15 +610,34 @@ def _resolve_photo_edtf(date_pattern: str | None, exif_date: object) -> str | No
     the scan's own date (a 1925 print dated 2021 is worse than undated). So an
     un-keyworded photo stays NULL here by design, not as a gap.
 
-    With a keyword: the shape-only form resolves against EXIF; a keyword that
-    embeds its own digits (a hand-typed 'DATE: 1880') resolves on its own.
+    The letter form is the ONLY form this resolves (archive-owner decision,
+    2026-08-16). SPEC §20 rule 1 defines the keyword grammar as per-component
+    precision letters - 'Y!M!D!', 'Y!M~', 'Y~' - and nothing else; the
+    parenthesised '(1942-11-25)' in that table glosses the resulting date, it
+    is not a second syntax. A digit-bearing keyword ('DATE: 1880', or the
+    marker form '1942!-11!-25!') is outside the spec, so the archive does not
+    read a date out of it. An owner is free to type whatever he likes into his
+    own keywords; the system simply does not treat a non-spec form as evidence.
+    Such a photo stays undated here - visibly, via the scan's
+    `nonspec_date_keywords` count, rather than silently.
     """
     if not date_pattern:
         return None
-    return (
-        _placeholder_to_edtf(date_pattern, exif_date)
-        or _keyword_to_edtf(date_pattern)
-    )
+    return _placeholder_to_edtf(date_pattern, exif_date)
+
+
+def _is_nonspec_date_keyword(date_pattern: str | None) -> bool:
+    """True for a DATE: keyword that carries something other than the SPEC §20
+    letter grammar - the forms the archive deliberately does not read.
+
+    Counted so a library keyworded in a non-spec form (hand-typed years, the
+    AI pipeline's digit-plus-marker form) reports as undated WITH a reason,
+    instead of the human wondering why photos he can see a date on never
+    acquired one.
+    """
+    if not date_pattern:
+        return False
+    return _DATE_PLACEHOLDER_RE.match(date_pattern.strip()) is None
 
 
 def _best_group_date(edtfs: list[str]) -> tuple[str | None, int | None]:
@@ -3685,7 +3715,8 @@ _EMPTY_SCAN_SUMMARY = {
     'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
     'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
     'ignore_patterns': [],
-    'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+    'groups': 0, 'dated_groups': 0, 'nonspec_date_keywords': 0,
+    'conflicts': 0, 'rebuilt_reason': None,
 }
 
 
@@ -3872,6 +3903,14 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         dated_groups = conn.execute(
             'SELECT COUNT(*) FROM photo_groups WHERE edtf_resolved IS NOT NULL'
         ).fetchone()[0]
+        # Keyworded photos the archive deliberately does not read a date from
+        # (SPEC §20 defines the letter grammar only). Reported so a library
+        # keyworded in a non-spec form reads as undated WITH a reason.
+        nonspec_dates = sum(
+            1 for (pattern,) in conn.execute(
+                'SELECT date_pattern FROM photos WHERE date_pattern IS NOT NULL')
+            if _is_nonspec_date_keyword(pattern)
+        )
 
         conn.commit()
     finally:
@@ -3913,7 +3952,8 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
         'unreadable_sample': [str(p) for p in unreadable[:5]],
         'unreadable_unindexed': len(unindexed),
         'ignore_patterns': ignore,
-        'groups': groups, 'dated_groups': dated_groups, 'conflicts': conflicts,
+        'groups': groups, 'dated_groups': dated_groups,
+        'nonspec_date_keywords': nonspec_dates, 'conflicts': conflicts,
         'rebuilt_reason': rebuilt_reason,
     })
 
@@ -4182,6 +4222,25 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         f"Groups: {summary['groups']} ({summary['dated_groups']} dated, "
         f"{summary['conflicts']} with date conflicts)."
     )
+    if summary.get('nonspec_date_keywords'):
+        # Undated-with-a-reason. Without this the owner sees photos he can
+        # read a date on sitting undated in the catalog and has nothing to
+        # go on (AGENTS_TOOLING: a message that says something broke but not
+        # what to do is a dead end).
+        print(
+            f"Note: {summary['nonspec_date_keywords']} photo(s) carry a DATE: "
+            'keyword the archive does not read a date from, so they stay '
+            'undated. A date keyword says how PRECISE the date is, not what '
+            "the date is: it is written as letters - 'DATE: Y!M!D!' (year, "
+            "month and day all certain), 'DATE: Y!M~' (year certain, month a "
+            "best guess), 'DATE: Y~' (about that year) - and the date itself "
+            "is read from the photo's own capture date (the DateTimeOriginal "
+            'field every camera and scanner writes). A keyword holding digits '
+            "instead - 'DATE: 1880' - is not one of those forms, so it is "
+            'left alone rather than guessed at. To date such a photo, rewrite '
+            'its DATE: keyword in the letter form, set its capture date to '
+            'the date you mean, and run `fha photoindex` again.'
+        )
     if summary.get('unreadable'):
         sample_list = summary.get('unreadable_sample', [])
         sample = ', '.join(sample_list)
