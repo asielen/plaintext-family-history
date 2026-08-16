@@ -19,10 +19,12 @@ Also covers two hand-edit hardening contracts:
 
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -1460,6 +1462,70 @@ class NegatedRelationshipDerivationTests(unittest.TestCase):
         status = index.upsert_source(self.root, {}, 's-9999999999')
         self.assertEqual(status, 'indexed')
         self.assertEqual(self._spouse_pairs(), full)
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    `os.walk` and pathlib's `rglob` both reach the filesystem through
+    `os.scandir`, so the failure goes in there: os.walk reports it to its
+    `onerror` callback, rglob swallows it and calls the folder empty. chmod
+    cannot produce this - CI runs as root, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class UnreadableFolderBuildTests(unittest.TestCase):
+    """A rebuild that could not read a folder must not report a clean build.
+
+    `build_index` DROPS every table and refills them, so a folder that will
+    not list does not merely go unindexed - the persons, claims and citations
+    filed there disappear from search, timelines and exports. The rows are
+    rebuildable (the index is a cache), but a build that says nothing has
+    told the human nothing, and `fha report` prints these messages at session
+    start where he actually looks."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.folder = self.root / 'people' / '040 Hartley'
+        self.folder.mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.folder / 'hartley__cur_P-aaaaaaaaaa.md').write_text(
+            '---\nid: P-aaaaaaaaaa\nname: Cur Hartley\nliving: false\n'
+            'tier: curated\n---\n\n## Biography\n\nx\n',
+            encoding='utf-8')
+
+    def test_build_warns_and_exits_1_naming_the_folder(self) -> None:
+        clean = index.build_index(self.root, {})
+        self.assertEqual(clean.exit_code, EXIT_CLEAN)
+        self.assertEqual(clean['persons'], 1)
+
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            result = index.build_index(self.root, {})
+
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result['persons'], 0)      # the folder went unread
+        self.assertEqual(result['unreadable_dirs'], ['people/040 Hartley'])
+        texts = [m.text for m in result.messages]
+        self.assertTrue(any('could not be opened' in t for t in texts), texts)
+        self.assertTrue(any('fha index' in t for t in texts), texts)
+        # Report output can be committed, so it carries no local absolute path.
+        self.assertFalse(any(str(self.root) in t for t in texts), texts)
 
 
 if __name__ == '__main__':

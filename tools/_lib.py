@@ -48,7 +48,6 @@ import calendar
 import dataclasses
 import datetime
 import fnmatch
-import itertools
 import json
 import os
 import re
@@ -202,6 +201,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    strip_unaccepted_drafts   - drop AI-DRAFT prose + AI markers pre-publication (fail-closed)
 #    GENERATED_PREFIX, is_generated_text, is_generated_file - GENERATED-header ownership test
+#
+#  Walking a tree that might not open
+#    unreadable_dir_recorder   - os.walk onerror collector: the folders it failed on
+#    walk_files                - rglob replacement WITH that error seam
+#    unreadable_dir_hold_mtimes - times to hold a cache behind so it reads 'stale'
 #
 #  Archive freshness
 #    _is_generated_companion   - a real `fha views` output under people/ (not a
@@ -1549,7 +1553,17 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
         # than walked and discarded - pruning is the whole point on a root
         # holding a 60,000-file export. It also yields the root itself as the
         # first dirpath, so the root's own mtime needs no separate stat.
-        for dirpath, dirnames, filenames in os.walk(photos_root):
+        #
+        # The `onerror` recorder is the freshness half of the rule in "Walking
+        # a tree that might not open": without it, a folder this walk cannot
+        # list contributes NO mtime - neither its files' nor its own - and the
+        # watermark comes back lower than the truth, so a catalog missing
+        # everything inside that folder reports itself `fresh`. Worse, if the
+        # photos ROOT is what will not list, the walk yields nothing at all
+        # and the answer falls back to the index/record mtimes alone.
+        unreadable_dirs: list[Path] = []
+        on_error = unreadable_dir_recorder(unreadable_dirs)
+        for dirpath, dirnames, filenames in os.walk(photos_root, onerror=on_error):
             rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
             prefix = '' if rel_dir == '.' else f'{rel_dir}/'
             if patterns:
@@ -1568,6 +1582,16 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
                     # A dangling symlink or a file that vanished mid-walk is
                     # not a freshness signal we can read; skip it.
                     pass
+
+        if unreadable_dirs:
+            # Fail closed. There is no honest watermark for a folder nobody
+            # could open: any of its photos may have changed a second ago, and
+            # the folder's own mtime says nothing about the files inside it.
+            # Reporting 'now' means the catalog keeps reading `stale` for as
+            # long as the folder stays shut, which is exactly the state it is
+            # in - `fha photoindex` is the command that says which folder and
+            # why, so the human is never left with an unexplained staleness.
+            max_mtime = max(max_mtime, time.time())
 
     if max_mtime == 0.0 or mtime >= max_mtime:
         return ('fresh', 0.0)          # empty root, or db newer than newest photo/index
@@ -4204,6 +4228,96 @@ def archive_title(cfg: dict) -> str:
     )
 
 
+# ── Walking a tree that might not open ────────────────────────────────────────
+#
+# THE RULE (learned the expensive way, photoindex 2026-08): an enumeration that
+# cannot see everything must not let its caller act as though it saw
+# everything.
+#
+# `os.walk` swallows the OSError from a directory it cannot list and simply
+# moves on, so a folder whose permissions changed - or an external drive that
+# unmounted mid-walk - looks exactly like an empty folder. `Path.rglob` and
+# `Path.glob` do the same thing and give you no hook at all to notice. A caller
+# that then DELETES the rows for everything it did not see (a cache sweep, a
+# drop-and-rebuild index) erases real content while reporting a clean run, and
+# a caller that watermarks freshness against what it saw certifies a cache as
+# current when half its inputs were never read.
+#
+# So: walk with `walk_files` and hand it a recorder. A missing row is
+# recoverable; a deleted row and a false 'fresh' are not.
+
+def unreadable_dir_recorder(into: list):
+    """Build an `os.walk` `onerror` callback that records the folders it failed on.
+
+    Appends the offending directory as a `Path` (de-duplicated, first-seen
+    order) to `into`. The caller reads a non-empty list as "this walk is
+    incomplete by at least that much" and fails closed.
+
+    The error carries the path in `err.filename`; an OSError raised with no
+    filename (nothing in the stdlib does this today, but a patched `listdir`
+    in a test might) is ignored rather than recorded as `None`, because a
+    recorder that can put junk in the list is a recorder nobody trusts.
+    """
+    def note(err: OSError) -> None:
+        name = getattr(err, 'filename', None)
+        if not name:
+            return
+        path = Path(name)
+        if path not in into:
+            into.append(path)
+    return note
+
+
+def walk_files(root: Path, suffix: str | None = None, on_error=None):
+    """Yield the files under `root`, with the error seam `rglob` does not have.
+
+    The drop-in replacement for `root.rglob('*')` / `root.rglob('*.md')` in
+    any code that deletes, sweeps, or certifies freshness. `rglob` has no
+    `onerror` equivalent, so the only way to learn that a subdirectory would
+    not open is to walk with `os.walk` and pass one - which is what this does.
+
+    `suffix` filters by extension, case-insensitively ('.md'), because that is
+    what every record walk in this codebase wants and doing it here keeps the
+    call sites short. Pass `on_error` (see `unreadable_dir_recorder`) whenever
+    under-seeing would be worse than slow.
+
+    Order is `os.walk`'s, not sorted - callers that need a stable order sort
+    the result, exactly as they had to with `rglob`.
+    """
+    if not root.is_dir():
+        return
+    want = suffix.lower() if suffix else None
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=on_error):
+        here = Path(dirpath)
+        for name in filenames:
+            if want is not None and not name.lower().endswith(want):
+                continue
+            yield here / name
+
+
+def unreadable_dir_hold_mtimes(dirs) -> list[float]:
+    """File times a cache must sit behind so an incomplete walk keeps reading 'stale'.
+
+    A directory nothing could list has no readable file inside it to watermark
+    against, so the times taken are the directory's own and its parent's. The
+    parent matters: a freshness walk never yields an unreadable directory from
+    its own listing either, so the directory's own mtime may be absent from
+    the watermark entirely - but the parent's is there, because reaching the
+    child means the parent listed fine.
+
+    Accepts an iterable of `Path`s. `photoindex` keeps `(alias, path)` pairs
+    for its own reporting and unwraps them before calling here.
+    """
+    out: list[float] = []
+    for path in dirs:
+        for candidate in (Path(path), Path(path).parent):
+            try:
+                out.append(candidate.stat().st_mtime)
+            except OSError:
+                continue
+    return out
+
+
 # ── Archive freshness ─────────────────────────────────────────────────────────
 
 def _is_generated_companion(path: Path, archive_root: Path) -> bool:
@@ -4252,6 +4366,41 @@ def _is_generated_companion(path: Path, archive_root: Path) -> bool:
     return is_generated_file(path)
 
 
+def _newest_md_mtime(dirs, keep=None) -> float:
+    """Max mtime across the `.md` files under `dirs` - or 'now' if any folder shut.
+
+    The one walk behind all three record watermarks below, so that a fix to
+    the fail-closed rule lands in every one of them at once (before this, each
+    had its own `rglob` and the rule had three places to be forgotten).
+
+    `keep(path)` filters which files vote; a file whose mtime cannot be read
+    (a dangling symlink, a file deleted mid-walk) simply does not vote.
+
+    When a subdirectory would not list, the answer is `time.time()` rather
+    than the max of what was visible. A watermark is a promise that nothing
+    newer exists, and a walk that skipped a subtree cannot make it: the caller
+    would stamp its cache 'fresh' over records it never read. 'Now' is the
+    honest answer - every cache reads stale until the folder opens again - and
+    it is self-clearing, needing no state anywhere.
+    """
+    unreadable: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable)
+    max_mtime = 0.0
+    for d in dirs:
+        for p in walk_files(Path(d), suffix='.md', on_error=on_error):
+            if keep is not None and not keep(p):
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > max_mtime:
+                max_mtime = mtime
+    if unreadable:
+        return max(max_mtime, time.time())
+    return max_mtime
+
+
 def newest_record_mtime(archive_root: Path) -> float:
     """Max mtime (epoch seconds) across sources/people/notes .md files and places/places.yaml.
 
@@ -4273,18 +4422,16 @@ def newest_record_mtime(archive_root: Path) -> float:
     (the roots a source's `files:` entries resolve through, and every other
     indexed setting); an edit there stales the index even though no record
     file changed.
+
+    A folder under sources/, people/ or notes/ that will not list makes this
+    return 'now' rather than a watermark it cannot stand behind - see
+    `_newest_md_mtime`. Every reader (`fha find`, `fha doctor`, `fha views`)
+    then treats the index as out of date, which is the truth: records it never
+    read may have changed.
     """
-    max_mtime = 0.0
     dirs = [archive_root / d for d in ('sources', 'people', 'notes')]
-    for p in itertools.chain.from_iterable(d.rglob('*.md') for d in dirs if d.is_dir()):
-        if _is_generated_companion(p, archive_root):
-            continue
-        try:
-            mtime = p.stat().st_mtime
-            if mtime > max_mtime:
-                max_mtime = mtime
-        except OSError:
-            pass
+    max_mtime = _newest_md_mtime(
+        dirs, keep=lambda p: not _is_generated_companion(p, archive_root))
     for extra in (
         archive_root / 'places' / 'places.yaml',
         archive_root / 'fha.yaml',
@@ -4310,21 +4457,15 @@ def newest_source_record_mtime(archive_root: Path, subdir: str | None = None) ->
     Pass `subdir` to limit the scan to a specific subdirectory under sources/
     (e.g. `'photos'`), which avoids false staleness when unrelated source types
     such as census records are edited.
+
+    Fails closed on a folder that will not list (`_newest_md_mtime`): the
+    photo catalog reads stale rather than certifying itself over source
+    records it never saw.
     """
-    max_mtime = 0.0
     sources_dir = archive_root / 'sources'
     if subdir:
         sources_dir = sources_dir / subdir
-    if not sources_dir.is_dir():
-        return max_mtime
-    for p in sources_dir.rglob('*.md'):
-        try:
-            mtime = p.stat().st_mtime
-            if mtime > max_mtime:
-                max_mtime = mtime
-        except OSError:
-            pass
-    return max_mtime
+    return _newest_md_mtime([sources_dir])
 
 
 def newest_person_record_mtime(archive_root: Path) -> float:
@@ -4336,22 +4477,18 @@ def newest_person_record_mtime(archive_root: Path) -> float:
     `sources-index.md` files under people/ must not bust this freshness
     check just because `fha views refresh` touched them.
     Returns 0.0 on a brand-new archive that has no person records yet.
+
+    Fails closed on a folder that will not list (`_newest_md_mtime`): an
+    unreadable `people/` subtree used to lower this watermark silently, so the
+    photo catalog read `fresh` while face-tag and name-variant edits it never
+    saw sat in the records - and `photo_people` kept serving the old matches.
     """
-    max_mtime = 0.0
-    people_dir = archive_root / 'people'
-    if not people_dir.is_dir():
-        return max_mtime
-    for p in people_dir.rglob('*.md'):
+    def _is_profile(p: Path) -> bool:
         parsed = parse_filename(p)
-        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
-            continue
-        try:
-            mtime = p.stat().st_mtime
-            if mtime > max_mtime:
-                max_mtime = mtime
-        except OSError:
-            pass
-    return max_mtime
+        return (parsed is not None
+                and parsed['id_type'] == 'P' and parsed['kind'] == 'profile')
+
+    return _newest_md_mtime([archive_root / 'people'], keep=_is_profile)
 
 
 def scan_person_record_ids(archive_root: str | Path) -> set[str]:
@@ -4379,7 +4516,9 @@ def scan_person_record_ids(archive_root: str | Path) -> set[str]:
     return found
 
 
-def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | None:
+def find_person_record_path(
+    archive_root: str | Path, person_id: str, unreadable: list | None = None,
+) -> Path | None:
     """Scan `people/` for one P-id's primary person record (not a companion view).
 
     The `.md` files are archive truth, so this never consults
@@ -4405,13 +4544,20 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
     Shared here because several tools need the same lookup (`fha confirm draft`,
     `fha person set-living`, `fha confirm merge`) - the same
     shared-infrastructure rationale as `mint_ids`.
+
+    Pass a list as `unreadable` to learn whether the scan saw all of `people/`
+    (the mirror of `find_source_record_path`'s parameter). A None answer from
+    an incomplete scan means "not found here, and I could not look everywhere";
+    today's callers all refuse on None, which is already fail-closed, so the
+    parameter exists for any future caller that would DELETE on it.
     """
     target = normalize_id(person_id)
     people_dir = Path(archive_root) / 'people'
     if not people_dir.is_dir():
         return None
     named_like_a_companion: Path | None = None
-    for path in sorted(people_dir.rglob('*.md')):
+    on_error = unreadable_dir_recorder(unreadable) if unreadable is not None else None
+    for path in sorted(walk_files(people_dir, suffix='.md', on_error=on_error)):
         parsed = parse_filename(path)
         if not parsed or parsed.get('id_str') != target:
             continue
@@ -4429,7 +4575,9 @@ def find_person_record_path(archive_root: str | Path, person_id: str) -> Path | 
     return named_like_a_companion
 
 
-def find_source_record_path(archive_root: str | Path, source_id: str) -> Path | None:
+def find_source_record_path(
+    archive_root: str | Path, source_id: str, unreadable: list | None = None,
+) -> Path | None:
     """Scan `sources/` for one S-id's record file, or None.
 
     The source sibling of `find_person_record_path`: identity is the
@@ -4446,12 +4594,22 @@ def find_source_record_path(archive_root: str | Path, source_id: str) -> Path | 
     as `mint_ids` and `find_person_record_path`. The two existing private
     copies are left as-is (out of scope for this change) rather than churned
     just to call through here.
+
+    Pass a list as `unreadable` to learn whether the scan could see all of
+    `sources/`. `rglob` swallowed an unlistable subdirectory silently, so a
+    record sitting behind a folder whose permissions changed came back as
+    None - indistinguishable from "there is no such source". Callers that
+    merely refuse on None are already failing closed and can ignore the
+    parameter; a caller that DELETES on None (photoindex's `source-people`
+    tier, whose rows `_rebuild_photo_people` rewrites) must pass it and hold
+    its rows instead.
     """
     target = normalize_id(source_id)
     sources_dir = Path(archive_root) / 'sources'
     if not sources_dir.is_dir():
         return None
-    for path in sorted(sources_dir.rglob('*.md')):
+    on_error = unreadable_dir_recorder(unreadable) if unreadable is not None else None
+    for path in sorted(walk_files(sources_dir, suffix='.md', on_error=on_error)):
         parsed = parse_filename(path)
         if not parsed or parsed.get('id_str') != target:
             continue
@@ -5184,10 +5342,12 @@ def promote_person_record(
 _SOURCE_RECORD_FILENAME_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})\.md$', re.I)
 
 
-def find_source_record(archive_root: str | Path, source_id: str) -> dict | None:
+def find_source_record(
+    archive_root: str | Path, source_id: str, unreadable: list | None = None,
+) -> dict | None:
     """Return the parsed record dict for a source by its S-id, or None.
 
-    Globs `sources/**/*.md` for a file whose `_{S-id}.md` suffix matches
+    Walks `sources/**/*.md` for a file whose `_{S-id}.md` suffix matches
     `source_id` (case-insensitive). The slug and subdirectory are mutable and
     are not matched - only the suffix carries identity. Used by `fha photoindex`
     to resolve `source-people` person references for photos that carry a matching
@@ -5197,13 +5357,21 @@ def find_source_record(archive_root: str | Path, source_id: str) -> dict | None:
 
     Returns None when the record is absent or its frontmatter has parse errors;
     callers that need `people:` should treat None as "no people known from this source."
+
+    That None is exactly why `unreadable` exists. `rglob` cannot report a
+    subdirectory it failed to list, so a source behind an unreadable folder
+    answered "no people known from this source" - and photoindex, which
+    rebuilds `photo_people` from scratch on every scan, deleted that photo's
+    `source-people` rows on the strength of it. Pass a list here and treat a
+    non-empty one as "unverified", never as "none".
     """
     root = Path(archive_root)
     sources_dir = root / 'sources'
     if not sources_dir.is_dir():
         return None
     sid_norm = normalize_id(source_id)
-    for p in sources_dir.rglob('*.md'):
+    on_error = unreadable_dir_recorder(unreadable) if unreadable is not None else None
+    for p in walk_files(sources_dir, suffix='.md', on_error=on_error):
         m = _SOURCE_RECORD_FILENAME_RE.search(p.name)
         if m and normalize_id(m.group(1)) == sid_norm:
             rec = read_record(p)

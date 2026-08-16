@@ -119,6 +119,8 @@ from _lib import (
     resolve_root_arg,
     roots_change_orphans,
     sex_slot_is_defaulted,
+    unreadable_dir_recorder,
+    walk_files,
     write_text_exact_atomic,
     yaml_inline,
 )
@@ -184,6 +186,8 @@ import yaml
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
 #    _check_roots_change         - W121: a roots: change orphaned filed assets
 #                                   (runs first; the E011 fallout follows it)
+#    _check_unreadable_dirs      - W123: a record folder this lint could not open
+#                                   (runs last; the caveat on everything above)
 #
 #  Format checks / fix modes
 #    _check_format               - W109: final newline, CRLF line endings
@@ -299,6 +303,12 @@ class Registry:
         # `--fix-reciprocal` can append the mirror without re-parsing messages.
         # Each: {other_pid, owner_pid, mirror_role, subtype, claim_id}
         self.missing_mirrors: list[dict] = []
+
+        # Record folders Pass 1 could not list (W123). A lint that reports
+        # "0 errors" is a certificate, and it must not be issued over records
+        # nobody could read: whatever is filed in these folders was never
+        # checked against the spec at all.
+        self.unreadable_dirs: list[Path] = []
 
         # The alias resolve map (alias_lower → canonical id), built once at the
         # start of Pass 2 from everything Pass 1 collected. Claim persons:/roles:
@@ -789,9 +799,15 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
             pass
 
     # People
+    #
+    # `walk_files` with a recorder, not rglob: lint's whole product is the
+    # sentence "your archive matches the spec", and rglob would hand it that
+    # sentence over a subtree it never opened. Every record walk below shares
+    # one recorder; W123 reports the folders at the end of Pass 2.
+    on_error = unreadable_dir_recorder(registry.unreadable_dirs)
     people_root = archive_root / 'people'
     if people_root.exists():
-        for path in sorted(people_root.rglob('*.md')):
+        for path in sorted(walk_files(people_root, suffix='.md', on_error=on_error)):
             rec = _process_person_file(path, registry, findings)
             # Collect research file content for E009. The record it just read
             # comes back so the kind is decided by CONTENT here too: a file
@@ -809,13 +825,13 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     # Sources
     sources_root = archive_root / 'sources'
     if sources_root.exists():
-        for path in sorted(sources_root.rglob('*.md')):
+        for path in sorted(walk_files(sources_root, suffix='.md', on_error=on_error)):
             _process_source_file(path, registry, findings)
 
     # Notes FTS (for token refs)
     notes_root = archive_root / 'notes'
     if notes_root.exists():
-        for path in sorted(notes_root.rglob('*.md')):
+        for path in sorted(walk_files(notes_root, suffix='.md', on_error=on_error)):
             try:
                 text = path.read_text(encoding='utf-8')
                 _collect_token_refs(text, path, registry)
@@ -2304,6 +2320,40 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # The run_lint caller emits a single informational note in data['wc_note'].
     if not registry.is_working_copy:
         _check_reverse_inventory(registry, findings, with_exif)
+
+    # W123: a record folder Pass 1 could not open. Last, so it reads as the
+    # caveat on everything above it rather than as one more finding among many.
+    _check_unreadable_dirs(registry, findings)
+
+
+def _check_unreadable_dirs(registry: Registry, findings: list[Finding]) -> None:
+    """W123: name every record folder this lint could not open.
+
+    Without it, `fha lint` answers "0 errors" for an archive whose `people/`
+    or `sources/` subtree it never listed - the most confident possible way to
+    say nothing at all. The finding is a warning rather than an error because
+    the archive itself is very probably fine: what failed is this machine's
+    access to it, and calling a permissions change a spec violation would be
+    both wrong and unfixable by editing a record. But it does move lint off
+    exit 0, which is the whole point - a clean bill of health must not be
+    issued over records nobody read.
+
+    Worded for someone who has never seen a permission bit: what was skipped,
+    what it means for the answer above, the two ordinary causes, and the one
+    command to run afterwards.
+    """
+    for path in registry.unreadable_dirs:
+        try:
+            shown = path.relative_to(registry.archive_root).as_posix()
+        except ValueError:
+            shown = str(path).replace('\\', '/')
+        findings.append(Finding(
+            'W', 'W123', path,
+            f'This folder could not be opened, so nothing filed in {shown} was '
+            'checked - the rest of this report says nothing about it either way. '
+            'Usually a folder whose permissions changed, or a drive or network '
+            'share that is not connected. Reconnect it (or restore your access '
+            'to the folder), then run `fha lint` again.'))
 
 
 def _check_reverse_inventory(

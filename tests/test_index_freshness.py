@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +151,79 @@ class ViewWritesKeepIndexFreshTests(unittest.TestCase):
         p = self.folder / f'hartley__cur_{CUR}.md'
         os.utime(p, (future, future))
         self.assertGreater(newest_record_mtime(self.root), before)
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    Both `os.walk` and pathlib's `rglob` reach the filesystem through
+    `os.scandir`, so the failure is injected there: os.walk passes the
+    OSError to its `onerror` callback, while rglob swallows it and reports an
+    empty folder - which is the fault being pinned. chmod would do nothing,
+    since CI runs the tests as root and Windows has no equivalent.
+
+    (The same helper lives in tests/test_photoindex.py, next to the photo-side
+    tests of the same rule; duplicated rather than imported because these test
+    modules are run standalone as well as under pytest.)
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class UnreadableFolderFailsClosedTests(unittest.TestCase):
+    """A watermark must never be LOWERED by a folder that would not open.
+
+    `newest_record_mtime` promises "nothing under sources/people/notes is
+    newer than this". A walk that skipped a subtree cannot make that promise,
+    but `rglob` gave no way to notice - it simply returned fewer files, the
+    watermark came back lower, and every reader (`fha find`, `fha doctor`,
+    `fha views`) treated a cache built without those records as current."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.folder = self.root / 'people' / '040 Test Couple'
+        self.folder.mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.folder / f'hartley__cur_{CUR}.md').write_text(
+            _person(CUR, 'Cur Hartley', 'curated'), encoding='utf-8')
+
+    def test_watermark_is_now_when_a_people_folder_will_not_open(self) -> None:
+        # Pre-fix: the couple folder's records vanish from the walk and the
+        # watermark drops to whatever else is around (0.0 here) - the index
+        # then reads "trivially current" over records nobody could read.
+        seen = newest_record_mtime(self.root)
+        self.assertGreater(seen, 0.0)
+
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            held = newest_record_mtime(self.root)
+
+        self.assertGreater(held, seen)
+        self.assertAlmostEqual(held, time.time(), delta=30)
+
+    def test_index_reads_stale_while_the_folder_stays_shut(self) -> None:
+        # The consumer side of the same fix: a freshly built index is fresh,
+        # and stops being fresh for exactly as long as the folder will not
+        # open - which is the honest answer, since the build never read it.
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        db = self.root / '.cache' / 'index.sqlite'
+        self.assertGreaterEqual(db.stat().st_mtime, newest_record_mtime(self.root))
+
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            self.assertLess(db.stat().st_mtime, newest_record_mtime(self.root))
 
 
 if __name__ == '__main__':

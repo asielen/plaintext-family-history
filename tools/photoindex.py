@@ -253,6 +253,7 @@ from _lib import (
     scan_person_record_ids,
     select_variation_primary,
     sqlite_cache_schema_status,
+    unreadable_dir_hold_mtimes,
     variant_role as _variant_role,
     write_cache_meta,
     write_generated_file,
@@ -507,15 +508,27 @@ def _unreadable_dir_hold_mtimes(unreadable: list) -> list[float]:
     is, because reaching the child means the parent listed fine. Sitting
     behind both is what makes the catalog keep reporting itself out of date
     until a scan can actually see the subtree.
+
+    The times themselves come from the shared `_lib.unreadable_dir_hold_mtimes`
+    (the same rule now applies to the record tree, not just the photos root);
+    this wrapper only unwraps the (alias, path) pairs the photo scan keeps for
+    its own reporting.
     """
-    out: list[float] = []
-    for _alias, path in unreadable:
-        for candidate in (path, path.parent):
-            try:
-                out.append(candidate.stat().st_mtime)
-            except OSError:
-                continue
-    return out
+    return unreadable_dir_hold_mtimes(path for _alias, path in unreadable)
+
+
+def _record_dir_label(path: Path, archive_root: Path) -> str:
+    """A record folder's name as the human filed it - 'sources/photos', not /Users/….
+
+    Report output can be committed or attached to a record, so it carries the
+    archive-relative spelling and never a local absolute path. A folder that
+    somehow sits outside the archive keeps its own spelling with backslashes
+    normalised, because naming it wrongly is worse than naming it long.
+    """
+    try:
+        return Path(path).relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
 
 
 def _run_exiftool(paths: list[Path]) -> list[dict]:
@@ -940,9 +953,9 @@ def _load_alias_resolver(archive_root: Path) -> dict[str, str]:
 
 def _load_source_people(
     conn: sqlite3.Connection, archive_root: Path,
-) -> dict[str, list[str]]:
+) -> tuple[dict[str, list[str]], list[Path]]:
     """
-    Return a {source_id -> [person_id, ...]} map loaded from source record files.
+    Return ({source_id -> [person_id, ...]}, unreadable source folders).
 
     Reads the `people:` list from every source record whose S-id appears in the
     catalog's `photos.source_id` column. This is the `source-people` resolution
@@ -956,19 +969,27 @@ def _load_source_people(
     resolved through the clash-aware alias map from index.sqlite (an ambiguous or
     unresolvable name draws no edge, matching `fha index`).
 
-    Returns an empty dict when no photos carry source_ids, or when source records
+    Returns an empty map when no photos carry source_ids, or when source records
     are absent or unparseable - callers fall back gracefully to keyword-only resolution.
+
+    The second element is the list of folders under `sources/` that would not
+    open. It is not bookkeeping: `_rebuild_photo_people` DELETES every
+    `photo_people` row before recomputing, so a source record hidden behind an
+    unreadable folder used to erase that photo's people - silently, in a run
+    that reported itself clean. A non-empty list means "this map is
+    incomplete", and the caller holds the old rows instead of trusting it.
     """
     source_ids = {
         row[0]
         for row in conn.execute('SELECT DISTINCT source_id FROM photos WHERE source_id IS NOT NULL')
     }
     if not source_ids:
-        return {}
+        return {}, []
     alias_map = _load_alias_resolver(archive_root)
+    unreadable: list[Path] = []
     result: dict[str, list[str]] = {}
     for sid in source_ids:
-        rec = find_source_record(archive_root, sid)
+        rec = find_source_record(archive_root, sid, unreadable=unreadable)
         if rec is None:
             continue
         pids = []
@@ -989,10 +1010,12 @@ def _load_source_people(
                     pids.append(normalize_id(cid))
         if pids:
             result[normalize_id(sid)] = pids
-    return result
+    return result, unreadable
 
 
-def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
+def _rebuild_photo_people(
+    conn: sqlite3.Connection, archive_root: Path,
+) -> list[Path]:
     """
     Recompute photo_people for every cached photo from SQLite metadata.
 
@@ -1027,12 +1050,21 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     just because some *other* photo's tagging triggered this rebuild. So a
     stale index keeps every existing non-`pid-keyword`/`source-people` row
     as-is and only refreshes the authoritative tiers.
+
+    A folder under `sources/` that would not open gets the same treatment one
+    tier up. The `source-people` map is then incomplete through no fault of
+    the records, and since this function DELETES the whole table before
+    recomputing, trusting it would erase the people of every photo whose
+    source record sits behind that folder. So the existing `source-people`
+    rows are preserved exactly as the weak tiers are under a stale index, and
+    the folder list is returned so the caller can say so and hold the catalog
+    stale. Returns [] on a scan that saw everything.
     """
     index_fresh = _index_is_fresh(archive_root)
     face_tags, names = _load_face_tag_index(archive_root)
     keywords_by_path = _load_keywords_by_path(conn)
     face_regions_by_path = _load_face_regions_by_path(conn)
-    source_people = _load_source_people(conn, archive_root)
+    source_people, unreadable_source_dirs = _load_source_people(conn, archive_root)
 
     # source_id stored in the photos table uses normalize_id (lowercase).
     source_id_by_path: dict[str, str | None] = {
@@ -1045,6 +1077,16 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
         for path, pid, via in conn.execute(
             "SELECT path, person_ref, via FROM photo_people "
             "WHERE via != 'pid-keyword' AND via != 'source-people'"
+        ):
+            preserved_by_path.setdefault(path, []).append((pid, via))
+    if unreadable_source_dirs:
+        # The map this run built cannot say a source names nobody - only that
+        # it could not read every source. Carry the existing source-people
+        # rows across the DELETE below; the ones this run DID re-derive
+        # overwrite them anyway, since a preserved entry is only added for a
+        # person the recompute did not already find.
+        for path, pid, via in conn.execute(
+            "SELECT path, person_ref, via FROM photo_people WHERE via = 'source-people'"
         ):
             preserved_by_path.setdefault(path, []).append((pid, via))
 
@@ -1066,7 +1108,7 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
                 if pid not in resolved_pids:
                     resolved.append((pid, 'source-people'))
                     resolved_pids.add(pid)
-        if not index_fresh and path in preserved_by_path:
+        if path in preserved_by_path:
             resolved_pids = {pid for pid, _via in resolved}
             resolved = resolved + [
                 (pid, via) for pid, via in preserved_by_path[path] if pid not in resolved_pids
@@ -1088,6 +1130,7 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
                     'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
                     (path, pid, via),
                 )
+    return unreadable_source_dirs
 
 
 # ── Variation grouping ───────────────────────────────────────────────────
@@ -3937,6 +3980,7 @@ _EMPTY_SCAN_SUMMARY = {
     'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
     'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
     'unreadable_dirs': [], 'held_unreadable': 0,
+    'unreadable_record_dirs': [],
     'stale_hold_failed': False,
     'ignore_patterns': [],
     'groups': 0, 'dated_groups': 0, 'nonspec_date_keywords': 0,
@@ -3977,6 +4021,13 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     (`_hold_cache_stale`, the same mechanism an unreadable FILE uses) and
     exits with warnings naming the folders, so no later reader treats this
     catalog as a complete picture of the disk.
+
+    The same rule reaches one level past the photos root. `photo_people` is
+    deleted and recomputed on every scan, and one of its tiers is read from
+    the source records - so a folder under `sources/` that will not list would
+    have erased the people of every photo filed under it. Those rows are
+    preserved too, the folders are named in `unreadable_record_dirs`, and the
+    cache is held stale behind them exactly the same way.
 
     In working-copy mode this function refuses: the photo files aren't here.
     Use _cmd_scan to surface a friendly refusal message; run_scan itself
@@ -4155,7 +4206,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
                     'UPDATE photos SET edtf=? WHERE path=?', (resolved, path_key))
 
         _group_photos(conn)
-        _rebuild_photo_people(conn, archive_root)
+        unreadable_source_dirs = _rebuild_photo_people(conn, archive_root)
 
         conn.execute('DELETE FROM photo_fts')
         keywords_by_path = _load_keywords_by_path(conn)
@@ -4220,21 +4271,29 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     # whether the rows it kept for them still describe anything. It has no
     # readable file inside to sit behind, so the times come from the folder
     # and its parent (_unreadable_dir_hold_mtimes).
+    #
+    # A folder under sources/ that would not open is the third case. It holds
+    # no photo, but the `source-people` tier is read from there, so this run
+    # could not confirm who the affected photos show - the rows were kept
+    # rather than recomputed (`_rebuild_photo_people`), and the catalog must
+    # keep saying so.
     unindexed = [
         p for p in unreadable
         if existing.get(alias_by_path[p]) != on_disk[p]
     ]
     behind = [on_disk[p][0] for p in unindexed]
     behind += _unreadable_dir_hold_mtimes(unreadable_dirs)
+    behind += unreadable_dir_hold_mtimes(unreadable_source_dirs)
     stale_hold_failed = (
-        bool(unindexed or unreadable_dirs) and not _hold_cache_stale(db_path, behind))
+        bool(unindexed or unreadable_dirs or unreadable_source_dirs)
+        and not _hold_cache_stale(db_path, behind))
 
     # The Result carries the exit code and `_cmd_scan` renders it (TOOLING §1),
     # so anything that made the CLI warn has to make the engine's own Result
     # say so too - otherwise a headless caller reading `.exit_code` is told the
     # scan was clean when the CLI would have printed a warning about the very
     # same run.
-    incomplete = bool(unreadable_dirs or unreadable)
+    incomplete = bool(unreadable_dirs or unreadable or unreadable_source_dirs)
     return Result(
         ok=not incomplete,
         exit_code=(EXIT_WARNINGS if incomplete else EXIT_CLEAN),
@@ -4248,6 +4307,8 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
             'unreadable_unindexed': len(unindexed),
             'unreadable_dirs': [alias for alias, _p in unreadable_dirs],
             'held_unreadable': held_unreadable,
+            'unreadable_record_dirs': [
+                _record_dir_label(p, archive_root) for p in unreadable_source_dirs],
             'ignore_patterns': ignore,
             'groups': groups, 'dated_groups': dated_groups,
             'nonspec_date_keywords': nonspec_dates, 'conflicts': conflicts,
@@ -4579,6 +4640,25 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             'to the folder), then run fha photoindex again.',
             file=sys.stderr,
         )
+    record_dirs = summary.get('unreadable_record_dirs') or []
+    if record_dirs:
+        # Not a photo folder - a folder of source RECORDS. The photos are all
+        # present; what could not be read is the archive's own statement of
+        # who is in them, so say that plainly rather than reusing the photo
+        # wording above.
+        shown = ', '.join(record_dirs[:5])
+        extra = len(record_dirs) - 5
+        if extra > 0:
+            shown += f' and {extra} more'
+        print(
+            f'WARNING: {len(record_dirs)} folder(s) of source records could not '
+            f'be opened, so this scan could not check which people your sources '
+            f'say are in each photo: {shown}. The people already recorded for '
+            'those photos were left exactly as they were, and the catalog stays '
+            'marked out of date. Restore your access to the folder (or reconnect '
+            'the drive it is on), then run fha photoindex again.',
+            file=sys.stderr,
+        )
     if summary.get('unreadable'):
         sample_list = summary.get('unreadable_sample', [])
         sample = ', '.join(sample_list)
@@ -4617,7 +4697,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             'backup if they are damaged), then run fha photoindex again.',
             file=sys.stderr,
         )
-    if unreadable_dirs or summary.get('unreadable'):
+    if unreadable_dirs or record_dirs or summary.get('unreadable'):
         return EXIT_WARNINGS
     return EXIT_CLEAN
 

@@ -323,6 +323,70 @@ class ReportTests(unittest.TestCase):
         self.assertIn('could not be read by exiftool', md)
         self.assertNotIn('stays marked out of date', md)
 
+    def test_a_photo_folder_that_would_not_open_is_named_in_section_6(self) -> None:
+        # Section 6 is where the human reliably looks, and it read only the
+        # exiftool-unreadable-FILE keys. A whole folder the scan could not
+        # open - the case where cached rows were held rather than swept -
+        # went unmentioned, so the report looked clean about a subtree the
+        # scan never saw.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 0, 'unchanged': 3, 'removed': 0,
+            'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
+            'unreadable_dirs': ['photos/Attic'], 'held_unreadable': 2,
+            'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('photos/Attic', md)
+        self.assertIn('could not be opened', md)
+        self.assertIn('2 photo(s) already catalogued from there were kept', md)
+        self.assertIn('`fha photoindex` again', md)
+
+    def test_a_source_folder_that_would_not_open_is_named_in_section_6(self) -> None:
+        # The other half: the photos were all readable, but the source records
+        # saying who is in them were not. The rows were held rather than
+        # recomputed, and the human has to be told which folder to restore.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 0, 'unchanged': 3, 'removed': 0,
+            'unreadable': 0, 'unreadable_sample': [], 'unreadable_unindexed': 0,
+            'unreadable_dirs': [], 'held_unreadable': 0,
+            'unreadable_record_dirs': ['sources/photos'], 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('sources/photos', md)
+        self.assertIn('which people your sources say are in each photo', md)
+        self.assertIn('left exactly as they were', md)
+
+    def test_all_three_unseen_conditions_get_their_own_note(self) -> None:
+        # Three different faults with three different fixes; folding them into
+        # one line would send the human to the wrong one.
+        scan = report.Result(data={
+            'root_found': True, 'total': 3, 'scraped': 0, 'unchanged': 2, 'removed': 0,
+            'unreadable': 1, 'unreadable_sample': ['photos/1950/locked.jpg'],
+            'unreadable_unindexed': 1,
+            'unreadable_dirs': ['photos/Attic'], 'held_unreadable': 0,
+            'unreadable_record_dirs': ['sources/photos'], 'ignore_patterns': [],
+            'groups': 0, 'dated_groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+        with unittest.mock.patch.object(report.photoindex, 'run_scan', return_value=scan):
+            result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertEqual(md.count('Note: '), 3)
+        self.assertIn('Nothing was removed from the catalog for them', md)
+        self.assertIn('could not be read by exiftool', md)
+
+    def test_a_scan_payload_missing_the_new_keys_still_reports(self) -> None:
+        # An older cached payload (or a partially filled summary) must degrade
+        # to fewer notes, never to a KeyError inside the session-start feed.
+        self.assertEqual(report._photo_scan_notes({}), [])
+        self.assertEqual(
+            report._photo_scan_notes({'root_found': True, 'total': 1}), [])
+
     def test_triage_candidate_that_is_not_on_disk_names_the_real_fix(self) -> None:
         # `fha photoindex reconcile` re-keys a vanished photo 'MISSING:…' and
         # leaves it as its group's primary, so triage can name one. Telling

@@ -76,6 +76,8 @@ from _lib import (
     format_roots_orphan_warning,
     sqlite_cache_schema_status,
     strip_link_wrapper,
+    unreadable_dir_recorder,
+    walk_files,
 )
 
 import yaml
@@ -1247,12 +1249,18 @@ def _index_source(
         )
 
 
-def _index_notes(conn: sqlite3.Connection, archive_root: Path) -> None:
-    """Index notes files for FTS."""
+def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None) -> None:
+    """Index notes files for FTS.
+
+    `on_error` is the build's shared unreadable-folder recorder (see
+    `build_index`): notes_fts is dropped and rewritten on every build, so a
+    notes subfolder that will not list silently takes its research out of
+    `fha find --text` with nothing said.
+    """
     notes_dir = archive_root / 'notes'
     if not notes_dir.exists():
         return
-    for path in notes_dir.rglob('*.md'):
+    for path in walk_files(notes_dir, suffix='.md', on_error=on_error):
         try:
             content = path.read_text(encoding='utf-8')
         except OSError:
@@ -1318,6 +1326,7 @@ def _index_citations(
     conn: sqlite3.Connection,
     archive_root: Path,
     alias_map: dict[str, str] | None = None,
+    on_error=None,
 ) -> None:
     """Scan all .md files for citation tokens and record the RESOLVED canonical ID.
 
@@ -1332,6 +1341,11 @@ def _index_citations(
     As a side effect, a cited `[[C-…]]` registers that C-id as an alias of its
     owning source - the on-demand C-id aliasing (added only when the citation
     actually exists, so a 60-claim interview carries no dead weight).
+
+    `on_error` is the build's shared unreadable-folder recorder: the citations
+    table is rebuilt from nothing each time, so a folder that will not list
+    drops every `[[S-…]]` written inside it and `fha find --related` quietly
+    shows fewer connections than the archive really holds.
     """
     from _lib import TOKEN_RE
     # archive_root/out/ is fha packet's default, gitignored output directory
@@ -1341,7 +1355,7 @@ def _index_citations(
     # is real archive content and must still be scanned.
     packet_out_root = archive_root / 'out'
     cited_cids: set[str] = set()
-    for path in archive_root.rglob('*.md'):
+    for path in walk_files(archive_root, suffix='.md', on_error=on_error):
         if '.cache' in path.parts:
             continue
         if path.is_relative_to(packet_out_root):
@@ -1600,6 +1614,11 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
                     # the .sqlite file, e.g. a tempdir-based test's cleanup)
     conn = _get_db(cache_dir)   # recreate tables after drop
 
+    # Every walk below shares one recorder, so the build reports "these
+    # folders would not open" once, whichever tree they were in.
+    unreadable_dirs: list[Path] = []
+    on_error = unreadable_dir_recorder(unreadable_dirs)
+
     try:
         with conn:
             # Places. Coord-shape warnings are collected (not printed) so they
@@ -1609,10 +1628,19 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
                 print('  indexed places')
 
             # People
+            #
+            # `walk_files` with a recorder, not rglob: this build DROPS every
+            # table first, so a folder that will not list does not merely go
+            # unread - the persons, claims and citations that live under it
+            # disappear from the index while the build reports success. The
+            # rows themselves are rebuildable from the records (the index is a
+            # cache), but nothing would tell the human that half his tree had
+            # gone quiet, and `photo_people` is derived from these very rows.
+            # Collecting the folders lets the build say so and exit 1.
             people_root = archive_root / 'people'
             person_count = 0
             if people_root.exists():
-                for path in people_root.rglob('*.md'):
+                for path in walk_files(people_root, suffix='.md', on_error=on_error):
                     _index_person(conn, path, archive_root)
                     person_count += 1
             if verbose:
@@ -1631,14 +1659,14 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             sources_root = archive_root / 'sources'
             source_count = 0
             if sources_root.exists():
-                for path in sources_root.rglob('*.md'):
+                for path in walk_files(sources_root, suffix='.md', on_error=on_error):
                     _index_source(conn, path, archive_root, fha_config, link_alias_map)
                     source_count += 1
             if verbose:
                 print(f'  indexed {source_count} source files')
 
             # Notes FTS
-            _index_notes(conn, archive_root)
+            _index_notes(conn, archive_root, on_error)
 
             # Capture log (durability: survives a search_log drop/rebuild)
             _index_capture_log(conn, archive_root)
@@ -1646,7 +1674,8 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             # Citation scan - the full alias map now includes source stems, so a
             # `[[grandmas-album]]` prose link resolves to its S-id and a cited
             # `[[C-…]]` registers its on-demand source alias.
-            _index_citations(conn, archive_root, _resolve_map_from_aliases(conn))
+            _index_citations(
+                conn, archive_root, _resolve_map_from_aliases(conn), on_error)
 
             # Relationship derivation
             _derive_relationships(conn)
@@ -1671,17 +1700,42 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         for item in roots_change_orphans(archive_root, fha_config)
     ]
 
-    # Warnings (today: malformed place coords, an orphaning roots: change) put
-    # the build on the documented warnings exit path (§1: 1 = warnings only)
-    # without failing it - the human must SEE that a hand-edited line was
-    # skipped, but the index is complete.
+    # A folder that would not list is the one warning here that means the
+    # index is INCOMPLETE rather than merely imperfect, so it is worded that
+    # way: name the folders, say what is missing from search until they open,
+    # and give the command to run afterwards. The paths are archive-relative -
+    # this text rides a Result that `fha report` writes into a committed
+    # markdown file, and a local absolute path has no business in one.
+    unreadable_warnings = []
+    if unreadable_dirs:
+        shown = ', '.join(
+            _archive_relative(p, archive_root) for p in unreadable_dirs[:5])
+        if len(unreadable_dirs) > 5:
+            shown += f' and {len(unreadable_dirs) - 5} more'
+        unreadable_warnings.append(
+            f'{len(unreadable_dirs)} folder(s) could not be opened, so nothing '
+            f'inside them was indexed: {shown}. Anything filed there will not '
+            'appear in searches, on timelines, or in exports until it can be '
+            'read. This is usually a folder whose permissions changed, or a '
+            'drive or network share that is not connected - reconnect it (or '
+            'restore your access), then run `fha index` again.'
+        )
+
+    # Warnings (today: malformed place coords, an orphaning roots: change, a
+    # folder that would not open) put the build on the documented warnings
+    # exit path (§1: 1 = warnings only) without failing it - the human must
+    # SEE that a hand-edited line was skipped or a folder went unread.
     return Result(
-        exit_code=EXIT_WARNINGS if (place_warnings or roots_warnings) else EXIT_CLEAN,
+        exit_code=(EXIT_WARNINGS
+                   if (place_warnings or roots_warnings or unreadable_warnings)
+                   else EXIT_CLEAN),
         data={
             'mode': 'full',
             'schema_version': INDEX_SCHEMA_VERSION,
             'persons': person_count,
             'sources': source_count,
+            'unreadable_dirs': [
+                _archive_relative(p, archive_root) for p in unreadable_dirs],
             'db_path': str(db_path),
         },
         messages=[
@@ -1690,9 +1744,24 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         ] + [
             Message(level='warning', text=w, path='fha.yaml')
             for w in roots_warnings
+        ] + [
+            Message(level='warning', text=w) for w in unreadable_warnings
         ],
         changed=[str(db_path)],
     )
+
+
+def _archive_relative(path: Path, archive_root: Path) -> str:
+    """A folder's name as the human filed it - 'people/003 Hartley', not /Users/….
+
+    Index output can end up in a committed report, so it never carries a local
+    absolute path. A folder somehow outside the archive keeps its own spelling
+    (forward-slashed): naming it wrongly is worse than naming it long.
+    """
+    try:
+        return Path(path).relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path).replace('\\', '/')
 
 
 def _find_source_file(archive_root: Path, sid: str) -> Path | None:

@@ -73,6 +73,7 @@ CODE MAP
     _section_search_log          - §5: search_log lookups for current leads
     _section_answerable_questions - §5b: open questions with a closeable gap
     _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
+    _photo_scan_notes            - §6: what this session's photo scan could NOT see
     _section_photo_triage        - §6: photoindex.run_triage embed
     _section_place_candidates    - §6b: places.run_candidates() embed
     _section_hypotheses          - §7: open hypotheses + draft-queue backlog
@@ -872,9 +873,93 @@ def _is_missing_key(path: str) -> bool:
     return path.startswith(_MISSING_PREFIX)
 
 
+def _photo_scan_notes(data: dict) -> list[str]:
+    """Turn one `photoindex.run_scan` payload into the §6 'what it could not see' lines.
+
+    Section 6 is where the human reliably looks, so everything the scan
+    reported as unseen has to arrive here - not only on the standalone
+    command's stderr, which a session-start `fha report` never shows him. Each
+    note names the thing, says what was NOT thrown away, and gives the one
+    command to run afterwards.
+
+    Three separate conditions, deliberately three separate notes: a file
+    exiftool could not read, a photo folder that would not list, and a folder
+    of source records that would not list are different faults with different
+    fixes, and folding them into one line would send him to the wrong one.
+    Every key is read defensively - an older `.cache` payload or a partially
+    populated summary must degrade to fewer notes, never to a KeyError inside
+    the session-start feed.
+    """
+    notes: list[str] = []
+
+    # A folder the walk could not open. First, because it is the one whose
+    # consequence (rows kept rather than swept) is the least obvious.
+    dirs = data.get('unreadable_dirs') or []
+    if dirs:
+        shown = ', '.join(dirs[:5])
+        if len(dirs) > 5:
+            shown += f' and {len(dirs) - 5} more'
+        held = int(data.get('held_unreadable') or 0)
+        kept = (
+            f'The {held} photo(s) already catalogued from there were kept, not '
+            'treated as deleted'
+            if held else
+            'Nothing was removed from the catalog for them'
+        )
+        notes.append(
+            f'{len(dirs)} photo folder(s) could not be opened, so this scan did '
+            f'not see what is inside them: {shown}. {kept}, and the photo '
+            'catalog stays marked out of date. This is usually a folder whose '
+            'permissions changed, or a drive or network share that is not '
+            'connected - reconnect it (or restore your access), then run '
+            '`fha photoindex` again'
+        )
+
+    # A folder of source RECORDS the scan could not read: the photos are all
+    # there, but the archive's own statement of who is in them was unreadable.
+    record_dirs = data.get('unreadable_record_dirs') or []
+    if record_dirs:
+        shown = ', '.join(record_dirs[:5])
+        if len(record_dirs) > 5:
+            shown += f' and {len(record_dirs) - 5} more'
+        notes.append(
+            f'{len(record_dirs)} folder(s) of source records could not be opened, '
+            f'so this scan could not check which people your sources say are in '
+            f'each photo: {shown}. The people already recorded for those photos '
+            'were left exactly as they were, and the photo catalog stays marked '
+            'out of date. Restore your access to the folder (or reconnect the '
+            'drive it is on), then run `fha photoindex` again'
+        )
+
+    # A file exiftool could not read (#34) - skipped, prior row kept.
+    n_unreadable = int(data.get('unreadable') or 0)
+    if n_unreadable:
+        sample = ', '.join(data.get('unreadable_sample') or [])
+        note = (
+            f'{n_unreadable} photo file(s) could not be read by exiftool and were '
+            f'skipped (any prior catalog entry kept): {sample}'
+        )
+        # Those files never reached the catalog, so run_scan deliberately
+        # holds the catalog's date back until they can be read - which is
+        # why `fha find` will keep calling the photo index out of date.
+        # Unexplained, that reads as a second, separate fault the human
+        # cannot clear, so the report says it here, where he is looking.
+        n_unindexed = int(data.get('unreadable_unindexed') or 0)
+        if n_unindexed:
+            note += (
+                f'. The photo catalog stays marked out of date until those '
+                f'{n_unindexed} file(s) can be read - close anything holding them '
+                'open (or restore them from backup if they are damaged), then run '
+                '`fha photoindex` again'
+            )
+        notes.append(note)
+
+    return notes
+
+
 def _section_photo_triage(
     archive_root: Path, fha_config: dict, scan_error: str | None = None,
-    scan_note: str | None = None,
+    scan_notes: list[str] | None = None,
 ) -> list[str]:
     if is_working_copy(archive_root):
         return [
@@ -887,11 +972,11 @@ def _section_photo_triage(
             f'Photo scan failed this session ({scan_error}) - triage results below may be '
             'stale; run `fha photoindex` once the issue is fixed.'
         ]
-    # The scan's note is prepended before the index verdict, not after: when
+    # The scan's notes are prepended before the index verdict, not after: when
     # this session's scan could not read some files, that is very often WHY
     # the catalog below is missing or out of date, and printing the verdict
     # alone would send the human to re-run the command that just told him.
-    lines = [f'Note: {scan_note}'] if scan_note else []
+    lines = [f'Note: {n}' for n in (scan_notes or [])]
     result = photoindex.run_triage(archive_root, fha_config, top=10)
     if result['status'] in ('absent', 'unreadable'):
         return lines + [
@@ -1201,9 +1286,13 @@ def _render_report(
 ) -> str:
     """Assemble the report markdown: title, archive notes (when any), sections.
 
-    `archive_notes` are the refresh's own warnings (today: build_index's
-    malformed-coords messages) - lines a hand-edit produced that the refresh
-    skipped over. They render right under the title, before any section,
+    `archive_notes` are the refresh's own warnings (build_index's
+    malformed-coords messages, an orphaning `roots:` change, and a record
+    folder the rebuild could not open) - things the refresh skipped over. The
+    last of those is why they matter most: while a folder stays shut the index
+    reads stale forever, and without the reason printed here the human would
+    be sent round the `fha index` loop with nothing to fix. They render right
+    under the title, before any section,
     because the report IS the session-start path: a warning that only exists
     on the discarded Result is invisible exactly where the human looks first
     (round-2 finding 16). They print on section-filtered runs too - narrowing
@@ -1276,33 +1365,10 @@ def run_report(
     index_result = index.build_index(archive_root, fha_config)
     archive_notes = [m.text for m in index_result.messages]
     photo_scan_error: str | None = None
-    photo_scan_note: str | None = None
+    photo_scan_notes: list[str] = []
     try:
         scan = photoindex.run_scan(archive_root, fha_config, full=False)
-        # A file exiftool could not read no longer aborts the scan (#34) - it
-        # is skipped with its prior row kept. The report is the one place the
-        # human reliably looks, so say so here rather than only on the
-        # standalone command's stderr.
-        n_unreadable = int((scan.data or {}).get('unreadable') or 0)
-        if n_unreadable:
-            sample = ', '.join((scan.data or {}).get('unreadable_sample') or [])
-            photo_scan_note = (
-                f'{n_unreadable} photo file(s) could not be read by exiftool and were '
-                f'skipped (any prior catalog entry kept): {sample}'
-            )
-            # Those files never reached the catalog, so run_scan deliberately
-            # holds the catalog's date back until they can be read - which is
-            # why `fha find` will keep calling the photo index out of date.
-            # Unexplained, that reads as a second, separate fault the human
-            # cannot clear, so the report says it here, where he is looking.
-            n_unindexed = int((scan.data or {}).get('unreadable_unindexed') or 0)
-            if n_unindexed:
-                photo_scan_note += (
-                    f'. The photo catalog stays marked out of date until those '
-                    f'{n_unindexed} file(s) can be read - close anything holding them '
-                    'open (or restore them from backup if they are damaged), then run '
-                    '`fha photoindex` again'
-                )
+        photo_scan_notes = _photo_scan_notes(scan.data or {})
     except (RuntimeError, OSError) as e:
         # `fha report` is the session-start feed across many sections
         # (0-5b/7/8); a photo-scan failure (e.g. exiftool missing or
@@ -1335,7 +1401,7 @@ def run_report(
             'search-log': _section_search_log(conn, current),
             'answerable-questions': _section_answerable_questions(conn, archive_root),
             'photo-triage': _section_photo_triage(
-                archive_root, fha_config, photo_scan_error, photo_scan_note),
+                archive_root, fha_config, photo_scan_error, photo_scan_notes),
             'place-candidates': _section_place_candidates(archive_root, fha_config),
             'hypotheses': _section_hypotheses(conn, archive_root),
             'promotion-candidates': _section_promotion_candidates(conn, fha_config),

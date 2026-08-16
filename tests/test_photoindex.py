@@ -25,7 +25,9 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    find_source_record,
     newest_person_record_mtime,
+    newest_source_record_mtime,
     parse_media_filename,
     photoindex_status,
     resolve_path,
@@ -4581,6 +4583,254 @@ class UnreadableDirectoryTests(unittest.TestCase):
 
             self.assertEqual(result['missing'], ['MISSING:photos/wedding_1902.jpg'])
             self.assertEqual(result['held_unreadable'], 2)
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    One level deeper than `_walk_with_unreadable_dir`, and deliberately so:
+    `os.walk` AND pathlib's `rglob`/`glob` both reach the filesystem through
+    `os.scandir`, so injecting the failure here reproduces the real fault for
+    either implementation - os.walk hands the OSError to its `onerror`
+    callback, while rglob swallows it and reports an empty folder, which is
+    the whole bug. That makes it the honest seam for a test that has to fail
+    against the pre-fix rglob code and pass against the os.walk code.
+
+    chmod is not an option: the test runner is root in CI, which ignores the
+    mode bits entirely, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False   # an fd, not a path - never the folder under test
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class UnreadableFreshnessTests(unittest.TestCase):
+    """A freshness watermark must not be lowered by a folder nobody could read.
+
+    `photoindex_status` walks the photos root and the record trees to answer
+    "is the catalog newer than everything it was built from?". Every one of
+    those walks used to swallow an unreadable directory, which subtracts its
+    files' mtimes AND its own from the watermark - so a catalog missing
+    everything inside that folder reported itself `fresh`, and `fha find`
+    served its stale rows with nobody told to rescan. The rule (see
+    `_lib.walk_files`): an enumeration that could not see everything must not
+    let its caller act as though it did."""
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [
+            {'SourceFile': str(p)} for p in paths]
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+
+    def _archive(self, tmp: Path) -> Path:
+        """The photo fixture, scanned clean, with an Attic and record files.
+
+        A real scan (not a hand-made .sqlite) because `photoindex_status`
+        probes the catalog's schema before it ever looks at mtimes, and the
+        thing under test is the mtime half.
+        """
+        archive = _copy_fixture(tmp)
+        (archive / 'photos' / 'Attic').mkdir()
+        (archive / 'photos' / 'Attic' / 'shelf.jpg').write_bytes(b'x')
+        folder = archive / 'people' / '002 Couple'
+        folder.mkdir(parents=True)
+        (folder / 'cole__margaret_P-de957bcda1.md').write_text(
+            '---\nid: P-de957bcda1\nname: Margaret Cole\nliving: false\n---\n\n',
+            encoding='utf-8')
+        (archive / 'sources' / 'photos').mkdir(parents=True)
+        (archive / 'sources' / 'photos' / 'album_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: Album\nsource_type: photograph\n---\n\n',
+            encoding='utf-8')
+        photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+        # Backdate every input, then sit the catalog between them and now, so
+        # the baseline reads 'fresh' and any staleness the test sees comes
+        # from the injected failure. Backdating the inputs rather than
+        # post-dating the catalog matters: the fail-closed watermark is
+        # 'now', and a catalog stamped into the future would outrank it.
+        old = time.time() - 3600
+        for sub in ('photos', 'people', 'sources'):
+            for p in (archive / sub).rglob('*'):
+                os.utime(p, (old, old))
+            os.utime(archive / sub, (old, old))
+        recent = time.time() - 60
+        os.utime(archive / '.cache' / 'photos.sqlite', (recent, recent))
+        return archive
+
+    def test_status_is_stale_when_a_photo_folder_will_not_open(self) -> None:
+        # Pre-fix: 'fresh'. The Attic's own mtime and its photo's both drop out
+        # of the watermark, so a catalog that knows nothing about the folder
+        # certifies itself current.
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._archive(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            self.assertEqual(photoindex_status(archive, cfg)[0], 'fresh')
+
+            attic = archive / 'photos' / 'Attic'
+            with mock.patch('os.scandir', new=_scandir_denying(attic)):
+                status, lag = photoindex_status(archive, cfg)
+            self.assertEqual(status, 'stale')
+            self.assertGreater(lag, 0.0)
+
+    def test_status_is_stale_when_the_photos_root_itself_will_not_open(self) -> None:
+        # The harder half: with the root unlistable the walk yields nothing at
+        # all, so max_mtime falls back to the index/record mtimes and the
+        # answer came back 'fresh' with the entire photo library unseen.
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._archive(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+
+            with mock.patch('os.scandir',
+                            new=_scandir_denying(archive / 'photos')):
+                status, _lag = photoindex_status(archive, cfg)
+            self.assertEqual(status, 'stale')
+
+    def test_person_watermark_is_now_when_a_people_folder_will_not_open(self) -> None:
+        # newest_person_record_mtime feeds photoindex_status. An unreadable
+        # people/ subtree used to lower it silently, so face-tag and
+        # name-variant edits the scan never saw left photo_people serving the
+        # old matches while the catalog read fresh.
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._archive(Path(d))
+            seen = newest_person_record_mtime(archive)
+            self.assertGreater(seen, 0.0)
+
+            folder = archive / 'people' / '002 Couple'
+            with mock.patch('os.scandir', new=_scandir_denying(folder)):
+                held = newest_person_record_mtime(archive)
+            self.assertGreater(held, seen)
+            self.assertAlmostEqual(held, time.time(), delta=30)
+
+    def test_source_watermark_is_now_when_a_source_folder_will_not_open(self) -> None:
+        # The sibling watermark, same rule: sources/photos feeds the catalog's
+        # source-people tier, so an unreadable folder there must not read as
+        # "nothing under sources/photos has changed".
+        with tempfile.TemporaryDirectory() as d:
+            archive = self._archive(Path(d))
+            seen = newest_source_record_mtime(archive, subdir='photos')
+            self.assertGreater(seen, 0.0)
+
+            folder = archive / 'sources' / 'photos'
+            with mock.patch('os.scandir', new=_scandir_denying(folder)):
+                held = newest_source_record_mtime(archive, subdir='photos')
+            self.assertGreater(held, seen)
+
+
+class UnreadableSourceFolderTests(unittest.TestCase):
+    """The source-people tier must not be deleted by a folder that will not open.
+
+    `_rebuild_photo_people` empties `photo_people` and recomputes it on every
+    scan. One of its tiers is read from the source records via
+    `_lib.find_source_record`, which globbed `sources/**/*.md` - and pathlib
+    swallows an unreadable subdirectory with no error hook at all. The record
+    therefore came back None, which the tier reads as "this source names
+    nobody", and the photo's people were deleted in a run that reported
+    success. Deletion is the outcome that must fail closed."""
+
+    def setUp(self) -> None:
+        self._orig_run_exiftool = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [
+            {'SourceFile': str(p), 'Keywords': ['SOURCE: S-1111111111']}
+            for p in paths
+        ]
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_run_exiftool
+
+    @staticmethod
+    def _source_naming_margaret(archive: Path) -> Path:
+        folder = archive / 'sources' / 'photos'
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'wedding_S-1111111111.md').write_text(
+            '---\nid: S-1111111111\ntitle: Wedding\nsource_type: photograph\n'
+            'people:\n  - P-de957bcda1\n---\n\n## Notes\n\nx\n',
+            encoding='utf-8')
+        return folder
+
+    @staticmethod
+    def _people_via(archive: Path, via: str) -> set:
+        conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+        try:
+            return {row[0] for row in conn.execute(
+                'SELECT person_ref FROM photo_people WHERE via=?', (via,))}
+        finally:
+            conn.close()
+
+    def test_find_source_record_reports_a_folder_it_could_not_read(self) -> None:
+        # The lookup's own contract. Without the out-parameter a caller cannot
+        # tell "no such source" from "I could not look everywhere", and
+        # photoindex deletes rows on the first answer.
+        with tempfile.TemporaryDirectory() as d:
+            archive = Path(d) / 'arc'
+            folder = self._source_naming_margaret(archive)
+
+            unreadable: list = []
+            with mock.patch('os.scandir', new=_scandir_denying(folder)):
+                rec = find_source_record(
+                    archive, 'S-1111111111', unreadable=unreadable)
+            self.assertIsNone(rec)
+            self.assertEqual([p.name for p in unreadable], ['photos'])
+
+    def test_scan_keeps_source_people_when_the_source_folder_will_not_open(self) -> None:
+        # The deletion half, end to end: scan once with the source readable so
+        # the source-people rows exist, then scan again with its folder shut.
+        # Pre-fix the second scan wiped them and exited clean.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            folder = self._source_naming_margaret(archive)
+            photoindex.run_scan(archive, cfg)
+            self.assertEqual(self._people_via(archive, 'source-people'),
+                             {'p-de957bcda1'})
+
+            with mock.patch('os.scandir', new=_scandir_denying(folder)):
+                scan = photoindex.run_scan(archive, cfg)
+
+            self.assertEqual(self._people_via(archive, 'source-people'),
+                             {'p-de957bcda1'})
+            self.assertEqual(scan['unreadable_record_dirs'], ['sources/photos'])
+            self.assertEqual(scan.exit_code, EXIT_WARNINGS)
+
+    def test_scan_holds_the_catalog_stale_and_names_the_folder(self) -> None:
+        # A scan that certifies itself is a scan nobody rechecks. The catalog
+        # must keep reading 'stale' and the CLI must name the folder and the
+        # fix in words a non-technical owner can act on.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'photos'}}
+            folder = self._source_naming_margaret(archive)
+            photoindex.run_scan(archive, cfg)
+
+            with mock.patch('os.scandir', new=_scandir_denying(folder)):
+                scan = photoindex.run_scan(archive, cfg)
+                self.assertFalse(scan['stale_hold_failed'])
+                self.assertEqual(photoindex_status(archive, cfg)[0], 'stale')
+
+                args = type('Args', (), {'root': str(archive), 'full': False})()
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(err):
+                    code = photoindex._cmd_scan(args)
+
+            self.assertEqual(code, EXIT_WARNINGS)
+            text = err.getvalue()
+            self.assertIn('sources/photos', text)
+            self.assertIn('left exactly as they were', text)
+            self.assertIn('fha photoindex', text)
+            self.assertNotIn(str(archive), text)   # no local absolute path
 
 
 class GroupDateSymmetryTests(unittest.TestCase):

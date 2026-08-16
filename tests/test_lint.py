@@ -33,10 +33,12 @@ CLI, so the checks run over a fresh in-memory registry with no prior `fha index`
 
 import datetime
 import io
+import os
 import re
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -44,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
-from _lib import CLAIMS_RE, normalize_date, read_record
+from _lib import CLAIMS_RE, EXIT_WARNINGS, normalize_date, read_record
 
 
 _PERSON_MD = '''---
@@ -1746,6 +1748,79 @@ class ContentDecidesPersonKindTests(unittest.TestCase):
         self.assertEqual(list(reg.research_content), [])
         self.assertNotIn('h-abcabcabca', reg.hypothesis_ids)
         self.assertIn('W122', self._codes(findings))
+
+
+def _scandir_denying(unreadable: Path):
+    """An os.scandir stand-in that refuses to list `unreadable`.
+
+    `os.walk` and pathlib's `rglob` both reach the filesystem through
+    `os.scandir`, so the failure goes there: os.walk hands it to `onerror`,
+    while rglob swallows it and reports an empty folder - the fault being
+    pinned. chmod is useless here: the test runner is root under CI, which
+    ignores mode bits, and Windows has no equivalent.
+    """
+    real_scandir = os.scandir
+    target = unreadable.resolve()
+
+    def scandir(path='.'):
+        try:
+            denied = Path(path).resolve() == target
+        except (TypeError, ValueError, OSError):
+            denied = False
+        if denied:
+            err = PermissionError(13, 'Permission denied')
+            err.filename = str(path)
+            raise err
+        return real_scandir(path)
+
+    return scandir
+
+
+class UnreadableRecordFolderTests(unittest.TestCase):
+    """W123: lint must not certify an archive it could not fully read.
+
+    `fha lint` sells one sentence - "your archive matches the spec" - and Pass
+    1's `rglob` handed it that sentence over any subtree that would not list.
+    Every record filed there went unchecked and the summary still read "0
+    errors", which is the most confident possible way to say nothing at all."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.folder = self.root / 'people' / '040 Hartley'
+        self.folder.mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.folder / 'hartley__cur_P-aaaaaaaaaa.md').write_text(
+            '---\nid: P-aaaaaaaaaa\nname: Cur Hartley\nliving: false\n'
+            'tier: curated\nno_known_marriages: true\n---\n\n'
+            '## Biography\n\nx\n', encoding='utf-8')
+
+    def test_a_folder_that_will_not_open_is_reported_not_certified(self) -> None:
+        clean, reg = lint._run_lint_core(self.root, {})
+        self.assertNotIn('W123', [f.code for f in clean])
+        self.assertEqual(reg.unreadable_dirs, [])
+        self.assertIn('p-aaaaaaaaaa', reg.person_profile_paths)
+
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            findings, reg = lint._run_lint_core(self.root, {})
+
+        # Pre-fix: the folder's record simply was not there, no W123 was
+        # raised, and lint reported an archive it had never opened as clean.
+        self.assertNotIn('p-aaaaaaaaaa', reg.person_profile_paths)
+        w123 = [f for f in findings if f.code == 'W123']
+        self.assertEqual(len(w123), 1)
+        self.assertEqual(w123[0].severity, 'W')
+        self.assertIn('people/040 Hartley', w123[0].message)
+        self.assertIn('fha lint', w123[0].message)
+
+    def test_run_lint_leaves_exit_0_behind(self) -> None:
+        # The point of the warning: a clean bill of health must not be issued
+        # over records nobody read, so the run moves off exit 0.
+        with unittest.mock.patch('os.scandir', new=_scandir_denying(self.folder)):
+            result = lint.run_lint(self.root, {})
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertGreaterEqual(result['n_warnings'], 1)
 
 
 if __name__ == '__main__':
